@@ -182,10 +182,12 @@ function AgentCreatePage({
               onBack={() => setDestinationConfirmed(false)}
               onChange={setDraft}
               onSubmit={() => {
-                if (selectedRequest) void create(selectedRequest);
+                // A saved attempt must be resolved through Check, Retry, or Discard. Reusing it
+                // through the ordinary form would make Create behave like an implicit Retry.
+                if (selectedRequest && !recovery.intent) void create(selectedRequest);
               }}
               submitLabel={submitting ? m.agent_create_creating_action() : m.agent_create_create_agent_action()}
-              submitting={submitting}
+              submitting={submitting || recovery.intent !== undefined}
             />
           ) : (
             <DestinationStep

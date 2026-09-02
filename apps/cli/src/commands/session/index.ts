@@ -81,7 +81,8 @@ async function runCommand(
   } catch (error) {
     if (error instanceof SessionCommandRequestError) {
       process.stderr.write(`${formatSessionCommandError(error, options.json ?? false)}\n`);
-      process.exitCode = 1;
+      const commandError = toCommandError(error.cause, "request");
+      process.exitCode = commandExitCode(commandError);
       return;
     }
     const commandError = toCommandError(error, "request");

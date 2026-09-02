@@ -433,6 +433,38 @@ describe("ImBinding HTTP API", () => {
     });
   });
 
+  it.each([
+    ["IM_BINDING_GENERATION_STALE", 409, "deterministic"],
+    ["IM_BINDING_TEMPORARILY_UNAVAILABLE", 503, "transient"],
+  ] as const)("keeps public IM failure %s inside the canonical envelope", async (code, statusCode, category) => {
+    const service = services();
+    service.imBindings.getConfigForAgent.mockRejectedValueOnce(
+      new ImBindingServiceError(code, statusCode, "Messaging state unavailable", category),
+    );
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: agentImBindingConfigPath(agentId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toEqual({
+      error: {
+        code,
+        category,
+        message: "Messaging state unavailable",
+        requestId: response.headers["x-request-id"],
+      },
+    });
+    expect(JSON.stringify(response.json())).not.toContain("Invalid option");
+  });
+
   it("unbinds the exact current binding through the Agent-scoped route", async () => {
     const service = services();
     const app = createApp({
@@ -581,7 +613,7 @@ describe("ImBindingService persistence", () => {
   it("handles Feishu replacement, identity validation, scope projection, and authorization errors", async () => {
     const value = await persistedFixture();
     await expect(value.service.activateFeishu(feishuInput(crypto.randomUUID()))).rejects.toMatchObject({
-      code: "AGENT_NOT_FOUND",
+      code: "IM_BINDING_NOT_FOUND",
     });
     const first = await value.service.activateFeishu(feishuInput(value.agent.id));
     await expect(
@@ -683,7 +715,7 @@ describe("ImBindingService persistence", () => {
       code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
     });
     await expect(value.service.activateSlack(slackInput(crypto.randomUUID()), "B1")).rejects.toMatchObject({
-      code: "AGENT_NOT_FOUND",
+      code: "IM_BINDING_NOT_FOUND",
     });
     const feishu = await value.service.activateFeishu(feishuInput(value.agent.id));
     await expect(value.service.activateSlack(slackInput(value.agent.id), "B1")).rejects.toMatchObject({

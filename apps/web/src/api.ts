@@ -57,6 +57,7 @@ import {
   type ImBindingMessagingExpectation,
   type ImBindingSummary,
   ImBindingSummarySchema,
+  type ImBindingUnbindRequiredDetail,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
@@ -131,6 +132,7 @@ export class ApiError extends Error {
     readonly issues?: readonly ValidationIssue[],
     readonly requestId?: string,
     readonly retryAfterSeconds?: number,
+    readonly unbindRequired?: ImBindingUnbindRequiredDetail,
   ) {
     super(message);
     this.name = "ApiError";
@@ -532,6 +534,7 @@ export class BrowserApi {
       error.issues,
       error.requestId ?? requestId,
       error.retryAfterSeconds,
+      error.unbindRequired,
     );
   }
 

@@ -252,6 +252,29 @@ describe("Agent setup projection ownership", () => {
     });
     await expect(agentService.getById(bootstrap.userId, agentId)).rejects.toBeInstanceOf(AgentServiceError);
   });
+
+  it("fails closed when the exact Agent is suspended during snapshot observation", async () => {
+    const bootstrap = await account();
+    const { agentService, feishuSetup } = harness();
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+    const service = new AgentSetupService(
+      unitDatabase.database,
+      agentService,
+      {
+        getSetupBindingForAgent: async () => {
+          await agentService.suspendById(bootstrap.userId, agentId);
+          return undefined;
+        },
+      },
+      feishuSetup,
+      { now: () => NOW, providerReadiness: runtimeReadiness("ready") },
+    );
+
+    await expect(service.getSetupById(bootstrap.userId, agentId)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+      statusCode: 409,
+    });
+  });
 });
 
 describe("Agent setup projection Computer states", () => {

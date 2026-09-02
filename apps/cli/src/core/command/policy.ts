@@ -1,4 +1,4 @@
-import { OpenTagApiError } from "@opentag/client";
+import { type ClientLogger, createLogger, OpenTagApiError } from "@opentag/client";
 import {
   type ErrorRetryability,
   redactSensitive,
@@ -68,17 +68,14 @@ type CommandFormatValueOptions<T> = { formatValue?: (value: T) => string };
 type CommandFormatWriterOptions = { stdout?: (chunk: string) => void; stderr?: (chunk: string) => void };
 type CommandFormatOptions<T> = CommandFormatValueOptions<T> & CommandFormatWriterOptions;
 export type CommandPresentationOptions<T> = { json?: boolean } & CommandFormatOptions<T>;
+export type CommandExecutionOptions<T> = CommandPresentationOptions<T> & {
+  logger?: ClientLogger;
+  phase?: CommandPhase;
+};
 
 /** Convert errors from Commander, Zod, the API, and Node into one local contract. */
 export function toCommandError(error: unknown, phase: CommandPhase = "unknown"): CommandError {
   if (error instanceof CommandError) return error;
-  if (isInterrupted(error)) {
-    return new CommandError(
-      { code: "INTERRUPTED", category: "cancelled", retryability: "never", phase: "shutdown" },
-      "The operation was interrupted",
-      { cause: error },
-    );
-  }
   if (isZodError(error)) {
     return new CommandError(
       { code: "VALIDATION_ERROR", category: "validation", retryability: "never", phase: "validation" },
@@ -89,6 +86,13 @@ export function toCommandError(error: unknown, phase: CommandPhase = "unknown"):
   if (error instanceof OpenTagApiError) {
     const mapped = mapApiError(error);
     return new CommandError(mapped, error.message, { cause: error });
+  }
+  if (isInterrupted(error)) {
+    return new CommandError(
+      { code: "INTERRUPTED", category: "cancelled", retryability: "never", phase: "shutdown" },
+      "The operation was interrupted",
+      { cause: error },
+    );
   }
 
   return classifyGenericError(error, phase);
@@ -205,7 +209,7 @@ export function presentCommand<T>(
           message: error.message,
         },
       })
-    : `${error.code}: ${error.message}`;
+    : `${error.code}: ${error.message}${error.requestId ? ` (request ${error.requestId})` : ""}`;
   stderr(`${output}\n`);
   return result.exitCode;
 }
@@ -213,12 +217,25 @@ export function presentCommand<T>(
 /** Run an operation through the shared result and presentation path. */
 export async function executeCommand<T>(
   operation: () => Promise<T>,
-  options: CommandPresentationOptions<T> & { phase?: CommandPhase } = {},
+  options: CommandExecutionOptions<T> = {},
 ): Promise<CommandExitCode> {
   try {
     return presentCommand({ ok: true, value: await operation(), exitCode: EXIT_CODES.success }, options);
   } catch (error) {
     const commandError = toCommandError(error, options.phase);
+    const structuredError = commandError.toStructuredError();
+    (options.logger ?? createLogger("cli")).error(
+      {
+        event: "command.failure",
+        error: structuredError,
+        code: structuredError.code,
+        category: structuredError.category,
+        retryability: structuredError.retryability,
+        phase: structuredError.phase,
+        ...(structuredError.requestId ? { requestId: structuredError.requestId } : {}),
+      },
+      "CLI command failed",
+    );
     return presentCommand(
       {
         ok: false,
@@ -301,8 +318,17 @@ export function commandExitCode(error: CommandError): Exclude<CommandExitCode, t
 
 function isInterrupted(error: unknown): boolean {
   if (error instanceof Error && (error.name === "AbortError" || error.name === "CanceledError")) return true;
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:^|\b)(?:aborted|abort|cancelled|canceled|interrupted)(?:\b|$)/iu.test(message);
+  return isAbortSignal(error);
+}
+
+function isAbortSignal(error: unknown): error is AbortSignal {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "aborted" in error &&
+    (error as { aborted?: unknown }).aborted === true &&
+    typeof (error as { addEventListener?: unknown }).addEventListener === "function"
+  );
 }
 
 function formatHumanValue(value: unknown): string {

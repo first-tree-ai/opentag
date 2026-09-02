@@ -93,10 +93,21 @@ describe("Agent Setup route boundary", () => {
 
   it("renders the creation flow without creating anything when the Account has no Agent", async () => {
     installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let listReads = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === undefined) {
+        listReads += 1;
+        return listReads === 1 ? json({ agents: [] }) : json({ agents: [agentListItem, secondAgentListItem] });
+      }
+      return fallback(input, init);
+    });
     window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    await waitFor(() => expect(listReads).toBe(1));
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).not.toContain("agentId=");
     // Zero targets means the reader creates deliberately — never an automatic POST from a visit.
@@ -172,6 +183,15 @@ describe("Agent Setup route boundary", () => {
 
     expect(await screen.findByRole("heading", { name: "Creation attempt interrupted" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry creation" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const create = screen.getByRole("button", { name: "Create Agent" });
+    expect(create.hasAttribute("disabled")).toBe(true);
+    const form = create.closest("form");
+    if (!form) throw new Error("Agent creation form was not rendered");
+    fireEvent.submit(form);
+    expect(agentCreationPosts()).toHaveLength(0);
+    expect(window.localStorage.getItem(creationIntentKey)).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Check result" }));
 
     await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));

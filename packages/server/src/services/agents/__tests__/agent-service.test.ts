@@ -573,6 +573,11 @@ describe("AgentService", () => {
     await expect(service.rebindById(bootstrap.userId, created.id, crypto.randomUUID())).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
     });
+    await service.suspendById(bootstrap.userId, created.id);
+    await expect(service.rebindById(bootstrap.userId, created.id, computer.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+      statusCode: 409,
+    });
   });
 
   it("notifies provider CLI placement after committed lifecycle changes and reports callback failures", async () => {

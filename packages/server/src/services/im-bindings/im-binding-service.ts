@@ -1,4 +1,5 @@
 import type {
+  ErrorCategory,
   ImBindingAdminDetail,
   ImBindingDiagnostics,
   ImBindingHandoffStatus,
@@ -212,11 +213,11 @@ export async function disableImBindingInTransaction(
 }
 
 export class ImBindingServiceError extends Error {
-  readonly category = "deterministic" as const;
   constructor(
     readonly code: string,
     readonly statusCode: number,
     message: string,
+    readonly category: ErrorCategory = "deterministic",
   ) {
     super(message);
   }
@@ -1238,7 +1239,7 @@ export class ImBindingService {
     const [agent] = await executor
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
       .limit(1);
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
   }
@@ -1251,7 +1252,7 @@ export class ImBindingService {
     const [agent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
       .limit(1)
       .for("update");
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
@@ -1438,12 +1439,11 @@ export class ImBindingService {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, id: agents.id })
         .from(agents)
-        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+        .where(and(eq(agents.id, input.agentId), eq(agents.status, "active")))
         .limit(1)
         .for("update");
-      if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
-      // Messaging routes work to the Agent's Computer, so a binding that has none would be created
-      // ready to deliver to nowhere. The Account binds a Computer first.
+      if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+      // Messaging routes require a bound Computer; otherwise the route would deliver to nowhere.
       if (agent.computerId === null) {
         throw new ImBindingServiceError(
           "AGENT_COMPUTER_NOT_BOUND",
@@ -1879,12 +1879,11 @@ export class ImBindingService {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, id: agents.id })
         .from(agents)
-        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+        .where(and(eq(agents.id, input.agentId), eq(agents.status, "active")))
         .limit(1)
         .for("update");
-      if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
-      // Messaging routes work to the Agent's Computer, so a binding that has none would be created
-      // ready to deliver to nowhere. The Account binds a Computer first.
+      if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+      // Messaging routes require a bound Computer; otherwise the route would deliver to nowhere.
       if (agent.computerId === null) {
         throw new ImBindingServiceError(
           "AGENT_COMPUTER_NOT_BOUND",

@@ -53,6 +53,44 @@ export interface BrowserAuthRateLimiter {
   check(key: string): void;
 }
 
+const RATE_LIMIT_FAILURE_METADATA = Symbol("opentag.rateLimitFailureMetadata");
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+
+interface RateLimitFailureMetadata {
+  keyKind: "email" | "ip";
+  limiter: BrowserAuthRateLimiter;
+  windowMs: number;
+}
+
+type RateLimitFailure = AuthServiceError & {
+  [RATE_LIMIT_FAILURE_METADATA]?: RateLimitFailureMetadata;
+};
+
+function checkRateLimit(
+  limiter: BrowserAuthRateLimiter,
+  key: string,
+  keyKind: RateLimitFailureMetadata["keyKind"],
+): void {
+  try {
+    limiter.check(key);
+  } catch (error) {
+    if (error instanceof AuthServiceError && error.code === "RATE_LIMITED") {
+      const candidateWindowMs = (limiter as { windowMs?: unknown }).windowMs;
+      const windowMs = typeof candidateWindowMs === "number" ? candidateWindowMs : DEFAULT_RATE_LIMIT_WINDOW_MS;
+      Object.defineProperty(error, RATE_LIMIT_FAILURE_METADATA, {
+        configurable: true,
+        value: { keyKind, limiter, windowMs },
+      });
+    }
+    throw error;
+  }
+}
+
+export function rateLimitFailureMetadata(error: unknown): RateLimitFailureMetadata | undefined {
+  if (!(error instanceof AuthServiceError) || error.code !== "RATE_LIMITED") return undefined;
+  return (error as RateLimitFailure)[RATE_LIMIT_FAILURE_METADATA];
+}
+
 function isLoopbackAddress(value: string): boolean {
   const address =
     value
@@ -254,7 +292,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   });
 
   app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
-    limiter.check(`${request.ip}:dev`);
+    checkRateLimit(limiter, `${request.ip}:dev`, "ip");
     const betterAuth = options.betterAuth;
     if (!devSignInAvailable(request) || !betterAuth) {
       throw new AuthServiceError(
@@ -295,7 +333,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   });
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
-    limiter.check(`${request.ip}:start`);
+    checkRateLimit(limiter, `${request.ip}:start`, "ip");
     const betterAuth = options.betterAuth;
     if (!options.googleSignIn || !betterAuth) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
@@ -349,7 +387,7 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   app.post(HTTP_PATHS.authEmailSignUp, async (request, reply) => {
     const betterAuth = requirePasswordAuth();
     requireBrowserOrigin(request, options.publicOrigin);
-    limiter.check(`${request.ip}:sign-up`);
+    checkRateLimit(limiter, `${request.ip}:sign-up`, "ip");
     const body = parseRequest(EmailSignUpRequestSchema, request.body);
     const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
       method: "POST",
@@ -367,14 +405,14 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
   app.post(HTTP_PATHS.authEmailSignIn, async (request, reply) => {
     const betterAuth = requirePasswordAuth();
     requireBrowserOrigin(request, options.publicOrigin);
-    limiter.check(`${request.ip}:sign-in`);
+    checkRateLimit(limiter, `${request.ip}:sign-in`, "ip");
     const body = parseRequest(EmailSignInRequestSchema, request.body);
     /*
      * Also bounded per address, so guessing one Account's password cannot be spread across many source addresses.
      * The cost is that an attacker can spend a victim's budget and lock them out for the window; against unbounded
      * distributed guessing at a single known address, that is the better failure.
      */
-    limiter.check(`sign-in:${body.email}`);
+    checkRateLimit(limiter, `sign-in:${body.email}`, "email");
     const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
       method: "POST",
       path: "/sign-in/email",

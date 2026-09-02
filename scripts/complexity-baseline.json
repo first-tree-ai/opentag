@@ -618,7 +618,7 @@
       "id": "packages/server/src/app.ts#createApp",
       "path": "packages/server/src/app.ts",
       "symbol": "createApp",
-      "complexity": 57
+      "complexity": 58
     },
     {
       "id": "packages/server/src/config.ts#callback",
@@ -756,16 +756,10 @@
       "id": "packages/server/src/services/agents/agent-service.ts#callback",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
-      "complexity": 21
-    },
-    {
-      "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
-      "path": "packages/server/src/services/agents/agent-service.ts",
-      "symbol": "callback",
       "complexity": 16
     },
     {
-      "id": "packages/server/src/services/agents/agent-service.ts#callback~3",
+      "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
       "path": "packages/server/src/services/agents/agent-service.ts",
       "symbol": "callback",
       "complexity": 30
@@ -810,7 +804,7 @@
       "id": "packages/server/src/services/im-bindings/feishu/setup-service.ts#createOrReuse",
       "path": "packages/server/src/services/im-bindings/feishu/setup-service.ts",
       "symbol": "createOrReuse",
-      "complexity": 23
+      "complexity": 19
     },
     {
       "id": "packages/server/src/services/im-bindings/im-binding-service.ts#activate",

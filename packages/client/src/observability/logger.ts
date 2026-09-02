@@ -45,6 +45,7 @@ const REDACT_PATHS = [
 
 let serviceDirectory: string | undefined;
 let serviceStream: RotatingFileStream | undefined;
+let serviceDestination: DestinationStream | undefined;
 let rootLogger: PinoLogger | undefined;
 let clientLoggerContext: ClientLogBindings = {};
 
@@ -55,7 +56,8 @@ export function configureClientLoggerForService(logDirectory: string): void {
   }
   if (serviceDirectory) return;
   serviceDirectory = canonicalDirectory;
-  serviceStream = new RotatingFileStream(canonicalDirectory, { minRetentionMs: CLIENT_LOG_MIN_RETENTION_MS });
+  serviceStream = undefined;
+  serviceDestination = undefined;
   rootLogger = undefined;
 }
 
@@ -75,13 +77,14 @@ export function resetClientLoggerForTests(): void {
   serviceStream?.close();
   serviceDirectory = undefined;
   serviceStream = undefined;
+  serviceDestination = undefined;
   rootLogger = undefined;
   clientLoggerContext = {};
 }
 
 function root(): PinoLogger {
   if (rootLogger) return rootLogger;
-  rootLogger = buildRoot(serviceStream ?? stderrDestination(), serviceDirectory !== undefined);
+  rootLogger = buildRoot(fileDestination(), serviceDirectory !== undefined);
   return rootLogger;
 }
 
@@ -120,12 +123,19 @@ function stderrDestination(): DestinationStream {
 }
 
 function fileDestination(): DestinationStream {
-  return serviceStream ?? stderrDestination();
+  if (!serviceDirectory) return stderrDestination();
+  if (serviceDestination) return serviceDestination;
+  serviceDestination = {
+    write(chunk: string) {
+      getServiceStream().write(chunk);
+    },
+  };
+  return serviceDestination;
 }
 
 function dualDestination(): DestinationStream {
-  const file = serviceStream;
-  if (!file) return stderrDestination();
+  if (!serviceDirectory) return stderrDestination();
+  const file = fileDestination();
   return {
     write(chunk: string) {
       file.write(chunk);
@@ -136,6 +146,12 @@ function dualDestination(): DestinationStream {
       }
     },
   };
+}
+
+function getServiceStream(): RotatingFileStream {
+  if (!serviceDirectory) throw new Error("The Client logger has no configured service directory");
+  serviceStream ??= new RotatingFileStream(serviceDirectory, { minRetentionMs: CLIENT_LOG_MIN_RETENTION_MS });
+  return serviceStream;
 }
 
 function adapt(logger: PinoLogger, bindings: ClientLogBindings): ClientLogger {

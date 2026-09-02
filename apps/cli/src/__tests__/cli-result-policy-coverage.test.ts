@@ -56,13 +56,16 @@ describe("command policy branches", () => {
       });
     }
 
-    expect(toCommandError(new Error("aborted by signal"))).toMatchObject({
+    expect(toCommandError(Object.assign(new Error("aborted by signal"), { name: "AbortError" }))).toMatchObject({
       code: "INTERRUPTED",
       category: "cancelled",
     });
     expect(toCommandError(Object.assign(new Error("cancelled"), { name: "AbortError" }))).toMatchObject({
       code: "INTERRUPTED",
     });
+    expect(
+      toCommandError(new OpenTagApiError("SETUP_CANCELLED", "deterministic", "The setup was cancelled", 409)),
+    ).toMatchObject({ category: "conflict" });
     expect(toCommandError({ category: "validation", code: "BAD_INPUT", message: "bad" }, "request")).toMatchObject({
       category: "validation",
       phase: "validation",

@@ -86,6 +86,31 @@ export class AgentSetupService {
     const computer = await this.#observeComputer(agent, observedAt);
     const runtime = this.#observeRuntime(agent.runtimeProvider, computer, observedAt);
     const messaging = await this.#observeMessaging(callerUserId, agentId);
+    // Observation crosses runtime and Provider boundaries, so the Agent may change while those
+    // reads are in flight. Revalidate the exact target after the last observation: a stale tab
+    // must never receive an actionable snapshot for an Agent that is no longer active, and a
+    // concurrent Agent mutation must be retried rather than projected as one mixed revision.
+    const current = await this.#agents.getById(callerUserId, agentId);
+    if (current.status !== "active") {
+      throw new AgentServiceError(
+        "AGENT_LIFECYCLE_CONFLICT",
+        "deterministic",
+        "Only an active Agent exposes a setup projection",
+        409,
+      );
+    }
+    if (
+      current.updatedAt !== detail.updatedAt ||
+      current.runtimeProvider !== detail.runtimeProvider ||
+      current.computer?.computerId !== detail.computer?.computerId
+    ) {
+      throw new AgentServiceError(
+        "AGENT_REVISION_CONFLICT",
+        "deterministic",
+        "The Agent changed while its setup state was observed",
+        409,
+      );
+    }
     const stage = deriveSetupStage(computer, runtime, messaging);
     return {
       agent,

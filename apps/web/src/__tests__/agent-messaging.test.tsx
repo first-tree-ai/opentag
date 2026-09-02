@@ -78,13 +78,15 @@ describe("OpenTag Web App Shell", () => {
     await screen.findByRole("button", { name: "Connect Slack" });
     const connect = screen.getAllByRole("button").filter((button) => button.textContent?.startsWith("Connect"));
     expect(connect.map((button) => button.textContent)).toEqual(["Connect Slack", "Connect Lark"]);
-    const marks = connect.map((button) => {
+    // A mark that is merely present could still be the other channel's, so read which one it depicts.
+    expect(connect.map(markProvider)).toEqual(["Slack", "Feishu"]);
+    // One neutral surface for both: identical classes, and `secondary`'s white card and default text
+    // rather than the emphasis fill or the destructive text that would single a channel out.
+    expect(new Set(connect.map((button) => button.className)).size).toBe(1);
+    for (const button of connect) {
       expect(button.className).toContain("bg-kumo-base");
-      expect(button.className).not.toContain("kumo-button-emphasis-bg");
-      return button.querySelector("img")?.getAttribute("src");
-    });
-    expect(marks.every((mark) => mark)).toBe(true);
-    expect(new Set(marks).size).toBe(2);
+      expect(button.className).toContain("!text-kumo-default");
+    }
   });
 
   it("separates the connected channel from the trigger mode that acts on it", async () => {
@@ -469,3 +471,15 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 });
+
+/**
+ * Which provider a decorative button mark actually depicts.
+ *
+ * The marks are inlined as data URIs, so the rendered `src` carries the whole SVG — including the
+ * `<title>` each asset names itself with. That is the one thing in the DOM that distinguishes one
+ * mark from the other, since both are `alt=""` and `aria-hidden` by design.
+ */
+function markProvider(button: HTMLElement): string | undefined {
+  const src = button.querySelector("img")?.getAttribute("src");
+  return src ? /<title>([^<]+)<\/title>/.exec(decodeURIComponent(src))?.[1] : undefined;
+}

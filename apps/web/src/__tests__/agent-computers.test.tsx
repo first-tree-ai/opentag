@@ -155,8 +155,9 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Reviewer")).toBeTruthy();
-    expect(screen.getByText("Computer unknown")).toBeTruthy();
-    expect(screen.getByText("Unable to confirm readiness")).toBeTruthy();
+    expect(screen.getByText("Status unavailable")).toBeTruthy();
+    expect(screen.queryByText("Computer unknown")).toBeNull();
+    expect(screen.queryByText("Unable to confirm readiness")).toBeNull();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/computers"))).toBe(true);
@@ -178,7 +179,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
-    expect(screen.getByText("Cannot receive new work")).toBeTruthy();
+    expect(screen.queryByText("Cannot receive new work")).toBeNull();
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
     expect(screen.queryByText("Available")).toBeNull();
   });

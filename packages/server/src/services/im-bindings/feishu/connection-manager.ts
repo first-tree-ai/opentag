@@ -1,8 +1,8 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { hasRequiredFeishuTenantScopes } from "@opentag/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
-import { agents, imBindings } from "../../../db/schema/index.js";
+import { agents, imBindings, imMessages } from "../../../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import {
   emitRootSpan,
@@ -16,7 +16,7 @@ import {
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../../im/index.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
-import { FeishuAdapter, feishuEnvelopeEventId } from "./adapter.js";
+import { FeishuAdapter, feishuEnvelopeEventId, feishuSenderOpenId } from "./adapter.js";
 import { FeishuOperationError, safeFeishuConnectionErrorCode } from "./errors.js";
 import type { FeishuInboundReceiptStore } from "./inbound-receipt-store.js";
 import type { FeishuBindingActivation } from "./setup-service.js";
@@ -503,8 +503,28 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           setActiveSpanAttributes(imAttrs({ provider: "feishu", bindingId: handoff.imBindingId }));
           setFailureCode("FEISHU_INBOUND_NORMALIZE_FAILED");
           const events = adapter.normalizeInbound({ appId: handoff.appId, teamId: null, message });
+          const senderOpenId = feishuSenderOpenId(message);
           for (const event of events) {
-            await this.#processInboundEvent(event, handoff, setFailureCode);
+            const result = await this.#processInboundEvent(event, handoff, setFailureCode);
+            const messageId = result?.messageId;
+            if (
+              messageId &&
+              senderOpenId &&
+              event.message.author.kind === "human" &&
+              !event.message.author.displayName
+            ) {
+              this.#trackDetached(
+                "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
+                this.#enrichSenderName(adapter, {
+                  imBindingId: handoff.imBindingId,
+                  messageId,
+                  chatId: event.conversation.externalId,
+                  senderOpenId,
+                }),
+                "provider",
+                messageId,
+              );
+            }
           }
         });
       },
@@ -567,7 +587,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     setFailureCode: (
       code: "FEISHU_INBOUND_DATABASE_FAILED" | "FEISHU_INBOUND_FENCE_STALE" | "FEISHU_INBOUND_IDENTITY_MISMATCH",
     ) => void,
-  ): Promise<void> {
+  ): Promise<Awaited<ReturnType<ImMessageInbox["ingest"]>> | undefined> {
     setActiveSpanAttributes(
       imAttrs({
         provider: "feishu",
@@ -578,7 +598,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     );
     const receiptEventId = feishuEnvelopeEventId(event);
     const receiptId = await this.#claimInboundReceipt(event, handoff, receiptEventId, setFailureCode);
-    if (receiptId === null) return;
+    if (receiptId === null) return undefined;
     const result = await this.#persistInboundEvent(event, handoff, receiptId, setFailureCode);
     if (receiptId) await this.#receipts?.markProcessed(receiptId);
     if (result.duplicate)
@@ -591,6 +611,28 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       }),
       ...outcomeAttrs(result.duplicate ? "duplicate" : result.deliveryIds.length > 0 ? "persisted" : "no_delivery"),
     });
+    return result;
+  }
+
+  async #enrichSenderName(
+    adapter: FeishuAdapter,
+    input: { imBindingId: string; messageId: string; chatId: string; senderOpenId: string },
+  ): Promise<void> {
+    const resolved = await adapter.resolveSenderName({ chatId: input.chatId, senderOpenId: input.senderOpenId });
+    const displayName = resolved?.trim();
+    if (!displayName) return;
+    if (displayName.length > 512) throw new Error("FEISHU_SENDER_NAME_INVALID");
+    await this.#database
+      .update(imMessages)
+      .set({ authorDisplayName: displayName })
+      .where(
+        and(
+          eq(imMessages.id, input.messageId),
+          eq(imMessages.imBindingId, input.imBindingId),
+          eq(imMessages.authorExternalId, input.senderOpenId),
+          isNull(imMessages.authorDisplayName),
+        ),
+      );
   }
 
   async #persistInboundEvent(

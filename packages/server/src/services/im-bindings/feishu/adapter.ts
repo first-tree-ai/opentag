@@ -27,6 +27,7 @@ interface FeishuRawEnvelope {
   event?: { sender?: { sender_type?: string; tenant_key?: string } };
   opentagOperation?: "created" | "edited" | "deleted";
   opentagConversationKind?: "unknown";
+  opentagSenderOpenId?: string;
 }
 
 interface RawFeishuMessageEvent {
@@ -80,11 +81,30 @@ export interface FeishuChannel {
 
 export interface FeishuHttpCapability {
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource>;
+  resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
+      chatMembers: {
+        get(input: {
+          path: { chat_id: string };
+          params: {
+            member_id_type: "open_id";
+            page_size: number;
+            page_token?: string;
+          };
+        }): Promise<{
+          code?: number;
+          msg?: string;
+          data?: {
+            items?: Array<{ member_id?: string; name?: string }>;
+            page_token?: string;
+            has_more?: boolean;
+          };
+        }>;
+      };
       messageResource: {
         get(input: unknown): Promise<{ getReadableStream(): Readable }>;
       };
@@ -301,6 +321,7 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
       tenant_key: tenantKey,
       event: { sender: { sender_type: raw.sender.sender_type, tenant_key: raw.sender.tenant_key } },
       opentagOperation: "created",
+      opentagSenderOpenId: raw.sender.sender_id?.open_id,
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -529,11 +550,11 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       loggerLevel: LoggerLevel.error,
     });
     this.#scopeList = input.scopeList ?? (() => this.#client.application.v6.scope.list({}));
+    this.#http = input.http ?? createFeishuHttpCapability(this.#client as unknown as FeishuHttpClient);
     this.#channel =
       input.channel === null
         ? undefined
         : (input.channel ?? new ReliableFeishuChannel({ appId: input.appId, appSecret: input.appSecret, domain }));
-    this.#http = input.http ?? createFeishuHttpCapability(this.#client as unknown as FeishuHttpClient);
   }
 
   get channel(): FeishuChannel {
@@ -574,9 +595,125 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       maxAttempts: 1,
     });
   }
+
+  async resolveSenderName(input: { chatId: string; senderOpenId: string }): Promise<string | undefined> {
+    const resolveSenderName = this.#http.resolveSenderName;
+    if (!resolveSenderName) return undefined;
+    return this.#policy.run("feishu.sender-name.resolve", () => resolveSenderName(input), {
+      circuitKey: `feishu:sender-name:${this.#appId}`,
+      maxAttempts: 1,
+      timeoutMs: FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS,
+    });
+  }
+}
+
+const FEISHU_SENDER_NAME_TTL_MS = 60 * 60 * 1000;
+const FEISHU_MISSING_SENDER_NAME_TTL_MS = 5 * 60 * 1000;
+const FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES = 10_000;
+const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 1_000;
+const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 1_500;
+
+export function feishuSenderOpenId(message: NormalizedMessage): string | null {
+  const raw = message.raw as FeishuRawEnvelope | undefined;
+  return raw?.opentagSenderOpenId ?? null;
+}
+
+async function fetchFeishuSenderName(
+  client: FeishuHttpClient,
+  input: { chatId: string; senderOpenId: string },
+  observeMember: (member: { member_id?: string; name?: string }) => void,
+): Promise<string | undefined> {
+  let pageToken: string | undefined;
+  do {
+    const response = await client.im.v1.chatMembers.get({
+      path: { chat_id: input.chatId },
+      params: {
+        member_id_type: "open_id",
+        page_size: 100,
+        ...(pageToken ? { page_token: pageToken } : {}),
+      },
+    });
+    if (response.code !== undefined && response.code !== 0) {
+      throw new Error("FEISHU_SENDER_NAME_LOOKUP_FAILED");
+    }
+    const members = response.data?.items ?? [];
+    for (const member of members) observeMember(member);
+    const sender = members.find((member) => member.member_id === input.senderOpenId);
+    const name = sender?.name?.trim();
+    if (name) return name;
+    pageToken = response.data?.has_more ? response.data.page_token : undefined;
+  } while (pageToken);
+  return undefined;
+}
+
+function withFeishuSenderNameTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("FEISHU_SENDER_NAME_LOOKUP_TIMEOUT")),
+      FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS,
+    );
+    timer.unref();
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function createCachedFeishuSenderNameResolver(
+  client: FeishuHttpClient,
+): (input: { chatId: string; senderOpenId: string }) => Promise<string | undefined> {
+  const senderNames = new Map<string, { expiresAt: number; name: string | undefined }>();
+  const pendingSenderNames = new Map<string, Promise<string | undefined>>();
+
+  const cacheKey = (chatId: string, senderOpenId: string): string => `${chatId}:${senderOpenId}`;
+  const remember = (chatId: string, senderOpenId: string, name: string | undefined, now: number): void => {
+    const key = cacheKey(chatId, senderOpenId);
+    senderNames.delete(key);
+    senderNames.set(key, {
+      expiresAt: now + (name ? FEISHU_SENDER_NAME_TTL_MS : FEISHU_MISSING_SENDER_NAME_TTL_MS),
+      name,
+    });
+    while (senderNames.size > FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES) {
+      const oldest = senderNames.keys().next().value;
+      if (oldest === undefined) break;
+      senderNames.delete(oldest);
+    }
+  };
+
+  return async (input) => {
+    const key = cacheKey(input.chatId, input.senderOpenId);
+    const now = Date.now();
+    const cached = senderNames.get(key);
+    if (cached && cached.expiresAt > now) {
+      senderNames.delete(key);
+      senderNames.set(key, cached);
+      return cached.name;
+    }
+    if (cached) senderNames.delete(key);
+    const pending = pendingSenderNames.get(key);
+    if (pending) return pending;
+
+    const lookup = withFeishuSenderNameTimeout(
+      fetchFeishuSenderName(client, input, (member) => {
+        const name = member.name?.trim();
+        if (member.member_id && name) remember(input.chatId, member.member_id, name, now);
+      }),
+    ).then((name) => {
+      if (!senderNames.has(key)) remember(input.chatId, input.senderOpenId, name, now);
+      return name;
+    });
+    pendingSenderNames.set(key, lookup);
+    try {
+      return await lookup;
+    } finally {
+      if (pendingSenderNames.get(key) === lookup) pendingSenderNames.delete(key);
+    }
+  };
 }
 
 export function createFeishuHttpCapability(client: FeishuHttpClient): FeishuHttpCapability {
+  const resolveSenderName = createCachedFeishuSenderNameResolver(client);
   return {
     async fetchResource(input) {
       const response = await client.im.v1.messageResource.get({
@@ -585,5 +722,6 @@ export function createFeishuHttpCapability(client: FeishuHttpClient): FeishuHttp
       });
       return { stream: response.getReadableStream() };
     },
+    resolveSenderName,
   };
 }

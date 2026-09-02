@@ -401,14 +401,20 @@ function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus
 }
 
 /**
- * The three things Agent Setup asks for, and so the three reasons it can still answer for: a
- * Computer, the chosen runtime on that Computer, a messaging app. Each is a stage of the setup
- * surface, which is why an Agent stopped on one of them has a single destination.
+ * The reasons Agent Setup still owns, and so the ones it can still answer for. They are the same
+ * set the Agent page routes to setup rather than to Settings: a Computer, the chosen runtime on
+ * that Computer, and a messaging app that is connected but not yet finished — a connect left
+ * mid-scan, or a provider CLI the Computer has not made ready.
+ *
+ * `computer_offline` is deliberately absent. Its subject is the machine rather than the flow, and
+ * repeating setup does not reach it; the Agent page sends it to Settings, and so does the list.
  */
 const SETUP_REASONS: ReadonlySet<AgentAvailability["reason"]> = new Set([
   "computer_not_bound",
   "runtime_unavailable",
   "im_not_connected",
+  "im_provisioning",
+  "handoff_unavailable",
 ]);
 
 /**

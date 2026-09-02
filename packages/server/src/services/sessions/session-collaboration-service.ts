@@ -9,6 +9,7 @@ import {
   type SessionMessageDeliveryResult,
   type SessionReconcileResult,
 } from "@opentag/shared";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { type RuntimeDomainOwner, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
@@ -27,6 +28,7 @@ export interface SessionCollaborationServiceOptions {
     | "withCollaborationDispatchAdmission"
   >;
   onDiagnostic?: (code: string) => void;
+  logger?: Pick<ServiceLogger, "error">;
 }
 
 export class SessionCollaborationService {
@@ -35,6 +37,7 @@ export class SessionCollaborationService {
   readonly #registry: SessionCollaborationServiceOptions["registry"];
   readonly #sessions: SessionCollaborationServiceOptions["sessions"];
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
+  readonly #logger: SessionCollaborationServiceOptions["logger"];
 
   constructor(options: SessionCollaborationServiceOptions) {
     this.#assembler = options.assembler;
@@ -42,6 +45,7 @@ export class SessionCollaborationService {
     this.#registry = options.registry;
     this.#sessions = options.sessions;
     this.#onDiagnostic = options.onDiagnostic;
+    this.#logger = options.logger;
   }
 
   async create(input: SessionCliCreateRequest, source: SessionCliSourceContext): Promise<SessionCliCommandResponse> {
@@ -97,6 +101,11 @@ export class SessionCollaborationService {
     try {
       runtime = await this.#assembler.assembleForSession(attempt.route.targetSessionId);
     } catch {
+      this.#logInternalFailure("SESSION_COLLABORATION_RUNTIME_ASSEMBLY_FAILED", {
+        messageId: attempt.message.id,
+        sessionId,
+        targetSessionId: attempt.route.targetSessionId,
+      });
       return this.#record(
         response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"),
         attempt.attemptCount,
@@ -211,7 +220,18 @@ export class SessionCollaborationService {
     } catch {
       // The durable outcome remains unknown; commands never replay automatically.
     }
+    this.#logInternalFailure("SESSION_COLLABORATION_OUTCOME_WRITE_FAILED", {
+      attemptCount,
+      code: result.code,
+      messageId: result.messageId,
+      outcome: result.status,
+      sessionId: result.sessionId,
+    });
     return response(result.messageId, "unknown", result.sessionId, "outcome_write_failed");
+  }
+
+  #logInternalFailure(code: string, bindings: Record<string, unknown>): void {
+    this.#logger?.error({ ...bindings, code }, "Session collaboration internal failure");
   }
 
   #failure(messageId: string, error: unknown): SessionCliCommandResponse {

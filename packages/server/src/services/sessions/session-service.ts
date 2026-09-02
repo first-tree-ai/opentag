@@ -21,6 +21,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -37,6 +38,16 @@ interface ActiveSessionAuthority {
 
 function hashSessionMessage(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function internalSessionInputMatches(target: SessionRow, input: CreateInternalSessionWithMessageInput): boolean {
+  return (
+    target.kind === "internal" &&
+    target.createdBySessionId === input.creatorSessionId &&
+    target.runtimeModel === (input.overrides?.model ?? null) &&
+    target.runtimeReasoningEffort === (input.overrides?.reasoningEffort ?? null) &&
+    target.runtimeMaxDurationMs === (input.overrides?.maxDurationMs ?? null)
+  );
 }
 
 export interface EnsureChatSessionInTransactionInput {
@@ -140,11 +151,20 @@ export class SessionService {
   readonly #database: DatabaseClient;
   readonly #afterPlacementLock: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
+  readonly #logger?: Pick<ServiceLogger, "info">;
 
-  constructor(database: DatabaseClient, options: { afterPlacementLock?: () => Promise<void>; now?: () => Date } = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: {
+      afterPlacementLock?: () => Promise<void>;
+      now?: () => Date;
+      logger?: Pick<ServiceLogger, "info">;
+    } = {},
+  ) {
     this.#database = database;
     this.#afterPlacementLock = options.afterPlacementLock;
     this.#now = options.now ?? (() => new Date());
+    this.#logger = options.logger;
   }
 
   async ensureChatSession(
@@ -223,13 +243,7 @@ export class SessionService {
       if (existing) {
         this.#assertMessageIdentity(existing, input.creatorSessionId, existing.targetSessionId, input.initialMessage);
         const target = await this.#activeTarget(transaction, existing.targetSessionId, creator.session);
-        if (
-          target.session.kind !== "internal" ||
-          target.session.createdBySessionId !== input.creatorSessionId ||
-          target.session.runtimeModel !== (input.overrides?.model ?? null) ||
-          target.session.runtimeReasoningEffort !== (input.overrides?.reasoningEffort ?? null) ||
-          target.session.runtimeMaxDurationMs !== (input.overrides?.maxDurationMs ?? null)
-        ) {
+        if (!internalSessionInputMatches(target.session, input)) {
           throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID has conflicting input");
         }
         const attempt = await this.#beginAttempt(transaction, existing);
@@ -417,7 +431,10 @@ export class SessionService {
         .where(eq(agents.id, route.agentId))
         .limit(1)
         .for("update");
-      if (agent?.status !== "active") return { admitted: false } as const;
+      if (agent?.status !== "active") {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AGENT_INACTIVE");
+        return { admitted: false } as const;
+      }
 
       const [binding] = await transaction
         .select({ agentId: imBindings.agentId, status: imBindings.status })
@@ -425,7 +442,10 @@ export class SessionService {
         .where(eq(imBindings.id, route.imBindingId))
         .limit(1)
         .for("update");
-      if (binding?.agentId !== route.agentId || binding.status !== "active") return { admitted: false } as const;
+      if (binding?.agentId !== route.agentId || binding.status !== "active") {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_BINDING_INVALID");
+        return { admitted: false } as const;
+      }
 
       const authoritySessionIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
       const authoritySessions = await transaction
@@ -438,6 +458,7 @@ export class SessionService {
         authoritySessions.length !== authoritySessionIds.length ||
         authoritySessions.some(({ endedAt, imBindingId }) => endedAt !== null || imBindingId !== route.imBindingId)
       ) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AUTHORITY_SESSION_INVALID");
         return { admitted: false } as const;
       }
 
@@ -461,6 +482,7 @@ export class SessionService {
         targetPlacement?.computerId !== route.targetComputerId ||
         targetPlacement.generation !== route.targetPlacementGeneration
       ) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_PLACEMENT_INVALID");
         return { admitted: false } as const;
       }
 
@@ -475,6 +497,7 @@ export class SessionService {
         placementComputers.length !== placementComputerIds.length ||
         placementComputers.some(({ ownerAccountId }) => ownerAccountId !== agent.createdByUserId)
       ) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_COMPUTER_OWNERSHIP_INVALID");
         return { admitted: false } as const;
       }
 
@@ -487,6 +510,7 @@ export class SessionService {
         .limit(1)
         .for("update");
       if (!sourceComputer || sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_SOURCE_INSTANCE_STALE");
         return { admitted: false } as const;
       }
 
@@ -505,6 +529,21 @@ export class SessionService {
       await dispatched;
       return { admitted: true, result } as const;
     });
+  }
+
+  #logAdmissionRejection(route: AuthorizedSessionMessageRoute, code: string): void {
+    this.#logger?.info(
+      {
+        agentId: route.agentId,
+        code,
+        imBindingId: route.imBindingId,
+        sourceComputerId: route.sourceComputerId,
+        sourceSessionId: route.sourceSessionId,
+        targetComputerId: route.targetComputerId,
+        targetSessionId: route.targetSessionId,
+      },
+      "Session collaboration dispatch admission rejected",
+    );
   }
 
   async recordMessageOutcome(input: {

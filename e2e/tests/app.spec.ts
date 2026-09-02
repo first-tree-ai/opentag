@@ -191,9 +191,45 @@ test("Agents and Usage keep their compact composition when their own containers 
   await page.goto("/agents", { waitUntil: "networkidle" });
   const agentRow = page.locator('[data-ui="agent-row"]').first();
   await expect(agentRow).toBeVisible();
+  await expect(agentRow.getByText("Last 30 days", { exact: true })).toBeVisible();
+  await expect(agentRow.getByText(/^\d+ tasks?$/)).toBeVisible();
+  await expect(agentRow.getByText(/^\d+(?:\.\d+)?[KMB]? tokens?$/)).toBeVisible();
+  await expect(agentRow.getByText(/Tasks \(30d\)|Tokens \(30d\)/)).toHaveCount(0);
+  await expect(agentRow.locator('[data-ui="agent-row-status"] [data-state]')).toHaveCount(1);
+  await expect(agentRow.locator('[data-ui="agent-row-usage"]')).toBeVisible();
   const agentRowBox = await agentRow.boundingBox();
   if (!agentRowBox) throw new Error("Agent row did not produce a layout box");
   expect(agentRowBox.height).toBeLessThan(110);
+
+  const [identityBox, statusBox, usageBox] = await Promise.all([
+    agentRow.locator('[data-ui="agent-row-identity"]').boundingBox(),
+    agentRow.locator('[data-ui="agent-row-status"]').boundingBox(),
+    agentRow.locator('[data-ui="agent-row-usage"]').boundingBox(),
+  ]);
+  if (!identityBox || !statusBox || !usageBox) throw new Error("Agent row regions did not produce layout boxes");
+  expect(statusBox.x).toBeGreaterThan(identityBox.x + identityBox.width);
+  expect(usageBox.x).toBeGreaterThan(statusBox.x + statusBox.width);
+  const identityCenter = identityBox.y + identityBox.height / 2;
+  expect(Math.abs(statusBox.y + statusBox.height / 2 - identityCenter)).toBeLessThan(2);
+  expect(Math.abs(usageBox.y + usageBox.height / 2 - identityCenter)).toBeLessThan(2);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/agents", { waitUntil: "networkidle" });
+  const mobileRow = page.locator('[data-ui="agent-row"]').first();
+  await expect(mobileRow).toBeVisible();
+  const [mobileIdentity, mobileStatus, mobileUsage] = await Promise.all([
+    mobileRow.locator('[data-ui="agent-row-identity"]').boundingBox(),
+    mobileRow.locator('[data-ui="agent-row-status"]').boundingBox(),
+    mobileRow.locator('[data-ui="agent-row-usage"]').boundingBox(),
+  ]);
+  if (!mobileIdentity || !mobileStatus || !mobileUsage) throw new Error("Mobile Agent row regions were not visible");
+  expect(mobileStatus.y).toBeGreaterThan(mobileIdentity.y + mobileIdentity.height);
+  expect(mobileUsage.y).toBeGreaterThan(mobileStatus.y + mobileStatus.height);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+    await page.evaluate(() => document.documentElement.clientWidth),
+  );
+
+  await page.setViewportSize({ width: 1100, height: 900 });
 
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
   const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');

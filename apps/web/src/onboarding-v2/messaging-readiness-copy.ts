@@ -1,5 +1,6 @@
 import type { ProviderCliHandoffProgress } from "@opentag/shared/browser";
-import { messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
+import { spaceScriptBoundary } from "../i18n/format.js";
+import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import type { MessagingProvider, MessagingState } from "./flow.js";
 
@@ -16,7 +17,7 @@ export function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): st
 }
 
 export function messagingCliMissingCopy(provider: MessagingProvider): string {
-  return spaceBrandInSentence(m.onboarding_v2_messaging_cli_missing({ provider: messagingProviderLabel(provider) }));
+  return spaceScriptBoundary(m.onboarding_v2_messaging_cli_missing({ provider: messagingProviderLabel(provider) }));
 }
 
 export function messagingWaitingReason(input: {

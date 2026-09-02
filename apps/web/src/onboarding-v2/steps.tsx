@@ -6,7 +6,8 @@ import {
   type ComputerConnectLifecycle,
   ComputerConnectLifecycleRoot,
 } from "../features/computer-connect/computer-connect.js";
-import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "../im/provider-label.js";
+import { spaceScriptBoundary } from "../i18n/format.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import {
   CheckLine,
@@ -1128,7 +1129,7 @@ export function DoneStep({
             installers to an app their Agent is not in.
           */}
           {provider
-            ? spaceBrandInSentence(
+            ? spaceScriptBoundary(
                 m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
               )
             : m.onboarding_v2_done_description_any_app({ name })}

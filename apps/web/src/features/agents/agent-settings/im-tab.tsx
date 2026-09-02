@@ -2,8 +2,9 @@ import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
+import { spaceScriptBoundary } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
-import { messagingProviderLabel, spaceBrandInSentence } from "../../../im/provider-label.js";
+import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import * as m from "../../../paraglide/messages.js";
 import { queryKeys } from "../../../query/keys.js";
@@ -83,7 +84,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       onAgentChanged();
     } catch {
       setConfirmationError(
-        spaceBrandInSentence(m.im_disconnect_failed({ providerName: messagingProviderLabel(provider) })),
+        spaceScriptBoundary(m.im_disconnect_failed({ providerName: messagingProviderLabel(provider) })),
       );
     } finally {
       setConfirmationBusy(false);
@@ -201,7 +202,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                   });
                                 }}
                               >
-                                {spaceBrandInSentence(
+                                {spaceScriptBoundary(
                                   m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) }),
                                 )}
                               </Button>
@@ -301,11 +302,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description={spaceBrandInSentence(
+          description={spaceScriptBoundary(
             m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) }),
           )}
           returnFocusRef={disableBindingButtonRef}
-          title={spaceBrandInSentence(
+          title={spaceScriptBoundary(
             m.im_disconnect_title({ providerName: messagingProviderLabel(confirmation.provider) }),
           )}
           onClose={closeConfirmation}
@@ -321,7 +322,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
               variant="danger"
               onClick={() => void disableBinding(confirmation.bindingId, confirmation.provider)}
             >
-              {spaceBrandInSentence(m.im_disconnect({ providerName: messagingProviderLabel(confirmation.provider) }))}
+              {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel(confirmation.provider) }))}
             </Button>
           </div>
         </Dialog>

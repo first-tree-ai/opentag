@@ -5,7 +5,7 @@ import { formatCompactNumber, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import { slackConfigurationMessage } from "../../im/slack-configuration.js";
 import * as m from "../../paraglide/messages.js";
-import { Banner, Button, Icon, StatusIndicator } from "../../ui/design-system.js";
+import { Banner, buttonClassName, Icon, StatusIndicator } from "../../ui/design-system.js";
 import { ProviderIcon } from "../../ui/provider-icon.js";
 import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
@@ -14,15 +14,12 @@ import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
-import { NewAgentDialog } from "./new-agent-page.js";
 
 export function AgentsPage() {
   const { me } = useAccount();
   const [oauthError] = useState(
     () => new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined,
   );
-  const [createOpen, setCreateOpen] = useState(false);
-  const createTriggerRef = useRef<HTMLButtonElement>(null);
   const state = useAgentListView(me.user.id);
   useEffect(() => {
     if (!oauthError) return;
@@ -31,24 +28,19 @@ export function AgentsPage() {
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
   }, [oauthError]);
   return (
-    <>
-      <Page
-        action={
-          <div data-ui="agents-page-action">
-            <Button ref={createTriggerRef} variant="secondary" onClick={() => setCreateOpen(true)}>
-              <Icon name="plus" weight="bold" /> {m.agents_new_agent()}
-            </Button>
-          </div>
-        }
-        title={m.agents_title()}
-      >
-        {oauthError ? (
-          <Banner variant="error" role="alert" description={slackConfigurationMessage(oauthError)} />
-        ) : null}
-        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
-      </Page>
-      <NewAgentDialog open={createOpen} returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} />
-    </>
+    <Page
+      action={
+        <div data-ui="agents-page-action">
+          <Link className={buttonClassName({ variant: "secondary" })} search={{ action: "create" }} to="/agents/setup">
+            <Icon name="plus" weight="bold" /> {m.agents_new_agent()}
+          </Link>
+        </div>
+      }
+      title={m.agents_title()}
+    >
+      {oauthError ? <Banner variant="error" role="alert" description={slackConfigurationMessage(oauthError)} /> : null}
+      <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
+    </Page>
   );
 }
 

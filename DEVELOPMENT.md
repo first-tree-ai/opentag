@@ -436,13 +436,13 @@ management container. Context Tree can preserve long-term context independently;
 ownership or change Computer connection, Agent placement, or IM binding.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
-## Onboarding end-to-end check
+## Agent Setup end-to-end check
 
-`scripts/e2e/onboarding-e2e.mjs` drives the whole `/onboarding` flow against a real Server, a real PostgreSQL database,
+`scripts/e2e/onboarding-e2e.mjs` drives the whole `/agents/setup` flow against a real Server, a real PostgreSQL database,
 the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
 page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
-creates the Agent from the form, and then checks the handoff, the authorized setup gate, persisted completion, and that a
-later runtime outage stays in the normal Agents product flow.
+creates the Agent before Computer preparation, and then checks the handoff, Account admission, pending Provider validation,
+and that a later runtime outage stays in the normal Agents product flow.
 
 ```bash
 pnpm build
@@ -472,8 +472,8 @@ than the invoking shell's, so readiness is the same on any developer machine.
 Two parts of the flow cannot run offline. Agent Runtime and Feishu CLI readiness use stub executables that answer the
 same probe contracts as Claude Code and `lark-cli`, because signed-in local CLIs are not available in CI. Feishu
 authorization needs `open.feishu.cn`, so the check starts a real setup attempt, records its outcome, and then writes an
-authorized binding into the database to confirm that the Server projects handoff readiness and the page derives the
-ready state from it.
+authorized binding into the database to confirm that the Server and page project the pending handoff. It does not fake
+the final provider credential-execution observation that the canonical Snapshot requires for `ready`.
 
 ## Environment variables
 

@@ -27,37 +27,29 @@ test.describe("anonymous access", () => {
 test("the authenticated Agents entrypoint exposes an accessible keyboard action", async ({ page }) => {
   await page.goto("/agents", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
-  const newAgent = page.getByRole("button", { name: "New Agent", exact: true });
+  const newAgent = page.getByRole("link", { name: "New Agent", exact: true });
   await expect(newAgent).toBeVisible();
   await newAgent.focus();
   await expect(newAgent).toBeFocused();
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("dialog", { name: "New Agent" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", { name: "New Agent" })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/agents\/setup\?action=create$/);
+  await expect(page.getByRole("heading", { name: "Where should your agent run?", exact: true })).toBeVisible();
   await expectAccessible(page);
 });
 
-test("the New Agent dialog traps focus and returns it after keyboard close", async ({ page }) => {
-  await page.goto("/agents", { waitUntil: "networkidle" });
-  const trigger = page.getByRole("button", { name: "New Agent", exact: true });
-  await trigger.focus();
+test("the Agent creation route exposes named keyboard controls", async ({ page }) => {
+  await page.goto("/agents/setup?action=create", { waitUntil: "networkidle" });
+  const localComputer = page.getByRole("button", { name: /Local computer/ });
+  await localComputer.focus();
+  await expect(localComputer).toBeFocused();
   await page.keyboard.press("Enter");
-  const dialog = page.getByRole("dialog", { name: "New Agent" });
-  await expect(dialog).toBeVisible();
-  const close = dialog.getByRole("button", { name: "Close new Agent dialog", exact: true });
-  await close.focus();
-  await expect(close).toBeFocused();
-
-  for (let step = 0; step < 4; step += 1) {
-    await page.keyboard.press("Tab");
-    await expect(dialog.locator(":focus")).toHaveCount(1);
-  }
+  const continueAction = page.getByRole("button", { name: "Continue", exact: true });
+  await expect(continueAction).toBeEnabled();
+  await continueAction.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "Create your agent", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Agent name", { exact: true })).toBeVisible();
   await expectAccessible(page);
-
-  await page.keyboard.press("Escape");
-  await expect(dialog).toHaveCount(0);
-  await expect(trigger).toBeFocused();
 });
 
 test("the Account menu has named keyboard destinations", async ({ page }) => {

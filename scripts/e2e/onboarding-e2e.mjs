@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * End-to-end onboarding check.
+ * End-to-end Agent Setup check.
  *
  * Runs the real Server against a real PostgreSQL database, serves the real Web
- * build, drives a real Chromium browser through `/onboarding`, and connects a
+ * build, drives a real Chromium browser through `/agents/setup`, and connects a
  * real Computer with the real CLI daemon over the runtime WebSocket protocol.
  * Nothing in the Server, Web, Client, or CLI code paths is stubbed. The only
  * substituted artifacts are the local Claude Code and lark-cli executables,
@@ -12,8 +12,9 @@
  *
  * The Feishu leg cannot be authorized offline, so the check does two things: it
  * starts a real setup attempt and records the outcome, then writes an authorized
- * binding directly into the database to confirm that the Server projects handoff
- * readiness and the page derives its ready state from those facts.
+ * binding directly into the database to confirm that the Server projects the
+ * pending handoff. Provider credential execution still requires a real provider,
+ * so this offline check does not manufacture a ready observation.
  *
  * Requirements:
  * - a reachable PostgreSQL superuser URL (OPENTAG_E2E_ADMIN_DATABASE_URL)
@@ -373,7 +374,7 @@ async function main() {
 
     const chromium = loadChromium();
     browser = await chromium.launch({ executablePath: CHROMIUM_PATH, headless: true, args: ["--no-sandbox"] });
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    const context = await browser.newContext({ locale: "en-US", viewport: { width: 1280, height: 900 } });
     const page = await context.newPage();
     const consoleErrors = [];
     page.on("console", (message) => {
@@ -392,9 +393,9 @@ async function main() {
       await page.screenshot({ path: join(ARTIFACT_DIRECTORY, `${name}.png`), fullPage: true });
     };
 
-    await step("sign in through the browser and land on /onboarding", async () => {
-      await page.goto(`${BASE_URL}/api/v1/auth/dev/callback?next=/onboarding`, { waitUntil: "networkidle" });
-      if (new URL(page.url()).pathname !== "/onboarding") throw new Error(`Landed on ${page.url()}`);
+    await step("sign in through the browser and land on /agents/setup", async () => {
+      await page.goto(`${BASE_URL}/api/v1/auth/dev/callback?next=/agents/setup`, { waitUntil: "networkidle" });
+      if (new URL(page.url()).pathname !== "/agents/setup") throw new Error(`Landed on ${page.url()}`);
       await page.getByRole("heading", { name: "Where should your agent run?" }).waitFor({ timeout: 15_000 });
       await shot("01-signed-in");
       return page.url();
@@ -405,7 +406,7 @@ async function main() {
       await page.getByRole("button", { name: "Continue" }).click();
       await page.getByRole("heading", { name: "Create your agent" }).waitFor({ timeout: 15_000 });
       await page.getByRole("button", { name: /Claude Code/ }).click();
-      await page.getByRole("button", { name: "Continue" }).click();
+      await page.getByRole("button", { name: "Create Agent" }).click();
       await page.getByRole("heading", { name: "Connect your computer" }).waitFor({ timeout: 15_000 });
       const command = await waitFor("the bootstrap command", async () => {
         const text = await page.locator("body").innerText();
@@ -451,24 +452,11 @@ async function main() {
       return connected ? `${PROVIDER_STUB ? "stubbed" : "installed"} local CLIs, daemon log: ${daemonLogPath}` : "";
     });
 
-    await step("complete the Computer check and create the Agent", async () => {
-      await waitFor(
-        "the passing Computer check",
-        async () => {
-          const passed = await page
-            .getByText("Everything your agent needs is ready.")
-            .isVisible()
-            .catch(() => false);
-          const next = page.getByRole("button", { name: "Continue" });
-          return passed && (await next.isEnabled().catch(() => false));
-        },
-        { timeoutMs: 120_000, intervalMs: 1_500 },
-      );
-      await shot("03-create-agent");
-      await page.getByRole("button", { name: "Continue" }).click();
-      await page.getByRole("heading", { name: "Connect your messaging app" }).waitFor({ timeout: 60_000 });
+    await step("complete Computer and runtime readiness for the exact Agent", async () => {
+      await page.getByRole("heading", { name: "Connect your messaging app" }).waitFor({ timeout: 120_000 });
+      await shot("03-agent-ready-for-messaging");
       await shot("04-handoff");
-      return "passing Computer check created the Claude Code Agent";
+      return "the existing Claude Code Agent reached Messaging setup";
     });
 
     await step("verify the Server facts behind the new Agent", async () => {
@@ -504,11 +492,9 @@ async function main() {
         "a Feishu setup response",
         async () => {
           const text = await page.locator("body").innerText();
-          const alert = await page
-            .locator("[role=alert], .notice.error")
-            .first()
-            .innerText()
-            .catch(() => "");
+          // `first().innerText()` waits for the default Playwright timeout when no alert exists,
+          // which can consume this step's entire polling budget before the waiting copy is read.
+          const [alert = ""] = await page.locator("[role=alert], .notice.error").allInnerTexts();
           if (alert) return `error: ${alert.replace(/\s+/g, " ").trim()}`;
           if (/scan|QR|Authorize|awaiting/i.test(text)) return "attempt awaiting user authorization";
           return undefined;
@@ -519,7 +505,7 @@ async function main() {
       return outcome;
     });
 
-    await step("reach the ready state with an authorized Feishu binding", async () => {
+    await step("project the pending handoff from an authorized Feishu binding", async () => {
       const { FEISHU_REQUIRED_TENANT_SCOPES } = await import(
         join(repositoryRoot, "packages", "shared", "dist", "index.mjs")
       );
@@ -550,11 +536,18 @@ async function main() {
          )`,
       );
       await page.reload({ waitUntil: "networkidle" });
-      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      await page
+        .locator('[data-ui="agent-setup-messaging"][data-state="waiting-handoff"]')
+        .waitFor({ timeout: 30_000 });
+      if (new URL(page.url()).pathname !== "/agents/setup") {
+        throw new Error(`Pending handoff left the canonical setup page: ${page.url()}`);
+      }
       const completedAt = await psql(DATABASE_URL, `select setup_completed_at from users where id = '${USER_ID}'`);
-      if (!completedAt) throw new Error("Account setup completion was not persisted");
+      if (!completedAt) throw new Error("Account admission was not persisted");
       await shot("06-completed");
-      return `handoff readiness projected and Account setup completed at ${completedAt}`;
+      await page.getByRole("button", { name: "Back to agent" }).click();
+      await page.waitForURL(`${BASE_URL}/agents/${agentId}`, { timeout: 30_000 });
+      return `pending handoff projected while Account admission stayed at ${completedAt}`;
     });
 
     await step("survive a Computer outage without losing the Agent", async () => {
@@ -567,8 +560,7 @@ async function main() {
         },
         { timeoutMs: 60_000 },
       );
-      await page.reload({ waitUntil: "networkidle" });
-      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      await page.goto(`${BASE_URL}/agents`, { waitUntil: "networkidle" });
       await page.getByRole("heading", { name: "Agents" }).waitFor({ timeout: 30_000 });
       await shot("07-runtime-outage");
       const agents = await psql(DATABASE_URL, `select count(*) from agents where created_by_user_id = '${USER_ID}'`);

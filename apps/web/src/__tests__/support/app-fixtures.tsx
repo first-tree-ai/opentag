@@ -33,10 +33,10 @@ export const twoReadyComputers = [
   },
 ];
 
-/** Writes one version-3 creation intent, the shape a previous visit would have left behind. */
+/** Writes one current creation intent, the shape an interrupted visit leaves behind. */
 export function storeCreationIntent(record: { creationIntentId: string; request: Record<string, unknown> }) {
-  const stored = { version: 3, accountId: userId, ...record };
-  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 3, accountId: userId, records: [stored] }));
+  const stored = { version: 4, accountId: userId, ...record };
+  window.localStorage.setItem(creationIntentKey, JSON.stringify({ version: 4, accountId: userId, records: [stored] }));
   return stored;
 }
 

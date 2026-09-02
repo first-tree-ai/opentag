@@ -13,8 +13,8 @@ nothing else, so the surviving facts carry the Account into the resume path inst
 
 Neither mode is available in production, and neither touches an Account other than the authenticated one.
 
-For screen-level design review — copy, hierarchy, state communication — use `/internal/onboarding-v2`, which runs the
-real onboarding page against a mock backend and needs neither an Account nor a reset.
+For screen-level design review — copy, hierarchy, state communication — use `/internal/agent-setup`, which runs the
+real Agent Setup presentation against the #437 in-memory Adapter and needs neither an Account nor a reset.
 
 ## Where to click it
 
@@ -83,7 +83,7 @@ await fetch("/api/v1/me/setup/reset", {
 });
 ```
 
-A `204` means setup completion is cleared; reload and `/onboarding` opens on its own.
+A `204` means setup completion is cleared; reload and `/agents/setup` opens on its own.
 
 ### `mode: "reboard"`
 

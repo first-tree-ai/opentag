@@ -9,7 +9,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   await mkdir(dirname(authStatePath), { recursive: true });
   const context = await request.newContext({ baseURL });
   try {
-    const response = await context.get("/api/v1/auth/dev/callback?next=/onboarding", { maxRedirects: 5 });
+    const response = await context.get("/api/v1/auth/dev/callback?next=/agents/setup", { maxRedirects: 5 });
     if (!response.ok()) {
       throw new Error(`Development sign-in failed with HTTP ${response.status()}: ${await response.text()}`);
     }

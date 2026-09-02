@@ -10,7 +10,7 @@
   "im_connection_error": "Connection error",
   "im_disconnect": "Disconnect {providerName}",
   "im_disconnect_cancel": "Keep connected",
-  "im_disconnect_description": "Teammates will no longer be able to send messages to this Agent through {providerName}.",
+  "im_disconnect_description": "Disconnecting {providerName} stops new messages from reaching this Agent and ends active conversations. Message history is preserved.",
   "im_disconnect_failed": "Couldn’t disconnect {providerName}. Try again.",
   "im_disconnect_title": "Disconnect {providerName}?",
   "im_disconnected": "Disconnected",

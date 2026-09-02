@@ -16,18 +16,21 @@ describe("OpenTag Web App Shell", () => {
         detail: "Slack · Reviewer",
         label: "Connected",
         exit: undefined,
+        href: undefined,
         options: { bound: true, provider: "slack" as const },
       },
       {
         detail: undefined,
         label: "Not connected",
-        exit: "Connect channel",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         options: { bound: false },
       },
       {
         detail: undefined,
         label: "Status unavailable",
         exit: "View channel",
+        href: `/agents/${agentId}/settings/messaging`,
         options: { bound: true, bindingEvidenceFails: true },
       },
     ];
@@ -44,9 +47,7 @@ describe("OpenTag Web App Shell", () => {
       expect(within(row).getByText(state.label)).toBeTruthy();
       if (state.detail) expect(within(row).getByText(state.detail)).toBeTruthy();
       if (state.exit) {
-        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(
-          `/agents/${agentId}/settings/messaging`,
-        );
+        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(state.href);
       } else {
         expect(within(row).queryByRole("link")).toBeNull();
       }

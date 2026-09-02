@@ -18,7 +18,7 @@ import {
   platformLabel,
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
-import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "./agent-routes.js";
+import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
   const state = useAgentDetailView(agentId, { watched: true });
@@ -197,7 +197,7 @@ function AgentStatusRow({
             <Link
               className="ml-auto inline-flex w-fit shrink-0 items-center gap-1 text-sm text-kumo-link"
               state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
-              {...agentSettingsSectionLink(agent.id, status.action.section)}
+              {...status.action.link}
             >
               {status.action.label}
               <Icon className="size-3.5" name="chevron-right" />

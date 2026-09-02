@@ -98,7 +98,7 @@ function AgentShellContent({
 
   function openNewAgent() {
     closeMobile();
-    void navigate({ to: "/agents/new" });
+    void navigate({ search: { action: "create" }, to: "/agents/setup" });
   }
 
   return (

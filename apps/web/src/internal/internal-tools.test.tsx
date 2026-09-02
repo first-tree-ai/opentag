@@ -111,8 +111,8 @@ describe("internal tools page", () => {
     const pages = screen.getByRole("navigation", { name: "Internal tool pages" });
     expect(
       within(pages)
-        .getByRole("link", { name: /Onboarding mock/ })
+        .getByRole("link", { name: /Agent Setup lab/ })
         .getAttribute("href"),
-    ).toBe("/internal/onboarding-v2");
+    ).toBe("/internal/agent-setup");
   });
 });

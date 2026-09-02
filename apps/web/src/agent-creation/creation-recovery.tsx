@@ -1,4 +1,3 @@
-import type { AgentRuntimeProvider } from "@opentag/shared/browser";
 import { useNavigate } from "@tanstack/react-router";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import * as m from "../paraglide/messages.js";
@@ -35,11 +34,10 @@ interface CreationRecoveryInput {
   readonly createInFlightRef: RefObject<boolean>;
   readonly dismissedIntentId: string | undefined;
   readonly onSubmittingChange?: (submitting: boolean) => void;
+  readonly onDiscarded?: () => void;
   readonly pendingIntent: CreationIntentRecord | undefined;
   readonly preview: boolean;
-  readonly selectedRoute:
-    | { readonly computer: { readonly id: string }; readonly provider: AgentRuntimeProvider }
-    | undefined;
+  readonly selectedRequest: CreationIntentRequest | undefined;
   readonly setDismissedIntentId: (creationIntentId: string) => void;
   readonly submitting: boolean;
 }
@@ -56,9 +54,10 @@ export function useCreationRecovery({
   createInFlightRef,
   dismissedIntentId,
   onSubmittingChange,
+  onDiscarded,
   pendingIntent,
   preview,
-  selectedRoute,
+  selectedRequest,
   setDismissedIntentId,
   submitting,
 }: CreationRecoveryInput): CreationRecovery {
@@ -81,10 +80,7 @@ export function useCreationRecovery({
    * on screen and ready — the same visibility rule the form applies to a fresh submission.
    */
   const retryRouteSelected =
-    intent !== undefined &&
-    selectedRoute !== undefined &&
-    selectedRoute.computer.id === intent.request.computerId &&
-    selectedRoute.provider === intent.request.runtimeProvider;
+    intent !== undefined && selectedRequest !== undefined && requestsMatch(selectedRequest, intent.request);
 
   /**
    * Reconciles the saved attempt against the Server without mutating anything there. The only local
@@ -112,7 +108,7 @@ export function useCreationRecovery({
       settle: async (agentId) => {
         if (!mountedRef.current) return;
         setDismissedIntentId(record.creationIntentId);
-        await navigate({ to: "/onboarding", search: { agentId } });
+        await navigate({ to: "/agents/setup", search: { agentId } });
       },
     });
   }, [accountId, createInFlightRef, intent, navigate, onSubmittingChange, preview, setDismissedIntentId]);
@@ -138,7 +134,8 @@ export function useCreationRecovery({
     if (!mountedRef.current) return;
     setOutcome(undefined);
     setDismissedIntentId(record.creationIntentId);
-  }, [accountId, createInFlightRef, intent, preview, setDismissedIntentId]);
+    onDiscarded?.();
+  }, [accountId, createInFlightRef, intent, onDiscarded, preview, setDismissedIntentId]);
 
   return {
     busy: checking || submitting,
@@ -152,6 +149,15 @@ export function useCreationRecovery({
     retryRouteSelected,
     retrying,
   };
+}
+
+function requestsMatch(left: CreationIntentRequest, right: CreationIntentRequest): boolean {
+  return (
+    left.name === right.name &&
+    left.displayName === right.displayName &&
+    left.runtimeProvider === right.runtimeProvider &&
+    left.computerId === right.computerId
+  );
 }
 
 /**

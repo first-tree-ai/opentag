@@ -4,6 +4,7 @@
   "computer_connect_agent_title": "Connect a Computer",
   "computer_connect_another_description": "Run the command on the additional Computer you want to connect.",
   "computer_connect_another_title": "Connect another Computer",
+  "computer_connect_command_intro": "Run this in your terminal, or paste it into your coding agent.",
   "computer_connect_connected": "{computerName} is connected",
   "computer_connect_copied": "Copied command",
   "computer_connect_copy": "Copy command",
@@ -23,6 +24,6 @@
   "computer_connect_repair_command_comment": "# Run this command in the terminal on {computerName}",
   "computer_connect_repair_title": "Reconnect {computerName}",
   "computer_connect_retry_issue": "Try again",
-  "computer_connect_waiting_create": "Waiting for the Computer to connect…",
-  "computer_connect_waiting_repair": "Waiting for {computerName} to connect…"
+  "computer_connect_waiting_create": "Waiting for your computer…",
+  "computer_connect_waiting_repair": "Waiting for {computerName} to reconnect…"
 }

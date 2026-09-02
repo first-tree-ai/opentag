@@ -1,9 +1,11 @@
+import { type ClientLogger, OpenTagApiError } from "@opentag/client";
 import { describe, expect, it, vi } from "vitest";
 import { buildChildEnvironment } from "../core/command/environment.js";
 import {
   CommandError,
   type CommandResult,
   EXIT_CODES,
+  executeCommand,
   presentCommand,
   toCommandError,
 } from "../core/command/policy.js";
@@ -70,12 +72,61 @@ describe("CLI command result policy", () => {
   });
 
   it("normalizes common thrown errors into the local structured shape", () => {
-    expect(toCommandError(new Error("cancelled by signal"))).toMatchObject({
+    expect(toCommandError(Object.assign(new Error("cancelled by signal"), { name: "AbortError" }))).toMatchObject({
       code: "INTERRUPTED",
       category: "cancelled",
       retryability: "never",
       phase: "shutdown",
     });
+  });
+
+  it("does not blame the user for a cancelled server operation", () => {
+    const error = new OpenTagApiError(
+      "FEISHU_SETUP_CANCELLED",
+      "deterministic",
+      "The setup attempt was cancelled",
+      409,
+      undefined,
+      { requestId: "request-cancelled" },
+    );
+    expect(toCommandError(error)).toMatchObject({
+      code: "FEISHU_SETUP_CANCELLED",
+      category: "conflict",
+      requestId: "request-cancelled",
+    });
+    expect(toCommandError(error).category).not.toBe("cancelled");
+  });
+
+  it("writes structured failures to the injected file logger and renders the request id", async () => {
+    const entries: Array<{ fields: Record<string, unknown>; level: string; message: string }> = [];
+    const logger: ClientLogger = {
+      child: (bindings) => ({
+        ...logger,
+        child: (nested) => logger.child({ ...bindings, ...nested }),
+      }),
+      debug: () => undefined,
+      error: (fields, message) => entries.push({ fields: { ...fields }, level: "error", message }),
+      info: () => undefined,
+      warn: () => undefined,
+    };
+    const stderr: string[] = [];
+    await expect(
+      executeCommand(
+        async () => {
+          throw new OpenTagApiError("RESOURCE_NOT_FOUND", "deterministic", "missing", 404, undefined, {
+            requestId: "request-file-1",
+          });
+        },
+        { logger, stderr: (chunk) => stderr.push(chunk) },
+      ),
+    ).resolves.toBe(1);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.fields).toMatchObject({
+      event: "command.failure",
+      requestId: "request-file-1",
+      error: { requestId: "request-file-1" },
+    });
+    expect(stderr.join(" ")).toContain("request request-file-1");
   });
 });
 

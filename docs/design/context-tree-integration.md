@@ -211,9 +211,11 @@ root is required rather than just its content. Claude Code runs unrestricted and
 ## Agent identity
 
 The slug is `Agent.name`: 1–64 characters, `^[a-z0-9][a-z0-9-]*$`, distinct from `displayName`,
-case-insensitively unique per workspace among active Agents, and **immutable** — the update
-contract accepts only `displayName`, `receiveMode`, and `runtimeConfig`. So `members/<agent-slug>/`
-cannot orphan through a rename.
+case-insensitively unique per Account among active Agents (`agents_account_name_active_unique`), and
+**immutable** — the update contract accepts only `displayName`, `receiveMode`, and `runtimeConfig`.
+So `members/<agent-slug>/` cannot orphan through a rename. Deleting an Agent frees the name, so
+recreating it under the same name inherits that member directory; that is intended, because member
+memory belongs to the role rather than to an Agent instance.
 
 The Server renders it into the trusted platform instruction layer:
 
@@ -236,9 +238,14 @@ The per-Session Context Tree status carries no slug either. Repeating it would m
 back out of the rendered prompt or adding a runtime snapshot field; instead the Platform section
 states the identity and the Session section states the tree path.
 
-Slug uniqueness is per workspace, but a GitHub-backed tree can be shared across workspaces and
-Computers, so two different Agents could collide on one `members/<slug>/`. Acceptable for now; a
-tree-side namespace is the fix if it becomes real.
+Slug uniqueness is per Account, but a GitHub-backed tree can be shared more widely than one
+Account, so two Agents owned by different Accounts could collide on one `members/<slug>/`. V1
+accepts that: `members/<slug>/` is a **trust-scoped convention among Accounts that already share a
+tree**, not a globally unique identifier and not private isolation. Nothing enforces it at runtime
+in any case — the isolation is one advisory prompt line, for every pair of Agents alike — so the
+exposure is silent identity collision rather than confidentiality. The fix, when it is needed, is a
+tree-side namespace keyed by something Account-stable; that needs an Account handle, which is a
+product decision rather than a detail of this design.
 
 ## Failure policy
 
@@ -307,6 +314,12 @@ the dependency from the published bundle.
 ## Deferred
 
 - Auto-creating a tree when none is configured.
+- A typed reason for a corrupt or unreadable configuration. A Session is told `unconfigured` today,
+  although doctor does distinguish it as invalid. This is worth doing now that a repaired
+  configuration is actually observed rather than masked by a stale cache.
+- Revalidating a cached `ready` entry against the tree itself, so that deleting the tree or editing
+  the CLI's connection store by hand is noticed within a daemon's lifetime. Honouring OpenTag's own
+  configuration changes is separate and is not deferred.
 - A cross-process advisory lock around the CLI's connection store.
 - Server-propagated target, so a Computer inherits it when it connects.
 - Suppressing the workspace `AGENTS.md` pointer with an upstream `--no-pointer` flag.

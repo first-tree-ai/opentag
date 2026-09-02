@@ -113,7 +113,7 @@ function visualContactSheet(): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Usage visual scenarios</title><style>body{font-family:system-ui,sans-serif;margin:2rem;background:#f5f7f2;color:#17210f}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(22rem,1fr));gap:1.5rem}figure{margin:0;padding:1rem;background:#fff;border:1px solid #d9e2d1;border-radius:.75rem}img{display:block;width:100%;height:auto;border:1px solid #d9e2d1}figcaption{margin-top:.75rem;font-weight:600;word-break:break-word}</style></head><body><h1>Usage visual scenarios</h1><main>${figures}</main></body></html>`;
 }
 
-test("Usage renders representative visual states across desktop and mobile", async ({ page }) => {
+test("Usage renders representative visual states across responsive widths", async ({ page }) => {
   test.setTimeout(180_000);
   await setSetupComplete();
   const agentId = await createVisualTestAgent(page);
@@ -162,6 +162,19 @@ test("Usage renders representative visual states across desktop and mobile", asy
     }
     await page.unroute(usageApi);
   }
+
+  const narrowFixture = usageVisualFixtures.find((fixture) => fixture.name === "single-spike");
+  if (!narrowFixture) throw new Error("Missing Usage visual fixture: single-spike");
+  const narrowUsageApi = await installUsageFixture(page, agentId, narrowFixture);
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+  await expectUsageFixtureState(page, narrowFixture);
+  await expectNoPageOverflow(page);
+  await waitForUsageChartAnimation(page, narrowFixture);
+  await expectMobileUsageLayout(page);
+  await expectAccessible(page);
+  await page.screenshot({ path: join(screenshots, "usage-single-spike-narrow.png"), fullPage: true });
+  await page.unroute(narrowUsageApi);
 
   const tabletFixture = usageVisualFixtures.find((fixture) => fixture.name === "steady-volume");
   if (!tabletFixture) throw new Error("Missing Usage visual fixture: steady-volume");

@@ -146,5 +146,6 @@ export const usageVisualScreenshotEntries = [
     route: "/usage visual fixture: single-spike breakdown (390px)",
     heading: "Token breakdown",
   },
+  { file: "usage-single-spike-narrow", route: "/usage visual fixture: single-spike (320px)", heading: "Usage" },
   { file: "usage-steady-volume-tablet", route: "/usage visual fixture: steady-volume (768px)", heading: "Usage" },
 ] as const;

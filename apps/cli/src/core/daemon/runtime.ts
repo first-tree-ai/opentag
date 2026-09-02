@@ -132,17 +132,19 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     instanceId,
     platform: currentPlatform,
   };
-  const environmentResult = await applyDaemonEnvironment(home, environment);
-  const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
-  if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
-  const ownership = await acquireOwnership(home, instanceId, options, baseBindings);
 
   let lifecycleLogger: ClientLogger | undefined;
   let runtimeLoggerGate: ClientLoggerGate | undefined;
   const state: DaemonMutableState = { handoffRequested: false };
+  let ownership: Awaited<ReturnType<typeof acquireOwnership>> | undefined;
   let failure: unknown;
   let failed = false;
   try {
+    const environmentResult = await applyDaemonEnvironment(home, environment);
+    const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
+    if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
+    ownership = await acquireOwnership(home, instanceId, options, baseBindings);
+
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
     lifecycleLogger = logger;
     state.terminalLogger = logger;
@@ -169,7 +171,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   lifecycleLogger?.info({}, "Daemon runtime stopped");
   runtimeLoggerGate?.disable();
   try {
-    await ownership.release();
+    await ownership?.release();
   } catch (error) {
     const logger =
       state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);

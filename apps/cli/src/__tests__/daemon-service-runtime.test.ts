@@ -72,6 +72,23 @@ describe("daemon service runtime", () => {
     expect(entries).toContainEqual(expect.objectContaining({ message: "Malformed daemon environment line ignored" }));
   });
 
+  it("logs an invalid daemon environment at the service entry while returning a clean exit", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-invalid-env-entry-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "OPENTAG_SERVER_URL=https://example.test\n", { mode: 0o644 });
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+
+    await expect(runDaemonServiceEntry({ home, logger: recordingLogger(entries) })).resolves.toBe(0);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        fields: expect.objectContaining({ category: "configuration", instanceId: expect.any(String) }),
+        message: "Daemon service configuration prevented startup; inspect daemon status",
+      }),
+    );
+  });
+
   it("configures the service log before reporting an already-held daemon owner", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-log-"));
     directories.push(home);

@@ -300,6 +300,8 @@ export {
   providerCliProbeEnvironment,
 } from "./runtime/provider-cli/probe.js";
 export {
+  PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS,
+  PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS,
   ProviderCliReconciler,
   type ProviderCliReconcilerOptions,
 } from "./runtime/provider-cli/reconciler.js";

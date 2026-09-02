@@ -1,9 +1,12 @@
 import {
+  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
+  AgentCreationIntentIdSchema,
+  AgentCreationIntentResultSchema,
   type ChannelName,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
@@ -51,10 +54,11 @@ const TaskDetailQuerySchema = z
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
+const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationIntentIdSchema }).strict();
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
-  computerConnectCode?: { environment: ChannelName; publicUrl: string };
+  computerConnectCode?: { downloadBaseUrl?: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
@@ -114,6 +118,12 @@ export function registerAccountRoutes(
       const account = accountId(request);
       return reply.code(200).send(ListAgentsResponseSchema.parse(await agentService.listForAccount(account)));
     });
+
+    app.get(ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { creationIntentId } = parseRequest(CreationIntentParamsSchema, request.params);
+      const result = await agentService.getCreationIntentResultForAccount(accountId(request), creationIntentId);
+      return reply.header("Cache-Control", "no-store").code(200).send(AgentCreationIntentResultSchema.parse(result));
+    });
   }
 
   if (options.taskService) {
@@ -159,7 +169,7 @@ export function registerAccountRoutes(
 
   if (options.machineAuthService && options.computerConnectCode) {
     const machineAuthService = options.machineAuthService;
-    const { environment, publicUrl } = options.computerConnectCode;
+    const { downloadBaseUrl, environment, publicUrl } = options.computerConnectCode;
 
     app.post(HTTP_PATHS.accountComputerConnectCodes, { preHandler }, async (request, reply) => {
       const input = parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
@@ -170,7 +180,12 @@ export function registerAccountRoutes(
         .send(
           ComputerConnectCodeIssueResponseSchema.parse({
             connectCodeId: issued.connectCodeId,
-            bootstrapCommand: buildComputerConnectCommand({ code: issued.code, environment, publicUrl }),
+            bootstrapCommand: buildComputerConnectCommand({
+              code: issued.code,
+              downloadBaseUrl,
+              environment,
+              publicUrl,
+            }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),
             mode: issued.mode,

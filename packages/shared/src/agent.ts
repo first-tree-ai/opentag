@@ -18,7 +18,7 @@ export const AgentNameSchema = z
     "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
-const AgentCreationIntentIdSchema = z.string().uuid();
+export const AgentCreationIntentIdSchema = z.string().uuid();
 export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code"] as const;
 export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
@@ -245,6 +245,17 @@ export const CreateAgentRequestSchema = z
   })
   .strict();
 
+/** Read-only reconciliation of one exact pre-Agent creation identity. */
+export const AgentCreationIntentResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("not-found") }).strict(),
+  z
+    .object({
+      kind: z.literal("found"),
+      agentId: z.string().uuid(),
+    })
+    .strict(),
+]);
+
 export const UpdateAgentRequestSchema = z
   .object({
     expectedRevision: z.number().int().min(1),
@@ -309,6 +320,7 @@ export type AgentUsageDetail = z.infer<typeof AgentUsageDetailSchema>;
 export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
+export type AgentCreationIntentResult = z.infer<typeof AgentCreationIntentResultSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
 export type RebindAgentComputerRequest = z.infer<typeof RebindAgentComputerRequestSchema>;
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;

@@ -383,13 +383,7 @@ describe("Account setup completion backfill", () => {
       await expect(auth.getActiveUserById(ACCOUNT_GRANT_ONLY)).resolves.toMatchObject({ setupCompletedAt: null });
       await expect(auth.getActiveUserById(ACCOUNT_EMPTY)).resolves.toMatchObject({ setupCompletedAt: null });
 
-      const setup = new AccountSetupService(
-        client.database,
-        {
-          getHandoffForAgent: async () => ({ bindingState: "active", handoffReady: true }),
-        } as never,
-        { now: () => LATE },
-      );
+      const setup = new AccountSetupService(client.database, { now: () => LATE });
       await expect(setup.completeForAccount(ACCOUNT_B, AGENT_LATE)).resolves.toEqual({
         setupCompletedAt: LATE.toISOString(),
       });

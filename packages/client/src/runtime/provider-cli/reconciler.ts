@@ -1,14 +1,18 @@
 import type {
+  ImCliReadinessStatus,
   ProviderCliArtifactStatusFrame,
   ProviderCliCancelFrame,
+  ProviderCliPrewarmFrame,
   ProviderCliRequirementFrame,
   ProviderCliValidationGrantFrame,
   ProviderCliValidationResultFrame,
 } from "@opentag/shared";
 import {
   ProviderCliCancelFrameSchema,
+  ProviderCliPrewarmFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
+  RUNTIME_CAPABILITY,
 } from "@opentag/shared";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "../runtime-connection.js";
 import type { ProviderCliManager } from "./manager.js";
@@ -18,17 +22,38 @@ import {
   readProviderCliSelection,
 } from "./selection-store.js";
 import { managedArtifactDigest } from "./turn-plan.js";
-import type { ProviderCliInspection, ProviderCliProvider, ProviderCliReadySelection } from "./types.js";
+import type {
+  ProviderCliEnsureResult,
+  ProviderCliInspection,
+  ProviderCliProvider,
+  ProviderCliReadySelection,
+} from "./types.js";
 import type { ProviderCliValidationRequest, ProviderCliValidationRunner } from "./validation-runner.js";
 
 const UNREPAIRABLE = new Set(["unsupported_platform", "global_bin_unavailable"]);
 const GRANT_REPLAY_RETENTION_MS = 60_000;
 
+/**
+ * A foreground targeted connect is the sole first-setup installer and holds the per-provider
+ * lock while it works. A daemon reconcile that loses that race waits the foreground operation
+ * out instead of reporting a verdict: the delay is one lock-acquire budget, and the attempt
+ * bound comfortably covers the installer's own download deadline.
+ */
+export const PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS = 5_000;
+export const PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS = 30;
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 export interface ProviderCliReconcilerOptions {
-  readonly connection: Pick<RuntimeConnection, "send" | "subscribeBusinessFrames" | "capabilityVersion">;
+  readonly connection: Pick<
+    RuntimeConnection,
+    "send" | "subscribeBusinessFrames" | "capabilityVersion" | "setImCliReadiness"
+  >;
   readonly manager: Pick<ProviderCliManager, "ensure" | "inspect" | "layout">;
   readonly now?: () => number;
   readonly signal?: AbortSignal;
+  /** Test hook: replaces the busy-lock retry wait. */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly validation: Pick<ProviderCliValidationRunner, "run" | "cleanupAll">;
 }
 
@@ -56,9 +81,12 @@ export class ProviderCliReconciler {
   readonly #manager: ProviderCliReconcilerOptions["manager"];
   readonly #now: () => number;
   readonly #frameJobs = new Set<Promise<void>>();
-  readonly #providerJobs = new Map<ProviderCliProvider, Promise<ProviderCliArtifactStatusFrame["status"]>>();
+  readonly #imCliPublished = new Map<ProviderCliProvider, ImCliReadinessStatus>();
+  readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ImCliReadinessStatus>>();
+  readonly #providerJobs = new Map<string, Promise<ProviderCliArtifactStatusFrame["status"]>>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
+  readonly #sleep: (ms: number) => Promise<void>;
   readonly #unsubscribe: () => void;
   readonly #validation: ProviderCliReconcilerOptions["validation"];
   #closePromise?: Promise<void>;
@@ -69,6 +97,7 @@ export class ProviderCliReconciler {
     this.#manager = options.manager;
     this.#now = options.now ?? Date.now;
     this.#signal = options.signal;
+    this.#sleep = options.sleep ?? defaultSleep;
     this.#validation = options.validation;
     this.#unsubscribe = this.#connection.subscribeBusinessFrames((frame) => this.#trackFrame(frame));
   }
@@ -78,11 +107,18 @@ export class ProviderCliReconciler {
     return this.#closePromise;
   }
 
+  /** Re-inspect each published CLI so heartbeat freshness reflects current local state. */
+  async refreshPublishedImCliReadiness(): Promise<void> {
+    if (this.#closed || this.#signal?.aborted) return;
+    await Promise.all([...this.#imCliPublished.keys()].map((provider) => this.#refreshImCli(provider)));
+  }
+
   async #performClose(): Promise<void> {
     this.#closed = true;
     this.#unsubscribe();
+    this.#imCliPublished.clear();
     this.#abortAll();
-    await Promise.allSettled([...this.#frameJobs]);
+    await Promise.allSettled([...this.#frameJobs, ...this.#inspectionJobs.values()]);
     await this.#validation.cleanupAll();
   }
 
@@ -128,8 +164,49 @@ export class ProviderCliReconciler {
       await this.#handleRequirement(requirement.data);
       return;
     }
+    const prewarm = ProviderCliPrewarmFrameSchema.safeParse(frame);
+    if (prewarm.success) {
+      await this.#handlePrewarm(prewarm.data);
+      return;
+    }
     const grant = ProviderCliValidationGrantFrameSchema.safeParse(frame);
     if (grant.success) await this.#handleGrant(grant.data);
+  }
+
+  async #handlePrewarm(frame: ProviderCliPrewarmFrame): Promise<void> {
+    if (this.#closed || this.#signal?.aborted) return;
+    if (this.#connection.capabilityVersion(RUNTIME_CAPABILITY.providerCliPrewarm) === undefined) return;
+    await Promise.all(frame.providers.map((provider) => this.#prewarmProvider(provider)));
+  }
+
+  async #prewarmProvider(provider: ProviderCliProvider): Promise<void> {
+    await this.#refreshImCli(provider);
+  }
+
+  async #refreshImCli(provider: ProviderCliProvider): Promise<void> {
+    this.#publishImCli(provider, "checking");
+    const status = await this.#inspectImCli(provider);
+    this.#publishImCli(provider, status);
+  }
+
+  #inspectImCli(provider: ProviderCliProvider): Promise<ImCliReadinessStatus> {
+    const existing = this.#inspectionJobs.get(provider);
+    if (existing) return existing;
+    const job = this.#manager
+      .inspect(provider)
+      .then((inspection) => inspection.readiness)
+      .catch(() => "unavailable" as const)
+      .finally(() => {
+        if (this.#inspectionJobs.get(provider) === job) this.#inspectionJobs.delete(provider);
+      });
+    this.#inspectionJobs.set(provider, job);
+    return job;
+  }
+
+  #publishImCli(provider: ProviderCliProvider, status: ImCliReadinessStatus): void {
+    if (this.#closed || this.#signal?.aborted) return;
+    this.#imCliPublished.set(provider, status);
+    this.#connection.setImCliReadiness({ provider, status });
   }
 
   #handleCancel(frame: ProviderCliCancelFrame): void {
@@ -168,22 +245,29 @@ export class ProviderCliReconciler {
     await this.#publishCurrentProvider(frame.provider, status);
   }
 
-  async #reconcileProvider(provider: ProviderCliProvider): Promise<ProviderCliArtifactStatusFrame["status"]> {
-    const existing = this.#providerJobs.get(provider);
+  async #reconcileProvider(
+    provider: ProviderCliProvider,
+    mode: "auto" | "managed-only" = "managed-only",
+  ): Promise<ProviderCliArtifactStatusFrame["status"]> {
+    const key = `${provider}:${mode}`;
+    const existing = this.#providerJobs.get(key);
     if (existing) return existing;
-    const job = this.#runProvider(provider).finally(() => {
-      if (this.#providerJobs.get(provider) === job) this.#providerJobs.delete(provider);
+    const job = this.#runProvider(provider, mode).finally(() => {
+      if (this.#providerJobs.get(key) === job) this.#providerJobs.delete(key);
     });
-    this.#providerJobs.set(provider, job);
+    this.#providerJobs.set(key, job);
     return job;
   }
 
-  async #runProvider(provider: ProviderCliProvider): Promise<ProviderCliArtifactStatusFrame["status"]> {
+  async #runProvider(
+    provider: ProviderCliProvider,
+    mode: "auto" | "managed-only",
+  ): Promise<ProviderCliArtifactStatusFrame["status"]> {
     try {
       let inspection = await this.#manager.inspect(provider);
       if (inspection.readiness !== "ready") {
         if (inspection.diagnostic && UNREPAIRABLE.has(inspection.diagnostic.code)) return "unavailable";
-        await this.#manager.ensure(provider, { mode: "managed-only" });
+        await this.#ensureConverging(provider, mode);
         inspection = await this.#manager.inspect(provider);
       }
       if (inspection.readiness === "ready") {
@@ -201,6 +285,50 @@ export class ProviderCliReconciler {
       this.#readySelection.delete(provider);
       return "unavailable";
     }
+  }
+
+  /**
+   * Ensure, waiting out a foreground installer's lock instead of converting the race into a
+   * verdict: losing the cross-process provider lock is transient, so the artifact stays in its
+   * published "checking" state while the foreground operation finishes, and the outcome is then
+   * re-read so the connection converges on a terminal status without waiting for a reconnect.
+   */
+  async #ensureConverging(
+    provider: ProviderCliProvider,
+    mode: "auto" | "managed-only",
+  ): Promise<ProviderCliEnsureResult> {
+    let outcome = await this.#manager.ensure(provider, { mode });
+    for (let attempt = 0; outcome.diagnostic?.code === "operation_in_progress"; attempt += 1) {
+      if (attempt >= PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS || this.#closed || this.#signal?.aborted) break;
+      await this.#sleepBusy();
+      // The shutdown signal may win the wait; do not start another ensure after it.
+      if (this.#closed || this.#signal?.aborted) break;
+      outcome = await this.#manager.ensure(provider, { mode });
+    }
+    return outcome;
+  }
+
+  /** Bounded wait between lock-busy retries; returns early when the daemon is shutting down. */
+  #sleepBusy(): Promise<void> {
+    const signal = this.#signal;
+    const wait = this.#sleep(PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS);
+    if (!signal) return wait;
+    if (signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown): void => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const onAbort = (): void => finish();
+      signal.addEventListener("abort", onAbort, { once: true });
+      // Close the check-to-listener race if shutdown happened between the guard above and add.
+      if (signal.aborted) onAbort();
+      void wait.then(() => finish(), finish);
+    });
   }
 
   async #publishCurrentProvider(

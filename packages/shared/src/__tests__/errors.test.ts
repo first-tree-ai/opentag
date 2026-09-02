@@ -69,4 +69,45 @@ describe("error contracts", () => {
       ErrorEnvelopeSchema.parse({ error: { code, category: "deterministic", message: "Agent request failed" } }),
     ).toMatchObject({ error: { code } });
   });
+
+  it.each([
+    ["FEISHU_APP_ALREADY_BOUND", "deterministic"],
+    ["FEISHU_BINDING_IDENTITY_MISMATCH", "deterministic"],
+    ["IM_BINDING_GENERATION_STALE", "deterministic"],
+    ["IM_BINDING_TEMPORARILY_UNAVAILABLE", "transient"],
+  ])("accepts public IM error code %s", (code, category) => {
+    expect(ErrorEnvelopeSchema.parse({ error: { code, category, message: "Messaging request failed" } })).toMatchObject(
+      { error: { code, category } },
+    );
+  });
+
+  it("carries the structured unbind-required identity only on its own code", () => {
+    const unbindRequired = {
+      currentProvider: "feishu" as const,
+      currentBindingId: crypto.randomUUID(),
+      requestedProvider: "slack" as const,
+    };
+    const envelope = {
+      error: {
+        code: "IM_BINDING_UNBIND_REQUIRED",
+        category: "deterministic",
+        message: "Unbind the current messaging connection before starting a different Provider",
+        unbindRequired,
+      },
+    };
+    expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    expect(() =>
+      ErrorEnvelopeSchema.parse({ error: { ...envelope.error, code: "IM_BINDING_CONFIGURATION_CONFLICT" } }),
+    ).toThrow();
+    expect(() =>
+      ErrorEnvelopeSchema.parse({
+        error: { ...envelope.error, unbindRequired: { ...unbindRequired, requestedProvider: "feishu" } },
+      }),
+    ).toThrow();
+    expect(() =>
+      ErrorEnvelopeSchema.parse({
+        error: { ...envelope.error, unbindRequired: { ...unbindRequired, callbackUrl: "https://evil.example.com" } },
+      }),
+    ).toThrow();
+  });
 });

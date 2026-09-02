@@ -40,18 +40,21 @@ function computer(overrides: Partial<AccountComputerSummary> = {}): AccountCompu
   };
 }
 
-function adminConfig(): AgentAdminConfig {
+function adminConfig(
+  computerId: string | null = null,
+  runtimeProvider: AgentAdminConfig["runtimeProvider"] = "codex",
+): AgentAdminConfig {
   return {
     id: AGENT_ID,
     name: "opentag",
     displayName: "opentag",
-    runtimeProvider: "codex",
+    runtimeProvider,
     receiveMode: "mention_only",
     status: "active",
     createdAt: NOW,
     updatedAt: NOW,
     createdByUserId: USER_ID,
-    computerId: COMPUTER_ID,
+    computerId,
     revision: 1,
     runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
   };
@@ -131,6 +134,7 @@ describe("the onboarding flow against the Server", () => {
     // The flow now reads what the Account already has before it renders, so a fresh Account has to
     // be stated: no Agents, and therefore no messaging binding.
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
@@ -168,14 +172,15 @@ describe("the onboarding flow against the Server", () => {
   it("walks from the connect command to a created Agent and a scanned Lark code", async () => {
     computersReturning([], [computer()]);
     redeemedVerdict();
-    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi.mocked(browserApi.createAgent);
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt());
     vi.spyOn(browserApi, "feishuSetupAttempt")
       .mockResolvedValueOnce(attempt())
       .mockResolvedValue(attempt({ state: "succeeded", completedAt: NOW }));
     vi.mocked(browserApi.imBindingHandoff).mockResolvedValue({ bindingState: "active", handoffReady: true });
+    const onAgentAvailable = vi.fn();
 
-    render(<OnboardingV2Page />);
+    render(<OnboardingV2Page onAgentAvailable={onAgentAvailable} />);
 
     await settle();
     await reachComputerStep();
@@ -196,8 +201,12 @@ describe("the onboarding flow against the Server", () => {
       name: "opentag",
       displayName: "opentag",
       runtimeProvider: "codex",
-      computerId: COMPUTER_ID,
     });
+    expect(browserApi.issueComputerConnectCode).toHaveBeenCalledWith({
+      mode: "create",
+      targetAgentId: AGENT_ID,
+    });
+    expect(onAgentAvailable).toHaveBeenCalledExactlyOnceWith(AGENT_ID);
 
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     press(/Lark/);
@@ -233,7 +242,8 @@ describe("the onboarding flow against the Server", () => {
       }),
     ]);
     redeemedVerdict();
-    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi.mocked(browserApi.createAgent);
+    create.mockResolvedValue(adminConfig(null, "claude-code"));
     render(<OnboardingV2Page />);
 
     await settle();
@@ -248,13 +258,13 @@ describe("the onboarding flow against the Server", () => {
     expect(screen.getByText("We can't find the Claude Code command on this computer.")).toBeTruthy();
     expect(screen.queryByText("Codex CLI is installed")).toBeNull();
     expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it("labels a not-yet-issued Lark QR as generating rather than scannable", async () => {
     computersReturning([computer()]);
     redeemedVerdict();
-    vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    vi.mocked(browserApi.createAgent).mockResolvedValue(adminConfig());
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(attempt({ qrUrl: null }));
     vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(attempt({ qrUrl: null }));
     render(<OnboardingV2Page />);
@@ -286,10 +296,10 @@ describe("the onboarding flow against the Server", () => {
     expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
   });
 
-  it("names the failing check and refuses to create the Agent", async () => {
+  it("names the failing check and refuses to advance the created Agent", async () => {
     computersReturning([computer({ providerReadiness: [{ provider: "codex", status: "install", observedAt: NOW }] })]);
     redeemedVerdict();
-    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    const create = vi.mocked(browserApi.createAgent);
 
     render(<OnboardingV2Page />);
 
@@ -299,7 +309,7 @@ describe("the onboarding flow against the Server", () => {
 
     expect(screen.getByText("One thing needs fixing before your agent can run.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Continue" })).toHaveProperty("disabled", true);
-    expect(create).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a failure to issue the connect command", async () => {

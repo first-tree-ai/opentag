@@ -1,9 +1,11 @@
 import type {
+  ErrorCategory,
   ImBindingAdminDetail,
   ImBindingDiagnostics,
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
+  ImBindingUnbindRequiredDetail,
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
@@ -18,6 +20,7 @@ import {
   FEISHU_REQUIRED_TENANT_SCOPES,
   hasRequiredFeishuTenantScopes,
   hasRequiredSlackBotScopes,
+  ImBindingUnbindRequiredDetailSchema,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -117,7 +120,27 @@ interface CredentialInspection {
   requiredCapabilities: string[];
   missingCapabilities: string[];
 }
-
+/**
+ * The Messaging facts an Agent setup snapshot must name: the exact binding identity and Provider as
+ * stored, the public error code a blocked binding may surface, and the handoff readiness computed
+ * from live runtime observations.
+ */
+export interface AgentSetupBindingState {
+  bindingId: string;
+  provider: "feishu" | "slack";
+  credentialGeneration: number;
+  errorCode: string | null;
+  handoff: ImBindingHandoffStatus;
+}
+interface ObservedAgentBinding {
+  id: string;
+  provider: "feishu" | "slack";
+  status: ImBindingState;
+  credentialGeneration: number;
+  lastErrorCode: string | null;
+  credential: CredentialInspection;
+  readiness: ImBindingReadiness;
+}
 interface ActivatedBinding {
   id: string;
   agentId: string;
@@ -127,7 +150,6 @@ interface ActivatedBinding {
   botId: string;
   credentialGeneration: number;
 }
-
 export async function disableImBindingInTransaction(
   transaction: DatabaseTransaction,
   imBindingId: string,
@@ -194,13 +216,31 @@ export async function disableImBindingInTransaction(
 }
 
 export class ImBindingServiceError extends Error {
-  readonly category = "deterministic" as const;
   constructor(
     readonly code: string,
     readonly statusCode: number,
     message: string,
+    readonly category: ErrorCategory = "deterministic",
   ) {
     super(message);
+  }
+}
+
+/**
+ * A cross-Provider messaging start fails closed: the Account must explicitly unbind the exact current
+ * binding first, then bind any Provider. The structured identity lets the caller offer that unbind
+ * without a second lookup. Same-Provider reauthorization and replacement never raise it.
+ */
+export class ImBindingUnbindRequiredError extends ImBindingServiceError {
+  readonly unbindRequired: ImBindingUnbindRequiredDetail;
+  constructor(detail: ImBindingUnbindRequiredDetail) {
+    super(
+      "IM_BINDING_UNBIND_REQUIRED",
+      409,
+      "Unbind the current messaging connection before starting a different Provider",
+    );
+    this.name = "ImBindingUnbindRequiredError";
+    this.unbindRequired = ImBindingUnbindRequiredDetailSchema.parse(detail);
   }
 }
 
@@ -761,6 +801,30 @@ export class ImBindingService {
   }
 
   async getHandoffForAgent(callerUserId: string, agentId: string): Promise<ImBindingHandoffStatus | undefined> {
+    const observed = await this.#observeForAgent(callerUserId, agentId);
+    return observed?.readiness.handoff;
+  }
+
+  async getSetupBindingForAgent(callerUserId: string, agentId: string): Promise<AgentSetupBindingState | undefined> {
+    const observed = await this.#observeForAgent(callerUserId, agentId);
+    if (!observed) return undefined;
+    return {
+      bindingId: observed.id,
+      provider: observed.provider,
+      credentialGeneration: observed.credentialGeneration,
+      errorCode: projectedErrorCode({
+        credentialStatus: observed.credential.status,
+        lastErrorCode: observed.lastErrorCode,
+        missingCapabilities: observed.credential.missingCapabilities,
+        provider: observed.provider,
+        reauthorizationRequired: observed.readiness.reauthorizationRequired,
+        status: observed.status,
+      }),
+      handoff: observed.readiness.handoff,
+    };
+  }
+
+  async #observeForAgent(callerUserId: string, agentId: string): Promise<ObservedAgentBinding | undefined> {
     await this.#assertCanRead(callerUserId, agentId);
     const [row] = await this.#database
       .select({
@@ -768,6 +832,7 @@ export class ImBindingService {
         agentId: imBindings.agentId,
         provider: imBindings.provider,
         status: imBindings.status,
+        lastErrorCode: imBindings.lastErrorCode,
         connectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
         observedConnectedAt: imBindings.observedConnectedAt,
         observedAt: imBindings.observedAt,
@@ -801,14 +866,21 @@ export class ImBindingService {
       row.provider === "slack" && row.slackInstallation?.status === "reauthorization_required"
         ? "reauthorization_required"
         : row.status;
-    return (
-      await this.#readiness(
-        this.#withCredentialStatus(
-          { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
-          credential.status,
-        ),
-      )
-    ).handoff;
+    const readiness = await this.#readiness(
+      this.#withCredentialStatus(
+        { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
+        credential.status,
+      ),
+    );
+    return {
+      id: row.id,
+      provider: row.provider,
+      status,
+      credentialGeneration,
+      lastErrorCode: row.lastErrorCode,
+      credential,
+      readiness,
+    };
   }
 
   async getConfigForAgent(callerUserId: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {
@@ -893,6 +965,37 @@ export class ImBindingService {
       }
       await disableImBindingInTransaction(transaction, imBindingId, this.#now());
       return imBinding.agentId;
+    });
+    await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
+  }
+
+  /**
+   * The explicit Account-owned unbind. Naming the exact current Provider and binding fences the mutation
+   * against a stale view: anything else fails closed and nothing is disabled. The atomic disable clears the
+   * effective credential, setup attempt context and owner, and connection leases, terminates active chat
+   * sessions, and retains message and session history. Afterwards any Provider may bind.
+   */
+  async unbindForAgent(
+    callerUserId: string,
+    agentId: string,
+    expected: { provider: "feishu" | "slack"; bindingId: string },
+  ): Promise<void> {
+    await this.#database.transaction(async (transaction) => {
+      await this.assertCanManageForMutation(callerUserId, agentId, transaction);
+      const [current] = await transaction
+        .select({ id: imBindings.id, provider: imBindings.provider })
+        .from(imBindings)
+        .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+        .limit(1)
+        .for("update");
+      if (!current || current.id !== expected.bindingId || current.provider !== expected.provider) {
+        throw new ImBindingServiceError(
+          "IM_BINDING_CONFIGURATION_CONFLICT",
+          409,
+          "The Agent's messaging connection changed since it was observed; refresh before unbinding",
+        );
+      }
+      await disableImBindingInTransaction(transaction, current.id, this.#now());
     });
     await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
   }
@@ -1145,7 +1248,7 @@ export class ImBindingService {
     const [agent] = await executor
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
       .limit(1);
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
   }
@@ -1158,7 +1261,7 @@ export class ImBindingService {
     const [agent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
       .limit(1)
       .for("update");
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
@@ -1332,12 +1435,11 @@ export class ImBindingService {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, id: agents.id })
         .from(agents)
-        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+        .where(and(eq(agents.id, input.agentId), eq(agents.status, "active")))
         .limit(1)
         .for("update");
-      if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
-      // Messaging routes work to the Agent's Computer, so a binding that has none would be created
-      // ready to deliver to nowhere. The Account binds a Computer first.
+      if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+      // Messaging routes require a bound Computer; otherwise the route would deliver to nowhere.
       if (agent.computerId === null) {
         throw new ImBindingServiceError(
           "AGENT_COMPUTER_NOT_BOUND",
@@ -1777,12 +1879,11 @@ export class ImBindingService {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, id: agents.id })
         .from(agents)
-        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+        .where(and(eq(agents.id, input.agentId), eq(agents.status, "active")))
         .limit(1)
         .for("update");
-      if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
-      // Messaging routes work to the Agent's Computer, so a binding that has none would be created
-      // ready to deliver to nowhere. The Account binds a Computer first.
+      if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+      // Messaging routes require a bound Computer; otherwise the route would deliver to nowhere.
       if (agent.computerId === null) {
         throw new ImBindingServiceError(
           "AGENT_COMPUTER_NOT_BOUND",

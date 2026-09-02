@@ -12,6 +12,7 @@ import {
 describe("computer contracts", () => {
   it("returns strict Computer-scoped machine authority", () => {
     const response = {
+      agentId: crypto.randomUUID(),
       computerId: crypto.randomUUID(),
       installationId: crypto.randomUUID(),
       machineToken: "opaque-secret",
@@ -23,11 +24,15 @@ describe("computer contracts", () => {
   it("treats an empty Account connect-code request as create and requires an explicit repair target", () => {
     expect(AccountComputerConnectCodeIssueRequestSchema.parse({})).toEqual({});
     expect(AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "create" })).toEqual({ mode: "create" });
-    const targetComputerId = crypto.randomUUID();
-    expect(AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "repair", targetComputerId })).toEqual({
-      mode: "repair",
-      targetComputerId,
+    const targetAgentId = crypto.randomUUID();
+    expect(AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "create", targetAgentId })).toEqual({
+      mode: "create",
+      targetAgentId,
     });
+    const targetComputerId = crypto.randomUUID();
+    expect(
+      AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "repair", targetAgentId, targetComputerId }),
+    ).toEqual({ mode: "repair", targetAgentId, targetComputerId });
     expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "repair" })).toThrow();
     expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ mode: "create", targetComputerId })).toThrow();
     expect(() => AccountComputerConnectCodeIssueRequestSchema.parse({ accountId: crypto.randomUUID() })).toThrow();
@@ -52,7 +57,7 @@ describe("computer contracts", () => {
   it("accepts optional create and repair mode on the issue response", () => {
     const response = {
       connectCodeId: crypto.randomUUID(),
-      bootstrapCommand: "opentag computer connect --server https://opentag.example -- otcc_code",
+      bootstrapCommand: "opentag connect --server https://opentag.example -- otcc_code",
       expiresIn: 900,
       issuedAt: "2026-08-29T00:00:00.000Z",
     };
@@ -66,7 +71,7 @@ describe("computer contracts", () => {
 
   it("requires the non-secret connectCodeId on the issue response", () => {
     const response = {
-      bootstrapCommand: "opentag computer connect --server https://opentag.example -- otcc_code",
+      bootstrapCommand: "opentag connect --server https://opentag.example -- otcc_code",
       expiresIn: 900,
       issuedAt: "2026-08-29T00:00:00.000Z",
     };

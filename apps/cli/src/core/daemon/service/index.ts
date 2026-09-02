@@ -116,13 +116,13 @@ export async function createDaemonServiceManager(
       } catch (error) {
         throw new DaemonServiceError(
           "CONFIGURATION",
-          "OpenTag Computer credentials are invalid; run computer connect again",
+          "OpenTag Computer credentials are invalid; run opentag connect again",
           { cause: error },
         );
       }
       const bound = resolveBoundAccountComputer(credentials);
       if (bound.status === "disconnected") {
-        throw new DaemonServiceError("CONFIGURATION", "This Computer is not connected; run computer connect first");
+        throw new DaemonServiceError("CONFIGURATION", "This Computer is not connected; run opentag connect first");
       }
       return mutate("install", () => backend.installAndStart());
     },

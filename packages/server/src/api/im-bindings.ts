@@ -3,6 +3,7 @@ import {
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
+  AGENT_IM_BINDING_UNBIND_TEMPLATE,
   CreateFeishuSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
@@ -12,6 +13,7 @@ import {
   ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
+  UnbindAgentMessagingRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -62,7 +64,12 @@ export function registerImBindingRoutes(
     app.post(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const input = parseRequest(CreateFeishuSetupAttemptRequestSchema, request.body ?? {});
-      const attempt = await feishu.createOrReuse(authenticatedUserId(request), agentId, input.intent);
+      const attempt = await feishu.createOrReuse(
+        authenticatedUserId(request),
+        agentId,
+        input.intent,
+        input.expectedMessaging,
+      );
       return reply.code(201).send(FeishuSetupAttemptSchema.parse(attempt));
     });
 
@@ -80,6 +87,13 @@ export function registerImBindingRoutes(
         .send(FeishuSetupAttemptSchema.parse(await feishu.cancel(authenticatedUserId(request), attemptId)));
     });
   }
+
+  app.post(AGENT_IM_BINDING_UNBIND_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const input = parseRequest(UnbindAgentMessagingRequestSchema, request.body ?? {});
+    await imBindings.unbindForAgent(authenticatedUserId(request), agentId, input);
+    return reply.code(204).send();
+  });
 
   app.post(`${IM_BINDING_BY_ID_TEMPLATE}/disable`, { preHandler }, async (request, reply) => {
     const { imBindingId } = parseRequest(ImBindingParamsSchema, request.params);

@@ -64,7 +64,6 @@ export function AgentSetupSurface({
       <AgentSetupPage
         adapter={setupAdapter}
         agentId={agentId}
-        onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
         onReady={onReady}
         reviewMode={reviewMode}

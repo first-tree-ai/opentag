@@ -54,9 +54,7 @@ export interface AgentSetupPageProps {
   readonly agentId: string;
   /** Defaults to the HTTP adapter over the browser API; tests and the lab pass the in-memory one. */
   readonly adapter?: AgentSetupAdapter;
-  /** Returns to the Account's Agent list after Account admission has opened normal surfaces. */
-  readonly onBackToAgents?: () => void;
-  /** Opens the normal Agent surface after canonical setup reaches ready. */
+  /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
   readonly onReady?: (agentId: string) => Promise<void> | void;
@@ -420,7 +418,6 @@ function useReadyReport(
 export function AgentSetupPage({
   agentId,
   adapter,
-  onBackToAgents,
   onOpenAgent,
   onReady,
   reviewMode = false,
@@ -434,7 +431,6 @@ export function AgentSetupPage({
       adapter={resolvedAdapter}
       agentId={agentId}
       key={agentId}
-      onBackToAgents={onBackToAgents}
       onOpenAgent={onOpenAgent}
       onReady={onReady}
       reviewMode={reviewMode}
@@ -446,7 +442,6 @@ export function AgentSetupPage({
 function AgentSetupPageContent({
   agentId,
   adapter,
-  onBackToAgents,
   onOpenAgent,
   onReady,
   reviewMode = false,
@@ -456,14 +451,15 @@ function AgentSetupPageContent({
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
+  const ready = snapshot?.stage === "ready";
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
         <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
-        {onBackToAgents ? (
-          <Button onClick={onBackToAgents} variant="ghost">
-            {m.onboarding_v2_back_to_agents()}
+        {onOpenAgent && !ready ? (
+          <Button onClick={onOpenAgent} variant="ghost">
+            {m.onboarding_v2_back_to_agent()}
           </Button>
         ) : null}
       </header>

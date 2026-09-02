@@ -9,6 +9,7 @@
   "onboarding_v2_agent_runtime_hint": "OpenTag 将使用的编码 Agent。",
   "onboarding_v2_agent_runtime_label": "Agent 运行时",
   "onboarding_v2_agent_title": "创建你的 Agent",
+  "onboarding_v2_back_to_agent": "返回 Agent",
   "onboarding_v2_back_to_agents": "返回 Agents",
   "onboarding_v2_brand_name": "OpenTag",
   "onboarding_v2_check_repair_hint": "请在终端或 Agent 中继续处理，或在那台电脑运行",

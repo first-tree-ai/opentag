@@ -9,6 +9,7 @@
   "onboarding_v2_agent_runtime_hint": "The coding agent OpenTag will use.",
   "onboarding_v2_agent_runtime_label": "Agent runtime",
   "onboarding_v2_agent_title": "Create your agent",
+  "onboarding_v2_back_to_agent": "Back to agent",
   "onboarding_v2_back_to_agents": "Back to agents",
   "onboarding_v2_brand_name": "OpenTag",
   "onboarding_v2_check_repair_hint": "Continue in your terminal or agent for instructions, or run",

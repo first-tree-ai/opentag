@@ -52,6 +52,7 @@ function renderSetup(
   adapter: AgentSetupAdapter,
   props: {
     agentId?: string;
+    onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
     reviewMode?: boolean;
     slackOAuthError?: string;
@@ -63,6 +64,7 @@ function renderSetup(
       <AgentSetupPage
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
+        onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
         reviewMode={props.reviewMode}
         slackOAuthError={props.slackOAuthError}
@@ -683,6 +685,20 @@ describe("AgentSetupPage request fencing", () => {
 });
 
 describe("AgentSetupPage closed failures and review", () => {
+  it("replaces the return action with Open agent when setup becomes ready", async () => {
+    const onOpenAgent = vi.fn();
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack", reachable: true },
+    });
+    renderSetup(memory.adapter, { onOpenAgent });
+    await settle();
+
+    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    expect(onOpenAgent).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed on a terminal answer instead of offering any creation path", async () => {
     const adapter = scriptedAdapter(async () => {
       throw new ApiError(404, "refused: RESOURCE_NOT_FOUND", "RESOURCE_NOT_FOUND", "deterministic");

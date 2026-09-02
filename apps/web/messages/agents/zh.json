@@ -41,6 +41,7 @@
   "agents_computers_description": "连接并恢复 Agent 使用的 Computer。",
   "agents_computers_title": "Computer",
   "agents_connected_computers": "已连接的 Computer",
+  "agents_continue_setup": "继续设置",
   "agents_created_by": "创建者：{name}",
   "agents_empty_description": "使用新建 Agent 创建你的第一个共享 AI 队友。",
   "agents_empty_title": "暂无 Agent",

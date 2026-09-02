@@ -273,7 +273,6 @@ function TargetedAgentSetup({
         agentId={resolution.agentId}
         key={resolution.agentId}
         onAdopt={onAdopt}
-        onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
         onReviewFinished={onReviewFinished}
         onTargetInvalidated={retryResolution}
@@ -303,7 +302,6 @@ function ExactAgentSetup({
   accountCompleted,
   agentId,
   onAdopt,
-  onBackToAgents,
   onOpenAgent,
   onReviewFinished,
   onTargetInvalidated,
@@ -313,7 +311,6 @@ function ExactAgentSetup({
   accountCompleted: boolean;
   agentId: string;
   onAdopt: (agentId: string) => Promise<void>;
-  onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
   onReviewFinished: (agentId: string) => Promise<void>;
   onTargetInvalidated: () => void;
@@ -383,7 +380,6 @@ function ExactAgentSetup({
   return (
     <AgentSetupSurface
       agentId={agentId}
-      onBackToAgents={onBackToAgents}
       onOpenAgent={() => onOpenAgent(agentId)}
       onReady={reviewMode ? onReviewFinished : undefined}
       reviewMode={reviewMode}

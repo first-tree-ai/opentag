@@ -41,6 +41,7 @@
   "agents_computers_description": "Connect and recover the Computers used by your Agents.",
   "agents_computers_title": "Computers",
   "agents_connected_computers": "Connected Computers",
+  "agents_continue_setup": "Continue setup",
   "agents_created_by": "Created by {name}",
   "agents_empty_description": "Create your first shared AI teammate with New Agent.",
   "agents_empty_title": "No Agents yet",

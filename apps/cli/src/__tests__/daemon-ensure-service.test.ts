@@ -49,7 +49,7 @@ describe("daemon ensure-service command", () => {
         writeError,
       }),
     ).resolves.toBe(1);
-    expect(writeError).toHaveBeenCalledWith("restart failed");
+    expect(writeError).toHaveBeenCalledWith(expect.stringContaining("INTERNAL_ERROR: restart failed"));
   });
 
   it("renders deferred, ready, and failure results as JSON", async () => {

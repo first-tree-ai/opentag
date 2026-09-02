@@ -149,6 +149,46 @@ export async function resolveAgentRuntimeExecutable(
 }
 
 /**
+ * Command-only install-only discovery. Desktop-app lookup is Codex-specific, so this
+ * resolver never searches ChatGPT/Codex app bundles unless the caller passes dirs.
+ */
+export async function resolveInstalledCliExecutable(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  options: ResolveAgentRuntimeExecutableOptions = {},
+): Promise<Pick<ResolvedAgentRuntimeExecutable, "path" | "source" | "searchDir">> {
+  for await (const candidate of iterateAgentRuntimeExecutables("claude-code", command, environment, {
+    ...options,
+    desktopAppDirs: options.desktopAppDirs ?? (() => []),
+  })) {
+    return { path: candidate.path, searchDir: candidate.searchDir, source: candidate.source };
+  }
+  throw new AgentRuntimeExecutableNotFoundError(`The ${command} CLI is not installed`);
+}
+
+export type InstalledCliProbeResult =
+  | { status: "installed"; path: string; source: AgentRuntimeExecutableSource }
+  | { status: "not-installed" }
+  | { status: "unknown"; detail: string };
+
+export async function probeInstalledCliCommand(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  options: ResolveAgentRuntimeExecutableOptions = {},
+): Promise<InstalledCliProbeResult> {
+  try {
+    const resolved = await resolveInstalledCliExecutable(command, environment, options);
+    return { status: "installed", path: resolved.path, source: resolved.source };
+  } catch (error) {
+    if (error instanceof AgentRuntimeExecutableNotFoundError) return { status: "not-installed" };
+    return {
+      status: "unknown",
+      detail: safeErrorDetail(error, "CLI installation could not be determined"),
+    };
+  }
+}
+
+/**
  * Lazy installed-candidate sequence. Later, more expensive sources are only
  * evaluated when the consumer asks for the next candidate — the common case of
  * a single working hit therefore keeps today's cost. An absolute explicit

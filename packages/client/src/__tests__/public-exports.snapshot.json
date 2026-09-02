@@ -151,6 +151,7 @@
   "parseProviderCliTurnRunnerArgv",
   "piAgentRuntimeEnvironment",
   "probeAgentRuntimeCliInstallations",
+  "probeIntegrationCliInstallations",
   "probeProviderCliExecutable",
   "providerCliArtifactId",
   "providerCliCommandForProvider",

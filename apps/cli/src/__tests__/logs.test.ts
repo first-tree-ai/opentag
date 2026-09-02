@@ -61,6 +61,72 @@ describe("opentag logs", () => {
     const home = await temporaryHome();
     await expect(runLogs({ home })).resolves.toMatchObject({ files: [] });
   });
+
+  it("keeps the tail of a log larger than the structured-field cap", async () => {
+    const home = await temporaryHome();
+    const logs = join(home, "logs");
+    await mkdir(logs, { recursive: true });
+    const tailMarker = "TAIL_MARKER_AFTER_FOUR_KIB";
+    await writeFile(join(logs, "client.log"), `${"legacy entry\n".repeat(500)}${tailMarker}\n`);
+
+    const result = await runLogs({ home });
+    const content = result.files[0]?.content ?? "";
+    const output = formatLogs(result);
+    expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(4 * 1024);
+    expect(content).toContain(tailMarker);
+    expect(output).toContain(tailMarker);
+  });
+
+  it("bounds an exported file from the newest line and marks omitted bytes", async () => {
+    const home = await temporaryHome();
+    const logs = join(home, "logs");
+    await mkdir(logs, { recursive: true });
+    const records = Array.from({ length: 1_400 }, (_, index) =>
+      JSON.stringify({ message: `legacy-${index}-${"x".repeat(900)}` }),
+    );
+    records.push(JSON.stringify({ message: "NEWEST_LOG_RECORD" }));
+    await writeFile(join(logs, "client.log"), `${records.join("\n")}\n`);
+
+    const result = await runLogs({ home });
+    const content = result.files[0]?.content ?? "";
+    const output = formatLogs(result);
+    expect(Buffer.byteLength(content, "utf8")).toBeLessThanOrEqual(1024 * 1024);
+    expect(content).toMatch(/^\[\.\.\. \d+ earlier bytes omitted \.\.\.\]\n/u);
+    expect(content).toContain("NEWEST_LOG_RECORD");
+    expect(content).not.toContain('"message":"legacy-0-');
+    expect(output).toContain("NEWEST_LOG_RECORD");
+    expect(output).toMatch(/\[\.\.\. \d+ earlier bytes omitted \.\.\.\]/u);
+  });
+
+  it("redacts credentials in a log larger than four KiB without the aggregate cap", async () => {
+    const home = await temporaryHome();
+    const logs = join(home, "logs");
+    await mkdir(logs, { recursive: true });
+    const credential = "plaintext-log-credential";
+    const tail = JSON.stringify({ authorization: `Bearer ${credential}`, message: "credential tail" });
+    await writeFile(join(logs, "client.log"), `${"prefix\n".repeat(900)}${tail}\n`);
+
+    const result = await runLogs({ home });
+    const content = result.files[0]?.content ?? "";
+    const output = formatLogs(result);
+    expect(Buffer.byteLength(content, "utf8")).toBeGreaterThan(4 * 1024);
+    expect(content).toContain("credential tail");
+    expect(content).toContain("[REDACTED]");
+    expect(content).not.toContain(credential);
+    expect(output).not.toContain(credential);
+  });
+
+  it("redacts environment metadata independently from log files", async () => {
+    const home = await temporaryHome();
+    const credential = "environment-secret";
+    const result = await runLogs({
+      environment: { OPENTAG_LOG_LEVEL: `Bearer ${credential}` },
+      home,
+    });
+
+    expect(result.environment.logLevel).not.toContain(credential);
+    expect(formatLogs(result)).not.toContain(credential);
+  });
 });
 
 async function temporaryHome(): Promise<string> {

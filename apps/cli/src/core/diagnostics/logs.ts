@@ -33,6 +33,7 @@ export interface LogsResult {
 
 const CLIENT_LOG_NAME = "client.log";
 const CLIENT_LOG_PATTERN = /^client\.log(?:\.\d+)?$/u;
+const MAX_EXPORTED_LOG_FILE_BYTES = 1024 * 1024;
 
 /** Read the local client log set and safe runtime metadata for support diagnostics. */
 export async function runLogs(options: LogsOptions = {}): Promise<LogsResult> {
@@ -40,8 +41,8 @@ export async function runLogs(options: LogsOptions = {}): Promise<LogsResult> {
   const home = options.home ?? resolveOpenTagHome(environment);
   const layout = resolveOpenTagHomeLayout(home);
   const files = await readClientLogs(layout.logs);
-  return redactForLog({
-    environment: {
+  return {
+    environment: redactForLog({
       arch: arch(),
       channel: CHANNEL,
       cliVersion: CLI_VERSION,
@@ -53,19 +54,19 @@ export async function runLogs(options: LogsOptions = {}): Promise<LogsResult> {
       platform: platform(),
       serverConfigured: Boolean(environment.OPENTAG_SERVER_URL),
       serviceMode: environment.OPENTAG_SERVICE_MODE === "1",
-    },
+    }),
     files,
-  });
+  };
 }
 
 export function formatLogs(result: LogsResult): string {
-  const safe = redactForLog(result);
-  const lines = ["OpenTag logs", "Environment:", JSON.stringify(safe.environment) ?? "{}", "", "Client log files:"];
-  if (safe.files.length === 0) {
+  const safeEnvironment = redactForLog(result.environment);
+  const lines = ["OpenTag logs", "Environment:", JSON.stringify(safeEnvironment) ?? "{}", "", "Client log files:"];
+  if (result.files.length === 0) {
     lines.push("(no client log files found)");
     return lines.join("\n");
   }
-  for (const file of safe.files) {
+  for (const file of result.files) {
     lines.push(`--- ${file.name} ---`, file.content.replace(/\s+$/u, ""));
   }
   return lines.join("\n");
@@ -86,12 +87,40 @@ async function readClientLogs(directory: string): Promise<LogBundleFile[]> {
   const files: LogBundleFile[] = [];
   for (const name of names) {
     try {
-      files.push({ content: redactLogContent(await readFile(`${directory}/${name}`, "utf8")), name });
+      const redacted = redactLogContent(await readFile(`${directory}/${name}`, "utf8"));
+      files.push({ content: boundLogContent(redacted), name });
     } catch (error) {
       if (!isMissingPath(error)) throw error;
     }
   }
   return files;
+}
+
+function boundLogContent(content: string): string {
+  const totalBytes = Buffer.byteLength(content, "utf8");
+  if (totalBytes <= MAX_EXPORTED_LOG_FILE_BYTES) return content;
+
+  const lines = content.match(/.*(?:\n|$)/gu)?.filter((line) => line.length > 0) ?? [];
+  let retainedLines = 0;
+  let retainedBytes = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line === undefined) continue;
+    const candidateBytes = retainedBytes + Buffer.byteLength(line, "utf8");
+    const omittedBytes = totalBytes - candidateBytes;
+    const marker = formatOmissionMarker(omittedBytes);
+    if (Buffer.byteLength(marker, "utf8") + candidateBytes > MAX_EXPORTED_LOG_FILE_BYTES) break;
+    retainedLines += 1;
+    retainedBytes = candidateBytes;
+  }
+
+  const omittedBytes = totalBytes - retainedBytes;
+  const marker = formatOmissionMarker(omittedBytes);
+  return `${marker}${lines.slice(lines.length - retainedLines).join("")}`;
+}
+
+function formatOmissionMarker(omittedBytes: number): string {
+  return `[... ${omittedBytes} earlier bytes omitted ...]\n`;
 }
 
 function redactLogContent(content: string): string {

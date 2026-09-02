@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { spaceScriptBoundary } from "../i18n/format.js";
 import { overwriteGetLocale } from "../paraglide/runtime.js";
-import { messagingProviderAlternateBrand, messagingProviderLabel, spaceBrandInSentence } from "./provider-label.js";
+import { messagingProviderAlternateBrand, messagingProviderLabel } from "./provider-label.js";
 
 /** Mirrors the helper in i18n/format.test.ts: run one assertion under a locale, then restore. */
 function withLocale(locale: "en" | "zh", callback: () => void): void {
@@ -56,26 +57,26 @@ describe("messagingProviderLabel", () => {
    */
   it("spaces a Latin brand against Chinese text and nothing else", () => {
     withLocale("zh", () => {
-      expect(spaceBrandInSentence("断开Slack")).toBe("断开 Slack");
-      expect(spaceBrandInSentence("无法断开Slack，请重试。")).toBe("无法断开 Slack，请重试。");
-      expect(spaceBrandInSentence("断开飞书")).toBe("断开飞书");
-      expect(spaceBrandInSentence("已连接的Slack频道")).toBe("已连接的 Slack 频道");
+      expect(spaceScriptBoundary("断开Slack")).toBe("断开 Slack");
+      expect(spaceScriptBoundary("无法断开Slack，请重试。")).toBe("无法断开 Slack，请重试。");
+      expect(spaceScriptBoundary("断开飞书")).toBe("断开飞书");
+      expect(spaceScriptBoundary("已连接的Slack频道")).toBe("已连接的 Slack 频道");
     });
   });
 
   /** Running it twice must not widen a gap it already set, since messages compose. */
   it("leaves an already-spaced sentence alone", () => {
     withLocale("zh", () => {
-      const once = spaceBrandInSentence("断开Slack");
-      expect(spaceBrandInSentence(once)).toBe(once);
-      expect(spaceBrandInSentence("同时支持 Lark")).toBe("同时支持 Lark");
+      const once = spaceScriptBoundary("断开Slack");
+      expect(spaceScriptBoundary(once)).toBe(once);
+      expect(spaceScriptBoundary("同时支持 Lark")).toBe("同时支持 Lark");
     });
   });
 
   /** English already spaces every word, so the rule must not touch it. */
   it("leaves English untouched", () => {
     withLocale("en", () => {
-      expect(spaceBrandInSentence("Disconnect Slack")).toBe("Disconnect Slack");
+      expect(spaceScriptBoundary("Disconnect Slack")).toBe("Disconnect Slack");
       expect(messagingProviderLabel("feishu")).toBe("Lark");
       expect(messagingProviderAlternateBrand()).toBe("Feishu");
     });

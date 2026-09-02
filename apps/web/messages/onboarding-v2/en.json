@@ -12,7 +12,7 @@
   "onboarding_v2_back_to_agents": "Back to agents",
   "onboarding_v2_brand_name": "OpenTag",
   "onboarding_v2_check_repair_hint": "Continue in your terminal or agent for instructions, or run",
-  "onboarding_v2_check_repair_hint_suffix": "to start the repair.",
+  "onboarding_v2_check_repair_hint_suffix": "on that Computer to see what is missing.",
   "onboarding_v2_coming_soon": "Coming soon",
   "onboarding_v2_completed": "Completed",
   "onboarding_v2_connect_generate_repair": "Need to reinstall? Generate a repair command.",

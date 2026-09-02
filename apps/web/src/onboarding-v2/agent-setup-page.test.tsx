@@ -177,7 +177,10 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
     expect(screen.getByText("Codex isn't installed on Review Mac yet.")).toBeTruthy();
-    expect(screen.getByText("opentag doctor --fix")).toBeTruthy();
+    const doctorCommand = screen.getByText("opentag doctor");
+    expect(doctorCommand.parentElement?.textContent).toBe(
+      "Continue in your terminal or agent for instructions, or run opentag doctor on that Computer to see what is missing.",
+    );
   });
 
   it("waits visibly while the runtime check is still resolving", async () => {

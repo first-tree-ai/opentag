@@ -6,5 +6,5 @@ export const RUNTIME_COPY: Record<Runtime, { readonly title: string; readonly de
 };
 
 export const COPY = {
-  check: { repairCommand: "opentag doctor --fix" },
+  check: { repairCommand: "opentag doctor" },
 } as const;

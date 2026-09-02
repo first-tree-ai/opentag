@@ -58,6 +58,7 @@ const DEFAULT_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 
 interface RateLimitFailureMetadata {
   keyKind: "email" | "ip";
+  limiter: BrowserAuthRateLimiter;
   windowMs: number;
 }
 
@@ -78,7 +79,7 @@ function checkRateLimit(
       const windowMs = typeof candidateWindowMs === "number" ? candidateWindowMs : DEFAULT_RATE_LIMIT_WINDOW_MS;
       Object.defineProperty(error, RATE_LIMIT_FAILURE_METADATA, {
         configurable: true,
-        value: { keyKind, windowMs },
+        value: { keyKind, limiter, windowMs },
       });
     }
     throw error;

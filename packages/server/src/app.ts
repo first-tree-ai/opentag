@@ -143,7 +143,7 @@ type ClassifiedFailure = {
   statusCode: number;
 };
 
-const rateLimitLogWindows = new Map<string, number>();
+const rateLimitLogWindows = new WeakMap<object, Map<string, number>>();
 
 function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailure, error: unknown): void {
   if (error instanceof AuthServiceError && error.statusCode === 401) return;
@@ -153,9 +153,11 @@ function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailur
     const route = request.routeOptions?.url ?? sanitizeRequestUrl(request.url);
     const bucket = `${route}:${rateLimit.keyKind}`;
     const now = Date.now();
-    const previousResetAt = rateLimitLogWindows.get(bucket);
+    const limiterWindows = rateLimitLogWindows.get(rateLimit.limiter) ?? new Map<string, number>();
+    const previousResetAt = limiterWindows.get(bucket);
     if (previousResetAt !== undefined && previousResetAt > now) return;
-    rateLimitLogWindows.set(bucket, now + rateLimit.windowMs);
+    limiterWindows.set(bucket, now + rateLimit.windowMs);
+    rateLimitLogWindows.set(rateLimit.limiter, limiterWindows);
   }
 
   const level = failure.statusCode >= 500 ? "error" : [409, 429].includes(failure.statusCode) ? "warn" : "info";

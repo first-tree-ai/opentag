@@ -6,15 +6,24 @@ import {
   agentId,
   agentListItem,
   agentSummary,
+  creationIntentKey,
   installApi,
   json,
   resetWebAppState,
   secondAgentId,
   secondAgentListItem,
+  storeCreationIntent,
 } from "./support/app-fixtures.js";
 
 const missingAgentId = "00000000-0000-4000-8000-000000000099";
+const savedCreationIntentId = "10000000-0000-4000-8000-000000000001";
 const observedAt = "2026-08-20T00:00:00.000Z";
+
+const savedCreationRequest = {
+  displayName: "recovered-agent",
+  name: "recovered-agent",
+  runtimeProvider: "codex",
+};
 
 function setupSnapshot(targetAgentId: string) {
   const summary =
@@ -62,6 +71,21 @@ function installAgentSetupApi(options?: Parameters<typeof installApi>[0]) {
 
 function agentListReads() {
   return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === undefined);
+}
+
+function installCreationIntentResult(response: Response) {
+  const fallback = vi.mocked(fetch).getMockImplementation();
+  if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+  vi.mocked(fetch).mockImplementation(async (input, init) => {
+    if (input === `/api/v1/agents/creation-intents/${savedCreationIntentId}` && init?.method === undefined) {
+      return response;
+    }
+    return fallback(input, init);
+  });
+}
+
+function storeSavedCreationIntent() {
+  storeCreationIntent({ creationIntentId: savedCreationIntentId, request: savedCreationRequest });
 }
 
 describe("Agent Setup route boundary", () => {
@@ -137,6 +161,103 @@ describe("Agent Setup route boundary", () => {
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
     expect(agentCreationPosts()).toHaveLength(2);
+  });
+
+  it("recovers a saved creation result at mount and canonicalizes to the exact Agent", async () => {
+    installAgentSetupApi({ setupCompletedAt: null });
+    installCreationIntentResult(json({ kind: "found", agentId }));
+    storeSavedCreationIntent();
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Creation attempt interrupted" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry creation" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Check result" }));
+
+    await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));
+    expect(window.localStorage.getItem(creationIntentKey)).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+  });
+
+  it("keeps a saved creation intent when the exact result is absent or cannot be checked", async () => {
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    installCreationIntentResult(json({ kind: "not-found" }));
+    storeSavedCreationIntent();
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    const view = render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
+    expect(await screen.findByText(/No active Agent named @recovered-agent exists yet/)).toBeTruthy();
+    expect(window.localStorage.getItem(creationIntentKey)).not.toBeNull();
+    expect(window.location.search).toBe("?action=create");
+
+    view.unmount();
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    installCreationIntentResult(
+      json(
+        {
+          error: {
+            code: "SERVICE_UNAVAILABLE",
+            category: "transient",
+            message: "Creation status unavailable",
+          },
+        },
+        503,
+      ),
+    );
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
+
+    expect(await screen.findByText("Creation status unavailable")).toBeTruthy();
+    expect(window.localStorage.getItem(creationIntentKey)).not.toBeNull();
+    expect(window.location.search).toBe("?action=create");
+  });
+
+  it("discards a saved creation intent and resets the thin creation flow", async () => {
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    storeSavedCreationIntent();
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("recovered-agent");
+    fireEvent.click(screen.getByRole("button", { name: "Discard and start over" }));
+
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Creation attempt interrupted" })).toBeNull());
+    expect(window.localStorage.getItem(creationIntentKey)).toBeNull();
+    expect(screen.getByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("opentag");
+  });
+
+  it("prunes a superseded v3 creation intent instead of resuming an incompatible request", async () => {
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    window.localStorage.setItem(
+      creationIntentKey,
+      JSON.stringify({
+        version: 3,
+        accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+        records: [
+          {
+            version: 3,
+            accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+            creationIntentId: savedCreationIntentId,
+            request: {
+              ...savedCreationRequest,
+              computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            },
+          },
+        ],
+      }),
+    );
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    await waitFor(() => expect(window.localStorage.getItem(creationIntentKey)).toBeNull());
+    expect(screen.queryByRole("heading", { name: "Creation attempt interrupted" })).toBeNull();
   });
 
   it("redirects an un-targeted visit to the canonical exact URL when the Account has one active Agent", async () => {

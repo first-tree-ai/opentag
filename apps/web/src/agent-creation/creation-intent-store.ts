@@ -1,6 +1,7 @@
 import type { AgentAdminConfig, CreateAgentRequest } from "@opentag/shared/browser";
 import { browserApi } from "../api.js";
 
+// v4 invalidates v3 records whose required Computer id cannot match the new Computer-less creation request.
 const CREATE_INTENT_VERSION = 4;
 const CREATION_INTENT_KEY_PREFIX = "opentag.agent-creation.intent:";
 

@@ -34,7 +34,7 @@ import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
-import { notifyTarget, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
+import { notifyTarget, protocolRejectionFields, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -368,7 +368,7 @@ export class RuntimeConnection {
           }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
-              { attempt: attempt + 1, category: "protocol", state: this.#state },
+              protocolRejectionFields(attempt, this.#state, error.message),
               "Runtime connection was rejected",
             );
             throw error;
@@ -378,14 +378,14 @@ export class RuntimeConnection {
               { attempt: attempt + 1, category: error.category, state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run computer connect again`, true);
+            throw new RuntimeConnectionError(`${error.message}; run opentag connect again`, true);
           }
           if (error instanceof Error && error.message.includes("not logged in")) {
             this.#logger.error(
               { attempt: attempt + 1, category: "credential", state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run computer connect first`, true);
+            throw new RuntimeConnectionError(`${error.message}; run opentag connect first`, true);
           }
           attempt += 1;
           const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));

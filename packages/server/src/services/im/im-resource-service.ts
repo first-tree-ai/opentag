@@ -115,6 +115,7 @@ export class ImResourceService {
           "IM_BINDING_TEMPORARILY_UNAVAILABLE",
           503,
           "The IM binding is temporarily unavailable",
+          "transient",
         );
       },
     );

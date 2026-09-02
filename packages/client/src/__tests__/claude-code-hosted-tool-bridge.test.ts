@@ -137,4 +137,33 @@ describe("Claude Code hosted tool bridge", () => {
       ),
     ).rejects.toThrow("unique names");
   });
+
+  it("returns an internal error when a hosted tool handler rejects", async () => {
+    const bridge = await startClaudeCodeHostedToolBridge(
+      {
+        definitions: [{ name: "failing", inputSchema: { type: "object" } }],
+        handler: async () => {
+          throw new Error("handler failed");
+        },
+      },
+      "run-failing-handler",
+      new AbortController().signal,
+    );
+    const configuration = JSON.parse(await readFile(bridge.configPath, "utf8")) as {
+      mcpServers: { opentag: { headers: Record<string, string>; url: string } };
+    };
+    const response = await fetch(configuration.mcpServers.opentag.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...configuration.mcpServers.opentag.headers },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "failing-call",
+        method: "tools/call",
+        params: { name: "failing", arguments: {} },
+      }),
+    });
+
+    expect(response.status).toBe(500);
+    await bridge.close();
+  });
 });

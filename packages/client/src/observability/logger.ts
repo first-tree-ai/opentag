@@ -45,6 +45,7 @@ const REDACT_PATHS = [
 
 let serviceDirectory: string | undefined;
 let serviceStream: RotatingFileStream | undefined;
+let serviceDestination: DestinationStream | undefined;
 let rootLogger: PinoLogger | undefined;
 let clientLoggerContext: ClientLogBindings = {};
 
@@ -55,7 +56,8 @@ export function configureClientLoggerForService(logDirectory: string): void {
   }
   if (serviceDirectory) return;
   serviceDirectory = canonicalDirectory;
-  serviceStream = new RotatingFileStream(canonicalDirectory, { minRetentionMs: CLIENT_LOG_MIN_RETENTION_MS });
+  serviceStream = undefined;
+  serviceDestination = undefined;
   rootLogger = undefined;
 }
 
@@ -65,23 +67,24 @@ export function configureClientLoggerContext(bindings: ClientLogBindings): void 
 }
 
 export function createLogger(module: string, options: CreateLoggerOptions = {}): ClientLogger {
-  if (options.destination === "stderr") return adapt(buildRoot(stderrDestination(), false), { module });
-  if (options.destination === "file") return adapt(buildRoot(fileDestination(), true), { module });
-  if (options.destination === "dual") return adapt(buildRoot(dualDestination(), true), { module });
-  return adapt(root(), { module });
+  if (options.destination === "stderr") return adapt(fixed(buildRoot(stderrDestination(), false)), { module });
+  if (options.destination === "file") return adapt(fixed(buildRoot(fileDestination(), true)), { module });
+  if (options.destination === "dual") return adapt(fixed(buildRoot(dualDestination(), true)), { module });
+  return adapt(root, { module });
 }
 
 export function resetClientLoggerForTests(): void {
   serviceStream?.close();
   serviceDirectory = undefined;
   serviceStream = undefined;
+  serviceDestination = undefined;
   rootLogger = undefined;
   clientLoggerContext = {};
 }
 
 function root(): PinoLogger {
   if (rootLogger) return rootLogger;
-  rootLogger = buildRoot(serviceStream ?? stderrDestination(), serviceDirectory !== undefined);
+  rootLogger = buildRoot(fileDestination(), serviceDirectory !== undefined);
   return rootLogger;
 }
 
@@ -120,12 +123,19 @@ function stderrDestination(): DestinationStream {
 }
 
 function fileDestination(): DestinationStream {
-  return serviceStream ?? stderrDestination();
+  if (!serviceDirectory) return stderrDestination();
+  if (serviceDestination) return serviceDestination;
+  serviceDestination = {
+    write(chunk: string) {
+      getServiceStream().write(chunk);
+    },
+  };
+  return serviceDestination;
 }
 
 function dualDestination(): DestinationStream {
-  const file = serviceStream;
-  if (!file) return stderrDestination();
+  if (!serviceDirectory) return stderrDestination();
+  const file = fileDestination();
   return {
     write(chunk: string) {
       file.write(chunk);
@@ -138,16 +148,27 @@ function dualDestination(): DestinationStream {
   };
 }
 
-function adapt(logger: PinoLogger, bindings: ClientLogBindings): ClientLogger {
+function getServiceStream(): RotatingFileStream {
+  if (!serviceDirectory) throw new Error("The Client logger has no configured service directory");
+  serviceStream ??= new RotatingFileStream(serviceDirectory, { minRetentionMs: CLIENT_LOG_MIN_RETENTION_MS });
+  return serviceStream;
+}
+
+function fixed(logger: PinoLogger): () => PinoLogger {
+  return () => logger;
+}
+
+function adapt(resolveLogger: () => PinoLogger, bindings: ClientLogBindings): ClientLogger {
   const write = (method: "debug" | "error" | "info" | "warn", fields: ClientLogBindings, message: string) =>
     safeWrite(() => {
+      const logger = resolveLogger();
       // Redaction walks and rewrites every string, so it must not run for a line the level discards.
       // Pino would drop the record anyway, but the arguments are evaluated before that call.
       if (!logger.isLevelEnabled(method)) return;
       logger[method](redactForLog({ ...bindings, ...fields }) as ClientLogBindings, redactForLog(message));
     });
   return {
-    child: (childBindings) => adapt(logger, { ...bindings, ...childBindings }),
+    child: (childBindings) => adapt(resolveLogger, { ...bindings, ...childBindings }),
     debug: (fields, message) => write("debug", fields, message),
     error: (fields, message) => write("error", fields, message),
     info: (fields, message) => write("info", fields, message),

@@ -12,9 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AuthenticatedResourcesRouteImport } from './routes/_authenticated/_resources'
-import { Route as InternalOnboardingV2RouteImport } from './routes/internal.onboarding-v2'
+import { Route as InternalAgentSetupRouteImport } from './routes/internal.agent-setup'
 import { Route as AuthenticatedResourcesShellRouteImport } from './routes/_authenticated/_resources/_shell'
-import { Route as AuthenticatedResourcesOnboardingRouteImport } from './routes/_authenticated/_resources/onboarding'
 import { Route as AuthenticatedInternalIndexRouteImport } from './routes/_authenticated/internal.index'
 import { Route as AuthenticatedResourcesShellIndexRouteImport } from './routes/_authenticated/_resources/_shell/index'
 import { Route as AuthenticatedResourcesShellAccountRouteImport } from './routes/_authenticated/_resources/_shell/account'
@@ -22,9 +21,9 @@ import { Route as AuthenticatedResourcesShellIntegrationsRouteImport } from './r
 import { Route as AuthenticatedResourcesShellResourcesRouteImport } from './routes/_authenticated/_resources/_shell/resources'
 import { Route as AuthenticatedResourcesShellSkillsRouteImport } from './routes/_authenticated/_resources/_shell/skills'
 import { Route as AuthenticatedResourcesShellUsageRouteImport } from './routes/_authenticated/_resources/_shell/usage'
+import { Route as AuthenticatedResourcesAgentsSetupRouteImport } from './routes/_authenticated/_resources/agents.setup'
 import { Route as AuthenticatedResourcesShellAgentsIndexRouteImport } from './routes/_authenticated/_resources/_shell/agents.index'
 import { Route as AuthenticatedResourcesShellAgentsComputersRouteImport } from './routes/_authenticated/_resources/_shell/agents.computers'
-import { Route as AuthenticatedResourcesShellAgentsNewRouteImport } from './routes/_authenticated/_resources/_shell/agents.new'
 import { Route as AuthenticatedResourcesShellTasksIndexRouteImport } from './routes/_authenticated/_resources/_shell/tasks.index'
 import { Route as AuthenticatedResourcesShellTasksTaskIdRouteImport } from './routes/_authenticated/_resources/_shell/tasks.$taskId'
 import { Route as AuthenticatedResourcesShellAgentsAgentIdIndexRouteImport } from './routes/_authenticated/_resources/_shell/agents.$agentId.index'
@@ -50,20 +49,14 @@ const AuthenticatedResourcesRoute = AuthenticatedResourcesRouteImport.update({
   id: '/_resources',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const InternalOnboardingV2Route = InternalOnboardingV2RouteImport.update({
-  id: '/internal/onboarding-v2',
-  path: '/internal/onboarding-v2',
+const InternalAgentSetupRoute = InternalAgentSetupRouteImport.update({
+  id: '/internal/agent-setup',
+  path: '/internal/agent-setup',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedResourcesShellRoute =
   AuthenticatedResourcesShellRouteImport.update({
     id: '/_shell',
-    getParentRoute: () => AuthenticatedResourcesRoute,
-  } as any)
-const AuthenticatedResourcesOnboardingRoute =
-  AuthenticatedResourcesOnboardingRouteImport.update({
-    id: '/onboarding',
-    path: '/onboarding',
     getParentRoute: () => AuthenticatedResourcesRoute,
   } as any)
 const AuthenticatedInternalIndexRoute =
@@ -108,6 +101,12 @@ const AuthenticatedResourcesShellUsageRoute =
     path: '/usage',
     getParentRoute: () => AuthenticatedResourcesShellRoute,
   } as any)
+const AuthenticatedResourcesAgentsSetupRoute =
+  AuthenticatedResourcesAgentsSetupRouteImport.update({
+    id: '/agents/setup',
+    path: '/agents/setup',
+    getParentRoute: () => AuthenticatedResourcesRoute,
+  } as any)
 const AuthenticatedResourcesShellAgentsIndexRoute =
   AuthenticatedResourcesShellAgentsIndexRouteImport.update({
     id: '/agents/',
@@ -118,12 +117,6 @@ const AuthenticatedResourcesShellAgentsComputersRoute =
   AuthenticatedResourcesShellAgentsComputersRouteImport.update({
     id: '/agents/computers',
     path: '/agents/computers',
-    getParentRoute: () => AuthenticatedResourcesShellRoute,
-  } as any)
-const AuthenticatedResourcesShellAgentsNewRoute =
-  AuthenticatedResourcesShellAgentsNewRouteImport.update({
-    id: '/agents/new',
-    path: '/agents/new',
     getParentRoute: () => AuthenticatedResourcesShellRoute,
   } as any)
 const AuthenticatedResourcesShellTasksIndexRoute =
@@ -196,16 +189,15 @@ const AuthenticatedResourcesShellAgentsAgentIdTasksTaskIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedResourcesShellIndexRoute
   '/login': typeof LoginRoute
-  '/internal/onboarding-v2': typeof InternalOnboardingV2Route
-  '/onboarding': typeof AuthenticatedResourcesOnboardingRoute
+  '/internal/agent-setup': typeof InternalAgentSetupRoute
   '/internal/': typeof AuthenticatedInternalIndexRoute
   '/account': typeof AuthenticatedResourcesShellAccountRoute
   '/integrations': typeof AuthenticatedResourcesShellIntegrationsRoute
   '/resources': typeof AuthenticatedResourcesShellResourcesRoute
   '/skills': typeof AuthenticatedResourcesShellSkillsRoute
   '/usage': typeof AuthenticatedResourcesShellUsageRoute
+  '/agents/setup': typeof AuthenticatedResourcesAgentsSetupRoute
   '/agents/computers': typeof AuthenticatedResourcesShellAgentsComputersRoute
-  '/agents/new': typeof AuthenticatedResourcesShellAgentsNewRoute
   '/tasks/$taskId': typeof AuthenticatedResourcesShellTasksTaskIdRoute
   '/agents/': typeof AuthenticatedResourcesShellAgentsIndexRoute
   '/tasks/': typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -222,16 +214,15 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof AuthenticatedResourcesShellIndexRoute
   '/login': typeof LoginRoute
-  '/internal/onboarding-v2': typeof InternalOnboardingV2Route
-  '/onboarding': typeof AuthenticatedResourcesOnboardingRoute
+  '/internal/agent-setup': typeof InternalAgentSetupRoute
   '/internal': typeof AuthenticatedInternalIndexRoute
   '/account': typeof AuthenticatedResourcesShellAccountRoute
   '/integrations': typeof AuthenticatedResourcesShellIntegrationsRoute
   '/resources': typeof AuthenticatedResourcesShellResourcesRoute
   '/skills': typeof AuthenticatedResourcesShellSkillsRoute
   '/usage': typeof AuthenticatedResourcesShellUsageRoute
+  '/agents/setup': typeof AuthenticatedResourcesAgentsSetupRoute
   '/agents/computers': typeof AuthenticatedResourcesShellAgentsComputersRoute
-  '/agents/new': typeof AuthenticatedResourcesShellAgentsNewRoute
   '/tasks/$taskId': typeof AuthenticatedResourcesShellTasksTaskIdRoute
   '/agents': typeof AuthenticatedResourcesShellAgentsIndexRoute
   '/tasks': typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -250,18 +241,17 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteWithChildren
   '/login': typeof LoginRoute
   '/_authenticated/_resources': typeof AuthenticatedResourcesRouteWithChildren
-  '/internal/onboarding-v2': typeof InternalOnboardingV2Route
+  '/internal/agent-setup': typeof InternalAgentSetupRoute
   '/_authenticated/_resources/_shell': typeof AuthenticatedResourcesShellRouteWithChildren
-  '/_authenticated/_resources/onboarding': typeof AuthenticatedResourcesOnboardingRoute
   '/_authenticated/internal/': typeof AuthenticatedInternalIndexRoute
   '/_authenticated/_resources/_shell/account': typeof AuthenticatedResourcesShellAccountRoute
   '/_authenticated/_resources/_shell/integrations': typeof AuthenticatedResourcesShellIntegrationsRoute
   '/_authenticated/_resources/_shell/resources': typeof AuthenticatedResourcesShellResourcesRoute
   '/_authenticated/_resources/_shell/skills': typeof AuthenticatedResourcesShellSkillsRoute
   '/_authenticated/_resources/_shell/usage': typeof AuthenticatedResourcesShellUsageRoute
+  '/_authenticated/_resources/agents/setup': typeof AuthenticatedResourcesAgentsSetupRoute
   '/_authenticated/_resources/_shell/': typeof AuthenticatedResourcesShellIndexRoute
   '/_authenticated/_resources/_shell/agents/computers': typeof AuthenticatedResourcesShellAgentsComputersRoute
-  '/_authenticated/_resources/_shell/agents/new': typeof AuthenticatedResourcesShellAgentsNewRoute
   '/_authenticated/_resources/_shell/tasks/$taskId': typeof AuthenticatedResourcesShellTasksTaskIdRoute
   '/_authenticated/_resources/_shell/agents/': typeof AuthenticatedResourcesShellAgentsIndexRoute
   '/_authenticated/_resources/_shell/tasks/': typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -280,16 +270,15 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
-    | '/internal/onboarding-v2'
-    | '/onboarding'
+    | '/internal/agent-setup'
     | '/internal/'
     | '/account'
     | '/integrations'
     | '/resources'
     | '/skills'
     | '/usage'
+    | '/agents/setup'
     | '/agents/computers'
-    | '/agents/new'
     | '/tasks/$taskId'
     | '/agents/'
     | '/tasks/'
@@ -306,16 +295,15 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
-    | '/internal/onboarding-v2'
-    | '/onboarding'
+    | '/internal/agent-setup'
     | '/internal'
     | '/account'
     | '/integrations'
     | '/resources'
     | '/skills'
     | '/usage'
+    | '/agents/setup'
     | '/agents/computers'
-    | '/agents/new'
     | '/tasks/$taskId'
     | '/agents'
     | '/tasks'
@@ -333,18 +321,17 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/login'
     | '/_authenticated/_resources'
-    | '/internal/onboarding-v2'
+    | '/internal/agent-setup'
     | '/_authenticated/_resources/_shell'
-    | '/_authenticated/_resources/onboarding'
     | '/_authenticated/internal/'
     | '/_authenticated/_resources/_shell/account'
     | '/_authenticated/_resources/_shell/integrations'
     | '/_authenticated/_resources/_shell/resources'
     | '/_authenticated/_resources/_shell/skills'
     | '/_authenticated/_resources/_shell/usage'
+    | '/_authenticated/_resources/agents/setup'
     | '/_authenticated/_resources/_shell/'
     | '/_authenticated/_resources/_shell/agents/computers'
-    | '/_authenticated/_resources/_shell/agents/new'
     | '/_authenticated/_resources/_shell/tasks/$taskId'
     | '/_authenticated/_resources/_shell/agents/'
     | '/_authenticated/_resources/_shell/tasks/'
@@ -362,7 +349,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   LoginRoute: typeof LoginRoute
-  InternalOnboardingV2Route: typeof InternalOnboardingV2Route
+  InternalAgentSetupRoute: typeof InternalAgentSetupRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -388,11 +375,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedResourcesRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/internal/onboarding-v2': {
-      id: '/internal/onboarding-v2'
-      path: '/internal/onboarding-v2'
-      fullPath: '/internal/onboarding-v2'
-      preLoaderRoute: typeof InternalOnboardingV2RouteImport
+    '/internal/agent-setup': {
+      id: '/internal/agent-setup'
+      path: '/internal/agent-setup'
+      fullPath: '/internal/agent-setup'
+      preLoaderRoute: typeof InternalAgentSetupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated/_resources/_shell': {
@@ -400,13 +387,6 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof AuthenticatedResourcesShellRouteImport
-      parentRoute: typeof AuthenticatedResourcesRoute
-    }
-    '/_authenticated/_resources/onboarding': {
-      id: '/_authenticated/_resources/onboarding'
-      path: '/onboarding'
-      fullPath: '/onboarding'
-      preLoaderRoute: typeof AuthenticatedResourcesOnboardingRouteImport
       parentRoute: typeof AuthenticatedResourcesRoute
     }
     '/_authenticated/internal/': {
@@ -458,6 +438,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedResourcesShellUsageRouteImport
       parentRoute: typeof AuthenticatedResourcesShellRoute
     }
+    '/_authenticated/_resources/agents/setup': {
+      id: '/_authenticated/_resources/agents/setup'
+      path: '/agents/setup'
+      fullPath: '/agents/setup'
+      preLoaderRoute: typeof AuthenticatedResourcesAgentsSetupRouteImport
+      parentRoute: typeof AuthenticatedResourcesRoute
+    }
     '/_authenticated/_resources/_shell/agents/': {
       id: '/_authenticated/_resources/_shell/agents/'
       path: '/agents'
@@ -470,13 +457,6 @@ declare module '@tanstack/react-router' {
       path: '/agents/computers'
       fullPath: '/agents/computers'
       preLoaderRoute: typeof AuthenticatedResourcesShellAgentsComputersRouteImport
-      parentRoute: typeof AuthenticatedResourcesShellRoute
-    }
-    '/_authenticated/_resources/_shell/agents/new': {
-      id: '/_authenticated/_resources/_shell/agents/new'
-      path: '/agents/new'
-      fullPath: '/agents/new'
-      preLoaderRoute: typeof AuthenticatedResourcesShellAgentsNewRouteImport
       parentRoute: typeof AuthenticatedResourcesShellRoute
     }
     '/_authenticated/_resources/_shell/tasks/': {
@@ -567,7 +547,6 @@ interface AuthenticatedResourcesShellRouteChildren {
   AuthenticatedResourcesShellUsageRoute: typeof AuthenticatedResourcesShellUsageRoute
   AuthenticatedResourcesShellIndexRoute: typeof AuthenticatedResourcesShellIndexRoute
   AuthenticatedResourcesShellAgentsComputersRoute: typeof AuthenticatedResourcesShellAgentsComputersRoute
-  AuthenticatedResourcesShellAgentsNewRoute: typeof AuthenticatedResourcesShellAgentsNewRoute
   AuthenticatedResourcesShellTasksTaskIdRoute: typeof AuthenticatedResourcesShellTasksTaskIdRoute
   AuthenticatedResourcesShellAgentsIndexRoute: typeof AuthenticatedResourcesShellAgentsIndexRoute
   AuthenticatedResourcesShellTasksIndexRoute: typeof AuthenticatedResourcesShellTasksIndexRoute
@@ -598,8 +577,6 @@ const AuthenticatedResourcesShellRouteChildren: AuthenticatedResourcesShellRoute
       AuthenticatedResourcesShellIndexRoute,
     AuthenticatedResourcesShellAgentsComputersRoute:
       AuthenticatedResourcesShellAgentsComputersRoute,
-    AuthenticatedResourcesShellAgentsNewRoute:
-      AuthenticatedResourcesShellAgentsNewRoute,
     AuthenticatedResourcesShellTasksTaskIdRoute:
       AuthenticatedResourcesShellTasksTaskIdRoute,
     AuthenticatedResourcesShellAgentsIndexRoute:
@@ -633,15 +610,15 @@ const AuthenticatedResourcesShellRouteWithChildren =
 
 interface AuthenticatedResourcesRouteChildren {
   AuthenticatedResourcesShellRoute: typeof AuthenticatedResourcesShellRouteWithChildren
-  AuthenticatedResourcesOnboardingRoute: typeof AuthenticatedResourcesOnboardingRoute
+  AuthenticatedResourcesAgentsSetupRoute: typeof AuthenticatedResourcesAgentsSetupRoute
 }
 
 const AuthenticatedResourcesRouteChildren: AuthenticatedResourcesRouteChildren =
   {
     AuthenticatedResourcesShellRoute:
       AuthenticatedResourcesShellRouteWithChildren,
-    AuthenticatedResourcesOnboardingRoute:
-      AuthenticatedResourcesOnboardingRoute,
+    AuthenticatedResourcesAgentsSetupRoute:
+      AuthenticatedResourcesAgentsSetupRoute,
   }
 
 const AuthenticatedResourcesRouteWithChildren =
@@ -666,7 +643,7 @@ const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   LoginRoute: LoginRoute,
-  InternalOnboardingV2Route: InternalOnboardingV2Route,
+  InternalAgentSetupRoute: InternalAgentSetupRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

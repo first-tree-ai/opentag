@@ -200,7 +200,9 @@ describe("OpenTag Web App Shell", () => {
       .getByRole("region", { name: "Agent status" })
       .querySelector('[data-ui="agent-status-message-channel"]') as HTMLElement;
     expect(within(messagingRow).queryByText("Messages cannot be delivered to this Agent right now.")).toBeNull();
-    expect(within(messagingRow).getByRole("link", { name: "Fix messaging" })).toBeTruthy();
+    expect(within(messagingRow).getByRole("link", { name: "Continue setup" }).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}`,
+    );
     expect(screen.getByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
@@ -296,41 +298,48 @@ describe("OpenTag Web App Shell", () => {
          * falls through to the Provider sentence and reports a Computer that does not exist.
          * Its exit differs too -- there is nothing here to view.
          */
-        exit: "Connect a Computer",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "No Computer",
         options: { agentUnbound: true },
       },
       {
         exit: "View computer",
+        href: `/agents/${agentId}/settings/computer`,
         label: "Status unavailable",
         options: { computerEvidenceFails: true },
       },
       {
         exit: "Open computer setup",
+        href: `/agents/${agentId}/settings/computer`,
         label: "Offline",
         options: { computerStatus: () => "offline" as const },
       },
       {
-        exit: undefined,
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Checking Codex",
         options: { computerProviderReadiness: readiness("checking") },
       },
       {
-        exit: "Set up Codex",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Codex not installed",
         options: { computerProviderReadiness: readiness("install") },
       },
       {
-        exit: "Sign in to Codex",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Codex sign-in required",
         options: { computerProviderReadiness: readiness("sign-in") },
       },
       {
-        exit: "Troubleshoot Codex",
+        exit: "Continue setup",
+        href: `/agents/setup?agentId=${agentId}`,
         label: "Codex unavailable",
         options: { computerProviderReadiness: readiness("unavailable") },
       },
-      { exit: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
+      { exit: undefined, href: undefined, label: "Online", options: { computerProviderReadiness: readiness("ready") } },
     ];
     for (const state of states) {
       installApi({ bound: true, ...state.options });
@@ -348,9 +357,7 @@ describe("OpenTag Web App Shell", () => {
         expect(within(row).getByText("Ada's Mac · macOS · Codex")).toBeTruthy();
       }
       if (state.exit) {
-        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(
-          `/agents/${agentId}/settings/computer`,
-        );
+        expect(within(row).getByRole("link", { name: state.exit }).getAttribute("href")).toBe(state.href);
       } else {
         expect(within(row).queryByRole("link")).toBeNull();
       }

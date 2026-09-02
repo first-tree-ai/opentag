@@ -3,6 +3,7 @@ import { constants, realpathSync, type Stats } from "node:fs";
 import { chmod, link, lstat, open, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import semver from "semver";
+import { createLogger } from "../../observability/logger.js";
 import {
   assertWithin,
   RuntimeStorageError,
@@ -19,6 +20,7 @@ export const MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES = 4096;
 const HOME_NAMESPACE_PATTERN = /^h-[0-9a-f]{40}$/;
 const SESSION_KEY_PATTERN = /^s-[0-9a-f]{40}$/;
 const FINGERPRINT_PATTERN = /^v1:[0-9a-f]{64}$/;
+const logger = createLogger("runtime-provider-cli-turn-plan");
 
 const SHARED_PLAN_KEYS = [
   "schemaVersion",
@@ -110,7 +112,11 @@ export function deriveProviderCliHomeNamespace(home: string): string {
   let canonical: string;
   try {
     canonical = realpathSync(resolve(home));
-  } catch {
+  } catch (error) {
+    logger.debug(
+      { code: "home_canonicalization_failed", error: String(error) },
+      "Provider CLI Turn Home canonicalization failed",
+    );
     throw new ProviderCliTurnPlanError("invalid_identity", "The OpenTag Home cannot be canonicalized");
   }
   return irreversibleKey("home", canonical);
@@ -345,6 +351,10 @@ export async function readProviderCliTurnPlan(path: string): Promise<ProviderCli
     return parseProviderCliTurnPlan(JSON.parse(content));
   } catch (error) {
     if (error instanceof ProviderCliTurnPlanError) throw error;
+    logger.debug(
+      { code: "plan_json_parse_failed", error: String(error) },
+      "Provider CLI Turn plan JSON parsing failed",
+    );
     throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan contains invalid JSON");
   }
 }
@@ -367,6 +377,7 @@ async function readBoundedPrivatePlanFile(path: string): Promise<string | undefi
     if ((error as NodeJS.ErrnoException).code === "ELOOP") {
       throw new ProviderCliTurnPlanError("unsafe", "Provider CLI Turn plan must not be a symlink");
     }
+    logger.debug({ code: "plan_read_failed", error: String(error) }, "Provider CLI Turn plan read failed");
     throw error;
   } finally {
     await handle?.close();
@@ -379,6 +390,7 @@ async function lstatPlanFile(path: string): Promise<Stats | undefined> {
     pathStatus = await lstat(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    logger.debug({ code: "plan_lstat_failed", error: String(error) }, "Provider CLI Turn plan stat failed");
     throw error;
   }
   return pathStatus;

@@ -11,6 +11,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
+    "@opentag/shared": "workspace:*",
     "@playwright/test": "1.62.1"
   }
 }

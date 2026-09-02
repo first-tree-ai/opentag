@@ -3,8 +3,13 @@ import { formatElapsedCompact, spaceScriptBoundary } from "../../i18n/format.js"
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import type { StatusTone } from "../../ui/design-system.js";
-import type { AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
-import { type AgentSettingsSectionLink, agentSettingsSectionLink } from "./agent-routes.js";
+import type { AgentAvailability, AgentDetailView, AgentListItem, AgentStatusSource } from "./agent-model.js";
+import {
+  type AgentSettingsSectionLink,
+  type AgentSetupLink,
+  agentSettingsSectionLink,
+  agentSetupLink,
+} from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 /**
@@ -332,10 +337,35 @@ export function agentRecoveryMessage(): string {
  * Computer, and a viewer repairing one needs to see the other's state unchanged while they do it.
  */
 export type AgentDependencyStatus = {
-  action?: { label: string; section: AgentSettingsSection };
+  action?: { label: string; link: AgentSettingsSectionLink | AgentSetupLink };
   label: string;
   tone: StatusTone;
 };
+
+function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
+  return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+}
+
+function settingsAction(
+  agentId: string,
+  label: string,
+  section: AgentSettingsSection,
+): NonNullable<AgentDependencyStatus["action"]> {
+  return { label, link: agentSettingsSectionLink(agentId, section) };
+}
+
+/**
+ * Only the dependency that currently owns the Agent-wide blocker may offer Setup. This keeps an
+ * unbound Agent from showing a second Setup exit on its downstream Messaging row. Existing
+ * configuration failures use their focused Settings section instead.
+ */
+function setupOrMaintenanceAction(
+  agent: AgentDetailView,
+  setupReason: NonNullable<AgentAvailability["reason"]>,
+  maintenance?: NonNullable<AgentDependencyStatus["action"]>,
+): AgentDependencyStatus["action"] {
+  return agent.availability.reason === setupReason ? continueSetupAction(agent.id) : maintenance;
+}
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
   const { computer, runtime } = agent.availability.dependencies;
@@ -355,55 +385,72 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
    */
   if (computer.state === "not_bound") {
     return {
-      action: { label: m.agents_computer_not_bound_action(), section: "computer" as const },
+      action: setupOrMaintenanceAction(
+        agent,
+        "computer_not_bound",
+        settingsAction(agent.id, m.agents_computer_not_bound_action(), "computer"),
+      ),
       label: m.agents_computer_not_bound_label(),
       tone: "warning",
     };
   }
   if (computer.state === "unconfirmed") {
     return {
-      action: { label: m.agents_status_action_view_computer(), section: "computer" },
+      action: settingsAction(agent.id, m.agents_status_action_view_computer(), "computer"),
       label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   if (computer.state === "action_required") {
     return {
-      action: { label: m.agents_status_action_open_computer_setup(), section: "computer" },
+      action: settingsAction(agent.id, m.agents_status_action_open_computer_setup(), "computer"),
       label: m.agents_status_computer_offline(),
       tone: "warning",
     };
   }
   if (!runtime.status) {
     return {
-      action: { label: m.agents_status_action_view_computer(), section: "computer" },
+      action: settingsAction(agent.id, m.agents_status_action_view_computer(), "computer"),
       label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   if (runtime.status === "checking") {
     return {
+      action: setupOrMaintenanceAction(agent, "runtime_unavailable"),
       label: m.agents_status_computer_checking_runtime({ providerName }),
       tone: "info",
     };
   }
   if (runtime.status === "install") {
     return {
-      action: { label: m.agents_status_action_set_up_runtime({ providerName }), section: "computer" },
+      action: setupOrMaintenanceAction(
+        agent,
+        "runtime_unavailable",
+        settingsAction(agent.id, m.agents_status_action_set_up_runtime({ providerName }), "computer"),
+      ),
       label: m.agents_status_computer_runtime_not_installed({ providerName }),
       tone: "warning",
     };
   }
   if (runtime.status === "sign-in") {
     return {
-      action: { label: m.agents_status_action_sign_in_to_runtime({ providerName }), section: "computer" },
+      action: setupOrMaintenanceAction(
+        agent,
+        "runtime_unavailable",
+        settingsAction(agent.id, m.agents_status_action_sign_in_to_runtime({ providerName }), "computer"),
+      ),
       label: m.agents_status_computer_runtime_sign_in_required({ providerName }),
       tone: "warning",
     };
   }
   if (runtime.status !== "ready") {
     return {
-      action: { label: m.agents_status_action_troubleshoot_runtime({ providerName }), section: "computer" },
+      action: setupOrMaintenanceAction(
+        agent,
+        "runtime_unavailable",
+        settingsAction(agent.id, m.agents_status_action_troubleshoot_runtime({ providerName }), "computer"),
+      ),
       label: m.agents_status_computer_runtime_unavailable({ providerName }),
       tone: "warning",
     };
@@ -414,7 +461,7 @@ export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStat
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
   if (agent.messaging.kind === "unconfirmed") {
     return {
-      action: { label: m.agents_status_action_view_channel(), section: "messaging" },
+      action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),
       label: m.agents_status_unknown(),
       tone: "neutral",
     };
@@ -422,7 +469,11 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
   const binding = agent.messaging.value;
   if (!binding) {
     return {
-      action: { label: m.agents_status_action_connect_channel(), section: "messaging" },
+      action: setupOrMaintenanceAction(
+        agent,
+        "im_not_connected",
+        settingsAction(agent.id, m.agents_status_action_connect_channel(), "messaging"),
+      ),
       label: m.agents_status_channel_not_connected(),
       tone: "neutral",
     };
@@ -430,7 +481,11 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
   const handoff = agent.availability.dependencies.handoff;
   if (binding.bindingState === "active" && handoff.state === "action_required") {
     return {
-      action: { label: m.agents_status_action_fix_messaging(), section: "messaging" },
+      action: setupOrMaintenanceAction(
+        agent,
+        "handoff_unavailable",
+        settingsAction(agent.id, m.agents_status_action_fix_messaging(), "messaging"),
+      ),
       label: m.agents_status_channel_cannot_receive_messages(),
       tone: "warning",
     };
@@ -441,16 +496,20 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
    */
   if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
     return {
-      action: { label: m.agents_status_action_view_channel(), section: "messaging" },
+      action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),
       label: m.agents_status_unknown(),
       tone: "neutral",
     };
   }
   const actions: Partial<Record<ImBindingSummary["bindingState"], AgentDependencyStatus["action"]>> = {
-    provisioning: { label: m.agents_status_action_view_setup(), section: "messaging" },
-    reauthorization_required: { label: m.agents_status_action_update_permissions(), section: "messaging" },
-    error: { label: m.agents_status_action_reconnect_channel(), section: "messaging" },
-    disabled: { label: m.agents_status_action_reconnect_channel(), section: "messaging" },
+    provisioning: setupOrMaintenanceAction(
+      agent,
+      "im_provisioning",
+      settingsAction(agent.id, m.agents_status_action_view_setup(), "messaging"),
+    ),
+    reauthorization_required: settingsAction(agent.id, m.agents_status_action_update_permissions(), "messaging"),
+    error: settingsAction(agent.id, m.agents_status_action_reconnect_channel(), "messaging"),
+    disabled: settingsAction(agent.id, m.agents_status_action_reconnect_channel(), "messaging"),
   };
   // Healthy channels stay quiet; Settings remains the place to change an already working binding.
   return {

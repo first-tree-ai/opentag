@@ -7,19 +7,19 @@ test.describe.configure({ mode: "serial" });
 
 let agentId: string;
 let taskId: string;
-const ONBOARDING_HEADING = "Where should your agent run?";
+const AGENT_SETUP_CREATE_HEADING = "Where should your agent run?";
 
-test("onboarding renders the v2 destination step and contains the Codex mark", async ({ page, e2eRuntime }) => {
+test("Agent Setup renders the destination step and contains the Codex mark", async ({ page, e2eRuntime }) => {
   await e2eRuntime.setSetupIncomplete();
-  await page.goto("/onboarding", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: ONBOARDING_HEADING, exact: true })).toBeVisible();
+  await page.goto("/agents/setup", { waitUntil: "networkidle" });
+  await expect(page.getByRole("heading", { name: AGENT_SETUP_CREATE_HEADING, exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Local computer / })).toBeVisible();
   const cloudComputer = page.getByRole("button", { name: /^Cloud computer Coming soon / });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
   await rm(join(repositoryRoot, "e2e/screenshots"), { recursive: true, force: true });
   await mkdir(join(repositoryRoot, "e2e/screenshots"), { recursive: true });
-  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/onboarding.png"), fullPage: true });
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/agent-setup.png"), fullPage: true });
 
   await page.getByRole("button", { name: /^Local computer / }).click();
   await page.getByRole("button", { name: "Continue" }).click();
@@ -55,21 +55,22 @@ test("onboarding renders the v2 destination step and contains the Codex mark", a
 
 test("Agent creation form creates an Agent visible in the list and detail page", async ({ page, e2eRuntime }) => {
   await e2eRuntime.setSetupComplete();
-  await page.goto("/agents/new", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Create Agent", exact: true })).toBeVisible();
-  const displayName = page.getByLabel("Display name");
-  await expect(displayName).toBeVisible();
-  await displayName.fill("E2E Agent");
+  await page.goto("/agents/setup?action=create", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /^Local computer / }).click();
+  await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("heading", { name: "Create your agent", exact: true })).toBeVisible();
+  const agentName = page.getByLabel("Agent name");
+  await agentName.fill("e2e-agent");
+  await page.getByRole("button", { name: /^Codex / }).click();
   const create = page.getByRole("button", { name: "Create Agent" });
   await expect(create).toBeEnabled();
   await create.click();
-  await expect(page.getByRole("heading", { name: "Agent created", exact: true })).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByRole("heading", { name: "Connect messaging", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Set up e2e-agent", exact: true })).toBeVisible({ timeout: 60_000 });
 
   const listResponse = await page.request.get("/api/v1/agents");
   expect(listResponse.ok()).toBeTruthy();
   const list = (await listResponse.json()) as { agents: Array<{ id: string; displayName: string }> };
-  const created = list.agents.find((agent) => agent.displayName === "E2E Agent");
+  const created = list.agents.find((agent) => agent.displayName === "e2e-agent");
   expect(created).toBeDefined();
   agentId = created?.id ?? "";
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
@@ -77,7 +78,7 @@ test("Agent creation form creates an Agent visible in the list and detail page",
   taskId = await e2eRuntime.seedTask(agentId);
 
   await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "E2E Agent" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "e2e-agent" })).toBeVisible();
 });
 
 test("sign-in rejects bad credentials and accepts the configured admin", async ({ page, browser }) => {
@@ -106,7 +107,7 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   await page.goto(`/agents/${agentId}/settings/identity`, { waitUntil: "networkidle" });
   const input = page.getByLabel("Display name");
-  await expect(input).toHaveValue("E2E Agent");
+  await expect(input).toHaveValue("e2e-agent");
   await input.fill("E2E Agent Updated");
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByRole("status")).toContainText("Name saved.");
@@ -271,7 +272,7 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     { file: "login", route: "/login", heading: "Welcome back" },
     { file: "home", route: "/", heading: "Agents" },
     { file: "agents", route: "/agents", heading: "Agents" },
-    { file: "agents-new", route: "/agents/new", heading: "Create Agent" },
+    { file: "agents-setup-create", route: "/agents/setup?action=create", heading: AGENT_SETUP_CREATE_HEADING },
     { file: "agents-computers", route: "/agents/computers", heading: "Computers" },
     { file: "agents-agentId", route: `/agents/${agentId}`, heading: "E2E Agent Updated" },
     { file: "agents-agentId-usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
@@ -287,14 +288,14 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
     { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
-    { file: "internal-onboarding-v2", route: "/internal/onboarding-v2", heading: ONBOARDING_HEADING },
+    { file: "internal-agent-setup", route: "/internal/agent-setup", heading: "Set up Reviewer" },
   ];
   const entries: Array<{ file: string; route: string; heading: string }> = [
-    { file: "onboarding", route: "/onboarding", heading: ONBOARDING_HEADING },
+    { file: "agent-setup", route: "/agents/setup", heading: AGENT_SETUP_CREATE_HEADING },
   ];
-  // Onboarding v2 resumes an existing Agent even when setup is marked incomplete. The initial-step
+  // Agent Setup resumes an existing Agent even when admission is incomplete. The initial-step
   // screenshot is therefore captured by the first test, before this serial suite creates an Agent.
-  await access(join(screenshots, "onboarding.png"));
+  await access(join(screenshots, "agent-setup.png"));
 
   for (const item of pages) {
     if (item.route === "/login") {

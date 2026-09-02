@@ -20,6 +20,7 @@ import { wasChannelDefaultHomeApplied } from "../channel/home-source.js";
 import { createDaemonServiceManager } from "../daemon/service/index.js";
 import { canonicalizeServiceHome } from "../daemon/service/shared.js";
 import type { DaemonServiceInfo } from "../daemon/service/types.js";
+import { providerCliRepairCommand } from "../provider-cli/shared.js";
 
 export type DoctorCheckStatus = "pass" | "fail" | "unknown" | "info" | "skipped";
 export type DoctorCheckScope =
@@ -40,6 +41,13 @@ export interface DoctorCheck {
   observedFrom?: string;
   path?: string;
   remediation?: string;
+  command?: string;
+}
+
+export interface DoctorNextAction {
+  checkCode: string;
+  command: string;
+  reason: string;
 }
 
 export interface DoctorTarget {
@@ -55,6 +63,8 @@ export interface DoctorTarget {
 export interface DoctorReport {
   target: DoctorTarget;
   checks: DoctorCheck[];
+  nextActions: DoctorNextAction[];
+  providerCliSetup: "ready" | "needs_attention" | "unknown";
   notEvaluated: readonly string[];
   exitCode: 0 | 1;
 }
@@ -166,7 +176,18 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
   )
     ? 1
     : 0;
-  const report: DoctorReport = { target, checks, notEvaluated: DOCTOR_NOT_EVALUATED, exitCode };
+  const nextActions = checks.flatMap((check) =>
+    check.command ? [{ checkCode: check.code, command: check.command, reason: check.code }] : [],
+  );
+  const providerCliSetup = providerCliSetupStatus(checks);
+  const report: DoctorReport = {
+    target,
+    checks,
+    nextActions,
+    providerCliSetup,
+    notEvaluated: DOCTOR_NOT_EVALUATED,
+    exitCode,
+  };
   return { ...report, message: renderDoctorReport(report) };
 }
 
@@ -196,10 +217,16 @@ export function renderDoctorReport(report: DoctorReport): string {
   const blockingFailures = report.checks.filter(
     (check) => check.blocking && (check.status === "fail" || check.status === "unknown"),
   ).length;
-  const summary =
+  const baselineSummary =
     blockingFailures === 0
       ? "Baseline checks passed for this OpenTag Home."
       : `${blockingFailures} blocking baseline check(s) failed for this OpenTag Home.`;
+  const providerSummary =
+    report.providerCliSetup === "ready"
+      ? "Lark and Slack CLIs are ready."
+      : report.providerCliSetup === "unknown"
+        ? "Lark and Slack CLI readiness could not be fully inspected."
+        : "At least one messaging CLI still needs attention.";
   const lines = [
     "OpenTag Doctor",
     "",
@@ -218,11 +245,18 @@ export function renderDoctorReport(report: DoctorReport): string {
     for (const check of report.checks.filter((candidate) => candidate.scope === scope)) {
       lines.push(`  ${statusMarker(check.status)} ${check.label}: ${check.detail}`);
       if (check.remediation) lines.push(`    Next: ${check.remediation}`);
+      if (check.command) lines.push(`    Command: ${check.command}`);
     }
   }
-  lines.push("", "Summary", `  ${summary}`, "", "Not evaluated");
+  lines.push("", "Summary", `  ${baselineSummary}`, `  ${providerSummary}`, "", "Not evaluated");
   for (const item of report.notEvaluated) lines.push(`  - ${item}`);
   return lines.join("\n");
+}
+
+function providerCliSetupStatus(checks: readonly DoctorCheck[]): DoctorReport["providerCliSetup"] {
+  const providerChecks = checks.filter((check) => check.scope === "provider-cli");
+  if (providerChecks.length === 0 || providerChecks.some((check) => check.status === "unknown")) return "unknown";
+  return providerChecks.every((check) => check.status === "pass") ? "ready" : "needs_attention";
 }
 
 function targetCheck(target: DoctorTarget): DoctorCheck {
@@ -282,7 +316,7 @@ function localCheck(code: string, label: string, status: "pass" | "fail" | "unkn
     detail,
     ...(status === "fail"
       ? {
-          remediation: `Review this OpenTag Home and run '${channelConfig.binName} computer connect' with a valid connect code`,
+          remediation: `Review this OpenTag Home and run '${channelConfig.binName} connect' with a valid connect code`,
         }
       : {}),
   };
@@ -491,6 +525,7 @@ function cliInstallationCheck(
       label: entry.displayName,
       detail: truncate(entry.detail ?? "installation could not be determined"),
       observedFrom,
+      ...(scope === "provider-cli" ? { command: providerCliRepairCommand(providerFromCheckCode(code)) } : {}),
     };
   }
   return {
@@ -501,7 +536,24 @@ function cliInstallationCheck(
     label: entry.displayName,
     detail: "not installed",
     observedFrom,
+    ...(scope === "provider-cli"
+      ? {
+          remediation: "Prepare this CLI before choosing the messaging app, or let an Agent run the command",
+          command: providerCliRepairCommand(providerFromCheckCode(code)),
+        }
+      : {}),
   };
+}
+
+function providerFromCheckCode(code: string): "feishu" | "slack" {
+  switch (code) {
+    case "provider-cli.feishu.installation":
+      return "feishu";
+    case "provider-cli.slack.installation":
+      return "slack";
+    default:
+      throw new Error(`Unsupported Provider CLI check code: ${code}`);
+  }
 }
 
 function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string, detail?: string): DoctorCheck {

@@ -12,7 +12,7 @@ Computer connection、Agent、runtime readiness 和 IM binding 会立即推进�
 
 两种模式在 production 都不可用，也都永远不会触及已认证 Account 之外的任何 Account。
 
-只做界面层面的设计评审——文案、层级、状态表达——请用 `/internal/onboarding-v2`：它用 mock 后端渲染真实的 onboarding 页面，
+只做界面层面的设计评审——文案、层级、状态表达——请用 `/internal/agent-setup`：它通过 #437 内存 Adapter 渲染真实的 Agent Setup 页面，
 既不需要 Account 也不需要 reset。
 
 ## 在哪里点它
@@ -75,7 +75,7 @@ await fetch("/api/v1/me/setup/reset", {
 });
 ```
 
-返回 `204` 表示该 Account 的 setup 完成标记已被清除；刷新页面就会自动进入 `/onboarding`。
+返回 `204` 表示该 Account 的 setup 完成标记已被清除；刷新页面就会自动进入 `/agents/setup`。
 
 ### `mode: "reboard"`
 

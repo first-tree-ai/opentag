@@ -26,9 +26,10 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });
-    const createAgent = screen.getByRole("button", { name: "New Agent" });
+    const createAgent = screen.getByRole("link", { name: "New Agent" });
     expect(createAgent.closest('[data-ui="page-header"]')).toBeTruthy();
     expect(createAgent.closest('[data-ui="agents-page-action"]')).toBeTruthy();
+    expect(createAgent.getAttribute("href")).toBe("/agents/setup?action=create");
     const agentRow = agentLink.closest('[data-ui="agent-row"]');
     expect(agentRow).toBeTruthy();
     expect(agentRow?.parentElement?.classList.contains("@container/agent-roster")).toBe(true);
@@ -95,6 +96,27 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(backToAgents);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
+  });
+
+  it("surfaces and removes an unscoped Slack callback failure on the Agents landing", async () => {
+    installApi();
+    window.history.replaceState({}, "", "/agents?slack_oauth_error=SLACK_UPSTREAM_UNAVAILABLE");
+    render(<App />);
+
+    expect(await screen.findByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+    await waitFor(() => expect(window.location.search).toBe(""));
+    expect(screen.getByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+  });
+
+  it("carries an unscoped Slack callback failure through the incomplete-Account gate", async () => {
+    installApi({ setupCompletedAt: null });
+    window.history.replaceState({}, "", "/agents?slack_oauth_error=SLACK_UPSTREAM_UNAVAILABLE");
+    render(<App />);
+
+    expect(await screen.findByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
+    await waitFor(() => expect(window.location.pathname).toBe("/agents/setup"));
+    await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));
+    expect(screen.getByText("Slack is unavailable right now. Check the connection and try again.")).toBeTruthy();
   });
 
   it("shows each unreleased Agent page only when Internal Tools enables it", async () => {

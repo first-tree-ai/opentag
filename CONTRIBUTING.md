@@ -41,3 +41,47 @@ issues through the private process in [SECURITY.md](./SECURITY.md).
 
 Maintainers must use the repository release workflows described in [docs/releasing.md](./docs/releasing.md). Local npm
 publishing, production tags outside the protected release process, and token-based fallback publishing are not accepted.
+
+## Code ownership
+
+[.github/CODEOWNERS](./.github/CODEOWNERS) assigns owners per path. An ownership-gate required status check evaluates
+each changed file against it and reports one red-or-green signal on the pull request. The check never approves on
+anyone's behalf; when it is red, its summary names which files still need whose approval. Every rule carries a mode
+declared in [.github/ownership-modes.json](./.github/ownership-modes.json), and a rule with no mode entry is treated as
+`gate`, so forgetting to declare a mode fails safe.
+
+- `gate`: mutual review. An approval is required from an owner other than the author; there is no author
+  self-exemption. This is the default, so any path not explicitly carved out is gated, including any directory added in
+  the future.
+- `territory`: if the author is one of the rule owners they may merge on green CI with no approval; any other author
+  needs an approval from one of those owners.
+- `exempt`: the rule deliberately lists no owners. Matching files require no approval and do not auto-request a
+  reviewer.
+
+`apps/web` is exempt. Web changes from anyone with write access merge on green CI with no approval and no automatic
+reviewer request. That is roughly a quarter of the tracked files but the majority of the change volume — 173 of the
+repository's first 290 commits touched `apps/web` — so in day-to-day terms most of what members write here carries no
+human-review requirement. It is a deliberate trade for iteration speed, and CI plus after-the-fact review are what stand
+behind it.
+
+Markdown outside `apps/web` is `territory` with a wider owner pool of yuezengwu, bestony, Gandy2025, and liuchao-001,
+except for the root policy and agent-instruction files: `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, and
+the Chinese mirrors of the last two. Those are pulled back into the gate, because agent-instruction files change what
+agents in this repository do and are behavior rather than documentation, and `CONTRIBUTING.md` is where this policy
+itself is written down. Three routine chore paths are `territory`: `.editorconfig`, `.gitignore`, and `LICENSE`. The
+dependency manifests are `exempt`: `package.json` at any depth and `pnpm-lock.yaml` name no owners, so a dependabot bump
+no longer auto-requests a reviewer. The auto-request is GitHub's and reads only `.github/CODEOWNERS`, which cannot tell
+one author from another, so the same exemption lets a human-authored manifest change merge without approval; that is the
+price of the behaviour and the reason the exemption stops at the manifests. `packages/server/drizzle/` carries a
+defensive `gate` pin so irreversible migrations stay mutually reviewed. Everything else is gated: the packages,
+`apps/cli`, `.github`, `scripts`, `e2e`, the rest of the root build and quality-gate configuration, and any directory
+added in the future.
+
+Two rules apply on top of the per-file result. When the pull request author has no write access to the repository, as
+an outside contributor, from a fork, or as a bot including dependabot, the pull request additionally needs an approval
+from at least one owner named anywhere in `.github/CODEOWNERS`, whatever files it touches; the `apps/web` exemption
+applies only to people with write access. Approvals are also not dismissed on a new push, so an approval obtained before
+a later push still counts, and the ownership gate does not close that gap either. Do not assume the check covers it.
+
+Relaxing the policy requires a reviewed change to `.github/CODEOWNERS`, which is itself gated. Ownership is derived from
+change history and recalculated monthly.

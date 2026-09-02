@@ -1,0 +1,46 @@
+name: Ownership Gate Relay
+
+# A deliberately powerless tripwire. Its only job is to exist so that submitting,
+# editing or dismissing a review produces a completed workflow run, which the
+# privileged `Ownership Gate` workflow observes through `workflow_run` and uses
+# to re-evaluate the gate without a new push.
+#
+# Assume the body of this file is hostile. `pull_request_review` is one of the
+# few events whose workflow file is loaded from the pull request's own merge ref
+# rather than from the default branch, so a pull request can rewrite, rename or
+# delete everything below. It therefore holds no token scopes, no secrets, no
+# checkout and no decision, and nothing downstream trusts what it produces: the
+# privileged workflow reads only `workflow_run.head_sha`, which GitHub sets.
+#
+# Deleting or renaming it does NOT simply fail closed, which is worth stating
+# because it reads as though it should. It stops the refresh, and the last
+# verdict survives -- and that verdict is green whenever the pull request had
+# already collected its approvals, so a dismissal afterwards would go unnoticed.
+# The reconciliation sweep in `Ownership Gate` is what actually closes that: it
+# re-judges every open pull request from the default branch on a schedule,
+# whether or not this file still exists.
+#
+# What this does NOT defend against, stated plainly because the empty
+# `permissions` block above reads like it does: on a pull request from a fork,
+# GitHub forces this run's token read-only, so a rewritten body can post nothing.
+# On a branch in THIS repository it does not, and a collaborator can already
+# reach the same place without touching this file at all -- pushing any branch
+# with a workflow that declares `statuses: write` mints a token that can write
+# the `ownership-gate` context. A commit status is not an unforgeable signal
+# against someone who already has push access; the gate constrains mistakes and
+# ordinary work, not a collaborator who sets out to defeat it. Closing that gap
+# means posting the status from a dedicated GitHub App and pinning the ruleset's
+# required check to that app id, so a GITHUB_TOKEN cannot satisfy it.
+on:
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+
+permissions: {}
+
+jobs:
+  relay:
+    name: Relay review activity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record the review event
+        run: echo "A review changed; the Ownership Gate workflow re-evaluates this pull request."

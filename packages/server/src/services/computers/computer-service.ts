@@ -1,7 +1,7 @@
 import type { ComputerRegisterFrame, ListAccountComputersResponse, MeResponse } from "@opentag/shared";
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computerCredentials, computers } from "../../db/schema/index.js";
+import { agents, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
@@ -32,6 +32,16 @@ export class ComputerService {
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#providerReadiness = options.providerReadiness;
+  }
+
+  async accountInFirstSetup(computerId: string): Promise<boolean> {
+    const [row] = await this.#database
+      .select({ setupCompletedAt: users.setupCompletedAt })
+      .from(computers)
+      .innerJoin(users, eq(users.id, computers.ownerAccountId))
+      .where(eq(computers.id, computerId))
+      .limit(1);
+    return row !== undefined && row.setupCompletedAt === null;
   }
 
   async listAccountComputers(

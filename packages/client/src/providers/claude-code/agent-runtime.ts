@@ -32,6 +32,7 @@ import {
   assertSystemPrompt,
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
+import { createLogger } from "../../observability/logger.js";
 import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
@@ -43,6 +44,7 @@ import {
 const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
 const CLAUDE_CODE_PROVIDER_ID = "claude-code";
+const logger = createLogger("provider-claude-code-runtime");
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: CLAUDE_CODE_PROVIDER_ID,
@@ -183,6 +185,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         hostedToolBridge = await this.#startHostedToolBridge(this.#hostedTools, request.runId, context.signal);
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
+        logger.debug({ code: "provider_start_failed", error: String(error) }, "Claude Code provider startup failed");
         throw new AgentProviderError(
           "provider_start_failed",
           error instanceof Error ? error.message : "Claude Code failed before accepting input",
@@ -197,6 +200,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       return claudeCodeRunResult(this.#terminal);
     } catch (error) {
       if (context.signal.aborted) throw error;
+      logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
       this.closeForProviderFailure();
       if (this.#providerFailure) throw this.#providerFailure;
       if (error instanceof AgentProviderError) throw error;
@@ -217,7 +221,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       );
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
-      await process?.close().catch(() => undefined);
+      await process?.close().catch((error: unknown) => {
+        logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
+      });
       await hostedToolBridge?.close();
       this.#process = undefined;
       this.#context = undefined;
@@ -276,6 +282,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#handleMessage(message);
     });
     this.#eventTail = next.catch((error: unknown) => {
+      logger.debug({ code: "event_processing_failed", error: String(error) }, "Claude Code event processing failed");
       this.#failProvider(error instanceof Error ? error : protocolError("Claude Code event processing failed"));
     });
   }
@@ -286,7 +293,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       parseTerminal(message, this.#sessionId);
       this.#context.claimTerminal();
       this.#terminalClaimed = true;
-    } catch {
+    } catch (error) {
+      logger.debug(
+        { code: "terminal_message_invalid", error: String(error) },
+        "Claude Code terminal message was rejected",
+      );
       // The serial event queue preserves the authoritative fail-closed error path.
     }
   }
@@ -568,9 +579,15 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   #failProvider(error: Error): void {
+    logger.debug({ code: "provider_failure", error: error.message }, "Claude Code provider failure recorded");
     this.#providerFailure = error;
     /* v8 ignore next -- process teardown during a provider failure must not raise a second fault. */
-    void this.#process?.close().catch(() => undefined);
+    void this.#process?.close().catch((error: unknown) => {
+      logger.debug(
+        { code: "provider_close_failed", error: String(error) },
+        "Claude Code provider close after failure failed",
+      );
+    });
     this.closeForProviderFailure();
   }
 }
@@ -616,6 +633,10 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     try {
       validateConfiguration(request.configuration);
     } catch (error) {
+      logger.debug(
+        { code: "probe_configuration_invalid", error: String(error) },
+        "Claude Code probe configuration was rejected",
+      );
       issues.push({ code: "configuration_invalid", message: (error as Error).message });
     }
     let version: string | undefined;
@@ -630,6 +651,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       }
     } catch (error) {
       if (request.signal?.aborted) throw error;
+      logger.debug({ code: "probe_execution_failed", error: String(error) }, "Claude Code probe execution failed");
       const issue = classifiedProviderProbeIssue(error, "Claude Code CLI could not be executed");
       if (!issue) throw error;
       issues.push(issue);
@@ -671,6 +693,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         systemPrompt: request.systemPrompt,
       });
     } catch (error) {
+      logger.debug({ code: "runtime_create_failed", error: String(error) }, "Claude Code runtime creation failed");
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Claude Code ${mode} failed`, {
         cause: error,
       });
@@ -766,12 +789,20 @@ async function probeClaudeCodeCredential(
     output = (await execFileAsync(command, ["auth", "status", "--json"], execution)).stdout;
   } catch (error) {
     if (signal?.aborted) throw error;
+    logger.debug(
+      { code: "credential_status_failed", error: String(error) },
+      "Claude Code credential status command failed",
+    );
     output = (error as Error & { readonly stdout: string }).stdout;
   }
   if (!output) return false;
   try {
     return record(JSON.parse(output))?.loggedIn === true;
-  } catch {
+  } catch (error) {
+    logger.debug(
+      { code: "credential_status_invalid_json", error: String(error) },
+      "Claude Code credential status output was invalid",
+    );
     return false;
   }
 }
@@ -940,6 +971,7 @@ function parseClaudeCodeBinding(binding: AgentRuntimeBinding): string {
   try {
     return requireUuid(payload.sessionId, "Claude Code binding sessionId");
   } catch (error) {
+    logger.debug({ code: "binding_invalid", error: String(error) }, "Claude Code binding was rejected");
     throw new AgentRuntimeError("binding_incompatible", (error as Error).message, { cause: error });
   }
 }

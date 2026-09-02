@@ -57,16 +57,14 @@ export async function executeDaemonServiceCommand(
     (options.writeOutput ?? ((message) => process.stdout.write(`${message}\n`)))(output);
     return daemonServiceExitCode(action, info.state);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (options.json) {
-      const commandError = commandPolicy.toCommandError(error, "request");
-      return commandPolicy.presentCommand(
-        { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
-        { json: true, stderr: options.writeError },
-      );
-    }
-    (options.writeError ?? ((value) => process.stderr.write(`${value}\n`)))(commandPolicy.redactSecrets(message));
-    return 1;
+    const commandError = commandPolicy.toCommandError(error, "request");
+    return commandPolicy.presentCommand(
+      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
+      {
+        json: options.json === true,
+        ...(options.writeError ? { stderr: options.writeError } : {}),
+      },
+    );
   }
 }
 

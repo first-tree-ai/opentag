@@ -1,5 +1,5 @@
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { type ReactNode, useSyncExternalStore } from "react";
+import { type CSSProperties, type ReactNode, useSyncExternalStore } from "react";
 import { initials } from "../../i18n/format.js";
 import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
@@ -26,6 +26,7 @@ import { AgentReturnEntry } from "./agent-return-entry.js";
 import { ShellMain } from "./shell-main.js";
 
 const AGENT_SIDEBAR_MOBILE_QUERY = "(max-width: 767px)";
+const AGENT_SIDEBAR_WIDTH = "15rem";
 
 export default function AgentShell({
   agentId,
@@ -41,6 +42,7 @@ export default function AgentShell({
       className="h-full min-h-0 overflow-hidden bg-kumo-canvas"
       collapsible={isMobileAgentShell ? "icon" : "none"}
       defaultOpen
+      style={{ "--sidebar-width": AGENT_SIDEBAR_WIDTH } as CSSProperties}
       variant="floating"
     >
       <AgentShellContent agentId={agentId} renderAccountMenu={renderAccountMenu} />
@@ -89,28 +91,32 @@ function AgentShellContent({
     void navigate(agentDetailLink(targetAgentId));
   }
 
+  function openAllAgents() {
+    closeMobile();
+    void navigate({ to: "/agents" });
+  }
+
+  function openNewAgent() {
+    closeMobile();
+    void navigate({ search: { action: "create" }, to: "/agents/setup" });
+  }
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas" data-ui="agent-shell">
       <Sidebar
         aria-label={m.shell_agent_navigation()}
-        className="bg-kumo-canvas md:m-2 md:mr-0 md:h-[calc(100%-1rem)] md:rounded-lg md:shadow-xs"
-        contentClassName="bg-kumo-canvas md:rounded-lg"
+        className="bg-kumo-base md:m-3 md:mr-0 md:h-[calc(100%-1.5rem)] md:rounded-xl md:shadow-xs"
+        contentClassName="bg-kumo-base md:rounded-xl"
         fullScreenOnMobile
       >
-        <Sidebar.Header className="border-b-0">
+        <Sidebar.Header className="h-16 border-b-0 px-3">
           <Sidebar.Menu className="min-w-0 flex-1">
             <Sidebar.MenuItem>
               <AgentSwitcher
                 agent={agent}
                 agents={agents}
-                onAllAgents={() => {
-                  closeMobile();
-                  void navigate({ to: "/agents" });
-                }}
-                onNewAgent={() => {
-                  closeMobile();
-                  void navigate({ to: "/agents/new" });
-                }}
+                onAllAgents={openAllAgents}
+                onNewAgent={openNewAgent}
                 onOpenAgent={openAgent}
               />
             </Sidebar.MenuItem>
@@ -119,8 +125,8 @@ function AgentShellContent({
         </Sidebar.Header>
         <Sidebar.Content className="md:[&_[data-sidebar=viewport]]:pt-0">
           <nav aria-label={m.shell_agent()}>
-            <Sidebar.Group>
-              <Sidebar.Menu>
+            <Sidebar.Group className="pt-1">
+              <Sidebar.Menu className="gap-1">
                 <AgentNavItem
                   active={isAgentSectionActive(pathname, agentId, "home")}
                   icon="home"
@@ -174,7 +180,7 @@ function AgentShellContent({
             </Sidebar.Group>
           </nav>
         </Sidebar.Content>
-        <Sidebar.Footer>
+        <Sidebar.Footer className="h-14 px-3">
           <Sidebar.Menu className="min-w-0 flex-1">
             <Sidebar.MenuItem>{renderAccountMenu(closeMobile)}</Sidebar.MenuItem>
           </Sidebar.Menu>
@@ -236,6 +242,7 @@ function AgentSwitcher({
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
+            className="min-h-11 rounded-lg px-2 hover:bg-kumo-fill-hover"
             icon={
               <span
                 className="grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold group-data-[state=collapsed]/sidebar:size-4 group-data-[state=collapsed]/sidebar:text-xs"
@@ -247,9 +254,9 @@ function AgentSwitcher({
             tooltip={agent?.displayName ?? m.shell_agent()}
           >
             <span className="min-w-0 flex-1 text-left">
-              <strong className="block truncate">{agent?.displayName ?? m.shell_agent()}</strong>
+              <strong className="block truncate text-sm font-semibold">{agent?.displayName ?? m.shell_agent()}</strong>
             </span>
-            <Icon name="chevron-down" />
+            <Icon className="size-3.5 text-kumo-subtle" name="chevron-down" />
           </Sidebar.MenuButton>
         }
       />
@@ -303,15 +310,15 @@ function AgentNavItem({
     <Sidebar.MenuButton
       active={active}
       aria-current={active ? "page" : undefined}
-      className="data-[active]:bg-(--brand-soft)"
+      className="min-h-10 rounded-lg px-3 data-[active]:bg-(--brand-soft)"
       icon={
-        <span className="flex w-8 shrink-0 items-center justify-center" aria-hidden="true">
-          <Icon name={icon} />
+        <span className="grid size-7 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
+          <Icon className="size-4.5" name={icon} />
         </span>
       }
       onClick={onClick}
     >
-      {label}
+      <span className={active ? "font-semibold text-kumo-strong" : undefined}>{label}</span>
     </Sidebar.MenuButton>
   );
 }

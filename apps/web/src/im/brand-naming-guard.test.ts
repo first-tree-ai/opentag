@@ -96,10 +96,6 @@ const ALLOWED_TEXT = new Map<string, { readonly reason: string; readonly text: R
       ]),
     },
   ],
-  [
-    "onboarding-v2/mock-backend.ts",
-    { reason: "demo fixture for the Slack return step", text: new Set(["Return from Slack"]) },
-  ],
 ]);
 
 interface Finding {

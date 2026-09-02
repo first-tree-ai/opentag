@@ -20,6 +20,7 @@ export type ComputerConnectIntent =
     };
 
 export interface ComputerConnectProps {
+  readonly adapter?: ComputerConnectAdapter;
   readonly intent: ComputerConnectIntent;
   readonly onConnected?: (computer: AccountComputerSummary) => void;
 }
@@ -184,9 +185,9 @@ async function pollIssuedCommand({
  * Callers choose only create versus a repair target and decide what to do after connection. The
  * module owns every ordering rule inside that seam, including retiring stale issue and poll work.
  */
-export function ComputerConnect({ intent, onConnected }: ComputerConnectProps) {
+export function ComputerConnect({ adapter, intent, onConnected }: ComputerConnectProps) {
   return (
-    <ComputerConnectLifecycleRoot intent={intent} onConnected={onConnected}>
+    <ComputerConnectLifecycleRoot adapter={adapter} intent={intent} onConnected={onConnected}>
       {(lifecycle) => <ComputerConnectPresentation intent={intent} lifecycle={lifecycle} />}
     </ComputerConnectLifecycleRoot>
   );
@@ -200,6 +201,39 @@ const browserAdapter: ComputerConnectAdapter = {
   status: (connectCodeId) => browserApi.computerConnectCodeStatus(connectCodeId),
   computers: () => browserApi.computers(),
 };
+
+type ComputerConnectBrowserApi = Pick<
+  typeof browserApi,
+  "issueComputerConnectCode" | "computerConnectCodeStatus" | "computers"
+>;
+
+/**
+ * Issues every create or repair command for one explicit Agent.
+ *
+ * The Agent id is authority carried by the signed-in Account request and embedded into the opaque
+ * one-time code by the Server. Keeping it in the adapter means every reissue preserves the same
+ * target, including retries after expiry; the presentation cannot accidentally fall back to an
+ * untargeted command.
+ */
+export function createAgentTargetedComputerConnectAdapter(
+  agentId: string,
+  api: ComputerConnectBrowserApi = browserApi,
+): ComputerConnectAdapter {
+  return {
+    issue: (intent) =>
+      api.issueComputerConnectCode(
+        intent.mode === "repair"
+          ? {
+              mode: "repair",
+              targetAgentId: agentId,
+              targetComputerId: intent.target.computerId,
+            }
+          : { mode: "create", targetAgentId: agentId },
+      ),
+    status: (connectCodeId) => api.computerConnectCodeStatus(connectCodeId),
+    computers: () => api.computers(),
+  };
+}
 
 /**
  * Render seam for pages that keep their own layout while sharing the complete connection lifecycle.
@@ -370,6 +404,12 @@ function ComputerConnectPresentation({
     : m.computer_connect_create_command_comment();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
+      <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">
+        <p className="text-sm text-kumo-subtle m-0">{m.computer_connect_command_intro()}</p>
+        <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
+          {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+        </div>
+      </div>
       {state.kind === "issuing" ? (
         <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">
           <CommandBlock
@@ -443,7 +483,6 @@ function AttemptStatus({ state, targetName }: { readonly state: ComputerConnectS
       <div aria-live="polite" role="status">
         {content}
       </div>
-      {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
     </div>
   );
 }

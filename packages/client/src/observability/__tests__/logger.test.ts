@@ -1,7 +1,15 @@
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const stderrWrites = vi.hoisted(() => ({ write: vi.fn() }));
+
+vi.mock("../rotating-file-stream.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../rotating-file-stream.js")>();
+  return { ...original, writeStringToFileDescriptor: stderrWrites.write };
+});
+
 import {
   configureClientLoggerContext,
   configureClientLoggerForService,
@@ -14,6 +22,7 @@ const originalLevel = process.env.OPENTAG_LOG_LEVEL;
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  stderrWrites.write.mockReset();
   resetClientLoggerForTests();
   if (originalLevel === undefined) delete process.env.OPENTAG_LOG_LEVEL;
   else process.env.OPENTAG_LOG_LEVEL = originalLevel;
@@ -21,6 +30,63 @@ afterEach(async () => {
 });
 
 describe("Client logger", () => {
+  it("does not create the service log directory until the first write", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "nested", "logs");
+    process.env.OPENTAG_LOG_LEVEL = "info";
+
+    configureClientLoggerForService(directory);
+    expect(await pathExists(directory)).toBe(false);
+    const logger = createLogger("lazy");
+    expect(await pathExists(directory)).toBe(false);
+
+    logger.info({}, "First diagnostic");
+
+    expect(await pathExists(directory)).toBe(true);
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain("First diagnostic");
+  });
+
+  it("re-resolves a module logger after service configuration", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "debug";
+    vi.resetModules();
+
+    const { AgentRunEventValidator } = await import("../../agent-runtime/event-validator.js");
+    const configuredLogger = await import("../logger.js");
+    configuredLogger.configureClientLoggerForService(directory);
+
+    const event = new Proxy(
+      { type: "message_started", messageId: "message" },
+      {
+        get() {
+          throw "invalid provider object";
+        },
+      },
+    );
+    expect(() => new AgentRunEventValidator().accept(event as never)).toThrow();
+
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain(
+      "Provider event validation failed",
+    );
+    expect(stderrWrites.write).not.toHaveBeenCalled();
+    configuredLogger.resetClientLoggerForTests();
+  });
+
+  it("writes a terminal daemon failure to stderr and the file sink", async () => {
+    const directory = await temporaryDirectory();
+    process.env.OPENTAG_LOG_LEVEL = "info";
+    configureClientLoggerForService(directory);
+
+    createLogger("daemon", { destination: "dual" }).warn(
+      { category: "ownership" },
+      "Daemon is already running; inspect daemon status",
+    );
+
+    const message = "Daemon is already running; inspect daemon status";
+    await expect(readFile(join(directory, "client.log"), "utf8")).resolves.toContain(message);
+    expect(stderrWrites.write).toHaveBeenCalledWith(2, expect.stringContaining(message));
+  });
+
   it("redacts and caps the log message, not only the fields", async () => {
     const directory = await temporaryDirectory();
     process.env.OPENTAG_LOG_LEVEL = "info";
@@ -320,7 +386,7 @@ describe("Client logger", () => {
     const silentDirectory = await temporaryDirectory();
     configureClientLoggerForService(silentDirectory);
     createLogger("test").warn({}, "Hidden test diagnostic");
-    expect(await readFile(join(silentDirectory, "client.log"), "utf8")).toBe("");
+    expect(await pathExists(join(silentDirectory, "client.log"))).toBe(false);
 
     resetClientLoggerForTests();
     process.env.OPENTAG_LOG_LEVEL = "debug";
@@ -336,4 +402,13 @@ async function temporaryDirectory(): Promise<string> {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "opentag-logger-")));
   directories.push(directory);
   return directory;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

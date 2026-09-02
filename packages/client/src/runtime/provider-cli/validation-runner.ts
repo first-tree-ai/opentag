@@ -12,6 +12,7 @@ import {
   RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
   RUNTIME_PROVIDER_CLI_VALIDATION_TIMEOUT_MS,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../../storage/home-layout.js";
 import { findProviderCliCatalogEntry } from "./catalog.js";
@@ -26,6 +27,7 @@ import {
 } from "./validation-classify.js";
 
 const execFileAsync = promisify(execFile);
+const defaultValidationLogger = createLogger("provider-cli-validation");
 const PRIVATE_DIRS = ["home", "config", "tmp", "cache", "state", "runtime"] as const;
 
 export function deriveProviderCliValidationRequestKey(requestId: string): string {
@@ -53,6 +55,7 @@ export interface ProviderCliValidationRunnerOptions {
   readonly execFile?: ProviderCliValidationExecFile;
   readonly fetch?: typeof fetch;
   readonly home: string;
+  readonly logger?: ClientLogger;
   readonly now?: () => number;
   readonly verifyTarget?: (request: ProviderCliValidationRequest) => Promise<boolean>;
 }
@@ -82,6 +85,7 @@ export class ProviderCliValidationRunner {
   readonly #exchangeFeishuToken: NonNullable<ProviderCliValidationRunnerOptions["exchangeFeishuToken"]>;
   readonly #execFile: ProviderCliValidationExecFile;
   readonly #home: string;
+  readonly #logger: ClientLogger;
   readonly #now: () => number;
   readonly #root: string;
   readonly #verifyTarget: (request: ProviderCliValidationRequest) => Promise<boolean>;
@@ -97,6 +101,7 @@ export class ProviderCliValidationRunner {
     this.#verifyTarget = options.verifyTarget ?? verifyTargetFingerprint;
     const layout = resolveOpenTagHomeLayout(options.home);
     this.#home = layout.home;
+    this.#logger = options.logger ?? createLogger("provider-cli-validation");
     this.#root = join(layout.runtime, "provider-cli-validation");
     this.#startupCleanup = this.cleanupAll();
   }
@@ -130,6 +135,7 @@ export class ProviderCliValidationRunner {
       const classification = await this.#classifyRequest(request, env, workDir, signal);
       return validationResult(fence, classification);
     } catch (error) {
+      this.#logger.debug({ code: "validation_run_failed", error: String(error) }, "Provider CLI validation run failed");
       return validationFailureResult(fence, error, signal);
     } finally {
       try {
@@ -164,6 +170,7 @@ export class ProviderCliValidationRunner {
           classifySlackAuthTest(
             payload,
             request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
+            this.#logger,
           ),
         signal,
       );
@@ -200,7 +207,7 @@ export class ProviderCliValidationRunner {
       ["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson"],
       env,
       workDir,
-      (payload) => classifyLarkAuthStatus(payload, expectedIdentity),
+      (payload) => classifyLarkAuthStatus(payload, expectedIdentity, this.#logger),
       signal,
     );
   }
@@ -211,6 +218,10 @@ export class ProviderCliValidationRunner {
       names = await readdir(this.#root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      this.#logger.debug(
+        { code: "validation_cleanup_scan_failed", error: String(error) },
+        "Provider CLI validation cleanup scan failed",
+      );
       throw error;
     }
     const results = await Promise.allSettled(
@@ -240,9 +251,13 @@ export class ProviderCliValidationRunner {
         windowsHide: true,
         ...(signal ? { signal } : {}),
       });
-      return classifyProcessOutput(result, classify);
+      return classifyProcessOutput(result, classify, this.#logger);
     } catch (error) {
-      return classifyProcessFailure(error, signal, classify);
+      this.#logger.debug(
+        { code: "validation_process_failed", error: String(error) },
+        "Provider CLI validation process failed",
+      );
+      return classifyProcessFailure(error, signal, classify, this.#logger);
     }
   }
 }
@@ -280,11 +295,14 @@ function validationFailureResult(
 function classifyProcessOutput(
   output: { readonly stderr: string; readonly stdout: string },
   classify: (payload: unknown) => ProviderCliValidationClassification,
+  logger: ClientLogger,
 ): ProviderCliValidationClassification {
   if (combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
     return { status: "needs_attention" };
   }
-  const payload = extractBoundedJson(output.stdout) ?? extractBoundedJson(output.stderr);
+  const payload =
+    extractBoundedJson(output.stdout, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
+    extractBoundedJson(output.stderr, RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
   return payload === undefined ? { status: "needs_attention" } : classify(payload);
 }
 
@@ -292,13 +310,16 @@ function classifyProcessFailure(
   error: unknown,
   signal: AbortSignal | undefined,
   classify: (payload: unknown) => ProviderCliValidationClassification,
+  logger: ClientLogger,
 ): ProviderCliValidationClassification {
   if (isAbortError(error) || signal?.aborted) throw abortError();
   const output = processOutput(error);
   if (output && combinedBytes(output.stdout, output.stderr) > RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES) {
     return { status: "needs_attention" };
   }
-  const payload = extractBoundedJson(output?.stdout ?? "") ?? extractBoundedJson(output?.stderr ?? "");
+  const payload =
+    extractBoundedJson(output?.stdout ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger) ??
+    extractBoundedJson(output?.stderr ?? "", RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES, logger);
   if (payload !== undefined) return classify(payload);
   if (isTimeout(error)) return { status: "retrying", reason: "provider_unreachable" };
   throw error;
@@ -309,7 +330,11 @@ async function verifyTargetFingerprint(request: ProviderCliValidationRequest): P
   try {
     const identity = await computeFileIdentity(request.targetPath);
     return computeTargetFingerprint(identity, request.version, request.managedDigest) === request.expectedFingerprint;
-  } catch {
+  } catch (error) {
+    defaultValidationLogger.debug(
+      { code: "validation_target_verification_failed", error: String(error) },
+      "Provider CLI validation target verification failed",
+    );
     return false;
   }
 }
@@ -413,7 +438,11 @@ export async function exchangeFeishuTenantToken(
       body: JSON.stringify({ app_id: grant.appId, app_secret: grant.appSecret }),
       signal: combined,
     });
-  } catch {
+  } catch (error) {
+    defaultValidationLogger.debug(
+      { code: "feishu_token_exchange_request_failed", error: String(error) },
+      "Feishu tenant token exchange request failed",
+    );
     if (combined.aborted && signal?.aborted) throw new FeishuTokenExchangeError("aborted");
     throw new FeishuTokenExchangeError("provider_unreachable");
   }
@@ -423,7 +452,11 @@ export async function exchangeFeishuTenantToken(
   let body: unknown;
   try {
     body = JSON.parse(new TextDecoder().decode(buffer));
-  } catch {
+  } catch (error) {
+    defaultValidationLogger.debug(
+      { code: "feishu_token_exchange_invalid_json", error: String(error) },
+      "Feishu tenant token exchange response was invalid",
+    );
     throw new FeishuTokenExchangeError(response.status >= 500 ? "provider_unreachable" : "invalid");
   }
   if (!response.ok) throw new FeishuTokenExchangeError("credential_rejected");

@@ -118,6 +118,7 @@ export {
 } from "./providers/codex/agent-runtime.js";
 export {
   CODEX_APP_SERVER_MAX_LINE_BYTES,
+  CODEX_APP_SERVER_MAX_STDERR_BYTES,
   CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
   type CodexAppServerClient,
   CodexAppServerError,
@@ -300,6 +301,8 @@ export {
   providerCliProbeEnvironment,
 } from "./runtime/provider-cli/probe.js";
 export {
+  PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS,
+  PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS,
   ProviderCliReconciler,
   type ProviderCliReconcilerOptions,
 } from "./runtime/provider-cli/reconciler.js";

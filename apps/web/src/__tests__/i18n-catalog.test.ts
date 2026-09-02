@@ -21,7 +21,7 @@ const areas = [
   "usage",
   "skills",
   "integrations",
-  "onboarding",
+  "agent-setup",
   "onboarding-v2",
   "im",
 ] as const;
@@ -34,6 +34,8 @@ const allowedUntranslatedValues = new Set([
   "Slack",
   "Feishu",
   "Lark",
+  "Lark CLI",
+  "Slack CLI",
   "Token",
   "Tokens",
 ]);

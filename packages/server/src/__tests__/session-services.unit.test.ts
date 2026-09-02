@@ -252,7 +252,8 @@ describe("SessionService with the unit database", () => {
   });
 
   it("admits only valid collaboration authorities and releases admission on dispatch", async () => {
-    const service = new SessionService(db.database);
+    const logger = { info: vi.fn() };
+    const service = new SessionService(db.database, { logger });
     const source = await service.ensureChatSession(
       { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
       "channel",
@@ -300,9 +301,34 @@ describe("SessionService with the unit database", () => {
       .set({ ownerAccountId: otherUserId })
       .where(eq(computers.id, fixture.computerId));
     await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
+    expect(logger.info).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        agentId: route.agentId,
+        code: "SESSION_COLLABORATION_ADMISSION_COMPUTER_OWNERSHIP_INVALID",
+        imBindingId: route.imBindingId,
+        sourceComputerId: route.sourceComputerId,
+        sourceSessionId: route.sourceSessionId,
+        targetComputerId: route.targetComputerId,
+        targetSessionId: route.targetSessionId,
+      }),
+      "Session collaboration dispatch admission rejected",
+    );
     await db.database
       .update(computers)
       .set({ ownerAccountId: fixture.userId })
+      .where(eq(computers.id, fixture.computerId));
+    await db.database
+      .update(computers)
+      .set({ currentInstanceId: randomUUID() })
+      .where(eq(computers.id, fixture.computerId));
+    await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
+    expect(logger.info).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: "SESSION_COLLABORATION_ADMISSION_SOURCE_INSTANCE_STALE" }),
+      "Session collaboration dispatch admission rejected",
+    );
+    await db.database
+      .update(computers)
+      .set({ currentInstanceId: fixture.instanceId })
       .where(eq(computers.id, fixture.computerId));
     await expect(
       service.withCollaborationDispatchAdmission(route, () => {
@@ -316,21 +342,37 @@ describe("SessionService with the unit database", () => {
     await expect(rejected.result).rejects.toThrow("async dispatch failed");
     await db.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
     await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
+    expect(logger.info).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: "SESSION_COLLABORATION_ADMISSION_AGENT_INACTIVE" }),
+      "Session collaboration dispatch admission rejected",
+    );
     await db.database.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
     await db.database.update(imBindings).set({ status: "error" }).where(eq(imBindings.id, fixture.bindingId));
     await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
+    expect(logger.info).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: "SESSION_COLLABORATION_ADMISSION_BINDING_INVALID" }),
+      "Session collaboration dispatch admission rejected",
+    );
     await db.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, fixture.bindingId));
     await db.database
       .update(sessionPlacements)
       .set({ generation: 2 })
       .where(eq(sessionPlacements.sessionId, target.session.id));
     await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
+    expect(logger.info).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: "SESSION_COLLABORATION_ADMISSION_PLACEMENT_INVALID" }),
+      "Session collaboration dispatch admission rejected",
+    );
     await db.database
       .update(sessionPlacements)
       .set({ generation: 1 })
       .where(eq(sessionPlacements.sessionId, target.session.id));
     await db.database.update(sessions).set({ endedAt: fixture.now }).where(eq(sessions.id, target.session.id));
     await expect(service.withCollaborationDispatchAdmission(route, operation)).resolves.toEqual({ admitted: false });
+    expect(logger.info).toHaveBeenLastCalledWith(
+      expect.objectContaining({ code: "SESSION_COLLABORATION_ADMISSION_AUTHORITY_SESSION_INVALID" }),
+      "Session collaboration dispatch admission rejected",
+    );
   });
 
   it("moves and asserts placements while fencing uncertain custody", async () => {

@@ -1,5 +1,5 @@
 import { LineChart } from "echarts/charts";
-import { BrushComponent, GridComponent, ToolboxComponent, TooltipComponent } from "echarts/components";
+import { AriaComponent, BrushComponent, GridComponent, ToolboxComponent, TooltipComponent } from "echarts/components";
 import * as echarts from "echarts/core";
 import { CanvasRenderer } from "echarts/renderers";
 
@@ -10,6 +10,14 @@ import { CanvasRenderer } from "echarts/renderers";
  * component, map projections included. Static named imports are traceable, so only what is named here
  * survives; the lazy boundary moves out to whoever imports this module.
  */
-echarts.use([LineChart, BrushComponent, GridComponent, ToolboxComponent, TooltipComponent, CanvasRenderer]);
+echarts.use([
+  AriaComponent,
+  LineChart,
+  BrushComponent,
+  GridComponent,
+  ToolboxComponent,
+  TooltipComponent,
+  CanvasRenderer,
+]);
 
 export { echarts };

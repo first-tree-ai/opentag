@@ -359,11 +359,12 @@ describe("background and WebSocket tracing", () => {
     });
     const diagnosticWrites: Array<Record<string, unknown>> = [];
     const loggerCodes: string[] = [];
-    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }], []];
+    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }]];
     const database = {
       select: vi.fn(() => resolvedQuery(selectRows.shift() ?? [])),
       transaction: vi.fn(async (run: (transaction: unknown) => Promise<unknown>) =>
         run({
+          select: vi.fn(() => resolvedQuery([])),
           insert: vi.fn(() => ({
             values: vi.fn((values: Record<string, unknown>) => ({
               returning: vi.fn().mockResolvedValue([

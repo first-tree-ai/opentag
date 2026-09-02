@@ -359,9 +359,10 @@ describe("FeishuSetupService persistence", () => {
       registrations: { start: vi.fn() },
       activation: { activateAtomicAttempt: vi.fn() },
     });
-    await expect(service.createOrReuse(value.bootstrap.userId, value.agent.id, "create")).rejects.toThrow(
-      "FEISHU_IM_BINDING_ALREADY_EXISTS",
-    );
+    await expect(service.createOrReuse(value.bootstrap.userId, value.agent.id, "create")).rejects.toMatchObject({
+      code: "IM_BINDING_CONFIGURATION_CONFLICT",
+      statusCode: 409,
+    });
 
     const noBindingAgent = await new AgentService(setupDatabase.database).createForAccount(value.bootstrap.userId, {
       name: "unbound-agent",
@@ -369,12 +370,16 @@ describe("FeishuSetupService persistence", () => {
       runtimeProvider: "codex",
       computerId: value.computerId,
     });
-    await expect(service.createOrReuse(value.bootstrap.userId, noBindingAgent.id, "reauthorize")).rejects.toThrow(
-      "FEISHU_REAUTHORIZATION_REQUIRES_BINDING",
+    await expect(service.createOrReuse(value.bootstrap.userId, noBindingAgent.id, "reauthorize")).rejects.toMatchObject(
+      {
+        code: "IM_BINDING_CONFIGURATION_CONFLICT",
+        statusCode: 409,
+      },
     );
-    await expect(service.createOrReuse(value.bootstrap.userId, noBindingAgent.id, "replace")).rejects.toThrow(
-      "FEISHU_REPLACEMENT_REQUIRES_BINDING",
-    );
+    await expect(service.createOrReuse(value.bootstrap.userId, noBindingAgent.id, "replace")).rejects.toMatchObject({
+      code: "IM_BINDING_CONFIGURATION_CONFLICT",
+      statusCode: 409,
+    });
 
     const startFailure = new FeishuSetupService({
       database: setupDatabase.database,

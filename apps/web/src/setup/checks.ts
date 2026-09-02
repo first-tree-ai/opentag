@@ -21,9 +21,7 @@ export type MessagingCliStatus = "checking" | "ready" | "install" | "unavailable
  * The messaging CLI is not a row: which binary is needed depends on a provider chosen later, so it is
  * named in a sentence rather than a third check line. Onboarding is the only surface that uses this
  * chain: `messagingCliCheck` maps the reported status to the `CheckState` that decides whether
- * `messagingCliMissingCopy` is shown. This comment previously said Agent settings named a missing
- * CLI through `providerCliRecoveryMessage`; that function was reachable only from a branch no
- * reader ever saw, and has been removed with it.
+ * `messagingCliMissingCopy` is shown.
  */
 export type CheckState = "pending" | "passed" | "failed" | "blocked";
 

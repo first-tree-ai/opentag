@@ -25,7 +25,7 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
-import { AgentRuntimeTestService, AgentService } from "./services/agents/index.js";
+import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -80,6 +80,7 @@ export {
 } from "./db/migrate.js";
 export {
   ConnectionRegistry,
+  type ConnectionRegistryOptions,
   type RuntimeConnectionEntry,
   RuntimeRegistrySendError,
 } from "./runtime/connection-registry.js";
@@ -99,7 +100,7 @@ export {
   RuntimeDurableWorkConflictError,
   type RuntimeDurableWorkStoreOptions,
 } from "./runtime/runtime-durable-work-store.js";
-export { AgentService, AgentServiceError } from "./services/agents/index.js";
+export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
@@ -129,7 +130,6 @@ export async function startServer(): Promise<void> {
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
-  void serviceLogger;
   const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
     logger: (payload, message) => app?.log.error(payload, message),
     onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
@@ -197,7 +197,7 @@ export async function startServer(): Promise<void> {
     });
     const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database));
     const connectCodeService = new ConnectCodeService(database);
-    const registry = new ConnectionRegistry();
+    const registry = new ConnectionRegistry({ logger: serviceLogger("runtime-registry") });
     const channelTargetPoller = createChannelTargetPoller({
       channel: config.environment,
       downloadBaseUrl: config.channelTarget.downloadBaseUrl,
@@ -271,23 +271,29 @@ export async function startServer(): Promise<void> {
           : { status: "unconfirmed" };
       },
       onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
+      logger: serviceLogger("im-binding"),
     });
-    const accountSetupService = new AccountSetupService(database, imBindingService);
+    const accountSetupService = new AccountSetupService(database);
     const imMessageInbox = new ImMessageInbox(database);
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
     });
-    const sessionService = new SessionService(database);
+    const sessionService = new SessionService(database, { logger: serviceLogger("session") });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
+      logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
     const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
-    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, imBindingService);
+    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
+      issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
+      shouldPrewarmOfficialProviderClis: (computerId) => computerService.accountInFirstSetup(computerId),
+    });
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
@@ -295,6 +301,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       registry,
       sessions: sessionService,
+      logger: serviceLogger("session-collaboration"),
     });
     const agentService = new AgentService(database, {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
@@ -328,6 +335,10 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
     });
+    const agentSetupService = new AgentSetupService(database, agentService, imBindingService, feishuSetupService, {
+      providerReadiness: registry,
+      slackOAuthAvailable: config.slackOAuth !== undefined,
+    });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
@@ -348,10 +359,13 @@ export async function startServer(): Promise<void> {
     const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
     });
+    const imDeliveryLogger = serviceLogger("im-delivery");
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,
+      logger: imDeliveryLogger,
+      onMetric: (metric) => imDeliveryLogger.info({ metric }, "IM delivery worker metric"),
       registry,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
@@ -370,6 +384,7 @@ export async function startServer(): Promise<void> {
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,
+      agentSetupService,
       agentRuntimeTestService,
       authService,
       browserAuth: {
@@ -386,6 +401,7 @@ export async function startServer(): Promise<void> {
         publicUrl: config.publicUrl,
       },
       computerConnectCode: {
+        downloadBaseUrl: config.channelTarget.downloadBaseUrl,
         environment: config.environment,
         publicUrl: config.publicUrl,
       },

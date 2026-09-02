@@ -38,6 +38,7 @@ const EXPECTED_ROOT_EXPORTS = [
   "selectComputer",
   "toCommandError",
   "type CommandResult",
+  "type DoctorNextAction",
   "type DoctorOptions",
   "type DoctorResult",
   "type LoginOptions",
@@ -46,6 +47,7 @@ const EXPECTED_ROOT_EXPORTS = [
   "type ProviderCliEnsureCommandResult",
   "type ProviderCliInspectCommandOptions",
   "type ProviderCliInspectCommandResult",
+  "type ProviderCliNextAction",
 ];
 
 describe("CLI package public surface", () => {

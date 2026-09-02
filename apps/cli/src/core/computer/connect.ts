@@ -26,6 +26,8 @@ export interface ComputerConnectOptions {
 }
 
 export interface ComputerConnectResult {
+  agentId?: string;
+  computerId: string;
   credentialsPath: string;
   message: string;
   service?: DaemonServiceInfo;
@@ -66,8 +68,12 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   await writeComputerIdentityAtomically(home, identity);
   await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
   const result: ComputerConnectResult = {
+    ...(exchange.agentId ? { agentId: exchange.agentId } : {}),
+    computerId: exchange.computerId,
     credentialsPath: machineCredentialsPath(home),
-    message: "Connected this Computer",
+    message: exchange.agentId
+      ? `Connected Computer ${exchange.computerId} and bound Agent ${exchange.agentId}`
+      : `Connected Computer ${exchange.computerId}`,
   };
   if (!manager) return result;
 

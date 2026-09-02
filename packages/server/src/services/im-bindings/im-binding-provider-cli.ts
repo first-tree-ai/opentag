@@ -14,6 +14,7 @@ import { hasRequiredFeishuTenantScopes, hasRequiredSlackBotScopes } from "@opent
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, computers, imBindings, slackInstallations } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { ApplicationCipher } from "../crypto.js";
 import { decodeFeishuCredential, decodeSlackCredential } from "./credential-material.js";
 
@@ -83,6 +84,7 @@ function expectedIdentity(
   cipher: ApplicationCipher,
   binding: BindingRow,
   installation: SlackInstallationRow | null,
+  logger?: Pick<ServiceLogger, "warn">,
 ): ProviderCliExpectedIdentity | undefined {
   if (binding.provider === "feishu") {
     if (!binding.externalAppId || !binding.externalBotId) return undefined;
@@ -94,7 +96,10 @@ function expectedIdentity(
     };
   }
   if (!installation?.externalTeamId || !installation.externalBotId) return undefined;
-  const credential = decodeSlackCredential(cipher, installation.encryptedCredential);
+  const credential = decodeSlackCredential(cipher, installation.encryptedCredential, {
+    bindingId: binding.id,
+    logger,
+  });
   if (!credential) return undefined;
   return {
     provider: "slack",
@@ -107,8 +112,9 @@ function expectedIdentity(
 function requirementFromRow(
   cipher: ApplicationCipher,
   row: { binding: BindingRow; slackInstallation: SlackInstallationRow | null },
+  logger?: Pick<ServiceLogger, "warn">,
 ): ProviderCliRequirement | undefined {
-  const identity = expectedIdentity(cipher, row.binding, row.slackInstallation);
+  const identity = expectedIdentity(cipher, row.binding, row.slackInstallation, logger);
   if (!identity) return undefined;
   return {
     agentId: row.binding.agentId,
@@ -186,9 +192,10 @@ function feishuValidationGrant(
   binding: BindingRow,
   identity: ProviderCliExpectedIdentity,
   generation: number,
+  logger?: Pick<ServiceLogger, "warn">,
 ): { expectedIdentity: ProviderCliExpectedIdentity; grant: ProviderCliValidationGrantFrame["grant"] } | undefined {
   if (binding.credentialGeneration !== generation) return undefined;
-  const credential = decodeFeishuCredential(cipher, binding.encryptedCredential);
+  const credential = decodeFeishuCredential(cipher, binding.encryptedCredential, { bindingId: binding.id, logger });
   if (!credential || credential.appId !== binding.externalAppId) return undefined;
   return {
     expectedIdentity: identity,
@@ -203,14 +210,16 @@ function feishuValidationGrant(
 
 function slackValidationGrant(
   cipher: ApplicationCipher,
+  bindingId: string,
   installation: SlackInstallationRow | null,
   identity: ProviderCliExpectedIdentity,
   generation: number,
+  logger?: Pick<ServiceLogger, "warn">,
 ): { expectedIdentity: ProviderCliExpectedIdentity; grant: ProviderCliValidationGrantFrame["grant"] } | undefined {
   if (!installation || installation.status !== "active" || installation.credentialGeneration !== generation) {
     return undefined;
   }
-  const credential = decodeSlackCredential(cipher, installation.encryptedCredential);
+  const credential = decodeSlackCredential(cipher, installation.encryptedCredential, { bindingId, logger });
   if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return undefined;
   return { expectedIdentity: identity, grant: { provider: "slack", botAccessToken: credential.botAccessToken } };
 }
@@ -220,6 +229,7 @@ export class ImBindingProviderCli {
   readonly #cipher: ApplicationCipher;
   readonly #artifactReadiness: ArtifactReadinessReader;
   readonly #credentialReadiness: ReadinessReader;
+  readonly #logger?: Pick<ServiceLogger, "warn">;
 
   constructor(
     database: DatabaseClient,
@@ -227,12 +237,14 @@ export class ImBindingProviderCli {
     options: {
       artifactReadiness: ArtifactReadinessReader;
       credentialReadiness: ReadinessReader;
+      logger?: Pick<ServiceLogger, "warn">;
     },
   ) {
     this.#database = database;
     this.#cipher = cipher;
     this.#artifactReadiness = options.artifactReadiness;
     this.#credentialReadiness = options.credentialReadiness;
+    this.#logger = options.logger;
   }
 
   async listActiveRequirements(computerId: string): Promise<readonly ProviderCliRequirement[]> {
@@ -243,7 +255,7 @@ export class ImBindingProviderCli {
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(agents.computerId, computerId), eq(agents.status, "active"), eq(imBindings.status, "active")));
     return rows.flatMap((row) => {
-      const requirement = requirementFromRow(this.#cipher, row);
+      const requirement = requirementFromRow(this.#cipher, row, this.#logger);
       return requirement ? [requirement] : [];
     });
   }
@@ -277,11 +289,18 @@ export class ImBindingProviderCli {
     ) {
       return undefined;
     }
-    const identity = expectedIdentity(this.#cipher, row.binding, row.slackInstallation);
+    const identity = expectedIdentity(this.#cipher, row.binding, row.slackInstallation, this.#logger);
     if (!identity) return undefined;
     return row.binding.provider === "feishu"
-      ? feishuValidationGrant(this.#cipher, row.binding, identity, input.credentialGeneration)
-      : slackValidationGrant(this.#cipher, row.slackInstallation, identity, input.credentialGeneration);
+      ? feishuValidationGrant(this.#cipher, row.binding, identity, input.credentialGeneration, this.#logger)
+      : slackValidationGrant(
+          this.#cipher,
+          row.binding.id,
+          row.slackInstallation,
+          identity,
+          input.credentialGeneration,
+          this.#logger,
+        );
   }
 
   async readiness(

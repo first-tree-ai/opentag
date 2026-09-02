@@ -148,6 +148,7 @@ describe("Kumo integration contract", () => {
   it("keeps module-owned stylesheet imports at reviewed seams", () => {
     const allowedImports = new Set([
       "main.tsx -> ./app.css",
+      "onboarding-v2/agent-setup-page.tsx -> ./onboarding-v2.css",
       "onboarding-v2/page.tsx -> ./onboarding-v2.css",
       "setup/command-block.tsx -> ./setup.css",
       "setup/components.tsx -> ./setup.css",
@@ -203,11 +204,11 @@ describe("Kumo integration contract", () => {
     const shell = ["app-shell.tsx", "agent-shell.tsx", "shell-main.tsx"]
       .map((file) => readFileSync(resolve(root, "features/shell", file), "utf8"))
       .join("\n");
-    expect(shell).toContain('<Sidebar.Header className="border-b-0">');
+    expect(shell).toContain('<Sidebar.Header className="h-16 border-b-0 px-3">');
     expect(shell).toMatch(/<Sidebar\.Content(?:\s|>)/);
-    expect(shell).toContain("<Sidebar.Menu>");
+    expect(shell).toContain('<Sidebar.Menu className="gap-1">');
     expect(shell).toContain("<Sidebar.MenuButton");
-    expect(shell).toContain("<Sidebar.Footer>");
+    expect(shell).toContain('<Sidebar.Footer className="h-14 px-3">');
     expect(shell).toContain("<DropdownMenu.LinkItem");
     expect(shell).toContain("<DropdownMenu.Separator />");
     expect(shell).toContain("selected={candidate.id === agent?.id}");
@@ -221,7 +222,7 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain('className="h-full min-h-0 overflow-hidden bg-kumo-canvas"');
     expect(shell).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
     expect(shell).toContain(
-      'className="bg-kumo-canvas md:m-2 md:mr-0 md:h-[calc(100%-1rem)] md:rounded-lg md:shadow-xs"',
+      'className="bg-kumo-base md:m-3 md:mr-0 md:h-[calc(100%-1.5rem)] md:rounded-xl md:shadow-xs"',
     );
     expect(shell).toContain('className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2"');
     expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");

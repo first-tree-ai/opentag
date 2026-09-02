@@ -518,7 +518,7 @@ async function issueComputerConnectCode(serverUrl, accessToken) {
   });
   expect(response.status === 201, `Computer connect-code issuance returned HTTP ${response.status}`);
   const payload = await response.json();
-  const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(
+  const match = /(?:computer )?connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_.-]+)'?/.exec(
     payload.bootstrapCommand ?? "",
   );
   expect(match?.[1] === serverUrl && match[2], "Computer connect-code response was invalid");

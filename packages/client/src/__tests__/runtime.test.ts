@@ -190,6 +190,57 @@ describe("RuntimeConnection", () => {
     }
   });
 
+  it("logs distinct redacted reasons for fatal protocol rejection", async () => {
+    const scenarios = [
+      {
+        send: (socket: ControlledWebSocket, _auth: Record<string, unknown>) =>
+          socket.receive({
+            type: "auth:result",
+            requestId: randomUUID(),
+            ok: true,
+            computerId: randomUUID(),
+            installationId: randomUUID(),
+          }),
+        expectedError: "unmatched auth result",
+      },
+      {
+        send: (socket: ControlledWebSocket, auth: Record<string, unknown>) =>
+          socket.receive({
+            type: "error",
+            requestId: auth.requestId,
+            code: "AUTH_INVALID_TOKEN",
+            message: "Authorization: Bearer close-secret",
+          }),
+        expectedError: "Authorization: Bearer close-secret",
+      },
+    ];
+    const reasons: unknown[] = [];
+    for (const scenario of scenarios) {
+      const socket = new ControlledWebSocket();
+      const logs: RecordedLog[] = [];
+      const connection = new RuntimeConnection({
+        ...controlledOptions(socket),
+        logger: recordingLogger(logs),
+      });
+      const running = connection.run();
+      await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
+      socket.open();
+      await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
+      scenario.send(socket, socket.frame("auth") ?? {});
+      await expect(running).rejects.toThrow(scenario.expectedError);
+      const rejection = logs.find((entry) => entry.message === "Runtime connection was rejected");
+      expect(rejection).toMatchObject({
+        level: "error",
+        fields: { attempt: 1, category: "protocol", state: "authenticating" },
+      });
+      reasons.push(rejection?.fields.reason);
+    }
+    expect(reasons[0]).toBe("The server returned an unmatched auth result");
+    expect(reasons[1]).toBe("Authorization: [REDACTED]");
+    expect(reasons[1]).not.toContain("close-secret");
+    expect(reasons[0]).not.toBe(reasons[1]);
+  });
+
   it("rejects malformed and oversized inbound frames and stale business fences", async () => {
     const cases: Array<{ label: string; receive: (socket: ControlledWebSocket) => void; parser?: boolean }> = [
       { label: "invalid JSON", receive: (socket) => socket.receiveData("not-json") },
@@ -232,7 +283,7 @@ describe("RuntimeConnection", () => {
         throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "access token was revoked");
       },
     });
-    await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run computer connect again");
+    await expect(apiConnection.run()).rejects.toThrow("access token was revoked; run opentag connect again");
 
     const credentialConnection = new RuntimeConnection({
       ...controlledOptions(new ControlledWebSocket()),
@@ -241,7 +292,7 @@ describe("RuntimeConnection", () => {
       },
     });
     await expect(credentialConnection.run()).rejects.toThrow(
-      "The runtime CLI is not logged in; run computer connect first",
+      "The runtime CLI is not logged in; run opentag connect first",
     );
   });
 

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory, syncDurableDirectory } from "../../storage/durable-file.js";
 import {
   type ProviderCliAccountLayout,
@@ -44,6 +45,7 @@ export type ProviderCliFetcher = (options: { url: string; maxBytes: number; time
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const MAX_REDIRECT_HOPS = 8;
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+const logger = createLogger("runtime-provider-cli-installer");
 
 /**
  * Resolve one request or redirect hop to the next URL. Every hop — the reviewed catalog
@@ -54,7 +56,8 @@ export function resolveProviderCliArtifactUrl(current: string, location?: string
   let next: URL;
   try {
     next = location === undefined ? new URL(current) : new URL(location, current);
-  } catch {
+  } catch (error) {
+    logger.debug({ code: "artifact_url_invalid", error: String(error) }, "Provider CLI artifact URL was invalid");
     throw new ProviderCliInstallError("integrity_failed", "Artifact URL or redirect target is not a valid URL");
   }
   if (next.protocol !== "https:") {
@@ -71,6 +74,7 @@ async function requestProviderCliArtifact(
   try {
     return await fetchImpl(url, { redirect: "manual", signal });
   } catch (error) {
+    logger.debug({ code: "artifact_download_failed", error: String(error) }, "Provider CLI artifact download failed");
     throw new ProviderCliInstallError(
       "install_incomplete",
       `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -83,6 +87,10 @@ async function cancelProviderCliRedirectBody(response: Response): Promise<void> 
   try {
     await response.body.cancel();
   } catch (error) {
+    logger.debug(
+      { code: "redirect_body_cleanup_failed", error: String(error) },
+      "Provider CLI redirect body cleanup failed",
+    );
     throw new ProviderCliInstallError(
       "install_incomplete",
       `Artifact redirect cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -205,7 +213,10 @@ export class ProviderCliInstaller {
    */
   async recoverStaging(provider: ProviderCliProvider): Promise<void> {
     const providerStaging = join(this.#layout.staging, provider);
-    const entries = await readdir(providerStaging).catch(() => [] as string[]);
+    const entries = await readdir(providerStaging).catch((error: unknown) => {
+      logger.debug({ code: "staging_scan_failed", error: String(error) }, "Provider CLI staging scan failed");
+      return [] as string[];
+    });
     for (const entry of entries) {
       if (!STAGING_DIR_PATTERN.test(entry)) continue;
       await rm(join(providerStaging, entry), { force: true, recursive: true });
@@ -233,7 +244,13 @@ export class ProviderCliInstaller {
 
     // Digest-addressed publication is idempotent: reuse a complete directory, but never
     // overwrite one whose content disagrees with the catalog.
-    const existing = await lstat(executablePath).catch(() => undefined);
+    const existing = await lstat(executablePath).catch((error: unknown) => {
+      logger.debug(
+        { code: "published_artifact_stat_failed", error: String(error) },
+        "Provider CLI published artifact stat failed",
+      );
+      return undefined;
+    });
     if (existing) {
       await verifyPublishedExecutable(executablePath, artifact, entry, this.#execFile);
       return { artifactId, version: entry.version, executablePath, archiveSha256: artifact.sha256, reused: true };
@@ -296,8 +313,15 @@ export class ProviderCliInstaller {
       await verifyPublishedExecutable(executablePath, artifact, entry, this.#execFile);
       return { artifactId, version: entry.version, executablePath, archiveSha256: artifact.sha256, reused: false };
     } finally {
-      await rm(stagingDir, { force: true, recursive: true }).catch(() => undefined);
-      await rmdir(dirname(stagingDir)).catch(() => undefined);
+      await rm(stagingDir, { force: true, recursive: true }).catch((error: unknown) => {
+        logger.debug({ code: "staging_cleanup_failed", error: String(error) }, "Provider CLI staging cleanup failed");
+      });
+      await rmdir(dirname(stagingDir)).catch((error: unknown) => {
+        logger.debug(
+          { code: "staging_parent_cleanup_failed", error: String(error) },
+          "Provider CLI staging parent cleanup failed",
+        );
+      });
     }
   }
 }
@@ -310,6 +334,7 @@ async function extractSafely(archive: Uint8Array, artifact: ProviderCliCatalogAr
       maxExecutableBytes: artifact.executableBytes,
     });
   } catch (error) {
+    logger.debug({ code: "archive_extraction_failed", error: String(error) }, "Provider CLI archive extraction failed");
     if (error instanceof ProviderCliArchiveError) {
       throw new ProviderCliInstallError("integrity_failed", `Artifact archive is unsafe: ${error.rejection}`);
     }
@@ -346,7 +371,13 @@ async function verifyPublishedExecutable(
   entry: ProviderCliCatalogEntry,
   execFile: ProviderCliExecFile | undefined,
 ): Promise<void> {
-  const status = await lstat(path).catch(() => undefined);
+  const status = await lstat(path).catch((error: unknown) => {
+    logger.debug(
+      { code: "artifact_stat_failed", error: String(error) },
+      "Provider CLI published artifact stat failed during verification",
+    );
+    return undefined;
+  });
   if (!status?.isFile() || status.isSymbolicLink() || (status.mode & 0o111) === 0) {
     throw new ProviderCliInstallError("integrity_failed", "The immutable version executable is missing or unsafe");
   }

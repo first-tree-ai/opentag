@@ -3,6 +3,10 @@ import {
   type ProviderCliValidationResultReason,
   RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
+
+type ValidationDiagnosticLogger = Pick<ClientLogger, "debug">;
+const defaultValidationLogger = createLogger("provider-cli-validation");
 
 export type ProviderCliValidationClassification =
   | { readonly status: "ready" }
@@ -11,18 +15,35 @@ export type ProviderCliValidationClassification =
       readonly reason?: ProviderCliValidationResultReason;
     };
 
-export function extractBoundedJson(text: string, maxBytes = RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES): unknown {
-  if (Buffer.byteLength(text) > maxBytes) return undefined;
+export function extractBoundedJson(
+  text: string,
+  maxBytes = RUNTIME_PROVIDER_CLI_VALIDATION_MAX_OUTPUT_BYTES,
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
+): unknown {
+  if (Buffer.byteLength(text) > maxBytes) {
+    logDiagnostic(logger, "json_output_oversize");
+    return undefined;
+  }
   const trimmed = text.trim();
-  if (!trimmed) return undefined;
+  if (!trimmed) {
+    logDiagnostic(logger, "json_output_empty");
+    return undefined;
+  }
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
-  if (start < 0 || end < start) return undefined;
+  if (start < 0 || end < start) {
+    logDiagnostic(logger, "json_object_bounds_missing");
+    return undefined;
+  }
   const slice = trimmed.slice(start, end + 1);
-  if (Buffer.byteLength(slice) > maxBytes) return undefined;
+  if (Buffer.byteLength(slice) > maxBytes) {
+    logDiagnostic(logger, "json_output_oversize");
+    return undefined;
+  }
   try {
     return JSON.parse(slice);
   } catch {
+    logDiagnostic(logger, "json_output_malformed");
     return undefined;
   }
 }
@@ -30,14 +51,28 @@ export function extractBoundedJson(text: string, maxBytes = RUNTIME_PROVIDER_CLI
 export function classifySlackAuthTest(
   payload: unknown,
   expected: Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
 ): ProviderCliValidationClassification {
-  if (!isRecord(payload) || typeof payload.ok !== "boolean") return { status: "needs_attention" };
+  if (!isRecord(payload)) {
+    logDiagnostic(logger, "slack_payload_not_record");
+    return { status: "needs_attention" };
+  }
+  if (typeof payload.ok !== "boolean") {
+    logDiagnostic(logger, "slack_ok_field_missing");
+    return { status: "needs_attention" };
+  }
   const error = typeof payload.error === "string" ? payload.error : undefined;
   const failure = classifyProviderFailure([error], payload.missing_scopes, error === "missing_scope");
   if (failure) return failure;
-  if (payload.ok !== true) return { status: "needs_attention" };
+  if (payload.ok !== true) {
+    logDiagnostic(logger, "slack_ok_not_true");
+    return { status: "needs_attention" };
+  }
   const identity = slackIdentity(payload);
-  if (!identity) return { status: "needs_attention" };
+  if (!identity) {
+    logDiagnostic(logger, "slack_identity_unparseable");
+    return { status: "needs_attention" };
+  }
   if (
     identity.teamId !== expected.teamId ||
     identity.userId !== expected.botUserId ||
@@ -51,22 +86,30 @@ export function classifySlackAuthTest(
 export function classifyLarkAuthStatus(
   payload: unknown,
   expected: Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
+  logger: ValidationDiagnosticLogger = defaultValidationLogger,
 ): ProviderCliValidationClassification {
-  if (!isRecord(payload)) return { status: "needs_attention" };
-  const failure = classifyLarkFailure(payload);
+  if (!isRecord(payload)) {
+    logDiagnostic(logger, "lark_payload_not_record");
+    return { status: "needs_attention" };
+  }
+  const failure = classifyLarkFailure(payload, logger);
   if (failure) return failure;
 
   const rawSuccess = payload.code === 0;
   const normalizedSuccess = payload.ok === true;
-  if (!rawSuccess && !normalizedSuccess) return { status: "needs_attention" };
+  if (!rawSuccess && !normalizedSuccess) {
+    logDiagnostic(logger, "lark_success_field_invalid");
+    return { status: "needs_attention" };
+  }
   if (normalizedSuccess && payload.identity !== "bot") {
-    return typeof payload.identity === "string"
-      ? { status: "needs_attention", reason: "identity_mismatch" }
-      : { status: "needs_attention" };
+    if (typeof payload.identity === "string") return { status: "needs_attention", reason: "identity_mismatch" };
+    logDiagnostic(logger, "lark_identity_field_invalid");
+    return { status: "needs_attention" };
   }
 
   const container = normalizedSuccess && isRecord(payload.data) ? payload.data : payload;
   if (!isRecord(container.bot) || typeof container.bot.open_id !== "string" || container.bot.open_id.length === 0) {
+    logDiagnostic(logger, "lark_bot_identity_unparseable");
     return { status: "needs_attention" };
   }
   if (container.bot.open_id !== expected.botOpenId) {
@@ -75,7 +118,10 @@ export function classifyLarkAuthStatus(
   return { status: "ready" };
 }
 
-function classifyLarkFailure(payload: Record<string, unknown>): ProviderCliValidationClassification | undefined {
+function classifyLarkFailure(
+  payload: Record<string, unknown>,
+  logger: ValidationDiagnosticLogger,
+): ProviderCliValidationClassification | undefined {
   const error = isRecord(payload.error) ? payload.error : undefined;
   const type = normalizedField(error?.type);
   const subtype = normalizedField(error?.subtype);
@@ -98,8 +144,8 @@ function classifyLarkFailure(payload: Record<string, unknown>): ProviderCliValid
     return { status: "retrying", reason: "provider_unreachable" };
   }
 
-  const scalarError = error ? undefined : stringifyUnknown(payload.error);
-  return classifyProviderFailure([scalarError, stringifyUnknown(payload.code)], payload.missing_scopes);
+  const scalarError = error ? undefined : stringifyUnknown(payload.error, logger);
+  return classifyProviderFailure([scalarError, stringifyUnknown(payload.code, logger)], payload.missing_scopes);
 }
 
 function classifyProviderFailure(
@@ -230,12 +276,13 @@ function isCredentialRejected(error: string | undefined): boolean {
   );
 }
 
-function stringifyUnknown(value: unknown): string | undefined {
+function stringifyUnknown(value: unknown, logger: ValidationDiagnosticLogger): string | undefined {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
   if (value === null || typeof value !== "object") return undefined;
   try {
     return JSON.stringify(value);
   } catch {
+    logDiagnostic(logger, "error_value_not_serializable");
     return undefined;
   }
 }
@@ -253,4 +300,8 @@ function httpStatus(error: unknown): number | undefined {
 
 function isAbortError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError";
+}
+
+function logDiagnostic(logger: ValidationDiagnosticLogger, code: string): void {
+  logger.debug({ code }, "Provider CLI validation output rejected");
 }

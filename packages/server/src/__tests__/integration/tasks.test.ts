@@ -135,8 +135,8 @@ async function fixture() {
   };
 }
 
-describe("Task debug queries", () => {
-  it("projects a top-level Session and its stored Turn report", async () => {
+describe("Task topic queries", () => {
+  it("projects a private chat as one Task with its stored Turn report", async () => {
     const value = await fixture();
     try {
       const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
@@ -144,7 +144,7 @@ describe("Task debug queries", () => {
         nextCursor: null,
         tasks: [
           {
-            id: value.session.id,
+            id: value.message.id,
             title: "Please debug this Turn.",
             status: "completed",
             agent: { id: value.agent.id, displayName: "Atlas" },
@@ -153,7 +153,7 @@ describe("Task debug queries", () => {
         ],
       });
 
-      const detail = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 50 });
+      const detail = await value.service.get(value.bootstrap.userId, value.message.id, { limit: 50 });
       expect(detail.turns).toHaveLength(1);
       expect(detail.turns[0]).toMatchObject({
         attention: "direct",
@@ -251,6 +251,33 @@ describe("Task debug queries", () => {
         })
         .returning();
       if (!secondSession) throw new Error("Second Session fixture was not created");
+      const [secondMessage] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: value.binding.id,
+          providerEventId: "event-second-chat",
+          channelId: "oc_second",
+          externalMessageId: "om_second_chat",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_other",
+          authorDisplayName: "Noah",
+          content: { version: 1, fallbackText: "Older private request.", blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "p2p" },
+          occurredAt: new Date("2026-08-26T01:01:00.000Z"),
+        })
+        .returning();
+      if (!secondMessage) throw new Error("Second chat message fixture was not created");
+      await value.database.insert(imMessageDeliveries).values({
+        messageId: secondMessage.id,
+        sessionId: secondSession.id,
+        attention: "direct",
+        state: "pending",
+        placementGeneration: 1,
+        expiresAt: new Date("2026-08-28T02:00:00.000Z"),
+      });
 
       const firstPage = await value.service.list(value.bootstrap.userId, { limit: 1 });
       expect(firstPage.tasks).toHaveLength(1);
@@ -261,7 +288,7 @@ describe("Task debug queries", () => {
         cursor: firstPage.nextCursor,
         limit: 1,
       });
-      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondSession.id]);
+      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondMessage.id]);
       expect(secondPage.nextCursor).toBeNull();
 
       const [followUpMessage] = await value.database
@@ -292,12 +319,12 @@ describe("Task debug queries", () => {
         expiresAt: new Date("2026-08-28T02:00:00.000Z"),
       });
 
-      const firstTurnPage = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 1 });
+      const firstTurnPage = await value.service.get(value.bootstrap.userId, value.message.id, { limit: 1 });
       expect(firstTurnPage.turns).toHaveLength(1);
       expect(firstTurnPage.nextCursor).not.toBeNull();
       if (!firstTurnPage.nextCursor) throw new Error("The first Turn page did not issue a cursor");
 
-      const secondTurnPage = await value.service.get(value.bootstrap.userId, value.session.id, {
+      const secondTurnPage = await value.service.get(value.bootstrap.userId, value.message.id, {
         cursor: firstTurnPage.nextCursor,
         limit: 1,
       });
@@ -309,7 +336,7 @@ describe("Task debug queries", () => {
     }
   });
 
-  it("titles a Session from a follow-up message that no longer addresses the Agent", async () => {
+  it("titles a Task from its root message even when it no longer addresses the Agent", async () => {
     const value = await fixture();
     try {
       const message: NormalizedMessage = {
@@ -350,7 +377,7 @@ describe("Task debug queries", () => {
         tasks: [],
         nextCursor: null,
       });
-      await expect(value.service.get(crypto.randomUUID(), value.session.id, { limit: 50 })).rejects.toMatchObject({
+      await expect(value.service.get(crypto.randomUUID(), value.message.id, { limit: 50 })).rejects.toMatchObject({
         statusCode: 404,
       });
       await expect(value.service.list(value.bootstrap.userId, { cursor: "invalid", limit: 50 })).rejects.toBeInstanceOf(
@@ -399,7 +426,7 @@ describe("Task debug queries", () => {
       const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
       expect(listed.tasks[0]).toMatchObject({
         status: "completed",
-        title: "Use the newer requirement.",
+        title: "Please debug this Turn.",
         lastActivityAt: steeredAt.toISOString(),
       });
       const [pendingMessage] = await value.database
@@ -434,7 +461,7 @@ describe("Task debug queries", () => {
         })
         .returning();
       if (!pendingDelivery) throw new Error("Deferred steer delivery fixture was not created");
-      const detail = await value.service.get(value.bootstrap.userId, value.session.id, { limit: 50 });
+      const detail = await value.service.get(value.bootstrap.userId, value.message.id, { limit: 50 });
       expect(detail.turns.find((turn) => turn.deliveryId === pendingDelivery.id)).toMatchObject({
         delivery: { state: "pending" },
         absorbedBy: null,

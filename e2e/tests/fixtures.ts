@@ -134,9 +134,10 @@ async function startDaemon(
     if (!response.ok())
       throw new Error(`Computer connect code failed with HTTP ${response.status()}: ${await response.text()}`);
     const payload = (await response.json()) as { bootstrapCommand: string };
-    const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(
-      payload.bootstrapCommand,
-    );
+    const match =
+      /\b(?:computer\s+)?connect --server\s+'?([^\s']+)'?\s+--\s+'?(otcc_(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{43}))'?(?:\s|$)/u.exec(
+        payload.bootstrapCommand,
+      );
     if (!match?.[2]) throw new Error(`Unexpected computer connect command: ${payload.bootstrapCommand}`);
     const cli = join(repositoryRoot, "apps/cli/dist/cli/index.mjs");
     await execFileAsync(
@@ -192,7 +193,8 @@ async function stopDaemon(daemon: ReturnType<typeof spawn>, temporaryHome: strin
 
 async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> {
   // The account task collection is read-only; seed the same inbound records the real Feishu ingestion path stores.
-  const taskId = randomUUID();
+  // A Task is keyed by the earliest message of its topic, so the seeded message id is the Task id.
+  const sessionId = randomUUID();
   const bindingId = randomUUID();
   const messageId = randomUUID();
   const now = new Date().toISOString();
@@ -206,7 +208,7 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
       'OpenTag E2E Bot', 1, 1, 'e2e-credential', '${now}', '${now}', '${now}'
     );
     insert into sessions (id, im_binding_id, channel_id, conversation_kind, kind, created_at)
-      values ('${taskId}', '${bindingId}', 'e2e-channel', 'channel', 'channel', '${now}');
+      values ('${sessionId}', '${bindingId}', 'e2e-channel', 'channel', 'channel', '${now}');
     insert into im_messages (
       id, im_binding_id, channel_id, external_message_id, provider_revision_key, operation, direction,
       author_kind, author_external_id, author_display_name, content, provider_context, occurred_at, received_at
@@ -217,10 +219,10 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
       '{}'::jsonb, '${now}', '${now}'
     );
     insert into im_message_deliveries (message_id, session_id, attention, state, placement_generation, expires_at)
-      values ('${messageId}', '${taskId}', 'direct', 'pending', 1, now() + interval '1 hour');
+      values ('${messageId}', '${sessionId}', 'direct', 'pending', 1, now() + interval '1 hour');
   `;
   await psql(runtime.databaseURL, sql);
-  return taskId;
+  return messageId;
 }
 
 const browserTest = base.extend({

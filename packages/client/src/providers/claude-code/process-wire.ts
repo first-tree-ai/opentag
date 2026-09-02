@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const CLAUDE_CODE_MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -27,6 +28,7 @@ export interface ClaudeCodeSpawnOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly maxLineBytes?: number;
   readonly maxStderrBytes?: number;
+  readonly logger?: ClientLogger;
   readonly spawnProcess?: (
     command: string,
     args: readonly string[],
@@ -55,6 +57,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #maxLineBytes: number;
   readonly #maxStderrBytes: number;
+  readonly #logger: ClientLogger;
   readonly #exit: Promise<void>;
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
@@ -73,6 +76,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   constructor(options: ClaudeCodeSpawnOptions) {
     this.#maxLineBytes = options.maxLineBytes ?? CLAUDE_CODE_MAX_LINE_BYTES;
     this.#maxStderrBytes = options.maxStderrBytes ?? CLAUDE_CODE_MAX_STDERR_BYTES;
+    this.#logger = options.logger ?? createLogger("provider-claude-code");
     if (!Number.isSafeInteger(this.#maxLineBytes) || this.#maxLineBytes < 1024) {
       throw new Error("maxLineBytes must be a safe integer of at least 1024");
     }
@@ -89,6 +93,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
         detached: process.platform !== "win32",
       });
     } catch (error) {
+      this.#logger.debug({ code: "spawn_failed", error: String(error) }, "Claude Code process spawn failed");
       throw new ClaudeCodeProcessError(
         "spawn",
         error instanceof Error ? error.message : "Claude Code could not be started",
@@ -99,9 +104,13 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#child.once("spawn", () => {
       this.#spawned = true;
     });
-    this.#child.on("error", (error) =>
-      this.#fail(new ClaudeCodeProcessError(this.#spawned ? "exited" : "spawn", error.message)),
-    );
+    this.#child.on("error", (error) => {
+      this.#logger.debug(
+        { code: this.#spawned ? "process_error" : "spawn_error", error: error.message },
+        "Claude Code process failed",
+      );
+      this.#fail(new ClaudeCodeProcessError(this.#spawned ? "exited" : "spawn", error.message));
+    });
     this.#child.on("exit", () => this.#onExit());
   }
 
@@ -166,6 +175,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       try {
         parsed = JSON.parse(raw);
       } catch {
+        this.#logger.debug({ code: "stdout_malformed_json" }, "Claude Code protocol output was rejected");
         this.#fail(new ClaudeCodeProcessError("protocol", "Claude Code emitted malformed JSONL"));
         return;
       }
@@ -176,6 +186,10 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       try {
         this.#listener?.(parsed);
       } catch (error) {
+        this.#logger.debug(
+          { code: "protocol_listener_failed", error: String(error) },
+          "Claude Code protocol listener failed",
+        );
         this.#fail(
           error instanceof Error
             ? error

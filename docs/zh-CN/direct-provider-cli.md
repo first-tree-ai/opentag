@@ -8,7 +8,11 @@ Turn 才会取得 OpenTag 投影的临时凭证。
 
 OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影和 provider 原生入站引用，不提供消息发送、回复、Reaction 或上传 API。
 
-有效的 Feishu/Lark 或 Slack binding 才会产生对应依赖。Daemon 只可修复该 binding 所需的
+首次上手时，定向的 `opentag connect` 命令是两套官方 Provider CLI 的唯一安装者。
+它不使用交互式问答，会返回有界的后续动作，人或 Agent 都可以执行。在 setup 未完成时，
+daemon 会独立检查并上报两套 CLI 状态，不会与前台安装争用安装锁。
+
+有效的 Feishu/Lark 或 Slack binding 产生对应依赖后，daemon 只可修复该 binding 所需的
 OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证同一个精确 CLI；不得替换
 外部安装或非 OpenTag shim。`opentag doctor` 与 portable installer 只报告 account-global
 静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。

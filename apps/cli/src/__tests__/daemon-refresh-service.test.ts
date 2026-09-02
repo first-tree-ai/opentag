@@ -185,6 +185,6 @@ describe("daemon refresh-service command", () => {
       writeError: (message) => errors.push(message),
     });
     expect(failed).toBe(1);
-    expect(errors).toContain("not installed");
+    expect(errors.join("\n")).toContain("INTERNAL_ERROR: not installed");
   });
 });

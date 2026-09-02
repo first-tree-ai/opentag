@@ -1,5 +1,9 @@
+import { redactForLog } from "@opentag/shared";
+import { DrizzleQueryError } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { createApp, sanitizeRequestUrl } from "../app.js";
+import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { AuthServiceError } from "../services/auth/index.js";
 
 describe("request logging", () => {
   it("uses an inbound x-request-id and echoes it on the response", async () => {
@@ -47,13 +51,26 @@ describe("request logging", () => {
     const chunks: string[] = [];
     const app = createApp({ loggerStream: { write: (chunk) => chunks.push(String(chunk)) } });
     try {
-      await app.inject({ method: "GET", url: "/healthz", headers: { "x-request-id": "probe-1" } });
+      await app.inject({ method: "GET", url: "/request-id-log", headers: { "x-request-id": "probe-1" } });
     } finally {
       await app.close();
     }
     const logs = chunks.join("");
     expect(logs).toContain('"requestId"');
     expect(logs).not.toContain('"reqId"');
+  });
+
+  it("silences request lifecycle logs for health and readiness probes", async () => {
+    const chunks: string[] = [];
+    const app = createApp({ loggerStream: { write: (chunk) => chunks.push(String(chunk)) } });
+    try {
+      await app.inject({ method: "GET", url: "/healthz" });
+      await app.inject({ method: "GET", url: "/readyz" });
+    } finally {
+      await app.close();
+    }
+
+    expect(chunks).toEqual([]);
   });
 
   it("removes query credentials from logged URLs", () => {
@@ -99,5 +116,165 @@ describe("request logging", () => {
     expect(logs).not.toContain("slack-state");
     expect(logs).toContain("/api/v1/auth/google/callback");
     expect(logs).toContain("/api/v1/im-bindings/slack/oauth/callback");
+  });
+
+  it("whitelists error fields and bounds the serialized stack", async () => {
+    const chunks: string[] = [];
+    const error = Object.assign(new Error("Database write failed"), {
+      detail: "offending-row-secret",
+      where: "complete-database-internal-context",
+    });
+    error.name = "DrizzleQueryError";
+    error.stack = `DrizzleQueryError: Database write failed\n${"stack-frame\n".repeat(2_000)}`;
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/database-error", async () => {
+      throw error;
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/database-error" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: Record<string, unknown>; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err).toEqual({
+      type: "DrizzleQueryError",
+      message: "Database write failed",
+      stack: redactForLog(error.stack),
+    });
+    expect(JSON.stringify(failure)).not.toContain("offending-row-secret");
+    expect(JSON.stringify(failure)).not.toContain("complete-database-internal-context");
+  });
+
+  it("never emits bound parameters from a real DrizzleQueryError", async () => {
+    const chunks: string[] = [];
+    const error = new DrizzleQueryError("select * from accounts where email = $1 and password = $2", [
+      "victim@example.com",
+      "hunter2",
+    ]);
+    const app = createApp({
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/drizzle-query-error", async () => {
+      throw error;
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/drizzle-query-error" });
+      expect(response.statusCode).toBe(500);
+    } finally {
+      await app.close();
+    }
+
+    const logs = chunks.join("");
+    expect(logs).not.toContain("victim@example.com");
+    expect(logs).not.toContain("hunter2");
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { err?: Record<string, unknown>; msg?: string })
+      .find((record) => record.msg === "Request failed");
+    expect(failure?.err).toEqual({
+      type: "DrizzleQueryError",
+      message: "Database query failed (2 parameters)",
+      stack: "DrizzleQueryError: Database query failed (2 parameters)",
+    });
+  });
+
+  it("emits classified failures with the status-based level and request context", async () => {
+    const chunks: string[] = [];
+    const app = createApp({
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/conflict", async () => {
+      throw new AuthServiceError("AUTH_EMAIL_CONFLICT", "deterministic", "An Account already exists", 409);
+    });
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/conflict" });
+      expect(response.statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+
+    const failure = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { code?: string; level?: number; statusCode?: number; requestId?: string })
+      .find((record) => record.code === "AUTH_EMAIL_CONFLICT");
+    expect(failure).toMatchObject({ level: 40, statusCode: 409 });
+    expect(failure?.requestId).toEqual(expect.any(String));
+  });
+
+  it("does not emit a classified log for an anonymous authentication failure", async () => {
+    const chunks: string[] = [];
+    const app = createApp({
+      authService: { getAuthenticatedUser: vi.fn() } as never,
+      loggerLevel: "error",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    app.get("/test/private", { preHandler: createUserAuthPreHandler({} as never) }, async () => ({ ok: true }));
+
+    try {
+      const response = await app.inject({ method: "GET", url: "/test/private" });
+      expect(response.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+
+    expect(chunks).toEqual([]);
+  });
+
+  it("logs one email rate-limit trigger with only its key kind", async () => {
+    const chunks: string[] = [];
+    const email = "sensitive-member@example.com";
+    const app = createApp({
+      browserAuth: {
+        betterAuth: { instance: {} as never, publicUrl: "http://localhost:8000" },
+        passwordSignIn: true,
+        publicOrigin: "http://localhost:8000",
+        rateLimiter: {
+          check: (key) => {
+            if (key.startsWith("sign-in:")) {
+              throw new AuthServiceError("RATE_LIMITED", "rate_limit", "Too many browser sign-in attempts", 429);
+            }
+          },
+        },
+        secureCookies: false,
+        sessionTtlSeconds: 3600,
+      },
+      loggerLevel: "warn",
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/api/v1/auth/email/sign-in",
+          headers: { "content-type": "application/json", origin: "http://localhost:8000" },
+          payload: { email, password: "correct-horse-battery" },
+        });
+        expect(response.statusCode).toBe(429);
+      }
+    } finally {
+      await app.close();
+    }
+
+    const failures = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .map((line) => JSON.parse(line) as { code?: string; keyKind?: string })
+      .filter((record) => record.code === "RATE_LIMITED");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ keyKind: "email" });
+    expect(JSON.stringify(failures)).not.toContain(email);
+    expect(JSON.stringify(failures)).not.toContain(`sign-in:${email}`);
   });
 });

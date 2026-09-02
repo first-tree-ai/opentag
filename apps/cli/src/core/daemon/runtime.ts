@@ -132,17 +132,19 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     instanceId,
     platform: currentPlatform,
   };
-  const ownership = await acquireOwnership(home, instanceId, options, baseBindings);
 
   let lifecycleLogger: ClientLogger | undefined;
   let runtimeLoggerGate: ClientLoggerGate | undefined;
   const state: DaemonMutableState = { handoffRequested: false };
+  let ownership: Awaited<ReturnType<typeof acquireOwnership>> | undefined;
   let failure: unknown;
   let failed = false;
   try {
-    const environmentResult = await applyDaemonEnvironment(home, resolveChannelEnvironment(process.env));
+    const environmentResult = await applyDaemonEnvironment(home, environment);
     const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
     if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
+    ownership = await acquireOwnership(home, instanceId);
+
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
     lifecycleLogger = logger;
     state.terminalLogger = logger;
@@ -158,7 +160,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     await runDaemonLifecycle((signal) => createDaemonRuntime(context, signal), signals);
   } catch (error) {
     const logger =
-      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "stderr" })).child(baseBindings);
+      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logTerminalFailure(logger, error);
     failure = error;
     failed = true;
@@ -169,10 +171,10 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   lifecycleLogger?.info({}, "Daemon runtime stopped");
   runtimeLoggerGate?.disable();
   try {
-    await ownership.release();
+    await ownership?.release();
   } catch (error) {
     const logger =
-      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "stderr" })).child(baseBindings);
+      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logger.error({ category: "ownership_release" }, "Daemon ownership release failed");
     if (!failed) {
       failure = error;
@@ -186,16 +188,8 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
 async function acquireOwnership(
   home: string,
   instanceId: string,
-  options: DaemonRuntimeOptions,
-  baseBindings: Readonly<Record<string, unknown>>,
 ): Promise<Awaited<ReturnType<typeof acquireDaemonOwner>>> {
-  try {
-    return await acquireDaemonOwner(home, instanceId);
-  } catch (error) {
-    const logger = (options.logger ?? createLogger("daemon", { destination: "stderr" })).child(baseBindings);
-    logTerminalFailure(logger, error);
-    throw error;
-  }
+  return acquireDaemonOwner(home, instanceId);
 }
 
 async function createDaemonRuntime(context: DaemonLifecycleContext, signal: AbortSignal): Promise<DaemonRuntime> {
@@ -250,14 +244,14 @@ async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform
   try {
     credentials = await readMachineCredentials(home);
   } catch (error) {
-    throw new DaemonRuntimeConfigurationError("OpenTag Computer credentials are invalid; run computer connect again", {
+    throw new DaemonRuntimeConfigurationError("OpenTag Computer credentials are invalid; run opentag connect again", {
       cause: error,
     });
   }
   signal.throwIfAborted();
   const bound = resolveBoundAccountComputer(credentials);
   if (bound.status === "disconnected") {
-    throw new DaemonRuntimeConfigurationError("This Computer is not connected; run computer connect first");
+    throw new DaemonRuntimeConfigurationError("This Computer is not connected; run opentag connect first");
   }
   let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
   try {
@@ -326,14 +320,14 @@ function isExpectedDaemonStop(error: unknown): boolean {
 
 function daemonOperatorMessage(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) {
-    return "Daemon configuration is invalid; run computer connect or inspect daemon status";
+    return "Daemon configuration is invalid; run opentag connect or inspect daemon status";
   }
   if (error instanceof DaemonOwnerStartupError) {
     return error.code === "BUSY"
       ? "Daemon is already running; inspect daemon status"
       : "Daemon ownership prevented startup; inspect daemon status";
   }
-  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run computer connect again";
+  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run opentag connect again";
   return "Daemon service configuration prevented startup; inspect daemon status";
 }
 

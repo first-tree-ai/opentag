@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
+import { createLogger } from "../../observability/logger.js";
 
 /**
  * Content-addressed identity of one executable file. `path` is the canonical realpath;
@@ -14,6 +15,7 @@ export interface ProviderCliFileIdentity {
 
 /** Hard bound for any selected Provider CLI executable, including external wrappers. */
 export const MAX_PROVIDER_CLI_EXECUTABLE_BYTES = 256 * 1024 * 1024;
+const logger = createLogger("runtime-provider-cli-fingerprint");
 
 export class ProviderCliFileError extends Error {
   override readonly name = "ProviderCliFileError";
@@ -32,7 +34,8 @@ export async function computeFileIdentity(
   let canonical: string;
   try {
     canonical = await realpath(path);
-  } catch {
+  } catch (error) {
+    logger.debug({ code: "file_realpath_failed", error: String(error) }, "Provider CLI file canonicalization failed");
     throw new ProviderCliFileError("missing", path);
   }
   const status = await stat(canonical);

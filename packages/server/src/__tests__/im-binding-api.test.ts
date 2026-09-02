@@ -3,6 +3,7 @@ import {
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
   agentImBindingPath,
+  agentImBindingUnbindPath,
   agentSlackOAuthStartPath,
   FEISHU_REQUIRED_TENANT_SCOPES,
   feishuSetupAttemptPath,
@@ -24,7 +25,11 @@ import {
   isImBindingUniqueViolation,
 } from "../services/im-bindings/im-binding-service.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
-import { ImBindingServiceError, ImBindingService as RealImBindingService } from "../services/im-bindings/index.js";
+import {
+  ImBindingServiceError,
+  ImBindingUnbindRequiredError,
+  ImBindingService as RealImBindingService,
+} from "../services/im-bindings/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -186,6 +191,7 @@ function services() {
     getHandoffForAgent: vi.fn().mockResolvedValue({ bindingState: "active", handoffReady: false }),
     getConfigForAgent: vi.fn().mockResolvedValue(slackDetail),
     disable: vi.fn().mockResolvedValue(undefined),
+    unbindForAgent: vi.fn().mockResolvedValue(undefined),
     diagnostics: vi.fn().mockResolvedValue({
       imBindingId,
       provider: "feishu",
@@ -345,6 +351,198 @@ describe("ImBinding HTTP API", () => {
     expect(response.json().error).toMatchObject({ code: "AGENT_COMPUTER_NOT_BOUND", category: "deterministic" });
   });
 
+  it("passes a declared Feishu messaging expectation to the setup command", async () => {
+    const service = services();
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+      feishuSetupService: service.feishu as unknown as FeishuSetupService,
+    });
+    apps.push(app);
+
+    const created = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: { intent: "create", expectedMessaging: { kind: "unbound" } },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(service.feishu.createOrReuse).toHaveBeenCalledWith(userId, agentId, "create", { kind: "unbound" });
+
+    const bound = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: {
+        intent: "reauthorize",
+        expectedMessaging: { kind: "bound", provider: "feishu", bindingId: imBindingId, credentialGeneration: 2 },
+      },
+    });
+    expect(bound.statusCode).toBe(201);
+    expect(service.feishu.createOrReuse).toHaveBeenCalledWith(userId, agentId, "reauthorize", {
+      kind: "bound",
+      provider: "feishu",
+      bindingId: imBindingId,
+      credentialGeneration: 2,
+    });
+
+    const contradiction = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: {
+        intent: "create",
+        expectedMessaging: { kind: "bound", provider: "feishu", bindingId: imBindingId, credentialGeneration: 1 },
+      },
+    });
+    expect(contradiction.statusCode).toBe(400);
+    expect(contradiction.json().error).toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("fails a cross-Provider Feishu start with the structured unbind-required identity", async () => {
+    const service = services();
+    service.feishu.createOrReuse = vi.fn().mockRejectedValue(
+      new ImBindingUnbindRequiredError({
+        currentProvider: "slack",
+        currentBindingId: imBindingId,
+        requestedProvider: "feishu",
+      }),
+    );
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+      feishuSetupService: service.feishu as unknown as FeishuSetupService,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: { intent: "create" },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toMatchObject({
+      code: "IM_BINDING_UNBIND_REQUIRED",
+      category: "deterministic",
+      unbindRequired: {
+        currentProvider: "slack",
+        currentBindingId: imBindingId,
+        requestedProvider: "feishu",
+      },
+    });
+  });
+
+  it.each([
+    ["IM_BINDING_GENERATION_STALE", 409, "deterministic"],
+    ["IM_BINDING_TEMPORARILY_UNAVAILABLE", 503, "transient"],
+  ] as const)("keeps public IM failure %s inside the canonical envelope", async (code, statusCode, category) => {
+    const service = services();
+    service.imBindings.getConfigForAgent.mockRejectedValueOnce(
+      new ImBindingServiceError(code, statusCode, "Messaging state unavailable", category),
+    );
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: agentImBindingConfigPath(agentId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json()).toEqual({
+      error: {
+        code,
+        category,
+        message: "Messaging state unavailable",
+        requestId: response.headers["x-request-id"],
+      },
+    });
+    expect(JSON.stringify(response.json())).not.toContain("Invalid option");
+  });
+
+  it("unbinds the exact current binding through the Agent-scoped route", async () => {
+    const service = services();
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+      feishuSetupService: service.feishu as unknown as FeishuSetupService,
+    });
+    apps.push(app);
+
+    const unbound = await app.inject({
+      method: "POST",
+      url: agentImBindingUnbindPath(agentId),
+      headers: authorization,
+      payload: { provider: "slack", bindingId: imBindingId },
+    });
+    expect(unbound.statusCode).toBe(204);
+    expect(service.imBindings.unbindForAgent).toHaveBeenCalledWith(userId, agentId, {
+      provider: "slack",
+      bindingId: imBindingId,
+    });
+
+    const malformed = await app.inject({
+      method: "POST",
+      url: agentImBindingUnbindPath(agentId),
+      headers: authorization,
+      payload: { provider: "slack", bindingId: "not-a-uuid" },
+    });
+    expect(malformed.statusCode).toBe(400);
+    const arbitraryField = await app.inject({
+      method: "POST",
+      url: agentImBindingUnbindPath(agentId),
+      headers: authorization,
+      payload: { provider: "slack", bindingId: imBindingId, returnUrl: "https://evil.example.com" },
+    });
+    expect(arbitraryField.statusCode).toBe(400);
+
+    service.imBindings.unbindForAgent.mockRejectedValueOnce(
+      new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found"),
+    );
+    const missing = await app.inject({
+      method: "POST",
+      url: agentImBindingUnbindPath(agentId),
+      headers: authorization,
+      payload: { provider: "slack", bindingId: imBindingId },
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json().error).toMatchObject({ code: "IM_BINDING_NOT_FOUND" });
+
+    service.imBindings.unbindForAgent.mockRejectedValueOnce(
+      new ImBindingServiceError("IM_BINDING_CONFIGURATION_CONFLICT", 409, "stale"),
+    );
+    const stale = await app.inject({
+      method: "POST",
+      url: agentImBindingUnbindPath(agentId),
+      headers: authorization,
+      payload: { provider: "slack", bindingId: imBindingId },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error).toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT", category: "deterministic" });
+    expect(stale.json().error).not.toHaveProperty("unbindRequired");
+  });
+
+  it("requires authentication to unbind messaging", async () => {
+    const service = services();
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: agentImBindingUnbindPath(agentId),
+      payload: { provider: "slack", bindingId: imBindingId },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(service.imBindings.unbindForAgent).not.toHaveBeenCalled();
+  });
+
   it("requires authentication to start Slack OAuth", async () => {
     const app = createApp({
       authService: authService(),
@@ -415,7 +613,7 @@ describe("ImBindingService persistence", () => {
   it("handles Feishu replacement, identity validation, scope projection, and authorization errors", async () => {
     const value = await persistedFixture();
     await expect(value.service.activateFeishu(feishuInput(crypto.randomUUID()))).rejects.toMatchObject({
-      code: "AGENT_NOT_FOUND",
+      code: "IM_BINDING_NOT_FOUND",
     });
     const first = await value.service.activateFeishu(feishuInput(value.agent.id));
     await expect(
@@ -517,7 +715,7 @@ describe("ImBindingService persistence", () => {
       code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
     });
     await expect(value.service.activateSlack(slackInput(crypto.randomUUID()), "B1")).rejects.toMatchObject({
-      code: "AGENT_NOT_FOUND",
+      code: "IM_BINDING_NOT_FOUND",
     });
     const feishu = await value.service.activateFeishu(feishuInput(value.agent.id));
     await expect(value.service.activateSlack(slackInput(value.agent.id), "B1")).rejects.toMatchObject({

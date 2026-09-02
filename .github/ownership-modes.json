@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "documentation": "Review mode per .github/CODEOWNERS rule pattern, enforced by the ownership-gate check. gate = mutual review, no author self-exemption. territory = an owner may self-merge on green CI, anyone else needs an owner approval. exempt = the rule deliberately lists no owners and requires nothing. Patterns must match .github/CODEOWNERS exactly; check-ownership-policy.mjs fails on drift in either direction. A pattern missing from this file resolves to gate at runtime, so the failure mode is fail-safe.",
+  "rules": [
+    { "pattern": "*", "mode": "gate" },
+    { "pattern": "/.editorconfig", "mode": "territory" },
+    { "pattern": "/.gitignore", "mode": "territory" },
+    { "pattern": "/LICENSE", "mode": "territory" },
+    { "pattern": "*.md", "mode": "territory" },
+    { "pattern": "package.json", "mode": "exempt" },
+    { "pattern": "/pnpm-lock.yaml", "mode": "exempt" },
+    { "pattern": "/.github/", "mode": "gate" },
+    { "pattern": "/packages/server/drizzle/", "mode": "gate" },
+    { "pattern": "/AGENTS.md", "mode": "gate" },
+    { "pattern": "/CLAUDE.md", "mode": "gate" },
+    { "pattern": "/CONTRIBUTING.md", "mode": "gate" },
+    { "pattern": "/CONTRIBUTING.zh-CN.md", "mode": "gate" },
+    { "pattern": "/SECURITY.md", "mode": "gate" },
+    { "pattern": "/SECURITY.zh-CN.md", "mode": "gate" },
+    { "pattern": "/apps/web/", "mode": "exempt" }
+  ],
+  "pins": [
+    {
+      "pattern": "/.github/",
+      "reason": "The ownership gate, the CI workflows that define what green CI means, and the pull request template must stay mutually reviewed. The pin is order-dependent, so this asserts no later rule wins for any tracked file beneath it."
+    },
+    {
+      "pattern": "/packages/server/drizzle/",
+      "reason": "Irreversible migrations and the CURRENT_MIGRATION_COUNT ratchet must stay mutually reviewed. The pin is order-dependent, so this asserts no later rule wins for any tracked file beneath it."
+    }
+  ]
+}

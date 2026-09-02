@@ -1,6 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { browserApi } from "../../api.js";
+import { ApiError, browserApi } from "../../api.js";
 import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-review.js";
 import { AgentSetupSurface } from "../../onboarding-v2/page.js";
 import * as m from "../../paraglide/messages.js";
@@ -144,6 +144,7 @@ function TargetedAgentSetup({
 }) {
   const [attempt, setAttempt] = useState(0);
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
+  const retryResolution = useCallback(() => setAttempt((current) => current + 1), []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; bumping it must re-run the read even though the effect body never reads it.
   useEffect(() => {
@@ -275,6 +276,7 @@ function TargetedAgentSetup({
         onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
         onReviewFinished={onReviewFinished}
+        onTargetInvalidated={retryResolution}
         reviewMode={reviewMode}
         slackOAuthError={slackOAuthError}
       />
@@ -304,6 +306,7 @@ function ExactAgentSetup({
   onBackToAgents,
   onOpenAgent,
   onReviewFinished,
+  onTargetInvalidated,
   reviewMode,
   slackOAuthError,
 }: {
@@ -313,6 +316,7 @@ function ExactAgentSetup({
   onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
   onReviewFinished: (agentId: string) => Promise<void>;
+  onTargetInvalidated: () => void;
   reviewMode: boolean;
   slackOAuthError?: string;
 }) {
@@ -331,14 +335,19 @@ function ExactAgentSetup({
       () => {
         if (live) setAdmission("ready");
       },
-      () => {
-        if (live) setAdmission("failed");
+      (error: unknown) => {
+        if (!live) return;
+        if (error instanceof ApiError && error.status === 404) {
+          onTargetInvalidated();
+          return;
+        }
+        setAdmission("failed");
       },
     );
     return () => {
       live = false;
     };
-  }, [accountCompleted, agentId, attempt, onAdopt]);
+  }, [accountCompleted, agentId, attempt, onAdopt, onTargetInvalidated]);
 
   if (admission === "loading") {
     return (

@@ -95,6 +95,7 @@ interface HarnessOptions {
   imCliReadiness?: ImCliReadinessStatus;
   credentialExecutionReadiness?: { status: IntegrationCredentialExecutionStatus };
   registrations?: FeishuRegistrationGateway;
+  slackOAuthAvailable?: boolean;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -121,6 +122,7 @@ function harness(options: HarnessOptions = {}) {
   const service = new AgentSetupService(unitDatabase.database, agentService, imBindingService, feishuSetup, {
     now: () => NOW,
     providerReadiness: options.runtimeReadiness,
+    slackOAuthAvailable: options.slackOAuthAvailable,
   });
   return { agentService, feishuSetup, imBindingService, service };
 }
@@ -454,6 +456,23 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 
+  it("withholds Slack setup when the deployment has no Slack OAuth capability", async () => {
+    const bootstrap = await account();
+    const { service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      slackOAuthAvailable: false,
+    });
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: { kind: "not-configured" },
+      actions: [{ kind: "start-messaging", provider: "feishu" }],
+    });
+  });
+
   it("names the exact live Feishu attempt while authorization is open", async () => {
     const bootstrap = await account();
     const qrExpiresAt = new Date(Date.now() + 60_000);
@@ -646,6 +665,27 @@ describe("Agent setup projection Messaging states", () => {
     });
     expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
     expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "replace-messaging" }));
+  });
+
+  it("withholds Slack reauthorization when OAuth is unavailable but preserves exact unbind", async () => {
+    const bootstrap = await account();
+    const { imBindingService, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReadiness: "ready",
+      credentialExecutionReadiness: { status: "ready" },
+      slackOAuthAvailable: false,
+    });
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const { imBindingId } = await activateSlackBinding(imBindingService, agentId);
+    await observeSlackConnection(agentId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "ready",
+      messaging: { kind: "ready", provider: "slack", bindingId: imBindingId },
+      actions: [{ kind: "unbind-messaging", provider: "slack", bindingId: imBindingId }],
+    });
   });
 
   it("reports a ready Feishu binding with same-Provider replacement allowed", async () => {

@@ -34,6 +34,7 @@ export interface AgentSetupServiceOptions {
   now?: () => Date;
   presenceTimeoutMs?: number;
   providerReadiness?: ProviderReadinessSource;
+  slackOAuthAvailable?: boolean;
 }
 
 /**
@@ -51,6 +52,7 @@ export class AgentSetupService {
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
   readonly #providerReadiness?: ProviderReadinessSource;
+  readonly #slackOAuthAvailable: boolean;
 
   constructor(
     database: DatabaseClient,
@@ -66,6 +68,7 @@ export class AgentSetupService {
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#providerReadiness = options.providerReadiness;
+    this.#slackOAuthAvailable = options.slackOAuthAvailable ?? true;
   }
 
   async getSetupById(callerUserId: string, agentId: string): Promise<AgentSetupSnapshot> {
@@ -91,7 +94,7 @@ export class AgentSetupService {
       runtime,
       messaging,
       blockers: deriveSetupBlockers(stage, computer, runtime, messaging),
-      actions: deriveSetupActions(stage, computer, messaging),
+      actions: deriveSetupActions(stage, computer, messaging, this.#slackOAuthAvailable),
       observedAt: observedAt.toISOString(),
     };
   }
@@ -348,6 +351,7 @@ function deriveSetupActions(
   stage: AgentSetupStage,
   computer: AgentSetupComputerState,
   messaging: AgentSetupMessagingState,
+  slackOAuthAvailable: boolean,
 ): AgentSetupAction[] {
   switch (stage) {
     case "needs-computer":
@@ -360,7 +364,7 @@ function deriveSetupActions(
       return [{ kind: "refresh" }];
     case "needs-messaging":
     case "ready":
-      return messagingActions(messaging);
+      return messagingActions(messaging, slackOAuthAvailable);
   }
 }
 
@@ -370,13 +374,13 @@ function deriveSetupActions(
  * projection returns to not-configured and `start-messaging` becomes legal. Same-Provider
  * reauthorization (and Feishu replacement) stays available because it names the exact binding.
  */
-function messagingActions(messaging: AgentSetupMessagingState): AgentSetupAction[] {
+function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailable: boolean): AgentSetupAction[] {
   switch (messaging.kind) {
-    case "not-configured":
-      return [
-        { kind: "start-messaging", provider: "feishu" },
-        { kind: "start-messaging", provider: "slack" },
-      ];
+    case "not-configured": {
+      const actions: AgentSetupAction[] = [{ kind: "start-messaging", provider: "feishu" }];
+      if (slackOAuthAvailable) actions.push({ kind: "start-messaging", provider: "slack" });
+      return actions;
+    }
     case "observation-failed":
       return [{ kind: "refresh" }];
     case "authorizing":
@@ -396,9 +400,19 @@ function messagingActions(messaging: AgentSetupMessagingState): AgentSetupAction
       if (!messaging.credentialGeneration) {
         throw new Error("A configured blocked Messaging binding must name its credential generation");
       }
-      return currentBindingActions(messaging.provider, messaging.bindingId, messaging.credentialGeneration);
+      return currentBindingActions(
+        messaging.provider,
+        messaging.bindingId,
+        messaging.credentialGeneration,
+        slackOAuthAvailable,
+      );
     case "ready":
-      return currentBindingActions(messaging.provider, messaging.bindingId, messaging.credentialGeneration);
+      return currentBindingActions(
+        messaging.provider,
+        messaging.bindingId,
+        messaging.credentialGeneration,
+        slackOAuthAvailable,
+      );
   }
 }
 
@@ -406,8 +420,12 @@ function currentBindingActions(
   provider: ImProvider,
   bindingId: string,
   credentialGeneration: number,
+  slackOAuthAvailable: boolean,
 ): AgentSetupAction[] {
-  const actions: AgentSetupAction[] = [{ kind: "reauthorize-messaging", provider, bindingId, credentialGeneration }];
+  const actions: AgentSetupAction[] = [];
+  if (provider !== "slack" || slackOAuthAvailable) {
+    actions.push({ kind: "reauthorize-messaging", provider, bindingId, credentialGeneration });
+  }
   if (provider === "feishu") {
     actions.push({ kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration });
   }

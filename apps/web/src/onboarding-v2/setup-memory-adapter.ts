@@ -9,8 +9,10 @@
  * page — scanning a code, finishing in Slack, a machine waking up — are explicit controls, because
  * no timer should decide when a state under review changes.
  *
- * Every read is validated against `AgentSetupSnapshotSchema` before it leaves: a model that could
- * emit a snapshot the real Server never would would teach the surface the wrong lessons.
+ * Every read is validated against `AgentSetupSnapshotSchema` before it leaves. Durable states match
+ * the Server projection. The one deliberate presentation-only superset is `slack-install`: it lets
+ * Review Lab show the browser-away interval after Slack navigation, while production cannot observe
+ * that interval because the callback activates the binding before returning to the application.
  */
 
 import {
@@ -138,6 +140,8 @@ function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState 
         qrUrl: MEMORY_QR_URL,
         expiresAt: attemptExpiresAt(),
       };
+    // Review Lab only: production leaves the application for this interval and therefore never
+    // returns this authorizing state from the setup endpoint.
     case "slack-install":
       return { kind: "authorizing", provider: "slack", expiresAt: attemptExpiresAt() };
     case "bound":

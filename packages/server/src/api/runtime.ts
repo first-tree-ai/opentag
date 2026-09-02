@@ -1,5 +1,6 @@
 import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
+import { createServiceLoggerPort } from "../observability/index.js";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
@@ -82,6 +83,7 @@ export function registerRuntimeRoutes(
     channelTarget: options.channelTarget,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
+    logger: options.logger ?? createServiceLoggerPort(() => app.log, "runtime-session"),
     now: options.now,
     onRegistered: async (input) => {
       await options.onRegistered?.(input);

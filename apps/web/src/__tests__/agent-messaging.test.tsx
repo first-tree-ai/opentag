@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
+import { withLocaleAsync } from "./support/with-locale.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -87,6 +88,21 @@ describe("OpenTag Web App Shell", () => {
       expect(button.className).toContain("bg-kumo-base");
       expect(button.className).toContain("!text-kumo-default");
     }
+  });
+
+  it("spaces both brand names correctly when the page itself renders in Chinese", async () => {
+    /*
+     * Composing the sentence in a test proves only that the catalogue and the spacing rule fit
+     * together; it cannot see whether this page still puts them together that way. Reading the
+     * rendered page is what observes the call site, and only Chinese shows the difference — the
+     * boundary rule is a no-op in English, so the English assertion above would survive its loss.
+     */
+    installApi({ bound: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    await withLocaleAsync("zh", async () => {
+      render(<App />);
+      expect(await screen.findByText("连接 Slack 或飞书，让团队成员可以向此 Agent 发送消息。")).toBeTruthy();
+    });
   });
 
   it("separates the connected channel from the trigger mode that acts on it", async () => {

@@ -3,6 +3,7 @@ import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
+import { sql } from "drizzle-orm";
 import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
@@ -26,6 +27,7 @@ import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/sla
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentRuntimeTestService, type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
@@ -41,6 +43,8 @@ import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
+  /** Drizzle client used by the liveness probe. The production bootstrap also exposes it through TaskService. */
+  database?: DatabaseClient;
   authService?: UserAuthService;
   /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
@@ -99,6 +103,11 @@ export function ignoreHttpTraceRoute(path: string): boolean {
     pathname.startsWith("/assets/") ||
     pathname.startsWith("/fonts/")
   );
+}
+
+function disableProbeRequestLogging(request: FastifyRequest): boolean {
+  const pathname = sanitizeRequestUrl(request.url);
+  return pathname === "/healthz" || pathname === "/readyz";
 }
 
 const MAX_ERROR_STACK_LENGTH = 8_192;
@@ -200,11 +209,15 @@ export function createApp(options: CreateAppOptions = {}) {
      * straight into Pino and OTel. Doing the read here keeps the header contract but validates it.
      */
     requestIdHeader: false,
-    logController: new LogController({ requestIdLogLabel: "requestId" }),
+    logController: new LogController({
+      disableRequestLogging: disableProbeRequestLogging,
+      requestIdLogLabel: "requestId",
+    }),
     genReqId: (request) => safeInboundRequestId(request.headers["x-request-id"]) ?? randomUUID(),
     logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
+  const healthDatabase = options.database ?? options.taskService?.database;
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
@@ -238,7 +251,15 @@ export function createApp(options: CreateAppOptions = {}) {
     if (traceId) reply.header("x-trace-id", traceId);
   });
 
-  app.get("/healthz", async (_request, reply) => {
+  app.get("/healthz", async (request, reply) => {
+    if (healthDatabase) {
+      try {
+        await healthDatabase.execute(sql`select 1`);
+      } catch (error) {
+        request.log.error({ check: "database", err: error }, "Health check failed");
+        return reply.code(503).send({ status: "unhealthy", service: "opentag-server" });
+      }
+    }
     const health = ServerHealthSchema.parse({
       status: "ok",
       service: "opentag-server",

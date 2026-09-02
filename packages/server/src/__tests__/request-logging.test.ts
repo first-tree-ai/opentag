@@ -49,13 +49,26 @@ describe("request logging", () => {
     const chunks: string[] = [];
     const app = createApp({ loggerStream: { write: (chunk) => chunks.push(String(chunk)) } });
     try {
-      await app.inject({ method: "GET", url: "/healthz", headers: { "x-request-id": "probe-1" } });
+      await app.inject({ method: "GET", url: "/request-id-log", headers: { "x-request-id": "probe-1" } });
     } finally {
       await app.close();
     }
     const logs = chunks.join("");
     expect(logs).toContain('"requestId"');
     expect(logs).not.toContain('"reqId"');
+  });
+
+  it("silences request lifecycle logs for health and readiness probes", async () => {
+    const chunks: string[] = [];
+    const app = createApp({ loggerStream: { write: (chunk) => chunks.push(String(chunk)) } });
+    try {
+      await app.inject({ method: "GET", url: "/healthz" });
+      await app.inject({ method: "GET", url: "/readyz" });
+    } finally {
+      await app.close();
+    }
+
+    expect(chunks).toEqual([]);
   });
 
   it("removes query credentials from logged URLs", () => {

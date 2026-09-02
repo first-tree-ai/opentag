@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { BootstrapReadiness } from "../bootstrap-readiness.js";
 
@@ -39,5 +39,40 @@ describe("GET /healthz", () => {
       status: "ok",
       service: "opentag-server",
     });
+  });
+
+  it("probes the configured database before reporting healthy", async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const app = createApp({ database: { execute } as never });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ok", service: "opentag-server" });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the application TaskService database when no explicit probe client is supplied", async () => {
+    const execute = vi.fn().mockResolvedValue([]);
+    const app = createApp({ taskService: { database: { execute } } as never });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(200);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns unavailable when the database health probe fails", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("database connection refused"));
+    const app = createApp({ database: { execute } as never });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: "/healthz" });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({ status: "unhealthy", service: "opentag-server" });
+    expect(response.body).not.toContain("database connection refused");
   });
 });

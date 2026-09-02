@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { createGitHubClient } from "../github/client.mjs";
+import { createLogger } from "../logger.mjs";
 import {
   CLOSED_MARKER,
   collectMentions,
@@ -11,8 +13,6 @@ import {
   normalizePullRequest,
 } from "../stale-pull-requests/activity.mjs";
 import { createPullRequestActions, executeDecisions } from "../stale-pull-requests/executor.mjs";
-import { createGitHubClient } from "../stale-pull-requests/github.mjs";
-import { createLogger } from "../stale-pull-requests/logger.mjs";
 import {
   ACTION_CLOSE,
   ACTION_NONE,

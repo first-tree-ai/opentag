@@ -3,10 +3,10 @@ import { appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { createGitHubClient } from "./github/client.mjs";
+import { createLogger } from "./logger.mjs";
 import { normalizeLogin, normalizePullRequest } from "./stale-pull-requests/activity.mjs";
 import { createPullRequestActions, ensureLabels, executeDecisions } from "./stale-pull-requests/executor.mjs";
-import { createGitHubClient } from "./stale-pull-requests/github.mjs";
-import { createLogger } from "./stale-pull-requests/logger.mjs";
 import { assertPolicyConfig, decidePullRequest } from "./stale-pull-requests/policy.mjs";
 import { fetchOpenPullRequests } from "./stale-pull-requests/query.mjs";
 import { renderSummary } from "./stale-pull-requests/report.mjs";
@@ -170,7 +170,10 @@ async function run({ config, env, logger, now }) {
 async function main() {
   const env = process.env;
   const config = buildConfig(process.argv.slice(2));
-  const logger = createLogger({ level: env.STALE_PR_LOG_LEVEL ?? (env.RUNNER_DEBUG === "1" ? "debug" : "info") });
+  const logger = createLogger({
+    level: env.STALE_PR_LOG_LEVEL ?? (env.RUNNER_DEBUG === "1" ? "debug" : "info"),
+    prefix: "[stale-pr]",
+  });
   logger.debug("Resolved configuration", config);
   return run({ config, env, logger, now: new Date().toISOString() });
 }

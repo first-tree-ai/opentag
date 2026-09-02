@@ -143,7 +143,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     const environmentResult = await applyDaemonEnvironment(home, environment);
     const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
     if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
-    ownership = await acquireOwnership(home, instanceId, options, baseBindings);
+    ownership = await acquireOwnership(home, instanceId);
 
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
     lifecycleLogger = logger;
@@ -188,16 +188,8 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
 async function acquireOwnership(
   home: string,
   instanceId: string,
-  options: DaemonRuntimeOptions,
-  baseBindings: Readonly<Record<string, unknown>>,
 ): Promise<Awaited<ReturnType<typeof acquireDaemonOwner>>> {
-  try {
-    return await acquireDaemonOwner(home, instanceId);
-  } catch (error) {
-    const logger = (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
-    logTerminalFailure(logger, error);
-    throw error;
-  }
+  return acquireDaemonOwner(home, instanceId);
 }
 
 async function createDaemonRuntime(context: DaemonLifecycleContext, signal: AbortSignal): Promise<DaemonRuntime> {

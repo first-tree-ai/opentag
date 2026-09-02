@@ -128,6 +128,23 @@ describe("daemon service runtime", () => {
     expect(clientMocks.createLogger).toHaveBeenCalledWith("daemon", { destination: "dual" });
   });
 
+  it("logs an already-held owner exactly once at the service entry", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-entry-once-"));
+    directories.push(home);
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+    const owner = await acquireDaemonOwner(home, "existing-instance");
+
+    try {
+      await expect(runDaemonServiceEntry({ home, logger: recordingLogger(entries) })).resolves.toBe(0);
+    } finally {
+      await owner.release();
+    }
+
+    expect(
+      entries.filter(({ message }) => message === "Daemon is already running; inspect daemon status"),
+    ).toHaveLength(1);
+  });
+
   it("does not start after a signal arrives during startup", async () => {
     const signals = new EventEmitter();
     const run = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);

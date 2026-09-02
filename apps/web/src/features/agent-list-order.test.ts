@@ -403,45 +403,55 @@ describe("Agent availability model and presentation", () => {
         availability: { ...base.availability, reason: "agent_unconfirmed", state: "unconfirmed" },
       }),
     ).toBeUndefined();
-    expect(agentCardStatus({ ...base, evidenceConfirmed: false } as never)).toMatchObject({ label: "Unconfirmed" });
+    expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
+      detail: undefined,
+      label: "Ready for new work",
+      priority: 3,
+      tone: "success",
+    });
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date(Date.now() - 8 * 60_000).toISOString() },
+        evidenceConfirmed: true,
+      } as never),
+    ).toEqual({
+      detail: "Working now · started 8m ago",
+      label: "Ready for new work",
+      priority: 3,
+      tone: "success",
+    });
+    expect(agentCardStatus({ ...base, evidenceConfirmed: false } as never)).toMatchObject({
+      label: "Status unavailable",
+    });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "not_connected" },
       } as never),
-    ).toEqual({
-      detail: "Cannot receive new work",
-      label: "Messaging disconnected",
-      priority: 2,
-      tone: "neutral",
-    });
+    ).toEqual({ label: "Messaging not connected", priority: 2, tone: "neutral" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "action_required", reason: "runtime_unavailable" },
       } as never),
-    ).toMatchObject({ detail: "Cannot receive new work", priority: 0, tone: "warning" });
+    ).toMatchObject({ label: "Codex unavailable", priority: 0, tone: "warning" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "action_required", reason: "im_error" },
       } as never),
-    ).toEqual({
-      detail: "Cannot receive new work",
-      label: "Messaging disconnected",
-      priority: 0,
-      tone: "warning",
-    });
+    ).toEqual({ label: "Messaging connection failed", priority: 0, tone: "warning" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "setting_up", reason: "im_provisioning" },
       } as never),
-    ).toMatchObject({ detail: "Messaging setup in progress" });
+    ).toMatchObject({ label: "Setting up messaging", priority: 2, tone: "info" });
     expect(titleCase("runtime_unavailable")).toBe("Runtime Unavailable");
     expect(platformLabel("darwin")).toBe("macOS");
     expect(platformLabel("win32")).toBe("Windows");

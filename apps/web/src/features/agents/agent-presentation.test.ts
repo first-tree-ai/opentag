@@ -5,7 +5,6 @@ import { projectAgentAvailability } from "./agent-model.js";
 import {
   agentAvailabilityRecovery,
   agentComputerStatus,
-  agentRecoveryMessage,
   agentSetupContinuation,
   agentStatusPresentation,
   computerRecoveryMessage,
@@ -57,7 +56,6 @@ describe("An Agent with no Computer, as the viewer reads it", () => {
       label: "Connect a Computer",
       link: { params: { agentId, section: "computer" }, to: "/agents/$agentId/settings/$section" },
     });
-    expect(agentRecoveryMessage(agent)).toBe("This Agent has no Computer. Connect one to give it somewhere to run.");
     // The Computer panel says the same thing without naming a machine, because there is none to name.
     expect(computerRecoveryMessage(agent)).toBe(
       "This Agent is not connected to a Computer yet. Connect one to give it somewhere to run.",

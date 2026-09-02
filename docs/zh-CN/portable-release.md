@@ -1,7 +1,7 @@
 # OpenTag Portable 发布指南
 
 > Canonical source: [../portable-release.md](../portable-release.md)
-> Last synced with: 2026-09-01
+> Last synced with: 2026-09-02
 
 Portable release 是一份自包含的 OpenTag 安装包：每个平台一个 tarball，同时携带 bundle 后的 CLI **和它自己的
 Node.js runtime**，因此没有 Node.js、没有 npm、没有任何 package manager 的机器也能安装并运行 OpenTag。它发布到

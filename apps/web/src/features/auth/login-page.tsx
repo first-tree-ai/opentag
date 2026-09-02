@@ -2,11 +2,13 @@ import { type AuthProvidersResponse, DEFAULT_SIGN_IN_DESTINATION } from "@openta
 import { useQuery } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import googleSignInButton from "../../assets/google-sign-in-light@2x.png";
+import { spaceScriptBoundary } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Icon, Text } from "../../ui/design-system.js";
 import { AsyncState, toResourceState } from "../resource/resource-state.js";
 import { PasswordSignInForm } from "./password-sign-in-form.js";
+import { authProviderLabel } from "./provider-label.js";
 
 export type AuthProvider = AuthProvidersResponse["providers"][number];
 
@@ -112,7 +114,7 @@ export function LoginProviderLink({ next, provider }: { next: string; provider: 
       data-ui="login-provider"
       href={href}
     >
-      <span>{m.auth_continue_with_provider({ providerId: provider.id })}</span>
+      <span>{spaceScriptBoundary(m.auth_continue_with_provider({ provider: authProviderLabel(provider.id) }))}</span>
     </a>
   );
 }

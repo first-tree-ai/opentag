@@ -1,7 +1,7 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { ImProviderSchema } from "@opentag/shared/browser";
-import { formatElapsedCompact } from "../../i18n/format.js";
-import { messagingProviderLabel, spaceBrandInSentence } from "../../im/provider-label.js";
+import { formatElapsedCompact, spaceScriptBoundary } from "../../i18n/format.js";
+import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { SETUP_COPY } from "../../setup/copy.js";
 import type { StatusTone } from "../../ui/design-system.js";
@@ -238,13 +238,13 @@ export function sharedConversationLabel(provider: ImBindingSummary["provider"]):
 export function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
   const brand = messagingProviderLabel(provider);
   if (provider === "feishu") {
-    return spaceBrandInSentence(
+    return spaceScriptBoundary(
       plural
         ? m.agents_shared_destination_group_chats({ provider: brand })
         : m.agents_shared_destination_group_chat({ provider: brand }),
     );
   }
-  return spaceBrandInSentence(
+  return spaceScriptBoundary(
     plural
       ? m.agents_shared_destination_channels({ provider: brand })
       : m.agents_shared_destination_channel({ provider: brand }),
@@ -272,7 +272,7 @@ export function agentAvailabilitySummary(agent: AgentDetailView): string {
   if (agent.availability.state === "ready") {
     const provider = agent.availability.dependencies.channel.provider;
     return provider
-      ? spaceBrandInSentence(m.agents_available_in_channel({ provider: messagingProviderLabel(provider) }))
+      ? spaceScriptBoundary(m.agents_available_in_channel({ provider: messagingProviderLabel(provider) }))
       : m.agents_ready_for_new_work();
   }
   return {

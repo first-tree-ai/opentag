@@ -12,6 +12,7 @@
   "agent_settings_channel_detail_with_name": "消息渠道：{provider} · @{name}",
   "agent_settings_claude_code": "Claude Code",
   "agent_settings_codex": "Codex",
+  "agent_settings_computer_description": "此 Agent 运行所在的电脑。只有这台电脑在线时，它才能工作。",
   "agent_settings_computer_none_heading": "未连接计算机",
   "agent_settings_computer_none_status": "未连接",
   "agent_settings_computer_none_summary": "未连接计算机",

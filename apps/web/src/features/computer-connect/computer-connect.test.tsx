@@ -13,6 +13,9 @@ const OTHER_COMPUTER_ID = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const COMMAND = "opentag computer connect --server https://opentag.example.com -- connect-code";
 const REPLACEMENT_COMMAND = "opentag computer connect --server https://opentag.example.com -- replacement-connect-code";
 const REDEEMED_AT = "2026-08-20T00:00:01.000Z";
+// What the block both shows and copies for `Ada's Mac`: the POSIX null command, with the
+// apostrophe closed and reopened so the sentence cannot escape its quotes.
+const REPAIR_COMMENT = ": 'Run this command in the terminal on Ada'\\''s Mac'";
 
 const computer: Computer = {
   computerId: COMPUTER_ID,
@@ -117,8 +120,37 @@ describe("ComputerConnect", () => {
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
     expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
-    expect(screen.getByText(`# Run this command in the terminal on ${computer.displayName}`)).toBeTruthy();
+    expect(screen.getByText(REPAIR_COMMENT)).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
+  });
+
+  it("copies a comment the terminal ignores instead of one zsh tries to run", async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    render(
+      <ComputerConnect
+        intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
+      />,
+    );
+    await flushAsync();
+    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    await flushAsync();
+
+    /*
+     * A leading `#` is only a comment where `interactive_comments` is set, which zsh leaves off for
+     * interactive use, so the pasted line answered `command not found: #` before the real command
+     * ran. `Ada's Mac` also carries the apostrophe that would otherwise close the quoted sentence
+     * and hand the rest of it to the shell as commands.
+     */
+    expect(writeText).toHaveBeenCalledWith(`${REPAIR_COMMENT}\n${COMMAND}`);
+    expect(REPAIR_COMMENT.startsWith("#")).toBe(false);
   });
 
   it("adopts only the Computer named by this code's Server verdict", async () => {

@@ -18,7 +18,7 @@ identity 改写和相同的 version coordinate，coordinate 的推导方式见 [
 ## 安装
 
 ~~~bash
-curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh
+curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
 ~~~
 
 installer 会解析 channel 的 `latest.json`，下载所检测平台对应的 tarball，校验其已发布的 SHA-256，解压，运行一次新
@@ -105,7 +105,7 @@ daemon 的 updater 遵循严格的契约：
 ~~~
 
 默认 coordinate 是 `opentag-release` bucket 的 `releases` prefix，通过
-`https://download.opentag.build/releases` 对外提供。
+`https://storage.googleapis.com/opentag-release/releases` 对外提供。
 
 version prefix 下的一切都是不可变的，写入时带 create-only precondition（`--if-generation-match=0`）以及
 `--content-md5` digest，因此 Cloud Storage 会同时拒绝静默覆盖和损坏的上传。只有 `latest.json` 与 `install.sh` 可变；
@@ -204,7 +204,7 @@ preflight，使不可变 prefix 冲突在 release 仍可重试时就失败；随
 | `OPENTAG_PORTABLE_GCS_BUCKET` | bucket 名称（默认 `opentag-release`） |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | channel 段之前的 object prefix（默认 `releases`） |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | 执行 `gcloud` 调用所用的 project |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://download.opentag.build/releases`） |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://storage.googleapis.com/opentag-release/releases`） |
 | `OPENTAG_PORTABLE_PLATFORMS` | 可选的构建平台过滤 |
 
 发布使用 workload identity federation，因此仓库中不保存任何 service-account key。该 service account 需要 bucket 上的

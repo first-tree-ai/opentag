@@ -443,7 +443,11 @@ describe("Computer connection persistence", () => {
       const installationId = crypto.randomUUID();
       const app = createApp({
         authService: value.auth,
-        computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
+        computerConnectCode: {
+          downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+          environment: "staging",
+          publicUrl: "https://dev.example.com",
+        },
         computerService: value.service,
         machineAuthService: value.machineAuth,
       });
@@ -480,7 +484,11 @@ describe("Computer connection persistence", () => {
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
       const app = createApp({
         authService: value.auth,
-        computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
+        computerConnectCode: {
+          downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+          environment: "staging",
+          publicUrl: "https://dev.example.com",
+        },
         computerService: value.service,
         machineAuthService: value.machineAuth,
       });
@@ -494,7 +502,7 @@ describe("Computer connection persistence", () => {
         expect(issued.headers["cache-control"]).toBe("no-store");
         const command = issued.json().bootstrapCommand as string;
         expect(command).toContain(
-          'curl -fsSL https://download.opentag.build/releases/staging/install.sh | sh && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- otcc_',
+          'opentag_installer="$(mktemp)" && curl -fsSL https://storage.googleapis.com/opentag-release/releases/staging/install.sh -o "$opentag_installer" && sh "$opentag_installer" && rm -f "$opentag_installer" && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- otcc_',
         );
         const code = command.split(" -- ").at(-1);
         if (!code) throw new Error("Computer connect command did not contain a code");
@@ -529,7 +537,11 @@ describe("Computer connection persistence", () => {
       const account = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
       const app = createApp({
         authService: value.auth,
-        computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
+        computerConnectCode: {
+          downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+          environment: "staging",
+          publicUrl: "https://dev.example.com",
+        },
         computerService: value.service,
         machineAuthService: value.machineAuth,
       });
@@ -744,7 +756,11 @@ describe("Connect code redemption status", () => {
       const otherAccount = await value.auth.exchangeConnectCode(otherLogin.code);
       const app = createApp({
         authService: value.auth,
-        computerConnectCode: { environment: "staging", publicUrl: "https://dev.example.com" },
+        computerConnectCode: {
+          downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+          environment: "staging",
+          publicUrl: "https://dev.example.com",
+        },
         computerService: value.service,
         machineAuthService: value.machineAuth,
       });

@@ -123,7 +123,9 @@ const ServerEnvironmentSchema = z
      * This is the same authority the portable installer consumes; release tooling keeps the npm
      * dist-tag at the same coordinate, so one target serves both install modes.
      */
-    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default("https://download.opentag.build/releases"),
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default(
+      "https://storage.googleapis.com/opentag-release/releases",
+    ),
     OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(300_000),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,

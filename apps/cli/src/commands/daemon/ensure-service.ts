@@ -12,7 +12,7 @@ type EnsureServiceResult = Promise<commandPolicy.CommandExitCode>;
 
 export async function executeDaemonEnsureService(options: EnsureServiceOptions = {}): EnsureServiceResult {
   const writeOutput = options.writeOutput ?? ((message: string) => process.stdout.write(`${message}\n`));
-  const writeError = options.writeError ?? ((message: string) => process.stderr.write(`${message}\n`));
+  const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
   try {
     const result = await (options.reconcileService ?? reconcileDaemonService)();
     if (result.status === "deferred") {

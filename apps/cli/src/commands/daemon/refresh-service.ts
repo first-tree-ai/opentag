@@ -23,7 +23,7 @@ export async function executeDaemonRefreshService(
   } = {},
 ): Promise<CommandExitCode> {
   const writeOutput = options.writeOutput ?? ((message: string) => process.stdout.write(`${message}\n`));
-  const writeError = options.writeError ?? ((message: string) => process.stderr.write(`${message}\n`));
+  const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
   try {
     const manager = options.manager ?? (await createDaemonServiceManager());
     const info = await manager.refreshDefinition();

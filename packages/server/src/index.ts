@@ -56,7 +56,6 @@ import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-r
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
-import { AccountSetupService } from "./services/setup/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
@@ -273,7 +272,6 @@ export async function startServer(): Promise<void> {
       onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
       logger: serviceLogger("im-binding"),
     });
-    const accountSetupService = new AccountSetupService(database);
     const imMessageInbox = new ImMessageInbox(database);
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
@@ -451,7 +449,6 @@ export async function startServer(): Promise<void> {
           }),
       },
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
-      accountSetupService,
     });
     feishuSetupService.start();
     feishuConnections.start();

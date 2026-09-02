@@ -257,30 +257,6 @@ function runtimeConfigsEqual(
   );
 }
 
-function creationIntentFingerprint(input: CreateAgentRequest): string {
-  const runtimeConfig = input.runtimeConfig;
-  const explicitRuntimeConfig =
-    runtimeConfig && Object.values(runtimeConfig).some((value) => value !== undefined)
-      ? {
-          instructions: runtimeConfig.instructions,
-          maxDurationMs: runtimeConfig.maxDurationMs,
-          model: runtimeConfig.model,
-          reasoningEffort: runtimeConfig.reasoningEffort,
-        }
-      : undefined;
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        computerId: input.computerId,
-        displayName: input.displayName,
-        name: input.name,
-        runtimeConfig: explicitRuntimeConfig,
-        runtimeProvider: input.runtimeProvider,
-      }),
-    )
-    .digest("hex");
-}
-
 function uniqueConstraintName(error: unknown): string | undefined {
   let current = error;
   const visited = new Set<unknown>();
@@ -334,25 +310,8 @@ export class AgentService {
     return this.#create(callerUserId, input);
   }
 
-  /**
-   * Reconciles one exact creation id without replaying its write. A foreign, deleted, or suspended
-   * result is indistinguishable from one that has not completed, and no namesake can satisfy it.
-   */
-  async getCreationIntentResultForAccount(
-    callerUserId: string,
-    creationIntentId: string,
-  ): Promise<{ kind: "found"; agentId: string } | { kind: "not-found" }> {
-    const [result] = await this.#database
-      .select({ agentId: agents.id, status: agents.status })
-      .from(agents)
-      .where(and(eq(agents.createdByUserId, callerUserId), eq(agents.creationIntentId, creationIntentId)))
-      .limit(1);
-    return result?.status === "active" ? { kind: "found", agentId: result.agentId } : { kind: "not-found" };
-  }
-
   async #create(callerUserId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
-    const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;
     try {
       return await this.#database.transaction(async (transaction) => {
         await this.#afterMembershipLocked?.();
@@ -362,15 +321,6 @@ export class AgentService {
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
         );
-        if (input.creationIntentId && intentFingerprint) {
-          const replay = await this.#findCreationIntent(
-            transaction,
-            callerUserId,
-            input.creationIntentId,
-            intentFingerprint,
-          );
-          if (replay) return replay;
-        }
         const [nameConflict] = await transaction
           .select({ id: agents.id })
           .from(agents)
@@ -392,8 +342,6 @@ export class AgentService {
           .insert(agents)
           .values({
             createdByUserId: callerUserId,
-            creationIntentId: input.creationIntentId,
-            creationIntentFingerprint: intentFingerprint,
             computerId: computer?.id ?? null,
             name: input.name,
             displayName: input.displayName,
@@ -411,16 +359,7 @@ export class AgentService {
         return toAgentAdminConfig(created, createdRuntimeConfig, computer?.id ?? null);
       });
     } catch (error) {
-      const constraintName = uniqueConstraintName(error);
-      if (constraintName && input.creationIntentId) {
-        const replay = await this.#replayCreationIntent(
-          callerUserId,
-          input.creationIntentId,
-          creationIntentFingerprint(input),
-        );
-        if (replay) return replay;
-      }
-      if (constraintName === "agents_workspace_name_active_unique") {
+      if (uniqueConstraintName(error) === "agents_workspace_name_active_unique") {
         throw new AgentServiceError(
           "AGENT_NAME_CONFLICT",
           "deterministic",
@@ -430,44 +369,6 @@ export class AgentService {
       }
       throw error;
     }
-  }
-
-  async #replayCreationIntent(
-    callerUserId: string,
-    creationIntentId: string,
-    intentFingerprint: string,
-  ): Promise<AgentAdminConfig | undefined> {
-    return this.#database.transaction(async (transaction) => {
-      return this.#findCreationIntent(transaction, callerUserId, creationIntentId, intentFingerprint);
-    });
-  }
-
-  async #findCreationIntent(
-    executor: QueryExecutor,
-    callerUserId: string,
-    creationIntentId: string,
-    intentFingerprint: string,
-  ): Promise<AgentAdminConfig | undefined> {
-    const [row] = await executor
-      .select({ agent: agents, computerId: agents.computerId, runtimeConfig: agentRuntimeConfigs })
-      .from(agents)
-      .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
-      .where(and(eq(agents.createdByUserId, callerUserId), eq(agents.creationIntentId, creationIntentId)))
-      .limit(1);
-    if (!row) return undefined;
-    if (
-      row.agent.status === "deleted" ||
-      row.runtimeConfig === null ||
-      row.agent.creationIntentFingerprint !== intentFingerprint
-    ) {
-      throw new AgentServiceError(
-        "AGENT_CREATION_INTENT_CONFLICT",
-        "deterministic",
-        "This Agent creation intent was already used for a different request",
-        409,
-      );
-    }
-    return toAgentAdminConfig(row.agent, row.runtimeConfig, row.computerId);
   }
 
   async listForAccount(callerUserId: string): Promise<ListAgentsResponse> {

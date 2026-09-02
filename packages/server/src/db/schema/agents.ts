@@ -14,8 +14,6 @@ export const agents = pgTable(
     createdByUserId: uuid("created_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
-    creationIntentId: uuid("creation_intent_id"),
-    creationIntentFingerprint: text("creation_intent_fingerprint"),
     /** Null until the Agent is bound to a Computer owned by its Account. */
     computerId: uuid("computer_id").references(() => computers.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
@@ -31,15 +29,8 @@ export const agents = pgTable(
     uniqueIndex("agents_account_name_active_unique")
       .on(table.createdByUserId, sql`lower(${table.name})`)
       .where(sql`${table.status} <> 'deleted'`),
-    uniqueIndex("agents_creation_intent_unique")
-      .on(table.createdByUserId, table.creationIntentId)
-      .where(sql`${table.creationIntentId} is not null`),
     index("agents_created_by_user_id_idx").on(table.createdByUserId),
     index("agents_computer_id_idx").on(table.computerId),
-    check(
-      "agents_creation_intent_pair",
-      sql`(${table.creationIntentId} is null) = (${table.creationIntentFingerprint} is null)`,
-    ),
     check("agents_revision_positive", sql`${table.revision} >= 1`),
   ],
 );

@@ -318,12 +318,10 @@ export function AgentStep({
 
 export function DoneStep({
   action,
-  completion,
   name,
   provider,
 }: {
   action?: { label: string; onClick: () => void };
-  completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
   name: string;
   provider?: ImProvider;
 }) {
@@ -347,17 +345,7 @@ export function DoneStep({
             : m.onboarding_v2_done_description_any_app({ name })}
         </p>
       </header>
-      {completion ? (
-        <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
-          {completion.state === "ready"
-            ? m.onboarding_v2_done_finish_reboard()
-            : completion.state === "pending"
-              ? m.onboarding_v2_done_finishing()
-              : m.onboarding_v2_done_retry_finish()}
-        </Button>
-      ) : action ? (
-        <Button onClick={action.onClick}>{action.label}</Button>
-      ) : null}
+      {action ? <Button onClick={action.onClick}>{action.label}</Button> : null}
     </section>
   );
 }

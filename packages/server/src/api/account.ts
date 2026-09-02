@@ -1,14 +1,8 @@
 import {
-  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   AccountComputerConnectCodeIssueRequestSchema,
-  AccountSetupCompletionSchema,
-  AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
-  AgentCreationIntentIdSchema,
-  AgentCreationIntentResultSchema,
   type ChannelName,
-  CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
@@ -34,7 +28,6 @@ import {
   type ComputerService,
   type MachineAuthService,
 } from "../services/computers/index.js";
-import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import { parseRequest } from "./request-validation.js";
 
@@ -54,7 +47,6 @@ const TaskDetailQuerySchema = z
   .strict();
 const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 const ConnectCodeParamsSchema = z.object({ connectCodeId: z.string().uuid() }).strict();
-const CreationIntentParamsSchema = z.object({ creationIntentId: AgentCreationIntentIdSchema }).strict();
 
 export interface AccountRoutesOptions {
   agentService?: AgentService;
@@ -72,14 +64,12 @@ export interface AccountRoutesOptions {
   /** Process-wide staging preview state; absent everywhere the internal tools are absent. */
   internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
-  accountSetupService?: AccountSetupService;
 }
 
-/** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
+/** Undoing setup. It acts on the authenticated Account and never a chosen one. */
 export interface AccountSetupResetService {
   /** Whether this deployment offers the reset at all; false outside staging. */
   readonly enabled: boolean;
-  reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;
 }
 
@@ -117,12 +107,6 @@ export function registerAccountRoutes(
     app.get(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
       const account = accountId(request);
       return reply.code(200).send(ListAgentsResponseSchema.parse(await agentService.listForAccount(account)));
-    });
-
-    app.get(ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE, { preHandler }, async (request, reply) => {
-      const { creationIntentId } = parseRequest(CreationIntentParamsSchema, request.params);
-      const result = await agentService.getCreationIntentResultForAccount(accountId(request), creationIntentId);
-      return reply.header("Cache-Control", "no-store").code(200).send(AgentCreationIntentResultSchema.parse(result));
     });
   }
 
@@ -205,26 +189,13 @@ export function registerAccountRoutes(
     });
   }
 
-  if (options.accountSetupService) {
-    const accountSetupService = options.accountSetupService;
-
-    app.post(HTTP_PATHS.accountSetupComplete, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(CompleteAccountSetupRequestSchema, request.body);
-      return reply
-        .code(200)
-        .send(
-          AccountSetupCompletionSchema.parse(await accountSetupService.completeForAccount(accountId(request), agentId)),
-        );
-    });
-  }
-
   if (options.setupResetService) {
     const setupResetService = options.setupResetService;
 
     /*
-     * Reflexive by construction: the Account comes from the access token, and the body carries only
-     * how much to undo. There is no field here that could name somebody else's Account, which is
-     * what makes this safe to offer to every signed-in tester rather than to administrators.
+     * Reflexive by construction: the Account comes from the access token and the request names
+     * nothing. There is no field here that could name somebody else's Account, which is what makes
+     * this safe to offer to every signed-in tester rather than to administrators.
      */
     /*
      * Reachability is the whole answer a client needs: outside staging the reset is absent rather
@@ -238,13 +209,8 @@ export function registerAccountRoutes(
     });
 
     app.post(HTTP_PATHS.accountSetupReset, { preHandler }, async (request, reply) => {
-      // Checked before the body is read, so a malformed request cannot tell a deployment that has
-      // the route but not the feature apart from one that never registered it.
       if (!setupResetService.enabled) throw resetNotOffered();
-      const { mode } = parseRequest(AccountSetupResetRequestSchema, request.body);
-      const account = accountId(request);
-      if (mode === "all") await setupResetService.resetOnboarding(account);
-      else await setupResetService.reboard(account);
+      await setupResetService.resetOnboarding(accountId(request));
       return reply.code(204).send();
     });
   }

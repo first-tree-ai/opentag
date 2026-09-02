@@ -5,7 +5,6 @@ import { StandaloneNotFoundPage } from "../../features/not-found.js";
 import { AsyncState, toResourceState } from "../../features/resource/resource-state.js";
 import { useAccount } from "../../features/session/session-context.js";
 import { InternalToolsPage } from "../../internal/internal-tools-page.js";
-import { forgetReboardReview, rememberReboardReview } from "../../internal/reboard-review.js";
 import { queryKeys } from "../../query/keys.js";
 
 export const Route = createFileRoute("/_authenticated/internal/")({
@@ -29,20 +28,14 @@ function InternalToolsRoute() {
         value ? (
           <InternalToolsPage
             user={me.user}
-            onResetSucceeded={async (mode) => {
-              // Success is never inferred from client state: onboarding is entered only once the
-              // refreshed Account actually reports incomplete setup.
+            onResetSucceeded={async () => {
+              // Success is never inferred from client state: Agent creation is offered only once the
+              // refreshed Account actually reports having no Agent left.
               const account = await refreshMe();
-              if (account.setupCompletedAt) {
-                throw new Error("The Account still reports completed setup; try again.");
+              if (account.hasActiveAgent) {
+                throw new Error("The Account still reports an Agent; try again.");
               }
-              if (mode === "reboard") rememberReboardReview(me.user.id);
-              else forgetReboardReview();
-              await navigate({
-                replace: true,
-                search: { review: mode === "reboard" ? "reboard" : undefined },
-                to: "/agents/setup",
-              });
+              await navigate({ replace: true, to: "/agents/setup" });
             }}
           />
         ) : (

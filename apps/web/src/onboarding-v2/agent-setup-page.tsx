@@ -43,8 +43,6 @@ import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
 /** The snapshot doubles as the observation channel while the outside world is expected to move it. */
 const SETUP_POLL_MS = 2_000;
-/** How many times to report readiness before the reader is offered an explicit retry. */
-const READY_REPORT_ATTEMPTS = 3;
 
 const SECTION = "flex flex-col gap-6";
 const SECTION_HEADER = "flex flex-col gap-1";
@@ -62,9 +60,6 @@ export interface AgentSetupPageProps {
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
-  readonly onReady?: (agentId: string) => Promise<void> | void;
-  /** A staging Re-board stays inspectable until the tester explicitly finishes the review. */
-  readonly reviewMode?: boolean;
   /** A Slack callback failure to surface once after the fixed return route remounts. */
   readonly slackOAuthError?: string;
 }
@@ -372,62 +367,7 @@ function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupC
   return { ...reader, ...actions, reload };
 }
 
-type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
-
-/**
- * Reporting readiness once the stage is `ready`. Reported from the render that first sees it —
- * not from the button that happened to produce it — so it is true for a reader who arrives
- * already finished. Refusals get a small bounded budget, then an explicit retry.
- */
-function useReadyReport(
-  snapshot: AgentSetupSnapshot | undefined,
-  agentId: string,
-  onReady: AgentSetupPageProps["onReady"],
-  reviewMode: boolean,
-): ReadyReport {
-  const reported = useRef<string | undefined>(undefined);
-  const [reportAttempt, setReportAttempt] = useState(0);
-  const [reportFailed, setReportFailed] = useState(false);
-  const [reviewConfirmed, setReviewConfirmed] = useState(false);
-  useEffect(() => {
-    if (snapshot?.stage !== "ready" || !onReady) return;
-    if (reported.current === agentId || reportFailed || (reviewMode && !reviewConfirmed)) return;
-    // Claimed before the call so a re-render cannot report twice, and released if it fails.
-    reported.current = agentId;
-    let live = true;
-    void Promise.resolve(onReady(agentId)).catch(() => {
-      if (!live) return;
-      reported.current = undefined;
-      if (reportAttempt + 1 < READY_REPORT_ATTEMPTS) setReportAttempt(reportAttempt + 1);
-      else setReportFailed(true);
-    });
-    return () => {
-      live = false;
-    };
-  }, [snapshot?.stage, agentId, onReady, reportAttempt, reportFailed, reviewMode, reviewConfirmed]);
-
-  if (!onReady) return undefined;
-  if (reportFailed) {
-    return {
-      onFinish: () => {
-        setReportAttempt(0);
-        setReportFailed(false);
-      },
-      state: "failed",
-    };
-  }
-  if (reviewMode) return { onFinish: () => setReviewConfirmed(true), state: reviewConfirmed ? "pending" : "ready" };
-  return undefined;
-}
-
-export function AgentSetupPage({
-  agentId,
-  adapter,
-  onOpenAgent,
-  onReady,
-  reviewMode = false,
-  slackOAuthError,
-}: AgentSetupPageProps) {
+export function AgentSetupPage({ agentId, adapter, onOpenAgent, slackOAuthError }: AgentSetupPageProps) {
   const resolvedAdapter = useMemo(() => adapter ?? createHttpSetupAdapter(), [adapter]);
   // Keyed on the exact target: a different Agent's setup is a different task, and remounting is
   // what retires everything the previous one still had in flight.
@@ -437,8 +377,6 @@ export function AgentSetupPage({
       agentId={agentId}
       key={agentId}
       onOpenAgent={onOpenAgent}
-      onReady={onReady}
-      reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
     />
   );
@@ -448,14 +386,11 @@ function AgentSetupPageContent({
   agentId,
   adapter,
   onOpenAgent,
-  onReady,
-  reviewMode = false,
   slackOAuthError,
 }: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
   const controller = useAgentSetup(agentId, adapter);
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
-  const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
   const ready = snapshot?.stage === "ready";
 
   return (
@@ -470,7 +405,7 @@ function AgentSetupPageContent({
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
         {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
-        <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} report={report} />
+        <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} />
       </main>
     </div>
   );
@@ -480,12 +415,10 @@ function SetupPhaseView({
   agentId,
   controller,
   onOpenAgent,
-  report,
 }: {
   readonly agentId: string;
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
-  readonly report: ReadyReport;
 }) {
   const { phase } = controller;
   if (phase.kind === "loading") {
@@ -525,7 +458,6 @@ function SetupPhaseView({
       agentId={agentId}
       controller={controller}
       onOpenAgent={onOpenAgent}
-      report={report}
       snapshot={phase.snapshot}
     />
   );
@@ -545,13 +477,11 @@ function AgentSetupSnapshotView({
   agentId,
   controller,
   onOpenAgent,
-  report,
   snapshot,
 }: {
   readonly agentId: string;
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
-  readonly report: ReadyReport;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
@@ -578,7 +508,6 @@ function AgentSetupSnapshotView({
         <div data-ui="agent-setup-ready">
           <DoneStep
             action={onOpenAgent ? { label: m.onboarding_v2_open_agent(), onClick: onOpenAgent } : undefined}
-            completion={report}
             name={snapshot.agent.name}
             provider={snapshot.messaging.kind === "ready" ? snapshot.messaging.provider : undefined}
           />

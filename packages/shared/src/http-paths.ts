@@ -28,11 +28,9 @@ export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`
  * Account-native management collections. Ownership comes only from the authenticated Account.
  */
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
-export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
-export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
 export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/navigation-visibility`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
@@ -42,7 +40,6 @@ export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
-  accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
   accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
   internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
@@ -81,10 +78,6 @@ export function accountComputerConnectCodePath(connectCodeId: string): string {
 
 export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
-}
-
-export function accountAgentCreationIntentPath(creationIntentId: string): string {
-  return `${ACCOUNT_AGENTS_PATH}/creation-intents/${encodeURIComponent(creationIntentId)}`;
 }
 
 export function agentSetupPath(agentId: string): string {

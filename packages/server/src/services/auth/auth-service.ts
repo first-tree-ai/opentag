@@ -8,7 +8,7 @@ import {
 } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { accountCliLoginCodes, users } from "../../db/schema/index.js";
+import { accountCliLoginCodes, agents, users } from "../../db/schema/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 import { hashSecret } from "./security.js";
 import type { AuthTokenProvider } from "./token-provider.js";
@@ -154,9 +154,15 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
 
+    const [ownedAgent] = await this.#database
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(eq(agents.createdByUserId, user.id), eq(agents.status, "active")))
+      .limit(1);
+
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },
-      setupCompletedAt: user.setupCompletedAt?.toISOString() ?? null,
+      hasActiveAgent: ownedAgent !== undefined,
     };
   }
 }

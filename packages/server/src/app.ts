@@ -47,7 +47,6 @@ import {
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
-import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
@@ -92,7 +91,6 @@ export interface CreateAppOptions {
   setupResetService?: OnboardingResetService;
   internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
-  accountSetupService?: AccountSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
@@ -105,8 +103,7 @@ type AccountFacingError =
   | ImBindingServiceError
   | OnboardingResetError
   | TaskQueryError
-  | SlackConfigurationServiceError
-  | AccountSetupServiceError;
+  | SlackConfigurationServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
@@ -115,8 +112,7 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof ImBindingServiceError ||
     error instanceof OnboardingResetError ||
     error instanceof TaskQueryError ||
-    error instanceof SlackConfigurationServiceError ||
-    error instanceof AccountSetupServiceError
+    error instanceof SlackConfigurationServiceError
   );
 }
 
@@ -484,7 +480,6 @@ export function createApp(options: CreateAppOptions = {}) {
       options.taskService ||
       options.computerService ||
       options.setupResetService ||
-      options.accountSetupService ||
       (options.machineAuthService && options.computerConnectCode)
     ) {
       registerAccountRoutes(app, authService, {
@@ -492,7 +487,6 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
         ...(options.computerService ? { computerService: options.computerService } : {}),
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
         ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
         internalNavigationService: options.internalNavigationService,

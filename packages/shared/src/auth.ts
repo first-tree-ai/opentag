@@ -49,7 +49,12 @@ export const UpdateUserProfileRequestSchema = z.object({ displayName: UserDispla
 export const MeResponseSchema = z
   .object({
     user: UserProfileSchema,
-    setupCompletedAt: z.string().datetime().nullable(),
+    /**
+     * Whether this Account owns an Agent it can work with. Derived on every read rather than
+     * recorded once: an Account that has deleted its last Agent is in the same position as one that
+     * never made a first, and a stored marker would answer that question with the past.
+     */
+    hasActiveAgent: z.boolean(),
   })
   .strict();
 

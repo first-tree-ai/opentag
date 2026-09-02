@@ -15,7 +15,6 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
     action?: "create";
     agentId?: string;
     invalid?: true;
-    review?: "reboard";
     slack_oauth?: "success";
     slack_oauth_error?: string;
   } => {
@@ -33,7 +32,6 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
       action,
       agentId,
       invalid,
-      review: search.review === "reboard" ? "reboard" : undefined,
       slack_oauth: search.slack_oauth === "success" ? "success" : undefined,
       slack_oauth_error: typeof search.slack_oauth_error === "string" ? search.slack_oauth_error : undefined,
     };
@@ -47,20 +45,14 @@ export const Route = createFileRoute("/_authenticated/_resources/agents/setup")(
  * exact-target decision live in the boundary.
  */
 function AgentSetupRoute() {
-  const { action, agentId, invalid, review, slack_oauth, slack_oauth_error } = Route.useSearch();
+  const { action, agentId, invalid, slack_oauth, slack_oauth_error } = Route.useSearch();
   const navigate = useNavigate();
   const [callbackError] = useState(slack_oauth_error);
   useEffect(() => {
     if (!slack_oauth && !slack_oauth_error) return;
-    void navigate({ replace: true, search: { agentId, review }, to: "/agents/setup" });
-  }, [agentId, navigate, review, slack_oauth, slack_oauth_error]);
+    void navigate({ replace: true, search: { agentId }, to: "/agents/setup" });
+  }, [agentId, navigate, slack_oauth, slack_oauth_error]);
   return (
-    <AgentSetupBoundary
-      action={action}
-      agentId={agentId}
-      invalidSearch={invalid}
-      review={review}
-      slackOAuthError={callbackError}
-    />
+    <AgentSetupBoundary action={action} agentId={agentId} invalidSearch={invalid} slackOAuthError={callbackError} />
   );
 }

@@ -1,7 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
-import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-review.js";
 import { AgentSetupSurface } from "../../onboarding-v2/page.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Loader, Text } from "../../ui/design-system.js";
@@ -56,29 +55,15 @@ export function AgentSetupBoundary({
   action,
   agentId,
   invalidSearch = false,
-  review,
   slackOAuthError,
 }: {
   action?: "create";
   agentId?: string;
   invalidSearch?: boolean;
-  review?: "reboard";
   slackOAuthError?: string;
 }) {
   const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
-  const reviewMode = review === "reboard" || isReboardReviewFor(me.user.id);
-  const adopt = useCallback(
-    async (adoptedAgentId: string) => {
-      await browserApi.completeSetup(adoptedAgentId);
-      await refreshMe();
-    },
-    [refreshMe],
-  );
-  const finishReview = useCallback(async () => {
-    forgetReboardReview();
-    await navigate({ replace: true, to: "/agents" });
-  }, [navigate]);
   const openAgent = useCallback(
     async (targetAgentId: string) => {
       await navigate(agentDetailLink(targetAgentId));
@@ -88,25 +73,27 @@ export function AgentSetupBoundary({
   const backToAgents = useCallback(async () => {
     await navigate({ to: "/agents" });
   }, [navigate]);
+  /*
+   * The Account is read again before the created Agent's URL is opened. Whether an Account has
+   * entered the application is derived from the Agents it has, so a stale read would still say it
+   * has none — and leaving setup would land on a list that sends the reader straight back.
+   */
   const openExactTarget = useCallback(
     async (createdAgentId: string) => {
-      await navigate({ replace: true, search: { agentId: createdAgentId, review }, to: "/agents/setup" });
+      await refreshMe();
+      await navigate({ replace: true, search: { agentId: createdAgentId }, to: "/agents/setup" });
     },
-    [navigate, review],
+    [navigate, refreshMe],
   );
   return (
     <TargetedAgentSetup
-      accountCompleted={me.setupCompletedAt !== null}
+      accountCompleted={me.hasActiveAgent}
       action={action}
       agentId={agentId}
       onBackToAgents={backToAgents}
       invalidSearch={invalidSearch}
-      onAdopt={adopt}
       onOpenAgent={openAgent}
-      onReviewFinished={finishReview}
       onTarget={openExactTarget}
-      review={review}
-      reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
     />
   );
@@ -117,31 +104,22 @@ function TargetedAgentSetup({
   action,
   agentId,
   invalidSearch,
-  onAdopt,
   onBackToAgents,
   onOpenAgent,
-  onReviewFinished,
   onTarget,
-  review,
-  reviewMode,
   slackOAuthError,
 }: {
   accountCompleted: boolean;
   action?: "create";
   agentId?: string;
   invalidSearch: boolean;
-  onAdopt: (agentId: string) => Promise<void>;
   onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
-  onReviewFinished: (agentId: string) => Promise<void>;
   onTarget: (agentId: string) => Promise<void>;
-  review?: "reboard";
-  reviewMode: boolean;
   slackOAuthError?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [resolution, setResolution] = useState<TargetResolution>({ kind: "loading" });
-  const retryResolution = useCallback(() => setAttempt((current) => current + 1), []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; bumping it must re-run the read even though the effect body never reads it.
   useEffect(() => {
@@ -233,7 +211,7 @@ function TargetedAgentSetup({
   }
 
   if (resolution.kind === "redirect") {
-    return <Redirect replace search={{ agentId: resolution.agentId, review }} to="/agents/setup" />;
+    return <Redirect replace search={{ agentId: resolution.agentId }} to="/agents/setup" />;
   }
 
   if (resolution.kind === "choice") {
@@ -251,7 +229,7 @@ function TargetedAgentSetup({
             <li key={agent.id}>
               <Link
                 className="block rounded-lg bg-kumo-base px-4 py-3 text-sm text-kumo-strong ring ring-kumo-line"
-                search={{ agentId: agent.id, review }}
+                search={{ agentId: agent.id }}
                 to="/agents/setup"
               >
                 {agent.displayName}
@@ -264,16 +242,16 @@ function TargetedAgentSetup({
   }
 
   if (resolution.kind === "exact") {
+    /*
+     * Setting up an Agent is not an Account gate. The exact Agent has been proved owned and active,
+     * and whether this Account has entered the application is answered by the Agents it has — so
+     * there is nothing to record here and nothing to wait for before the setup surface renders.
+     */
     return (
-      <ExactAgentSetup
-        accountCompleted={accountCompleted}
+      <AgentSetupSurface
         agentId={resolution.agentId}
         key={resolution.agentId}
-        onAdopt={onAdopt}
-        onOpenAgent={onOpenAgent}
-        onReviewFinished={onReviewFinished}
-        onTargetInvalidated={retryResolution}
-        reviewMode={reviewMode}
+        onOpenAgent={() => onOpenAgent(resolution.agentId)}
         slackOAuthError={slackOAuthError}
       />
     );
@@ -281,102 +259,5 @@ function TargetedAgentSetup({
 
   return (
     <AgentSetupSurface onBackToAgents={accountCompleted ? onBackToAgents : undefined} onAgentAvailable={onTarget} />
-  );
-}
-
-type AdmissionState = "failed" | "loading" | "ready";
-
-/**
- * Account admission and Agent readiness are deliberately separate. Once the boundary has proved
- * the exact active owned Agent, this component adopts it immediately; Computer, runtime, and
- * Messaging setup continue on the same canonical URL without becoming Account access gates.
- */
-function ExactAgentSetup({
-  accountCompleted,
-  agentId,
-  onAdopt,
-  onOpenAgent,
-  onReviewFinished,
-  onTargetInvalidated,
-  reviewMode,
-  slackOAuthError,
-}: {
-  accountCompleted: boolean;
-  agentId: string;
-  onAdopt: (agentId: string) => Promise<void>;
-  onOpenAgent: (agentId: string) => Promise<void>;
-  onReviewFinished: (agentId: string) => Promise<void>;
-  onTargetInvalidated: () => void;
-  reviewMode: boolean;
-  slackOAuthError?: string;
-}) {
-  const [attempt, setAttempt] = useState(0);
-  const [admission, setAdmission] = useState<AdmissionState>(accountCompleted ? "ready" : "loading");
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the explicit retry signal; incrementing it must repeat admission even though the value is not otherwise read.
-  useEffect(() => {
-    if (accountCompleted) {
-      setAdmission("ready");
-      return;
-    }
-    let live = true;
-    setAdmission("loading");
-    void onAdopt(agentId).then(
-      () => {
-        if (live) setAdmission("ready");
-      },
-      (error: unknown) => {
-        if (!live) return;
-        if (error instanceof ApiError && error.status === 404) {
-          onTargetInvalidated();
-          return;
-        }
-        setAdmission("failed");
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [accountCompleted, agentId, attempt, onAdopt, onTargetInvalidated]);
-
-  if (admission === "loading") {
-    return (
-      <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas"
-        data-ui="agent-setup-target-adopting"
-      >
-        <Loader />
-        <p className="text-sm text-kumo-subtle m-0" role="status">
-          {m.agent_setup_target_adopting()}
-        </p>
-      </div>
-    );
-  }
-
-  if (admission === "failed") {
-    return (
-      <div
-        className="flex min-h-screen flex-col items-center justify-center gap-3 bg-kumo-canvas p-6"
-        data-ui="agent-setup-target-adoption-failed"
-      >
-        <Text as="h1" size="lg" variant="heading">
-          {m.agent_setup_target_adoption_failed_title()}
-        </Text>
-        <p className="text-sm text-kumo-danger m-0 max-w-prose text-center" role="alert">
-          {m.agent_setup_target_adoption_failed_detail()}
-        </p>
-        <Button onClick={() => setAttempt((current) => current + 1)}>{m.agent_setup_target_retry()}</Button>
-      </div>
-    );
-  }
-
-  return (
-    <AgentSetupSurface
-      agentId={agentId}
-      onOpenAgent={() => onOpenAgent(agentId)}
-      onReady={reviewMode ? onReviewFinished : undefined}
-      reviewMode={reviewMode}
-      slackOAuthError={slackOAuthError}
-    />
   );
 }

@@ -8,7 +8,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "../../db/migrate.js";
 import { AuthService } from "../../services/auth/index.js";
-import { AccountSetupService } from "../../services/setup/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -31,9 +30,11 @@ const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const LATE = new Date("2026-08-20T00:00:00.000Z");
 
 const THROUGH_0028_IDX = 28;
+/** The last migration where the backfilled column still exists; 0038 drops it. */
+const THROUGH_0030_IDX = 30;
 const THROUGH_0028_COUNT = 29;
 const THROUGH_0030_COUNT = 31;
-const CURRENT_MIGRATION_COUNT = 38;
+const CURRENT_MIGRATION_COUNT = 39;
 
 type Journal = {
   version: string;
@@ -205,12 +206,21 @@ describe("Account setup completion backfill", () => {
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
       expect(await journalCount(sql)).toBe(CURRENT_MIGRATION_COUNT);
-      const [column] = await sql<{ data_type: string; is_nullable: string }[]>`
-        select data_type, is_nullable
+      /*
+       * 0029 backfilled the marker and 0038 drops it. Both are still in the journal, so a database
+       * built from scratch runs the backfill and then removes what it wrote — which is correct, and
+       * is why the head asserts absence rather than shape.
+       */
+      const retired = await sql<{ table_name: string; column_name: string }[]>`
+        select table_name, column_name
         from information_schema.columns
-        where table_schema = 'public' and table_name = 'users' and column_name = 'setup_completed_at'
+        where table_schema = 'public'
+          and (
+            (table_name = 'users' and column_name = 'setup_completed_at')
+            or (table_name = 'agents' and column_name in ('creation_intent_id', 'creation_intent_fingerprint'))
+          )
       `;
-      expect(column).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+      expect(retired).toEqual([]);
       await verifyDatabaseMigrations(databaseUrl, migrationsFolder);
     } finally {
       await sql.end();
@@ -235,20 +245,27 @@ describe("Account setup completion backfill", () => {
         await sql.end();
       }
 
-      await migrateDatabase(databaseUrl, migrationsFolder);
-      const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      const through0030 = await truncatedMigrations(THROUGH_0030_IDX);
       try {
-        expect(await journalCount(after)).toBe(CURRENT_MIGRATION_COUNT);
-        expect(await accountSetup(after)).toEqual({
-          [ACCOUNT_A]: EARLY.toISOString(),
-          [ACCOUNT_B]: LATE.toISOString(),
-          [ACCOUNT_GRANT_ONLY]: null,
-          [ACCOUNT_EMPTY]: null,
-        });
-        await verifyDatabaseMigrations(databaseUrl, migrationsFolder);
+        await migrateDatabase(databaseUrl, through0030);
+        const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+        try {
+          expect(await journalCount(after)).toBe(THROUGH_0030_COUNT);
+          expect(await accountSetup(after)).toEqual({
+            [ACCOUNT_A]: EARLY.toISOString(),
+            [ACCOUNT_B]: LATE.toISOString(),
+            [ACCOUNT_GRANT_ONLY]: null,
+            [ACCOUNT_EMPTY]: null,
+          });
+        } finally {
+          await after.end();
+        }
       } finally {
-        await after.end();
+        await rm(through0030, { recursive: true, force: true });
       }
+
+      await migrateDatabase(databaseUrl, migrationsFolder);
+      await verifyDatabaseMigrations(databaseUrl, migrationsFolder);
     } finally {
       await rm(through0028, { recursive: true, force: true });
     }
@@ -264,11 +281,12 @@ describe("Account setup completion backfill", () => {
       } finally {
         await sql.end();
       }
-      await migrateDatabase(databaseUrl, migrationsFolder);
-      await migrateDatabase(databaseUrl, migrationsFolder);
+      const through0030 = await truncatedMigrations(THROUGH_0030_IDX);
+      await migrateDatabase(databaseUrl, through0030);
+      await migrateDatabase(databaseUrl, through0030);
       const after = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(after)).toBe(CURRENT_MIGRATION_COUNT);
+        expect(await journalCount(after)).toBe(THROUGH_0030_COUNT);
         expect(await accountSetup(after)).toEqual({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
@@ -277,6 +295,7 @@ describe("Account setup completion backfill", () => {
         });
       } finally {
         await after.end();
+        await rm(through0030, { recursive: true, force: true });
       }
     } finally {
       await rm(through0028, { recursive: true, force: true });
@@ -325,24 +344,27 @@ describe("Account setup completion backfill", () => {
         await failed.end();
       }
 
-      await migrateDatabase(databaseUrl, migrationsFolder);
+      const through0030 = await truncatedMigrations(THROUGH_0030_IDX);
       const retried = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        expect(await journalCount(retried)).toBe(CURRENT_MIGRATION_COUNT);
+        await migrateDatabase(databaseUrl, through0030);
+        expect(await journalCount(retried)).toBe(THROUGH_0030_COUNT);
         expect(await accountSetup(retried)).toMatchObject({
           [ACCOUNT_A]: EARLY.toISOString(),
           [ACCOUNT_B]: LATE.toISOString(),
         });
-        await verifyDatabaseMigrations(databaseUrl, migrationsFolder);
       } finally {
         await retried.end();
+        await rm(through0030, { recursive: true, force: true });
       }
+      await migrateDatabase(databaseUrl, migrationsFolder);
+      await verifyDatabaseMigrations(databaseUrl, migrationsFolder);
     } finally {
       await rm(through0028, { recursive: true, force: true });
     }
   });
 
-  it("reads and writes Account setup through the application after the production runner", async () => {
+  it("reads whether an Account has an Agent through the application after the production runner", async () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     try {
@@ -351,7 +373,6 @@ describe("Account setup completion backfill", () => {
         values
           (${ACCOUNT_A}, 'a@example.com', 'A'),
           (${ACCOUNT_B}, 'b@example.com', 'B'),
-          (${ACCOUNT_GRANT_ONLY}, 'grant@example.com', 'Grant Only'),
           (${ACCOUNT_EMPTY}, 'empty@example.com', 'Empty')
       `;
       await sql`
@@ -360,10 +381,9 @@ describe("Account setup completion backfill", () => {
       `;
       await sql`
         insert into agents (id, created_by_user_id, computer_id, name, display_name, runtime_provider, status)
-        values (${AGENT_LATE}, ${ACCOUNT_B}, ${ENROLLMENT_B}, 'b-assistant', 'B', 'codex', 'active')
-      `;
-      await sql`
-        update users set setup_completed_at = ${EARLY} where id = ${ACCOUNT_A}
+        values
+          (${AGENT_LATE}, ${ACCOUNT_B}, ${ENROLLMENT_B}, 'b-assistant', 'B', 'codex', 'active'),
+          (${AGENT_DELETED}, ${ACCOUNT_A}, null, 'a-assistant', 'A', 'codex', 'deleted')
       `;
     } finally {
       await sql.end();
@@ -377,19 +397,14 @@ describe("Account setup completion backfill", () => {
         verifyAccess: async () => ({ userId: ACCOUNT_A, expiresAt: new Date() }),
         verifyRefresh: async () => ({ userId: ACCOUNT_A }),
       } as never);
-      await expect(auth.getActiveUserById(ACCOUNT_A)).resolves.toMatchObject({
-        setupCompletedAt: EARLY.toISOString(),
-      });
-      await expect(auth.getActiveUserById(ACCOUNT_GRANT_ONLY)).resolves.toMatchObject({ setupCompletedAt: null });
-      await expect(auth.getActiveUserById(ACCOUNT_EMPTY)).resolves.toMatchObject({ setupCompletedAt: null });
-
-      const setup = new AccountSetupService(client.database, { now: () => LATE });
-      await expect(setup.completeForAccount(ACCOUNT_B, AGENT_LATE)).resolves.toEqual({
-        setupCompletedAt: LATE.toISOString(),
-      });
-      await expect(auth.getActiveUserById(ACCOUNT_B)).resolves.toMatchObject({
-        setupCompletedAt: LATE.toISOString(),
-      });
+      /*
+       * Read from the Agents themselves, so the answer cannot be stale. A deleted Agent leaves its
+       * row behind; an Account holding only those is in the same position as one that never made an
+       * Agent, and is offered creation rather than the application.
+       */
+      await expect(auth.getActiveUserById(ACCOUNT_B)).resolves.toMatchObject({ hasActiveAgent: true });
+      await expect(auth.getActiveUserById(ACCOUNT_A)).resolves.toMatchObject({ hasActiveAgent: false });
+      await expect(auth.getActiveUserById(ACCOUNT_EMPTY)).resolves.toMatchObject({ hasActiveAgent: false });
     } finally {
       await client.sql.end();
     }

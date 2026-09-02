@@ -85,23 +85,6 @@ export class OnboardingResetService {
     return this.#environment === "staging";
   }
 
-  /**
-   * Clear the setup marker and nothing else, so onboarding can be walked again.
-   *
-   * There is no cleanup to verify here, which is the whole difference: the Agents, Computers and
-   * messaging connections the Account already has are exactly what it keeps. That makes the next
-   * run a resume rather than a first run — anyone who needs first-run behaviour wants
-   * `resetOnboarding` instead.
-   */
-  async reboard(accountId: string): Promise<void> {
-    if (!this.enabled) throw resourceNotFound();
-    const now = this.#now();
-    await this.#database.transaction(async (transaction) => {
-      await lockActiveAccount(transaction, accountId);
-      await transaction.update(users).set({ setupCompletedAt: null, updatedAt: now }).where(eq(users.id, accountId));
-    });
-  }
-
   async resetOnboarding(accountId: string): Promise<void> {
     if (!this.enabled) throw resourceNotFound();
     await this.#deleteOwnedAgents(accountId);
@@ -110,7 +93,7 @@ export class OnboardingResetService {
       await this.#registry?.closeComputer(computerId);
     }
     await this.#afterCleanup?.();
-    await this.#commitFirstRunState(accountId);
+    await this.#verifyFirstRunState(accountId);
   }
 
   async #deleteOwnedAgents(accountId: string): Promise<void> {
@@ -163,13 +146,16 @@ export class OnboardingResetService {
     });
   }
 
-  async #commitFirstRunState(accountId: string): Promise<void> {
-    const now = this.#now();
+  /**
+   * Proves the Account is back to its first run. There is no marker to clear: an Account is offered
+   * Agent creation because it has no Agent, so deleting the last one is the whole reset, and this
+   * refuses to report success until that is actually true.
+   */
+  async #verifyFirstRunState(accountId: string): Promise<void> {
     await this.#database.transaction(async (transaction) => {
       await lockActiveAccount(transaction, accountId);
-      await this.#verifyCleanedUp(transaction, accountId, now);
+      await this.#verifyCleanedUp(transaction, accountId, this.#now());
       await this.#afterVerified?.();
-      await transaction.update(users).set({ setupCompletedAt: null, updatedAt: now }).where(eq(users.id, accountId));
     });
   }
 

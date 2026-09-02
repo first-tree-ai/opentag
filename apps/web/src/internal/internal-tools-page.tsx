@@ -1,4 +1,4 @@
-import type { AccountSetupResetMode, UserProfile } from "@opentag/shared/browser";
+import type { UserProfile } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
@@ -11,14 +11,14 @@ import { useInternalNavigationVisibility } from "./navigation-visibility.js";
 type InternalNavigationItem = "integrations" | "skills";
 
 export interface InternalToolsPageProps {
-  /** Runs after a completed reset: refresh authoritative `/me` state, then enter ordinary onboarding. */
-  readonly onResetSucceeded: (mode: AccountSetupResetMode) => Promise<void> | void;
+  /** Runs after a completed reset: refresh authoritative `/me` state, then enter Agent creation. */
+  readonly onResetSucceeded: () => Promise<void> | void;
   readonly user: UserProfile;
 }
 
 type ResetState =
   | { readonly kind: "idle" }
-  | { readonly kind: "pending"; readonly mode: AccountSetupResetMode }
+  | { readonly kind: "pending" }
   | { readonly kind: "error"; readonly error: Error };
 
 interface ResetOperation {
@@ -26,32 +26,25 @@ interface ResetOperation {
   readonly confirmDescription: string;
   readonly confirmTitle: string;
   readonly description: string;
-  readonly mode: AccountSetupResetMode;
   readonly title: string;
 }
 
 /**
- * The two staging Account resets, described by what they cost rather than by what they call. Both
- * act on the signed-in Account and nobody else's, so the copy names the Account rather than warning
- * about scope.
+ * The staging Account reset, described by what it costs rather than by what it calls. It acts on
+ * the signed-in Account and nobody else's, so the copy names the Account rather than warning about
+ * scope.
+ *
+ * There is one, because there is one thing to undo. An Account is offered Agent creation because it
+ * has no Agent, so deleting its Agents is the whole reset; there is no separate marker left to
+ * clear, and walking setup again for an Agent that still exists is that Agent's own setup URL.
  */
-
 function resetOperations(): readonly ResetOperation[] {
   return [
-    {
-      action: m.common_reboard(),
-      confirmDescription: m.common_reboard_confirm_description(),
-      confirmTitle: m.common_reboard_confirm_title(),
-      description: m.common_reboard_description(),
-      mode: "reboard",
-      title: m.common_reboard(),
-    },
     {
       action: m.common_reset_and_start_onboarding(),
       confirmDescription: m.common_reset_all_confirm_description(),
       confirmTitle: m.common_reset_all_confirm_title(),
       description: m.common_reset_all_description(),
-      mode: "all",
       title: m.common_reset_all(),
     },
   ];
@@ -80,7 +73,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
   const [resetState, setResetState] = useState<ResetState>({ kind: "idle" });
   const [preferenceError, setPreferenceError] = useState(false);
   const [pendingPreference, setPendingPreference] = useState<InternalNavigationItem>();
-  const triggerRefs = useRef(new Map<AccountSetupResetMode, HTMLButtonElement | null>());
+  const triggerRefs = useRef(new Map<string, HTMLButtonElement | null>());
   const resetInFlight = useRef(false);
   const queryClient = useQueryClient();
   const internalNavigation = useInternalNavigationVisibility();
@@ -99,14 +92,14 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
     }
   }
 
-  async function run(operation: ResetOperation) {
+  async function run() {
     if (resetInFlight.current) return;
     resetInFlight.current = true;
     setConfirming(null);
-    setResetState({ kind: "pending", mode: operation.mode });
+    setResetState({ kind: "pending" });
     try {
-      await browserApi.resetAccountSetup(operation.mode);
-      await onResetSucceeded(operation.mode);
+      await browserApi.resetAccountSetup();
+      await onResetSucceeded();
     } catch (cause) {
       setResetState({
         kind: "error",
@@ -168,7 +161,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
           {m.common_account_resets()}
         </Text>
         {operations.map((operation) => (
-          <div className="grid gap-2 rounded-lg p-4 ring ring-kumo-line" key={operation.mode}>
+          <div className="grid gap-2 rounded-lg p-4 ring ring-kumo-line" key={operation.title}>
             <Text as="h3" variant="heading">
               {operation.title}
             </Text>
@@ -176,13 +169,13 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
             <div>
               <Button
                 disabled={pending}
-                loading={resetState.kind === "pending" && resetState.mode === operation.mode}
+                loading={pending}
                 ref={(element) => {
-                  triggerRefs.current.set(operation.mode, element);
+                  triggerRefs.current.set(operation.title, element);
                 }}
                 size="compact"
                 type="button"
-                variant={operation.mode === "all" ? "danger" : "secondary"}
+                variant="danger"
                 onClick={() => setConfirming(operation)}
               >
                 {operation.action}
@@ -216,16 +209,12 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
           busy={pending}
           description={confirming.confirmDescription}
           eyebrow={m.common_staging_only()}
-          returnFocusRef={{ current: triggerRefs.current.get(confirming.mode) ?? null }}
+          returnFocusRef={{ current: triggerRefs.current.get(confirming.title) ?? null }}
           title={confirming.confirmTitle}
           onClose={() => setConfirming(null)}
         >
           <div className="flex flex-wrap gap-3">
-            <Button
-              loading={pending}
-              variant={confirming.mode === "all" ? "danger" : "primary"}
-              onClick={() => void run(confirming)}
-            >
+            <Button loading={pending} variant="danger" onClick={() => void run()}>
               {confirming.action}
             </Button>
             <Button variant="secondary" onClick={() => setConfirming(null)}>

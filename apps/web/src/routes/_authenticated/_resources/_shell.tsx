@@ -8,12 +8,15 @@ export const Route = createFileRoute("/_authenticated/_resources/_shell")({
 });
 
 /**
- * The application surface. An Account that has not finished admission is sent to Agent Setup.
+ * The application surface. An Account with no Agent is sent to Agent Setup, because there is
+ * nothing here for it to manage yet. Only the count decides: an Agent that still needs a Computer
+ * or a messaging app is the Agent list's business to report, not a reason to send someone off to
+ * make a second one.
  */
 function AccountShell() {
   const { me } = useAccount();
   const slackOAuthError = new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined;
-  if (!me.setupCompletedAt) {
+  if (!me.hasActiveAgent) {
     return (
       <Redirect replace search={slackOAuthError ? { slack_oauth_error: slackOAuthError } : {}} to="/agents/setup" />
     );

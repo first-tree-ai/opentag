@@ -67,7 +67,7 @@ owns the recurring baseline measurement.
 Adding a migration under `packages/server/drizzle` requires two extra steps, or CI fails even when
 `pnpm check` passes locally:
 
-- Bump `CURRENT_MIGRATION_COUNT` in `packages/server/src/__tests__/integration/setup-completion-backfill.test.ts`
+- Bump `CURRENT_MIGRATION_COUNT` in `packages/server/src/__tests__/integration/setup-state-migrations.test.ts`
   by one. The constant is a deliberate ratchet over the migration journal; the migration drift check
   in `pnpm check` does not cover it, only the PostgreSQL integration suite does.
 - Run `pnpm --filter @opentag/server test:integration` (Docker with testcontainers) before opening

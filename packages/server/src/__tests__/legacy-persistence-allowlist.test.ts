@@ -15,7 +15,7 @@ const EXPLICIT_MIGRATION_FIXTURES = new Set([
   "packages/server/src/__tests__/integration/account-ownership-backfill.test.ts",
   "packages/server/src/__tests__/integration/account-ownership-expansion.test.ts",
   "packages/server/src/__tests__/integration/auth-migrations.test.ts",
-  "packages/server/src/__tests__/integration/setup-completion-backfill.test.ts",
+  "packages/server/src/__tests__/integration/setup-state-migrations.test.ts",
   "packages/server/src/__tests__/integration/workspace-ownership-contract-migration.test.ts",
 ]);
 const SCANNER_PATH = "packages/server/src/__tests__/legacy-persistence-allowlist.test.ts";

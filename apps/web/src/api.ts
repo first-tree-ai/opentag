@@ -1,8 +1,5 @@
 import {
   type AccountComputerConnectCodeIssueRequest,
-  type AccountSetupCompletion,
-  AccountSetupCompletionSchema,
-  type AccountSetupResetMode,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -156,14 +153,6 @@ export class BrowserApi {
 
   authProviders(): Promise<AuthProvidersResponse> {
     return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema);
-  }
-
-  completeSetup(agentId: string): Promise<AccountSetupCompletion> {
-    return this.request(HTTP_PATHS.accountSetupComplete, AccountSetupCompletionSchema, {
-      method: "POST",
-      body: JSON.stringify({ agentId }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   agents(): Promise<ListAgentsResponse> {
@@ -385,14 +374,14 @@ export class BrowserApi {
   }
 
   /**
-   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
-   * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
+   * Undoes setup for the authenticated staging Account by destroying its Agents and Computer
+   * access; it accepts no client-selected Account. An Account with no Agent is offered creation, so
+   * there is nothing else to undo.
    */
-  resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {
+  resetAccountSetup(): Promise<void> {
     return this.requestNoContent(HTTP_PATHS.accountSetupReset, {
       method: "POST",
-      body: JSON.stringify({ mode }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      headers: this.csrfHeaders(),
     });
   }
 

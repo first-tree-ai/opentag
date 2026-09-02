@@ -57,6 +57,8 @@ describe("setup piece layout", () => {
    * resolves — so they are guarded here rather than left to be deleted as decoration.
    */
   it("holds a reserved height for every piece whose contents change length", () => {
+    // The connect status, still rendered by ComputerConnect: waiting on one line, connected on another.
+    expect(declarationValue(".ots-slot--status", "min-height")).toBe("28px");
     // The QR frame, which holds its box whether or not a code has arrived.
     expect(declarationValue(".ots-qr", "height")).toBe("208px");
   });

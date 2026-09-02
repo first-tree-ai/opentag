@@ -150,6 +150,15 @@
   animation: ots-fade 1.4s ease-in-out infinite;
 }
 
+/*
+ * The connect status: waiting on one line, connected on another. The class is written by
+ * ComputerConnect rather than by anything in this directory, so the rule outlives the setup
+ * component that used to share it.
+ */
+.ots-slot--status {
+  min-height: 28px;
+}
+
 /* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */
 .ots-qr {
   width: min(208px, 100%);

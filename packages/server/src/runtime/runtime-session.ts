@@ -89,7 +89,9 @@ export class RuntimeSession {
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
   readonly #logger?: ServiceLogger;
-  readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "channelTarget" | "now" | "onRegistered">> & {
+  readonly #options: Required<
+    Omit<RuntimeSessionOptions, "business" | "channelTarget" | "logger" | "now" | "onRegistered">
+  > & {
     business?: RuntimeBusinessOptions;
     channelTarget?: () => RuntimeChannelTarget | undefined;
     now: () => Date;

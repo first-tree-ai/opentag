@@ -117,6 +117,7 @@
   "computeFileIdentity",
   "computeTargetFingerprint",
   "computerIdentityPath",
+  "configureClientLoggerContext",
   "configureClientLoggerForService",
   "createClientRuntime",
   "createLogger",

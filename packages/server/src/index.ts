@@ -292,7 +292,8 @@ export async function startServer(): Promise<void> {
     providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
       listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
       issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
-      shouldPrewarmOfficialProviderClis: (computerId) => computerService.accountInFirstSetup(computerId),
+      shouldPrewarmOfficialProviderClis: (computerId) =>
+        computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({

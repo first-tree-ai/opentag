@@ -13,9 +13,9 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/first-tree-ai/opentag?style=flat)](https://github.com/first-tree-ai/opentag/stargazers)
-[![Node.js](https://img.shields.io/badge/node-22.13%20%7C%2024%20%7C%2026-5FA04E?style=flat&logo=node.js&logoColor=white)](#开发)
+[![Node.js](https://img.shields.io/badge/node-22.13%20%7C%2024%20%7C%2026-5FA04E?style=flat&logo=node.js&logoColor=white)](#参与贡献)
 
-[官网](https://opentag.build/zh?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [快速开始](#快速开始) · [文档](#文档) · [开发指南](./DEVELOPMENT.zh-CN.md) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全策略](./SECURITY.zh-CN.md)
+[官网](https://opentag.build/zh?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [快速开始](#快速开始) · [文档](#文档) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全策略](./SECURITY.zh-CN.md)
 
 **[English](./README.md) | 简体中文**
 
@@ -24,141 +24,111 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-09-02
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
+  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
 </p>
 
-> **Pre-alpha。** 控制面、本地 Runtime 以及飞书和 Slack 链路今天已经端到端跑通。安装与管理工作流仍在完善，
-> 公开 API 在第一个稳定版本前仍可能变化。参见[项目状态](#项目状态)。
+> **Pre-alpha。** 控制面、本地 Runtime 以及飞书和 Slack 链路今天已经端到端跑通。安装工作流仍在完善，
+> 公开 API 在第一个稳定版本前仍可能变化。Web 中的 Tasks、Skills 和 Integrations 区域是基于 demo 数据的
+> 界面预览。
 
 ---
 
 ## OpenTag 是什么
 
-你的团队已经在 Slack 或飞书里沟通，你也已经在为 Claude Code 或 Codex 付费。但 Agent 住在某台笔记本的终端
-里：每个需求都要人工搬过去，每个结果都要人工搬回来，而让这个需求成立的上下文，留在了 Agent 永远看不到的
-频道里。
+你已经在为 Claude Code 或 Codex 付费，但 Agent 住在某一个人笔记本的终端里。OpenTag 把它放进房间：
+整个频道共用的一个机器人，跑在你自己的机器上。
 
-OpenTag 把 Agent 放进房间。它是整个频道共用的一个机器人：有人 @ 它，OpenTag 就把这条消息路由给绑定在你所
-enrollment 的机器上的 Agent，Agent 在那台机器上、用那台机器上已有的凭证开工，然后回到它被提问的那个话题里
-回复。没有任何东西经由厂商代理——OpenTag 不附带模型，也不持有 provider 密钥。你运行的 Server 是控制面，活
-在你自己的硬件上干。
+- **[飞书与 Slack](#聊天平台) →** 绑定 Agent，邀请它进频道，然后 @ 它。
+- **[Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md) →** 每个频道一个长生命周期 Session；话题按需获得自己的 Session。
+- **[以它自己的身份回复](./docs/zh-CN/direct-provider-cli.md) →** Agent 持有受限的 IM 凭证，自行决定回复、开话题还是加 Reaction。
+- **不丢活 →** 消息先持久化再显式移交托管；Agent 绑定带 revision fencing。
 
 ---
 
-## 自带你自己的订阅。
-
-*中间没有厂商——模型不是、密钥不是、机器也不是。*
-
-- **[Runtime](#runtime) →** Codex 和 Claude Code，以你 enrollment 的那台机器上已安装并登录的 Agent CLI 形式被调用。OpenTag 不附带模型。
-- **不托管密钥 →** OpenTag 从不索要 provider API key。Agent 依旧按它在那台机器上原有的方式认证，用你已经在付费的套餐。
-- **Runtime 配置 →** 在 Agent 的 **Runtime** 页签或 `agent update` 中设置 Codex Agent 的模型、reasoning effort 和单个 Turn 的最长时长。留空即把选择权交回 Codex；显式值由绑定的 Computer 校验，绝不被静默替换。
-- **你的机器就是 Runtime →** 在 Web 里生成 15 分钟有效的连接命令，粘贴到该干活的那台机器上执行。它会保存 enrollment 范围的凭证，并在 Linux 和 macOS 上安装当前用户的 daemon。
-- **独立的机器身份 →** 登录永远不会启动 daemon；daemon 凭证也永远管不了你的账号。
-
-## 团队群里的 AI worker。
-
-*整个频道共用一个机器人——不是和机器人私聊。*
-
-- **[飞书与 Slack](#聊天平台) →** 把 Agent 绑定到工作区，邀请它进频道，然后 @ 它。
-- **[Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md) →** 每个频道保持一个长生命周期 Session；只有真实的话题事件到达时才物化 Thread Session。
-- **[direct 与 ambient 注意力](./docs/zh-CN/thread-sessions.md) →** Agent 知道自己是被直接叫到，还是只是在旁听，并自行决定回复、开话题还是加 Reaction。
-- **[用 provider 自己的 CLI 回复](./docs/zh-CN/direct-provider-cli.md) →** OpenTag 把受限的 IM 凭证交给 Agent，消息和 Reaction 出自 Agent 自己的判断，而不是模板化的机器人回复。
-- **持久化 delivery custody →** 入站消息先持久化再显式移交托管，Agent/Computer 绑定带 revision fencing——Turn 中途重启不会把请求悄悄吞掉，过期的 Runtime 也无法认领已经易主的工作。
-
-## 共享知识，归你所有。
+## 上下文归你。
 
 *比一次终端会话活得更久的上下文，就存在你能直接打开的文件里。*
 
-- **来自每个频道的上下文 →** 每个 Agent 和频道一个 Channel Session，Thread Session 按需物化并带上有界的根消息与话题历史，Agent 从大家真正说过的话开始，而不是从谁手写的摘要开始。
-- **记忆就是纯文本文件 →** Agent 工作区和运行时状态都在你自己机器的 `${OPENTAG_HOME}` 下，默认私有（`0700` / `0600`）。没有任何东西被上传到厂商那里替你记住。
-- **[Agent 之间互相沟通](./docs/zh-CN/internal-session-collaboration.md) →** 持久化的 internal Session 消息，带显式重试，而不是 best-effort 式的沉默。
-- **可以推理的恢复语义 →** 重新连接会轮换凭证并重建 effective snapshot；工作区文件仍由你自己备份。[什么能恢复、什么不能](./DEVELOPMENT.zh-CN.md)
+- **来自每个频道 →** Thread Session 带上有界的根消息与话题历史，Agent 从大家真正说过的话开始。
+- **就是纯文本文件 →** 工作区和运行时状态都在你机器的 `${OPENTAG_HOME}` 下，默认私有。没有任何东西被上传到别处替你记住。
+- **[Agent 之间互相沟通](./docs/zh-CN/internal-session-collaboration.md) →** 持久化的 internal Session，带显式重试。
 
 ## 连接你的技术栈。
 
 *同一个 tag 触达你其余的工具。*
 
-- **今天：经由你的机器 →** Agent 就跑在你的 CLI 和凭证已经存在的地方——`gh`、你的云 CLI、你的 checkout——所以触达它们既不需要 OpenTag connector，也不需要把 token 交给第三方。
-- **一等公民的 connector 目录是下一步 →** Web 里的 Integrations 区域是它的界面预览，目前是 demo 数据，参见[项目状态](#项目状态)。
+- **经由你的机器 →** Agent 就跑在你的 CLI 和凭证已经存在的地方——`gh`、你的云 CLI、你的 checkout。不必把 token 交给第三方。
+- **一等公民的 connector 目录是下一步 →** Web 里的 Integrations 区域是它今天的界面预览。
 
 ## 整套都归你。
 
-*你的 Server、你的数据库、你的规则。*
+*tag 归你、上下文归你、套餐用你自己的。*
 
-- **Apache 2.0 →** 没有托管服务例外条款，也没有商用附加条件。[LICENSE](./LICENSE)
-- **一个容器 →** `ghcr.io/first-tree-ai/opentag`，按 commit 发布。指向你自己的 PostgreSQL 即可。[部署指南](./docs/zh-CN/deploying.md)
-- **同源 Web →** 管理界面由同一个 Server 提供，没有需要额外信任的第三方前端。
-- **[可观测性](./docs/zh-CN/observability.md) →** OpenTelemetry trace 与 metric 发往你自己的 endpoint。
+- **模型不锁定 →** [Codex 和 Claude Code](#runtime) 以你机器上已登录的 CLI 形式运行。OpenTag 不附带模型，也从不索要 provider 密钥。
+- **组织的上下文归你 →** 它沉淀在你控制的硬件上，而不是一个可能把你锁在门外的厂商账号里。
+- **tag 归你 →** Apache 2.0，没有托管服务例外条款，也没有商用附加条件。[LICENSE](./LICENSE)
+- **哪里都能跑 →** `ghcr.io/first-tree-ai/opentag`，按 commit 发布，指向你自己的 PostgreSQL。[部署指南](./docs/zh-CN/deploying.md)
 
 ---
 
 ## 快速开始
 
-目前 OpenTag 从源码 checkout 构建和运行，发布安装渠道仍在建设中，参见[项目状态](#项目状态)。
-
-**前置要求：** Node.js 22.13+（22.x）、24.x 或 26.x · Corepack · pnpm 10.12.1 · Docker（用于本地 PostgreSQL）
-
-**1. 启动 Server。**
+唯一的前置条件：要跑 Agent 的那台机器上装好并登录了一个 [Agent CLI](#runtime)——`codex` 或 `claude`。
+OpenTag 驱动它们，但不附带它们。
 
 ```bash
-corepack enable
-pnpm install
-docker compose up -d postgres
+git clone https://github.com/first-tree-ai/opentag.git && cd opentag
+pnpm install && ./scripts/dev-install.sh
+```
 
+需要 Node.js 22.13+、Corepack 和 pnpm 10.12.1。`dev-install.sh` 会把 `opentag-dev` 放到你的 `PATH` 上。
+npm 包与一行安装脚本正在路上。
+
+<details>
+<summary><b>运行 Server</b></summary>
+
+<br/>
+
+```bash
+docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
 export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-
-pnpm build
-pnpm --filter @opentag/server start
+pnpm build && pnpm --filter @opentag/server start
+pnpm --filter @opentag/server bootstrap:admin   # 输出首个账号的登录 code
 ```
 
-Migration 在 Server 开始监听前执行，服务启动在 `http://127.0.0.1:8000`。
+Migration 在 Server 开始监听前执行。要部署到你自己的基础设施，见[部署指南](./docs/zh-CN/deploying.md)。
 
-**2. 创建首个账号并安装 CLI。** 在另一个终端：
+</details>
 
-```bash
-export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
-export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
-export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
-pnpm --filter @opentag/server bootstrap:admin
+---
 
-./scripts/dev-install.sh
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login --server http://127.0.0.1:8000 -- <account-login-code>
-```
+## 五分钟跑通第一个 Agent
 
-把 `~/.local/bin` 放在 `PATH` 最前，daemon service 才会用当前 checkout 构建的 CLI 而不是旧 shim。若要在
-loopback 下不配 Google 凭证开发，设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` 和
-`OPENTAG_DEV_AUTH_EMAIL` 为 bootstrap 邮箱；该 bypass 在 `dev` 环境之外会被拒绝，且永不创建账号。
+**1. 登录。** `opentag-dev login --server <你的-server> -- <账号登录-code>`，然后在同一个地址打开 Web。
 
-**3. 连接一台 Computer。** 打开 `http://127.0.0.1:8000/` 登录，进入 **Agents** 区域生成 Computer 连接命令
-（15 分钟有效），在该干活的机器上运行：
+**2. 连接一台 Computer。** *Computer* 就是 Agent 可以干活的任意机器——你的笔记本，或一台云主机。在 Web 的
+**Agents** 区域生成连接命令，在那台机器上运行：
 
 ```bash
-opentag-dev computer connect --server http://127.0.0.1:8000 -- <computer-connect-code>
+opentag-dev computer connect --server <你的-server> -- <Computer-连接-code>
 opentag-dev computer list     # Computer 应显示为 online
 ```
 
-该命令保存机器凭证，并安装或重启当前用户的 daemon。加 `--no-start` 则只保存凭证、不安装 service。
+它会保存 enrollment 范围的凭证，并在 Linux 和 macOS 上安装当前用户的 daemon。
 
-**4. 创建 Agent。**
+**3. 创建 Agent。**
 
 ```bash
-opentag-dev agent create \
-  --name code-reviewer \
-  --display-name "Code Reviewer" \
-  --provider codex
-opentag-dev agent list
+opentag-dev agent create --name code-reviewer --display-name "Code Reviewer" --provider codex
 ```
 
-**5. 把它放进频道。** 在 Web 里把 Agent 绑定到飞书或 Slack，邀请机器人进频道，然后 @ 它。参见
-[聊天平台](#聊天平台)。
+**4. 把它放进频道。** 在 Web 里把 Agent 绑定到飞书或 Slack，邀请机器人进群，然后 @ 它。
 
-完整本地流程、校验命令与恢复说明：**[DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)**。
+完整流程：[DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md) · [聊天平台](#聊天平台)
 
 ---
 
@@ -235,47 +205,21 @@ provider 自己的 CLI 发出。
 
 ---
 
-## 开发
+## 参与贡献
+
+OpenTag 以小而经过验证的纵向切片推进，`main` 变动很快——记得常拉取。
 
 ```bash
-corepack enable
 pnpm install
 pnpm check && pnpm build && pnpm typecheck && pnpm test
 ```
 
-`pnpm lint` 只做 lint 反馈，`pnpm format` 应用 Biome 格式化。Pull request 的必需检查是 `CI` 汇聚 job：除上述
-命令外，还包括 source 与 staging CLI tarball 安装、生产容器健康冒烟，以及各受支持的 Node.js 版本线。Agent
-Runtime 另有自己的 100% 覆盖率门禁。
+这就是 pull request 的必需检查（`CI` 汇聚 job），只少了它同时运行的 CLI tarball 安装和容器冒烟。
+Agent Runtime 另有自己的 100% 覆盖率门禁。
 
-请先阅读[贡献指南](./CONTRIBUTING.zh-CN.md)；完整本地流程见 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
-
----
-
-## 项目状态
-
-OpenTag 以小而经过验证的纵向切片推进，`main` 变动很快。
-
-**今天已经可用：** 控制面与同源 Web；基于 Better Auth 的账号登录；独立认证的 Computer enrollment、在线状态
-以及 Linux/macOS 上的当前用户 daemon；带不可变 Computer/provider 绑定与 revision fencing 的 Agent Registry；
-带 delivery custody、上报与恢复的持久化 Agent Runtime 执行；飞书与 Slack 入站标准化及 Channel/Thread Session
-路由；供 Agent 自主回复和 Reaction 的 provider CLI 凭证交接；Internal Session collaboration；以及 `doctor`、
-`login`、`agent`、`computer`、`session` 和 `daemon` 命令。
-
-**还没有：** 公开的安装渠道——[releasing.md](./docs/zh-CN/releasing.md) 与
-[portable-release.md](./docs/zh-CN/portable-release.md) 中描述的 npm 与便携版 `curl … | sh` 链路已经构建完成，
-但尚未对外提供正式发布，目前请从源码 checkout 构建。Windows daemon service 不在 v0.1 范围内。Web 中的 Tasks、
-Skills 和 Integrations 区域是基于 demo 数据的界面预览，不是可用功能。OpenTag 没有托管版本，Server 由你自己运行。
-
-数据库仍会创建一个内部默认 Workspace 和 grant 作为兼容层。OpenTag 不暴露任何 Workspace、Admin 或邀请管理界面，
-既定的产品形态是 **Account → Computer enrollment → Agent → IM 绑定**。在该兼容层移除之前，历史遗留的活跃
-grant 可能让多个 Account 管理同一批 Agent；它们不是共享协作容器。
-
----
-
-## 为什么叫 OpenTag
-
-因为整个产品就是一个动作。你早就知道怎么在群里请同事帮忙：打一个 `@`，加上他的名字。OpenTag 让这个动作能够
-到达一个编码 Agent——并且保持它是开放的：Agent 由你选、机器归你有、许可证不会反悔。
+请先阅读**[贡献指南](./CONTRIBUTING.zh-CN.md)**；完整本地流程、校验命令与恢复说明见
+[DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。欢迎提 issue 和 PR——动手前请先看
+[行为准则](./CODE_OF_CONDUCT.zh-CN.md)；安全漏洞请走[安全策略](./SECURITY.zh-CN.md)，不要开公开 issue。
 
 ---
 

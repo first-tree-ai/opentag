@@ -214,6 +214,8 @@ describe("targeted local Computer preparation", () => {
       expect(human.exitCode).toBe(3);
       expect(human.err).toContain(preparation.NO_CODE_REUSE_GUIDANCE);
       expect(document.result.guidance).toContain(preparation.NO_CODE_REUSE_GUIDANCE);
+      expect(human.err).toContain(`Blocked by: ${codes.join(", ")}`);
+      expect(document.result.guidance).toContain(`Blocked by: ${codes.join(", ")}`);
       for (const row of parsed.components.filter((row) => row.id.startsWith("im-cli:") && row.blocking)) {
         const action = row.nextAction;
         expect(action).toBeDefined();
@@ -355,6 +357,18 @@ describe("targeted local Computer preparation", () => {
     expect(document.result.connected).toBe(true);
   });
 
+  it("keeps blank daemon errors valid in normal and fallback projections", async () => {
+    vi.mocked(connect.runComputerConnect).mockResolvedValue({ ...connection, service: undefined, serviceError: "  " });
+    const normal = await invoke(["--json"]);
+    vi.spyOn(preparation, "runLocalComputerPreparation").mockRejectedValue(new Error("projection failed"));
+    const fallback = await invoke(["--json"]);
+    for (const output of [normal, fallback]) {
+      const result = LocalComputerPreparationResultSchema.parse(JSON.parse(output.err).result.preparation);
+      expect(result.components[0]?.checks?.[1]).toMatchObject({ message: "Daemon service failed.", blocking: true });
+      expect(JSON.parse(output.err).result.connected).toBe(true);
+    }
+  });
+
   it("does not lose the connection or Provider results when Runtime throws unexpectedly", async () => {
     vi.mocked(runtime.probeRuntimeComponent).mockRejectedValue(new Error("unexpected Runtime failure"));
     const output = await invoke(["--json"]);
@@ -376,8 +390,60 @@ describe("targeted local Computer preparation", () => {
       LocalComputerPreparationResultSchema.parse(JSON.parse(fallback.err).result.preparation).components,
     ).toHaveLength(4);
     expect(JSON.parse(fallback.err).error.retryability).toBe("never");
+    for (const caseOutput of [output, fallback]) {
+      const rows = JSON.parse(caseOutput.err).result.preparation.components.slice(2);
+      expect(rows.map((row: LocalPreparationComponent) => row.verifyAction?.command)).toEqual([
+        '"$HOME/.local/bin/opentag-dev" provider-cli inspect --provider lark',
+        '"$HOME/.local/bin/opentag-dev" provider-cli inspect --provider slack',
+      ]);
+    }
     expect(connect.runComputerConnect).toHaveBeenCalledTimes(2);
     expect(provider.runProviderCliEnsure).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates projection invariants and counts required rows in both paths", async () => {
+    const ready = readyRuntime("codex");
+    expect(preparation.projectPreparation([ready, { ...ready, id: "optional", required: false }])).toMatchObject({
+      readyCount: 1,
+      requiredCount: 1,
+      localReady: true,
+    });
+    expect(() => preparation.projectPreparation([{ ...ready, blocking: true }])).toThrow("cannot be blocking");
+    vi.mocked(runtime.probeRuntimeComponent).mockResolvedValue({ ...ready, blocking: true });
+    const output = await invoke(["--json"]);
+    const result = LocalComputerPreparationResultSchema.parse(JSON.parse(output.err).result.preparation);
+    expect(result).toMatchObject({ readyCount: 1, requiredCount: 4, localReady: false });
+    expect(result.components[1]?.diagnosticCode).toBe("runtime_probe_failed");
+    expect(connect.runComputerConnect).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])("preserves a consumed-code local persistence failure (targeted: %s)", async (targeted) => {
+    vi.mocked(connect.runComputerConnect).mockResolvedValue({
+      ...connection,
+      agentId: targeted ? connection.agentId : undefined,
+      service: undefined,
+      persistenceError: {
+        stage: "credentials",
+        installationId: "22222222-2222-4222-8222-222222222222",
+        message: "disk full",
+      },
+    });
+    const json = await invoke(["--json"]);
+    expect(JSON.parse(json.err)).toMatchObject({
+      ok: false,
+      error: { code: "COMPUTER_LOCAL_PERSISTENCE_FAILED", retryability: "never" },
+      result: { connected: true, codeConsumed: true, localPersistenceReady: false },
+    });
+    expect(json.out).toBe("");
+    expect(json.exitCode).toBe(3);
+    const human = await invoke();
+    expect(human.err).toContain("Do not reuse it");
+    expect(human.err).toContain("previous credentials may no longer work");
+    expect(human.err).toContain("computer repair-local --installation-id 22222222-2222-4222-8222-222222222222");
+    expect(human.err).toContain(`--home '/tmp/f3 home '"'"'quoted'"'"''`);
+    expect(human.err).toContain("NEW connect/repair code");
+    expect(provider.runProviderCliEnsure).not.toHaveBeenCalled();
+    expect(runtime.probeRuntimeComponent).not.toHaveBeenCalled();
   });
 
   it("does not invent preparation for an untargeted connection", async () => {

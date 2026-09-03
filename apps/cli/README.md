@@ -30,9 +30,22 @@ The Web must still wait for fresh daemon observations. Partial preparation retur
 Provider ensure remains independently retryable according to its own error contract. Daemon repair uses the exact
 connected Home, even when `--home` differs from the channel default.
 
+If the Server exchange succeeds but a local file write fails, the command instead returns exit `3` with
+`COMPUTER_LOCAL_PERSISTENCE_FAILED`, `connected: true` (Server-side only), `codeConsumed: true`, and
+`localPersistenceReady: false`. It does not start/restart the daemon or run preparation on an incomplete local binding.
+Credentials are written before identity; these are not a two-file atomic transaction. After fixing local storage,
+run the emitted `computer repair-local --installation-id <id> --home <path>` command. This idempotently rewrites the
+saved credential and reconstructs its identity without a code exchange, including recovery after a crash between writes
+or a post-rename durability error. For an interrupted process, use the installation ID in the saved credential file
+(do not share its machine token). Repair refuses a missing credential or one from a different installation. If the
+new credential was never saved, request a **new** connect/repair code in Web; never replay the consumed code or assume
+the previous credential still works. Local repair alone does not assert Runtime, Provider, daemon, or Server readiness.
+
 After manually repairing a Runtime, run `opentag computer runtime-inspect --provider codex` or
 `opentag computer runtime-inspect --provider claude-code` (optionally `--json`). This explicitly selected, read-only
-command performs the same full probe; neither `doctor` nor a version string alone substitutes for it.
+command performs the same full probe; neither `doctor` nor a version string alone substitutes for it. Transient probe
+failures use `retryability: backoff`; install, login, version, and configuration failures require manual repair first.
+The probe is point-in-time local evidence: it neither creates Runtime homes nor shares the daemon's discovery cache.
 
 The exchange advertises support in its existing `clientVersion` SemVer build metadata (`opentag-connect-runtime-v1`).
 New Servers omit `runtimeProvider` for unmarked Clients, preserving their strict response schema and version floor.

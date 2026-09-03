@@ -17,8 +17,9 @@ import { redactSecrets } from "../command/policy.js";
 
 /**
  * Read-only probe of one Agent Runtime CLI for targeted Computer preparation. It reuses the same
- * resolved factories the daemon runs (canonical environment filter, executable discovery, bounded
- * probe) so a connect-time verdict and the daemon's readiness cannot disagree. No model is ever
+ * resolved factories and environment filters the daemon runs. This is point-in-time local proof,
+ * not daemon readiness: inspection never creates Runtime homes and uses fresh executable discovery,
+ * whereas daemon startup creates homes and shares a login-shell discovery cache. No model is ever
  * invoked and OpenTag never installs a Runtime CLI: the operator supplies it.
  */
 
@@ -32,7 +33,7 @@ export interface ResolvedRuntimeProbeEnvironment {
 }
 
 /**
- * Resolve the selected Runtime's home and filtered probe environment exactly like the daemon:
+ * Reuse the daemon's selected Runtime home rules and environment filter without creating homes:
  * Codex under `CODEX_HOME` (default `~/.codex`) and Claude Code under `CLAUDE_CONFIG_DIR`
  * (default `~/.claude`). `CLAUDE_CONFIG_DIR` is omitted when it resolves to Claude's own default,
  * because setting it explicitly would change the credential record the daemon later reads.

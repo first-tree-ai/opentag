@@ -311,14 +311,14 @@ export const LocalPreparationWarningSchema = z
   })
   .strict();
 
-export const LocalPreparationCheckSchema = z
+const LocalPreparationCheckFieldsSchema = z
   .object({
     id: z.string().trim().min(1).max(64),
     label: z.string().trim().min(1).max(200),
     /** A required Check must reach `ready` before its Component may claim readiness. */
     required: z.boolean(),
     status: LocalPreparationStatusSchema,
-    /** A blocking Check in any non-ready status (including `skipped`) keeps its Component non-ready. */
+    /** Currently blocking, not merely a gate: a ready Check must be unblocked. */
     blocking: z.boolean(),
     phase: z.string().trim().min(1).max(64).optional(),
     message: z.string().trim().min(1).max(512).optional(),
@@ -331,10 +331,20 @@ export const LocalPreparationCheckSchema = z
   })
   .strict();
 
-export const LocalPreparationComponentSchema = LocalPreparationCheckSchema.extend({
+export const LocalPreparationCheckSchema = LocalPreparationCheckFieldsSchema.refine(
+  (check) => check.status !== "ready" || !check.blocking,
+  { path: ["blocking"], message: "A ready Check cannot be blocking" },
+);
+
+export const LocalPreparationComponentSchema = LocalPreparationCheckFieldsSchema.extend({
   /** Child Checks (for example credential and daemon under the Computer component). */
   checks: z.array(LocalPreparationCheckSchema).optional(),
-}).strict();
+})
+  .strict()
+  .refine((component) => component.status !== "ready" || !component.blocking, {
+    path: ["blocking"],
+    message: "A ready Component cannot be blocking",
+  });
 
 const LocalComputerPreparationResultFieldsSchema = z
   .object({
@@ -378,12 +388,10 @@ function readyComponentIssue(
   concealed: string[],
   index: number,
 ): LocalPreparationIssue | undefined {
-  if (component.status !== "ready" || (!component.blocking && concealed.length === 0)) return undefined;
+  if (component.status !== "ready" || concealed.length === 0) return undefined;
   return {
     path: ["components", index, "status"],
-    message: component.blocking
-      ? "A ready Component cannot be blocking"
-      : `A ready Component cannot conceal non-ready required/blocking Checks: ${concealed.join(", ")}`,
+    message: `A ready Component cannot conceal non-ready required/blocking Checks: ${concealed.join(", ")}`,
   };
 }
 

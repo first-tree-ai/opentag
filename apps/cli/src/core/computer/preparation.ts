@@ -92,7 +92,7 @@ export function daemonChildCheck(input: {
       status: "needs_attention",
       blocking: true,
       diagnosticCode: "DAEMON_SERVICE_FAILED",
-      message: redactSecrets(input.serviceError).slice(0, 512),
+      message: redactSecrets(input.serviceError).trim().slice(0, 512) || "Daemon service failed.",
       nextAction: { command: daemonServiceCommand("install", input.home) },
       verifyAction,
     };
@@ -231,6 +231,7 @@ export function providerComponentFromEnsureResult(
   }
   const observed = observedAt(now);
   if (result.ok && result.readiness === "ready" && result.selected) {
+    const warnings = warningsFromProvider(result);
     return {
       id,
       label,
@@ -239,7 +240,7 @@ export function providerComponentFromEnsureResult(
       blocking: false,
       version: redactSecrets(result.selected.version).slice(0, 64),
       observedAt: observed,
-      ...(warningsFromProvider(result) ? { warnings: warningsFromProvider(result) } : {}),
+      ...(warnings ? { warnings } : {}),
     };
   }
   const code = result.diagnostic?.code ?? "unavailable";
@@ -278,7 +279,6 @@ export function providerComponentFromEnsureResult(
       blocking: true,
       message: remediation ?? `${label} needs manual attention.`,
       nextAction: { instruction: remediation ?? `Fix the ${label} manually, then run the verify command.` },
-      verifyAction: { command: providerInspectCommand(provider) },
     };
   }
   return {
@@ -307,6 +307,7 @@ function failedClosedProviderComponent(
     diagnosticCode: "provider_prepare_failed",
     message: detail.length > 0 ? `${label} preparation failed: ${detail}` : `${label} preparation failed.`,
     nextAction: { command: providerRepairCommand(provider) },
+    verifyAction: { command: providerInspectCommand(provider) },
     observedAt: observedAt(now),
   };
 }
@@ -349,13 +350,23 @@ export async function runLocalComputerPreparation(
       slack = failedClosedProviderComponent("slack", error, now);
     }
   }
-  const components = [computer, runtime, lark, slack];
-  const ready = components.filter((component) => component.status === "ready" && !component.blocking).length;
+  return projectPreparation([computer, runtime, lark, slack]);
+}
+
+/** Derive counts from required rows and validate both normal and fail-closed projections. */
+export function projectPreparation(components: LocalPreparationComponent[]): LocalComputerPreparationResult {
+  const required = components.filter((component) => component.required);
+  const ready = required.filter(
+    (component) =>
+      component.status === "ready" &&
+      !component.blocking &&
+      !(component.checks ?? []).some((check) => check.blocking || (check.required && check.status !== "ready")),
+  ).length;
   return LocalComputerPreparationResultSchema.parse({
-    status: ready === components.length ? "ready" : "needs_attention",
-    localReady: ready === components.length,
+    status: ready === required.length ? "ready" : "needs_attention",
+    localReady: ready === required.length,
     readyCount: ready,
-    requiredCount: components.length,
+    requiredCount: required.length,
     components,
   });
 }
@@ -370,18 +381,12 @@ export function failedLocalComputerPreparation(
   const runtime = options.runtimeProvider
     ? runtimeComponentFromProbeFailure(options.runtimeProvider, error, observedAt(now))
     : unconfirmedRuntimeComponent();
-  return {
-    status: "needs_attention",
-    localReady: false,
-    readyCount: computer.status === "ready" ? 1 : 0,
-    requiredCount: 4,
-    components: [
-      computer,
-      runtime,
-      failedClosedProviderComponent("feishu", error, now),
-      failedClosedProviderComponent("slack", error, now),
-    ],
-  };
+  return projectPreparation([
+    computer,
+    runtime,
+    failedClosedProviderComponent("feishu", error, now),
+    failedClosedProviderComponent("slack", error, now),
+  ]);
 }
 
 async function probeRuntimeSafely(
@@ -416,5 +421,10 @@ export function preparationBlockerCodes(result: LocalComputerPreparationResult):
 /** Guidance lines shared verbatim by the human and JSON projections of one result. */
 export function preparationGuidance(result: LocalComputerPreparationResult): string[] {
   if (result.status === "ready") return [SERVER_CONFIRMATION_GUIDANCE];
-  return [NO_CODE_REUSE_GUIDANCE, SERVER_CONFIRMATION_GUIDANCE];
+  const codes = preparationBlockerCodes(result);
+  return [
+    ...(codes.length ? [`Blocked by: ${codes.join(", ")}`] : []),
+    NO_CODE_REUSE_GUIDANCE,
+    SERVER_CONFIRMATION_GUIDANCE,
+  ];
 }

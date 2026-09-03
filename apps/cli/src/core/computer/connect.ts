@@ -45,6 +45,12 @@ export interface ComputerConnectResult {
    * instead of a raw throw that could read as "retry the one-time code".
    */
   serviceError?: string;
+  /** Server exchange committed, but local files must be recovered before starting the daemon. */
+  persistenceError?: {
+    stage: "credentials" | "identity";
+    installationId: string;
+    message: string;
+  };
 }
 
 export async function runComputerConnect(options: ComputerConnectOptions): Promise<ComputerConnectResult> {
@@ -70,8 +76,6 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
     arch: arch(),
     clientVersion,
   });
-  await writeComputerIdentityAtomically(home, identity);
-  await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
   const result: ComputerConnectResult = {
     agentId: exchange.agentId,
     runtimeProvider: exchange.runtimeProvider,
@@ -81,6 +85,26 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
       ? `Connected Computer ${exchange.computerId} and bound Agent ${exchange.agentId}`
       : `Connected Computer ${exchange.computerId}`,
   };
+  let stage: "credentials" | "identity" = "credentials";
+  try {
+    // Save the non-reconstructable token first. Identity is derivable from this credential, so
+    // repair-local can finish a partial write (including a crash or an error after rename).
+    // These are two durable file writes, not an atomic transaction; never roll back to a token
+    // that the committed exchange may already have revoked.
+    await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
+    stage = "identity";
+    await writeComputerIdentityAtomically(home, identity);
+  } catch (error) {
+    return {
+      ...result,
+      message: `${result.message} on the Server; local persistence is incomplete`,
+      persistenceError: {
+        stage,
+        installationId: identity.computerId,
+        message: safeFailureMessage(error, "Local write failed", exchange.machineToken),
+      },
+    };
+  }
   if (!manager) return result;
 
   try {
@@ -90,8 +114,13 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   } catch (error) {
     return {
       ...result,
-      serviceError:
-        redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 512) || "Daemon service failed",
+      serviceError: safeFailureMessage(error, "Daemon service failed", exchange.machineToken),
     };
   }
+}
+
+function safeFailureMessage(error: unknown, fallback: string, machineToken: string): string {
+  let message = error instanceof Error ? error.message : String(error);
+  if (machineToken) message = message.replaceAll(machineToken, "[REDACTED]");
+  return redactSecrets(message).trim().slice(0, 512) || fallback;
 }

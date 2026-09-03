@@ -333,6 +333,9 @@ describe("computer contracts", () => {
       LocalPreparationCheckSchema.parse({ ...check, warnings: [{ code: "blocked", blocking: true }] }),
     ).toThrow();
     expect(() => LocalPreparationCheckSchema.parse({ ...check, status: "install_required!" })).toThrow();
+    expect(() => LocalPreparationCheckSchema.parse({ ...check, status: "ready" })).toThrow(
+      "A ready Check cannot be blocking",
+    );
   });
 
   it("rejects duplicate top-level ids and inconsistent counts", () => {
@@ -538,7 +541,7 @@ describe("computer contracts", () => {
         ...result,
         components: [{ ...component, checks: [{ ...component, id: "daemon", blocking: true }] }],
       }),
-    ).toThrow("cannot conceal");
+    ).toThrow("A ready Check cannot be blocking");
     const optionalReady = { ...result, components: [component, { ...component, id: "optional", required: false }] };
     expect(LocalComputerPreparationResultSchema.parse(optionalReady)).toEqual(optionalReady);
     expect(() => LocalComputerPreparationResultSchema.parse({ ...optionalReady, readyCount: 2 })).toThrow(

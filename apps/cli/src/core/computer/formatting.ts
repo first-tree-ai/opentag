@@ -31,7 +31,7 @@ function actionText(action: LocalPreparationAction): string {
  * or version keeps the row self-contained.
  */
 export function formatPreparationCheckLine(check: LocalPreparationCheck): string {
-  const blocking = check.status !== "ready" && check.blocking ? " (blocking)" : "";
+  const blocking = check.blocking ? " (blocking)" : "";
   const detail = [check.version, check.message].filter((value) => value !== undefined).join(" — ");
   return `[${check.id}] ${check.status}${blocking}${detail ? ` — ${detail}` : ""}`;
 }

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import * as client from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
+import * as runtime from "../core/computer/runtime-probe.js";
 import { probeRuntimeComponent, resolveRuntimeProbeEnvironment } from "../core/computer/runtime-probe.js";
 
 const homes: string[] = [];
@@ -33,6 +34,43 @@ function mockFactories(
 }
 
 describe("selected Runtime full-probe adapter", () => {
+  it.each([
+    ["artifact_missing", "never"],
+    ["credential_missing", "never"],
+    ["version_incompatible", "never"],
+    ["configuration_invalid", "never"],
+    ["temporarily_unavailable", "backoff"],
+    ["runtime_probe_failed", "backoff"],
+  ] as const)("reports standalone %s as %s retryability", async (code, retryability) => {
+    const observed = new Date().toISOString();
+    const component =
+      code === "runtime_probe_failed"
+        ? runtime.runtimeComponentFromProbeFailure("codex", new Error("Runtime probe timed out"), observed)
+        : runtime.runtimeComponentFromProbeResult(
+            "codex",
+            { ready: false, issues: [{ code, message: "probe failed" }] },
+            observed,
+          );
+    vi.spyOn(runtime, "probeRuntimeComponent").mockResolvedValue(component);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await createProgram().parseAsync([
+      "node",
+      "opentag",
+      "computer",
+      "runtime-inspect",
+      "--provider",
+      "codex",
+      "--json",
+    ]);
+    expect(JSON.parse(String(stderr.mock.calls[0]?.[0]))).toMatchObject({
+      ok: false,
+      error: { retryability },
+      result: { diagnosticCode: code, verifyAction: { command: expect.stringContaining("runtime-inspect") } },
+    });
+    expect(stdout).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(3);
+  });
   it.each(["codex", "claude-code"] as const)(
     "reuses only the %s factory and does not create a Runtime Home or install anything",
     async (provider) => {

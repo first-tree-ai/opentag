@@ -1,4 +1,4 @@
-import { AgentRuntimeProviderSchema } from "@opentag/shared";
+import { AgentRuntimeProviderSchema, type LocalPreparationComponent } from "@opentag/shared";
 import type { Command } from "commander";
 import { CommandError, commandExitCode, presentCommand, toCommandError } from "../../core/command/policy.js";
 import { formatPreparationComponentLines } from "../../core/computer/formatting.js";
@@ -16,10 +16,7 @@ export function registerRuntimeInspectCommand(computer: Command): void {
       try {
         const provider = AgentRuntimeProviderSchema.parse(options.provider);
         const component = await probeRuntimeComponent({ provider });
-        const error = new CommandError(
-          { code: "RUNTIME_CHECK_INCOMPLETE", category: "dependency", retryability: "never", phase: "provider" },
-          "The selected Runtime needs attention. Follow its repair and verify actions.",
-        );
+        const error = runtimeInspectionError(component);
         const ready = component.status === "ready" && !component.blocking;
         process.exitCode = ready ? 0 : commandExitCode(error);
         if (options.json) {
@@ -44,4 +41,18 @@ export function registerRuntimeInspectCommand(computer: Command): void {
         );
       }
     });
+}
+
+function runtimeInspectionError(component: LocalPreparationComponent): CommandError {
+  const transient =
+    component.diagnosticCode === "temporarily_unavailable" || component.diagnosticCode === "runtime_probe_failed";
+  return new CommandError(
+    {
+      code: "RUNTIME_CHECK_INCOMPLETE",
+      category: "dependency",
+      retryability: transient ? "backoff" : "never",
+      phase: "provider",
+    },
+    "The selected Runtime needs attention. Follow its repair and verify actions.",
+  );
 }

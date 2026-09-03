@@ -1,6 +1,7 @@
 import type {
   AgentSetupAction,
   AgentSetupBlocker,
+  AgentSetupComponent,
   AgentSetupComputerState,
   AgentSetupMessagingState,
   AgentSetupRuntimeState,
@@ -10,6 +11,7 @@ import type {
   FeishuSetupAttempt,
   ImProvider,
 } from "@opentag/shared";
+import { AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS, projectAgentSetupComponents } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { computers } from "../../db/schema/index.js";
@@ -115,14 +117,23 @@ export class AgentSetupService {
         409,
       );
     }
-    const stage = deriveSetupStage(computer, runtime, messaging);
+    const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+    const components = projectAgentSetupComponents({
+      computer,
+      runtime,
+      messaging,
+      requiredImCliProviders,
+    });
+    const stage = deriveSetupStage(computer, runtime, messaging, components);
     return {
       agent,
       stage,
       computer,
       runtime,
       messaging,
-      blockers: deriveSetupBlockers(stage, computer, runtime, messaging),
+      requiredImCliProviders,
+      components,
+      blockers: deriveSetupBlockers(stage, computer, runtime, messaging, components),
       actions: deriveSetupActions(stage, computer, messaging, this.#slackOAuthAvailable),
       observedAt: observedAt.toISOString(),
     };
@@ -310,20 +321,33 @@ function runtimeStateFor(
   }
   const exact = readiness.find((observation) => observation.provider === provider);
   if (!exact) throw new Error("The Agent's runtime Provider is not admitted by the server");
+  // The runtime wire projector keeps its public contract; its evidence-less "checking" fallback for
+  // a missing report is normalized here to an explicit waiting state within Agent setup.
+  if (exact.observedAt === null) return { kind: "waiting", provider };
   return { kind: "observed", provider, status: exact.status, observedAt: exact.observedAt };
 }
 
-/** The same canonical order the shared contract validates: Computer, then runtime, then Messaging. */
+/**
+ * The same canonical order the shared contract validates: Computer, then runtime, then required IM
+ * CLIs while Messaging is not-configured, then Messaging.
+ */
 function deriveSetupStage(
   computer: AgentSetupComputerState,
   runtime: AgentSetupRuntimeState,
   messaging: AgentSetupMessagingState,
+  components: AgentSetupComponent[],
 ): AgentSetupStage {
   const computerReady = computer.kind === "bound" && computer.connectionStatus === "online";
   if (!computerReady) return "needs-computer";
   const runtimeReady = runtime.kind === "observed" && runtime.status === "ready";
   if (!runtimeReady) return "needs-runtime";
-  return messaging.kind === "ready" ? "ready" : "needs-messaging";
+  if (messaging.kind === "ready") return "ready";
+  // A known Messaging state (authorizing, waiting-handoff, blocked, observation-failed) keeps its
+  // fail-closed needs-messaging projection; only not-configured Messaging consults the required
+  // IM CLI reports again, and both must be freshly ready before the gate passes.
+  if (messaging.kind !== "not-configured") return "needs-messaging";
+  const anyCliBlocking = components.some((component) => component.kind === "im-cli" && component.blocking);
+  return anyCliBlocking ? "needs-provider-clis" : "needs-messaging";
 }
 
 function deriveSetupBlockers(
@@ -331,12 +355,15 @@ function deriveSetupBlockers(
   computer: AgentSetupComputerState,
   runtime: AgentSetupRuntimeState,
   messaging: AgentSetupMessagingState,
+  components: AgentSetupComponent[],
 ): AgentSetupBlocker[] {
   switch (stage) {
     case "needs-computer":
       return computerBlockers(computer);
     case "needs-runtime":
       return runtimeBlockers(runtime);
+    case "needs-provider-clis":
+      return providerCliBlockers(components);
     case "needs-messaging":
       return messagingBlockers(messaging);
     case "ready":
@@ -357,10 +384,30 @@ function runtimeBlockers(runtime: AgentSetupRuntimeState): AgentSetupBlocker[] {
   if (runtime.kind === "observation-failed") {
     return [{ code: "resource-observation-failed", resource: "runtime" }];
   }
+  if (runtime.kind === "waiting") {
+    return [{ code: "runtime-not-ready", provider: runtime.provider, status: "waiting" }];
+  }
   if (runtime.kind !== "observed" || runtime.status === "ready") {
     throw new Error("A needs-runtime setup must carry an observed non-ready runtime");
   }
   return [{ code: "runtime-not-ready", provider: runtime.provider, status: runtime.status }];
+}
+
+function providerCliBlockers(components: AgentSetupComponent[]): AgentSetupBlocker[] {
+  const failing = components.filter((component) => component.kind === "im-cli" && component.blocking);
+  if (failing.length === 0) {
+    throw new Error("A needs-provider-clis setup must carry a required IM CLI that is not freshly ready");
+  }
+  return failing.map((component) => {
+    if (component.kind !== "im-cli" || component.status === "ready") {
+      throw new Error("A blocking required IM CLI cannot carry a ready status");
+    }
+    return {
+      code: "provider-cli-not-ready",
+      provider: component.provider,
+      status: component.status,
+    };
+  });
 }
 
 function messagingBlockers(messaging: AgentSetupMessagingState): AgentSetupBlocker[] {
@@ -396,6 +443,8 @@ function deriveSetupActions(
       }
       return [{ kind: "refresh" }, { kind: "repair-computer", computerId: computer.computerId }];
     case "needs-runtime":
+      return [{ kind: "refresh" }];
+    case "needs-provider-clis":
       return [{ kind: "refresh" }];
     case "needs-messaging":
     case "ready":

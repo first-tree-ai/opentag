@@ -45,6 +45,46 @@ import { CardCopy, DoneStep, StepRail } from "./steps.js";
 const SETUP_POLL_MS = 2_000;
 /** How many times to report readiness before the reader is offered an explicit retry. */
 const READY_REPORT_ATTEMPTS = 3;
+/**
+ * The finite budget for automatic local-preparation polls (needs-provider-clis, and Runtime
+ * waiting/checking): 30 polls at 2s is roughly a one-minute observation window. Exhaustion stops
+ * the timer; an explicit Check again restarts a fresh window. The budget never resets on an
+ * unchanged snapshot, and Messaging/offline observation keeps its unbounded beat.
+ */
+const BOUNDED_POLL_ATTEMPTS = 30;
+
+/**
+ * Arms one automatic-read observation window. The window is single-flight across effect
+ * restarts: an automatic read an earlier window started is awaited before a new one begins, and
+ * a manual refresh deliberately supersedes its reply through the request lifecycle instead.
+ */
+function armAutomaticPollWindow(
+  pollClass: Exclude<SetupPollClass, undefined>,
+  budget: { current: number },
+  inFlight: { current: Promise<boolean> | undefined },
+  read: () => Promise<boolean>,
+): () => void {
+  let cancelled = false;
+  let timer: number | undefined;
+  const poll = async (): Promise<void> => {
+    let turn = inFlight.current;
+    if (turn === undefined) {
+      if (pollClass === "bounded") budget.current -= 1;
+      turn = read();
+      inFlight.current = turn;
+    }
+    await turn;
+    if (inFlight.current === turn) inFlight.current = undefined;
+    if (cancelled) return;
+    if (pollClass === "bounded" && budget.current <= 0) return;
+    timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
+  };
+  timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
+}
 
 const SECTION = "flex flex-col gap-6";
 const SECTION_HEADER = "flex flex-col gap-1";
@@ -75,11 +115,26 @@ type SetupPhase =
   | { readonly kind: "load-failed"; readonly message: string }
   | { readonly kind: "ready"; readonly snapshot: AgentSetupSnapshot };
 
+type SetupPollClass = "bounded" | "unbounded" | undefined;
+
+/**
+ * How a snapshot the outside world is still moving should be watched. Messaging authorizing,
+ * waiting-handoff, and an offline Computer keep the existing unbounded beat; local preparation
+ * (required IM CLI readiness, a Runtime report missing or still checking) polls inside a finite
+ * budget because nothing on this page can install or sign a CLI in.
+ */
+function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
+  if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
+  if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return "unbounded";
+  if (snapshot.stage === "needs-provider-clis") return "bounded";
+  if (snapshot.runtime.kind === "waiting") return "bounded";
+  if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return "bounded";
+  return undefined;
+}
+
 /** A snapshot the outside world is still moving: read it again on a beat until it settles. */
 export function setupSnapshotIsTransitional(snapshot: AgentSetupSnapshot): boolean {
-  if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return true;
-  if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return true;
-  return snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking";
+  return snapshotPollClass(snapshot) !== undefined;
 }
 
 function setupReadError(cause: unknown): string {
@@ -344,6 +399,8 @@ interface AgentSetupController {
   readonly act: (action: AgentSetupAction) => Promise<boolean>;
   /** A silent re-read, for surfaces that finished their own work (a bind, a repair). */
   readonly reload: () => void;
+  /** An explicit Check again restarts the finite local-preparation observation window. */
+  readonly resetPollBudget: () => void;
 }
 
 function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupController {
@@ -352,24 +409,30 @@ function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupC
   const actions = useSetupActions(agentId, adapter, lifecycle, reader.read);
 
   const snapshot = reader.phase.kind === "ready" ? reader.phase.snapshot : undefined;
-  const transitional = snapshot !== undefined && setupSnapshotIsTransitional(snapshot);
+  const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
+  const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);
+  /**
+   * The one automatic read the mounted controller allows at a time. A manual refresh deliberately
+   * supersedes a pending automatic read through the request lifecycle, but a new poll effect must
+   * never start a second automatic read while an earlier one is still in flight.
+   */
+  const autoPollInFlight = useRef<Promise<boolean> | undefined>(undefined);
+  // A stateful restart signal: an explicit Check again must reopen a bounded observation window
+  // even when the busyKey updates around the refresh are collapsed into one render.
+  const [pollRestartKey, setPollRestartKey] = useState(0);
+  /** An explicit Check again opens a fresh bounded observation window. */
+  const resetPollBudget = useCallback(() => {
+    pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    setPollRestartKey((value) => value + 1);
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pollRestartKey explicitly restarts the observation window.
   useEffect(() => {
-    if (!transitional || actions.busyKey !== undefined) return;
-    let cancelled = false;
-    let timer = window.setTimeout(async function poll() {
-      await reader.read();
-      // One observation at a time: overlapping reads would continuously retire one another when a
-      // slow Server takes longer than the interval, leaving a transitional screen unable to move.
-      if (!cancelled) timer = window.setTimeout(poll, SETUP_POLL_MS);
-    }, SETUP_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [transitional, actions.busyKey, reader.read]);
+    if (pollClass === undefined || actions.busyKey !== undefined) return;
+    return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read);
+  }, [pollClass, actions.busyKey, pollRestartKey, reader.read]);
 
   const reload = useCallback(() => void reader.read(), [reader.read]);
-  return { ...reader, ...actions, reload };
+  return { ...reader, ...actions, reload, resetPollBudget };
 }
 
 type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
@@ -573,6 +636,9 @@ function AgentSetupSnapshotView({
         <ComputerSetupSection agentId={agentId} onChanged={controller.reload} snapshot={snapshot} />
       ) : null}
       {stage === "needs-runtime" ? <RuntimeSetupSection snapshot={snapshot} /> : null}
+      {stage === "needs-runtime" || stage === "needs-provider-clis" ? (
+        <ProviderCliReadinessSection snapshot={snapshot} />
+      ) : null}
       {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
@@ -589,7 +655,10 @@ function AgentSetupSnapshotView({
           <Button
             disabled={controller.busyKey !== undefined}
             loading={controller.busyKey === "refresh"}
-            onClick={() => void controller.act({ kind: "refresh" })}
+            onClick={() => {
+              controller.resetPollBudget();
+              void controller.act({ kind: "refresh" });
+            }}
             variant="secondary"
           >
             {m.onboarding_v2_setup_refresh()}
@@ -799,7 +868,7 @@ function RuntimeSetupSection({ snapshot }: { readonly snapshot: AgentSetupSnapsh
   const { runtime, computer } = snapshot;
   const runtimeTitle = RUNTIME_COPY[runtime.provider].title;
   const computerName = computer.kind === "not-bound" ? "" : computer.displayName;
-  const status = runtime.kind === "observed" ? runtime.status : "unavailable";
+  const status = runtime.kind === "observed" ? runtime.status : runtime.kind === "waiting" ? "waiting" : "unavailable";
   return (
     <section className={SECTION} data-state={status} data-ui="agent-setup-runtime">
       <header className={SECTION_HEADER}>
@@ -807,10 +876,12 @@ function RuntimeSetupSection({ snapshot }: { readonly snapshot: AgentSetupSnapsh
           {m.onboarding_v2_setup_runtime_title({ runtime: runtimeTitle })}
         </Text>
       </header>
-      {status === "checking" ? (
+      {status === "checking" || status === "waiting" ? (
         <p className={WAITING_LINE} role="status">
           <span aria-hidden="true" className="ots-pulse shrink-0" />
-          {m.onboarding_v2_setup_runtime_checking({ computerName, runtime: runtimeTitle })}
+          {status === "checking"
+            ? m.onboarding_v2_setup_runtime_checking({ computerName, runtime: runtimeTitle })
+            : m.onboarding_v2_setup_runtime_waiting({ computerName, runtime: runtimeTitle })}
         </p>
       ) : (
         <div className="grid gap-1">
@@ -822,6 +893,32 @@ function RuntimeSetupSection({ snapshot }: { readonly snapshot: AgentSetupSnapsh
           </p>
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * The required IM CLI readiness rows during local preparation. Statuses come from the snapshot's
+ * canonical component projection — the Server already normalized missing reports to `waiting` —
+ * and the row order is the Server-supplied required Provider order.
+ */
+function ProviderCliReadinessSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
+  const statuses = useMemo(() => {
+    const rows: ImCliStatuses = {};
+    for (const component of snapshot.components) {
+      if (component.kind === "im-cli") rows[component.provider] = component.status;
+    }
+    return rows;
+  }, [snapshot.components]);
+  return (
+    <section className={SECTION} data-ui="agent-setup-provider-clis">
+      <header className={SECTION_HEADER}>
+        <Text as="h2" variant="heading">
+          {m.onboarding_v2_provider_clis_title()}
+        </Text>
+        <p className={HINT}>{m.onboarding_v2_provider_clis_hint()}</p>
+      </header>
+      <ImCliReadinessList providers={snapshot.requiredImCliProviders} statuses={statuses} />
     </section>
   );
 }
@@ -841,10 +938,6 @@ function MessagingSetupSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { messaging } = snapshot;
-  const cliStatuses: ImCliStatuses | undefined =
-    snapshot.computer.kind === "bound"
-      ? Object.fromEntries(snapshot.computer.imCliReadiness.map((entry) => [entry.provider, entry.status]))
-      : undefined;
   return (
     <section className={SECTION} data-state={messaging.kind} data-ui="agent-setup-messaging">
       <header className={SECTION_HEADER}>
@@ -852,7 +945,6 @@ function MessagingSetupSection({
           {m.onboarding_v2_messaging_title()}
         </Text>
       </header>
-      <ImCliReadinessList statuses={cliStatuses} />
       {messaging.kind === "not-configured" ? (
         <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
       ) : null}

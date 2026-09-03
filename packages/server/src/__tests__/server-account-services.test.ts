@@ -747,9 +747,9 @@ describe("machine authentication and Computer services", () => {
       { provider: "codex", status: "ready" },
       { provider: "claude-code", status: "checking" },
     ]);
-    expect(projectComputerImCliReadiness("c", "online", observed, source)).toMatchObject([
-      { provider: "feishu", status: "ready" },
-      { provider: "slack", status: "checking" },
+    // A Provider without a report stays absent: nothing may present it as checking.
+    expect(projectComputerImCliReadiness("c", "online", observed, source)).toEqual([
+      { provider: "feishu", status: "ready", observedAt: observed.toISOString() },
     ]);
     expect(() => rejectUnsupportedClientVersion("0.0.1")).toThrow(AuthServiceError);
   });

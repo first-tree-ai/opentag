@@ -16,8 +16,10 @@
  */
 
 import {
+  AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
   type AgentSetupAction,
   type AgentSetupBlocker,
+  type AgentSetupComponent,
   type AgentSetupComputerState,
   type AgentSetupMessagingBlockerCode,
   type AgentSetupMessagingState,
@@ -31,6 +33,7 @@ import {
   type ImCliReadinessStatus,
   type ImProvider,
   type ProviderReadinessStatus,
+  projectAgentSetupComponents,
   type SlackConfigurationIntent,
 } from "@opentag/shared/browser";
 import { messagingProviderLabel } from "../im/provider-label.js";
@@ -66,8 +69,16 @@ export interface MemorySetupSeed {
   readonly computerOnline?: boolean;
   /** Defaults to ready, so a seed names only the legs it wants to exercise. */
   readonly runtimeStatus?: ProviderReadinessStatus;
-  /** Independent daemon observations for both messaging CLIs; absent Providers are still checking. */
+  /**
+   * Independent daemon observations for the messaging CLIs. This is a fixture adapter, not a
+   * readiness source: when the option is omitted entirely both CLIs are preset fresh ready so
+   * lab scenarios that start at Messaging setup do not have to name them. An explicitly empty
+   * object means neither CLI has a report, and a partial object leaves the unnamed Providers
+   * absent — nothing here synthesizes a checking row for a missing report.
+   */
   readonly imCliReadiness?: Partial<Record<ImProvider, ImCliReadinessStatus>>;
+  /** No fresh runtime readiness report exists on the Computer: projected as `waiting`, not checking. */
+  readonly runtimeMissing?: boolean;
   readonly messaging?: MemoryMessagingModel;
   /** Keeps one authoritative observation leg failed, for production-parity blocker scenarios. */
   readonly observationFailure?: "computer" | "runtime" | "messaging";
@@ -119,6 +130,7 @@ interface MemoryState {
   readonly agent: AgentSummary;
   computerOnline: boolean;
   readonly imCliReadiness: Partial<Record<ImProvider, ImCliReadinessStatus>>;
+  readonly runtimeMissing: boolean;
   runtimeStatus: ProviderReadinessStatus;
   messaging: MemoryMessagingState;
   readonly observationFailure: MemorySetupSeed["observationFailure"];
@@ -178,26 +190,65 @@ function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState 
 function deriveBlockers(
   stage: AgentSetupStage,
   snapshot: { computer: AgentSetupComputerState; runtime: AgentSetupRuntimeState; messaging: AgentSetupMessagingState },
+  components: AgentSetupComponent[],
 ): AgentSetupBlocker[] {
   const { computer, runtime, messaging } = snapshot;
-  if (computer.kind === "not-bound") return [{ code: "computer-not-bound" }];
-  if (computer.kind === "observation-failed") {
-    return [{ code: "resource-observation-failed", resource: "computer" }];
+  switch (stage) {
+    case "needs-computer":
+      return computerLegBlockers(computer);
+    case "needs-runtime":
+      return runtimeLegBlockers(runtime);
+    case "needs-provider-clis":
+      return providerCliBlockers(components);
+    case "needs-messaging":
+      return messagingLegBlockers(messaging);
+    case "ready":
+      return [];
   }
+}
+
+function computerLegBlockers(computer: AgentSetupComputerState): AgentSetupBlocker[] {
+  if (computer.kind === "observation-failed") return [{ code: "resource-observation-failed", resource: "computer" }];
+  if (computer.kind === "not-bound") return [{ code: "computer-not-bound" }];
   if (computer.kind === "requires-rebind") return [{ code: "computer-rebind-required" }];
-  if (computer.connectionStatus === "offline") return [{ code: "computer-offline", computerId: computer.computerId }];
-  if (stage === "needs-runtime" && runtime.kind === "observed" && runtime.status !== "ready") {
+  return [{ code: "computer-offline", computerId: computer.computerId }];
+}
+
+function runtimeLegBlockers(runtime: AgentSetupRuntimeState): AgentSetupBlocker[] {
+  if (runtime.kind === "observation-failed") return [{ code: "resource-observation-failed", resource: "runtime" }];
+  if (runtime.kind === "waiting") {
+    return [{ code: "runtime-not-ready", provider: runtime.provider, status: "waiting" }];
+  }
+  if (runtime.kind === "observed" && runtime.status !== "ready") {
     return [{ code: "runtime-not-ready", provider: runtime.provider, status: runtime.status }];
   }
-  if (runtime.kind === "observation-failed") {
-    return [{ code: "resource-observation-failed", resource: "runtime" }];
-  }
-  if (messaging.kind === "observation-failed") {
-    return [{ code: "resource-observation-failed", resource: "messaging" }];
-  }
+  throw new Error("A needs-runtime snapshot must carry a non-ready runtime report");
+}
+
+function messagingLegBlockers(messaging: AgentSetupMessagingState): AgentSetupBlocker[] {
+  if (messaging.kind === "observation-failed") return [{ code: "resource-observation-failed", resource: "messaging" }];
   if (messaging.kind === "not-configured") return [{ code: "messaging-not-configured" }];
-  if (messaging.kind === "ready") return [];
+  if (messaging.kind === "ready") {
+    throw new Error("A needs-messaging snapshot cannot carry a ready Messaging binding");
+  }
   return [messagingBlocker(messaging)];
+}
+
+function providerCliBlockers(components: AgentSetupComponent[]): AgentSetupBlocker[] {
+  const failing = components.filter((component) => component.kind === "im-cli" && component.blocking);
+  if (failing.length === 0) {
+    throw new Error("A needs-provider-clis snapshot must carry a required IM CLI that is not ready");
+  }
+  return failing.map((component) => {
+    if (component.kind !== "im-cli" || component.status === "ready") {
+      throw new Error("A blocking required IM CLI cannot carry a ready status");
+    }
+    return {
+      code: "provider-cli-not-ready",
+      provider: component.provider,
+      status: component.status,
+    };
+  });
 }
 
 function messagingBlocker(
@@ -271,7 +322,7 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
   }
 }
 
-function deriveActions(state: MemoryState): AgentSetupAction[] {
+function deriveActions(state: MemoryState, components: AgentSetupComponent[]): AgentSetupAction[] {
   const { agent, computerOnline, observationFailure, runtimeStatus, messaging } = state;
   if (observationFailure === "computer") return [{ kind: "refresh" }];
   if (agent.computer === null) return [{ kind: "bind-computer" }];
@@ -283,7 +334,14 @@ function deriveActions(state: MemoryState): AgentSetupAction[] {
   }
   if (observationFailure === "runtime") return [{ kind: "refresh" }];
   if (runtimeStatus !== "ready") return [{ kind: "refresh" }];
+  if (state.runtimeMissing) return [{ kind: "refresh" }];
   if (observationFailure === "messaging") return [{ kind: "refresh" }];
+  if (
+    messaging.kind === "not-configured" &&
+    components.some((component) => component.kind === "im-cli" && component.blocking)
+  ) {
+    return [{ kind: "refresh" }];
+  }
   return deriveMessagingActions(messaging);
 }
 
@@ -292,15 +350,23 @@ function deriveComputerState(state: MemoryState): AgentSetupComputerState {
   if (agent.computer === null) return { kind: "not-bound" };
   if (state.observationFailure === "computer") return { kind: "observation-failed", ...agent.computer };
   if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...agent.computer };
+  const reports = (["feishu", "slack"] as const).flatMap((provider) => {
+    const status = state.imCliReadiness[provider];
+    if (computerOnline && status) return [{ provider, status, observedAt: now() }];
+    return [];
+  });
   return {
     kind: "bound",
     ...agent.computer,
     connectionStatus: computerOnline ? "online" : "offline",
-    imCliReadiness: (["feishu", "slack"] as const).map((provider) => ({
-      provider,
-      status: computerOnline ? (state.imCliReadiness[provider] ?? "checking") : "unavailable",
-      observedAt: computerOnline && state.imCliReadiness[provider] ? now() : null,
-    })),
+    // Offline is the connection fence: every Provider reads unavailable with no observation time,
+    // exactly like the Server projection. Online, a Provider without a report stays absent.
+    imCliReadiness: computerOnline
+      ? reports
+      : [
+          { provider: "feishu", status: "unavailable", observedAt: null },
+          { provider: "slack", status: "unavailable", observedAt: null },
+        ],
     lastSeenAt: computerOnline ? null : now(),
     observedAt: now(),
   };
@@ -317,6 +383,7 @@ function deriveRuntimeState(state: MemoryState): AgentSetupRuntimeState {
   }
   if (!state.computerOnline) return { kind: "unavailable", provider, reason: "computer-offline" };
   if (state.observationFailure === "runtime") return { kind: "observation-failed", provider };
+  if (state.runtimeMissing) return { kind: "waiting", provider };
   return { kind: "observed", provider, status: state.runtimeStatus, observedAt: now() };
 }
 
@@ -324,10 +391,17 @@ function deriveStage(
   computer: AgentSetupComputerState,
   runtime: AgentSetupRuntimeState,
   messaging: AgentSetupMessagingState,
+  components: AgentSetupComponent[],
 ): AgentSetupStage {
   if (computer.kind !== "bound" || computer.connectionStatus === "offline") return "needs-computer";
   if (runtime.kind !== "observed" || runtime.status !== "ready") return "needs-runtime";
-  return messaging.kind === "ready" ? "ready" : "needs-messaging";
+  if (messaging.kind === "ready") return "ready";
+  // The dual-Provider local preparation gate applies only while Messaging is not-configured; any
+  // known Messaging state stays on needs-messaging without consulting the CLI reports again.
+  if (messaging.kind !== "not-configured") return "needs-messaging";
+  return components.some((component) => component.kind === "im-cli" && component.blocking)
+    ? "needs-provider-clis"
+    : "needs-messaging";
 }
 
 function deriveSnapshot(state: MemoryState): AgentSetupSnapshot {
@@ -335,15 +409,24 @@ function deriveSnapshot(state: MemoryState): AgentSetupSnapshot {
   const runtime = deriveRuntimeState(state);
   const messaging: AgentSetupMessagingState =
     state.observationFailure === "messaging" ? { kind: "observation-failed" } : deriveMessaging(state.messaging);
-  const stage = deriveStage(computer, runtime, messaging);
+  const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+  const components = projectAgentSetupComponents({
+    computer,
+    runtime,
+    messaging,
+    requiredImCliProviders,
+  });
+  const stage = deriveStage(computer, runtime, messaging, components);
   return AgentSetupSnapshotSchema.parse({
     agent: state.agent,
     stage,
     computer,
     runtime,
     messaging,
-    blockers: stage === "ready" ? [] : deriveBlockers(stage, { computer, runtime, messaging }),
-    actions: deriveActions(state),
+    requiredImCliProviders,
+    components,
+    blockers: stage === "ready" ? [] : deriveBlockers(stage, { computer, runtime, messaging }, components),
+    actions: deriveActions(state, components),
     observedAt: now(),
   });
 }
@@ -376,7 +459,10 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
   const state: MemoryState = {
     agent: seed.agent,
     computerOnline: seed.computerOnline ?? true,
-    imCliReadiness: seed.imCliReadiness ?? {},
+    // Omitted entirely: both CLIs preset fresh ready (see MemorySetupSeed). This is the fixture
+    // preset, not a production readiness default.
+    imCliReadiness: seed.imCliReadiness ?? { feishu: "ready", slack: "ready" },
+    runtimeMissing: seed.runtimeMissing ?? false,
     runtimeStatus: seed.runtimeStatus ?? "ready",
     messaging: bound
       ? {

@@ -45,9 +45,9 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 
 ---
 
-## Own your context.
+## Context management.
 
-*Context that outlives a terminal session, in files you can open.*
+*Context from every channel, kept by OpenTag — and it outlives the terminal session.*
 
 - **From every channel →** Thread Sessions carry bounded root and thread history, so the agent starts from what was actually said.
 - **In plain files →** Work areas and runtime state live under `${OPENTAG_HOME}` on your machine, private by default. Nothing is uploaded to be remembered for you.

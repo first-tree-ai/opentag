@@ -62,6 +62,9 @@ async function chooseOption(label: string, optionName: string): Promise<void> {
   fireEvent.pointerUp(option, { pointerType: "mouse" });
   fireEvent.click(option);
   await waitFor(() => expect(trigger.textContent?.trim()).toContain(optionName));
+  // Kumo keeps the closing popup mounted during its exit transition. Wait for it to leave the
+  // accessible tree before another selector opens, or a slow runner can read both option sets.
+  await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
 }
 
 beforeEach(() => mockBrowserApi());

@@ -48,7 +48,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
     expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate a repair command" })).toBeTruthy();
   });
 
   it("withholds machine recovery when the Computer is reachable but its Provider is not", async () => {
@@ -60,7 +60,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Codex is not installed on Ada's Mac.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Generate a repair command" })).toBeNull();
   });
 
   it("generates a command naming the assigned Computer without leaving the Agent", async () => {
@@ -68,7 +68,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate a repair command" }));
 
     // The disclosure is one labelled region rather than a heading repeating the name the command
     // block already carries.
@@ -99,7 +99,7 @@ describe("OpenTag Web App Shell", () => {
     expect(
       screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
     ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
 
     computerStatus = "online";
@@ -111,7 +111,7 @@ describe("OpenTag Web App Shell", () => {
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate a repair command" })).toBeTruthy();
     expect(
       vi
         .mocked(fetch)

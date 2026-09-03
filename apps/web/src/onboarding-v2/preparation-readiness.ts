@@ -25,8 +25,8 @@
  *   that never arrived. Both project to `waiting`, and re-checking is the browser's only honest
  *   move — this module does not synthesize a stale/expired authority the schema did not give it.
  *
- * The fixed-row primitive renders four lines regardless of stage, so every preparation stage keeps
- * the same four rows and the same DOM identity while the copy underneath resolves.
+ * The canonical projection retains all four component rows for contract checks. The Step 2 page
+ * then compacts those facts into one selected-Runtime row and one Messaging support row.
  */
 
 import type {
@@ -339,16 +339,98 @@ export function preparationReadinessRows(snapshot: AgentSetupSnapshot): Readines
   };
 }
 
+export type PreparationSummaryRows = Readonly<{
+  runtime: CheckRow;
+  messaging: CheckRow;
+}>;
+
+/**
+ * The compact Step 2 presentation. Provider-specific CLI reports stay authoritative underneath,
+ * but the reader has not chosen a messaging app yet, so the surface exposes one combined
+ * Messaging support result instead of prematurely naming Lark and Slack.
+ */
+export function preparationSummaryRows(snapshot: AgentSetupSnapshot): PreparationSummaryRows {
+  const readiness = preparationReadinessRows(snapshot);
+  const runtime = {
+    ...readiness.runtime,
+    label: runtimeTitle(snapshot.runtime.provider),
+    statusLabel:
+      readiness.runtime.status === "ready" ? m.onboarding_v2_prep_status_ready() : readiness.runtime.statusLabel,
+  };
+  const requiredRows = snapshot.requiredImCliProviders.map((provider) =>
+    provider === "feishu" ? readiness.feishu : readiness.slack,
+  );
+  const name = computerName(snapshot) ?? "";
+  const shared = {
+    detailLabel: m.onboarding_v2_prep_messaging_detail_label(),
+    label: m.onboarding_v2_prep_messaging_label(),
+  };
+  if (requiredRows.some((row) => row.status === "needs-attention")) {
+    return {
+      runtime,
+      messaging: {
+        ...shared,
+        detail: m.onboarding_v2_prep_messaging_attention({ computerName: name }),
+        state: "failed",
+        status: "needs-attention",
+        statusLabel: m.onboarding_v2_prep_needs_attention(),
+      },
+    };
+  }
+  if (requiredRows.some((row) => row.status === "install-required")) {
+    return {
+      runtime,
+      messaging: {
+        ...shared,
+        detail: m.onboarding_v2_prep_messaging_install({ computerName: name }),
+        state: "failed",
+        status: "install-required",
+        statusLabel: m.onboarding_v2_prep_install_required(),
+      },
+    };
+  }
+  if (requiredRows.some((row) => row.status === "checking")) {
+    return {
+      runtime,
+      messaging: {
+        ...shared,
+        detail: m.onboarding_v2_prep_messaging_checking({ computerName: name }),
+        state: "pending",
+        status: "checking",
+        statusLabel: m.onboarding_v2_prep_status_checking(),
+      },
+    };
+  }
+  if (requiredRows.length === 0 || requiredRows.some((row) => row.status !== "ready")) {
+    return {
+      runtime,
+      messaging: {
+        ...shared,
+        detail: m.onboarding_v2_prep_messaging_waiting({ computerName: name }),
+        state: "pending",
+        status: "waiting",
+        statusLabel: m.onboarding_v2_prep_status_waiting(),
+      },
+    };
+  }
+  return {
+    runtime,
+    messaging: {
+      ...shared,
+      detail: m.onboarding_v2_prep_messaging_ready({ computerName: name }),
+      state: "passed",
+      status: "ready",
+      statusLabel: m.onboarding_v2_prep_status_ready(),
+    },
+  };
+}
+
 /**
  * Whether the second step's preparation surface belongs on screen. It stays current through every
- * computer-preparation stage, and it remains visible as the successful summary while Messaging is
- * still not-configured — so all four ready rows are on screen before the first IM interaction.
- * Once Messaging has started (authorizing, waiting-handoff, blocked, observation-failed, ready)
- * the rows leave the page: an unselected Provider's later report must never regress a messaging
- * session that is already underway.
+ * computer-preparation stage. Once Messaging starts, the preparation rows leave the page: an
+ * unselected Provider's later report must never regress a messaging session already underway.
  */
 export function showPreparationSection(snapshot: AgentSetupSnapshot): boolean {
-  if (snapshot.stage === "needs-messaging") return snapshot.messaging.kind === "not-configured";
   return (
     snapshot.stage === "needs-computer" ||
     snapshot.stage === "needs-runtime" ||

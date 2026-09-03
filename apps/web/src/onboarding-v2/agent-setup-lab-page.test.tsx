@@ -142,7 +142,7 @@ describe("agent setup lab page", () => {
 
     expect(await screen.findByText("Opening app access for this agent…")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Complete account admission" }));
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
 
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Overrides" }));

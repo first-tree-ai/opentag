@@ -30,23 +30,19 @@ import {
   createAgentTargetedComputerConnectAdapter,
 } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
-import { formatDateTime, formatRelativeTime, spaceScriptBoundary } from "../i18n/format.js";
+import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
-import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../ui/design-system.js";
+import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
-import {
-  preparationIsTransitional,
-  preparationReadinessRows,
-  showPreparationSection,
-} from "./preparation-readiness.js";
-import { ReadinessList } from "./readiness-list.js";
+import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
+import { CheckLine } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
@@ -722,28 +718,23 @@ function AgentSetupSnapshotView({
   return (
     <>
       <StepRail steps={setupSteps(stage)} />
-      <header className={SECTION_HEADER}>
-        <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
-        </Text>
-      </header>
+      {stage === "needs-messaging" || stage === "ready" ? (
+        <header className={SECTION_HEADER}>
+          <Text as="h1" size="lg" variant="heading">
+            {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
+          </Text>
+        </header>
+      ) : null}
       {observationFailed ? (
         <Banner variant="alert" role="alert" description={m.onboarding_v2_setup_observation_failed()} />
       ) : null}
       {controller.refreshError ? <Banner variant="error" role="alert" description={controller.refreshError} /> : null}
-      {showPreparationSection(snapshot) ? (
-        <>
-          <PreparationSection snapshot={snapshot} />
-          {stage === "needs-computer" ? (
-            <ComputerSetupSection
-              agentId={agentId}
-              computerAdapter={computerAdapter}
-              onChanged={controller.reload}
-              snapshot={snapshot}
-            />
-          ) : null}
-        </>
-      ) : null}
+      <LocalPreparationSections
+        agentId={agentId}
+        computerAdapter={computerAdapter}
+        onChanged={controller.reload}
+        snapshot={snapshot}
+      />
       {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
@@ -769,6 +760,35 @@ function AgentSetupSnapshotView({
             {m.onboarding_v2_setup_refresh()}
           </Button>
         </div>
+      ) : null}
+    </>
+  );
+}
+
+function LocalPreparationSections({
+  agentId,
+  computerAdapter,
+  onChanged,
+  snapshot,
+}: {
+  readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly onChanged: () => void;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
+  const { stage } = snapshot;
+  return (
+    <>
+      {stage === "needs-computer" ? (
+        <ComputerSetupSection
+          agentId={agentId}
+          computerAdapter={computerAdapter}
+          onChanged={onChanged}
+          snapshot={snapshot}
+        />
+      ) : null}
+      {stage === "needs-runtime" || stage === "needs-provider-clis" ? (
+        <PreparationSummarySection snapshot={snapshot} />
       ) : null}
     </>
   );
@@ -804,22 +824,19 @@ function ComputerSetupSection({
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-        <header className={SECTION_HEADER}>
-          <Text as="h2" variant="heading">
-            {m.onboarding_v2_connect_title()}
-          </Text>
-        </header>
-        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-            <Icon name="laptop" />
-          </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h3" variant="heading">
-              {computer.displayName}
-            </Text>
-            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-          </div>
-        </div>
+        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_no_computer_status()}
+          title={computer.displayName}
+          tone="neutral"
+        />
+        <p className={HINT}>
+          {m.onboarding_v2_setup_computer_rebind({
+            computerName: computer.displayName,
+            name: snapshot.agent.displayName,
+          })}
+        </p>
         {canBind ? (
           <AgentComputerChoice
             adapter={computerConnectAdapter}
@@ -834,22 +851,13 @@ function ComputerSetupSection({
   if (computer.kind === "observation-failed") {
     return (
       <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-        <header className={SECTION_HEADER}>
-          <Text as="h2" variant="heading">
-            {m.onboarding_v2_connect_title()}
-          </Text>
-        </header>
-        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-            <Icon name="laptop" />
-          </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h3" variant="heading">
-              {computer.displayName}
-            </Text>
-            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-          </div>
-        </div>
+        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_unconfirmed()}
+          title={computer.displayName}
+          tone="warning"
+        />
       </section>
     );
   }
@@ -860,6 +868,56 @@ function ComputerSetupSection({
       onChanged={onChanged}
       snapshot={snapshot}
     />
+  );
+}
+
+function ComputerStepHeader({ name }: { readonly name: string }) {
+  return (
+    <header className="grid gap-1" data-ui="agent-setup-computer-header">
+      <Text as="h1" size="lg" variant="heading">
+        {m.onboarding_v2_connect_title()}
+      </Text>
+      <p className={HINT}>{m.onboarding_v2_connect_description({ name })}</p>
+      <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0">
+        <span aria-hidden="true" className="text-kumo-brand">
+          <Icon name="shield" />
+        </span>
+        {m.onboarding_v2_connect_privacy()}
+      </p>
+    </header>
+  );
+}
+
+function ComputerSummary({
+  metadata,
+  status,
+  title,
+  tone,
+}: {
+  readonly metadata?: string;
+  readonly status: string;
+  readonly title: string;
+  readonly tone: StatusTone;
+}) {
+  return (
+    <div
+      className="otv2-computer-summary grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-y border-kumo-line py-2"
+      data-ui="agent-setup-computer-summary"
+    >
+      <span
+        aria-hidden="true"
+        className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint text-kumo-brand"
+      >
+        <Icon name="laptop" />
+      </span>
+      <span className="flex min-w-0 items-baseline gap-x-1.5 overflow-hidden">
+        <strong className="truncate text-sm font-medium text-kumo-strong" title={title}>
+          {title}
+        </strong>
+        {metadata ? <span className="shrink-0 text-sm text-kumo-subtle">{metadata}</span> : null}
+      </span>
+      <StatusIndicator className="justify-self-end" label={status} tone={tone} />
+    </div>
   );
 }
 
@@ -881,12 +939,12 @@ function NotBoundComputerSection({
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
   return (
     <section className={SECTION} data-state="not-bound" data-ui="agent-setup-computer">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_connect_title()}
-        </Text>
-        <p className={HINT}>{m.onboarding_v2_setup_computer_none({ name })}</p>
-      </header>
+      <ComputerStepHeader name={name} />
+      <ComputerSummary
+        status={m.onboarding_v2_connect_no_computer_status()}
+        title={m.onboarding_v2_connect_no_computer_title()}
+        tone="neutral"
+      />
       {/*
        * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
        * does it — including the choice when the Account genuinely has one to make.
@@ -914,7 +972,6 @@ function BoundComputerSection({
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
-  const [repairing, setRepairing] = useState(false);
   const repair = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "repair-computer" }> =>
       action.kind === "repair-computer" && action.computerId === computer.computerId,
@@ -922,87 +979,49 @@ function BoundComputerSection({
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
     <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_connect_title()}
-        </Text>
-      </header>
-      <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-        <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-          <Icon name="laptop" />
-        </span>
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-          <Text as="h3" variant="heading">
-            {computer.displayName}
-          </Text>
-          <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-        </div>
-        <StatusIndicator
-          className="justify-self-end"
-          label={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
-          tone={offline ? "warning" : "success"}
-        />
-      </div>
-      <div className="grid gap-1">
-        <p className={HINT}>{m.onboarding_v2_connect_offline_for({ computerName: computer.displayName })}</p>
-        {computer.lastSeenAt ? (
-          <p className={HINT}>
-            {m.onboarding_v2_connect_offline_last_seen({ when: formatRelativeTime(computer.lastSeenAt) })}
-          </p>
-        ) : null}
-      </div>
+      <ComputerStepHeader name={snapshot.agent.displayName} />
+      <ComputerSummary
+        metadata={platformLabel(computer.platform)}
+        status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+        title={computer.displayName}
+        tone={offline ? "warning" : "success"}
+      />
       {repair ? (
-        <div className="grid gap-3">
-          <Button
-            aria-controls="agent-setup-repair-command"
-            aria-expanded={repairing}
-            className="w-fit"
-            onClick={() => setRepairing((current) => !current)}
-            size="compact"
-            variant="inline"
-          >
-            {repairing ? m.onboarding_v2_connect_hide_repair() : m.onboarding_v2_connect_generate_repair()}
-          </Button>
-          {repairing ? (
-            <div id="agent-setup-repair-command">
-              <ComputerConnect
-                adapter={computerConnectAdapter}
-                intent={{
-                  mode: "repair",
-                  target: { computerId: repair.computerId, displayName: computer.displayName },
-                }}
-                onConnected={onChanged}
-              />
-            </div>
-          ) : null}
-        </div>
+        <ComputerConnect
+          adapter={computerConnectAdapter}
+          intent={{
+            mode: "repair",
+            target: { computerId: repair.computerId, displayName: computer.displayName },
+          }}
+          onConnected={onChanged}
+        />
       ) : null}
     </section>
   );
 }
 
-/**
- * The second step's unified local-preparation surface: the fixed Computer / selected Runtime /
- * required messaging CLI rows over the snapshot's canonical component projection, rendered
- * through the F4 readiness primitive. The rows are the whole state display — the interactive
- * Computer connect/rebind/repair surface stays a sibling that appears only while its leg needs
- * work. Once the gate passes, the section remains on screen as the successful-preparation
- * summary while Messaging is still not-configured, so all four ready rows are visible before the
- * first IM interaction.
- */
-function PreparationSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const rows = useMemo(() => preparationReadinessRows(snapshot), [snapshot]);
-  // At needs-messaging this is the completed summary; the intro below would restate the gate.
-  const summaryOnly = snapshot.stage === "needs-messaging";
+function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
+  const rows = useMemo(() => preparationSummaryRows(snapshot), [snapshot]);
+  const { computer } = snapshot;
+  if (computer.kind === "not-bound") return null;
   return (
     <section className={SECTION} data-ui="agent-setup-preparation">
       <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
+        <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_prep_title()}
         </Text>
-        {!summaryOnly ? <p className={HINT}>{m.onboarding_v2_prep_intro()}</p> : null}
+        <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
-      <ReadinessList label={m.onboarding_v2_prep_title()} rows={rows} />
+      <ComputerSummary
+        metadata={platformLabel(computer.platform)}
+        status={m.onboarding_v2_connect_online()}
+        title={computer.displayName}
+        tone="success"
+      />
+      <ol aria-label={m.onboarding_v2_prep_title()} className="otv2-readiness" data-ui="readiness-list">
+        <CheckLine check={rows.runtime} component="runtime" position={1} />
+        <CheckLine check={rows.messaging} component="messaging-support" position={2} />
+      </ol>
     </section>
   );
 }

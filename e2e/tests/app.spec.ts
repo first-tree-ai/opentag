@@ -65,7 +65,9 @@ test("Agent creation form creates an Agent visible in the list and detail page",
   const create = page.getByRole("button", { name: "Create Agent" });
   await expect(create).toBeEnabled();
   await create.click();
-  await expect(page.getByRole("heading", { name: "Set up e2e-agent", exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.getByRole("heading", { name: /^(Connect your computer|Prepare this computer)$/u, exact: true }),
+  ).toBeVisible({ timeout: 60_000 });
 
   const listResponse = await page.request.get("/api/v1/agents");
   expect(listResponse.ok()).toBeTruthy();

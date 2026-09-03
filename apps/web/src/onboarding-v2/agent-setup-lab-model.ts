@@ -5,19 +5,28 @@ export const LAB_AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 export const LAB_ACCOUNT_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const LAB_COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const LAB_SPARE_COMPUTER_ID = "95fe9af3-d1c6-472b-b78c-8a7ccf512751";
+const LAB_PREVIOUS_COMPUTER_ID = "a5fe9af3-d1c6-472b-b78c-8a7ccf512752";
 const LAB_NOW = "2026-09-01T10:00:00.000Z";
 
 export const LAB_JOURNEYS = ["first", "additional"] as const;
 export type LabJourney = (typeof LAB_JOURNEYS)[number];
 
-/** A small set of design destinations. Fine-grained facts live under Overrides. */
+/** Reviewable product journeys and checkpoints. Fine-grained failures still live under Overrides. */
 export const LAB_SCENARIOS = [
   "full-new-computer",
   "full-existing-computer",
   "agent-creation",
   "computer-connection",
+  "computer-reconnect",
+  "computer-rebind",
+  "runtime-waiting",
+  "runtime-checking",
   "runtime-setup",
+  "runtime-sign-in",
+  "messaging-support-setup",
   "messaging-setup",
+  "messaging-handoff",
+  "messaging-recovery",
   "everything-ready",
 ] as const;
 export type LabScenario = (typeof LAB_SCENARIOS)[number];
@@ -37,16 +46,162 @@ export interface LabScenarioDefaults {
   readonly runtime: AgentRuntimeProvider;
 }
 
+type LabComputerPreset = "unbound" | "bound" | "requires-rebind";
+type LabMessagingPreset = "not-configured" | "waiting-handoff" | "blocked" | "ready";
+
+interface LabScenarioPreset extends LabScenarioDefaults {
+  readonly computer: LabComputerPreset;
+  readonly imCliReadiness: NonNullable<MemorySetupSeed["imCliReadiness"]>;
+  readonly messaging: LabMessagingPreset;
+  readonly runtimeMissing?: boolean;
+  readonly runtimeStatus: NonNullable<MemorySetupSeed["runtimeStatus"]>;
+}
+
+const READY_IM_CLIS = { feishu: "ready", slack: "ready" } as const;
+const CHECKING_IM_CLIS = { feishu: "checking", slack: "checking" } as const;
+
+const LAB_SCENARIO_PRESETS: Record<LabScenario, LabScenarioPreset> = {
+  "full-new-computer": {
+    computer: "unbound",
+    imCliReadiness: CHECKING_IM_CLIS,
+    inventory: "none",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "checking",
+  },
+  "full-existing-computer": {
+    computer: "unbound",
+    imCliReadiness: CHECKING_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "checking",
+  },
+  "agent-creation": {
+    computer: "unbound",
+    imCliReadiness: CHECKING_IM_CLIS,
+    inventory: "none",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "checking",
+  },
+  "computer-connection": {
+    computer: "unbound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "none",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "computer-reconnect": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-offline",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "computer-rebind": {
+    computer: "requires-rebind",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "runtime-waiting": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeMissing: true,
+    runtimeStatus: "ready",
+  },
+  "runtime-checking": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "checking",
+  },
+  "runtime-setup": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "install",
+  },
+  "runtime-sign-in": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "sign-in",
+  },
+  "messaging-support-setup": {
+    computer: "bound",
+    imCliReadiness: { feishu: "unavailable", slack: "ready" },
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "messaging-setup": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "messaging-handoff": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "waiting-handoff",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "messaging-recovery": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "blocked",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "everything-ready": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
+    inventory: "one-online",
+    messaging: "ready",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+};
+
 export function labScenarioDefaults(scenario: LabScenario): LabScenarioDefaults {
-  if (
-    scenario === "full-existing-computer" ||
-    scenario === "runtime-setup" ||
-    scenario === "messaging-setup" ||
-    scenario === "everything-ready"
-  ) {
-    return { inventory: "one-online", messagingProvider: "feishu", runtime: "codex" };
-  }
-  return { inventory: "none", messagingProvider: "feishu", runtime: "codex" };
+  const { inventory, messagingProvider, runtime } = LAB_SCENARIO_PRESETS[scenario];
+  return { inventory, messagingProvider, runtime };
 }
 
 export function labScenarioStartsWithCreation(scenario: LabScenario): boolean {
@@ -78,18 +233,19 @@ function inventoryComputers(inventory: LabInventory): readonly AccountComputerSu
   return [reviewMac, computer(LAB_SPARE_COMPUTER_ID, "Spare Mac", "offline")];
 }
 
-function scenarioPrebindsComputer(scenario: LabScenario): boolean {
-  return scenario === "runtime-setup" || scenario === "messaging-setup" || scenario === "everything-ready";
-}
-
 export function labSeed(
   scenario: LabScenario,
   inventory: LabInventory,
   runtime: AgentRuntimeProvider,
   messagingProvider: ImProvider,
 ): MemorySetupSeed {
+  const preset = LAB_SCENARIO_PRESETS[scenario];
   const computers = inventoryComputers(inventory);
-  const boundComputer = scenarioPrebindsComputer(scenario) ? computers[0] : undefined;
+  const boundComputer = preset.computer === "bound" ? computers[0] : undefined;
+  const assignedComputer =
+    preset.computer === "requires-rebind"
+      ? { computerId: LAB_PREVIOUS_COMPUTER_ID, displayName: "Previous Mac", platform: "darwin" as const }
+      : boundComputer;
   const agent: AgentSummary = {
     id: LAB_AGENT_ID,
     name: "reviewer",
@@ -100,33 +256,37 @@ export function labSeed(
     createdAt: LAB_NOW,
     updatedAt: LAB_NOW,
     createdBy: { userId: LAB_ACCOUNT_ID, displayName: "Owner" },
-    computer: boundComputer
+    computer: assignedComputer
       ? {
-          computerId: boundComputer.computerId,
-          displayName: boundComputer.displayName,
-          platform: boundComputer.platform,
+          computerId: assignedComputer.computerId,
+          displayName: assignedComputer.displayName,
+          platform: assignedComputer.platform,
         }
       : null,
+    requiresComputerRebind: preset.computer === "requires-rebind" ? true : undefined,
   };
-  const runtimeStatus =
-    scenario === "runtime-setup"
-      ? "install"
-      : scenario === "messaging-setup" || scenario === "everything-ready"
-        ? "ready"
-        : "checking";
-  const messagingCliStatus =
-    scenario === "messaging-setup" || scenario === "runtime-setup" || scenario === "everything-ready"
-      ? "ready"
-      : "checking";
+  const messaging =
+    preset.messaging === "ready"
+      ? { kind: "bound" as const, provider: messagingProvider, reachable: true }
+      : preset.messaging === "waiting-handoff"
+        ? { kind: "bound" as const, provider: messagingProvider, reachable: false }
+        : preset.messaging === "blocked"
+          ? {
+              kind: "bound" as const,
+              provider: messagingProvider,
+              reachable: true,
+              attention: "reauthorization-required" as const,
+            }
+          : undefined;
 
   return {
     agent,
     computers,
     computerOnline: boundComputer?.connectionStatus !== "offline",
-    runtimeStatus,
-    imCliReadiness: { feishu: messagingCliStatus, slack: messagingCliStatus },
-    messaging:
-      scenario === "everything-ready" ? { kind: "bound", provider: messagingProvider, reachable: true } : undefined,
+    runtimeStatus: preset.runtimeStatus,
+    runtimeMissing: preset.runtimeMissing,
+    imCliReadiness: preset.imCliReadiness,
+    messaging,
   };
 }
 
@@ -145,7 +305,10 @@ export function pendingLabEvent(memory: MemorySetupAdapter): LabPendingEvent | u
   if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") {
     return "reconnect-computer";
   }
-  if (snapshot.runtime.kind === "observed" && snapshot.runtime.status !== "ready") {
+  if (
+    snapshot.runtime.kind === "waiting" ||
+    (snapshot.runtime.kind === "observed" && snapshot.runtime.status !== "ready")
+  ) {
     return "finish-readiness";
   }
   if (

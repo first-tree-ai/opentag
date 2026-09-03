@@ -111,6 +111,7 @@ function rowDetail(component: string): string {
 
 /** Runtime and aggregate Messaging support stay mounted in a fixed order throughout Step 2. */
 function expectCompactReadinessRows(): void {
+  expect(document.querySelector('[data-ui="readiness-list"]')?.classList).toContain("otv2-readiness--compact");
   const rows = readinessRows();
   expect(rows).toHaveLength(2);
   expect(rows.map((row) => row.getAttribute("data-component"))).toEqual([...PREP_ROW_COMPONENTS]);
@@ -150,6 +151,7 @@ describe("AgentSetupPage stages", () => {
     const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
     expect(summary?.textContent).toContain("No computer connected");
     expect(summary?.textContent).toContain("Not connected");
+    expect(summary?.classList).not.toContain("border-y");
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe("not-bound");
     expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: SETUP_AGENT_ID });
   });
@@ -236,8 +238,8 @@ describe("AgentSetupPage stages", () => {
     expect(rowTitle("runtime")).toContain("Installation required");
     // An install is a manual action the operator owns: OpenTag never installs Runtime CLIs, and
     // the row never claims a preparing/installing state exists.
-    expect(rowDetail("runtime")).toContain("Codex isn't installed on Review Mac yet.");
-    expect(rowDetail("runtime")).toContain("OpenTag never installs Runtime CLIs");
+    expect(rowDetail("runtime")).toContain("Install Codex on Review Mac, then check again.");
+    expect(rowDetail("runtime")).toContain("OpenTag won't install it for you");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
   });
 
@@ -250,7 +252,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("checking");
     expect(rowTitle("runtime")).toContain("Codex");
     expect(rowTitle("runtime")).toContain("Checking");
-    expect(rowDetail("runtime")).toContain("Checking the Codex CLI on Review Mac");
+    expect(rowDetail("runtime")).toContain("Checking the version and sign-in on Review Mac");
   });
 
   it("moves to Messaging without repeating Step 2 readiness", async () => {
@@ -303,7 +305,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("repair and verification instructions");
+    expect(rowDetail("messaging-support")).toContain("connection command's setup steps");
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
@@ -331,7 +333,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("runtime").getAttribute("data-state")).toBe("pending");
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("waiting");
     expect(rowTitle("runtime")).toContain("Waiting");
-    expect(rowDetail("runtime")).toContain("No fresh Codex readiness report from Review Mac yet");
+    expect(rowDetail("runtime")).toContain("No recent report from Review Mac");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
   });
 
@@ -424,7 +426,7 @@ describe("preparation review regressions", () => {
     renderSetup(memory.adapter);
     await settle();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("needs-attention");
-    expect(rowDetail("runtime")).toContain("couldn't confirm that Codex is usable");
+    expect(rowDetail("runtime")).toContain("Codex isn't ready on Review Mac");
     expect(rowDetail("runtime")).not.toMatch(/not responding|isn't responding|timed out|opentag doctor/i);
   });
 

@@ -5,6 +5,7 @@
  */
 
 import { messagingProviderLabel } from "../im/provider-label.js";
+import * as m from "../paraglide/messages.js";
 import type { CheckRow, CheckState, ReadinessRows, ReadinessStatus } from "./readiness-list.js";
 
 export const READINESS_SCENARIOS = [
@@ -36,10 +37,28 @@ export const READINESS_SCENARIO_LABELS: Readonly<Record<ReadinessScenario, strin
   "readiness-stale": "Checklist: stale",
   "readiness-blank": "Blank details",
   "readiness-long-en": "Long English",
-  "readiness-long-zh": "中文长文案",
+  "readiness-long-zh": "Long Chinese copy",
   "readiness-mixed": "Mixed states",
   "readiness-warning": "Passed with warning",
 };
+
+const READINESS_SCENARIO_COPY: Readonly<Record<ReadinessScenario, () => string>> = {
+  "readiness-waiting": m.onboarding_v2_lab_visual_waiting,
+  "readiness-checking": m.onboarding_v2_lab_visual_checking,
+  "readiness-install-required": m.onboarding_v2_lab_visual_install,
+  "readiness-ready": m.onboarding_v2_lab_visual_ready,
+  "readiness-needs-attention": m.onboarding_v2_lab_visual_needs_attention,
+  "readiness-stale": m.onboarding_v2_lab_visual_stale,
+  "readiness-blank": m.onboarding_v2_lab_visual_blank,
+  "readiness-long-en": m.onboarding_v2_lab_visual_long_en,
+  "readiness-long-zh": m.onboarding_v2_lab_visual_long_zh,
+  "readiness-mixed": m.onboarding_v2_lab_visual_mixed,
+  "readiness-warning": m.onboarding_v2_lab_visual_warning,
+};
+
+export function readinessScenarioLabel(scenario: ReadinessScenario): string {
+  return READINESS_SCENARIO_COPY[scenario]();
+}
 
 export const PREVIEW_RUNTIMES = ["codex", "claude-code", "long"] as const;
 export type PreviewRuntime = (typeof PREVIEW_RUNTIMES)[number];

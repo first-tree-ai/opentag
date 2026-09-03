@@ -26,9 +26,9 @@ import {
   isReadinessScenario,
   PREVIEW_RUNTIMES,
   type PreviewRuntime,
-  READINESS_SCENARIO_LABELS,
   type ReadinessScenario,
   readinessRowsForScenario,
+  readinessScenarioLabel,
   runtimeLabelFor,
 } from "./readiness-lab-fixtures.js";
 import { ReadinessList } from "./readiness-list.js";
@@ -38,6 +38,7 @@ type LabPhase = "creation" | "admission" | "setup";
 type LabNavigationTarget = "agent" | "agents";
 type LabScenarioOption = LabScenario | ReadinessScenario;
 type LabMemory = ReturnType<typeof createMemorySetupAdapter>;
+type LabCustomization = "computer" | "failure" | "inventory" | "messaging-provider" | "runtime";
 
 interface LabConfiguration {
   readonly automation: LabAutomation;
@@ -47,17 +48,20 @@ interface LabConfiguration {
   readonly messagingProvider: ImProvider;
   readonly revision: number;
   readonly runtime: AgentRuntimeProvider;
+  readonly runtimeBaseline: AgentRuntimeProvider;
   readonly scenario: LabScenarioOption;
 }
 
 function initialConfiguration(): LabConfiguration {
   const scenario = "full-new-computer";
+  const defaults = labScenarioDefaults(scenario);
   return {
-    ...labScenarioDefaults(scenario),
+    ...defaults,
     automation: "manual",
     failure: "none",
     journey: "first",
     revision: 0,
+    runtimeBaseline: defaults.runtime,
     scenario,
   };
 }
@@ -72,6 +76,7 @@ function phaseLabel(phase: LabPhase, memory: LabMemory): string {
   const { stage } = memory.inspect().snapshot;
   if (stage === "needs-computer") return m.onboarding_v2_lab_status_computer();
   if (stage === "needs-runtime") return m.onboarding_v2_lab_status_runtime();
+  if (stage === "needs-provider-clis") return m.onboarding_v2_lab_status_messaging_support();
   if (stage === "needs-messaging") return m.onboarding_v2_lab_status_messaging();
   return m.onboarding_v2_lab_status_ready();
 }
@@ -94,11 +99,13 @@ function resetConfiguration(current: LabConfiguration): LabConfiguration {
   if (isReadinessScenario(current.scenario)) {
     return { ...current, failure: "none", revision: current.revision + 1 };
   }
+  const defaults = labScenarioDefaults(current.scenario);
   return {
     ...current,
-    ...labScenarioDefaults(current.scenario),
+    ...defaults,
     failure: "none",
     revision: current.revision + 1,
+    runtimeBaseline: defaults.runtime,
   };
 }
 
@@ -106,18 +113,38 @@ function configurationForScenario(current: LabConfiguration, scenario: LabScenar
   if (isReadinessScenario(scenario)) {
     return { ...current, failure: "none", revision: current.revision + 1, scenario };
   }
+  const defaults = labScenarioDefaults(scenario);
   return {
     ...current,
-    ...labScenarioDefaults(scenario),
+    ...defaults,
     failure: "none",
     revision: current.revision + 1,
+    runtimeBaseline: defaults.runtime,
     scenario,
   };
+}
+
+function updateCustomizations(
+  current: readonly LabCustomization[],
+  customization: LabCustomization,
+  active: boolean,
+): readonly LabCustomization[] {
+  if (active) return current.includes(customization) ? current : [...current, customization];
+  return current.filter((candidate) => candidate !== customization);
+}
+
+function updateAfterMemoryRebuild(
+  current: readonly LabCustomization[],
+  customization: LabCustomization,
+  active: boolean,
+): readonly LabCustomization[] {
+  return updateCustomizations(updateCustomizations(current, "computer", false), customization, active);
 }
 
 /** The production New Agent surface and focused readiness fixtures over a controllable in-memory world. */
 export function AgentSetupLabPage() {
   const [configuration, setConfiguration] = useState<LabConfiguration>(initialConfiguration);
+  const [customizations, setCustomizations] = useState<readonly LabCustomization[]>([]);
   const [navigationTarget, setNavigationTarget] = useState<LabNavigationTarget>();
   const [phase, setPhase] = useState<LabPhase>(() => initialPhase(configuration.scenario));
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime>("codex");
@@ -138,10 +165,11 @@ export function AgentSetupLabPage() {
   const version = useSyncExternalStore(memory.subscribe, memory.getVersion, memory.getVersion);
   const readinessScenario = isReadinessScenario(configuration.scenario) ? configuration.scenario : undefined;
   const pending = pendingEventFor(readinessScenario, phase, memory);
-  const status = readinessScenario ? READINESS_SCENARIO_LABELS[readinessScenario] : phaseLabel(phase, memory);
+  const status = readinessScenario ? readinessScenarioLabel(readinessScenario) : phaseLabel(phase, memory);
 
   const reset = useCallback(() => {
     setConfiguration(resetConfiguration);
+    setCustomizations([]);
     setPreviewRuntime("codex");
     setNavigationTarget(undefined);
     setPhase(initialPhase(configuration.scenario));
@@ -149,6 +177,7 @@ export function AgentSetupLabPage() {
 
   const changeScenario = useCallback((scenario: LabScenarioOption) => {
     setConfiguration((current) => configurationForScenario(current, scenario));
+    setCustomizations([]);
     setNavigationTarget(undefined);
     setPhase(initialPhase(scenario));
   }, []);
@@ -156,6 +185,7 @@ export function AgentSetupLabPage() {
   const changeJourney = useCallback(
     (journey: LabJourney) => {
       setConfiguration((current) => ({ ...current, journey, revision: current.revision + 1 }));
+      setCustomizations((current) => updateCustomizations(current, "computer", false));
       setNavigationTarget(undefined);
       setPhase(initialPhase(configuration.scenario));
     },
@@ -164,7 +194,12 @@ export function AgentSetupLabPage() {
 
   const createPreviewAgent = useCallback(
     async (request: CreationIntentRequest) => {
-      setConfiguration((current) => ({ ...current, runtime: request.runtimeProvider }));
+      setConfiguration((current) => ({
+        ...current,
+        runtime: request.runtimeProvider,
+        runtimeBaseline: request.runtimeProvider,
+      }));
+      setCustomizations((current) => updateCustomizations(current, "runtime", false));
       setPhase(configuration.journey === "first" ? "admission" : "setup");
       return { id: LAB_AGENT_ID };
     },
@@ -177,7 +212,54 @@ export function AgentSetupLabPage() {
       return;
     }
     runPendingLabEvent(memory);
-  }, [memory, phase]);
+    if (pending === "reconnect-computer") {
+      setCustomizations((current) => updateCustomizations(current, "computer", false));
+    }
+  }, [memory, pending, phase]);
+
+  const changeRuntime = useCallback(
+    (runtime: AgentRuntimeProvider) => {
+      setConfiguration((current) => ({ ...current, runtime, revision: current.revision + 1 }));
+      setCustomizations((current) =>
+        updateAfterMemoryRebuild(current, "runtime", runtime !== configuration.runtimeBaseline),
+      );
+    },
+    [configuration.runtimeBaseline],
+  );
+
+  const takeComputerOffline = useCallback(() => {
+    memory.controls.setComputerOnline(false);
+    setCustomizations((current) => updateCustomizations(current, "computer", true));
+  }, [memory]);
+
+  const changeInventory = useCallback(
+    (inventory: LabInventory) => {
+      setConfiguration((current) => ({ ...current, inventory, revision: current.revision + 1 }));
+      setCustomizations((current) =>
+        updateAfterMemoryRebuild(current, "inventory", inventory !== labScenarioDefaults(productionScenario).inventory),
+      );
+    },
+    [productionScenario],
+  );
+
+  const changeMessagingProvider = useCallback(
+    (messagingProvider: ImProvider) => {
+      setConfiguration((current) => ({ ...current, messagingProvider, revision: current.revision + 1 }));
+      setCustomizations((current) =>
+        updateAfterMemoryRebuild(
+          current,
+          "messaging-provider",
+          messagingProvider !== labScenarioDefaults(productionScenario).messagingProvider,
+        ),
+      );
+    },
+    [productionScenario],
+  );
+
+  const changeFailure = useCallback((failure: LabObservationFailure) => {
+    setConfiguration((current) => ({ ...current, failure }));
+    setCustomizations((current) => updateCustomizations(current, "failure", failure !== "none"));
+  }, []);
 
   useEffect(() => {
     memory.controls.setObservationFailure(configuration.failure === "none" ? undefined : configuration.failure);
@@ -206,6 +288,7 @@ export function AgentSetupLabPage() {
       />
       <AgentSetupLabControls
         automation={configuration.automation}
+        customizationCount={customizations.length}
         failure={configuration.failure}
         inventory={configuration.inventory}
         journey={configuration.journey}
@@ -213,20 +296,15 @@ export function AgentSetupLabPage() {
         messagingProvider={configuration.messagingProvider}
         onAutomationChange={(automation) => setConfiguration((current) => ({ ...current, automation }))}
         onFailPending={() => failPendingLabEvent(memory)}
-        onFailureChange={(failure) => setConfiguration((current) => ({ ...current, failure }))}
-        onInventoryChange={(inventory) =>
-          setConfiguration((current) => ({ ...current, inventory, revision: current.revision + 1 }))
-        }
+        onFailureChange={changeFailure}
+        onInventoryChange={changeInventory}
         onJourneyChange={changeJourney}
-        onMessagingProviderChange={(messagingProvider) =>
-          setConfiguration((current) => ({ ...current, messagingProvider, revision: current.revision + 1 }))
-        }
+        onMessagingProviderChange={changeMessagingProvider}
         onReset={reset}
         onRunPending={runPending}
-        onRuntimeChange={(runtime) =>
-          setConfiguration((current) => ({ ...current, runtime, revision: current.revision + 1 }))
-        }
+        onRuntimeChange={changeRuntime}
         onScenarioChange={changeScenario}
+        onTakeComputerOffline={takeComputerOffline}
         pending={pending}
         runtime={configuration.runtime}
         scenario={configuration.scenario}

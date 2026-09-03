@@ -42,22 +42,29 @@ const READINESS_ORDER: ReadonlyArray<{ key: keyof ReadinessRows; component: stri
  * One readiness row. `position` becomes a decorative 1..4 marker, `component` a stable identity
  * the list also uses as the row key, so a row never moves or remounts as its copy changes.
  *
- * The title and detail slots are fixed-height scroll regions: both are always mounted and
- * keyboard-focusable, and the detail slot carries its own accessible label.
+ * The title and detail slots are always mounted, and the detail slot carries its own accessible
+ * label. Fixed-height variants keep both overflow regions keyboard-scrollable; compact variants
+ * opt out because their content is fully visible.
  */
-export function CheckLine({ check, position, component }: { check: CheckRow; position: number; component: string }) {
+export function CheckLine({
+  check,
+  position,
+  component,
+  scrollable = true,
+}: {
+  check: CheckRow;
+  position: number;
+  component: string;
+  /** Keep overflow slots in the keyboard order only when their fixed height can hide content. */
+  scrollable?: boolean;
+}) {
   return (
     <li className="otv2-readiness__line" data-component={component} data-state={check.state} data-status={check.status}>
       <span aria-hidden="true" className="otv2-readiness__marker">
         {position}
       </span>
       <div className="otv2-readiness__copy">
-        <div
-          className="otv2-readiness__title"
-          data-ui="readiness-title"
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: The title slot is a fixed-height scroll region; keyboard users must be able to focus and scroll it.
-          tabIndex={0}
-        >
+        <div className="otv2-readiness__title" data-ui="readiness-title" tabIndex={scrollable ? 0 : undefined}>
           <span className="otv2-readiness__name">{check.label}</span>
           <span className="otv2-readiness__status">{check.statusLabel}</span>
         </div>
@@ -65,8 +72,7 @@ export function CheckLine({ check, position, component }: { check: CheckRow; pos
           aria-label={check.detailLabel}
           className="otv2-readiness__detail"
           data-ui="readiness-detail"
-          // biome-ignore lint/a11y/noNoninteractiveTabindex: The detail slot is a fixed-height scroll region; keyboard users must be able to focus and scroll it.
-          tabIndex={0}
+          tabIndex={scrollable ? 0 : undefined}
         >
           {check.detail}
         </section>

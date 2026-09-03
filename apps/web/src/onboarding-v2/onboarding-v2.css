@@ -129,7 +129,7 @@
   width: min(100%, 720px);
 }
 
-/* One stable Computer summary row separates the step copy from its command surface. */
+/* One stable Computer summary row locates the setup work without adding another panel boundary. */
 .otv2-computer-summary {
   box-sizing: border-box;
   height: 56px;
@@ -299,6 +299,49 @@
   color: var(--text-color-kumo-strong);
 }
 
+/*
+ * Step 2 projects the full four-part diagnostic checklist into two summary rows. Restore the
+ * compact, divided-row rhythm of the earlier checklist for that projection instead of carrying
+ * the four-row fixture's fixed title/detail reservations into a list with only two short items.
+ */
+.otv2-readiness--compact {
+  gap: 0;
+  overflow: hidden;
+}
+
+.otv2-readiness--compact .otv2-readiness__line {
+  align-items: center;
+  padding: 1rem;
+  border-top: 1px solid var(--color-kumo-line);
+}
+
+.otv2-readiness--compact .otv2-readiness__line:first-child {
+  border-top: 0;
+}
+
+.otv2-readiness--compact .otv2-readiness__copy {
+  gap: 0.25rem;
+}
+
+.otv2-readiness--compact .otv2-readiness__title {
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  height: auto;
+  overflow: visible;
+}
+
+.otv2-readiness--compact .otv2-readiness__status {
+  flex-shrink: 0;
+}
+
+.otv2-readiness--compact .otv2-readiness__detail {
+  height: auto;
+  min-height: 1.125rem;
+  overflow: visible;
+}
+
 /* Below 640px each slot reserves the extra lines its copy needs there. */
 @media (width <= 640px) {
   .otv2-readiness__title {
@@ -307,6 +350,11 @@
 
   .otv2-readiness__detail {
     height: 4.5rem;
+  }
+
+  .otv2-readiness--compact .otv2-readiness__title,
+  .otv2-readiness--compact .otv2-readiness__detail {
+    height: auto;
   }
 }
 

@@ -1,6 +1,7 @@
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
+import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
 
 test.describe.configure({ mode: "serial" });
@@ -51,6 +52,48 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   await expect(darkMark).toHaveCSS("display", "none");
   await page.setViewportSize({ width: 390, height: 844 });
   await expectContainedDimensions();
+});
+
+test("Agent Setup Lab exposes recoverable core states through its real controls", async ({ page }) => {
+  await page.goto("/internal/agent-setup", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Journey · New computer · Agent creation" }).click();
+  const closeLab = page.getByRole("button", { name: "Close", exact: true });
+  await expect(closeLab).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+
+  const scenario = page.getByRole("combobox", { name: "Start from" });
+  await scenario.click();
+  await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
+  await closeLab.click();
+  await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness--compact');
+  const readinessRows = readiness.locator(":scope > li");
+  await expect(readinessRows).toHaveCount(2);
+  await expect(readinessRows.nth(0)).toContainText("Codex");
+  await expect(readinessRows.nth(0)).toContainText(
+    "No recent report from Review Mac. Finish setup there, then check again.",
+  );
+  await expect(readinessRows.nth(1)).toContainText("Messaging support");
+  await expectWithinViewport(readinessRows.nth(0));
+  await expectWithinViewport(readinessRows.nth(1));
+  await expectNoPageOverflow(page);
+
+  await page.getByRole("button", { name: /^Preparation · Runtime report missing ·/ }).click();
+  await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
+  await page.getByRole("button", { name: "Finish readiness check" }).click();
+  await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
+
+  await scenario.click();
+  await page.getByRole("option", { name: "Complete · Everything ready" }).click();
+  await page.getByRole("button", { name: "Fine-tune state" }).click();
+  await page.getByRole("button", { name: "Take computer offline" }).click();
+  await expect(page.getByText("1 changed", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Reconnect computer" }).click();
+  await expect(page.getByText("1 changed", { exact: true })).toHaveCount(0);
+
+  await expectWithinViewport(closeLab);
+  await expectNoPageOverflow(page);
+  await expectAccessible(page);
 });
 
 test("Agent creation form creates an Agent visible in the list and detail page", async ({ page, e2eRuntime }) => {

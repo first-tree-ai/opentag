@@ -206,7 +206,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         state: "pending",
         status: "waiting",
         statusLabel: m.onboarding_v2_prep_status_waiting(),
-        detail: m.onboarding_v2_prep_runtime_missing({ runtime, computerName: computer }),
+        detail: m.onboarding_v2_prep_runtime_missing({ computerName: computer }),
         detailLabel,
       };
     case "checking":
@@ -215,7 +215,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         state: "pending",
         status: "checking",
         statusLabel: m.onboarding_v2_prep_status_checking(),
-        detail: m.onboarding_v2_prep_runtime_checking({ runtime, computerName: computer }),
+        detail: m.onboarding_v2_prep_runtime_checking({ computerName: computer }),
         detailLabel,
       };
     case "install":

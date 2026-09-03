@@ -277,44 +277,59 @@ function parseRawContent(message: RawFeishuMessageEvent["message"]): {
 type RawFeishuMention = NonNullable<RawFeishuMessageEvent["message"]["mentions"]>[number];
 
 /**
- * The plain text of a rich-text message, read from its documented shape: paragraphs of tagged
- * elements under `content`, at the top level or under a locale key. Feishu also sends the same
- * paragraphs as markdown under `content_v2`; that copy is read only when the tagged form has no
- * text, so a message is never repeated. Runs of one paragraph stay on one line, and an `@` element
- * becomes its mention key, the same placeholder a plain-text message carries.
+ * The plain text of a rich-text message, read from its documented shape: an optional title, then
+ * paragraphs of tagged elements under `content`, at the top level or under a locale key. Feishu
+ * also sends the same paragraphs as markdown under `content_v2`; that copy is read only when the
+ * tagged form has no text, so a message is never repeated. Runs of one paragraph stay on one line,
+ * and an `@` element becomes its mention key, the same placeholder a plain-text message carries.
  */
 function postText(content: Record<string, unknown>, mentions: readonly RawFeishuMention[] = []): string {
-  const tagged = paragraphsText(postParagraphs(content, "content"), mentions);
-  return tagged || paragraphsText(postParagraphs(content, "content_v2"), mentions);
+  const title = postField(content, "title");
+  const tagged = paragraphsText(postField(content, "content"), mentions);
+  const body = tagged || paragraphsText(postField(content, "content_v2"), mentions);
+  return [typeof title === "string" ? title.trim() : "", body].filter(Boolean).join("\n");
 }
 
-function postParagraphs(content: Record<string, unknown>, key: "content" | "content_v2"): unknown[] {
-  if (Array.isArray(content[key])) return content[key];
+/** A field of the post at the top level, or under the locale key the older shape wraps it in. */
+function postField(content: Record<string, unknown>, key: "title" | "content" | "content_v2"): unknown {
+  if (content[key] !== undefined) return content[key];
   for (const value of Object.values(content)) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
     const nested = (value as Record<string, unknown>)[key];
-    if (Array.isArray(nested)) return nested;
+    if (nested !== undefined) return nested;
   }
-  return [];
+  return undefined;
 }
 
-function paragraphsText(paragraphs: readonly unknown[], mentions: readonly RawFeishuMention[]): string {
+/**
+ * Paragraphs joined by line breaks. A paragraph whose elements render nothing, such as an image
+ * on its own line, is left out rather than shown as a blank line; an authored empty paragraph stays.
+ */
+function paragraphsText(paragraphs: unknown, mentions: readonly RawFeishuMention[]): string {
+  if (!Array.isArray(paragraphs)) return "";
   return paragraphs
     .map((paragraph) => (Array.isArray(paragraph) ? paragraph : [paragraph]))
-    .map((paragraph) => paragraph.map((element) => elementText(element, mentions)).join(""))
+    .map((paragraph) => ({ authored: paragraph.length === 0, text: elementsText(paragraph, mentions) }))
+    .filter(({ authored, text }) => authored || text !== "")
+    .map(({ text }) => text)
     .join("\n")
     .trim();
+}
+
+function elementsText(elements: readonly unknown[], mentions: readonly RawFeishuMention[]): string {
+  return elements.map((element) => elementText(element, mentions)).join("");
 }
 
 function elementText(element: unknown, mentions: readonly RawFeishuMention[]): string {
   if (typeof element !== "object" || element === null) return "";
   const { tag, text, user_id, user_name } = element as Record<string, unknown>;
-  if (tag === "at") {
-    const mention = mentions.find((candidate) => candidate.id.open_id === user_id || candidate.id.user_id === user_id);
-    if (mention) return mention.key;
-    return typeof user_name === "string" && user_name ? `@${user_name}` : "";
-  }
-  return typeof text === "string" ? text : "";
+  if (tag !== "at") return typeof text === "string" ? text : "";
+  const id = typeof user_id === "string" && user_id ? user_id : undefined;
+  const mention = id
+    ? mentions.find((candidate) => candidate.id.open_id === id || candidate.id.user_id === id)
+    : undefined;
+  if (mention) return mention.key;
+  return typeof user_name === "string" && user_name ? `@${user_name}` : "";
 }
 
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {

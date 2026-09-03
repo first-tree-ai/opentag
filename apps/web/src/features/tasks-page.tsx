@@ -386,14 +386,14 @@ export function TaskDetailPage({
           aria-label={m.tasks_details()}
         >
           <TaskDetailFact label={m.tasks_agent_label()}>
-            <span className="inline-flex items-center gap-2">
+            <span className="flex min-w-0 items-center gap-2">
               <span
-                className="grid size-7 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
+                className="grid size-7 shrink-0 place-items-center rounded-full bg-kumo-brand text-xs font-medium text-kumo-inverse"
                 aria-hidden="true"
               >
                 {task.agent.displayName.charAt(0)}
               </span>
-              <strong>{task.agent.displayName}</strong>
+              <strong className="min-w-0 break-words">{task.agent.displayName}</strong>
             </span>
           </TaskDetailFact>
           <TaskDetailFact label={m.tasks_source_label()}>

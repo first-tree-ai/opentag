@@ -172,7 +172,7 @@ describe("Feishu adapter", () => {
       "[unsupported:text]",
       "[image]",
       "[file]",
-      "first\nsecond",
+      "Title\nfirst\nsecond",
       "[unsupported:sticker]",
     ]);
     expect(received[1]?.resources[0]).toMatchObject({ fileKey: "img_1", fileName: "image.png" });
@@ -221,7 +221,28 @@ describe("Feishu adapter", () => {
       { key: "@_user_1", id: { open_id: "ou_bot" }, name: "Atlas", mentioned_type: "app" },
     ];
     await dispatcher.invoke(post, { needCheck: false });
-    expect(received.map((message) => message.content)).toEqual(["@_user_1 please fix the docs\n\nbefore 5pm"]);
+    expect(received.map((message) => message.content)).toEqual(["@_user_1 please fix the docs\nbefore 5pm"]);
+  });
+
+  it("writes an @ element without a usable id by name rather than matching a mention without one", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-at", "om-post-at", "9");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [
+        [
+          { tag: "at", user_name: "Someone" },
+          { tag: "text", text: " hi", style: [] },
+        ],
+      ],
+    });
+    (post.event.message as { mentions?: unknown }).mentions = [{ key: "@_user_1", id: {}, name: "Other" }];
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["@Someone hi"]);
   });
 
   it("falls back to a rich-text message's markdown copy when the tagged paragraphs carry no text", async () => {

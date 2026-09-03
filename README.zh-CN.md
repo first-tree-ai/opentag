@@ -6,9 +6,9 @@
 
 **Claude Tag 的开源替代品。**
 
-AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干了——用你已经在付费的编码 agent 和模型
+AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干了：用你已经在付费的编码 agent 和模型
 套餐，记忆以纯文本文件的形式留在你自己的机器上。免费，Apache 2.0：tag 归你、记忆归你、套餐用你自己的。
-它跑在你的机器上——云端版本即将推出。
+它跑在你的机器上。云端版本即将推出。
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
@@ -41,19 +41,20 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 
 ---
 
-## 上下文管理。
+## 长出你的 context tree。
 
-*来自每个频道的上下文，由 OpenTag 保管——而且比一次终端会话活得更久。*
+*OpenTag 替你建立并维护组织的上下文，存在一个归你所有的 repo 里。*
 
-- **来自每个频道 →** Thread Session 带上有界的根消息与话题历史，Agent 从大家真正说过的话开始。
-- **就是纯文本文件 →** 工作区和运行时状态都在你机器的 `${OPENTAG_HOME}` 下，默认私有。没有任何东西被上传到别处替你记住。
-- **[Agent 之间互相沟通](./docs/zh-CN/internal-session-collaboration.md) →** 持久化的 internal Session，带显式重试。
+- **repo 建在你自己的 GitHub 上 →** OpenTag 在你选定的账号下创建 context repo，并随着频道里发生的工作持续更新它。
+- **Git 原生 →** 分支、diff、历史、review。上下文和你拥有的其他一切一样被版本化。
+- **用 Markdown 写成 →** 没有私有存储，也不需要导出按钮。用任何编辑器打开，交给任何 agent，这棵树你想怎么用都行。
+- **为 agent 而建，由 agent 来建 →** 干活的 agent 顺手把上下文写下来，下一个 agent 就从上一个停下的地方接着开始。
 
 ## 连接你的技术栈。
 
 *同一个 tag 触达你其余的工具。*
 
-- **经由你的机器 →** Agent 就跑在你的 CLI 和凭证已经存在的地方——`gh`、你的云 CLI、你的 checkout。不必把 token 交给第三方。
+- **经由你的机器 →** Agent 就跑在你的 CLI 和凭证已经存在的地方：`gh`、你的云 CLI、你的 checkout。不必把 token 交给第三方。
 - **一等公民的 connector 目录是下一步 →** Web 里的 Integrations 区域是它今天的界面预览。
 
 ## 整套都归你。
@@ -69,7 +70,7 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 
 ## 快速开始
 
-唯一的前置条件：要跑 Agent 的那台机器上装好并登录了一个 [Agent CLI](#runtime)——`codex` 或 `claude`。
+唯一的前置条件：要跑 Agent 的那台机器上装好并登录了一个 [Agent CLI](#runtime)，`codex` 或 `claude`。
 OpenTag 驱动它们，但不附带它们。
 
 ```bash
@@ -106,7 +107,7 @@ Migration 在 Server 开始监听前执行。要部署到你自己的基础设�
 
 **1. 登录。** `opentag-dev login --server <你的-server> -- <账号登录-code>`，然后在同一个地址打开 Web。
 
-**2. 连接一台 Computer。** *Computer* 就是 Agent 可以干活的任意机器——你的笔记本，或一台云主机。在 Web 的
+**2. 连接一台 Computer。** *Computer* 就是 Agent 可以干活的任意机器：你的笔记本，或一台云主机。在 Web 的
 **Agents** 区域生成连接命令，在那台机器上运行：
 
 ```bash
@@ -203,7 +204,7 @@ provider 自己的 CLI 发出。
 
 ## 参与贡献
 
-OpenTag 以小而经过验证的纵向切片推进，`main` 变动很快——记得常拉取。
+OpenTag 以小而经过验证的纵向切片推进，`main` 变动很快，记得常拉取。
 
 ```bash
 pnpm install
@@ -214,7 +215,7 @@ pnpm check && pnpm build && pnpm typecheck && pnpm test
 Agent Runtime 另有自己的 100% 覆盖率门禁。
 
 请先阅读**[贡献指南](./CONTRIBUTING.zh-CN.md)**；完整本地流程、校验命令与恢复说明见
-[DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。欢迎提 issue 和 PR——动手前请先看
+[DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。欢迎提 issue 和 PR，动手前请先看
 [行为准则](./CODE_OF_CONDUCT.zh-CN.md)；安全漏洞请走[安全策略](./SECURITY.zh-CN.md)，不要开公开 issue。
 
 ---

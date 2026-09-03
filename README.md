@@ -6,10 +6,10 @@
 
 **Open source Claude Tag alternative.**
 
-An AI worker in your Slack and Lark. Tag it in a thread and it does the work — running the
-coding agent and model plan you already pay for, with its memory in plain files on your own machine.
-Free and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on your machine —
-cloud coming soon.
+An AI worker in your Slack and Lark. Tag it in a thread and it does the work, running the coding
+agent and model plan you already pay for, with its memory in plain files on your own machine. Free
+and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on your machine. Cloud
+coming soon.
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
@@ -40,19 +40,20 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 
 ---
 
-## Context management.
+## Build your context tree.
 
-*Context from every channel, kept by OpenTag — and it outlives the terminal session.*
+*OpenTag builds and maintains your org's context for you, in a repo you own.*
 
-- **From every channel →** Thread Sessions carry bounded root and thread history, so the agent starts from what was actually said.
-- **In plain files →** Work areas and runtime state live under `${OPENTAG_HOME}` on your machine, private by default. Nothing is uploaded to be remembered for you.
-- **[Agents that talk to each other](./docs/internal-session-collaboration.md) →** Durable internal Sessions with explicit retry.
+- **A repo on your own GitHub →** OpenTag creates the context repo on the account you pick and keeps it current as work happens in your channels.
+- **Git native →** Branches, diffs, history, review. Your context is versioned like everything else you own.
+- **Written in Markdown →** No proprietary store and no export button. Open it in any editor, hand it to any agent, use the tree however you want.
+- **For agents, by agents →** The agents doing the work write the context down, so the next one starts where the last one stopped.
 
 ## Connect your stack.
 
 *The same tag reaches the rest of your tools.*
 
-- **Through your machine →** The agent runs where your CLIs and credentials already are — `gh`, your cloud CLIs, your checkouts. No token handed to a third party.
+- **Through your machine →** The agent runs where your CLIs and credentials already are: `gh`, your cloud CLIs, your checkouts. No token handed to a third party.
 - **A connector catalog is next →** The Integrations area in the Web is its interface preview today.
 
 ## Own the whole thing.
@@ -68,8 +69,8 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 
 ## Quickstart
 
-The one prerequisite: the machine that will run agents needs an [agent CLI](#runtimes) — `codex` or
-`claude` — installed and signed in. OpenTag drives them; it doesn't ship them.
+The one prerequisite: the machine that will run agents needs an [agent CLI](#runtimes), `codex` or
+`claude`, installed and signed in. OpenTag drives them; it doesn't ship them.
 
 ```bash
 git clone https://github.com/first-tree-ai/opentag.git && cd opentag
@@ -107,7 +108,7 @@ it on your own infrastructure instead.
 **1. Sign in.** `opentag-dev login --server <your-server> -- <account-login-code>`, then open the Web
 at that same URL.
 
-**2. Connect a computer.** A *Computer* is any machine agents can work on — your laptop, or a cloud
+**2. Connect a computer.** A *Computer* is any machine agents can work on: your laptop, or a cloud
 box. Open **Agents** in the Web, generate a connection command, and run it on that machine:
 
 ```bash
@@ -206,7 +207,7 @@ Chinese translations live in [`docs/zh-CN/`](./docs/zh-CN).
 
 ## Contributing
 
-OpenTag is built in small, validated vertical slices, and `main` moves quickly — pull often.
+OpenTag is built in small, validated vertical slices, and `main` moves quickly, so pull often.
 
 ```bash
 pnpm install
@@ -218,7 +219,7 @@ container smoke it also runs. Agent Runtime keeps its own 100% coverage gate.
 
 Start with the **[Contributing guide](./CONTRIBUTING.md)**; the full local workflow, validation
 commands, and recovery notes are in [DEVELOPMENT.md](./DEVELOPMENT.md). Issues and pull requests are
-welcome — please read the [Code of Conduct](./CODE_OF_CONDUCT.md) first, and report vulnerabilities
+welcome. Please read the [Code of Conduct](./CODE_OF_CONDUCT.md) first, and report vulnerabilities
 through the [Security policy](./SECURITY.md) rather than a public issue.
 
 ---

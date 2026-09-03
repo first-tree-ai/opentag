@@ -562,14 +562,7 @@ export class RuntimeDomainOwner {
           resultHash: frame.resultHash,
         };
       }
-      if (frame.type === "im:credential") {
-        return {
-          type: "im:credential:result",
-          requestId: frame.requestId,
-          status: "rejected",
-          code: "placement_stale",
-        };
-      }
+      if (frame.type === "im:credential") return this.#rejectCredentialGrant(frame, context, "placement_stale");
       return undefined;
     }
     if (frame.type === "session:reconcile:result") {
@@ -604,6 +597,31 @@ export class RuntimeDomainOwner {
     return this.#handleResidualFrame(frame, context);
   }
 
+  #rejectCredentialGrant(
+    frame: RuntimeImCredentialGrantRequest,
+    context: RuntimeBusinessContext,
+    code: "placement_stale" | "credential_stale",
+    reason?: "grant_callback_missing" | "capability_version_unsupported",
+  ): RuntimeImCredentialGrantResult {
+    try {
+      this.#logger?.warn(
+        {
+          code,
+          ...(reason ? { reason } : {}),
+          computerId: context.computerId,
+          instanceId: context.instanceId,
+          requestId: frame.requestId,
+          sessionId: frame.sessionId,
+          agentId: frame.agentId,
+        },
+        "Runtime credential grant rejected",
+      );
+    } catch {
+      // Logging must never replace the rejection result.
+    }
+    return { type: "im:credential:result", requestId: frame.requestId, status: "rejected", code };
+  }
+
   async #handleResidualFrame(
     frame: ResidualRuntimeFrame,
     context: RuntimeBusinessContext,
@@ -612,13 +630,17 @@ export class RuntimeDomainOwner {
       return undefined;
     }
     if (frame.type === "im:credential") {
-      if (!this.#options.onImCredentialGrant) return businessFailureResult(frame);
+      if (!this.#options.onImCredentialGrant) {
+        return this.#rejectCredentialGrant(frame, context, "credential_stale", "grant_callback_missing");
+      }
       const version = this.#registry.capabilityVersion(
         context.computerId,
         context.instanceId,
         RUNTIME_CAPABILITY.imCredentialGrant,
       );
-      if (version !== 1 && version !== 2) return businessFailureResult(frame);
+      if (version !== 1 && version !== 2) {
+        return this.#rejectCredentialGrant(frame, context, "credential_stale", "capability_version_unsupported");
+      }
       return this.#options.onImCredentialGrant(frame, { ...context, imCredentialGrantVersion: version });
     }
     return withSpan(

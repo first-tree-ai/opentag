@@ -334,17 +334,4 @@ export class ImBindingProviderCli {
       connection,
     };
   }
-
-  async runtimeReady(input: {
-    agentId: string;
-    provider: ImCliProvider;
-    integrationId: string;
-    credentialGeneration: number;
-  }): Promise<boolean> {
-    const [artifact, credential] = await Promise.all([
-      this.#artifactReadiness(input.agentId, input.provider, input.integrationId, input.credentialGeneration),
-      this.#credentialReadiness(input.agentId, input.provider, input.integrationId, input.credentialGeneration),
-    ]);
-    return artifact === "ready" && credential.status === "ready";
-  }
 }

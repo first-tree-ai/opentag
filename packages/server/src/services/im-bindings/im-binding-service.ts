@@ -432,13 +432,20 @@ export class ImBindingService {
       .where(eq(sessions.id, request.sessionId))
       .limit(1);
     const rejected = (
-      code: "binding_inactive" | "credential_stale" | "provider_cli_unready" | "placement_stale" | "agent_mismatch",
-    ): RuntimeImCredentialGrantResult => ({
-      type: "im:credential:result",
-      requestId: request.requestId,
-      status: "rejected",
-      code,
-    });
+      code: "binding_inactive" | "credential_stale" | "placement_stale" | "agent_mismatch",
+    ): RuntimeImCredentialGrantResult => {
+      this.#logger?.warn(
+        {
+          code,
+          sessionId: request.sessionId,
+          agentId: request.agentId,
+          computerId: computerAuth.computerId,
+          requestId: request.requestId,
+        },
+        "Runtime credential grant rejected",
+      );
+      return { type: "im:credential:result", requestId: request.requestId, status: "rejected", code };
+    };
     if (
       !row ||
       row.sessionKind === "internal" ||
@@ -465,16 +472,6 @@ export class ImBindingService {
     const issueFeishuGrant = async (): Promise<RuntimeImCredentialGrantResult> => {
       const credential = this.#decodeFeishuCredential(binding.encryptedCredential, binding.id);
       if (!credential || credential.appId !== binding.externalAppId) return rejected("credential_stale");
-      if (
-        !(await this.#runtimeProviderCliReady(
-          binding.agentId,
-          binding.provider,
-          binding.id,
-          binding.credentialGeneration,
-        ))
-      ) {
-        return rejected("provider_cli_unready");
-      }
       return {
         type: "im:credential:result",
         requestId: request.requestId,
@@ -510,16 +507,6 @@ export class ImBindingService {
       }
       const credential = this.#decodeSlackCredential(installation.encryptedCredential, binding.id);
       if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
-      if (
-        !(await this.#runtimeProviderCliReady(
-          binding.agentId,
-          binding.provider,
-          binding.id,
-          installation.credentialGeneration,
-        ))
-      ) {
-        return rejected("provider_cli_unready");
-      }
       return {
         type: "im:credential:result",
         requestId: request.requestId,
@@ -1274,15 +1261,6 @@ export class ImBindingService {
 
   async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
     return this.#providerCli.readiness(imBinding, this.#agentRuntimeReadiness(imBinding.agentId), this.#now());
-  }
-
-  async #runtimeProviderCliReady(
-    agentId: string,
-    provider: "feishu" | "slack",
-    integrationId: string,
-    credentialGeneration: number,
-  ): Promise<boolean> {
-    return this.#providerCli.runtimeReady({ agentId, provider, integrationId, credentialGeneration });
   }
 
   #withCredentialStatus<

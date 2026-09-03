@@ -14,6 +14,7 @@ import {
   ProviderCliValidationGrantFrameSchema,
   RUNTIME_CAPABILITY,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "../runtime-connection.js";
 import type { ProviderCliManager } from "./manager.js";
 import {
@@ -49,6 +50,7 @@ export interface ProviderCliReconcilerOptions {
     RuntimeConnection,
     "send" | "subscribeBusinessFrames" | "capabilityVersion" | "setImCliReadiness"
   >;
+  readonly logger?: Pick<ClientLogger, "info" | "warn">;
   readonly manager: Pick<ProviderCliManager, "ensure" | "inspect" | "layout">;
   readonly now?: () => number;
   readonly signal?: AbortSignal;
@@ -83,6 +85,7 @@ export class ProviderCliReconciler {
   readonly #frameJobs = new Set<Promise<void>>();
   readonly #imCliPublished = new Map<ProviderCliProvider, ImCliReadinessStatus>();
   readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ImCliReadinessStatus>>();
+  readonly #logger: Pick<ClientLogger, "info" | "warn">;
   readonly #providerJobs = new Map<string, Promise<ProviderCliArtifactStatusFrame["status"]>>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
@@ -94,6 +97,7 @@ export class ProviderCliReconciler {
 
   constructor(options: ProviderCliReconcilerOptions) {
     this.#connection = options.connection;
+    this.#logger = options.logger ?? createLogger("provider-cli-reconciler");
     this.#manager = options.manager;
     this.#now = options.now ?? Date.now;
     this.#signal = options.signal;
@@ -477,6 +481,21 @@ export class ProviderCliReconciler {
       status: result.status,
       ...(result.reason ? { reason: result.reason } : {}),
     };
+    if (result.status !== "ready") {
+      const fields = {
+        code: "PROVIDER_CLI_VALIDATION_NOT_READY",
+        provider: frame.provider,
+        agentId: frame.agentId,
+        integrationId: frame.integrationId,
+        credentialGeneration: frame.credentialGeneration,
+        status: result.status,
+        ...(result.reason ? { reason: result.reason } : {}),
+      };
+      const message = "Provider CLI validation did not confirm readiness";
+      // "retrying" is an expected transient with a reason; only needs_attention is actionable.
+      if (result.status === "retrying") this.#logger.info(fields, message);
+      else this.#logger.warn(fields, message);
+    }
     await this.#connection.send(payload, { priority: "result" });
   }
 }

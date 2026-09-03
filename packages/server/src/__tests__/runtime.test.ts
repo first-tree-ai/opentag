@@ -924,6 +924,41 @@ describe("Computer runtime WebSocket", () => {
 });
 
 describe("RuntimeSession direct protocol coverage", () => {
+  it("logs a business handler failure before answering with the failure result", async () => {
+    const logger = loggerFixture();
+    const requestId = randomUUID();
+    const runtime = directRuntimeSession({
+      logger,
+      business: {
+        parse: (value) => value as never,
+        laneKey: () => "work",
+        handle: async () => {
+          throw new Error("expected handler failure");
+        },
+        failureResult: (frame) => ({ type: "work:result", requestId: frame.requestId, status: "failed" }),
+        overloadResult: () => undefined,
+      },
+    });
+    await registerDirect(runtime);
+    runtime.socket.emit("message", JSON.stringify({ type: "work", requestId }), false);
+    await vi.waitFor(() =>
+      expect(runtime.frames()).toContainEqual(
+        expect.objectContaining({ type: "work:result", requestId, status: "failed" }),
+      ),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      {
+        code: "RUNTIME_BUSINESS_HANDLER_FAILED",
+        frameType: "work",
+        requestId,
+        computerId: runtime.context.computerId,
+        instanceId: expect.any(String),
+        reason: "expected handler failure",
+      },
+      "Runtime business frame handler failed",
+    );
+  });
+
   it("logs 4401, 4409, and protocol termination with close codes and redacted reasons", async () => {
     const authLogger = loggerFixture();
     const authFailure = directRuntimeSession({ logger: authLogger });

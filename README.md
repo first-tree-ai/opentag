@@ -49,12 +49,13 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 - **Written in Markdown →** No proprietary store and no export button. Open it in any editor, hand it to any agent, use the tree however you want.
 - **For agents, by agents →** The agents doing the work write the context down, so the next one starts where the last one stopped.
 
-## Connect your stack.
+## The connectors are your agent's own.
 
-*The same tag reaches the rest of your tools.*
+*Whatever it can already reach, the room can reach.*
 
-- **Through your machine →** The agent runs where your CLIs and credentials already are: `gh`, your cloud CLIs, your checkouts. No token handed to a third party.
-- **A connector catalog is next →** The Integrations area in the Web is its interface preview today.
+- **Its reach is the connector list →** Pull up the issue, check the calendar, open the pull request. Anything the agent can already do on that machine, it can do from the thread.
+- **It reads and it acts →** Asking it a question and asking it to do something are the same message.
+- **Your credentials, your machine →** `gh`, your cloud CLIs, your checkouts. Nothing to install and authorize first, and no token handed to a third party.
 
 ## Own the whole thing.
 

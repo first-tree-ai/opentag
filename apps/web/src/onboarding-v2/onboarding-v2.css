@@ -129,6 +129,47 @@
   width: min(100%, 720px);
 }
 
+/* One stable Computer summary row separates the step copy from its command surface. */
+.otv2-computer-summary {
+  box-sizing: border-box;
+  height: 56px;
+}
+
+/* Runtime installation and sign-in are distinct checks but keep one stable two-row group. */
+.otv2-runtime-readiness__row {
+  box-sizing: border-box;
+  min-height: 80px;
+}
+
+.otv2-runtime-readiness__marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 50%;
+  color: var(--text-color-kumo-subtle);
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.otv2-runtime-readiness__row[data-state="ready"] .otv2-runtime-readiness__marker {
+  border-color: var(--color-kumo-brand);
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+.otv2-runtime-readiness__row[data-state="checking"] .otv2-runtime-readiness__marker {
+  border-color: var(--color-kumo-brand);
+  color: var(--brand-ink);
+}
+
+.otv2-runtime-readiness__row[data-state="action-required"] .otv2-runtime-readiness__marker {
+  color: var(--text-color-kumo-strong);
+}
+
 /* Cards sit side by side wherever two tracks fit, and stack when they do not. */
 .otv2-choices--grid {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -156,6 +197,14 @@
 }
 
 @media (width <= 640px) {
+  .otv2-computer-summary {
+    height: 72px;
+  }
+
+  .otv2-runtime-readiness__row {
+    min-height: 104px;
+  }
+
   .otv2-slot--outcome {
     min-height: 71px;
   }

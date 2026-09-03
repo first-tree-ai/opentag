@@ -65,7 +65,9 @@ test("Agent creation form creates an Agent visible in the list and detail page",
   const create = page.getByRole("button", { name: "Create Agent" });
   await expect(create).toBeEnabled();
   await create.click();
-  await expect(page.getByRole("heading", { name: "Set up e2e-agent", exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("heading", { name: "Connect your computer", exact: true })).toBeVisible({
+    timeout: 60_000,
+  });
 
   const listResponse = await page.request.get("/api/v1/agents");
   expect(listResponse.ok()).toBeTruthy();
@@ -115,13 +117,11 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
 });
 
-test("Agent navigation reaches every Agent-owned destination", async ({ page }) => {
+test("Agent navigation reaches every production Agent destination", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   const destinations = [
     { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
-    { name: "Skills", heading: "Skills", path: `/agents/${agentId}/skills` },
-    { name: "Integrations", heading: "Integrations", path: `/agents/${agentId}/integrations` },
     { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
   for (const destination of destinations) {
@@ -185,7 +185,7 @@ test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", as
   );
 });
 
-test("Agents and Usage keep their compact composition when their own containers have room", async ({ page }) => {
+test("Agents keep their compact composition and Usage presents its empty state", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   await page.setViewportSize({ width: 1100, height: 900 });
 
@@ -233,14 +233,8 @@ test("Agents and Usage keep their compact composition when their own containers 
   await page.setViewportSize({ width: 1100, height: 900 });
 
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
-  const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
-  await expect(usageAnalysisCards).toHaveCount(2);
-  const [trendCard, breakdownCard] = await Promise.all([
-    usageAnalysisCards.nth(0).boundingBox(),
-    usageAnalysisCards.nth(1).boundingBox(),
-  ]);
-  if (!trendCard || !breakdownCard) throw new Error("Usage analysis cards did not produce layout boxes");
-  expect(trendCard.y).toBeCloseTo(breakdownCard.y, 1);
+  await expect(page.getByRole("heading", { name: "No token usage", exact: true })).toBeVisible();
+  await expect(page.locator('[data-ui="usage-analysis"]')).toHaveCount(0);
 });
 
 test("an unauthenticated protected visit redirects to login", async ({ browser }) => {
@@ -288,7 +282,11 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
     { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
-    { file: "internal-agent-setup", route: "/internal/agent-setup", heading: "Set up Reviewer" },
+    {
+      file: "internal-agent-setup",
+      route: "/internal/agent-setup",
+      heading: "Where should your agent run?",
+    },
   ];
   const entries: Array<{ file: string; route: string; heading: string }> = [
     { file: "agent-setup", route: "/agents/setup", heading: AGENT_SETUP_CREATE_HEADING },

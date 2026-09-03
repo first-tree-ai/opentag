@@ -56,7 +56,11 @@ async function openControls(): Promise<void> {
 
 /** Opens the labelled combobox and picks the option by its visible label. */
 async function chooseOption(label: string, optionName: string): Promise<void> {
-  if (label === "Scenario") await openControls();
+  if (label === "Scenario" || label === "Component fixtures") await openControls();
+  if (label === "Component fixtures") {
+    const section = screen.getByRole("button", { name: label });
+    if (section.getAttribute("aria-expanded") !== "true") fireEvent.click(section);
+  }
   const trigger = screen.getByRole("combobox", { name: label });
   fireEvent.click(trigger);
   const option = await screen.findByRole("option", { name: optionName });
@@ -88,7 +92,7 @@ describe("agent setup lab page", () => {
     expect(document.querySelector('[data-ui="readiness-lab"]')).toBeNull();
 
     await openControls();
-    expect(page?.className).toContain("lg:pr-[27rem]");
+    expect(page?.className).not.toContain("lg:pr-[27rem]");
     expect(screen.getByRole("button", { name: "First Agent" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Additional Agent" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Manual" }).getAttribute("aria-pressed")).toBe("true");
@@ -105,7 +109,6 @@ describe("agent setup lab page", () => {
       "Runtime setup",
       "Messaging setup",
       "Everything ready",
-      ...READINESS_SCENARIOS.map((scenario) => READINESS_SCENARIO_LABELS[scenario]),
     ]);
     fireEvent.click(trigger);
     await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
@@ -113,7 +116,7 @@ describe("agent setup lab page", () => {
     await chooseOption("Scenario", "Everything ready");
     await waitFor(() => expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull());
     expect(document.querySelector('[data-ui="readiness-lab"]')).toBeNull();
-    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
   });
 
   it("shows the real creation choice and only exposes Back to agents for an additional Agent", async () => {
@@ -142,7 +145,7 @@ describe("agent setup lab page", () => {
 
     expect(await screen.findByText("Opening app access for this agent…")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Complete account admission" }));
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
 
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Overrides" }));
@@ -187,7 +190,7 @@ describe("agent setup lab page", () => {
 
   it("renders the ready checklist with four rows and the exact ready copy", async () => {
     renderLabPage();
-    await chooseOption("Scenario", "Checklist: ready");
+    await chooseOption("Component fixtures", "Checklist: ready");
 
     expect(document.querySelector('[data-ui="agent-setup"]')).toBeNull();
     expect(screen.getByRole("heading", { name: "Readiness checklist" })).toBeTruthy();
@@ -221,7 +224,7 @@ describe("agent setup lab page", () => {
 
   it("relabels the runtime row when Preview Runtime moves to Claude Code", async () => {
     renderLabPage();
-    await chooseOption("Scenario", "Checklist: ready");
+    await chooseOption("Component fixtures", "Checklist: ready");
     const runtimeRow = readinessRow("runtime");
     const computerRow = readinessRow("computer");
 
@@ -248,7 +251,7 @@ describe("agent setup lab page", () => {
 
   it("keeps one persistent list with the same row elements across every fixture scenario", async () => {
     renderLabPage();
-    await chooseOption("Scenario", "Checklist: waiting");
+    await chooseOption("Component fixtures", "Checklist: waiting");
 
     const firstRows = new Map(COMPONENTS.map((component) => [component, readinessRow(component)]));
     const firstList = readinessList();
@@ -256,7 +259,7 @@ describe("agent setup lab page", () => {
     expect(readinessRow("runtime").getAttribute("data-state")).toBe("blocked");
 
     for (const scenario of READINESS_SCENARIOS) {
-      await chooseOption("Scenario", READINESS_SCENARIO_LABELS[scenario]);
+      await chooseOption("Component fixtures", READINESS_SCENARIO_LABELS[scenario]);
       expect(readinessList()).toBe(firstList);
       expect(screen.getByRole("heading", { name: "Readiness checklist" })).toBeTruthy();
       for (const component of COMPONENTS) {
@@ -277,7 +280,7 @@ describe("agent setup lab page", () => {
   it("exposes the long English and Chinese fixture copy", async () => {
     renderLabPage();
 
-    await chooseOption("Scenario", "Long English");
+    await chooseOption("Component fixtures", "Long English");
     const runtimeDetail = slot(readinessRow("runtime"), "readiness-detail").textContent ?? "";
     expect(runtimeDetail).toContain("Wait for a fresh reading");
     expect(runtimeDetail).toContain("OpenTag does not install Runtime CLIs");
@@ -286,7 +289,7 @@ describe("agent setup lab page", () => {
     const feishuDetail = slot(readinessRow("im-cli:feishu"), "readiness-detail").textContent ?? "";
     expect(feishuDetail).toContain("opentag provider-cli inspect --provider feishu");
 
-    await chooseOption("Scenario", "中文长文案");
+    await chooseOption("Component fixtures", "中文长文案");
     const runtimeRow = readinessRow("runtime");
     expect(slot(readinessRow("computer"), "readiness-title").textContent).toBe("电脑就绪");
     // The sample sentences are Chinese; brand names still follow the app locale via the naming helper.
@@ -309,7 +312,7 @@ describe("agent setup lab page", () => {
   it("exposes the passed warning and the genuinely blank details", async () => {
     renderLabPage();
 
-    await chooseOption("Scenario", "Passed with warning");
+    await chooseOption("Component fixtures", "Passed with warning");
     const warningRow = readinessRow("runtime");
     expect(warningRow.getAttribute("data-state")).toBe("passed");
     expect(warningRow.getAttribute("data-status")).toBe("ready");
@@ -318,7 +321,7 @@ describe("agent setup lab page", () => {
     expect(readinessRow("computer").getAttribute("data-state")).toBe("passed");
     expect(readinessRow("im-cli:slack").getAttribute("data-state")).toBe("passed");
 
-    await chooseOption("Scenario", "Blank details");
+    await chooseOption("Component fixtures", "Blank details");
     for (const component of COMPONENTS) {
       const detail = slot(readinessRow(component), "readiness-detail");
       expect(detail.textContent).toBe("");
@@ -331,13 +334,13 @@ describe("agent setup lab page", () => {
 
   it("keeps stale reports blocked and messaging authorization out of preparation fixtures", async () => {
     renderLabPage();
-    await chooseOption("Scenario", "Checklist: stale");
+    await chooseOption("Component fixtures", "Checklist: stale");
     for (const component of COMPONENTS) {
       expect(readinessRow(component).getAttribute("data-state")).toBe("blocked");
       expect(readinessRow(component).getAttribute("data-status")).toBe("stale");
     }
     for (const scenario of READINESS_SCENARIOS) {
-      await chooseOption("Scenario", READINESS_SCENARIO_LABELS[scenario]);
+      await chooseOption("Component fixtures", READINESS_SCENARIO_LABELS[scenario]);
       expect(readinessList().textContent).not.toMatch(
         /workspace authoriz|workspace token|credentials expire|opentag-runtime-(install|upgrade)|review\.invalid/i,
       );

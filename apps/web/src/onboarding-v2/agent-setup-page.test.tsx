@@ -111,9 +111,12 @@ describe("AgentSetupPage stages", () => {
     await settle();
     await advance(1);
 
-    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer has no computer yet. Connect the machine it should run on.")).toBeTruthy();
-    expect(screen.getByText("Connect your computer")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    expect(screen.getByText("Reviewer runs on your own computer.")).toBeTruthy();
+    expect(screen.getByText("Your code and data never leave your machine.")).toBeTruthy();
+    const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
+    expect(summary?.textContent).toContain("No computer connected");
+    expect(summary?.textContent).toContain("Not connected");
     expect(document.querySelector('[data-ui="agent-setup-computer"]')?.getAttribute("data-state")).toBe("not-bound");
     expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: SETUP_AGENT_ID });
   });
@@ -139,11 +142,10 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expect(
-      screen.getByText(
-        "Review Mac is offline. Run opentag daemon start in a terminal on that Computer; this page will continue when it reconnects.",
-      ),
-    ).toBeTruthy();
+    const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
+    expect(summary?.textContent).toContain("Review Mac");
+    expect(summary?.textContent).toContain("macOS");
+    expect(summary?.textContent).toContain("Offline");
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
 
@@ -170,11 +172,11 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    fireEvent.click(screen.getByRole("button", { name: "Need to reinstall? Generate a repair command." }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
     await settle();
 
     const repairSurface = document.querySelector('[data-ui="computer-connect"]');
-    expect(repairSurface?.parentElement?.id).toBe("agent-setup-repair-command");
+    expect(repairSurface?.querySelector(".ots-command__body")).not.toBeNull();
     expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for Review Mac to reconnect");
@@ -190,12 +192,19 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
-    expect(screen.getByText("Codex isn't installed on Review Mac yet.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
+    const readiness = screen.getByRole("list", { name: "Runtime readiness" });
+    expect(readiness.querySelectorAll("li")).toHaveLength(2);
+    expect(within(readiness).getByText("Codex CLI")).toBeTruthy();
+    expect(within(readiness).getByText("Install required")).toBeTruthy();
+    expect(within(readiness).getByText("Codex sign-in")).toBeTruthy();
+    expect(within(readiness).getByText("Waiting")).toBeTruthy();
     const doctorCommand = screen.getByText("opentag doctor");
-    expect(doctorCommand.parentElement?.textContent).toBe(
-      "Continue in your terminal or agent for instructions, or run opentag doctor on that Computer to see what is missing.",
+    expect(doctorCommand.parentElement?.textContent).toContain("Codex isn't installed on Review Mac yet.");
+    expect(doctorCommand.parentElement?.textContent).toContain(
+      "Continue in your terminal or agent for instructions, or run",
     );
+    expect(doctorCommand.parentElement?.textContent).toContain("on that Computer to see what is missing.");
   });
 
   it("waits visibly while the runtime check is still resolving", async () => {
@@ -302,6 +311,17 @@ describe("AgentSetupPage stages", () => {
 });
 
 describe("AgentSetupPage blockers", () => {
+  it("keeps a Computer observation failure concise inside the one-line summary", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), observationFailure: "computer" });
+    renderSetup(memory.adapter);
+    await settle();
+
+    const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
+    expect(summary?.textContent).toContain("Review Mac");
+    expect(summary?.textContent).toContain("Unable to confirm");
+    expect(summary?.textContent).not.toContain("We couldn't read the latest state from the server");
+  });
+
   it("says when the Server could not observe a resource", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "install" });
     const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
@@ -313,7 +333,7 @@ describe("AgentSetupPage blockers", () => {
     await settle();
 
     expect(screen.getByText("We couldn't read the latest state from the server. Check again.")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
   });
 
   it("names the requested Provider when a switch was refused", async () => {
@@ -574,7 +594,7 @@ describe("AgentSetupPage transitions", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByText(/Review Mac is offline/)).toBeTruthy();
+    expect(document.querySelector('[data-ui="agent-setup-computer-summary"]')?.textContent).toContain("Offline");
 
     memory.controls.setComputerOnline(true);
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
@@ -595,13 +615,13 @@ describe("AgentSetupPage transitions", () => {
     });
     renderSetup(adapter);
     await settle();
-    expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await settle();
 
     expect(screen.getByText("network is down")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Prepare Codex" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
   });
 });
 

@@ -23,7 +23,55 @@ const COPY_FEEDBACK_MS = 1_600;
  * instruction to an agent. The block shows exactly that line, because the manual-selection fallback
  * copies what is on screen rather than what the copy button would have written.
  */
-export function CommandBlock({
+interface CommandBlockSharedProps {
+  copyLabel: string;
+  copiedLabel: string;
+  fallbackHint: string;
+}
+
+type CommandBlockProps = CommandBlockSharedProps &
+  (
+    | {
+        /** Replaces the command with one centered action while preserving the command surface. */
+        actionNotice: ReactNode;
+        comment?: never;
+        command?: never;
+        expiredNotice?: never;
+        inert?: never;
+      }
+    | {
+        comment: string;
+        command: string;
+        /**
+         * Shown across the block once its contents are dead. It speaks from the block itself rather
+         * than from a line underneath, because the block is the thing that expired.
+         */
+        expiredNotice?: ReactNode;
+        /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
+        inert?: boolean;
+      }
+  );
+
+export function CommandBlock(props: CommandBlockProps) {
+  if ("actionNotice" in props) {
+    return <CommandActionBlock actionNotice={props.actionNotice} />;
+  }
+  return <CopyableCommandBlock {...props} />;
+}
+
+function CommandActionBlock({ actionNotice }: { readonly actionNotice: ReactNode }) {
+  return (
+    <div className="ots-command flex flex-col gap-1" data-action="true">
+      <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
+        <div className="ots-command__action flex flex-wrap items-center justify-center gap-2 rounded-lg p-4 text-sm text-center">
+          {actionNotice}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CopyableCommandBlock({
   comment,
   command,
   copyLabel,
@@ -31,19 +79,16 @@ export function CommandBlock({
   expiredNotice,
   fallbackHint,
   inert = false,
-}: {
-  comment: string;
-  command: string;
-  copyLabel: string;
-  copiedLabel: string;
+}: CommandBlockSharedProps & {
+  readonly comment: string;
+  readonly command: string;
   /**
    * Shown across the block once its contents are dead. It speaks from the block itself rather than
    * from a line underneath, because the block is the thing that expired.
    */
-  expiredNotice?: ReactNode;
-  fallbackHint: string;
+  readonly expiredNotice?: ReactNode;
   /** Renders the block's shape with nothing to act on, while its real contents are still coming. */
-  inert?: boolean;
+  readonly inert?: boolean;
 }) {
   const commentLine = inertComment(comment);
   const split = command.lastIndexOf(" ") + 1;
@@ -82,6 +127,8 @@ export function CommandBlock({
     }
   }
 
+  const buttonLabel = copied ? copiedLabel : copyLabel;
+
   return (
     <div className="ots-command flex flex-col gap-1" data-expired={expiredNotice ? "true" : undefined}>
       <div className="ots-command__body flex items-start gap-3 rounded-lg border py-3 pr-3 pl-4">
@@ -106,13 +153,13 @@ export function CommandBlock({
           comment line underneath it. An icon is the same size in both states.
         */}
         <Button
-          aria-label={copied ? copiedLabel : copyLabel}
+          aria-label={buttonLabel}
           className="ots-command__copy shrink-0"
           data-copied={copied ? "true" : undefined}
           disabled={inert || expiredNotice !== undefined}
           onClick={() => void copy()}
           size="compact"
-          title={copied ? copiedLabel : copyLabel}
+          title={buttonLabel}
           variant="ghost"
         >
           <Icon name={copied ? "check" : "copy"} />

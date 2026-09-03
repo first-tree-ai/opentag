@@ -26,11 +26,9 @@ import {
 } from "./readiness-lab-fixtures.js";
 import type { MemorySetupAdapter } from "./setup-memory-adapter.js";
 
-const LAB_SCENARIO_OPTIONS = [...LAB_SCENARIOS, ...READINESS_SCENARIOS] as const;
 type LabScenarioOption = LabScenario | ReadinessScenario;
 
-function scenarioLabel(scenario: LabScenarioOption): string {
-  if (isReadinessScenario(scenario)) return READINESS_SCENARIO_LABELS[scenario];
+function scenarioLabel(scenario: LabScenario): string {
   if (scenario === "full-new-computer") return m.onboarding_v2_lab_scenario_full_new_computer();
   if (scenario === "full-existing-computer") return m.onboarding_v2_lab_scenario_full_existing_computer();
   if (scenario === "agent-creation") return m.onboarding_v2_lab_scenario_agent_creation();
@@ -96,7 +94,6 @@ export function AgentSetupLabControls({
   onInventoryChange,
   onJourneyChange,
   onMessagingProviderChange,
-  onOpenChange,
   onReset,
   onRunPending,
   onRuntimeChange,
@@ -118,7 +115,6 @@ export function AgentSetupLabControls({
   readonly onInventoryChange: (inventory: LabInventory) => void;
   readonly onJourneyChange: (journey: LabJourney) => void;
   readonly onMessagingProviderChange: (provider: ImProvider) => void;
-  readonly onOpenChange: (open: boolean) => void;
   readonly onReset: () => void;
   readonly onRunPending: () => void;
   readonly onRuntimeChange: (runtime: AgentRuntimeProvider) => void;
@@ -135,6 +131,7 @@ export function AgentSetupLabControls({
   const failureId = useId();
   const runtimeId = useId();
   const messagingId = useId();
+  const fixtureId = useId();
   const panelId = useId();
   const readinessFixture = isReadinessScenario(scenario);
   const { computerConnectState, snapshot } = memory.inspect();
@@ -146,7 +143,6 @@ export function AgentSetupLabControls({
   function togglePanel(): void {
     const next = !open;
     setOpen(next);
-    onOpenChange(next);
   }
 
   return (
@@ -207,15 +203,49 @@ export function AgentSetupLabControls({
               container={panelRef}
               id={scenarioId}
               onChange={(event) => onScenarioChange(event.target.value as LabScenarioOption)}
-              value={scenario}
+              value={readinessFixture ? "" : scenario}
             >
-              {LAB_SCENARIO_OPTIONS.map((candidate) => (
+              {readinessFixture ? (
+                <option disabled value="">
+                  {m.onboarding_v2_lab_scenario_core_placeholder()}
+                </option>
+              ) : null}
+              {LAB_SCENARIOS.map((candidate) => (
                 <option key={candidate} value={candidate}>
                   {scenarioLabel(candidate)}
                 </option>
               ))}
             </KumoSelectControl>
           </div>
+
+          <Collapsible.Root className="border-t border-kumo-line pt-3" defaultOpen={readinessFixture}>
+            <Collapsible.Trigger
+              render={<Button className="w-full justify-between" size="compact" type="button" variant="ghost" />}
+            >
+              {m.onboarding_v2_lab_component_fixtures()}
+              <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
+            </Collapsible.Trigger>
+            <Collapsible.Panel className="mt-3 grid gap-1">
+              <label className="text-xs text-kumo-subtle" htmlFor={fixtureId}>
+                {m.onboarding_v2_lab_component_fixtures()}
+              </label>
+              <KumoSelectControl
+                container={panelRef}
+                id={fixtureId}
+                onChange={(event) => onScenarioChange(event.target.value as ReadinessScenario)}
+                value={readinessFixture ? scenario : ""}
+              >
+                <option disabled value="">
+                  {m.onboarding_v2_lab_component_fixture_none()}
+                </option>
+                {READINESS_SCENARIOS.map((candidate) => (
+                  <option key={candidate} value={candidate}>
+                    {READINESS_SCENARIO_LABELS[candidate]}
+                  </option>
+                ))}
+              </KumoSelectControl>
+            </Collapsible.Panel>
+          </Collapsible.Root>
 
           <fieldset className="grid gap-2 border-0 p-0 m-0" hidden={readinessFixture}>
             <legend className="text-xs font-medium uppercase text-kumo-subtle">

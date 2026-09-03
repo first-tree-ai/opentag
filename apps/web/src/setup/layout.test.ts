@@ -43,11 +43,20 @@ describe("setup piece layout", () => {
   });
 
   it("keeps the expired-command action legible over its dark scrim", () => {
-    expect(declarationValue(".ots-command__expired button", "color")).toBe("var(--on-dark)");
+    expect(declarationValue(".ots-command__expired button", "color")).toBe("#b8d77d");
     expect(declarationValue(".ots-command__expired button:hover", "background")).toBe(
       "color-mix(in srgb, var(--on-dark) 14%, transparent)",
     );
-    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("var(--on-dark)");
+    expect(declarationValue(".ots-command__expired button:hover", "color")).toBe("#c8e594");
+  });
+
+  it("keeps idle, issuing, issued, failed, and expired states on one measured command surface", () => {
+    expect(declarationValue(".ots-command", "min-width")).toBe("0");
+    expect(declarationValue(".ots-command-lead", "min-width")).toBe("0");
+    expect(declarationValue(".ots-command__body", "height")).toBe("132px");
+    expect(declarationValue(".ots-command__body", "overflow")).toBe("hidden");
+    expect(declarationValue(".ots-command__action", "position")).toBe("absolute");
+    expect(declarationValue(".ots-command__action", "inset")).toBe("0");
   });
 
   /*

@@ -15,7 +15,7 @@
  */
 
 import type { AgentSetupAction, AgentSetupSnapshot, ImProvider } from "@opentag/shared/browser";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
@@ -25,12 +25,12 @@ import {
   createAgentTargetedComputerConnectAdapter,
 } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
-import { formatDateTime, formatRelativeTime, spaceScriptBoundary } from "../i18n/format.js";
+import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
-import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../ui/design-system.js";
+import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import { COPY, RUNTIME_COPY } from "./copy.js";
@@ -602,11 +602,13 @@ function AgentSetupSnapshotView({
   return (
     <>
       <StepRail steps={setupSteps(stage)} />
-      <header className={SECTION_HEADER}>
-        <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
-        </Text>
-      </header>
+      {stage === "needs-computer" || stage === "needs-runtime" ? null : (
+        <header className={SECTION_HEADER}>
+          <Text as="h1" size="lg" variant="heading">
+            {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
+          </Text>
+        </header>
+      )}
       {observationFailed ? (
         <Banner variant="alert" role="alert" description={m.onboarding_v2_setup_observation_failed()} />
       ) : null}
@@ -677,22 +679,13 @@ function ComputerSetupSection({
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-        <header className={SECTION_HEADER}>
-          <Text as="h2" variant="heading">
-            {m.onboarding_v2_connect_title()}
-          </Text>
-        </header>
-        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-            <Icon name="laptop" />
-          </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h3" variant="heading">
-              {computer.displayName}
-            </Text>
-            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-          </div>
-        </div>
+        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_no_computer_status()}
+          title={computer.displayName}
+          tone="neutral"
+        />
         <p className={HINT}>
           {m.onboarding_v2_setup_computer_rebind({
             computerName: computer.displayName,
@@ -713,22 +706,13 @@ function ComputerSetupSection({
   if (computer.kind === "observation-failed") {
     return (
       <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-        <header className={SECTION_HEADER}>
-          <Text as="h2" variant="heading">
-            {m.onboarding_v2_connect_title()}
-          </Text>
-        </header>
-        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-            <Icon name="laptop" />
-          </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h3" variant="heading">
-              {computer.displayName}
-            </Text>
-            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-          </div>
-        </div>
+        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_unconfirmed()}
+          title={computer.displayName}
+          tone="warning"
+        />
       </section>
     );
   }
@@ -739,6 +723,56 @@ function ComputerSetupSection({
       onChanged={onChanged}
       snapshot={snapshot}
     />
+  );
+}
+
+function ComputerStepHeader({ name }: { readonly name: string }) {
+  return (
+    <header className="grid gap-1" data-ui="agent-setup-computer-header">
+      <Text as="h1" size="lg" variant="heading">
+        {m.onboarding_v2_connect_title()}
+      </Text>
+      <p className={HINT}>{m.onboarding_v2_connect_description({ name })}</p>
+      <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0">
+        <span aria-hidden="true" className="text-kumo-brand">
+          <Icon name="shield" />
+        </span>
+        {m.onboarding_v2_connect_privacy()}
+      </p>
+    </header>
+  );
+}
+
+function ComputerSummary({
+  metadata,
+  status,
+  title,
+  tone,
+}: {
+  readonly metadata?: string;
+  readonly status: string;
+  readonly title: string;
+  readonly tone: StatusTone;
+}) {
+  return (
+    <div
+      className="otv2-computer-summary grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-y border-kumo-line py-2"
+      data-ui="agent-setup-computer-summary"
+    >
+      <span
+        aria-hidden="true"
+        className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint text-kumo-brand"
+      >
+        <Icon name="laptop" />
+      </span>
+      <span className="flex min-w-0 items-baseline gap-x-1.5 overflow-hidden">
+        <strong className="truncate text-sm font-medium text-kumo-strong" title={title}>
+          {title}
+        </strong>
+        {metadata ? <span className="shrink-0 text-sm text-kumo-subtle">{metadata}</span> : null}
+      </span>
+      <StatusIndicator className="justify-self-end" label={status} tone={tone} />
+    </div>
   );
 }
 
@@ -760,12 +794,12 @@ function NotBoundComputerSection({
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
   return (
     <section className={SECTION} data-state="not-bound" data-ui="agent-setup-computer">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_connect_title()}
-        </Text>
-        <p className={HINT}>{m.onboarding_v2_setup_computer_none({ name })}</p>
-      </header>
+      <ComputerStepHeader name={name} />
+      <ComputerSummary
+        status={m.onboarding_v2_connect_no_computer_status()}
+        title={m.onboarding_v2_connect_no_computer_title()}
+        tone="neutral"
+      />
       {/*
        * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
        * does it — including the choice when the Account genuinely has one to make.
@@ -793,7 +827,6 @@ function BoundComputerSection({
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
-  const [repairing, setRepairing] = useState(false);
   const repair = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "repair-computer" }> =>
       action.kind === "repair-computer" && action.computerId === computer.computerId,
@@ -801,62 +834,146 @@ function BoundComputerSection({
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
     <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_connect_title()}
-        </Text>
-      </header>
-      <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-        <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-          <Icon name="laptop" />
-        </span>
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-          <Text as="h3" variant="heading">
-            {computer.displayName}
-          </Text>
-          <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-        </div>
-        <StatusIndicator
-          className="justify-self-end"
-          label={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
-          tone={offline ? "warning" : "success"}
-        />
-      </div>
-      <div className="grid gap-1">
-        <p className={HINT}>{m.onboarding_v2_connect_offline_for({ computerName: computer.displayName })}</p>
-        {computer.lastSeenAt ? (
-          <p className={HINT}>
-            {m.onboarding_v2_connect_offline_last_seen({ when: formatRelativeTime(computer.lastSeenAt) })}
-          </p>
-        ) : null}
-      </div>
+      <ComputerStepHeader name={snapshot.agent.displayName} />
+      <ComputerSummary
+        metadata={platformLabel(computer.platform)}
+        status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+        title={computer.displayName}
+        tone={offline ? "warning" : "success"}
+      />
       {repair ? (
-        <div className="grid gap-3">
-          <Button
-            aria-controls="agent-setup-repair-command"
-            aria-expanded={repairing}
-            className="w-fit"
-            onClick={() => setRepairing((current) => !current)}
-            size="compact"
-            variant="inline"
-          >
-            {repairing ? m.onboarding_v2_connect_hide_repair() : m.onboarding_v2_connect_generate_repair()}
-          </Button>
-          {repairing ? (
-            <div id="agent-setup-repair-command">
-              <ComputerConnect
-                adapter={computerConnectAdapter}
-                intent={{
-                  mode: "repair",
-                  target: { computerId: repair.computerId, displayName: computer.displayName },
-                }}
-                onConnected={onChanged}
-              />
-            </div>
-          ) : null}
-        </div>
+        <ComputerConnect
+          adapter={computerConnectAdapter}
+          intent={{
+            mode: "repair",
+            target: { computerId: repair.computerId, displayName: computer.displayName },
+          }}
+          onConnected={onChanged}
+        />
       ) : null}
     </section>
+  );
+}
+
+type RuntimeReadinessVisualState = "waiting" | "checking" | "ready" | "action-required";
+
+interface RuntimeReadinessRow {
+  readonly detail: ReactNode;
+  readonly label: string;
+  readonly state: RuntimeReadinessVisualState;
+  readonly status: string;
+}
+
+function runtimeRepairDetail(primary: string): ReactNode {
+  return (
+    <>
+      {primary} {m.onboarding_v2_check_repair_hint()}{" "}
+      <code className="rounded bg-kumo-recessed px-1 py-0.5">{COPY.check.repairCommand}</code>{" "}
+      {m.onboarding_v2_check_repair_hint_suffix()}
+    </>
+  );
+}
+
+function runtimeReadinessRows(status: string, runtime: string, computerName: string): readonly RuntimeReadinessRow[] {
+  const cliLabel = m.onboarding_v2_runtime_cli_label({ runtime });
+  const signInLabel = m.onboarding_v2_runtime_sign_in_label({ runtime });
+  const waitingSignIn: RuntimeReadinessRow = {
+    detail: m.onboarding_v2_runtime_sign_in_waiting(),
+    label: signInLabel,
+    state: "waiting",
+    status: m.onboarding_v2_runtime_readiness_waiting(),
+  };
+  if (status === "checking") {
+    return [
+      {
+        detail: m.onboarding_v2_setup_runtime_checking({ computerName, runtime }),
+        label: cliLabel,
+        state: "checking",
+        status: m.onboarding_v2_runtime_readiness_checking(),
+      },
+      waitingSignIn,
+    ];
+  }
+  if (status === "install") {
+    return [
+      {
+        detail: runtimeRepairDetail(m.onboarding_v2_setup_runtime_install({ computerName, runtime })),
+        label: cliLabel,
+        state: "action-required",
+        status: m.onboarding_v2_runtime_readiness_install(),
+      },
+      waitingSignIn,
+    ];
+  }
+  if (status === "sign-in") {
+    return [
+      {
+        detail: m.onboarding_v2_runtime_cli_installed({ computerName }),
+        label: cliLabel,
+        state: "ready",
+        status: m.onboarding_v2_runtime_readiness_ready(),
+      },
+      {
+        detail: m.onboarding_v2_setup_runtime_sign_in({ computerName, runtime }),
+        label: signInLabel,
+        state: "action-required",
+        status: m.onboarding_v2_runtime_readiness_sign_in(),
+      },
+    ];
+  }
+  if (status === "ready") {
+    return [
+      {
+        detail: m.onboarding_v2_runtime_cli_installed({ computerName }),
+        label: cliLabel,
+        state: "ready",
+        status: m.onboarding_v2_runtime_readiness_ready(),
+      },
+      {
+        detail: m.onboarding_v2_runtime_readiness_ready(),
+        label: signInLabel,
+        state: "ready",
+        status: m.onboarding_v2_runtime_readiness_ready(),
+      },
+    ];
+  }
+  return [
+    {
+      detail: runtimeRepairDetail(m.onboarding_v2_setup_runtime_unavailable({ computerName, runtime })),
+      label: cliLabel,
+      state: "action-required",
+      status: m.onboarding_v2_runtime_readiness_action_required(),
+    },
+    waitingSignIn,
+  ];
+}
+
+function RuntimeReadinessList({ rows }: { readonly rows: readonly RuntimeReadinessRow[] }) {
+  return (
+    <ol
+      aria-label={m.onboarding_v2_runtime_readiness_label()}
+      className="otv2-runtime-readiness m-0 p-0 list-none rounded-xl bg-kumo-base ring ring-kumo-line overflow-hidden"
+      data-ui="agent-setup-runtime-readiness"
+    >
+      {rows.map((row, index) => (
+        <li
+          className="otv2-runtime-readiness__row grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3 border-t border-kumo-line p-3 first:border-t-0"
+          data-state={row.state}
+          key={row.label}
+        >
+          <span aria-hidden="true" className="otv2-runtime-readiness__marker">
+            {row.state === "ready" ? <Icon name="check" /> : index + 1}
+          </span>
+          <span className="grid min-w-0 gap-1">
+            <span className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+              <strong className="font-medium text-kumo-strong">{row.label}</strong>
+              <span className="text-sm text-kumo-subtle">{row.status}</span>
+            </span>
+            <span className="text-sm text-kumo-subtle">{row.detail}</span>
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 
@@ -867,35 +984,18 @@ function RuntimeSetupSection({ snapshot }: { readonly snapshot: AgentSetupSnapsh
   const status = runtime.kind === "observed" ? runtime.status : "unavailable";
   return (
     <section className={SECTION} data-state={status} data-ui="agent-setup-runtime">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_setup_runtime_title({ runtime: runtimeTitle })}
-        </Text>
-      </header>
-      {status === "checking" ? (
-        <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
-          {m.onboarding_v2_setup_runtime_checking({ computerName, runtime: runtimeTitle })}
-        </p>
-      ) : (
-        <div className="grid gap-1">
-          <p className="text-sm text-kumo-strong m-0">{runtimeBlockerCopy(status, runtimeTitle, computerName)}</p>
-          <p className={HINT}>
-            {m.onboarding_v2_check_repair_hint()}{" "}
-            <code className="rounded bg-kumo-recessed px-1 py-0.5">{COPY.check.repairCommand}</code>{" "}
-            {m.onboarding_v2_check_repair_hint_suffix()}
-          </p>
-        </div>
+      <ComputerStepHeader name={snapshot.agent.displayName} />
+      {computer.kind === "not-bound" ? null : (
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_online()}
+          title={computer.displayName}
+          tone="success"
+        />
       )}
+      <RuntimeReadinessList rows={runtimeReadinessRows(status, runtimeTitle, computerName)} />
     </section>
   );
-}
-
-function runtimeBlockerCopy(status: string, runtime: string, computerName: string): string {
-  if (status === "install") return m.onboarding_v2_setup_runtime_install({ computerName, runtime });
-  if (status === "sign-in") return m.onboarding_v2_setup_runtime_sign_in({ computerName, runtime });
-  // `ready` never reaches this section: the stage would have moved past it.
-  return m.onboarding_v2_setup_runtime_unavailable({ computerName, runtime });
 }
 
 function MessagingSetupSection({

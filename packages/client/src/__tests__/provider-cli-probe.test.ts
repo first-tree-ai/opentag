@@ -1,5 +1,9 @@
 import { access } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Real child-process probes need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { probeProviderCliExecutable, requireProviderCliCatalogEntry } from "../index.js";
 
 describe("probeProviderCliExecutable", () => {

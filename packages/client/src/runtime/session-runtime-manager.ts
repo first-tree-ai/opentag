@@ -6,12 +6,16 @@ import type {
   SessionReconcileRequest,
 } from "@opentag/shared";
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import { createLogger } from "../observability/logger.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
+import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
 import type { LocalSessionBinding, SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
 import type { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
+
+const logger = createLogger("runtime-session-manager");
 
 interface ManagedSessionRuntime {
   readonly agentId: string;
@@ -45,6 +49,7 @@ export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
+  readonly contextTree?: Pick<ContextTreeManager, "ensureAgent">;
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
   readonly home?: string;
@@ -66,6 +71,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #bindingStore: SessionBindingStore;
   readonly #cliCommand: string;
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
+  readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
   readonly #home: string;
@@ -86,6 +92,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#bindingStore = options.bindingStore;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
+    if (options.contextTree) this.#contextTree = options.contextTree;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
     this.#home = options.home ?? "";
@@ -130,7 +137,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#assertOpen();
     const operation = this.#prepareSession(request, hashes);
     this.#prepares.add(operation);
-    void operation.finally(() => this.#prepares.delete(operation)).catch(() => undefined);
+    void operation
+      .finally(() => this.#prepares.delete(operation))
+      .catch((error: unknown) => {
+        logger.debug({ code: "session_prepare_failed", error: String(error) }, "Session preparation failed");
+      });
     return operation;
   }
 
@@ -169,6 +180,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       try {
         await this.#closeManaged(current);
       } catch (error) {
+        logger.debug(
+          { code: "managed_runtime_close_failed", error: String(error) },
+          "Managed Session Runtime close failed",
+        );
         /* v8 ignore else -- close failures outside shutdown propagate without being collected. */
         if (this.#closing) this.#closeFailures.push(error);
         throw error;
@@ -210,7 +225,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     });
     managed.start = start;
     this.#starts.add(start);
-    void start.catch(() => undefined);
+    void start.catch((error: unknown) => {
+      logger.debug({ code: "runtime_start_failed", error: String(error) }, "Session Runtime start failed");
+    });
     return waitForStart(start, signal);
   }
 
@@ -241,6 +258,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       }
       await managed.eventSink?.(event);
     };
+    // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`
+    // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
+    // caches per workspace, revalidates that entry against the Computer's recorded target, and
+    // never throws, so a failure only changes what the prompt reports.
+    const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -249,6 +271,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         ...(managed.creatorSessionId ? { creatorSessionId: managed.creatorSessionId } : {}),
         cliCommand: this.#cliCommand,
         sessionCliAvailable: Boolean(managed.proofPath),
+        ...contextTree.promptContext,
       }),
       workspace: {
         cwd: managed.cwd,
@@ -262,12 +285,15 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
               }
             : {}),
         },
-        writableRoots: visibleSlackWritableRoots(
-          managed.sessionKind,
-          managed.cwd,
-          managed.binding.sessionId,
-          this.#slackConfigWritableRoot,
-        ),
+        writableRoots: [
+          ...visibleSlackWritableRoots(
+            managed.sessionKind,
+            managed.cwd,
+            managed.binding.sessionId,
+            this.#slackConfigWritableRoot,
+          ),
+          ...contextTree.writableRoots,
+        ],
       },
       policy: provider.policy(managed.snapshot),
       configuration: {
@@ -286,6 +312,14 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             ? await provider.factory.resume({ ...common, binding: runtimeBinding })
             : await provider.factory.create(common);
       } catch (error) {
+        logger.debug(
+          {
+            code: "provider_start_failed",
+            providerId: managed.providerId,
+            error: String(error),
+          },
+          "Session provider Runtime start failed",
+        );
         throw new ClientRuntimeProviderStartError(managed.providerId, { cause: error });
       }
       this.#assertOpen();
@@ -312,6 +346,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         try {
           await runtime.close();
         } catch (closeError) {
+          logger.debug(
+            { code: "runtime_cleanup_failed", error: String(closeError) },
+            "Session Runtime cleanup after start failure failed",
+          );
           if (this.#closing) this.#closeFailures.push(closeError);
           else throw new AggregateError([error, closeError], "Agent Runtime creation and cleanup both failed");
         }
@@ -395,7 +433,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   async #closeManaged(managed: ManagedSessionRuntime): Promise<void> {
     const start = managed.start;
-    if (start) await start.catch(() => undefined);
+    if (start)
+      await start.catch((error: unknown) => {
+        logger.debug(
+          { code: "pending_runtime_start_failed", error: String(error) },
+          "Pending Session Runtime start failed",
+        );
+      });
     if (!managed.runtime || managed.runtime.state.phase === "closed") return;
     await managed.runtime.close();
     managed.runtime = undefined;
@@ -419,6 +463,25 @@ function visibleProviderCliPath(
     return { PATH: inheritedPath };
   }
   return { PATH: `${launchPath}${pathDelimiter}${inheritedPath}` };
+}
+
+/**
+ * Resolve Context Tree for one Agent Workspace into the two things a Provider Runtime needs.
+ *
+ * The shared tree lives outside the Workspace, so a workspace-write Provider such as Codex cannot
+ * write to it unless it is named as a writable root. Optional memory: an absent or unavailable
+ * tree yields no roots and only changes what the prompt reports.
+ */
+async function prepareContextTree(
+  manager: Pick<ContextTreeManager, "ensureAgent"> | undefined,
+  cwd: string,
+): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
+  const status = await manager?.ensureAgent(cwd);
+  if (!status) return { promptContext: {}, writableRoots: [] };
+  return {
+    promptContext: { contextTree: status },
+    writableRoots: status.status === "ready" ? [status.treePath] : [],
+  };
 }
 
 function visibleSlackWritableRoots(

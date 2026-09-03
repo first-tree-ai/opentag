@@ -269,7 +269,7 @@ describe("manual upgrade", () => {
     const home = await tempHome();
     const installed: string[] = [];
     const fetchFn = (async (url: string | URL | Request) => {
-      expect(String(url)).toBe("https://download.opentag.build/releases/staging/latest.json");
+      expect(String(url)).toBe("https://storage.googleapis.com/opentag-release/releases/staging/latest.json");
       return jsonResponse({ channel: "staging", version: "0.0.3-staging.1.1" });
     }) as typeof fetch;
     const result = await runUpgrade({

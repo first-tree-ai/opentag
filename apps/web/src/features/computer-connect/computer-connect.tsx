@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
-import { Banner, Button, Loader, StatusIndicator } from "../../ui/design-system.js";
+import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 /**
@@ -48,6 +48,7 @@ interface RedeemedComputerConnectCommand {
 }
 
 export type ComputerConnectState =
+  | { readonly kind: "idle" }
   | { readonly kind: "issuing" }
   | { readonly kind: "issue-failed" }
   | { readonly kind: "issued"; readonly issued: IssuedComputerConnectCommand }
@@ -65,7 +66,7 @@ export type ComputerConnectState =
 
 export interface ComputerConnectLifecycle {
   readonly error: string | undefined;
-  readonly reissue: () => void;
+  readonly issue: () => void;
   readonly state: ComputerConnectState;
 }
 
@@ -267,7 +268,9 @@ function ComputerConnectAttempt({
   readonly onConnected?: (computer: AccountComputerSummary) => void;
 }) {
   const targetComputerId = intent.mode === "repair" ? intent.target.computerId : undefined;
-  const [state, setState] = useState<ComputerConnectState>({ kind: "issuing" });
+  const [state, setState] = useState<ComputerConnectState>(() =>
+    intent.mode === "create" ? { kind: "issuing" } : { kind: "idle" },
+  );
   const [error, setError] = useState<string>();
   const mounted = useRef(false);
   const started = useRef(false);
@@ -305,14 +308,14 @@ function ComputerConnectAttempt({
     mounted.current = true;
     // React Strict Mode replays the effect while preserving this ref. One mount is one Server-side
     // attempt, even in development; the replay only restores the mounted flag after its cleanup.
-    if (!started.current) {
+    if (!started.current && intent.mode === "create") {
       started.current = true;
       void issue();
     }
     return () => {
       mounted.current = false;
     };
-  }, [issue]);
+  }, [issue, intent.mode]);
 
   useEffect(() => {
     if (state.kind !== "issued" && state.kind !== "redeemed") return;
@@ -375,7 +378,7 @@ function ComputerConnectAttempt({
     };
   }, [adapter, state, targetComputerId]);
 
-  return children({ error, reissue: () => void issue(), state });
+  return children({ error, issue: () => void issue(), state });
 }
 
 function ComputerConnectPresentation({
@@ -385,72 +388,125 @@ function ComputerConnectPresentation({
   readonly intent: ComputerConnectIntent;
   readonly lifecycle: ComputerConnectLifecycle;
 }) {
-  const { error, reissue, state } = lifecycle;
+  const { error, issue, state } = lifecycle;
   const targetName = intent.mode === "repair" ? intent.target.displayName : undefined;
-
-  if (state.kind === "issue-failed") {
-    return (
-      <div className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
-        {error ? <Banner variant="error" role="alert" description={error} /> : null}
-        <Button className="w-fit" onClick={reissue}>
-          {m.computer_connect_retry_issue()}
-        </Button>
-      </div>
-    );
-  }
 
   const comment = targetName
     ? m.computer_connect_repair_command_comment({ computerName: targetName })
     : m.computer_connect_create_command_comment();
+  const intro =
+    state.kind === "idle" && targetName
+      ? m.computer_connect_repair_intro({ computerName: targetName })
+      : m.computer_connect_command_intro();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
       <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">
-        <p className="text-sm text-kumo-subtle m-0">{m.computer_connect_command_intro()}</p>
+        <p className="text-sm text-kumo-subtle m-0">{intro}</p>
         <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
           {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
         </div>
       </div>
-      {state.kind === "issuing" ? (
-        <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">
-          <CommandBlock
-            command={COMPUTER_CONNECT_COMMAND_PLACEHOLDER}
-            comment={comment}
-            copiedLabel={m.computer_connect_copied()}
-            copyLabel={m.computer_connect_copy()}
-            fallbackHint={m.computer_connect_copy_fallback()}
-            inert
-          />
-        </div>
-      ) : (
-        <CommandBlock
-          key={state.issued.command}
-          command={state.issued.command}
-          comment={comment}
-          copiedLabel={m.computer_connect_copied()}
-          copyLabel={m.computer_connect_copy()}
-          expiredNotice={
-            state.kind === "expired" ? (
-              <>
-                <span>{m.computer_connect_expired()}</span>
-                <Button size="compact" variant="inline" onClick={reissue}>
-                  {m.computer_connect_reissue()}
-                </Button>
-              </>
-            ) : undefined
-          }
-          fallbackHint={m.computer_connect_copy_fallback()}
-          inert={state.kind === "redeemed"}
-        />
-      )}
-      <AttemptStatus state={state} targetName={targetName} />
-      {error ? <Banner variant="error" role="alert" description={error} /> : null}
+      <ConnectCommandSurface comment={comment} error={error} issue={issue} state={state} />
+      <AttemptStatus
+        error={state.kind === "issue-failed" || state.kind === "expired" ? undefined : error}
+        state={state}
+        targetName={targetName}
+      />
     </div>
   );
 }
 
-function AttemptStatus({ state, targetName }: { readonly state: ComputerConnectState; readonly targetName?: string }) {
-  let content = null;
+function ConnectCommandSurface({
+  comment,
+  error,
+  issue,
+  state,
+}: {
+  readonly comment: string;
+  readonly error?: string;
+  readonly issue: () => void;
+  readonly state: ComputerConnectState;
+}) {
+  const labels = {
+    copiedLabel: m.computer_connect_copied(),
+    copyLabel: m.computer_connect_copy(),
+    fallbackHint: m.computer_connect_copy_fallback(),
+  };
+  if (state.kind === "idle") {
+    return (
+      <CommandBlock
+        {...labels}
+        actionNotice={
+          <>
+            <span>{m.computer_connect_repair_prompt()}</span>
+            <Button size="compact" variant="inline" onClick={issue}>
+              {m.computer_connect_repair_action()}
+            </Button>
+          </>
+        }
+      />
+    );
+  }
+  if (state.kind === "issue-failed") {
+    return (
+      <CommandBlock
+        {...labels}
+        actionNotice={
+          <>
+            <span role="alert">{error ?? m.computer_connect_issue_failed()}</span>
+            <Button size="compact" variant="inline" onClick={issue}>
+              {m.computer_connect_retry_issue()}
+            </Button>
+          </>
+        }
+      />
+    );
+  }
   if (state.kind === "issuing") {
+    return (
+      <div aria-hidden="true" className="ots-command-pending" data-ui="computer-connect-command-skeleton">
+        <CommandBlock {...labels} command={COMPUTER_CONNECT_COMMAND_PLACEHOLDER} comment={comment} inert />
+      </div>
+    );
+  }
+  const expiredNotice =
+    state.kind === "expired" ? (
+      <>
+        {error ? <span role="alert">{error}</span> : <span>{m.computer_connect_expired()}</span>}
+        <Button size="compact" variant="inline" onClick={issue}>
+          {error ? m.computer_connect_retry_issue() : m.computer_connect_reissue()}
+        </Button>
+      </>
+    ) : undefined;
+  return (
+    <CommandBlock
+      {...labels}
+      key={state.issued.command}
+      command={state.issued.command}
+      comment={comment}
+      expiredNotice={expiredNotice}
+      inert={state.kind === "redeemed"}
+    />
+  );
+}
+
+function AttemptStatus({
+  error,
+  state,
+  targetName,
+}: {
+  readonly error?: string;
+  readonly state: ComputerConnectState;
+  readonly targetName?: string;
+}) {
+  let content = null;
+  if (error) {
+    content = (
+      <span className="text-kumo-danger" role="alert">
+        {error}
+      </span>
+    );
+  } else if (state.kind === "issuing") {
     content = (
       <p className="flex items-center gap-2 text-kumo-subtle">
         <span aria-hidden="true">

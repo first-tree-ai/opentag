@@ -39,16 +39,31 @@ const snapshot = {
     lastSeenAt: observedAt,
     imCliReadiness: [
       { provider: "feishu", status: "ready", observedAt },
-      { provider: "slack", status: "checking", observedAt: null },
+      { provider: "slack", status: "ready", observedAt },
     ],
     observedAt,
   },
   runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
   messaging: { kind: "not-configured" },
+  requiredImCliProviders: ["feishu", "slack"],
+  components: [
+    {
+      kind: "computer",
+      status: "online",
+      blocking: false,
+      computerId,
+      displayName: "Laptop",
+      platform: "linux",
+      observedAt,
+    },
+    { kind: "runtime", status: "ready", blocking: false, provider: "codex", observedAt },
+    { kind: "im-cli", status: "ready", blocking: false, provider: "feishu", observedAt },
+    { kind: "im-cli", status: "ready", blocking: false, provider: "slack", observedAt },
+  ],
   blockers: [{ code: "messaging-not-configured" }],
   actions: [
-    { kind: "start-messaging", provider: "feishu" },
     { kind: "start-messaging", provider: "slack" },
+    { kind: "start-messaging", provider: "feishu" },
   ],
   observedAt,
 };

@@ -9,7 +9,7 @@ set -eu
 # pinned to the channel they belong to.
 
 PORTABLE_CHANNEL="${OPENTAG_PORTABLE_CHANNEL:-prod}"
-DOWNLOAD_BASE_URL="${OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https://download.opentag.build/releases}"
+DOWNLOAD_BASE_URL="${OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https://storage.googleapis.com/opentag-release/releases}"
 DEFAULT_PREFIX="${HOME}/.local/share/opentag/${PORTABLE_CHANNEL}"
 DEFAULT_BIN_DIR="${HOME}/.local/bin"
 PATH_MODE="auto"

@@ -520,7 +520,7 @@ describe("Agent CLI core", () => {
     expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
     expect(connect?.description()).toBe(
-      "Connect this Computer and, for targeted onboarding, prepare the Lark and Slack CLIs",
+      "Connect this Computer, check the selected Runtime, and prepare Lark and Slack CLIs",
     );
     expect(bind?.description()).toBe("Bind an Agent to a Computer owned by this Account");
     expect(bind?.options.map((option) => option.long)).toEqual(expect.arrayContaining(["--computer"]));

@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { access, lstat, open, realpath } from "node:fs/promises";
 import { delimiter, isAbsolute, join, sep } from "node:path";
 import semver from "semver";
+import { createLogger } from "../../observability/logger.js";
 import { protectedRoots, resolveOutsideProtectedRoots } from "../protected-paths.js";
 import {
   type ProviderCliAccountLayout,
@@ -69,6 +70,7 @@ export interface ProviderCliDetectOptions {
 const PATH_ENTRY_LIMIT = 256;
 const CANDIDATE_PROBE_LIMIT = 16;
 const EXECUTABLE_HEADER_BYTES = 64;
+const logger = createLogger("runtime-provider-cli-detector");
 
 async function canonicalSafeDirectory(
   entry: string,
@@ -80,7 +82,10 @@ async function canonicalSafeDirectory(
   const protectedRootList = protectedRoots(platform, accountHome);
   const canonical = resolveOutsideProtectedRoots(entry, protectedRootList);
   if (canonical === null) return { reason: "protected-path-entry" };
-  const status = await lstat(canonical).catch(() => undefined);
+  const status = await lstat(canonical).catch((error: unknown) => {
+    logger.debug({ code: "path_entry_stat_failed", error: String(error) }, "Provider CLI PATH entry stat failed");
+    return undefined;
+  });
   if (!status) return { reason: "unreadable-path-entry" };
   if (!status.isDirectory() || status.isSymbolicLink()) return { reason: "non-directory-path-entry" };
   if ((status.mode & 0o002) !== 0) return { reason: "world-writable-path-entry" };
@@ -117,13 +122,22 @@ async function assessCandidatePath(
   digests: ReadonlySet<string>,
   managedDigest?: string,
 ): Promise<AssessedCandidate | { reason: string; version?: string }> {
-  const status = await lstat(canonical).catch(() => undefined);
+  const status = await lstat(canonical).catch((error: unknown) => {
+    logger.debug({ code: "candidate_stat_failed", error: String(error) }, "Provider CLI candidate stat failed");
+    return undefined;
+  });
   if (!status) return { reason: "not-found" };
   if (!status.isFile() || status.isSymbolicLink()) return { reason: "not-regular-file" };
   if ((status.mode & 0o111) === 0) return { reason: "not-executable" };
   if ((status.mode & 0o002) !== 0) return { reason: "world-writable" };
 
-  const header = await readExecutableHeader(canonical).catch(() => undefined);
+  const header = await readExecutableHeader(canonical).catch((error: unknown) => {
+    logger.debug(
+      { code: "candidate_header_read_failed", error: String(error) },
+      "Provider CLI candidate header read failed",
+    );
+    return undefined;
+  });
   if (!header) return { reason: "unreadable" };
   const format = inspectExecutableFormat(header);
   if (format.kind === "unknown") return { reason: "unrecognized-format" };
@@ -131,7 +145,10 @@ async function assessCandidatePath(
     return { reason: "wrong-platform-architecture" };
   }
 
-  const identity = await computeFileIdentity(canonical).catch(() => undefined);
+  const identity = await computeFileIdentity(canonical).catch((error: unknown) => {
+    logger.debug({ code: "candidate_identity_failed", error: String(error) }, "Provider CLI candidate identity failed");
+    return undefined;
+  });
   if (!identity) return { reason: "not-found" };
   const probed = await probeProviderCliExecutable(canonical, options.entry, {
     execFile,
@@ -173,13 +190,29 @@ export async function detectProviderCliCandidates(options: ProviderCliDetectOpti
   let probedCandidateCount = 0;
 
   const launcherPath = providerCliLauncherPath(options.layout, options.entry.command);
-  const launcherCanonical = await realpath(launcherPath).catch(() => undefined);
+  const launcherCanonical = await realpath(launcherPath).catch((error: unknown) => {
+    logger.debug(
+      { code: "launcher_realpath_failed", error: String(error) },
+      "Provider CLI launcher canonicalization failed",
+    );
+    return undefined;
+  });
   // PATH candidates are canonicalized by realpath; the account root and protected
   // roots must be canonical too, or symlinked prefixes (e.g. /var on macOS) never match.
-  const accountHome = await realpath(options.layout.accountHome).catch(() => options.layout.accountHome);
-  const layoutRoot = await realpath(options.layout.root).catch(
-    () => resolveProviderCliAccountLayout(accountHome, options.platform).root,
-  );
+  const accountHome = await realpath(options.layout.accountHome).catch((error: unknown) => {
+    logger.debug(
+      { code: "account_home_realpath_failed", error: String(error) },
+      "Provider CLI account home canonicalization failed",
+    );
+    return options.layout.accountHome;
+  });
+  const layoutRoot = await realpath(options.layout.root).catch((error: unknown) => {
+    logger.debug(
+      { code: "layout_root_realpath_failed", error: String(error) },
+      "Provider CLI layout root canonicalization failed",
+    );
+    return resolveProviderCliAccountLayout(accountHome, options.platform).root;
+  });
 
   // --- PATH scan (skipped entirely in managed-only mode). ---
   if (options.mode === "auto") {
@@ -202,7 +235,11 @@ export async function detectProviderCliCandidates(options: ProviderCliDetectOpti
       try {
         await access(candidatePath, constants.X_OK);
         canonical = await realpath(candidatePath);
-      } catch {
+      } catch (error) {
+        logger.debug(
+          { code: "path_candidate_resolution_failed", error: String(error) },
+          "Provider CLI PATH candidate resolution failed",
+        );
         continue; // A directory without this command contributes nothing.
       }
       if (seenCanonical.has(canonical)) {
@@ -339,7 +376,13 @@ export function rankProviderCliCandidates(candidates: readonly ProviderCliCandid
  * persistence. A changed candidate is rejected so the caller can rank again.
  */
 export async function verifyProviderCliCandidateFingerprint(candidate: ProviderCliCandidate): Promise<boolean> {
-  const identity = await computeFileIdentity(candidate.path).catch(() => undefined);
+  const identity = await computeFileIdentity(candidate.path).catch((error: unknown) => {
+    logger.debug(
+      { code: "candidate_identity_failed", error: String(error) },
+      "Provider CLI candidate identity failed during fingerprint verification",
+    );
+    return undefined;
+  });
   if (!identity || identity.path !== candidate.path) return false;
   const fingerprint = computeTargetFingerprint(identity, candidate.version, candidate.managedDigest);
   return fingerprint === candidate.fingerprint;

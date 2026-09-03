@@ -1,0 +1,1923 @@
+{
+  "schema": "onboarding-preparation-contract/1",
+  "description": "Cross-layer onboarding preparation contract matrix (F6). One scenario describes one instant of one Agent setup world and carries: the selected Runtime identity, the local (CLI) facts and verdict an executing Agent consumes, independent Server observation facts with the canonical stage projection, a canonical exact-Agent snapshot fixture, and the Web presentation expectations. CLI, Server, and Web tests live in different packages and each consume only this file plus their own public boundary; nobody imports another package's internals.",
+  "canonicalClock": {
+    "now": "2026-09-01T10:00:00.000Z",
+    "freshObservationOffsetMs": -5000,
+    "runtimeAndCliReportFreshAt": "2026-09-01T09:59:55.000Z",
+    "expiredObservationOffsetMs": -120000
+  },
+  "identities": {
+    "agentId": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+    "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+    "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+    "messagingBindingId": "22222222-2222-4222-8222-222222222222",
+    "runtimeProviders": ["codex", "claude-code"],
+    "runtimeLabels": { "codex": "Codex", "claude-code": "Claude Code" },
+    "requiredImCliProviders": ["feishu", "slack"]
+  },
+  "localComponentIds": ["computer", "runtime", "im-cli:lark", "im-cli:slack"],
+  "presentationLimitations": [
+    {
+      "id": "missing-vs-expired",
+      "description": "The Server drops an expired readiness report at its TTL and exposes the leg as waiting with no old timestamp; an observation that never arrived is exposed identically. The Web cannot distinguish 'never arrived' from 'expired' and must not fabricate stale/expired evidence: both facts project to fail-closed waiting rows (never permanent checking, never a stale claim). This matrix records the limitation explicitly and pins the identical fail-closed projections from both server facts (scenarios no-fresh-observation and expired-observation); no schema extension is made to carry expiry client-side.",
+      "assertion": "waiting, not checking; identical canonical snapshot from both facts"
+    },
+    {
+      "id": "local-ready-does-not-authorize-server",
+      "description": "A CLI local result is local authority only. It never writes a Server stage, never claims Server readiness, and never reuses the consumed connect code. Messaging starts only when fresh daemon observations make the Server snapshot gate pass; scenarios no-fresh-observation and expired-observation carry localReady=true with a Server snapshot that is still gated.",
+      "assertion": "connected=true plus exit code and guidance carry the local verdict; the Web gate stays closed until fresh reports"
+    },
+    {
+      "id": "no-implicit-runtime-install",
+      "description": "OpenTag never installs a Runtime CLI. A missing/login/config-failed Runtime always surfaces as an explicit human instruction plus an idempotent read-only runtime-inspect verify command, never as an install/repair command of its own.",
+      "assertion": "instruction, never a Runtime repair command"
+    },
+    {
+      "id": "checking-is-an-observation",
+      "description": "checking is a real observation (a report or a cross-process ensure ownership), never a default: a missing or expired report is waiting. install is installation required, never a claim that installation is in progress.",
+      "assertion": "waiting rows never render Checking/Installing"
+    }
+  ],
+  "coverage": {
+    "success": ["success-codex", "success-claude-code"],
+    "runtime-missing": ["runtime-missing-codex"],
+    "runtime-login-failure": ["runtime-signin-codex"],
+    "runtime-config-failure": ["runtime-config-claude-code"],
+    "single-lark-failure": ["lark-cli-failure"],
+    "single-slack-failure": ["slack-cli-failure"],
+    "manual-repair": ["manual-repair-slack"],
+    "non-blocking-warning": ["warning-non-blocking"],
+    "checking-ownership": ["checking-ownership"],
+    "no-fresh-observation": ["no-fresh-observation"],
+    "expired-observation": ["expired-observation"],
+    "daemon-skipped": ["daemon-skipped"],
+    "messaging-underway-unselected-provider": ["messaging-underway-slack"],
+    "crossLayerGatingLocalReadyServerWaiting": ["no-fresh-observation", "expired-observation"]
+  },
+  "scenarios": [
+    {
+      "id": "success-codex",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "Return to the Web app. Messaging may start only when fresh daemon observations report the Computer, the Codex runtime, and both messaging CLIs ready.",
+            "serverStageStillRequired": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": { "stage": "needs-messaging", "blockingComponents": [] }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-messaging",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "messaging-not-configured" }],
+        "actions": [
+          { "kind": "start-messaging", "provider": "slack" },
+          { "kind": "start-messaging", "provider": "feishu" }
+        ],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": false,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "success-claude-code",
+      "runtimeProvider": "claude-code",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "2.1.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:claude-code", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "Return to the Web app. Messaging may start only when fresh daemon observations report the Computer, the Claude Code runtime, and both messaging CLIs ready.",
+            "serverStageStillRequired": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": { "stage": "needs-messaging", "blockingComponents": [] }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "claude-code",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-messaging",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "claude-code",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "claude-code",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "messaging-not-configured" }],
+        "actions": [
+          { "kind": "start-messaging", "provider": "slack" },
+          { "kind": "start-messaging", "provider": "feishu" }
+        ],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": false,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Claude Code ready" },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "runtime-missing-codex",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "artifact_missing" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "install_required", "blocking": true },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "manual-runtime-install",
+            "instruction": "Install and sign in to the Codex CLI yourself (OpenTag never installs Runtime CLIs), then run the verify command.",
+            "verifyCommandTail": "computer runtime-inspect --provider codex",
+            "repairCommandAbsent": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "install", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-runtime",
+          "blockingComponents": ["runtime"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-runtime",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "install",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "install",
+            "blocking": true,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "runtime-not-ready", "provider": "codex", "status": "install" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          {
+            "component": "runtime",
+            "state": "failed",
+            "status": "install-required",
+            "statusLabel": "Installation required",
+            "labelPart": "Codex"
+          },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "runtime-signin-codex",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "credential_missing" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "needs_attention", "blocking": true },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "manual-runtime-login",
+            "instruction": "Sign in to the Codex CLI with its own login command, then run the verify command.",
+            "verifyCommandTail": "computer runtime-inspect --provider codex",
+            "repairCommandAbsent": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "sign-in", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-runtime",
+          "blockingComponents": ["runtime"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-runtime",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "sign-in",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "sign-in",
+            "blocking": true,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "runtime-not-ready", "provider": "codex", "status": "sign-in" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          {
+            "component": "runtime",
+            "state": "failed",
+            "status": "needs-attention",
+            "statusLabel": "Needs attention",
+            "labelPart": "Codex"
+          },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "runtime-config-claude-code",
+      "runtimeProvider": "claude-code",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "configuration_invalid" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:claude-code", "status": "needs_attention", "blocking": true },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "manual-runtime-config",
+            "instruction": "Fix the Claude Code CLI configuration, then run the verify command.",
+            "verifyCommandTail": "computer runtime-inspect --provider claude-code",
+            "repairCommandAbsent": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-runtime",
+          "blockingComponents": ["runtime"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "claude-code",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-runtime",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "claude-code",
+          "status": "unavailable",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "unavailable",
+            "blocking": true,
+            "provider": "claude-code",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "runtime-not-ready", "provider": "claude-code", "status": "unavailable" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          {
+            "component": "runtime",
+            "state": "failed",
+            "status": "needs-attention",
+            "statusLabel": "Needs attention",
+            "labelPart": "Claude Code"
+          },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "lark-cli-failure",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "failed", "diagnosticCode": "not_installed" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "install_required", "blocking": true },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "repair-command",
+            "commandTail": "provider-cli ensure --provider lark",
+            "verifyCommandTail": "provider-cli inspect --provider lark",
+            "repairInstructionAbsent": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-provider-clis",
+          "blockingComponents": ["im-cli:feishu"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-provider-clis",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "unavailable",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": true
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "provider-cli-not-ready", "provider": "feishu", "status": "unavailable" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          {
+            "component": "im-cli:feishu",
+            "state": "failed",
+            "status": "needs-attention",
+            "statusLabel": "Needs attention",
+            "labelPart": "Lark CLI"
+          },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "slack-cli-failure",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "failed", "diagnosticCode": "not_installed" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "install_required", "blocking": true }
+          ],
+          "nextAction": {
+            "kind": "repair-command",
+            "commandTail": "provider-cli ensure --provider slack",
+            "verifyCommandTail": "provider-cli inspect --provider slack",
+            "repairInstructionAbsent": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-provider-clis",
+          "blockingComponents": ["im-cli:slack"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-provider-clis",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "unavailable",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": true
+          }
+        ],
+        "blockers": [{ "code": "provider-cli-not-ready", "provider": "slack", "status": "unavailable" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          {
+            "component": "im-cli:slack",
+            "state": "failed",
+            "status": "needs-attention",
+            "statusLabel": "Needs attention",
+            "labelPart": "Slack CLI"
+          }
+        ]
+      }
+    },
+    {
+      "id": "manual-repair-slack",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": {
+            "ensure": "failed",
+            "diagnosticCode": "version_incompatible",
+            "remediation": "Install the Slack CLI version pinned by this workspace, then run the verify command."
+          }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "needs_attention", "blocking": true }
+          ],
+          "nextAction": {
+            "kind": "manual-provider-repair",
+            "instruction": "Install the Slack CLI version pinned by this workspace, then run the verify command.",
+            "verifyCommandTail": "provider-cli inspect --provider slack",
+            "repairCommandAbsent": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-provider-clis",
+          "blockingComponents": ["im-cli:slack"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-provider-clis",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "unavailable", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "unavailable",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": true
+          }
+        ],
+        "blockers": [{ "code": "provider-cli-not-ready", "provider": "slack", "status": "unavailable" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          {
+            "component": "im-cli:slack",
+            "state": "failed",
+            "status": "needs-attention",
+            "statusLabel": "Needs attention",
+            "labelPart": "Slack CLI"
+          }
+        ]
+      }
+    },
+    {
+      "id": "warning-non-blocking",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": {
+            "ensure": "ready",
+            "version": "2.3.0",
+            "warnings": [
+              {
+                "code": "global_path_not_configured",
+                "remediation": "Add the CLI directory to your PATH for future shells."
+              }
+            ]
+          },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "Return to the Web app. The warning does not block the local verdict; messaging still waits for fresh daemon observations.",
+            "warningVisible": "non-blocking"
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-messaging",
+          "blockingComponents": []
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-messaging",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "messaging-not-configured" }],
+        "actions": [
+          { "kind": "start-messaging", "provider": "slack" },
+          { "kind": "start-messaging", "provider": "feishu" }
+        ],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": false,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          { "component": "im-cli:feishu", "state": "passed", "status": "ready", "label": "Lark CLI ready" },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "checking-ownership",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "failed", "diagnosticCode": "operation_in_progress" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "checking", "blocking": true },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "repair-command",
+            "commandTail": "provider-cli ensure --provider lark",
+            "verifyCommandTail": "provider-cli inspect --provider lark",
+            "ownershipDetail": "owned by another OpenTag process"
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": { "status": "checking", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-provider-clis",
+          "blockingComponents": ["im-cli:feishu"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-provider-clis",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "checking", "observedAt": "2026-09-01T09:59:55.000Z" },
+            { "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }
+          ],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "checking",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": true
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "provider-cli-not-ready", "provider": "feishu", "status": "checking" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          {
+            "component": "im-cli:feishu",
+            "state": "pending",
+            "status": "checking",
+            "statusLabel": "Checking",
+            "labelPart": "Lark CLI"
+          },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    },
+    {
+      "id": "no-fresh-observation",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "The CLI result is local authority only: return to the Web app and wait until fresh daemon observations open the Server gate.",
+            "serverStageStillRequired": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": null,
+          "feishuReport": null,
+          "slackReport": null,
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-runtime",
+          "blockingComponents": ["runtime"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-runtime",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": { "kind": "waiting", "provider": "codex" },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          { "kind": "runtime", "status": "waiting", "blocking": true, "provider": "codex", "observedAt": null },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "waiting",
+            "observedAt": null,
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "waiting",
+            "observedAt": null,
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "runtime-not-ready", "provider": "codex", "status": "waiting" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          {
+            "component": "runtime",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Codex"
+          },
+          {
+            "component": "im-cli:feishu",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Lark CLI"
+          },
+          {
+            "component": "im-cli:slack",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Slack CLI"
+          }
+        ]
+      }
+    },
+    {
+      "id": "expired-observation",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "The CLI result is local authority only: return to the Web app and wait until fresh daemon observations open the Server gate.",
+            "serverStageStillRequired": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:58:00.000Z", "expired": true },
+          "feishuReport": { "status": "ready", "observedAt": "2026-09-01T09:58:00.000Z", "expired": true },
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:58:00.000Z", "expired": true },
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-runtime",
+          "blockingComponents": ["runtime"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-runtime",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": { "kind": "waiting", "provider": "codex" },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          { "kind": "runtime", "status": "waiting", "blocking": true, "provider": "codex", "observedAt": null },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "waiting",
+            "observedAt": null,
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "waiting",
+            "observedAt": null,
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "runtime-not-ready", "provider": "codex", "status": "waiting" }],
+        "actions": [{ "kind": "refresh" }],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          {
+            "component": "runtime",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Codex"
+          },
+          {
+            "component": "im-cli:feishu",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Lark CLI"
+          },
+          {
+            "component": "im-cli:slack",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Slack CLI"
+          }
+        ]
+      }
+    },
+    {
+      "id": "daemon-skipped",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "skipped-no-start",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "needs_attention",
+          "localReady": false,
+          "exitCode": 3,
+          "components": [
+            { "id": "computer", "status": "needs_attention", "blocking": true },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "daemon-install",
+            "commandTail": "daemon install",
+            "verifyCommandTail": "daemon status",
+            "daemonSkippedDetail": "was not started (--no-start)"
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "offline",
+          "runtimeReport": null,
+          "feishuReport": null,
+          "slackReport": null,
+          "messaging": "not-configured"
+        },
+        "expected": {
+          "stage": "needs-computer",
+          "blockingComponents": ["computer"]
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-computer",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "offline",
+          "imCliReadiness": [
+            { "provider": "feishu", "status": "unavailable", "observedAt": null },
+            { "provider": "slack", "status": "unavailable", "observedAt": null }
+          ],
+          "lastSeenAt": null,
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": { "kind": "unavailable", "provider": "codex", "reason": "computer-offline" },
+        "messaging": { "kind": "not-configured" },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "offline",
+            "blocking": true,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          { "kind": "runtime", "status": "unavailable", "blocking": false, "provider": "codex", "observedAt": null },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "unavailable",
+            "observedAt": null,
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "unavailable",
+            "observedAt": null,
+            "blocking": false
+          }
+        ],
+        "blockers": [{ "code": "computer-offline", "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750" }],
+        "actions": [
+          { "kind": "refresh" },
+          { "kind": "repair-computer", "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750" }
+        ],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": true,
+        "rows": [
+          {
+            "component": "computer",
+            "state": "blocked",
+            "status": "needs-attention",
+            "statusLabel": "Needs attention",
+            "labelPart": "Computer"
+          },
+          {
+            "component": "runtime",
+            "state": "blocked",
+            "status": "waiting",
+            "statusLabel": "Waiting for Computer",
+            "labelPart": "Codex"
+          },
+          {
+            "component": "im-cli:feishu",
+            "state": "blocked",
+            "status": "waiting",
+            "statusLabel": "Waiting for Computer",
+            "labelPart": "Lark CLI"
+          },
+          {
+            "component": "im-cli:slack",
+            "state": "blocked",
+            "status": "waiting",
+            "statusLabel": "Waiting for Computer",
+            "labelPart": "Slack CLI"
+          }
+        ]
+      }
+    },
+    {
+      "id": "messaging-underway-slack",
+      "runtimeProvider": "codex",
+      "local": {
+        "facts": {
+          "daemon": "active",
+          "runtime": { "probe": "ready", "version": "1.0.0" },
+          "feishu": { "ensure": "ready", "version": "2.3.0" },
+          "slack": { "ensure": "ready", "version": "1.4.0" }
+        },
+        "expected": {
+          "status": "ready",
+          "localReady": true,
+          "exitCode": 0,
+          "components": [
+            { "id": "computer", "status": "ready", "blocking": false },
+            { "id": "runtime:codex", "status": "ready", "blocking": false },
+            { "id": "im-cli:lark", "status": "ready", "blocking": false },
+            { "id": "im-cli:slack", "status": "ready", "blocking": false }
+          ],
+          "nextAction": {
+            "kind": "wait-for-fresh-server-observation",
+            "instruction": "Return to the Web app: the Slack handoff owns the Messaging surface; a later unselected-Provider report never regresses it.",
+            "serverStageStillRequired": true
+          }
+        }
+      },
+      "server": {
+        "facts": {
+          "connection": "online",
+          "runtimeReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "feishuReport": null,
+          "slackReport": { "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" },
+          "messaging": "slack-waiting-handoff"
+        },
+        "expected": {
+          "stage": "needs-messaging",
+          "blockingComponents": []
+        }
+      },
+      "snapshot": {
+        "agent": {
+          "id": "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+          "name": "reviewer",
+          "displayName": "Reviewer",
+          "runtimeProvider": "codex",
+          "receiveMode": "all_message",
+          "status": "active",
+          "createdAt": "2026-09-01T10:00:00.000Z",
+          "updatedAt": "2026-09-01T10:00:00.000Z",
+          "createdBy": { "userId": "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", "displayName": "Admin" },
+          "computer": {
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin"
+          }
+        },
+        "stage": "needs-messaging",
+        "computer": {
+          "kind": "bound",
+          "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+          "displayName": "Review Mac",
+          "platform": "darwin",
+          "connectionStatus": "online",
+          "imCliReadiness": [{ "provider": "slack", "status": "ready", "observedAt": "2026-09-01T09:59:55.000Z" }],
+          "lastSeenAt": "2026-09-01T10:00:00.000Z",
+          "observedAt": "2026-09-01T10:00:00.000Z"
+        },
+        "runtime": {
+          "kind": "observed",
+          "provider": "codex",
+          "status": "ready",
+          "observedAt": "2026-09-01T09:59:55.000Z"
+        },
+        "messaging": {
+          "kind": "waiting-handoff",
+          "provider": "slack",
+          "bindingId": "22222222-2222-4222-8222-222222222222",
+          "credentialGeneration": 1,
+          "progress": { "phase": "checking_credentials" }
+        },
+        "requiredImCliProviders": ["feishu", "slack"],
+        "components": [
+          {
+            "kind": "computer",
+            "status": "online",
+            "blocking": false,
+            "computerId": "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            "displayName": "Review Mac",
+            "platform": "darwin",
+            "observedAt": "2026-09-01T10:00:00.000Z"
+          },
+          {
+            "kind": "runtime",
+            "status": "ready",
+            "blocking": false,
+            "provider": "codex",
+            "observedAt": "2026-09-01T09:59:55.000Z"
+          },
+          {
+            "kind": "im-cli",
+            "provider": "feishu",
+            "status": "waiting",
+            "observedAt": null,
+            "blocking": false
+          },
+          {
+            "kind": "im-cli",
+            "provider": "slack",
+            "status": "ready",
+            "observedAt": "2026-09-01T09:59:55.000Z",
+            "blocking": false
+          }
+        ],
+        "blockers": [
+          {
+            "code": "messaging-not-ready",
+            "provider": "slack",
+            "bindingId": "22222222-2222-4222-8222-222222222222",
+            "state": "waiting-handoff"
+          }
+        ],
+        "actions": [
+          { "kind": "refresh" },
+          {
+            "kind": "unbind-messaging",
+            "provider": "slack",
+            "bindingId": "22222222-2222-4222-8222-222222222222"
+          }
+        ],
+        "observedAt": "2026-09-01T10:00:00.000Z"
+      },
+      "web": {
+        "showPreparationSection": false,
+        "rows": [
+          { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
+          { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
+          {
+            "component": "im-cli:feishu",
+            "state": "pending",
+            "status": "waiting",
+            "statusLabel": "Waiting",
+            "labelPart": "Lark CLI"
+          },
+          { "component": "im-cli:slack", "state": "passed", "status": "ready", "label": "Slack CLI ready" }
+        ]
+      }
+    }
+  ]
+}

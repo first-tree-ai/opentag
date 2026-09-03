@@ -1,4 +1,4 @@
-import type { TaskTurn, TurnReportRequest } from "@opentag/shared";
+import type { ImContentV1, TaskTurn, TurnReportRequest } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
@@ -117,6 +117,7 @@ async function createMessage(
     externalMessageId?: string;
     threadKey?: string | null;
     text?: string;
+    blocks?: ImContentV1["blocks"];
     occurredAt?: Date;
     authorDisplayName?: string | null;
     revisionKey?: string;
@@ -137,7 +138,12 @@ async function createMessage(
       authorKind: "human",
       authorExternalId: "ou_human",
       authorDisplayName: options.authorDisplayName === undefined ? "Mia" : options.authorDisplayName,
-      content: { version: 1, fallbackText: options.text ?? "Task input", blocks: [], truncated: false },
+      content: {
+        version: 1,
+        fallbackText: options.text ?? "Task input",
+        blocks: options.blocks ?? [],
+        truncated: false,
+      },
       providerContext: options.providerContext ?? { provider: "feishu", chatType: "group" },
       occurredAt: options.occurredAt ?? BASE_TIME,
     })
@@ -317,6 +323,23 @@ describe("TaskService", () => {
     const detail = await service.get(bootstrap.userId, root.id, { limit: 50 });
     expect(detail.turns.filter((turn) => turn.message.id === reply.id)).toHaveLength(1);
     expect(detail.turns.find((turn) => turn.message.id === reply.id)?.attention).toBe("direct");
+  });
+
+  it("shows a mention by its label in a Turn instead of the provider placeholder", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const dm = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const message = await createMessage(binding.id, {
+      channelId: DM,
+      text: "@_user_1 帮我关掉 446;",
+      blocks: [
+        { type: "mention", externalId: "ou_bot", label: "@Atlas" },
+        { type: "text", text: " 帮我关掉 446;" },
+      ],
+    });
+    await createDelivery(dm.id, message.id, { at: minutes(1), reported: true });
+
+    const detail = await service.get(bootstrap.userId, message.id, { limit: 10 });
+    expect(detail.turns.map((turn) => turn.message.fallbackText)).toEqual(["@Atlas 帮我关掉 446;"]);
   });
 
   it("treats a private chat as one Task regardless of reply chains", async () => {

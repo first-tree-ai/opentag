@@ -118,6 +118,7 @@ export {
 } from "./providers/codex/agent-runtime.js";
 export {
   CODEX_APP_SERVER_MAX_LINE_BYTES,
+  CODEX_APP_SERVER_MAX_STDERR_BYTES,
   CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
   type CodexAppServerClient,
   CodexAppServerError,
@@ -185,12 +186,15 @@ export {
 export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
+  claudeCodeProcessEnvironment,
   createClientRuntime,
   type ProtectedWorkSnapshot,
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
+  type ResolvedCodexFactoryOptions,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
+  resolvedCodexFactory,
 } from "./runtime/client-runtime-composition.js";
 export {
   allocateComputerIdentity,
@@ -201,6 +205,16 @@ export {
   resolveComputerIdentity,
   writeComputerIdentityAtomically,
 } from "./runtime/computer-identity.js";
+export {
+  type ContextTreeExecFile,
+  ContextTreeManager,
+  type ContextTreeManagerOptions,
+  type ContextTreePackage,
+  type ContextTreeStatus,
+  readContextTreePreparation,
+  resolveContextTreePackage,
+  runContextTreeCli,
+} from "./runtime/context-tree.js";
 export {
   ImCredentialEnvironmentError,
   ImCredentialEnvironmentManager,
@@ -221,7 +235,7 @@ export {
   type LocalComputerConfigurationInspection,
   type LocalConfigurationStatus,
 } from "./runtime/local-computer-configuration.js";
-export { renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
+export { type ManagedSessionContext, renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
 export {
   ProviderCliAccountError,
   type ProviderCliAccountLayout,

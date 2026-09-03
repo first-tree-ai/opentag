@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process lifecycle cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
   AgentApprovalResponse,
@@ -985,6 +989,28 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     nonErrorClient.emit({ method: "warning", params: { message: "second failure" } });
     await expect(nonErrorRun).resolves.toMatchObject({ status: "failed", error: { code: "event_delivery_failed" } });
     await vi.waitFor(() => expect(nonError.state.phase).toBe("closed"));
+
+    const rejectionFailureClient = new ManualCodexClient({ rejectServerRequestError: true });
+    const rejectionFailure = await factory(rejectionFailureClient).create(
+      createRequest((event) => {
+        if (event.type === "interaction_requested") throw new Error("sink rejected interaction");
+      }),
+    );
+    const rejectionFailureRun = rejectionFailure.prompt({
+      runId: "interaction-rejection-failure",
+      input: input("interact"),
+    });
+    await rejectionFailureClient.called("turn/start");
+    rejectionFailureClient.emitRequest({
+      id: "approval-failure",
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1", turnId: "turn-1" },
+    });
+    await expect(rejectionFailureRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "event_delivery_failed" },
+    });
+    await vi.waitFor(() => expect(rejectionFailure.state.phase).toBe("closed"));
   });
 
   it("queues steer and abort until turn/start returns and rejects a crossed steer", async () => {
@@ -1566,6 +1592,7 @@ interface ManualClientOptions {
   readonly beforeTurnStartResponse?: (client: ManualCodexClient) => void;
   readonly closeError?: boolean;
   readonly initializeError?: Error;
+  readonly rejectServerRequestError?: boolean;
   readonly interruptResponse?: Promise<void>;
   readonly steerTurnId?: string;
   readonly threadStartResponse?: unknown;
@@ -1654,6 +1681,7 @@ class ManualCodexClient implements InteractiveCodexAppServerClient {
   }
 
   async rejectServerRequest(id: number | string, code: number, message: string): Promise<void> {
+    if (this.#options.rejectServerRequestError) throw new Error("server request rejection failed");
     this.serverRejections.push({ id, code, message });
   }
 

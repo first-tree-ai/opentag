@@ -14,10 +14,15 @@
  * snapshot then offers. There is no direct switch.
  */
 
-import type { AgentSetupAction, AgentSetupSnapshot, ImProvider } from "@opentag/shared/browser";
+import type {
+  AgentSetupAction,
+  AgentSetupSnapshot,
+  ImProvider,
+  ProviderCliHandoffProgress,
+} from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api.js";
-import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
+import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
   ComputerConnect,
@@ -25,19 +30,19 @@ import {
   createAgentTargetedComputerConnectAdapter,
 } from "../features/computer-connect/computer-connect.js";
 import { isTerminalResourceError } from "../features/resource/resource-state.js";
-import { formatDateTime, formatRelativeTime, spaceScriptBoundary } from "../i18n/format.js";
+import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
-import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../ui/design-system.js";
+import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
-import { COPY, RUNTIME_COPY } from "./copy.js";
 import type { FlowState } from "./flow.js";
-import { ImCliReadinessList, type ImCliStatuses } from "./im-cli-status.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
+import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
+import { CheckLine } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
@@ -45,6 +50,47 @@ import { CardCopy, DoneStep, StepRail } from "./steps.js";
 const SETUP_POLL_MS = 2_000;
 /** How many times to report readiness before the reader is offered an explicit retry. */
 const READY_REPORT_ATTEMPTS = 3;
+/**
+ * The finite budget for automatic local-preparation polls (a required IM CLI still waiting or
+ * checking behind the gate, a Runtime report missing or still checking): 30 polls at 2s is
+ * roughly a one-minute observation window. Exhaustion stops the timer; an explicit Check again
+ * restarts a fresh window. The budget never resets on an unchanged snapshot, and
+ * Messaging/offline observation keeps its unbounded beat.
+ */
+const BOUNDED_POLL_ATTEMPTS = 30;
+
+/**
+ * Arms one automatic-read observation window. The window is single-flight across effect
+ * restarts: an automatic read an earlier window started is awaited before a new one begins, and
+ * a manual refresh deliberately supersedes its reply through the request lifecycle instead.
+ */
+function armAutomaticPollWindow(
+  pollClass: Exclude<SetupPollClass, undefined>,
+  budget: { current: number },
+  inFlight: { current: Promise<boolean> | undefined },
+  read: () => Promise<boolean>,
+): () => void {
+  let cancelled = false;
+  let timer: number | undefined;
+  const poll = async (): Promise<void> => {
+    let turn = inFlight.current;
+    if (turn === undefined) {
+      if (pollClass === "bounded") budget.current -= 1;
+      turn = read();
+      inFlight.current = turn;
+    }
+    await turn;
+    if (inFlight.current === turn) inFlight.current = undefined;
+    if (cancelled) return;
+    if (pollClass === "bounded" && budget.current <= 0) return;
+    timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
+  };
+  timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
+}
 
 const SECTION = "flex flex-col gap-6";
 const SECTION_HEADER = "flex flex-col gap-1";
@@ -59,6 +105,15 @@ export interface AgentSetupPageProps {
   readonly agentId: string;
   /** Defaults to the HTTP adapter over the browser API; tests and the lab pass the in-memory one. */
   readonly adapter?: AgentSetupAdapter;
+  /** Keeps Computer inventory, binding, and connect-code work behind the Lab's in-memory seam. */
+  readonly computerAdapter?: {
+    readonly connect: ComputerConnectAdapter;
+    readonly inventory: AgentComputerInventoryAdapter;
+  };
+  /** An external Lab mutation asks the mounted page to re-read without resetting its local UI. */
+  readonly refreshSignal?: number;
+  /** Review Lab intercepts Provider URLs so a simulated OAuth round trip stays inside the Lab. */
+  readonly onExternalNavigation?: (url: string) => void;
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
@@ -75,11 +130,33 @@ type SetupPhase =
   | { readonly kind: "load-failed"; readonly message: string }
   | { readonly kind: "ready"; readonly snapshot: AgentSetupSnapshot };
 
+type SetupPollClass = "bounded" | "unbounded" | undefined;
+
+/**
+ * How a snapshot the outside world is still moving should be watched. Messaging authorizing,
+ * waiting-handoff, and an offline Computer keep the existing unbounded beat. Local preparation
+ * polls inside a finite budget only while a leg is genuinely transitional: a required IM CLI
+ * whose report is missing or still checking, or a Runtime report missing or still
+ * checking. A settled manual-action failure (install, sign-in, unavailable) never polls on its
+ * own — nothing on this page can install, sign in, or repair a CLI. Check again or returning
+ * to this page retrieves a fresh snapshot after an operator acts.
+ */
+function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
+  if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
+  if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return "unbounded";
+  if (
+    (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") &&
+    preparationIsTransitional(snapshot)
+  )
+    return "bounded";
+  if (snapshot.runtime.kind === "waiting") return "bounded";
+  if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return "bounded";
+  return undefined;
+}
+
 /** A snapshot the outside world is still moving: read it again on a beat until it settles. */
 export function setupSnapshotIsTransitional(snapshot: AgentSetupSnapshot): boolean {
-  if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return true;
-  if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return true;
-  return snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking";
+  return snapshotPollClass(snapshot) !== undefined;
 }
 
 function setupReadError(cause: unknown): string {
@@ -272,6 +349,7 @@ function useSetupActions(
   adapter: AgentSetupAdapter,
   lifecycle: RequestLifecycle,
   read: () => Promise<boolean>,
+  onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
 ): {
   actionError: string | undefined;
   busyKey: AgentSetupAction["kind"] | undefined;
@@ -305,7 +383,8 @@ function useSetupActions(
         const navigate = await performSetupAction(adapter, agentId, action);
         if (!live()) return false;
         if (navigate !== undefined) {
-          window.location.assign(navigate);
+          if (onExternalNavigation) onExternalNavigation(navigate);
+          else window.location.assign(navigate);
           return true;
         }
         return await read();
@@ -326,7 +405,7 @@ function useSetupActions(
         }
       }
     },
-    [adapter, agentId, lifecycle, read],
+    [adapter, agentId, lifecycle, onExternalNavigation, read],
   );
 
   return { actionError, busyKey, act };
@@ -344,32 +423,84 @@ interface AgentSetupController {
   readonly act: (action: AgentSetupAction) => Promise<boolean>;
   /** A silent re-read, for surfaces that finished their own work (a bind, a repair). */
   readonly reload: () => void;
+  /** An explicit Check again restarts the finite local-preparation observation window. */
+  readonly resetPollBudget: () => void;
 }
 
-function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupController {
+function useAgentSetup(
+  agentId: string,
+  adapter: AgentSetupAdapter,
+  onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
+): AgentSetupController {
   const lifecycle = useRequestLifecycle();
   const reader = useSnapshotReader(agentId, adapter, lifecycle);
-  const actions = useSetupActions(agentId, adapter, lifecycle, reader.read);
+  const actions = useSetupActions(agentId, adapter, lifecycle, reader.read, onExternalNavigation);
 
   const snapshot = reader.phase.kind === "ready" ? reader.phase.snapshot : undefined;
-  const transitional = snapshot !== undefined && setupSnapshotIsTransitional(snapshot);
+  const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
+  const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);
+  /**
+   * The one automatic read the mounted controller allows at a time. A manual refresh deliberately
+   * supersedes a pending automatic read through the request lifecycle, but a new poll effect must
+   * never start a second automatic read while an earlier one is still in flight.
+   */
+  const autoPollInFlight = useRef<Promise<boolean> | undefined>(undefined);
+  // A stateful restart signal: an explicit Check again must reopen a bounded observation window
+  // even when the busyKey updates around the refresh are collapsed into one render.
+  const [pollRestartKey, setPollRestartKey] = useState(0);
+  /** An explicit Check again opens a fresh bounded observation window. */
+  const resetPollBudget = useCallback(() => {
+    pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    setPollRestartKey((value) => value + 1);
+  }, []);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pollRestartKey explicitly restarts the observation window.
   useEffect(() => {
-    if (!transitional || actions.busyKey !== undefined) return;
+    if (pollClass === undefined || actions.busyKey !== undefined) return;
+    return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read);
+  }, [pollClass, actions.busyKey, pollRestartKey, reader.read]);
+
+  /*
+   * A window or tab returning to view re-reads the canonical snapshot: the outside world (a
+   * daemon reconnect, a Runtime report, a handoff) may have moved it while the reader was away.
+   * The refresh rides the same request lifecycle as every other read — a reply superseded by a
+   * newer read or by an action is discarded, a transient failure over a good snapshot keeps the
+   * last-good snapshot on screen, and the automatic poll window never overlaps itself — and it
+   * is skipped while an action is in flight and when no snapshot is on screen yet (loading,
+   * load-failed, and unavailable keep their own manual flows).
+   */
+  useEffect(() => {
+    if (actions.busyKey !== undefined || reader.phase.kind !== "ready") return;
     let cancelled = false;
-    let timer = window.setTimeout(async function poll() {
-      await reader.read();
-      // One observation at a time: overlapping reads would continuously retire one another when a
-      // slow Server takes longer than the interval, leaving a transitional screen unable to move.
-      if (!cancelled) timer = window.setTimeout(poll, SETUP_POLL_MS);
-    }, SETUP_POLL_MS);
+    let returnRead: Promise<boolean> | undefined;
+    const refreshOnReturn = (): void => {
+      if (document.visibilityState !== "visible" || returnRead !== undefined) return;
+      resetPollBudget();
+      const pending = autoPollInFlight.current;
+      // A return queues one fresh read behind an existing poll, never another concurrent one.
+      const turn =
+        pending === undefined
+          ? reader.read()
+          : pending.then(() => (cancelled || document.visibilityState !== "visible" ? false : reader.read()));
+      returnRead = turn;
+      autoPollInFlight.current = turn;
+      void turn.then(() => {
+        if (returnRead === turn) returnRead = undefined;
+        if (autoPollInFlight.current === turn) autoPollInFlight.current = undefined;
+      });
+    };
+    window.addEventListener("focus", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    window.addEventListener("pageshow", refreshOnReturn);
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      window.removeEventListener("focus", refreshOnReturn);
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+      window.removeEventListener("pageshow", refreshOnReturn);
     };
-  }, [transitional, actions.busyKey, reader.read]);
+  }, [actions.busyKey, reader.phase.kind, reader.read, resetPollBudget]);
 
   const reload = useCallback(() => void reader.read(), [reader.read]);
-  return { ...reader, ...actions, reload };
+  return { ...reader, ...actions, reload, resetPollBudget };
 }
 
 type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
@@ -423,8 +554,11 @@ function useReadyReport(
 export function AgentSetupPage({
   agentId,
   adapter,
+  computerAdapter,
+  onExternalNavigation,
   onOpenAgent,
   onReady,
+  refreshSignal,
   reviewMode = false,
   slackOAuthError,
 }: AgentSetupPageProps) {
@@ -435,9 +569,12 @@ export function AgentSetupPage({
     <AgentSetupPageContent
       adapter={resolvedAdapter}
       agentId={agentId}
+      computerAdapter={computerAdapter}
       key={agentId}
+      onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
       onReady={onReady}
+      refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
     />
@@ -447,16 +584,26 @@ export function AgentSetupPage({
 function AgentSetupPageContent({
   agentId,
   adapter,
+  computerAdapter,
+  onExternalNavigation,
   onOpenAgent,
   onReady,
+  refreshSignal,
   reviewMode = false,
   slackOAuthError,
 }: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
-  const controller = useAgentSetup(agentId, adapter);
+  const controller = useAgentSetup(agentId, adapter, onExternalNavigation);
+  const previousRefreshSignal = useRef(refreshSignal);
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
   const ready = snapshot?.stage === "ready";
+
+  useEffect(() => {
+    if (previousRefreshSignal.current === refreshSignal) return;
+    previousRefreshSignal.current = refreshSignal;
+    controller.reload();
+  }, [controller.reload, refreshSignal]);
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
@@ -470,7 +617,13 @@ function AgentSetupPageContent({
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
         {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
-        <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} report={report} />
+        <SetupPhaseView
+          agentId={agentId}
+          computerAdapter={computerAdapter}
+          controller={controller}
+          onOpenAgent={onOpenAgent}
+          report={report}
+        />
       </main>
     </div>
   );
@@ -478,11 +631,13 @@ function AgentSetupPageContent({
 
 function SetupPhaseView({
   agentId,
+  computerAdapter,
   controller,
   onOpenAgent,
   report,
 }: {
   readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
@@ -523,6 +678,7 @@ function SetupPhaseView({
   return (
     <AgentSetupSnapshotView
       agentId={agentId}
+      computerAdapter={computerAdapter}
       controller={controller}
       onOpenAgent={onOpenAgent}
       report={report}
@@ -543,12 +699,14 @@ function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
 
 function AgentSetupSnapshotView({
   agentId,
+  computerAdapter,
   controller,
   onOpenAgent,
   report,
   snapshot,
 }: {
   readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
@@ -560,19 +718,23 @@ function AgentSetupSnapshotView({
   return (
     <>
       <StepRail steps={setupSteps(stage)} />
-      <header className={SECTION_HEADER}>
-        <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
-        </Text>
-      </header>
+      {stage === "needs-messaging" || stage === "ready" ? (
+        <header className={SECTION_HEADER}>
+          <Text as="h1" size="lg" variant="heading">
+            {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
+          </Text>
+        </header>
+      ) : null}
       {observationFailed ? (
         <Banner variant="alert" role="alert" description={m.onboarding_v2_setup_observation_failed()} />
       ) : null}
       {controller.refreshError ? <Banner variant="error" role="alert" description={controller.refreshError} /> : null}
-      {stage === "needs-computer" ? (
-        <ComputerSetupSection agentId={agentId} onChanged={controller.reload} snapshot={snapshot} />
-      ) : null}
-      {stage === "needs-runtime" ? <RuntimeSetupSection snapshot={snapshot} /> : null}
+      <LocalPreparationSections
+        agentId={agentId}
+        computerAdapter={computerAdapter}
+        onChanged={controller.reload}
+        snapshot={snapshot}
+      />
       {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
@@ -589,7 +751,10 @@ function AgentSetupSnapshotView({
           <Button
             disabled={controller.busyKey !== undefined}
             loading={controller.busyKey === "refresh"}
-            onClick={() => void controller.act({ kind: "refresh" })}
+            onClick={() => {
+              controller.resetPollBudget();
+              void controller.act({ kind: "refresh" });
+            }}
             variant="secondary"
           >
             {m.onboarding_v2_setup_refresh()}
@@ -600,22 +765,55 @@ function AgentSetupSnapshotView({
   );
 }
 
-function ComputerSetupSection({
+function LocalPreparationSections({
   agentId,
+  computerAdapter,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly onChanged: () => void;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
+  const { stage } = snapshot;
+  return (
+    <>
+      {stage === "needs-computer" ? (
+        <ComputerSetupSection
+          agentId={agentId}
+          computerAdapter={computerAdapter}
+          onChanged={onChanged}
+          snapshot={snapshot}
+        />
+      ) : null}
+      {stage === "needs-runtime" || stage === "needs-provider-clis" ? (
+        <PreparationSummarySection snapshot={snapshot} />
+      ) : null}
+    </>
+  );
+}
+
+function ComputerSetupSection({
+  agentId,
+  computerAdapter,
+  onChanged,
+  snapshot,
+}: {
+  readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { computer } = snapshot;
-  const computerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
+  const serverComputerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
+  const computerConnectAdapter = computerAdapter?.connect ?? serverComputerConnectAdapter;
   if (computer.kind === "not-bound") {
     return (
       <NotBoundComputerSection
         agentId={agentId}
         computerConnectAdapter={computerConnectAdapter}
+        inventoryAdapter={computerAdapter?.inventory}
         name={snapshot.agent.displayName}
         onChanged={onChanged}
         snapshot={snapshot}
@@ -626,22 +824,13 @@ function ComputerSetupSection({
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-        <header className={SECTION_HEADER}>
-          <Text as="h2" variant="heading">
-            {m.onboarding_v2_connect_title()}
-          </Text>
-        </header>
-        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-            <Icon name="laptop" />
-          </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h3" variant="heading">
-              {computer.displayName}
-            </Text>
-            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-          </div>
-        </div>
+        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_no_computer_status()}
+          title={computer.displayName}
+          tone="neutral"
+        />
         <p className={HINT}>
           {m.onboarding_v2_setup_computer_rebind({
             computerName: computer.displayName,
@@ -649,7 +838,12 @@ function ComputerSetupSection({
           })}
         </p>
         {canBind ? (
-          <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
+          <AgentComputerChoice
+            adapter={computerConnectAdapter}
+            agentId={agentId}
+            inventoryAdapter={computerAdapter?.inventory}
+            onBound={onChanged}
+          />
         ) : null}
       </section>
     );
@@ -657,22 +851,13 @@ function ComputerSetupSection({
   if (computer.kind === "observation-failed") {
     return (
       <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-        <header className={SECTION_HEADER}>
-          <Text as="h2" variant="heading">
-            {m.onboarding_v2_connect_title()}
-          </Text>
-        </header>
-        <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-          <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-            <Icon name="laptop" />
-          </span>
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-            <Text as="h3" variant="heading">
-              {computer.displayName}
-            </Text>
-            <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-          </div>
-        </div>
+        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_unconfirmed()}
+          title={computer.displayName}
+          tone="warning"
+        />
       </section>
     );
   }
@@ -686,15 +871,67 @@ function ComputerSetupSection({
   );
 }
 
+function ComputerStepHeader({ name }: { readonly name: string }) {
+  return (
+    <header className="grid gap-1" data-ui="agent-setup-computer-header">
+      <Text as="h1" size="lg" variant="heading">
+        {m.onboarding_v2_connect_title()}
+      </Text>
+      <p className={HINT}>{m.onboarding_v2_connect_description({ name })}</p>
+      <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0">
+        <span aria-hidden="true" className="text-kumo-brand">
+          <Icon name="shield" />
+        </span>
+        {m.onboarding_v2_connect_privacy()}
+      </p>
+    </header>
+  );
+}
+
+function ComputerSummary({
+  metadata,
+  status,
+  title,
+  tone,
+}: {
+  readonly metadata?: string;
+  readonly status: string;
+  readonly title: string;
+  readonly tone: StatusTone;
+}) {
+  return (
+    <div
+      className="otv2-computer-summary grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-y border-kumo-line py-2"
+      data-ui="agent-setup-computer-summary"
+    >
+      <span
+        aria-hidden="true"
+        className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint text-kumo-brand"
+      >
+        <Icon name="laptop" />
+      </span>
+      <span className="flex min-w-0 items-baseline gap-x-1.5 overflow-hidden">
+        <strong className="truncate text-sm font-medium text-kumo-strong" title={title}>
+          {title}
+        </strong>
+        {metadata ? <span className="shrink-0 text-sm text-kumo-subtle">{metadata}</span> : null}
+      </span>
+      <StatusIndicator className="justify-self-end" label={status} tone={tone} />
+    </div>
+  );
+}
+
 function NotBoundComputerSection({
   agentId,
   computerConnectAdapter,
+  inventoryAdapter,
   name,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerConnectAdapter: ComputerConnectAdapter;
+  readonly inventoryAdapter?: AgentComputerInventoryAdapter;
   readonly name: string;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
@@ -702,17 +939,24 @@ function NotBoundComputerSection({
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
   return (
     <section className={SECTION} data-state="not-bound" data-ui="agent-setup-computer">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_connect_title()}
-        </Text>
-        <p className={HINT}>{m.onboarding_v2_setup_computer_none({ name })}</p>
-      </header>
+      <ComputerStepHeader name={name} />
+      <ComputerSummary
+        status={m.onboarding_v2_connect_no_computer_status()}
+        title={m.onboarding_v2_connect_no_computer_title()}
+        tone="neutral"
+      />
       {/*
        * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
        * does it — including the choice when the Account genuinely has one to make.
        */}
-      {canBind ? <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} /> : null}
+      {canBind ? (
+        <AgentComputerChoice
+          adapter={computerConnectAdapter}
+          agentId={agentId}
+          inventoryAdapter={inventoryAdapter}
+          onBound={onChanged}
+        />
+      ) : null}
     </section>
   );
 }
@@ -728,7 +972,6 @@ function BoundComputerSection({
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
-  const [repairing, setRepairing] = useState(false);
   const repair = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "repair-computer" }> =>
       action.kind === "repair-computer" && action.computerId === computer.computerId,
@@ -736,101 +979,51 @@ function BoundComputerSection({
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
     <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_connect_title()}
-        </Text>
-      </header>
-      <div className={IDENTITY_ROW} data-ui="agent-setup-computer-identity">
-        <span aria-hidden="true" className="grid size-8 shrink-0 place-items-center rounded-md bg-kumo-tint">
-          <Icon name="laptop" />
-        </span>
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
-          <Text as="h3" variant="heading">
-            {computer.displayName}
-          </Text>
-          <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
-        </div>
-        <StatusIndicator
-          className="justify-self-end"
-          label={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
-          tone={offline ? "warning" : "success"}
-        />
-      </div>
-      <div className="grid gap-1">
-        <p className={HINT}>{m.onboarding_v2_connect_offline_for({ computerName: computer.displayName })}</p>
-        {computer.lastSeenAt ? (
-          <p className={HINT}>
-            {m.onboarding_v2_connect_offline_last_seen({ when: formatRelativeTime(computer.lastSeenAt) })}
-          </p>
-        ) : null}
-      </div>
+      <ComputerStepHeader name={snapshot.agent.displayName} />
+      <ComputerSummary
+        metadata={platformLabel(computer.platform)}
+        status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+        title={computer.displayName}
+        tone={offline ? "warning" : "success"}
+      />
       {repair ? (
-        <div className="grid gap-3">
-          <Button
-            aria-controls="agent-setup-repair-command"
-            aria-expanded={repairing}
-            className="w-fit"
-            onClick={() => setRepairing((current) => !current)}
-            size="compact"
-            variant="inline"
-          >
-            {repairing ? m.onboarding_v2_connect_hide_repair() : m.onboarding_v2_connect_generate_repair()}
-          </Button>
-          {repairing ? (
-            <div id="agent-setup-repair-command">
-              <ComputerConnect
-                adapter={computerConnectAdapter}
-                intent={{
-                  mode: "repair",
-                  target: { computerId: repair.computerId, displayName: computer.displayName },
-                }}
-                onConnected={onChanged}
-              />
-            </div>
-          ) : null}
-        </div>
+        <ComputerConnect
+          adapter={computerConnectAdapter}
+          intent={{
+            mode: "repair",
+            target: { computerId: repair.computerId, displayName: computer.displayName },
+          }}
+          onConnected={onChanged}
+        />
       ) : null}
     </section>
   );
 }
 
-function RuntimeSetupSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const { runtime, computer } = snapshot;
-  const runtimeTitle = RUNTIME_COPY[runtime.provider].title;
-  const computerName = computer.kind === "not-bound" ? "" : computer.displayName;
-  const status = runtime.kind === "observed" ? runtime.status : "unavailable";
+function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
+  const rows = useMemo(() => preparationSummaryRows(snapshot), [snapshot]);
+  const { computer } = snapshot;
+  if (computer.kind === "not-bound") return null;
   return (
-    <section className={SECTION} data-state={status} data-ui="agent-setup-runtime">
+    <section className={SECTION} data-ui="agent-setup-preparation">
       <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_setup_runtime_title({ runtime: runtimeTitle })}
+        <Text as="h1" size="lg" variant="heading">
+          {m.onboarding_v2_prep_title()}
         </Text>
+        <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
-      {status === "checking" ? (
-        <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
-          {m.onboarding_v2_setup_runtime_checking({ computerName, runtime: runtimeTitle })}
-        </p>
-      ) : (
-        <div className="grid gap-1">
-          <p className="text-sm text-kumo-strong m-0">{runtimeBlockerCopy(status, runtimeTitle, computerName)}</p>
-          <p className={HINT}>
-            {m.onboarding_v2_check_repair_hint()}{" "}
-            <code className="rounded bg-kumo-recessed px-1 py-0.5">{COPY.check.repairCommand}</code>{" "}
-            {m.onboarding_v2_check_repair_hint_suffix()}
-          </p>
-        </div>
-      )}
+      <ComputerSummary
+        metadata={platformLabel(computer.platform)}
+        status={m.onboarding_v2_connect_online()}
+        title={computer.displayName}
+        tone="success"
+      />
+      <ol aria-label={m.onboarding_v2_prep_title()} className="otv2-readiness" data-ui="readiness-list">
+        <CheckLine check={rows.runtime} component="runtime" position={1} />
+        <CheckLine check={rows.messaging} component="messaging-support" position={2} />
+      </ol>
     </section>
   );
-}
-
-function runtimeBlockerCopy(status: string, runtime: string, computerName: string): string {
-  if (status === "install") return m.onboarding_v2_setup_runtime_install({ computerName, runtime });
-  if (status === "sign-in") return m.onboarding_v2_setup_runtime_sign_in({ computerName, runtime });
-  // `ready` never reaches this section: the stage would have moved past it.
-  return m.onboarding_v2_setup_runtime_unavailable({ computerName, runtime });
 }
 
 function MessagingSetupSection({
@@ -841,10 +1034,6 @@ function MessagingSetupSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { messaging } = snapshot;
-  const cliStatuses: ImCliStatuses | undefined =
-    snapshot.computer.kind === "bound"
-      ? Object.fromEntries(snapshot.computer.imCliReadiness.map((entry) => [entry.provider, entry.status]))
-      : undefined;
   return (
     <section className={SECTION} data-state={messaging.kind} data-ui="agent-setup-messaging">
       <header className={SECTION_HEADER}>
@@ -852,7 +1041,6 @@ function MessagingSetupSection({
           {m.onboarding_v2_messaging_title()}
         </Text>
       </header>
-      <ImCliReadinessList statuses={cliStatuses} />
       {messaging.kind === "not-configured" ? (
         <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
       ) : null}
@@ -988,6 +1176,19 @@ function SlackAuthorizing({
   );
 }
 
+function messagingHandoffCopy(progress: ProviderCliHandoffProgress, provider: ImProvider): string {
+  if (progress.phase === "preparing_cli") {
+    return m.onboarding_v2_setup_messaging_confirming_computer({ provider: providerTitle(provider) });
+  }
+  if (progress.reason === "upgrade_required") {
+    return m.onboarding_v2_setup_messaging_computer_attention({ provider: providerTitle(provider) });
+  }
+  if (progress.phase === "needs_attention" && !progress.reason) {
+    return m.onboarding_v2_setup_messaging_computer_attention({ provider: providerTitle(provider) });
+  }
+  return providerCliWaitingCopy(progress);
+}
+
 function MessagingHandoff({
   controller,
   messaging,
@@ -1011,7 +1212,9 @@ function MessagingHandoff({
         <span aria-hidden="true" className="ots-pulse shrink-0" />
         {m.onboarding_v2_messaging_confirming()}
       </p>
-      {messaging.progress ? <p className={HINT}>{providerCliWaitingCopy(messaging.progress)}</p> : null}
+      {messaging.progress ? (
+        <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>
+      ) : null}
       {unbind ? (
         <div>
           <Button

@@ -52,6 +52,43 @@ describe("Computer provider readiness projection", () => {
 });
 
 describe("Computer IM CLI readiness projection", () => {
+  it("keeps missing online observations absent instead of synthesizing checking", () => {
+    expect(
+      projectComputerImCliReadiness("computer-1", "online", now, {
+        providerReadiness: () => [],
+        imCliReadiness: () => [],
+      }),
+    ).toEqual([]);
+    expect(
+      projectComputerImCliReadiness("computer-1", "online", now, {
+        providerReadiness: () => [],
+        imCliReadiness: () => [
+          {
+            observation: { provider: "feishu", status: "ready" },
+            observedAt: now.getTime() - 1_000,
+          },
+        ],
+      }),
+    ).toEqual([{ provider: "feishu", status: "ready", observedAt: "2026-08-19T23:59:59.000Z" }]);
+  });
+
+  it("makes the disconnect fence authoritative for every IM CLI Provider", () => {
+    expect(
+      projectComputerImCliReadiness("computer-1", "offline", now, {
+        providerReadiness: () => [],
+        imCliReadiness: () => [
+          {
+            observation: { provider: "slack", status: "ready" },
+            observedAt: now.getTime(),
+          },
+        ],
+      }),
+    ).toEqual([
+      { provider: "feishu", status: "unavailable", observedAt: null },
+      { provider: "slack", status: "unavailable", observedAt: null },
+    ]);
+  });
+
   it("does not let an empty active observation collection hide the generic daemon observation", () => {
     expect(
       projectComputerImCliReadiness("computer-1", "online", now, {

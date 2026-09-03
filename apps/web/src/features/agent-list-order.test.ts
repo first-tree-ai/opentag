@@ -5,7 +5,7 @@ import type {
   ImBindingHandoffStatus,
   ImBindingSummary,
 } from "@opentag/shared/browser";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatCompactNumber, formatElapsedCompact, formatRelativeTime, initials } from "../i18n/format.js";
 import { orderAgentIds } from "./agent-list-order.js";
 import {
@@ -24,7 +24,6 @@ import {
   agentStatusPresentation,
   agentUseInstruction,
   computerRecoveryMessage,
-  messagingAgentStatusDescription,
   messagingChannelLabel,
   messagingConnectionLabel,
   messagingConnectionTone,
@@ -61,6 +60,15 @@ describe("Agent list order", () => {
 });
 
 describe("Agent availability model and presentation", () => {
+  /*
+   * These assertions compare an interval against the clock -- "8m ago", "2m", "1 minute ago" -- so a
+   * live clock makes each one a race it cannot win: a full minute of real delay between building the
+   * fixture and reading the string turns 8m into 9m. Pinning removes the dependency rather than
+   * widening a tolerance around it.
+   */
+  beforeEach(() => vi.setSystemTime(new Date("2026-09-02T12:00:00.000Z")));
+  afterEach(() => vi.useRealTimers());
+
   const boundComputerId = "22222222-2222-4222-8222-222222222222";
   const agent = {
     id: "11111111-1111-4111-8111-111111111111",
@@ -337,48 +345,19 @@ describe("Agent availability model and presentation", () => {
     expect(agentAvailabilitySummary({ ...base, availability: { ...base.availability, state: "suspended" } })).toBe(
       "Not receiving new work",
     );
-    expect(
-      agentRecoveryMessage({
-        ...base,
-        availability: { ...base.availability, reason: "im_not_connected", state: "not_connected" },
-      }),
-    ).toContain("Connect");
-    expect(
-      agentRecoveryMessage({ ...base, availability: { ...base.availability, reason: null, state: "ready" } }),
-    ).toContain("Available");
+    /*
+     * The notice renders only for a suspended Agent, so this is the only reading it has. The
+     * assertions this replaces called it with `state: "ready"` and `state: "not_connected"` --
+     * states it can never be called in, which is how thirteen unreachable branches kept looking
+     * covered.
+     */
+    expect(agentRecoveryMessage()).toBe("This Agent is paused. Resume it to start receiving messages again.");
     expect(agentUseInstruction(base, "feishu")).toBe(
       "Send @reviewer a direct message, or mention it in a Lark group chat.",
     );
     expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
       "every message in connected Slack channels",
     );
-    expect(messagingAgentStatusDescription(base, "feishu")).toContain("Ready to receive");
-    expect(
-      messagingAgentStatusDescription(
-        { ...base, activity: { state: "working", startedAt: "2026-08-20T00:00:00.000Z" } },
-        "slack",
-      ),
-    ).toContain("handling a request");
-    for (const reason of ["computer_offline", "runtime_unavailable"] as const) {
-      expect(
-        messagingAgentStatusDescription(
-          { ...base, availability: { ...base.availability, state: "action_required", reason } },
-          "feishu",
-        ),
-      ).toBeTruthy();
-    }
-    expect(
-      messagingAgentStatusDescription(
-        { ...base, availability: { ...base.availability, state: "action_required", reason: "handoff_unavailable" } },
-        "slack",
-      ),
-    ).toContain("Slack is connected");
-    expect(
-      messagingAgentStatusDescription(
-        { ...base, availability: { ...base.availability, state: "not_connected", reason: "im_not_connected" } },
-        "feishu",
-      ),
-    ).toContain("Connect");
     expect(
       agentAvailabilityRecovery({
         ...base,

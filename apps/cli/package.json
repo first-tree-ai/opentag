@@ -50,6 +50,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1"
   },
+  "dependencies": {
+    "@first-tree-ai/context-tree": "0.1.8"
+  },
   "devDependencies": {
     "@opentag/client": "workspace:*",
     "@opentag/shared": "workspace:*",

@@ -18,6 +18,7 @@ import {
   type RunShell,
   resetLoginShellPathDirsCache,
 } from "../runtime/login-shell-path.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 function wrap(dirs: string[], env: { fnmDir?: string; nvmBin?: string } = {}): string {
   const envBody = `${env.fnmDir ?? ""}\n${env.nvmBin ?? ""}\n`;
@@ -254,6 +255,22 @@ describe("getLoginShellPathDirs", () => {
       dirs: ["/usr/local/bin"],
       env,
     });
+  });
+
+  it("keeps doctor-facing output free of diagnostic log lines", async () => {
+    const entries: RecordedLog[] = [];
+    const result = await probeLoginShellPath({
+      ...linux,
+      logger: recordingLogger(entries),
+      runShell: () => null,
+    });
+
+    expect(result).toEqual({ ok: false, dirs: [], env: {} });
+    expect(entries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ level: "debug", fields: { code: "shell_output_empty" } })]),
+    );
+    expect(entries.every((entry) => entry.level === "debug")).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("log");
   });
 });
 

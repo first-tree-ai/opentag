@@ -280,6 +280,12 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --binary "${{ steps.version.outputs.binary_name }}"
 
+      - name: Smoke staging portable app
+        run: >-
+          node scripts/portable/smoke-portable-app.mjs
+          --channel staging
+          --version "${{ steps.version.outputs.version }}"
+
       - name: Restore and prepare production identity
         run: |
           git checkout -- apps/cli/package.json apps/cli/src/build-info.ts
@@ -302,6 +308,12 @@ jobs:
             --name open-tag \
             --version 0.0.2 \
             --binary opentag
+
+      - name: Smoke production portable app
+        run: >-
+          node scripts/portable/smoke-portable-app.mjs
+          --channel prod
+          --version 0.0.2
 
   container-smoke:
     name: Container Smoke

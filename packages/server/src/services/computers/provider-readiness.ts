@@ -42,15 +42,19 @@ export function projectComputerImCliReadiness(
   const generic = source?.imCliReadiness?.(computerId, observedAt.getTime()) ?? [];
   const artifactByProvider = new Map(artifacts.map((snapshot) => [snapshot.observation.provider, snapshot]));
   const genericByProvider = new Map(generic.map((snapshot) => [snapshot.observation.provider, snapshot]));
-  return IM_CLI_PROVIDERS.map((provider) => {
+  // Missing observations stay absent: the sources already apply their freshness TTL, so a missing
+  // Provider report is a fact for the caller to present as waiting, never a synthesized checking.
+  return IM_CLI_PROVIDERS.flatMap((provider) => {
     const snapshot = artifactByProvider.get(provider) ?? genericByProvider.get(provider);
     return snapshot
-      ? {
-          provider,
-          status: snapshot.observation.status,
-          observedAt: new Date(snapshot.observedAt).toISOString(),
-        }
-      : { provider, status: "checking", observedAt: null };
+      ? [
+          {
+            provider,
+            status: snapshot.observation.status,
+            observedAt: new Date(snapshot.observedAt).toISOString(),
+          },
+        ]
+      : [];
   });
 }
 

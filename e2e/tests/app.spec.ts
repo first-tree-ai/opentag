@@ -65,7 +65,9 @@ test("Agent creation form creates an Agent visible in the list and detail page",
   const create = page.getByRole("button", { name: "Create Agent" });
   await expect(create).toBeEnabled();
   await create.click();
-  await expect(page.getByRole("heading", { name: "Set up e2e-agent", exact: true })).toBeVisible({ timeout: 60_000 });
+  await expect(
+    page.getByRole("heading", { name: /^(Connect your computer|Prepare this computer)$/u, exact: true }),
+  ).toBeVisible({ timeout: 60_000 });
 
   const listResponse = await page.request.get("/api/v1/agents");
   expect(listResponse.ok()).toBeTruthy();
@@ -288,7 +290,11 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
     { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
-    { file: "internal-agent-setup", route: "/internal/agent-setup", heading: "Set up Reviewer" },
+    {
+      file: "internal-agent-setup",
+      route: "/internal/agent-setup",
+      heading: "Where should your agent run?",
+    },
   ];
   const entries: Array<{ file: string; route: string; heading: string }> = [
     { file: "agent-setup", route: "/agents/setup", heading: AGENT_SETUP_CREATE_HEADING },

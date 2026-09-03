@@ -1,4 +1,11 @@
-import type { TaskSummary } from "@opentag/shared/browser";
+import {
+  AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
+  type AgentSetupComputerState,
+  type AgentSetupMessagingState,
+  type AgentSetupRuntimeState,
+  projectAgentSetupComponents,
+  type TaskSummary,
+} from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
@@ -512,6 +519,21 @@ describe("BrowserApi", () => {
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
     const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
     const observedAt = "2026-09-01T10:00:00.000Z";
+    // Slack has no readiness report yet: the canonical snapshot is the needs-provider-clis
+    // preparation stage, with the missing CLI projected as waiting and refresh-only actions.
+    const computer: AgentSetupComputerState = {
+      kind: "bound",
+      computerId,
+      displayName: "Review Mac",
+      platform: "darwin",
+      connectionStatus: "online",
+      lastSeenAt: null,
+      imCliReadiness: [{ provider: "feishu", status: "ready", observedAt }],
+      observedAt,
+    };
+    const runtime: AgentSetupRuntimeState = { kind: "observed", provider: "codex", status: "ready", observedAt };
+    const messaging: AgentSetupMessagingState = { kind: "not-configured" };
+    const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
     const snapshot = {
       agent: {
         id: agentId,
@@ -525,27 +547,14 @@ describe("BrowserApi", () => {
         createdBy: { userId, displayName: "Owner" },
         computer: { computerId, displayName: "Review Mac", platform: "darwin" },
       },
-      stage: "needs-messaging",
-      computer: {
-        kind: "bound",
-        computerId,
-        displayName: "Review Mac",
-        platform: "darwin",
-        connectionStatus: "online",
-        lastSeenAt: null,
-        imCliReadiness: [
-          { provider: "feishu", status: "ready", observedAt },
-          { provider: "slack", status: "checking", observedAt: null },
-        ],
-        observedAt,
-      },
-      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
-      messaging: { kind: "not-configured" },
-      blockers: [{ code: "messaging-not-configured" }],
-      actions: [
-        { kind: "start-messaging", provider: "feishu" },
-        { kind: "start-messaging", provider: "slack" },
-      ],
+      stage: "needs-provider-clis",
+      computer,
+      runtime,
+      messaging,
+      requiredImCliProviders,
+      components: projectAgentSetupComponents({ computer, runtime, messaging, requiredImCliProviders }),
+      blockers: [{ code: "provider-cli-not-ready", provider: "slack", status: "waiting" }],
+      actions: [{ kind: "refresh" }],
       observedAt,
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

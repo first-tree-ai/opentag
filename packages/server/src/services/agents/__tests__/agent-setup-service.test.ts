@@ -12,16 +12,21 @@ import {
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
   FEISHU_REQUIRED_TENANT_SCOPES,
+  type ImCliProvider,
   type ImCliReadinessStatus,
   type IntegrationCredentialExecutionStatus,
   type ProviderReadinessStatus,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type WebSocket from "ws";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
 import { computers, imBindings, slackInstallations, users } from "../../../db/schema/index.js";
+import { ConnectionRegistry } from "../../../runtime/connection-registry.js";
 import type { ProviderReadinessSource } from "../../computers/index.js";
 import { ApplicationCipher } from "../../crypto.js";
 import type { FeishuRegistration, FeishuRegistrationGateway } from "../../im-bindings/feishu/index.js";
@@ -89,8 +94,23 @@ function runtimeReadiness(
   };
 }
 
+function imCliReportsSource(
+  reports: Partial<Record<ImCliProvider, ImCliReadinessStatus>>,
+  observedAt = NOW.getTime() - 5_000,
+): ProviderReadinessSource {
+  return {
+    providerReadiness: () => [],
+    imCliReadiness: () =>
+      (Object.keys(reports) as ImCliProvider[]).flatMap((provider) =>
+        reports[provider] === undefined ? [] : [{ observation: { provider, status: reports[provider] }, observedAt }],
+      ),
+  };
+}
+
 interface HarnessOptions {
   runtimeReadiness?: ProviderReadinessSource;
+  imCliReports?: Partial<Record<ImCliProvider, ImCliReadinessStatus>>;
+  providerReadiness?: ProviderReadinessSource;
   agentRuntimeReadiness?: ProviderReadinessStatus;
   imCliReadiness?: ImCliReadinessStatus;
   credentialExecutionReadiness?: { status: IntegrationCredentialExecutionStatus };
@@ -119,9 +139,18 @@ function harness(options: HarnessOptions = {}) {
     activation: { activateAtomicAttempt: vi.fn() },
   });
   const agentService = new AgentService(unitDatabase.database, { now: () => NOW });
+  const setupReadiness: ProviderReadinessSource | undefined =
+    (options.runtimeReadiness ?? options.imCliReports)
+      ? {
+          ...(options.runtimeReadiness?.providerReadiness
+            ? { providerReadiness: options.runtimeReadiness.providerReadiness }
+            : { providerReadiness: () => [] }),
+          ...(options.imCliReports ? { imCliReadiness: imCliReportsSource(options.imCliReports).imCliReadiness } : {}),
+        }
+      : undefined;
   const service = new AgentSetupService(unitDatabase.database, agentService, imBindingService, feishuSetup, {
     now: () => NOW,
-    providerReadiness: options.runtimeReadiness,
+    providerReadiness: options.providerReadiness ?? setupReadiness,
     slackOAuthAvailable: options.slackOAuthAvailable,
   });
   return { agentService, feishuSetup, imBindingService, service };
@@ -379,28 +408,13 @@ describe("Agent setup projection runtime readiness", () => {
   });
 
   it.each([
-    { name: "no observation yet", readiness: undefined, status: "checking", observedAt: null },
-    {
-      name: "install pending",
-      readiness: runtimeReadiness("install"),
-      status: "install",
-      observedAt: "2026-09-01T09:59:55.000Z",
-    },
-    {
-      name: "sign-in pending",
-      readiness: runtimeReadiness("sign-in"),
-      status: "sign-in",
-      observedAt: "2026-09-01T09:59:55.000Z",
-    },
-    {
-      name: "Provider unavailable",
-      readiness: runtimeReadiness("unavailable"),
-      status: "unavailable",
-      observedAt: "2026-09-01T09:59:55.000Z",
-    },
-  ])("projects $name for the exact runtime Provider", async ({ readiness, status, observedAt }) => {
+    { name: "checking", status: "checking" as const, observedAt: "2026-09-01T09:59:55.000Z" },
+    { name: "install pending", status: "install" as const, observedAt: "2026-09-01T09:59:55.000Z" },
+    { name: "sign-in pending", status: "sign-in" as const, observedAt: "2026-09-01T09:59:55.000Z" },
+    { name: "Provider unavailable", status: "unavailable" as const, observedAt: "2026-09-01T09:59:55.000Z" },
+  ])("projects a real $name observation for the exact runtime Provider", async ({ status, observedAt }) => {
     const bootstrap = await account();
-    const { service } = harness({ runtimeReadiness: readiness });
+    const { service } = harness({ runtimeReadiness: runtimeReadiness(status) });
     const { agentId } = await boundAgent(bootstrap.userId, { online: true });
 
     const snapshot = await service.getSetupById(bootstrap.userId, agentId);
@@ -411,6 +425,29 @@ describe("Agent setup projection runtime readiness", () => {
       runtime: { kind: "observed", provider: "codex", status, observedAt },
       blockers: [{ code: "runtime-not-ready", provider: "codex", status }],
       actions: [{ kind: "refresh" }],
+    });
+  });
+
+  it("projects a waiting runtime while no fresh report exists for the exact runtime Provider", async () => {
+    const bootstrap = await account();
+    const { service } = harness();
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-runtime",
+      computer: { kind: "bound", connectionStatus: "online" },
+      runtime: { kind: "waiting", provider: "codex" },
+      blockers: [{ code: "runtime-not-ready", provider: "codex", status: "waiting" }],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(snapshot.components).toContainEqual({
+      kind: "runtime",
+      status: "waiting",
+      blocking: true,
+      provider: "codex",
+      observedAt: null,
     });
   });
 
@@ -463,18 +500,36 @@ describe("Agent setup projection Messaging states", () => {
 
   it("offers both Providers only while Messaging is not configured", async () => {
     const bootstrap = await account();
-    const { service } = harness({ runtimeReadiness: runtimeReadiness("ready") });
+    const { service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { feishu: "ready", slack: "ready" },
+    });
     const { agentId } = await messagingReadyAgent(bootstrap.userId);
 
     const snapshot = await service.getSetupById(bootstrap.userId, agentId);
     expectContractValid(snapshot);
+    expect(snapshot.requiredImCliProviders).toEqual(["feishu", "slack"]);
+    expect(snapshot.components).toEqual([
+      {
+        kind: "computer",
+        status: "online",
+        blocking: false,
+        computerId: expect.any(String),
+        displayName: "workstation",
+        platform: "linux",
+        observedAt: NOW_ISO,
+      },
+      { kind: "runtime", status: "ready", blocking: false, provider: "codex", observedAt: "2026-09-01T09:59:55.000Z" },
+      { kind: "im-cli", provider: "feishu", status: "ready", observedAt: "2026-09-01T09:59:55.000Z", blocking: false },
+      { kind: "im-cli", provider: "slack", status: "ready", observedAt: "2026-09-01T09:59:55.000Z", blocking: false },
+    ]);
     expect(snapshot).toMatchObject({
       stage: "needs-messaging",
       messaging: { kind: "not-configured" },
       blockers: [{ code: "messaging-not-configured" }],
       actions: [
-        { kind: "start-messaging", provider: "feishu" },
         { kind: "start-messaging", provider: "slack" },
+        { kind: "start-messaging", provider: "feishu" },
       ],
     });
   });
@@ -483,6 +538,7 @@ describe("Agent setup projection Messaging states", () => {
     const bootstrap = await account();
     const { service } = harness({
       runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { feishu: "ready", slack: "ready" },
       slackOAuthAvailable: false,
     });
     const { agentId } = await messagingReadyAgent(bootstrap.userId);
@@ -791,3 +847,335 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 });
+
+describe("Agent setup projection required Provider CLI gate", () => {
+  it("keeps both required IM CLIs fresh ready before not-configured Messaging advances", async () => {
+    const bootstrap = await account();
+    const { service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { feishu: "ready", slack: "ready" },
+    });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-messaging",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+    });
+    expect(snapshot.components).toContainEqual({
+      kind: "im-cli",
+      provider: "feishu",
+      status: "ready",
+      observedAt: "2026-09-01T09:59:55.000Z",
+      blocking: false,
+    });
+  });
+
+  it.each([
+    { name: "missing", reports: { feishu: "ready" }, failing: "slack", status: "waiting" } as const,
+    {
+      name: "checking",
+      reports: { feishu: "ready", slack: "checking" },
+      failing: "slack",
+      status: "checking",
+    } as const,
+    {
+      name: "install pending",
+      reports: { feishu: "ready", slack: "install" },
+      failing: "slack",
+      status: "install",
+    } as const,
+    {
+      name: "unavailable",
+      reports: { feishu: "ready", slack: "unavailable" },
+      failing: "slack",
+      status: "unavailable",
+    } as const,
+  ])("blocks on a $name required Slack CLI while Feishu is ready", async ({ reports, failing, status }) => {
+    const bootstrap = await account();
+    const { service } = harness({ runtimeReadiness: runtimeReadiness("ready"), imCliReports: reports });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-provider-clis",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "provider-cli-not-ready", provider: failing, status }],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(snapshot.components).toContainEqual({
+      kind: "im-cli",
+      provider: failing,
+      status,
+      blocking: true,
+      observedAt: status === "waiting" ? null : "2026-09-01T09:59:55.000Z",
+    });
+    expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
+  });
+
+  it("blocks on every required IM CLI that lacks a fresh ready report", async () => {
+    const bootstrap = await account();
+    const { service } = harness({ runtimeReadiness: runtimeReadiness("ready") });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-provider-clis",
+      messaging: { kind: "not-configured" },
+      blockers: [
+        { code: "provider-cli-not-ready", provider: "feishu", status: "waiting" },
+        { code: "provider-cli-not-ready", provider: "slack", status: "waiting" },
+      ],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(snapshot.components).toContainEqual({
+      kind: "im-cli",
+      provider: "feishu",
+      status: "waiting",
+      observedAt: null,
+      blocking: true,
+    });
+  });
+
+  it("keeps runtime precedence ahead of the IM CLI gate", async () => {
+    const bootstrap = await account();
+    const { service } = harness({ imCliReports: { feishu: "ready", slack: "ready" } });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "needs-runtime",
+      runtime: { kind: "waiting", provider: "codex" },
+      blockers: [{ code: "runtime-not-ready", provider: "codex", status: "waiting" }],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
+  });
+
+  it("expires stale registry reports into a waiting gate and recovers on a fresh report", async () => {
+    const bootstrap = await account();
+    const registry = new ConnectionRegistry();
+    const { agentId, computerId } = await boundAgent(bootstrap.userId, { online: true });
+    const { service } = harness({ providerReadiness: registry });
+
+    const imCliReady = [
+      { provider: "feishu" as const, status: "ready" as const },
+      { provider: "slack" as const, status: "ready" as const },
+    ];
+    await registerRuntimeConnection(registry, computerId, {
+      runtime: { status: "ready" },
+      imCli: imCliReady,
+    });
+    const ready = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(ready);
+    expect(ready.stage).toBe("needs-messaging");
+
+    // The im-cli collection is now older than the source TTL: the registry stops reporting it, so
+    // both required CLIs fall back to waiting even though the runtime report stays fresh.
+    await registerRuntimeConnection(registry, computerId, {
+      runtime: { status: "ready" },
+      imCli: imCliReady,
+      imCliObservedAt: NOW.getTime() - RUNTIME_CLIENT_CAPABILITY_TTL_MS - 1_000,
+    });
+    const expired = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(expired);
+    expect(expired).toMatchObject({
+      stage: "needs-provider-clis",
+      blockers: [
+        { code: "provider-cli-not-ready", provider: "feishu", status: "waiting" },
+        { code: "provider-cli-not-ready", provider: "slack", status: "waiting" },
+      ],
+      actions: [{ kind: "refresh" }],
+    });
+
+    await registerRuntimeConnection(registry, computerId, {
+      runtime: { status: "ready" },
+      imCli: imCliReady,
+    });
+    const recovered = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(recovered);
+    expect(recovered.stage).toBe("needs-messaging");
+    expect(recovered.actions).toContainEqual({ kind: "start-messaging", provider: "slack" });
+  });
+
+  it("does not pull a live Feishu authorization backward over a missing Feishu CLI report", async () => {
+    const bootstrap = await account();
+    const qrExpiresAt = new Date(Date.now() + 60_000);
+    const { feishuSetup, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { slack: "ready" },
+      registrations: registrationGateway(qrExpiresAt),
+    });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+    const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
+
+    const authorizing = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(authorizing);
+    expect(authorizing).toMatchObject({
+      stage: "needs-messaging",
+      messaging: { kind: "authorizing", provider: "feishu", attemptId: attempt.id },
+      blockers: [{ code: "messaging-not-ready", provider: "feishu", state: "authorizing" }],
+    });
+    expect(authorizing.components).toContainEqual({
+      kind: "im-cli",
+      provider: "feishu",
+      status: "waiting",
+      observedAt: null,
+      blocking: false,
+    });
+    expect(authorizing.blockers).not.toContainEqual(expect.objectContaining({ code: "provider-cli-not-ready" }));
+  });
+
+  it("does not pull a waiting Slack handoff backward over a missing unselected Feishu CLI", async () => {
+    const bootstrap = await account();
+    const { imBindingService, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { slack: "ready" },
+    });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+    const { imBindingId } = await activateSlackBinding(imBindingService, agentId);
+
+    const waitingHandoff = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(waitingHandoff);
+    expect(waitingHandoff).toMatchObject({
+      stage: "needs-messaging",
+      messaging: { kind: "waiting-handoff", provider: "slack", bindingId: imBindingId },
+      blockers: [{ code: "messaging-not-ready", provider: "slack", state: "waiting-handoff" }],
+    });
+    expect(waitingHandoff.components).toContainEqual({
+      kind: "im-cli",
+      provider: "feishu",
+      status: "waiting",
+      observedAt: null,
+      blocking: false,
+    });
+    expect(waitingHandoff.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
+  });
+
+  it("keeps a ready Messaging binding ready while an unselected CLI report is missing", async () => {
+    const bootstrap = await account();
+    const { imBindingService, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { slack: "ready" },
+      imCliReadiness: "ready",
+      credentialExecutionReadiness: { status: "ready" },
+    });
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+    const { imBindingId } = await activateSlackBinding(imBindingService, agentId);
+    await observeSlackConnection(agentId);
+
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    expect(snapshot).toMatchObject({
+      stage: "ready",
+      messaging: { kind: "ready", provider: "slack", bindingId: imBindingId },
+      blockers: [],
+    });
+    expect(snapshot.components).toContainEqual({
+      kind: "im-cli",
+      provider: "feishu",
+      status: "waiting",
+      observedAt: null,
+      blocking: false,
+    });
+    expect(snapshot.actions).toContainEqual(
+      expect.objectContaining({ kind: "reauthorize-messaging", provider: "slack" }),
+    );
+  });
+
+  it("expires stale provider-cli artifact reports through their own source TTL", async () => {
+    const bootstrap = await account();
+    const registry = new ConnectionRegistry();
+    const { agentId, computerId } = await boundAgent(bootstrap.userId, { online: true });
+    const { service } = harness({ providerReadiness: registry });
+    const { instanceId } = await registerRuntimeConnection(registry, computerId, {
+      runtime: { status: "ready" },
+    });
+
+    const artifact = (provider: ImCliProvider) => ({
+      agentId,
+      integrationId: "integration-1",
+      provider,
+      credentialGeneration: 1,
+      requestId: "prewarm-1",
+      status: "ready" as const,
+    });
+    // A fresh ready artifact report stands in for the generic daemon collection and satisfies the
+    // first-setup gate for its Provider.
+    expect(registry.setProviderCliArtifactObservation(computerId, instanceId, artifact("feishu"), NOW.getTime())).toBe(
+      true,
+    );
+    expect(registry.setProviderCliArtifactObservation(computerId, instanceId, artifact("slack"), NOW.getTime())).toBe(
+      true,
+    );
+    const ready = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(ready);
+    expect(ready.stage).toBe("needs-messaging");
+
+    // The artifact TTL (300s) is separate from the generic collection TTL: once the reports age
+    // past it and no fresh generic fallback exists, the gate falls back to waiting for both.
+    const staleAt = NOW.getTime() - RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS - 1_000;
+    registry.setProviderCliArtifactObservation(computerId, instanceId, artifact("feishu"), staleAt);
+    registry.setProviderCliArtifactObservation(computerId, instanceId, artifact("slack"), staleAt);
+    const expired = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(expired);
+    expect(expired).toMatchObject({
+      stage: "needs-provider-clis",
+      blockers: [
+        { code: "provider-cli-not-ready", provider: "feishu", status: "waiting" },
+        { code: "provider-cli-not-ready", provider: "slack", status: "waiting" },
+      ],
+      actions: [{ kind: "refresh" }],
+    });
+
+    // A fresh artifact report recovers the gate.
+    registry.setProviderCliArtifactObservation(computerId, instanceId, artifact("feishu"), NOW.getTime());
+    registry.setProviderCliArtifactObservation(computerId, instanceId, artifact("slack"), NOW.getTime());
+    const recovered = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(recovered);
+    expect(recovered.stage).toBe("needs-messaging");
+    expect(recovered.actions).toContainEqual({ kind: "start-messaging", provider: "slack" });
+  });
+});
+
+async function registerRuntimeConnection(
+  registry: ConnectionRegistry,
+  computerId: string,
+  entry: {
+    runtime?: { status: ProviderReadinessStatus };
+    imCli?: readonly { provider: ImCliProvider; status: ImCliReadinessStatus }[];
+    imCliObservedAt?: number;
+  },
+): Promise<{ instanceId: string }> {
+  const socket = { close: vi.fn(), terminate: vi.fn() } as unknown as WebSocket;
+  const instanceId = crypto.randomUUID();
+  await registry.register(
+    {
+      computerId,
+      installationId: crypto.randomUUID(),
+      instanceId,
+      lastHeartbeatAt: NOW.getTime(),
+      socket,
+      ...(entry.runtime
+        ? {
+            providerReadiness: [{ provider: "codex" as const, status: entry.runtime.status }],
+            providerReadinessObservedAt: NOW.getTime(),
+            providerReadinessProviders: ["codex" as const],
+          }
+        : {}),
+      ...(entry.imCli
+        ? {
+            imCliReadiness: [...entry.imCli],
+            imCliReadinessObservedAt: entry.imCliObservedAt ?? NOW.getTime(),
+          }
+        : {}),
+    },
+    async () => undefined,
+  );
+  return { instanceId };
+}

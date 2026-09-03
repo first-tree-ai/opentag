@@ -1,3 +1,4 @@
+import { createLogger } from "../observability/logger.js";
 import { AgentProviderError } from "./errors.js";
 import type { AgentProviderRunEvent, AgentProviderRunResult, AgentUsage } from "./types.js";
 import { AGENT_RUNTIME_TEXT_MAX_BYTES } from "./types.js";
@@ -8,6 +9,7 @@ interface ToolLifecycle {
 }
 
 const TOOL_COMPLETION_STATUSES: ReadonlySet<unknown> = new Set(["completed", "failed", "declined"]);
+const logger = createLogger("agent-runtime-event-validator");
 
 /**
  * Validates the provider-neutral event grammar for one Run. Provider adapters
@@ -27,6 +29,7 @@ export class AgentRunEventValidator {
       this.#accept(event);
     } catch (error) {
       if (error instanceof AgentProviderError) throw error;
+      logger.debug({ code: "event_validation_failed", error: String(error) }, "Provider event validation failed");
       throw protocolError(error instanceof Error ? error.message : "provider emitted an invalid event");
     }
   }

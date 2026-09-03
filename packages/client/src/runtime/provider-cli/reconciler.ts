@@ -33,6 +33,7 @@ import type { ProviderCliValidationRequest, ProviderCliValidationRunner } from "
 
 const UNREPAIRABLE = new Set(["unsupported_platform", "global_bin_unavailable"]);
 const GRANT_REPLAY_RETENTION_MS = 60_000;
+const logger = createLogger("runtime-provider-cli-reconciler");
 
 /**
  * A foreground targeted connect is the sole first-setup installer and holds the per-provider
@@ -141,7 +142,13 @@ export class ProviderCliReconciler {
    */
   async readySelectionForRun(provider: ProviderCliProvider): Promise<ProviderCliReadySelection | undefined> {
     if (this.#closed || this.#signal?.aborted) return undefined;
-    const inspection = await this.#manager.inspect(provider).catch(() => undefined);
+    const inspection = await this.#manager.inspect(provider).catch((error: unknown) => {
+      logger.debug(
+        { code: "ready_inspection_failed", provider, error: String(error) },
+        "Provider CLI readiness inspection failed",
+      );
+      return undefined;
+    });
     const live = inspection ? await readySelectionFromInspect(this.#manager.layout, provider, inspection) : undefined;
     const accepted = this.#readySelection.get(provider);
     if (accepted && live && selectionsMatch(accepted, live)) return { ...live };
@@ -285,7 +292,11 @@ export class ProviderCliReconciler {
       }
       this.#readySelection.delete(provider);
       return "unavailable";
-    } catch {
+    } catch (error) {
+      logger.debug(
+        { code: "provider_reconcile_failed", provider, error: String(error) },
+        "Provider CLI reconciliation failed",
+      );
       this.#readySelection.delete(provider);
       return "unavailable";
     }
@@ -416,7 +427,15 @@ export class ProviderCliReconciler {
       );
       if (!this.#finishGrant(frame, abort)) return;
       await this.#publishValidation(frame, result);
-    } catch {
+    } catch (error) {
+      logger.debug(
+        {
+          code: "validation_failed",
+          provider: frame.provider,
+          error: String(error),
+        },
+        "Provider CLI validation failed",
+      );
       if (!this.#finishGrant(frame, abort)) return;
       await this.#publishValidation(frame, { status: "needs_attention" });
     }
@@ -509,7 +528,11 @@ async function readySelectionFromInspect(
   let record: ProviderCliSelectionRecord | undefined;
   try {
     record = await readProviderCliSelection(layout, provider);
-  } catch {
+  } catch (error) {
+    logger.debug(
+      { code: "selection_read_failed", provider, error: String(error) },
+      "Provider CLI selection read failed",
+    );
     return undefined;
   }
   if (!record) return undefined;

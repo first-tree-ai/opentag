@@ -102,6 +102,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
           {m.im_messaging_page_title()}
         </Text>
+        <p className="text-sm text-kumo-subtle">{m.im_messaging_page_description()}</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -136,10 +137,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                 <AsyncState state={state}>
                   {(binding) => (
                     <div className="grid gap-6">
-                      <section
-                        className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-                        aria-labelledby="messaging-app-heading"
-                      >
+                      <section className="grid gap-4" aria-labelledby="messaging-app-heading">
                         <Text as="h2" id="messaging-app-heading" variant="heading">
                           {m.im_messaging_app()}
                         </Text>
@@ -211,23 +209,20 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                         ) : (
                           <>
                             <p className="text-sm text-kumo-subtle">
-                              {m.im_messaging_connect_description({
-                                alternateProvider: messagingProviderLabel("slack"),
-                                provider: messagingProviderLabel("feishu"),
-                              })}
+                              {spaceScriptBoundary(
+                                m.im_messaging_connect_description({
+                                  alternateProvider: messagingProviderLabel("feishu"),
+                                  provider: messagingProviderLabel("slack"),
+                                }),
+                              )}
                             </p>
+                            {/*
+                             * Neither channel is the recommended one — which app a team already lives in decides this,
+                             * not us — so both connect actions share one neutral variant and carry their own mark.
+                             */}
                             <div className="flex flex-wrap gap-3">
                               <Button
-                                loading={feishuSetup.loading}
-                                disabled={feishuSetup.loading}
-                                onClick={(event) => {
-                                  activeFeishuTriggerRef.current = event.currentTarget;
-                                  void connectFeishu();
-                                }}
-                              >
-                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
-                              </Button>
-                              <Button
+                                icon={<ProviderIcon className="size-4" provider="slack" />}
                                 loading={slackConfiguration.loading}
                                 disabled={slackConfiguration.loading}
                                 variant="secondary"
@@ -235,16 +230,25 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               >
                                 {m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
                               </Button>
+                              <Button
+                                icon={<ProviderIcon className="size-4" provider="feishu" />}
+                                loading={feishuSetup.loading}
+                                disabled={feishuSetup.loading}
+                                variant="secondary"
+                                onClick={(event) => {
+                                  activeFeishuTriggerRef.current = event.currentTarget;
+                                  void connectFeishu();
+                                }}
+                              >
+                                {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
+                              </Button>
                             </div>
                           </>
                         )}
                       </section>
 
                       {binding ? (
-                        <section
-                          className="grid gap-4 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-                          aria-labelledby="trigger-rules-heading"
-                        >
+                        <section className="grid gap-4" aria-labelledby="trigger-rules-heading">
                           <div className="grid gap-2">
                             <Text
                               as="h2"

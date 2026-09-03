@@ -96,7 +96,7 @@ server container.
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://download.opentag.build/releases` |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://storage.googleapis.com/opentag-release/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
 
 The two optional variables control how the Server learns the exact channel latest target it advertises to connected

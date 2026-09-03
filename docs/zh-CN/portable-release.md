@@ -1,7 +1,7 @@
 # OpenTag Portable 发布指南
 
 > Canonical source: [../portable-release.md](../portable-release.md)
-> Last synced with: 2026-09-01
+> Last synced with: 2026-09-03
 
 Portable release 是一份自包含的 OpenTag 安装包：每个平台一个 tarball，同时携带 bundle 后的 CLI **和它自己的
 Node.js runtime**，因此没有 Node.js、没有 npm、没有任何 package manager 的机器也能安装并运行 OpenTag。它发布到
@@ -18,7 +18,7 @@ identity 改写和相同的 version coordinate，coordinate 的推导方式见 [
 ## 安装
 
 ~~~bash
-curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh
+curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
 ~~~
 
 installer 会解析 channel 的 `latest.json`，下载所检测平台对应的 tarball，校验其已发布的 SHA-256，解压，运行一次新
@@ -59,12 +59,15 @@ shim，并能在之后每一次更新后继续生效。shim 会在 exec 内嵌 r
 VERSION                 纯文本 version
 INSTALL.json            release metadata、platform、install mode 与 app entry
 node/bin/node           内嵌 Node.js runtime，已对官方 SHASUMS256.txt 校验
-app/                    bundle 后的 CLI、其 package manifest、LICENSE、README、THIRD_PARTY_NOTICES
+app/                    bundle 后的 CLI、其 package manifest、LICENSE、README、THIRD_PARTY_NOTICES、
+                        dependency-closure.json 与内嵌的 node_modules/ 依赖树
 bin/<binName>           artifact 本地 shim，在 payload 激活之前使用
 ~~~
 
-bundle 后的 CLI 没有 `node_modules`：`apps/cli` 不声明任何 runtime dependency，一旦这一点发生变化，构建会 fail
-closed，而不是产出一个只在用户运行时才崩溃的 artifact。
+bundle 后的 CLI 的 Context Tree 集成会在运行时解析已安装的 `@first-tree-ai/context-tree` 包——通过 `createRequire`
+读取其 `package.json`、执行其 bundle 后的 CLI，并读取其自带的 skills 与 templates——因此每个 payload 都会内嵌该包
+及其完整的生产依赖闭包，作为物理的 `app/node_modules` 目录树。`app/dependency-closure.json`
+记录精确的 direct pin 与每个内嵌包的 name 与 version。
 
 ## 自动升级
 
@@ -105,7 +108,7 @@ daemon 的 updater 遵循严格的契约：
 ~~~
 
 默认 coordinate 是 `opentag-release` bucket 的 `releases` prefix，通过
-`https://download.opentag.build/releases` 对外提供。
+`https://storage.googleapis.com/opentag-release/releases` 对外提供。
 
 version prefix 下的一切都是不可变的，写入时带 create-only precondition（`--if-generation-match=0`）以及
 `--content-md5` digest，因此 Cloud Storage 会同时拒绝静默覆盖和损坏的上传。只有 `latest.json` 与 `install.sh` 可变；
@@ -135,7 +138,28 @@ node scripts/portable/verify-portable-artifact.mjs \
   --tarball .portable-release/staging/0.0.2-staging.1.1/open-tag-staging-0.0.2-staging.1.1-darwin-arm64.tar.gz
 ~~~
 
-verifier 会检查已发布的 checksum、解压后的结构与 metadata；当 artifact 目标平台就是宿主平台时，还会实际运行它。
+verifier 会检查已发布的 checksum、解压后的结构、metadata 与内嵌的依赖图（精确 direct pin、closure record、随包
+assets，以及无 symlink/无 native 的布局）。当 artifact 目标平台就是宿主平台时，还会实际运行它：通过 shim 运行
+OpenTag CLI，并在隔离 home 下运行内嵌的 Context Tree CLI（`--version`、`--help`、`list`）。
+它还会对不存在的 managed name 执行 OpenTag 的 `context-tree connect`，验证真实的 runtime 解析路径，
+但不连接 Tree、不持久化配置。
+
+portable builder 会内嵌 `@first-tree-ai/context-tree` 以及 frozen install 为它解析出的每个生产依赖，形成确定性的
+扁平 `app/node_modules` 目录树：每个包一个真实目录，无 symlink、无嵌套 `node_modules`、无 native addon。包内容
+只从已安装的 store 拷贝——绝不联网拉取，也绝不执行 lifecycle script；Context Tree 自带的 `postinstall` 会随发布
+内容一起携带但保持惰性，因为 OpenTag 直接调用打包好的 CLI。app manifest 只保留真实的 direct pin；builder（在
+identity smoke 之前）与 artifact verifier（对每个平台）都会运行同一套图校验。
+
+**Fail-closed 依赖形状。** `apps/cli` 只能声明 `@first-tree-ai/context-tree`，且必须是精确的 `x.y.z` pin。未知或
+非精确的 direct pin、非空的 optional/peer dependency、带 `os`/`cpu` 约束的包、内嵌包（Context Tree 自身除外）上
+的 lifecycle script、发布内容里的 symlink、native addon，以及同名包解析到不同的已安装根目录都会让构建失败。
+这些依赖形状必须先获得明确的打包支持才能发布。
+
+**CI gate。** staging 与 production 的每次 `CLI Pack Smoke` 都会用刚构建好的 release-channel CLI 组装真实的
+portable app、校验其内嵌依赖图，并在临时 `HOME` 与最小环境下运行迁移后的 Context Tree CLI 和 OpenTag 的
+runtime 解析探针（无 `NODE_PATH`、`NODE_OPTIONS` 或宿主凭证；`scripts/portable/smoke-portable-app.mjs`）。
+该 gate 不需要下载 Node.js runtime，因此依赖回归会直接在普通 CI
+失败，而不是拖到 release 阶段。
 
 内嵌 Node.js version 固定在 `scripts/portable/node-version.txt`，必须是精确的 `vX.Y.Z`。其 tarball 在成为 artifact
 的一部分之前，会先对该 release 的官方 `SHASUMS256.txt` 校验。
@@ -204,7 +228,7 @@ preflight，使不可变 prefix 冲突在 release 仍可重试时就失败；随
 | `OPENTAG_PORTABLE_GCS_BUCKET` | bucket 名称（默认 `opentag-release`） |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | channel 段之前的 object prefix（默认 `releases`） |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | 执行 `gcloud` 调用所用的 project |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://download.opentag.build/releases`） |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://storage.googleapis.com/opentag-release/releases`） |
 | `OPENTAG_PORTABLE_PLATFORMS` | 可选的构建平台过滤 |
 
 发布使用 workload identity federation，因此仓库中不保存任何 service-account key。该 service account 需要 bucket 上的

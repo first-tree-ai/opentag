@@ -29,6 +29,8 @@ import {
 
 export interface ProviderCliEnsureCommandOptions extends ProviderCliCommandDeps {
   readonly provider: string;
+  /** Observe real foreground phases when a parent command owns final presentation. */
+  readonly onPhase?: (event: ProviderCliPhaseEvent) => void;
   readonly managedOnly?: boolean;
   /** `--no-path-update` passes false. */
   readonly pathUpdate?: boolean;
@@ -123,9 +125,11 @@ async function ensureOneProvider(
       pathUpdate: options.pathUpdate ?? true,
       dryRun: options.dryRun ?? false,
       onPhase:
-        options.json || !emitPhases
+        (options.json && !options.onPhase) || !emitPhases
           ? undefined
           : (event) => {
+              options.onPhase?.(event);
+              if (options.json) return;
               const line = renderPhaseLine(event);
               if (line !== undefined) writeStdout(options, `${line}\n`);
             },

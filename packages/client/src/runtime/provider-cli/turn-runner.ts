@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createLogger } from "../../observability/logger.js";
 import { validatePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveAccountHome, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliCatalogEntry } from "./catalog.js";
@@ -18,6 +19,8 @@ import {
   readProviderCliTurnPlan,
 } from "./turn-plan.js";
 import type { ProviderCliProvider } from "./types.js";
+
+const logger = createLogger("runtime-provider-cli-turn-runner");
 
 export interface ProviderCliTurnRunnerArgv {
   readonly planPath: string;
@@ -101,6 +104,10 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
     plansRoot: options.plansRoot,
   });
   const identity = await computeFileIdentity(plan.targetPath).catch((error: unknown) => {
+    logger.debug(
+      { code: "turn_target_identity_failed", error: String(error) },
+      "Provider CLI Turn target identity failed",
+    );
     throw mapTargetError(error);
   });
   if (identity.path !== plan.targetPath) {
@@ -134,6 +141,7 @@ export async function runProviderCliTurnRunner(
       plansRoot: options.plansRoot,
     });
   } catch (error) {
+    logger.debug({ code: "turn_runner_failed", error: String(error) }, "Provider CLI Turn runner failed");
     const message = error instanceof Error ? error.message : "Provider CLI Turn runner failed";
     process.stderr.write(`${message}\n`);
     return 1;
@@ -237,6 +245,10 @@ async function assertPrivateSlackConfigDirectory(configDir: string): Promise<voi
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new ProviderCliTurnPlanError("unsafe", "Slack config directory is missing");
     }
+    logger.debug(
+      { code: "slack_config_stat_failed", error: String(error) },
+      "Slack config directory inspection failed",
+    );
     throw error;
   }
   const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -254,7 +266,11 @@ async function assertPrivateSlackConfigDirectory(configDir: string): Promise<voi
   let canonical: string;
   try {
     canonical = await realpath(frozen);
-  } catch {
+  } catch (error) {
+    logger.debug(
+      { code: "slack_config_realpath_failed", error: String(error) },
+      "Slack config directory canonicalization failed",
+    );
     throw new ProviderCliTurnPlanError("unsafe", "Slack config directory cannot be canonicalized");
   }
   if (canonical !== frozen) {

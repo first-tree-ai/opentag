@@ -1,4 +1,5 @@
 import semver from "semver";
+import { createLogger } from "../../observability/logger.js";
 import { RuntimeStorageError } from "../../storage/durable-file.js";
 import {
   type ProviderCliAccountLayout,
@@ -76,6 +77,7 @@ export interface ProviderCliEnsureOptions {
 }
 
 const SUPPORTED_PLATFORMS: ReadonlySet<string> = new Set(["darwin", "linux"]);
+const logger = createLogger("runtime-provider-cli-manager");
 
 const REMEDIATIONS: Record<string, string> = {
   not_installed: "Run `opentag provider-cli ensure` to select a compatible CLI or install the reviewed artifact.",
@@ -165,7 +167,11 @@ export class ProviderCliManager {
     let record: ProviderCliSelectionRecord | undefined;
     try {
       record = await readProviderCliSelection(this.#layout, provider);
-    } catch {
+    } catch (error) {
+      logger.debug(
+        { code: "selection_inspection_failed", provider, error: String(error) },
+        "Provider CLI selection inspection failed",
+      );
       const launcher = await inspectProviderCliLauncher(this.#layout, entry, undefined);
       return {
         provider,
@@ -220,7 +226,13 @@ export class ProviderCliManager {
     };
 
     // Validate the exact selected target and its fingerprint.
-    const identity = await computeFileIdentity(targetPath).catch(() => undefined);
+    const identity = await computeFileIdentity(targetPath).catch((error: unknown) => {
+      logger.debug(
+        { code: "selection_identity_failed", provider, error: String(error) },
+        "Provider CLI selection identity failed",
+      );
+      return undefined;
+    });
     if (!identity) {
       return fail(selection.kind === "external" ? "external_path_invalid" : "artifact_drifted");
     }
@@ -306,7 +318,8 @@ export class ProviderCliManager {
     try {
       selection = await readProviderCliSelection(this.#layout, provider);
       detection = await this.#detect(provider, entry, selection, mode);
-    } catch {
+    } catch (error) {
+      logger.debug({ code: "detection_failed", provider, error: String(error) }, "Provider CLI detection failed");
       session.recordPhase("detect", "failed", "selection_invalid");
       return failed("selection_invalid", []);
     }
@@ -336,6 +349,7 @@ export class ProviderCliManager {
         },
       );
     } catch (error) {
+      logger.debug({ code: "ensure_failed", provider, error: String(error) }, "Provider CLI ensure failed");
       if (error instanceof ProviderCliLockBusyError) {
         return failed("operation_in_progress", []);
       }
@@ -576,6 +590,10 @@ export class ProviderCliManager {
       try {
         installed = await installer.install(entry, provider);
       } catch (error) {
+        logger.debug(
+          { code: "managed_install_failed", provider, error: String(error) },
+          "Provider CLI managed install failed",
+        );
         const code =
           error instanceof ProviderCliInstallError
             ? error.code

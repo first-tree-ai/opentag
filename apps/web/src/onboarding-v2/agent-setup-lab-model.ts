@@ -5,6 +5,7 @@ export const LAB_AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 export const LAB_ACCOUNT_ID = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const LAB_COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const LAB_SPARE_COMPUTER_ID = "95fe9af3-d1c6-472b-b78c-8a7ccf512751";
+const LAB_PREVIOUS_COMPUTER_ID = "a5fe9af3-d1c6-472b-b78c-8a7ccf512752";
 const LAB_NOW = "2026-09-01T10:00:00.000Z";
 
 export const LAB_JOURNEYS = ["first", "additional"] as const;
@@ -243,7 +244,7 @@ export function labSeed(
   const boundComputer = preset.computer === "bound" ? computers[0] : undefined;
   const assignedComputer =
     preset.computer === "requires-rebind"
-      ? { computerId: LAB_COMPUTER_ID, displayName: "Previous Mac", platform: "darwin" as const }
+      ? { computerId: LAB_PREVIOUS_COMPUTER_ID, displayName: "Previous Mac", platform: "darwin" as const }
       : boundComputer;
   const agent: AgentSummary = {
     id: LAB_AGENT_ID,

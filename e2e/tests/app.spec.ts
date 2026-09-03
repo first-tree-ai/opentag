@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
+import { usageVisualFixtures } from "./usage-visual-fixtures.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -59,11 +60,23 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("button", { name: "Journey · New computer · Agent creation" }).click();
   const closeLab = page.getByRole("button", { name: "Close", exact: true });
   await expect(closeLab).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
 
   const scenario = page.getByRole("combobox", { name: "Start from" });
   await scenario.click();
   await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness--compact');
+  const readinessRows = readiness.locator(":scope > li");
+  await expect(readinessRows).toHaveCount(2);
+  await expect(readinessRows.nth(0)).toContainText("Codex");
+  await expect(readinessRows.nth(0)).toContainText(
+    "No recent report from Review Mac. Finish setup there, then check again.",
+  );
+  await expect(readinessRows.nth(1)).toContainText("Messaging support");
+  await expectWithinViewport(readinessRows.nth(0));
+  await expectWithinViewport(readinessRows.nth(1));
+  await expectNoPageOverflow(page);
   await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
   await page.getByRole("button", { name: "Finish readiness check" }).click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
@@ -76,7 +89,6 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("button", { name: "Reconnect computer" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toHaveCount(0);
 
-  await page.setViewportSize({ width: 390, height: 844 });
   await expectWithinViewport(closeLab);
   await expectNoPageOverflow(page);
   await expectAccessible(page);
@@ -148,9 +160,14 @@ test("Agent settings persist a change across reload", async ({ page }) => {
 
 test("Agent navigation reaches every Agent-owned destination", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
+  await page.route("**/api/v1/internal/navigation-visibility", async (route) => {
+    await route.fulfill({ json: { integrations: true, skills: true } });
+  });
   const destinations = [
     { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
+    { name: "Skills", heading: "Skills", path: `/agents/${agentId}/skills` },
+    { name: "Integrations", heading: "Integrations", path: `/agents/${agentId}/integrations` },
     { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
   for (const destination of destinations) {
@@ -214,7 +231,7 @@ test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", as
   );
 });
 
-test("Agents and empty Usage keep their compact composition when their own containers have room", async ({ page }) => {
+test("Agents and Usage keep their compact composition when their own containers have room", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   await page.setViewportSize({ width: 1100, height: 900 });
 
@@ -261,10 +278,21 @@ test("Agents and empty Usage keep their compact composition when their own conta
 
   await page.setViewportSize({ width: 1100, height: 900 });
 
+  const usageFixture = usageVisualFixtures.find((fixture) => fixture.name === "single-spike");
+  if (!usageFixture) throw new Error("Missing single-spike Usage fixture");
+  const { name: _fixtureName, ...usageResponse } = usageFixture;
+  await page.route(`**/api/v1/agents/${agentId}/usage?**`, async (route) => {
+    await route.fulfill({ json: usageResponse });
+  });
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { level: 2, name: "No token usage" })).toBeVisible();
-  await expect(page.locator('[data-ui="usage-analysis"]')).toHaveCount(0);
-  await expectNoPageOverflow(page);
+  const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
+  await expect(usageAnalysisCards).toHaveCount(2);
+  const [trendCard, breakdownCard] = await Promise.all([
+    usageAnalysisCards.nth(0).boundingBox(),
+    usageAnalysisCards.nth(1).boundingBox(),
+  ]);
+  if (!trendCard || !breakdownCard) throw new Error("Usage analysis cards did not produce layout boxes");
+  expect(trendCard.y).toBeCloseTo(breakdownCard.y, 1);
 });
 
 test("an unauthenticated protected visit redirects to login", async ({ browser }) => {

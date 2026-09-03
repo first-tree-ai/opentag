@@ -201,7 +201,7 @@ describe("agent setup lab page", () => {
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
   });
 
-  it("carries the runtime selected in the real creation form into First Agent setup", async () => {
+  it("carries the creation Runtime into setup without allowing the created Agent to change it", async () => {
     renderLabPage();
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -214,12 +214,8 @@ describe("agent setup lab page", () => {
 
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Fine-tune state" }));
-    expect(screen.getByRole("combobox", { name: "Agent runtime" }).textContent).toContain("Claude Code");
-    expect(screen.queryByText("1 changed")).toBeNull();
-
-    await chooseOption("Agent runtime", "Codex");
-    expect(screen.getByText("1 changed")).toBeTruthy();
-    await chooseOption("Agent runtime", "Claude Code");
+    expect(screen.queryByRole("combobox", { name: "Agent runtime" })).toBeNull();
+    expect(stateSummaryRow("Runtime · Claude Code").textContent).toContain("Waiting");
     expect(screen.queryByText("1 changed")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));

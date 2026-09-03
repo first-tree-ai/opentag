@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  LAB_AGENT_ID,
   LAB_SCENARIOS,
   type LabScenario,
   labScenarioDefaults,
@@ -44,10 +45,24 @@ describe("agent setup lab model", () => {
     }
   });
 
-  it("covers each Computer recovery shape directly", () => {
+  it("covers each Computer recovery shape directly", async () => {
     expect(snapshotFor("computer-connection").computer.kind).toBe("not-bound");
     expect(snapshotFor("computer-reconnect").computer).toMatchObject({ kind: "bound", connectionStatus: "offline" });
-    expect(snapshotFor("computer-rebind").computer.kind).toBe("requires-rebind");
+    const rebind = memoryFor("computer-rebind");
+    const initial = rebind.inspect().snapshot.computer;
+    expect(initial.kind).toBe("requires-rebind");
+    if (initial.kind !== "requires-rebind") throw new Error("The rebind scenario needs a stale Computer binding");
+    const target = (await rebind.computerAdapter.inventory.computers()).computers[0];
+    if (!target) throw new Error("The rebind scenario needs an owned Computer target");
+    expect(initial.computerId).not.toBe(target.computerId);
+
+    await rebind.computerAdapter.inventory.bindComputer(LAB_AGENT_ID, target.computerId);
+
+    expect(rebind.inspect().snapshot.computer).toMatchObject({
+      kind: "bound",
+      computerId: target.computerId,
+      displayName: "Review Mac",
+    });
   });
 
   it("covers waiting, checking, install, and sign-in Runtime states directly", () => {

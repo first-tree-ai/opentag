@@ -31,42 +31,81 @@ import type { MemorySetupAdapter } from "./setup-memory-adapter.js";
 
 type LabScenarioOption = LabScenario | ReadinessScenario;
 
+type LabScenarioCopy = Readonly<{ label: () => string; description: () => string }>;
+
+const LAB_SCENARIO_COPY: Record<LabScenario, LabScenarioCopy> = {
+  "full-new-computer": {
+    label: m.onboarding_v2_lab_scenario_full_new_computer,
+    description: m.onboarding_v2_lab_scenario_full_new_computer_description,
+  },
+  "full-existing-computer": {
+    label: m.onboarding_v2_lab_scenario_full_existing_computer,
+    description: m.onboarding_v2_lab_scenario_full_existing_computer_description,
+  },
+  "agent-creation": {
+    label: m.onboarding_v2_lab_scenario_agent_creation,
+    description: m.onboarding_v2_lab_scenario_agent_creation_description,
+  },
+  "computer-connection": {
+    label: m.onboarding_v2_lab_scenario_computer_connection,
+    description: m.onboarding_v2_lab_scenario_computer_connection_description,
+  },
+  "computer-reconnect": {
+    label: m.onboarding_v2_lab_scenario_computer_reconnect,
+    description: m.onboarding_v2_lab_scenario_computer_reconnect_description,
+  },
+  "computer-rebind": {
+    label: m.onboarding_v2_lab_scenario_computer_rebind,
+    description: m.onboarding_v2_lab_scenario_computer_rebind_description,
+  },
+  "runtime-waiting": {
+    label: m.onboarding_v2_lab_scenario_runtime_waiting,
+    description: m.onboarding_v2_lab_scenario_runtime_waiting_description,
+  },
+  "runtime-checking": {
+    label: m.onboarding_v2_lab_scenario_runtime_checking,
+    description: m.onboarding_v2_lab_scenario_runtime_checking_description,
+  },
+  "runtime-setup": {
+    label: m.onboarding_v2_lab_scenario_runtime_setup,
+    description: m.onboarding_v2_lab_scenario_runtime_setup_description,
+  },
+  "runtime-sign-in": {
+    label: m.onboarding_v2_lab_scenario_runtime_sign_in,
+    description: m.onboarding_v2_lab_scenario_runtime_sign_in_description,
+  },
+  "messaging-support-setup": {
+    label: m.onboarding_v2_lab_scenario_messaging_support_setup,
+    description: m.onboarding_v2_lab_scenario_messaging_support_setup_description,
+  },
+  "messaging-setup": {
+    label: m.onboarding_v2_lab_scenario_messaging_setup,
+    description: m.onboarding_v2_lab_scenario_messaging_setup_description,
+  },
+  "messaging-handoff": {
+    label: m.onboarding_v2_lab_scenario_messaging_handoff,
+    description: m.onboarding_v2_lab_scenario_messaging_handoff_description,
+  },
+  "messaging-recovery": {
+    label: m.onboarding_v2_lab_scenario_messaging_recovery,
+    description: m.onboarding_v2_lab_scenario_messaging_recovery_description,
+  },
+  "everything-ready": {
+    label: m.onboarding_v2_lab_scenario_everything_ready,
+    description: m.onboarding_v2_lab_scenario_everything_ready_description,
+  },
+};
+
 function scenarioLabel(scenario: LabScenario): string {
-  if (scenario === "full-new-computer") return m.onboarding_v2_lab_scenario_full_new_computer();
-  if (scenario === "full-existing-computer") return m.onboarding_v2_lab_scenario_full_existing_computer();
-  if (scenario === "agent-creation") return m.onboarding_v2_lab_scenario_agent_creation();
-  if (scenario === "computer-connection") return m.onboarding_v2_lab_scenario_computer_connection();
-  if (scenario === "computer-reconnect") return m.onboarding_v2_lab_scenario_computer_reconnect();
-  if (scenario === "computer-rebind") return m.onboarding_v2_lab_scenario_computer_rebind();
-  if (scenario === "runtime-waiting") return m.onboarding_v2_lab_scenario_runtime_waiting();
-  if (scenario === "runtime-checking") return m.onboarding_v2_lab_scenario_runtime_checking();
-  if (scenario === "runtime-setup") return m.onboarding_v2_lab_scenario_runtime_setup();
-  if (scenario === "runtime-sign-in") return m.onboarding_v2_lab_scenario_runtime_sign_in();
-  if (scenario === "messaging-support-setup") return m.onboarding_v2_lab_scenario_messaging_support_setup();
-  if (scenario === "messaging-setup") return m.onboarding_v2_lab_scenario_messaging_setup();
-  if (scenario === "messaging-handoff") return m.onboarding_v2_lab_scenario_messaging_handoff();
-  if (scenario === "messaging-recovery") return m.onboarding_v2_lab_scenario_messaging_recovery();
-  return m.onboarding_v2_lab_scenario_everything_ready();
+  return LAB_SCENARIO_COPY[scenario].label();
 }
 
 function scenarioDescription(scenario: LabScenario): string {
-  if (scenario === "full-new-computer") return m.onboarding_v2_lab_scenario_full_new_computer_description();
-  if (scenario === "full-existing-computer") return m.onboarding_v2_lab_scenario_full_existing_computer_description();
-  if (scenario === "agent-creation") return m.onboarding_v2_lab_scenario_agent_creation_description();
-  if (scenario === "computer-connection") return m.onboarding_v2_lab_scenario_computer_connection_description();
-  if (scenario === "computer-reconnect") return m.onboarding_v2_lab_scenario_computer_reconnect_description();
-  if (scenario === "computer-rebind") return m.onboarding_v2_lab_scenario_computer_rebind_description();
-  if (scenario === "runtime-waiting") return m.onboarding_v2_lab_scenario_runtime_waiting_description();
-  if (scenario === "runtime-checking") return m.onboarding_v2_lab_scenario_runtime_checking_description();
-  if (scenario === "runtime-setup") return m.onboarding_v2_lab_scenario_runtime_setup_description();
-  if (scenario === "runtime-sign-in") return m.onboarding_v2_lab_scenario_runtime_sign_in_description();
-  if (scenario === "messaging-support-setup") {
-    return m.onboarding_v2_lab_scenario_messaging_support_setup_description();
-  }
-  if (scenario === "messaging-setup") return m.onboarding_v2_lab_scenario_messaging_setup_description();
-  if (scenario === "messaging-handoff") return m.onboarding_v2_lab_scenario_messaging_handoff_description();
-  if (scenario === "messaging-recovery") return m.onboarding_v2_lab_scenario_messaging_recovery_description();
-  return m.onboarding_v2_lab_scenario_everything_ready_description();
+  return LAB_SCENARIO_COPY[scenario].description();
+}
+
+function scenarioAllowsRuntimeOverride(scenario: LabScenarioOption): boolean {
+  return !isReadinessScenario(scenario) && !labScenarioStartsWithCreation(scenario);
 }
 
 function journeyLabel(journey: LabJourney): string {
@@ -360,6 +399,42 @@ function FlowProgressControl({
   );
 }
 
+function RuntimeOverrideControl({
+  container,
+  id,
+  onChange,
+  runtime,
+  visible,
+}: {
+  readonly container: RefObject<HTMLDivElement | null>;
+  readonly id: string;
+  readonly onChange: (runtime: AgentRuntimeProvider) => void;
+  readonly runtime: AgentRuntimeProvider;
+  readonly visible: boolean;
+}) {
+  if (!visible) return null;
+  return (
+    <div className="grid gap-1">
+      <label className="text-xs text-kumo-subtle" htmlFor={id}>
+        {m.onboarding_v2_agent_runtime_label()}
+      </label>
+      <KumoSelectControl
+        container={container}
+        id={id}
+        onChange={(event) => onChange(event.target.value as AgentRuntimeProvider)}
+        value={runtime}
+      >
+        {RUNTIMES.map((candidate) => (
+          <option key={candidate} value={candidate}>
+            {runtimeLabel(candidate)}
+          </option>
+        ))}
+      </KumoSelectControl>
+      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_lab_runtime_override_hint()}</p>
+    </div>
+  );
+}
+
 export function AgentSetupLabControls({
   automation,
   failure,
@@ -417,6 +492,7 @@ export function AgentSetupLabControls({
   const panelId = useId();
   const readinessFixture = isReadinessScenario(scenario);
   const showJourney = !isReadinessScenario(scenario) && labScenarioStartsWithCreation(scenario);
+  const showRuntimeOverride = scenarioAllowsRuntimeOverride(scenario);
   const { computerConnectState, snapshot } = memory.inspect();
   const canFailPending =
     computerConnectState === "pending" ||
@@ -538,24 +614,13 @@ export function AgentSetupLabControls({
                 </span>
               </Collapsible.Trigger>
               <Collapsible.Panel className="mt-3 grid gap-3">
-                <div className="grid gap-1">
-                  <label className="text-xs text-kumo-subtle" htmlFor={runtimeId}>
-                    {m.onboarding_v2_agent_runtime_label()}
-                  </label>
-                  <KumoSelectControl
-                    container={panelRef}
-                    id={runtimeId}
-                    onChange={(event) => onRuntimeChange(event.target.value as AgentRuntimeProvider)}
-                    value={runtime}
-                  >
-                    {RUNTIMES.map((candidate) => (
-                      <option key={candidate} value={candidate}>
-                        {runtimeLabel(candidate)}
-                      </option>
-                    ))}
-                  </KumoSelectControl>
-                  <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_lab_runtime_override_hint()}</p>
-                </div>
+                <RuntimeOverrideControl
+                  container={panelRef}
+                  id={runtimeId}
+                  onChange={onRuntimeChange}
+                  runtime={runtime}
+                  visible={showRuntimeOverride}
+                />
 
                 <div className="grid gap-1">
                   <label className="text-xs text-kumo-subtle" htmlFor={inventoryId}>

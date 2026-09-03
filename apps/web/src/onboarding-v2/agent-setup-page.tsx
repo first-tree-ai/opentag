@@ -17,7 +17,7 @@
 import type { AgentSetupAction, AgentSetupSnapshot, ImProvider } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api.js";
-import { AgentComputerChoice } from "../features/agents/agent-computer-choice.js";
+import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
   ComputerConnect,
@@ -59,6 +59,15 @@ export interface AgentSetupPageProps {
   readonly agentId: string;
   /** Defaults to the HTTP adapter over the browser API; tests and the lab pass the in-memory one. */
   readonly adapter?: AgentSetupAdapter;
+  /** Keeps Computer inventory, binding, and connect-code work behind the Lab's in-memory seam. */
+  readonly computerAdapter?: {
+    readonly connect: ComputerConnectAdapter;
+    readonly inventory: AgentComputerInventoryAdapter;
+  };
+  /** An external Lab mutation asks the mounted page to re-read without resetting its local UI. */
+  readonly refreshSignal?: number;
+  /** Review Lab intercepts Provider URLs so a simulated OAuth round trip stays inside the Lab. */
+  readonly onExternalNavigation?: (url: string) => void;
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
@@ -272,6 +281,7 @@ function useSetupActions(
   adapter: AgentSetupAdapter,
   lifecycle: RequestLifecycle,
   read: () => Promise<boolean>,
+  onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
 ): {
   actionError: string | undefined;
   busyKey: AgentSetupAction["kind"] | undefined;
@@ -305,7 +315,8 @@ function useSetupActions(
         const navigate = await performSetupAction(adapter, agentId, action);
         if (!live()) return false;
         if (navigate !== undefined) {
-          window.location.assign(navigate);
+          if (onExternalNavigation) onExternalNavigation(navigate);
+          else window.location.assign(navigate);
           return true;
         }
         return await read();
@@ -326,7 +337,7 @@ function useSetupActions(
         }
       }
     },
-    [adapter, agentId, lifecycle, read],
+    [adapter, agentId, lifecycle, onExternalNavigation, read],
   );
 
   return { actionError, busyKey, act };
@@ -346,10 +357,14 @@ interface AgentSetupController {
   readonly reload: () => void;
 }
 
-function useAgentSetup(agentId: string, adapter: AgentSetupAdapter): AgentSetupController {
+function useAgentSetup(
+  agentId: string,
+  adapter: AgentSetupAdapter,
+  onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
+): AgentSetupController {
   const lifecycle = useRequestLifecycle();
   const reader = useSnapshotReader(agentId, adapter, lifecycle);
-  const actions = useSetupActions(agentId, adapter, lifecycle, reader.read);
+  const actions = useSetupActions(agentId, adapter, lifecycle, reader.read, onExternalNavigation);
 
   const snapshot = reader.phase.kind === "ready" ? reader.phase.snapshot : undefined;
   const transitional = snapshot !== undefined && setupSnapshotIsTransitional(snapshot);
@@ -423,8 +438,11 @@ function useReadyReport(
 export function AgentSetupPage({
   agentId,
   adapter,
+  computerAdapter,
+  onExternalNavigation,
   onOpenAgent,
   onReady,
+  refreshSignal,
   reviewMode = false,
   slackOAuthError,
 }: AgentSetupPageProps) {
@@ -435,9 +453,12 @@ export function AgentSetupPage({
     <AgentSetupPageContent
       adapter={resolvedAdapter}
       agentId={agentId}
+      computerAdapter={computerAdapter}
       key={agentId}
+      onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
       onReady={onReady}
+      refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
     />
@@ -447,16 +468,26 @@ export function AgentSetupPage({
 function AgentSetupPageContent({
   agentId,
   adapter,
+  computerAdapter,
+  onExternalNavigation,
   onOpenAgent,
   onReady,
+  refreshSignal,
   reviewMode = false,
   slackOAuthError,
 }: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
-  const controller = useAgentSetup(agentId, adapter);
+  const controller = useAgentSetup(agentId, adapter, onExternalNavigation);
+  const previousRefreshSignal = useRef(refreshSignal);
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
   const ready = snapshot?.stage === "ready";
+
+  useEffect(() => {
+    if (previousRefreshSignal.current === refreshSignal) return;
+    previousRefreshSignal.current = refreshSignal;
+    controller.reload();
+  }, [controller.reload, refreshSignal]);
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
@@ -470,7 +501,13 @@ function AgentSetupPageContent({
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
         {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
-        <SetupPhaseView agentId={agentId} controller={controller} onOpenAgent={onOpenAgent} report={report} />
+        <SetupPhaseView
+          agentId={agentId}
+          computerAdapter={computerAdapter}
+          controller={controller}
+          onOpenAgent={onOpenAgent}
+          report={report}
+        />
       </main>
     </div>
   );
@@ -478,11 +515,13 @@ function AgentSetupPageContent({
 
 function SetupPhaseView({
   agentId,
+  computerAdapter,
   controller,
   onOpenAgent,
   report,
 }: {
   readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
@@ -523,6 +562,7 @@ function SetupPhaseView({
   return (
     <AgentSetupSnapshotView
       agentId={agentId}
+      computerAdapter={computerAdapter}
       controller={controller}
       onOpenAgent={onOpenAgent}
       report={report}
@@ -543,12 +583,14 @@ function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
 
 function AgentSetupSnapshotView({
   agentId,
+  computerAdapter,
   controller,
   onOpenAgent,
   report,
   snapshot,
 }: {
   readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
   readonly report: ReadyReport;
@@ -570,7 +612,12 @@ function AgentSetupSnapshotView({
       ) : null}
       {controller.refreshError ? <Banner variant="error" role="alert" description={controller.refreshError} /> : null}
       {stage === "needs-computer" ? (
-        <ComputerSetupSection agentId={agentId} onChanged={controller.reload} snapshot={snapshot} />
+        <ComputerSetupSection
+          agentId={agentId}
+          computerAdapter={computerAdapter}
+          onChanged={controller.reload}
+          snapshot={snapshot}
+        />
       ) : null}
       {stage === "needs-runtime" ? <RuntimeSetupSection snapshot={snapshot} /> : null}
       {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
@@ -602,20 +649,24 @@ function AgentSetupSnapshotView({
 
 function ComputerSetupSection({
   agentId,
+  computerAdapter,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
+  readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { computer } = snapshot;
-  const computerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
+  const serverComputerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
+  const computerConnectAdapter = computerAdapter?.connect ?? serverComputerConnectAdapter;
   if (computer.kind === "not-bound") {
     return (
       <NotBoundComputerSection
         agentId={agentId}
         computerConnectAdapter={computerConnectAdapter}
+        inventoryAdapter={computerAdapter?.inventory}
         name={snapshot.agent.displayName}
         onChanged={onChanged}
         snapshot={snapshot}
@@ -649,7 +700,12 @@ function ComputerSetupSection({
           })}
         </p>
         {canBind ? (
-          <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} />
+          <AgentComputerChoice
+            adapter={computerConnectAdapter}
+            agentId={agentId}
+            inventoryAdapter={computerAdapter?.inventory}
+            onBound={onChanged}
+          />
         ) : null}
       </section>
     );
@@ -689,12 +745,14 @@ function ComputerSetupSection({
 function NotBoundComputerSection({
   agentId,
   computerConnectAdapter,
+  inventoryAdapter,
   name,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerConnectAdapter: ComputerConnectAdapter;
+  readonly inventoryAdapter?: AgentComputerInventoryAdapter;
   readonly name: string;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
@@ -712,7 +770,14 @@ function NotBoundComputerSection({
        * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
        * does it — including the choice when the Account genuinely has one to make.
        */}
-      {canBind ? <AgentComputerChoice adapter={computerConnectAdapter} agentId={agentId} onBound={onChanged} /> : null}
+      {canBind ? (
+        <AgentComputerChoice
+          adapter={computerConnectAdapter}
+          agentId={agentId}
+          inventoryAdapter={inventoryAdapter}
+          onBound={onChanged}
+        />
+      ) : null}
     </section>
   );
 }

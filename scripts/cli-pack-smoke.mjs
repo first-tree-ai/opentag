@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const COMMAND_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
+
+/** The Context Tree `postinstall` line that means it never attempted an install. */
+const GUARD_DECLINED = "run `context-tree install` to add the skills to your agent";
+/** The line it prints only after actually invoking its own installer. */
+const INSTALL_ATTEMPTED = "no agent directory found";
 
 function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
@@ -98,6 +104,77 @@ function parseArguments(arguments_) {
     values.set(key.slice(2), value);
   }
   return values;
+}
+
+/** Where a globally installed package's own dependency can end up, nested or hoisted. */
+function nestedContextTreeRoots(prefix, expectedName) {
+  const globalRoot = join(prefix, "lib", "node_modules");
+  const dependency = join("@first-tree-ai", "context-tree");
+  return [join(globalRoot, expectedName, "node_modules", dependency), join(globalRoot, dependency)];
+}
+
+/**
+ * A global install must not touch the user's own agent configuration.
+ *
+ * npm sets `npm_config_global` for a global install's *dependencies* too, so the packed CLI's
+ * pinned `@first-tree-ai/context-tree` relies on its own nested-dependency guard to stay inert.
+ * The consumer install above passes `--ignore-scripts`, which is exactly why that hazard needs
+ * its own check.
+ *
+ * Absence alone is not enough to prove the guard works: an npm that declines to run dependency
+ * scripts, or a `postinstall` that crashed, would also leave the home untouched. So the nested
+ * copy is invoked directly as a global dependency and compared against the same script relocated
+ * outside any `node_modules`. Only the location differs, so the two must disagree — and the
+ * relocated run is what proves the script is functional rather than broken.
+ */
+async function assertGlobalInstallLeavesAgentConfiguration({ channel, tarballPath, temporaryRoot, expectedName }) {
+  // One channel is enough, and `prod` is the identity actually published as the global package.
+  if (channel !== "prod") return;
+  const home = join(temporaryRoot, "global-home");
+  const prefix = join(temporaryRoot, "global-prefix");
+  await mkdir(home, { mode: 0o700 });
+  await mkdir(prefix);
+  // CODEX_HOME is redirected inside the isolated home so that a write which escapes the guard
+  // lands somewhere this assertion can see, rather than in the real ~/.codex.
+  const env = { HOME: home, CODEX_HOME: join(home, ".codex"), npm_config_prefix: prefix };
+  run("npm", ["install", "--global", "--foreground-scripts", "--no-audit", "--no-fund", tarballPath], { env });
+  await assertNoAgentConfiguration(home, "the global install");
+
+  const packageRoot = nestedContextTreeRoots(prefix, expectedName).find((candidate) =>
+    existsSync(join(candidate, "scripts", "postinstall.mjs")),
+  );
+  if (!packageRoot) {
+    throw new Error("globally installed CLI does not carry @first-tree-ai/context-tree/scripts/postinstall.mjs");
+  }
+  const asDependency = runNestedPostinstall(packageRoot, env);
+  if (!asDependency.includes(GUARD_DECLINED) || asDependency.includes(INSTALL_ATTEMPTED)) {
+    throw new Error(`Context Tree postinstall did not decline as a global dependency: ${asDependency}`);
+  }
+  await assertNoAgentConfiguration(home, "the nested postinstall run as a global dependency");
+
+  // The same script, outside a node_modules tree, must reach the install it just declined.
+  const relocated = join(temporaryRoot, "context-tree-relocated");
+  run("cp", ["-R", packageRoot, relocated]);
+  const asTarget = runNestedPostinstall(relocated, env);
+  if (!asTarget.includes(INSTALL_ATTEMPTED)) {
+    throw new Error(`Context Tree postinstall is inert regardless of location, so the guard is unproven: ${asTarget}`);
+  }
+  await assertNoAgentConfiguration(home, "the relocated postinstall");
+}
+
+function runNestedPostinstall(packageRoot, env) {
+  const result = run("node", [join(packageRoot, "scripts", "postinstall.mjs")], {
+    env: { ...env, npm_config_global: "true" },
+  });
+  return result.stdout.trim();
+}
+
+async function assertNoAgentConfiguration(home, what) {
+  const entries = await readdir(home);
+  const agentConfiguration = entries.filter((entry) => entry === ".claude" || entry === ".codex");
+  if (agentConfiguration.length > 0) {
+    throw new Error(`${what} wrote agent configuration into the user home: ${agentConfiguration.join(", ")}`);
+  }
 }
 
 export async function runCliPackSmoke({ channel, expectedName, expectedVersion, expectedBinary }) {
@@ -220,6 +297,7 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       await readFile(join(consumer, "node_modules", expectedName, "package.json"), "utf8"),
     );
     assertReleaseManifest(installedManifest, { channel, expectedName, expectedVersion, expectedBinary });
+    await assertGlobalInstallLeavesAgentConfiguration({ channel, tarballPath, temporaryRoot, expectedName });
     console.log(`Verified ${expectedName}@${expectedVersion} through ${expectedBinary}`);
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

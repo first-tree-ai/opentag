@@ -60,7 +60,12 @@ import {
   runtimeWebSocketUrl,
   taskByIdPath,
 } from "../http-paths.js";
-import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from "../runtime-config.js";
+import {
+  AGENT_SLUG_MAX_LENGTH,
+  RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  renderPlatformInstructions,
+  runtimeUtf8Length,
+} from "../runtime-config.js";
 
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agent = {
@@ -351,8 +356,12 @@ describe("Agent contracts", () => {
   });
 
   it("reserves the shared platform instruction budget on create and update", () => {
-    const encoder = new TextEncoder();
-    const agentBudget = RUNTIME_INSTRUCTIONS_MAX_BYTES - encoder.encode(OPENTAG_PLATFORM_INSTRUCTIONS).byteLength;
+    // The reserved platform budget is the worst case, including the longest Agent slug line,
+    // so instructions accepted here can never fail later during snapshot assembly.
+    const worstCasePlatform = runtimeUtf8Length(
+      renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }),
+    );
+    const agentBudget = RUNTIME_INSTRUCTIONS_MAX_BYTES - worstCasePlatform;
     const exactAscii = "a".repeat(agentBudget);
     const exactUtf8 = "界".repeat(Math.floor(agentBudget / 3)) + "a".repeat(agentBudget % 3);
     const createInput = {

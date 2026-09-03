@@ -652,6 +652,7 @@ describe("doctor report and exit contract", () => {
       "Server",
       "Agent Runtime CLIs",
       "IM Provider CLIs",
+      "Context Tree",
       "Summary",
       "Not evaluated",
     ];
@@ -684,8 +685,79 @@ describe("doctor report and exit contract", () => {
       "runtime.claude-code.installation",
       "provider-cli.feishu.installation",
       "provider-cli.slack.installation",
+      "context-tree.target",
+      "context-tree.tree",
     ]);
     for (const item of result.notEvaluated) expect(rendered).toContain(item);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("never lets a Context Tree fault change the doctor exit code", async () => {
+    const home = await createHome();
+    const cases = [
+      { configPath: resolve(home, "config", "context-tree.json"), tree: "unknown" as const },
+      {
+        configPath: resolve(home, "config", "context-tree.json"),
+        target: "team-context-tree",
+        tree: "invalid" as const,
+        detail: "DIRTY_TREE",
+      },
+    ];
+
+    for (const state of cases) {
+      const result = await runHealthyDoctor(home, {
+        inspectContextTreeState: vi.fn().mockResolvedValue(state),
+      });
+      // Context Tree is optional memory, so no check here may block.
+      expect(result.checks.filter((check) => check.scope === "context-tree").every((check) => !check.blocking)).toBe(
+        true,
+      );
+      expect(result.exitCode).toBe(0);
+    }
+  });
+
+  it("tells an operator how to configure a Computer that has no Context Tree", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, {
+      inspectContextTreeState: vi.fn().mockResolvedValue({
+        configPath: resolve(home, "config", "context-tree.json"),
+        tree: "unknown" as const,
+      }),
+    });
+    const target = result.checks.find((check) => check.code === "context-tree.target");
+
+    expect(target).toMatchObject({ status: "info", blocking: false });
+    expect(target?.remediation).toContain("context-tree connect");
+    expect(renderDoctorReport(result)).toContain("no Context Tree is configured");
+  });
+
+  it("reports an uncloned GitHub target as expected rather than broken", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, {
+      inspectContextTreeState: vi.fn().mockResolvedValue({
+        configPath: resolve(home, "config", "context-tree.json"),
+        target: "acme/shared-context",
+        tree: "not-cloned" as const,
+      }),
+    });
+
+    expect(result.checks.find((check) => check.code === "context-tree.tree")).toMatchObject({
+      status: "info",
+      blocking: false,
+    });
+    expect(renderDoctorReport(result)).toContain("the first Agent Session clones it");
+  });
+
+  it("reports an unreadable Context Tree state as unknown without failing the run", async () => {
+    const home = await createHome();
+    const result = await runHealthyDoctor(home, {
+      inspectContextTreeState: vi.fn().mockRejectedValue(new Error("inspection exploded")),
+    });
+
+    expect(result.checks.find((check) => check.code === "context-tree.target")).toMatchObject({
+      status: "unknown",
+      blocking: false,
+    });
     expect(result.exitCode).toBe(0);
   });
 
@@ -718,6 +790,7 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
     cliVersion: "0.1.0",
     env: { OPENTAG_HOME: home },
     healthChecker: vi.fn().mockResolvedValue({ service: "opentag-server", status: "ok" } as const),
+    inspectContextTreeState: vi.fn().mockResolvedValue(configuredContextTree(home)),
     inspectDaemonService: vi.fn().mockResolvedValue(activeService(home)),
     integrationCliDetector: vi.fn().mockResolvedValue(missingIntegrationClis()),
     nodeVersion: "v24.0.0",
@@ -725,6 +798,14 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
     runtimeDetector: vi.fn().mockResolvedValue(installedCodex()),
     ...overrides,
   });
+}
+
+function configuredContextTree(home: string) {
+  return {
+    configPath: resolve(home, "config", "context-tree.json"),
+    target: "team-context-tree",
+    tree: "valid" as const,
+  };
 }
 
 function activeService(home: string) {

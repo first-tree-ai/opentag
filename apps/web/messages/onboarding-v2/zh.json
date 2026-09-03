@@ -128,7 +128,7 @@
   "onboarding_v2_prep_runtime_detail_label": "运行时诊断",
   "onboarding_v2_prep_runtime_install": "{computerName} 上还没有安装 {runtime}。OpenTag 从不替操作者安装 Runtime CLI——请在那台电脑上安装 {runtime}，然后重新检查。",
   "onboarding_v2_prep_runtime_missing": "还没有收到来自 {computerName} 的 {runtime} 新就绪报告。报告可能尚未上报或已过期。请完成本地准备后重新检查。",
-  "onboarding_v2_prep_runtime_not_responding": "{computerName} 上的 {runtime} 没有响应。请按照连接命令输出的修复和验证提示操作，然后重新检查。",
+  "onboarding_v2_prep_runtime_not_responding": "OpenTag 无法确认 {computerName} 上的 {runtime} 可以使用。请按照连接命令输出的修复和验证提示操作，然后重新检查。",
   "onboarding_v2_prep_runtime_observation_failed": "无法从服务器读取 {runtime} 的就绪状态。请重新检查重试。",
   "onboarding_v2_prep_runtime_ready": "{runtime} 已就绪",
   "onboarding_v2_prep_runtime_ready_detail": "已在 {computerName} 上安装并登录。",

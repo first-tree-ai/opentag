@@ -437,6 +437,15 @@ describe("AgentSetupPage stages", () => {
 });
 
 describe("preparation review regressions", () => {
+  it("does not invent a timeout cause for a coarse unavailable Runtime report", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "unavailable" });
+    renderSetup(memory.adapter);
+    await settle();
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("needs-attention");
+    expect(rowDetail("runtime")).toContain("couldn't confirm that Codex is usable");
+    expect(rowDetail("runtime")).not.toMatch(/not responding|isn't responding|timed out|opentag doctor/i);
+  });
+
   it("coalesces focus, visibility and pageshow into one automatic read", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "install" });
     const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);

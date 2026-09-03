@@ -128,7 +128,7 @@
   "onboarding_v2_prep_runtime_detail_label": "Runtime diagnostics",
   "onboarding_v2_prep_runtime_install": "{runtime} isn't installed on {computerName} yet. OpenTag never installs Runtime CLIs — install {runtime} on that Computer, then check again.",
   "onboarding_v2_prep_runtime_missing": "No fresh {runtime} readiness report from {computerName} yet. The report may not have arrived or may have expired. Finish local preparation, then check again.",
-  "onboarding_v2_prep_runtime_not_responding": "{runtime} isn't responding on {computerName}. Follow the repair and verification instructions printed by the connection command, then check again.",
+  "onboarding_v2_prep_runtime_not_responding": "OpenTag couldn't confirm that {runtime} is usable on {computerName}. Follow the repair and verification instructions printed by the connection command, then check again.",
   "onboarding_v2_prep_runtime_observation_failed": "The {runtime} readiness couldn't be read from the server. Check again to retry.",
   "onboarding_v2_prep_runtime_ready": "{runtime} ready",
   "onboarding_v2_prep_runtime_ready_detail": "Installed and signed in on {computerName}.",

@@ -41,6 +41,18 @@ async function currentMessagingExpectation(
 }
 
 describe("createMemorySetupAdapter", () => {
+  it("uses a non-runnable production-shaped Computer command in the Lab", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent({ computer: null }) });
+
+    const issued = await memory.computerAdapter.connect.issue({ mode: "create" });
+
+    expect(issued.bootstrapCommand).toContain("/prod/install.sh");
+    expect(issued.bootstrapCommand).toContain('sh "$opentag_installer"');
+    expect(issued.bootstrapCommand).toContain('"$HOME/.local/bin/opentag" connect');
+    expect(issued.bootstrapCommand).toContain("--server https://opentag.invalid -- memory-");
+    expect(issued.bootstrapCommand).not.toContain("opentag.ai");
+  });
+
   it.each([
     ["computer", "needs-computer"],
     ["runtime", "needs-runtime"],

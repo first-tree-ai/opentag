@@ -20,6 +20,22 @@ function declarationValue(selector: string, property: string): string {
   return value;
 }
 
+/** Reads a declaration from the rules inside a media query that names the given width limit. */
+function mediaDeclarationValue(limit: string, selector: string, property: string): string {
+  let value: string | undefined;
+  stylesheet.walkAtRules("media", (atRule) => {
+    if (!atRule.params.includes(limit)) return;
+    atRule.walkRules((rule) => {
+      if (!rule.selectors.includes(selector)) return;
+      rule.walkDecls(property, (declaration) => {
+        value = declaration.value;
+      });
+    });
+  });
+  if (!value) throw new Error(`Missing ${property} declaration for ${selector} within ${limit} media`);
+  return value;
+}
+
 describe("onboarding flow layout", () => {
   it("selects the Codex mark from the app theme instead of the operating-system theme", () => {
     expect(declarationValue(".otv2-codex-mark--light", "display")).toBe("block");
@@ -96,5 +112,83 @@ describe("onboarding flow layout", () => {
     expect(atWidth("640px", ".otv2-slot--outcome", "min-height")).toBe("71px");
     expect(atWidth("640px", ".otv2-field-error", "min-height")).toBe("34px");
     expect(atWidth("359px", ".otv2-slot--outcome", "min-height")).toBe("114px");
+  });
+
+  /*
+   * The readiness rows follow the same rule as the slots above: the reserved heights and the
+   * fixed marker are declarations the layout depends on, so they are guarded here rather than
+   * left to be deleted as decoration.
+   */
+  it("lays the readiness list out as a bordered column of padded rows", () => {
+    expect(declarationValue(".otv2-readiness", "display")).toBe("flex");
+    expect(declarationValue(".otv2-readiness", "flex-direction")).toBe("column");
+    expect(declarationValue(".otv2-readiness", "gap")).toBe("0.75rem");
+    expect(declarationValue(".otv2-readiness__line", "padding")).toBe("0.75rem");
+    expect(declarationValue(".otv2-readiness__line", "box-sizing")).toBe("border-box");
+  });
+
+  it("fixes the decorative readiness markers at 24px", () => {
+    expect(declarationValue(".otv2-readiness__marker", "width")).toBe("24px");
+    expect(declarationValue(".otv2-readiness__marker", "height")).toBe("24px");
+    expect(declarationValue(".otv2-readiness__marker", "flex-shrink")).toBe("0");
+  });
+
+  it("reserves fixed heights for the readiness title and detail slots and scrolls their overflow", () => {
+    expect(declarationValue(".otv2-readiness__title", "height")).toBe("2.75rem");
+    expect(declarationValue(".otv2-readiness__title", "line-height")).toBe("1.25rem");
+    expect(declarationValue(".otv2-readiness__detail", "height")).toBe("3.375rem");
+    expect(declarationValue(".otv2-readiness__detail", "line-height")).toBe("1.125rem");
+    // A fixed height only stays fixed when padding and borders are counted inside it.
+    expect(declarationValue(".otv2-readiness__title", "box-sizing")).toBe("border-box");
+    expect(declarationValue(".otv2-readiness__detail", "box-sizing")).toBe("border-box");
+    // Copy that does not fit scrolls inside its own slot; the slots are keyboard-focusable in
+    // the markup, and the visible focus answers the keyboard.
+    expect(declarationValue(".otv2-readiness__title", "overflow-y")).toBe("auto");
+    expect(declarationValue(".otv2-readiness__detail", "overflow-y")).toBe("auto");
+    expect(declarationValue(".otv2-readiness__detail:focus-visible", "outline")).toBe(
+      "2px solid var(--color-kumo-focus)",
+    );
+  });
+
+  it("wraps long readiness copy instead of widening the rows or clipping it", () => {
+    expect(declarationValue(".otv2-readiness__title", "white-space")).toBe("pre-wrap");
+    expect(declarationValue(".otv2-readiness__title", "overflow-wrap")).toBe("anywhere");
+    expect(declarationValue(".otv2-readiness__detail", "white-space")).toBe("pre-wrap");
+    expect(declarationValue(".otv2-readiness__detail", "overflow-wrap")).toBe("anywhere");
+    expect(declarationValue(".otv2-readiness__copy", "min-width")).toBe("0");
+  });
+
+  it("reserves the taller title and detail slots a narrow readiness layout needs", () => {
+    expect(mediaDeclarationValue("640px", ".otv2-readiness__title", "height")).toBe("3.75rem");
+    expect(mediaDeclarationValue("640px", ".otv2-readiness__detail", "height")).toBe("4.5rem");
+  });
+
+  it("lets lab select wrappers and their triggers shrink on narrow screens", () => {
+    expect(declarationValue(".otv2-readiness-lab__controls > div", "min-width")).toBe("0");
+    expect(declarationValue(".otv2-readiness-lab__scenario > div", "min-width")).toBe("0");
+    expect(declarationValue(".otv2-readiness-lab__select", "width")).toBe("100%");
+    expect(declarationValue('.otv2-readiness-lab__scenario [role="combobox"]', "width")).toBe("100%");
+  });
+
+  it("keeps readiness state emphasis on the marker, never in the row geometry", () => {
+    expect(declarationValue('.otv2-readiness__line[data-state="passed"] .otv2-readiness__marker', "background")).toBe(
+      "var(--brand-soft)",
+    );
+    expect(declarationValue('.otv2-readiness__line[data-state="passed"] .otv2-readiness__marker', "color")).toBe(
+      "var(--brand-ink)",
+    );
+    expect(declarationValue('.otv2-readiness__line[data-state="failed"] .otv2-readiness__marker', "background")).toBe(
+      "var(--color-kumo-recessed)",
+    );
+    expect(declarationValue('.otv2-readiness__line[data-state="blocked"] .otv2-readiness__marker', "background")).toBe(
+      "var(--color-kumo-recessed)",
+    );
+    // No rule keyed on a row state may change a fixed size.
+    stylesheet.walkRules((rule) => {
+      if (!rule.selectors.some((selector) => selector.includes('data-state="'))) return;
+      rule.walkDecls((declaration) => {
+        expect(declaration.prop).not.toMatch(/^(height|min-height|max-height|padding|border-width)$/);
+      });
+    });
   });
 });

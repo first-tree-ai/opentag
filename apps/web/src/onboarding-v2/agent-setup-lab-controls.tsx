@@ -18,9 +18,19 @@ import {
   type LabScenario,
 } from "./agent-setup-lab-model.js";
 import { RUNTIMES } from "./flow.js";
+import {
+  isReadinessScenario,
+  READINESS_SCENARIO_LABELS,
+  READINESS_SCENARIOS,
+  type ReadinessScenario,
+} from "./readiness-lab-fixtures.js";
 import type { MemorySetupAdapter } from "./setup-memory-adapter.js";
 
-function scenarioLabel(scenario: LabScenario): string {
+const LAB_SCENARIO_OPTIONS = [...LAB_SCENARIOS, ...READINESS_SCENARIOS] as const;
+type LabScenarioOption = LabScenario | ReadinessScenario;
+
+function scenarioLabel(scenario: LabScenarioOption): string {
+  if (isReadinessScenario(scenario)) return READINESS_SCENARIO_LABELS[scenario];
   if (scenario === "full-new-computer") return m.onboarding_v2_lab_scenario_full_new_computer();
   if (scenario === "full-existing-computer") return m.onboarding_v2_lab_scenario_full_existing_computer();
   if (scenario === "agent-creation") return m.onboarding_v2_lab_scenario_agent_creation();
@@ -69,6 +79,10 @@ function pendingLabel(event: LabPendingEvent | undefined): string {
   return m.onboarding_v2_lab_nothing_waiting();
 }
 
+function controlButtonLabel(scenario: LabScenarioOption, journey: LabJourney, status: string): string {
+  return isReadinessScenario(scenario) ? status : `${journeyLabel(journey)} · ${status}`;
+}
+
 export function AgentSetupLabControls({
   automation,
   failure,
@@ -108,10 +122,10 @@ export function AgentSetupLabControls({
   readonly onReset: () => void;
   readonly onRunPending: () => void;
   readonly onRuntimeChange: (runtime: AgentRuntimeProvider) => void;
-  readonly onScenarioChange: (scenario: LabScenario) => void;
+  readonly onScenarioChange: (scenario: LabScenarioOption) => void;
   readonly pending: LabPendingEvent | undefined;
   readonly runtime: AgentRuntimeProvider;
-  readonly scenario: LabScenario;
+  readonly scenario: LabScenarioOption;
   readonly status: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -122,6 +136,7 @@ export function AgentSetupLabControls({
   const runtimeId = useId();
   const messagingId = useId();
   const panelId = useId();
+  const readinessFixture = isReadinessScenario(scenario);
   const { computerConnectState, snapshot } = memory.inspect();
   const canFailPending =
     computerConnectState === "pending" ||
@@ -149,7 +164,7 @@ export function AgentSetupLabControls({
           onClick={togglePanel}
           variant="secondary"
         >
-          {journeyLabel(journey)} · {status}
+          {controlButtonLabel(scenario, journey, status)}
         </Button>
         <div
           className="flex max-h-[min(42rem,calc(100vh-7rem))] w-96 max-w-[calc(100vw-1.5rem)] flex-col gap-4 overflow-y-auto rounded-xl bg-kumo-base p-4 shadow-lg ring ring-kumo-line"
@@ -167,7 +182,7 @@ export function AgentSetupLabControls({
             </Button>
           </header>
 
-          <fieldset className="grid gap-2 border-0 p-0 m-0">
+          <fieldset className="grid gap-2 border-0 p-0 m-0" hidden={readinessFixture}>
             <legend className="text-xs font-medium uppercase text-kumo-subtle">{m.onboarding_v2_lab_journey()}</legend>
             <div className="grid grid-cols-2 gap-1">
               {LAB_JOURNEYS.map((candidate) => (
@@ -191,10 +206,10 @@ export function AgentSetupLabControls({
             <KumoSelectControl
               container={panelRef}
               id={scenarioId}
-              onChange={(event) => onScenarioChange(event.target.value as LabScenario)}
+              onChange={(event) => onScenarioChange(event.target.value as LabScenarioOption)}
               value={scenario}
             >
-              {LAB_SCENARIOS.map((candidate) => (
+              {LAB_SCENARIO_OPTIONS.map((candidate) => (
                 <option key={candidate} value={candidate}>
                   {scenarioLabel(candidate)}
                 </option>
@@ -202,7 +217,7 @@ export function AgentSetupLabControls({
             </KumoSelectControl>
           </div>
 
-          <fieldset className="grid gap-2 border-0 p-0 m-0">
+          <fieldset className="grid gap-2 border-0 p-0 m-0" hidden={readinessFixture}>
             <legend className="text-xs font-medium uppercase text-kumo-subtle">
               {m.onboarding_v2_lab_automation()}
             </legend>
@@ -223,94 +238,97 @@ export function AgentSetupLabControls({
             </div>
           </fieldset>
 
-          <Collapsible.Root className="border-t border-kumo-line pt-3">
-            <Collapsible.Trigger
-              render={<Button className="w-full justify-between" size="compact" type="button" variant="ghost" />}
-            >
-              {m.onboarding_v2_lab_overrides()}
-              <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
-            </Collapsible.Trigger>
-            <Collapsible.Panel className="mt-3 grid gap-3">
-              <div className="grid gap-1">
-                <label className="text-xs text-kumo-subtle" htmlFor={runtimeId}>
-                  {m.onboarding_v2_agent_runtime_label()}
-                </label>
-                <KumoSelectControl
-                  container={panelRef}
-                  id={runtimeId}
-                  onChange={(event) => onRuntimeChange(event.target.value as AgentRuntimeProvider)}
-                  value={runtime}
-                >
-                  {RUNTIMES.map((candidate) => (
-                    <option key={candidate} value={candidate}>
-                      {runtimeLabel(candidate)}
-                    </option>
-                  ))}
-                </KumoSelectControl>
-                <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_lab_runtime_override_hint()}</p>
-              </div>
-
-              <div className="grid gap-1">
-                <label className="text-xs text-kumo-subtle" htmlFor={inventoryId}>
-                  {m.onboarding_v2_lab_computers_on_account()}
-                </label>
-                <KumoSelectControl
-                  container={panelRef}
-                  id={inventoryId}
-                  onChange={(event) => onInventoryChange(event.target.value as LabInventory)}
-                  value={inventory}
-                >
-                  {LAB_INVENTORIES.map((candidate) => (
-                    <option key={candidate} value={candidate}>
-                      {inventoryLabel(candidate)}
-                    </option>
-                  ))}
-                </KumoSelectControl>
-              </div>
-
-              {scenario === "everything-ready" ? (
+          <div hidden={readinessFixture}>
+            <Collapsible.Root className="border-t border-kumo-line pt-3">
+              <Collapsible.Trigger
+                render={<Button className="w-full justify-between" size="compact" type="button" variant="ghost" />}
+              >
+                {m.onboarding_v2_lab_overrides()}
+                <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
+              </Collapsible.Trigger>
+              <Collapsible.Panel className="mt-3 grid gap-3">
                 <div className="grid gap-1">
-                  <label className="text-xs text-kumo-subtle" htmlFor={messagingId}>
-                    {m.onboarding_v2_lab_messaging_provider()}
+                  <label className="text-xs text-kumo-subtle" htmlFor={runtimeId}>
+                    {m.onboarding_v2_agent_runtime_label()}
                   </label>
                   <KumoSelectControl
                     container={panelRef}
-                    id={messagingId}
-                    onChange={(event) => onMessagingProviderChange(event.target.value as ImProvider)}
-                    value={messagingProvider}
+                    id={runtimeId}
+                    onChange={(event) => onRuntimeChange(event.target.value as AgentRuntimeProvider)}
+                    value={runtime}
                   >
-                    {(["feishu", "slack"] as const).map((candidate) => (
+                    {RUNTIMES.map((candidate) => (
                       <option key={candidate} value={candidate}>
-                        {messagingProviderLabel(candidate)}
+                        {runtimeLabel(candidate)}
+                      </option>
+                    ))}
+                  </KumoSelectControl>
+                  <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_lab_runtime_override_hint()}</p>
+                </div>
+
+                <div className="grid gap-1">
+                  <label className="text-xs text-kumo-subtle" htmlFor={inventoryId}>
+                    {m.onboarding_v2_lab_computers_on_account()}
+                  </label>
+                  <KumoSelectControl
+                    container={panelRef}
+                    id={inventoryId}
+                    onChange={(event) => onInventoryChange(event.target.value as LabInventory)}
+                    value={inventory}
+                  >
+                    {LAB_INVENTORIES.map((candidate) => (
+                      <option key={candidate} value={candidate}>
+                        {inventoryLabel(candidate)}
                       </option>
                     ))}
                   </KumoSelectControl>
                 </div>
-              ) : null}
 
-              <div className="grid gap-1">
-                <label className="text-xs text-kumo-subtle" htmlFor={failureId}>
-                  {m.onboarding_v2_lab_observation_failure()}
-                </label>
-                <KumoSelectControl
-                  container={panelRef}
-                  id={failureId}
-                  onChange={(event) => onFailureChange(event.target.value as LabObservationFailure)}
-                  value={failure}
-                >
-                  {LAB_OBSERVATION_FAILURES.map((candidate) => (
-                    <option key={candidate} value={candidate}>
-                      {failureLabel(candidate)}
-                    </option>
-                  ))}
-                </KumoSelectControl>
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
+                {scenario === "everything-ready" ? (
+                  <div className="grid gap-1">
+                    <label className="text-xs text-kumo-subtle" htmlFor={messagingId}>
+                      {m.onboarding_v2_lab_messaging_provider()}
+                    </label>
+                    <KumoSelectControl
+                      container={panelRef}
+                      id={messagingId}
+                      onChange={(event) => onMessagingProviderChange(event.target.value as ImProvider)}
+                      value={messagingProvider}
+                    >
+                      {(["feishu", "slack"] as const).map((candidate) => (
+                        <option key={candidate} value={candidate}>
+                          {messagingProviderLabel(candidate)}
+                        </option>
+                      ))}
+                    </KumoSelectControl>
+                  </div>
+                ) : null}
+
+                <div className="grid gap-1">
+                  <label className="text-xs text-kumo-subtle" htmlFor={failureId}>
+                    {m.onboarding_v2_lab_observation_failure()}
+                  </label>
+                  <KumoSelectControl
+                    container={panelRef}
+                    id={failureId}
+                    onChange={(event) => onFailureChange(event.target.value as LabObservationFailure)}
+                    value={failure}
+                  >
+                    {LAB_OBSERVATION_FAILURES.map((candidate) => (
+                      <option key={candidate} value={candidate}>
+                        {failureLabel(candidate)}
+                      </option>
+                    ))}
+                  </KumoSelectControl>
+                </div>
+              </Collapsible.Panel>
+            </Collapsible.Root>
+          </div>
 
           <section
             className="grid gap-2 rounded-lg bg-kumo-recessed p-3"
             aria-label={m.onboarding_v2_lab_external_event()}
+            hidden={readinessFixture}
           >
             <span className="text-xs font-medium uppercase text-kumo-subtle">
               {m.onboarding_v2_lab_external_event()}

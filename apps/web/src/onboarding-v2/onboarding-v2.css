@@ -176,3 +176,191 @@
 .otv2-slack-install img {
   height: 40px;
 }
+
+/* Readiness rows --------------------------------------------------------- */
+
+/*
+ * The four readiness rows use fixed reservations: each slot keeps one
+ * height for every state it can hold, so no row grows, collapses, or shifts while the copy under
+ * it resolves. Text that does not fit scrolls inside its own slot; both slots are focusable in
+ * the markup and keep a visible focus ring, so a keyboard can read every line.
+ */
+.otv2-readiness {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--color-kumo-base);
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 0.75rem;
+}
+
+.otv2-readiness__line {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  box-sizing: border-box;
+}
+
+/* Decorative running number. The state never lives in the marker alone: the row always states it. */
+.otv2-readiness__marker {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 50%;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: var(--text-color-kumo-subtle);
+}
+
+.otv2-readiness__copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+/* A row's header: the caller's label with its status label underneath, in one fixed slot. */
+.otv2-readiness__title {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  height: 2.75rem;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  line-height: 1.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.otv2-readiness__name {
+  color: var(--text-color-kumo-strong);
+  font-weight: 500;
+}
+
+.otv2-readiness__status {
+  color: var(--text-color-kumo-subtle);
+  font-size: 0.75rem;
+}
+
+/* The diagnostic region, mounted even when its copy is empty. */
+.otv2-readiness__detail {
+  height: 3.375rem;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
+  line-height: 1.125rem;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-color-kumo-subtle);
+}
+
+/* Both slots are scroll regions, so both answer a keyboard visit with the focus ring. */
+.otv2-readiness__title:focus-visible,
+.otv2-readiness__detail:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 2px;
+}
+
+/*
+ * A row's outcome is told in text first; the marker only frames it. The emphasis stays on the
+ * marker, never on the row geometry, so a fixed-height row cannot change shape with its state.
+ */
+.otv2-readiness__line[data-state="passed"] .otv2-readiness__marker {
+  border-color: var(--brand-ink);
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+}
+
+.otv2-readiness__line[data-state="failed"] .otv2-readiness__marker,
+.otv2-readiness__line[data-state="blocked"] .otv2-readiness__marker {
+  background: var(--color-kumo-recessed);
+  color: var(--text-color-kumo-strong);
+}
+
+/* Below 640px each slot reserves the extra lines its copy needs there. */
+@media (width <= 640px) {
+  .otv2-readiness__title {
+    height: 3.75rem;
+  }
+
+  .otv2-readiness__detail {
+    height: 4.5rem;
+  }
+}
+
+/* Readiness lab (internal preview) --------------------------------------- */
+
+/*
+ * The readiness lab replaces the production surface while a readiness scenario is selected. The
+ * preview is capped at 720px and centered. Its scenario toolbar stays in normal flow above the
+ * checklist so it cannot cover a diagnostic region. Everything here is lab-only and must not
+ * leak into the production surface.
+ */
+.otv2-readiness-lab {
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  padding: 1.25rem 1rem;
+  min-width: 0;
+}
+
+.otv2-readiness-lab__inner {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: min(100%, 720px);
+  min-width: 0;
+}
+
+.otv2-readiness-lab__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+/* Kumo owns the select's outer grid; the flex child, not just its trigger, must shrink. */
+.otv2-readiness-lab__controls > div,
+.otv2-readiness-lab__scenario > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.otv2-readiness-lab__scenario {
+  box-sizing: border-box;
+  width: calc(100% - 2rem);
+  max-width: 720px;
+  margin-top: 1rem;
+}
+
+.otv2-readiness-lab__scenario label {
+  flex-shrink: 0;
+}
+
+.otv2-readiness-lab__label {
+  flex-shrink: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-color-kumo-strong);
+}
+
+.otv2-readiness-lab__select,
+.otv2-readiness-lab__scenario [role="combobox"] {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}

@@ -61,12 +61,15 @@ Each payload contains:
 VERSION                 Plain-text version
 INSTALL.json            Release metadata, platform, install mode, and app entry
 node/bin/node           Embedded Node.js runtime, checked against the official SHASUMS256.txt
-app/                    Bundled CLI, its package manifest, LICENSE, README, THIRD_PARTY_NOTICES
+app/                    Bundled CLI, its package manifest, LICENSE, README, THIRD_PARTY_NOTICES,
+                        dependency-closure.json, and the embedded node_modules/ dependency tree
 bin/<binName>           Artifact-local shim, used before the payload is activated
 ~~~
 
-The bundled CLI has no `node_modules`: `apps/cli` declares no runtime dependencies, and the build fails closed if that
-ever changes rather than shipping an artifact that only breaks when a user runs it.
+The bundled CLI's Context Tree integration resolves the installed `@first-tree-ai/context-tree` package at runtime —
+its `package.json` through `createRequire`, its bundled CLI, and its packaged skills and templates — so every payload
+embeds that package and its full production dependency closure as a physical `app/node_modules` tree.
+`app/dependency-closure.json` records the exact direct pins and every embedded package name and version.
 
 ## Automatic upgrades
 
@@ -145,8 +148,31 @@ node scripts/portable/verify-portable-artifact.mjs \
   --tarball .portable-release/staging/0.0.2-staging.1.1/open-tag-staging-0.0.2-staging.1.1-darwin-arm64.tar.gz
 ~~~
 
-The verifier checks the published checksum, the extracted layout, and the metadata, and additionally runs the artifact
-when it targets the host platform.
+The verifier checks the published checksum, the extracted layout, the metadata, and the embedded dependency graph
+(exact direct pins, the closure record, packaged assets, and the no-symlink/no-native layout). When the artifact
+targets the host platform it additionally executes it: the OpenTag CLI through its shim, and the embedded Context
+Tree CLI (`--version`, `--help`, `list`) against an isolated home. It also runs OpenTag's
+`context-tree connect` against a nonexistent managed name, verifying real runtime resolution without connecting a
+tree or persisting configuration.
+
+The portable builder ships `@first-tree-ai/context-tree` and every production dependency the frozen install resolves
+for it as a deterministic flat `app/node_modules` tree: one real directory per package, no symlinks, no nested
+`node_modules`, and no native addons. Packages are copied from the installed store only — nothing is fetched and no
+lifecycle script runs; Context Tree's own `postinstall` ships inside its published files but stays inert because
+OpenTag invokes the packaged CLI directly. The app manifest keeps only the truthful direct pins, and both the builder
+(before its identity smoke) and the artifact verifier (for every platform) run the same graph checks.
+
+**Fail-closed dependency shapes.** `apps/cli` may declare only `@first-tree-ai/context-tree`, pinned to an exact
+`x.y.z` version. Unknown or non-exact direct pins, non-empty optional or peer dependencies, `os`/`cpu`-constrained
+packages, lifecycle scripts on embedded packages other than Context Tree's own, symlinks inside published files,
+native addons, and same-name packages resolving to different installed roots all fail the build. These dependency
+shapes need explicit packaging support before they can ship.
+
+**CI gate.** Every `CLI Pack Smoke` run for staging and production assembles the real portable app from the freshly
+built release-channel CLI, verifies its embedded graph, and runs both the relocated Context Tree CLI and OpenTag's
+runtime resolution probe with a temporary `HOME` and a minimal environment (no `NODE_PATH`, `NODE_OPTIONS`, or host
+credentials; `scripts/portable/smoke-portable-app.mjs`). The gate needs no downloaded Node.js runtime,
+so a dependency regression fails ordinary CI rather than the release.
 
 The embedded Node.js version is pinned in `scripts/portable/node-version.txt` and must be an exact `vX.Y.Z`. Its tarball
 is checked against the official `SHASUMS256.txt` for that release before it becomes part of an artifact.

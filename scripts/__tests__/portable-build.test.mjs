@@ -10,7 +10,6 @@ import {
   APP_ENTRY,
   artifactDownloadUrl,
   artifactFileName,
-  assertBundledCliHasNoRuntimeDependencies,
   buildPortableReleaseMetadata,
   DEFAULT_DOWNLOAD_BASE_URL,
   getPortableChannelConfig,
@@ -136,7 +135,7 @@ test("normalizers fail closed on inexact release inputs", () => {
   assert.throws(() => normalizeGeneratedAt(""), /requires a timestamp value/);
 });
 
-test("the portable app manifest exposes exactly one channel binary and no runtime dependencies", () => {
+test("the portable app manifest exposes exactly one channel binary and only supported runtime dependencies", () => {
   const sourcePackage = {
     description: "OpenTag command-line interface",
     engines: { node: "^24.0.0" },
@@ -149,14 +148,20 @@ test("the portable app manifest exposes exactly one channel binary and no runtim
   assert.deepEqual(appPackage.bin, { opentag: "./cli/index.mjs" });
   assert.equal(appPackage.dependencies, undefined);
 
-  assertBundledCliHasNoRuntimeDependencies(sourcePackage);
+  const withDependency = portableAppPackageJson({
+    channelConfig: CHANNEL_CONFIG.prod,
+    sourcePackage: { ...sourcePackage, dependencies: { "@first-tree-ai/context-tree": "0.1.8" } },
+    version: "1.2.3",
+  });
+  assert.deepEqual(withDependency.dependencies, { "@first-tree-ai/context-tree": "0.1.8" });
   assert.throws(
-    () => assertBundledCliHasNoRuntimeDependencies({ dependencies: { commander: "^13.1.0" } }),
-    /ships without node_modules/,
-  );
-  assert.throws(
-    () => assertBundledCliHasNoRuntimeDependencies({ optionalDependencies: { bufferutil: "^4.0.0" } }),
-    /ships without node_modules/,
+    () =>
+      portableAppPackageJson({
+        channelConfig: CHANNEL_CONFIG.prod,
+        sourcePackage: { ...sourcePackage, dependencies: { commander: "^13.1.0" } },
+        version: "1.2.3",
+      }),
+    /unsupported runtime dependency/,
   );
 });
 

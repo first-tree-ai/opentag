@@ -31,6 +31,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 import { CHANNEL_CONFIG } from "../channel-config.mjs";
 import { parseStableVersion, parseStagingVersion } from "../release-versions.mjs";
+import {
+  materializeRuntimeDependencyClosure,
+  readPortableDirectDependencyPins,
+  verifyPortableDependencyGraph,
+  writeDependencyClosureFile,
+} from "./runtime-dependencies.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..");
@@ -141,25 +147,8 @@ export function normalizeGeneratedAt(value) {
   return date.toISOString();
 }
 
-/**
- * The portable app ships the bundled CLI verbatim, with no `node_modules` beside it. A runtime
- * dependency would therefore resolve to nothing at all on an installed machine, so it must fail the
- * build instead of producing an artifact that only breaks once a user runs it.
- */
-export function assertBundledCliHasNoRuntimeDependencies(sourcePackage) {
-  for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-    const names = Object.keys(sourcePackage[field] ?? {});
-    if (names.length > 0) {
-      fail(
-        `apps/cli declares ${field} (${names.join(", ")}), but the portable app ships without node_modules. ` +
-          "Bundle the dependency into the CLI build, or extend the portable builder to install and ship it.",
-      );
-    }
-  }
-}
-
 export function portableAppPackageJson({ channelConfig, version, sourcePackage }) {
-  return {
+  const manifest = {
     name: channelConfig.packageName,
     version,
     type: "module",
@@ -169,6 +158,13 @@ export function portableAppPackageJson({ channelConfig, version, sourcePackage }
     engines: sourcePackage.engines,
     bin: { [channelConfig.binName]: "./cli/index.mjs" },
   };
+  const dependencyPins = readPortableDirectDependencyPins(sourcePackage);
+  if (dependencyPins.length > 0) {
+    manifest.dependencies = Object.fromEntries(
+      dependencyPins.map(({ name, version: pinnedVersion }) => [name, pinnedVersion]),
+    );
+  }
+  return manifest;
 }
 
 export function buildPortableMetadata({ channel, channelConfig, version, gitSha, nodeVersion, generatedAt }) {
@@ -387,24 +383,44 @@ export function assertBuiltCliIdentity({ appDir, channelConfig, version }) {
  * Assembles the channel- and version-specific app tree once, so every platform artifact ships
  * byte-identical application code and only differs in its embedded Node.js runtime.
  */
-async function createAppTemplate({ channelConfig, version }) {
-  const root = await mkdtemp(join(tmpdir(), "opentag-portable-app-"));
-  const appDir = join(root, "app");
-  const sourcePackage = readJson(join(CLI_ROOT, "package.json"));
-  assertBundledCliHasNoRuntimeDependencies(sourcePackage);
+export async function createAppTemplate({ channelConfig, version, cliRoot = CLI_ROOT, temporaryParent = tmpdir() }) {
+  const root = await mkdtemp(join(temporaryParent, "opentag-portable-app-"));
+  try {
+    const appDir = join(root, "app");
+    const sourceManifestPath = join(cliRoot, "package.json");
+    const sourcePackage = readJson(sourceManifestPath);
+    const dependencyPins = readPortableDirectDependencyPins(sourcePackage);
 
-  // The runtime only loads ESM chunks; declaration files, source maps, and build info would triple
-  // the download for bytes no installed CLI ever reads.
-  cpSync(join(CLI_ROOT, "dist"), appDir, {
-    recursive: true,
-    filter: (source) => lstatSync(source).isDirectory() || source.endsWith(".mjs"),
-  });
-  cpSync(join(CLI_ROOT, "LICENSE"), join(appDir, "LICENSE"));
-  cpSync(join(CLI_ROOT, "README.md"), join(appDir, "README.md"));
-  cpSync(join(CLI_ROOT, "THIRD_PARTY_NOTICES"), join(appDir, "THIRD_PARTY_NOTICES"));
-  writeJson(join(appDir, "package.json"), portableAppPackageJson({ channelConfig, sourcePackage, version }));
-  assertBuiltCliIdentity({ appDir, channelConfig, version });
-  return { appDir, root };
+    // The runtime only loads ESM chunks; declaration files, source maps, and build info would
+    // triple the download for bytes no installed CLI ever reads.
+    cpSync(join(cliRoot, "dist"), appDir, {
+      recursive: true,
+      filter: (source) => lstatSync(source).isDirectory() || source.endsWith(".mjs"),
+    });
+    cpSync(join(cliRoot, "LICENSE"), join(appDir, "LICENSE"));
+    cpSync(join(cliRoot, "README.md"), join(appDir, "README.md"));
+    cpSync(join(cliRoot, "THIRD_PARTY_NOTICES"), join(appDir, "THIRD_PARTY_NOTICES"));
+    writeJson(join(appDir, "package.json"), portableAppPackageJson({ channelConfig, sourcePackage, version }));
+
+    // Materialize the runtime dependency closure from the frozen install into the app's own
+    // node_modules, and record the closed graph beside the app manifest.
+    if (dependencyPins.length > 0) {
+      const closure = materializeRuntimeDependencyClosure({
+        nodeModulesDir: join(appDir, "node_modules"),
+        sourceManifestPath,
+      });
+      writeDependencyClosureFile(appDir, closure);
+    }
+    // The shared verifier runs before the identity smoke, so an app whose embedded pieces cannot
+    // resolve or are incomplete never reaches the point of claiming a runnable identity.
+    verifyPortableDependencyGraph(appDir);
+    assertBuiltCliIdentity({ appDir, channelConfig, version });
+    return { appDir, root };
+  } catch (error) {
+    // A failed assembly must not leak its temporary app tree.
+    await rm(root, { force: true, recursive: true });
+    throw error;
+  }
 }
 
 async function downloadText(url) {

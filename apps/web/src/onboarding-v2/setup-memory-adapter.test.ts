@@ -101,6 +101,64 @@ describe("createMemorySetupAdapter", () => {
     ]);
   });
 
+  it("models a missing runtime report as waiting, never as checking", async () => {
+    const agent = setupAgent();
+    const { adapter } = createMemorySetupAdapter({ agent, runtimeMissing: true });
+
+    const snapshot = await adapter.readSnapshot(agent.id);
+    expect(snapshot.stage).toBe("needs-runtime");
+    expect(snapshot.runtime).toEqual({ kind: "waiting", provider: "codex" });
+    expect(snapshot.blockers).toEqual([{ code: "runtime-not-ready", provider: "codex", status: "waiting" }]);
+    expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
+    expect(snapshot.components).toContainEqual({
+      kind: "runtime",
+      status: "waiting",
+      blocking: true,
+      provider: "codex",
+      observedAt: null,
+    });
+  });
+
+  it("keeps absent CLI reports absent instead of synthesizing checking", async () => {
+    const agent = setupAgent();
+    const { adapter } = createMemorySetupAdapter({ agent, imCliReadiness: {} });
+
+    const snapshot = await adapter.readSnapshot(agent.id);
+    expect(snapshot.stage).toBe("needs-provider-clis");
+    expect(snapshot.computer).toMatchObject({ kind: "bound", imCliReadiness: [] });
+    expect(snapshot.messaging).toEqual({ kind: "not-configured" });
+    expect(snapshot.requiredImCliProviders).toEqual(["feishu", "slack"]);
+    expect(snapshot.blockers).toEqual([
+      { code: "provider-cli-not-ready", provider: "feishu", status: "waiting" },
+      { code: "provider-cli-not-ready", provider: "slack", status: "waiting" },
+    ]);
+    expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
+    expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
+    expect(snapshot.components).toContainEqual({
+      kind: "im-cli",
+      provider: "feishu",
+      status: "waiting",
+      observedAt: null,
+      blocking: true,
+    });
+  });
+
+  it("preserves partial CLI reports while the unnamed Provider stays waiting", async () => {
+    const agent = setupAgent();
+    const { adapter } = createMemorySetupAdapter({ agent, imCliReadiness: { slack: "install" } });
+
+    const snapshot = await adapter.readSnapshot(agent.id);
+    expect(snapshot.stage).toBe("needs-provider-clis");
+    expect(snapshot.computer).toMatchObject({
+      imCliReadiness: [{ provider: "slack", status: "install", observedAt: expect.any(String) }],
+    });
+    expect(snapshot.blockers).toEqual([
+      { code: "provider-cli-not-ready", provider: "feishu", status: "waiting" },
+      { code: "provider-cli-not-ready", provider: "slack", status: "install" },
+    ]);
+    expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
+  });
+
   it("moves Feishu from a fresh start to ready through the canonical transitions", async () => {
     const agent = setupAgent();
     const { adapter, controls } = createMemorySetupAdapter({ agent });
@@ -309,7 +367,12 @@ describe("createMemorySetupAdapter", () => {
       { agent: setupAgent({ requiresComputerRebind: true }) },
       { agent: setupAgent(), computerOnline: false },
       { agent: setupAgent(), runtimeStatus: "checking" },
+      { agent: setupAgent(), runtimeMissing: true },
       { agent: setupAgent(), runtimeStatus: "unavailable" },
+      { agent: setupAgent(), imCliReadiness: {} },
+      { agent: setupAgent(), imCliReadiness: { slack: "install" } },
+      { agent: setupAgent(), imCliReadiness: { feishu: "checking", slack: "unavailable" } },
+      { agent: setupAgent(), computerOnline: false, imCliReadiness: {} },
       { agent: setupAgent() },
       { agent: setupAgent(), messaging: { kind: "bound", provider: "slack" } },
       { agent: setupAgent(), messaging: { kind: "bound", provider: "slack", reachable: true } },
@@ -327,5 +390,68 @@ describe("createMemorySetupAdapter", () => {
       const snapshot = await adapter.readSnapshot(seed.agent.id);
       expect(() => AgentSetupSnapshotSchema.parse(snapshot), snapshot.stage).not.toThrow();
     }
+  });
+
+  it("clones the seeded CLI reports so controls cannot mutate the caller fixture", async () => {
+    const agent = setupAgent();
+    const seedReports = Object.freeze({ feishu: "install", slack: "checking" });
+    const first = createMemorySetupAdapter({ agent, imCliReadiness: seedReports });
+    const second = createMemorySetupAdapter({ agent, imCliReadiness: seedReports });
+
+    // The controls must land on the first adapter's own copy: a frozen seed and a sibling
+    // adapter seeded from the same object must stay exactly as they were.
+    first.controls.setImCliReadiness("slack", "ready");
+    first.controls.runDoctor();
+
+    const firstSnapshot = await first.adapter.readSnapshot(agent.id);
+    expect(firstSnapshot.stage).toBe("needs-messaging");
+
+    const secondSnapshot = await second.adapter.readSnapshot(agent.id);
+    expect(secondSnapshot.stage).toBe("needs-provider-clis");
+    expect(secondSnapshot.components).toContainEqual(
+      expect.objectContaining({ kind: "im-cli", provider: "slack", status: "checking", blocking: true }),
+    );
+    expect(secondSnapshot.components).toContainEqual(
+      expect.objectContaining({ kind: "im-cli", provider: "feishu", status: "install", blocking: true }),
+    );
+    expect(seedReports).toEqual({ feishu: "install", slack: "checking" });
+  });
+
+  it("clears a missing runtime report when setRuntimeStatus supplies a fresh observation", async () => {
+    const agent = setupAgent();
+    const { adapter, controls } = createMemorySetupAdapter({ agent, runtimeMissing: true });
+
+    const waiting = await adapter.readSnapshot(agent.id);
+    expect(waiting.stage).toBe("needs-runtime");
+    expect(waiting.runtime).toEqual({ kind: "waiting", provider: "codex" });
+
+    controls.setRuntimeStatus("ready");
+
+    const observed = await adapter.readSnapshot(agent.id);
+    expect(observed.stage).toBe("needs-messaging");
+    expect(observed.runtime).toMatchObject({ kind: "observed", provider: "codex", status: "ready" });
+    const runtime = observed.runtime;
+    expect(runtime.kind === "observed" ? runtime.observedAt : null).toEqual(expect.any(String));
+    expect(observed.components).toContainEqual(
+      expect.objectContaining({ kind: "runtime", status: "ready", blocking: false, provider: "codex" }),
+    );
+  });
+
+  it("clears a missing runtime report when runDoctor reports success", async () => {
+    const agent = setupAgent();
+    const { adapter, controls } = createMemorySetupAdapter({
+      agent,
+      runtimeMissing: true,
+      imCliReadiness: {},
+    });
+
+    controls.runDoctor();
+
+    const ready = await adapter.readSnapshot(agent.id);
+    expect(ready.stage).toBe("needs-messaging");
+    expect(ready.runtime).toMatchObject({ kind: "observed", provider: "codex", status: "ready" });
+    const runtime = ready.runtime;
+    expect(runtime.kind === "observed" ? runtime.observedAt : null).toEqual(expect.any(String));
+    expect(ready.blockers).toEqual([{ code: "messaging-not-configured" }]);
   });
 });

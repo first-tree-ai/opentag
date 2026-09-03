@@ -27,10 +27,6 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
   <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
 </p>
 
-> **Pre-alpha。** 控制面、本地 Runtime 以及飞书和 Slack 链路今天已经端到端跑通。安装工作流仍在完善，
-> 公开 API 在第一个稳定版本前仍可能变化。Web 中的 Tasks、Skills 和 Integrations 区域是基于 demo 数据的
-> 界面预览。
-
 ---
 
 ## OpenTag 是什么

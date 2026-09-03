@@ -26,11 +26,6 @@ not on ours.
   <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
 </p>
 
-> **Pre-alpha.** The control plane, the local runtime, and the Lark and Slack paths work end to
-> end today. Install workflows are still being finished and public APIs may change before the first
-> stable release. The Tasks, Skills, and Integrations areas of the Web are interface previews backed
-> by demo data.
-
 ---
 
 ## What is OpenTag?

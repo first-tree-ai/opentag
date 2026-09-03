@@ -53,7 +53,7 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 
 *Whatever it can already reach, the room can reach.*
 
-- **The same tools you already have →** Pull up the issue, check the calendar, open the pull request. If the agent can do it on that machine, it can do it from the thread.
+- **Your whole toolbox →** Git hosts, issue trackers, calendars, cloud CLIs, and the internal scripts nobody would ever build a connector for. Pull up the issue, check the calendar, open the pull request.
 - **Your credentials, your machine →** `gh`, your cloud CLIs, your checkouts. Nothing to install and authorize first, and no token handed to a third party.
 
 ## Own the whole thing.

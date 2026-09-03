@@ -22,7 +22,7 @@ and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on y
 </div>
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
+  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, thread context read from the root message, and reaching the tools already set up on that machine." width="100%">
 </p>
 
 ---
@@ -59,7 +59,7 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 *Own your tag, own your context, bring your own plan.*
 
 - **No model lock-in →** [Codex and Claude Code](#runtimes) run as the CLIs already signed in on your machine. OpenTag ships no model and never asks for a provider key.
-- **Context stays local →** It accumulates on hardware you control, not in a vendor account you can be locked out of.
+- **Work-area files stay local →** Work areas and runtime state sit on hardware you control, not in a vendor account you can be locked out of. What the agent sends to its provider, and what that provider retains, stays between you and them.
 - **Own the tag →** Apache 2.0, no hosted-service carve-out and no commercial-use rider. [LICENSE](./LICENSE)
 - **Run it anywhere →** `ghcr.io/first-tree-ai/opentag`, published per commit, pointed at your own PostgreSQL. [Deployment guide](./docs/deploying.md)
 

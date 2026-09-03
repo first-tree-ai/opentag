@@ -24,7 +24,7 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-09-02
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
+  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、从根消息读起的话题上下文，以及使用那台机器上已经配置好的工具。" width="100%">
 </p>
 
 ---
@@ -61,7 +61,7 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 *tag 归你、上下文归你、套餐用你自己的。*
 
 - **模型不锁定 →** [Codex 和 Claude Code](#runtime) 以你机器上已登录的 CLI 形式运行。OpenTag 不附带模型，也从不索要 provider 密钥。
-- **上下文留在本地 →** 它沉淀在你控制的硬件上，而不是一个可能把你锁在门外的厂商账号里。
+- **工作区文件留在本地 →** 工作区和运行时状态都在你控制的硬件上，而不是一个可能把你锁在门外的厂商账号里。至于 Agent 往它的 provider 发了什么、provider 又留存多久，那是你和 provider 之间的事。
 - **tag 归你 →** Apache 2.0，没有托管服务例外条款，也没有商用附加条件。[LICENSE](./LICENSE)
 - **哪里都能跑 →** `ghcr.io/first-tree-ai/opentag`，按 commit 发布，指向你自己的 PostgreSQL。[部署指南](./docs/zh-CN/deploying.md)
 

@@ -40,7 +40,7 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 
 ---
 
-## Build your context tree.
+## Org memory you can audit.
 
 *OpenTag builds and maintains your org's context for you, in a repo you own.*
 

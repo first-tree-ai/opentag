@@ -7,7 +7,7 @@
 **Claude Tag 的开源替代品。**
 
 AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干了：用你已经在付费的编码 agent 和模型
-套餐，记忆以纯文本文件的形式留在你自己的机器上。免费，Apache 2.0：tag 归你、记忆归你、套餐用你自己的。
+套餐，工作区以纯文本文件的形式留在你自己的机器上。免费，Apache 2.0：tag 归你、文件归你、套餐用你自己的。
 它跑在你的机器上。
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)

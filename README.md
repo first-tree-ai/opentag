@@ -7,8 +7,8 @@
 **Open source Claude Tag alternative.**
 
 An AI worker in your Slack and Lark. Tag it in a thread and it does the work, running the coding
-agent and model plan you already pay for, with its memory in plain files on your own machine. Free
-and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on your machine.
+agent and model plan you already pay for, with its work area in plain files on your own machine.
+Free and Apache 2.0: own your tag, own your files, bring your own plan. It runs on your machine.
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)

@@ -49,8 +49,8 @@ function setupSnapshot(targetAgentId: string) {
     messaging: { kind: "not-configured" },
     blockers: [{ code: "messaging-not-configured" }],
     actions: [
-      { kind: "start-messaging", provider: "feishu" },
       { kind: "start-messaging", provider: "slack" },
+      { kind: "start-messaging", provider: "feishu" },
     ],
     observedAt,
   };

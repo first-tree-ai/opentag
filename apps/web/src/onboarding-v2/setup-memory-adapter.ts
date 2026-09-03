@@ -259,8 +259,8 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
   switch (messaging.kind) {
     case "not-configured":
       return [
-        { kind: "start-messaging", provider: "feishu" },
         { kind: "start-messaging", provider: "slack" },
+        { kind: "start-messaging", provider: "feishu" },
       ];
     case "feishu-attempt":
       return [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId }];

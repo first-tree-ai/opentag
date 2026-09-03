@@ -218,6 +218,14 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    // Slack leads here for the same reason it leads in Messaging settings: neither channel is the
+    // recommended one, so the two surfaces must not disagree about which comes first.
+    const choices = document.querySelector('[data-ui="agent-setup-messaging-choices"]') as HTMLElement;
+    expect(
+      within(choices)
+        .getAllByRole("button")
+        .map((button) => (/Slack/.test(button.textContent ?? "") ? "slack" : "feishu")),
+    ).toEqual(["slack", "feishu"]);
     const readiness = document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]');
     expect(readiness).not.toBeNull();
     expect(within(readiness as HTMLElement).getByText("Preparing")).toBeTruthy();

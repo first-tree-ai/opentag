@@ -96,8 +96,8 @@ describe("createMemorySetupAdapter", () => {
     expect(unconfiguredSnapshot.messaging).toEqual({ kind: "not-configured" });
     expect(unconfiguredSnapshot.blockers).toEqual([{ code: "messaging-not-configured" }]);
     expect(unconfiguredSnapshot.actions).toEqual([
-      { kind: "start-messaging", provider: "feishu" },
       { kind: "start-messaging", provider: "slack" },
+      { kind: "start-messaging", provider: "feishu" },
     ]);
   });
 
@@ -245,8 +245,8 @@ describe("createMemorySetupAdapter", () => {
     const cleared = await adapter.readSnapshot(agent.id);
     expect(cleared.messaging).toEqual({ kind: "not-configured" });
     expect(cleared.actions).toEqual([
-      { kind: "start-messaging", provider: "feishu" },
       { kind: "start-messaging", provider: "slack" },
+      { kind: "start-messaging", provider: "feishu" },
     ]);
 
     const url = await adapter.startSlackInstall(agent.id, "create", { kind: "unbound" });

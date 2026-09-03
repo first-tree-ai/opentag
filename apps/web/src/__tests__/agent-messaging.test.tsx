@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
+import { withLocaleAsync } from "./support/with-locale.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -61,9 +62,47 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    expect(screen.getByText("Connect Lark or Slack so teammates can send messages to this Agent.")).toBeTruthy();
+    expect(screen.getByText("Connect Slack or Lark so teammates can send messages to this Agent.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
+  });
+
+  it("presents both messaging channels as equal choices rather than a recommendation", async () => {
+    /*
+     * Which app a team already lives in decides this, so neither channel gets the emphasis styling
+     * that would read as our recommendation. Each carries its own mark instead, and Slack leads.
+     */
+    installApi({ bound: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    await screen.findByRole("button", { name: "Connect Slack" });
+    const connect = screen.getAllByRole("button").filter((button) => button.textContent?.startsWith("Connect"));
+    expect(connect.map((button) => button.textContent)).toEqual(["Connect Slack", "Connect Lark"]);
+    // A mark that is merely present could still be the other channel's, so read which one it depicts.
+    expect(connect.map(markProvider)).toEqual(["Slack", "Feishu"]);
+    // One neutral surface for both: identical classes, and `secondary`'s white card and default text
+    // rather than the emphasis fill or the destructive text that would single a channel out.
+    expect(new Set(connect.map((button) => button.className)).size).toBe(1);
+    for (const button of connect) {
+      expect(button.className).toContain("bg-kumo-base");
+      expect(button.className).toContain("!text-kumo-default");
+    }
+  });
+
+  it("spaces both brand names correctly when the page itself renders in Chinese", async () => {
+    /*
+     * Composing the sentence in a test proves only that the catalogue and the spacing rule fit
+     * together; it cannot see whether this page still puts them together that way. Reading the
+     * rendered page is what observes the call site, and only Chinese shows the difference — the
+     * boundary rule is a no-op in English, so the English assertion above would survive its loss.
+     */
+    installApi({ bound: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    await withLocaleAsync("zh", async () => {
+      render(<App />);
+      expect(await screen.findByText("连接 Slack 或飞书，让团队成员可以向此 Agent 发送消息。")).toBeTruthy();
+    });
   });
 
   it("separates the connected channel from the trigger mode that acts on it", async () => {
@@ -448,3 +487,15 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 });
+
+/**
+ * Which provider a decorative button mark actually depicts.
+ *
+ * The marks are inlined as data URIs, so the rendered `src` carries the whole SVG — including the
+ * `<title>` each asset names itself with. That is the one thing in the DOM that distinguishes one
+ * mark from the other, since both are `alt=""` and `aria-hidden` by design.
+ */
+function markProvider(button: HTMLElement): string | undefined {
+  const src = button.querySelector("img")?.getAttribute("src");
+  return src ? /<title>([^<]+)<\/title>/.exec(decodeURIComponent(src))?.[1] : undefined;
+}

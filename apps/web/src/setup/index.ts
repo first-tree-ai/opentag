@@ -10,16 +10,7 @@
  * came from.
  */
 
-export {
-  type CheckRow,
-  type CheckState,
-  deriveChecks,
-  formatRemaining,
-  type MessagingCliStatus,
-  messagingCliCheck,
-  type RuntimeStatus,
-} from "./checks.js";
+export { formatRemaining, type MessagingCliStatus } from "./checks.js";
 export { CommandBlock } from "./command-block.js";
-export { CheckLine, ConnectStatus, Countdown, QrCode, useRemaining, WAITING_LINE } from "./components.js";
+export { QrCode, useRemaining, WAITING_LINE } from "./components.js";
 export { type ConnectCodeVerdict, readConnectCodeVerdict } from "./connect-code-verdict.js";
-export { CHECK_COPY, SETUP_COPY } from "./copy.js";

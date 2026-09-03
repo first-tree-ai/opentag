@@ -57,25 +57,9 @@ describe("setup piece layout", () => {
    * resolves — so they are guarded here rather than left to be deleted as decoration.
    */
   it("holds a reserved height for every piece whose contents change length", () => {
-    // The connect status: waiting on one line, connected on another.
+    // The connect status, still rendered by ComputerConnect: waiting on one line, connected on another.
     expect(declarationValue(".ots-slot--status", "min-height")).toBe("28px");
-    // A check row, whose failure detail takes a second line on a narrow screen.
-    expect(declarationValue(".ots-check", "min-height")).toBe("73px");
     // The QR frame, which holds its box whether or not a code has arrived.
     expect(declarationValue(".ots-qr", "height")).toBe("208px");
-  });
-
-  it("holds the taller reserve a check row needs once its status wraps", () => {
-    let value: string | undefined;
-    stylesheet.walkAtRules("media", (atRule) => {
-      if (!atRule.params.includes("399px")) return;
-      atRule.walkRules((rule) => {
-        if (!rule.selectors.includes(".ots-check")) return;
-        rule.walkDecls("min-height", (declaration) => {
-          value = declaration.value;
-        });
-      });
-    });
-    expect(value).toBe("90px");
   });
 });

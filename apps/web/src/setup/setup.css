@@ -12,36 +12,6 @@
  * styling that stays its own.
  */
 
-/* Check rows ------------------------------------------------------------- */
-
-/*
- * These two need to read as green and amber at 22px. The operational status palette is tuned for
- * large surfaces and goes indistinct at this size, so the pair is stated locally.
- */
-.ots-check__marker {
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--color-kumo-hairline);
-  line-height: 1;
-}
-
-.ots-check[data-state="passed"] .ots-check__marker {
-  border-color: #17a04a;
-  background: #e6f7ec;
-  color: #17a04a;
-}
-
-.ots-check[data-state="failed"] .ots-check__marker {
-  border-color: #d98207;
-  background: #fdf1de;
-  color: #d98207;
-}
-
-.ots-check[data-state="pending"] .ots-check__marker {
-  border-style: dashed;
-  animation: ots-fade 1.4s ease-in-out infinite;
-}
-
 @keyframes ots-fade {
   0%,
   100% {
@@ -171,23 +141,6 @@
  * so what sits under it keeps one position. These are measured, not chosen.
  */
 
-/* The connect status: waiting on one line, connected on another. */
-.ots-slot--status {
-  min-height: 28px;
-}
-
-/* A check row's second line is a status, and a failure reads longer than what it replaces. */
-.ots-check {
-  min-height: 73px;
-}
-
-/* Below this width a failing check's status takes a second line. */
-@media (width <= 399px) {
-  .ots-check {
-    min-height: 90px;
-  }
-}
-
 /* The waiting dot carries its own animation. */
 .ots-pulse {
   width: 8px;
@@ -195,6 +148,15 @@
   border-radius: 50%;
   background: var(--color-kumo-brand);
   animation: ots-fade 1.4s ease-in-out infinite;
+}
+
+/*
+ * The connect status: waiting on one line, connected on another. The class is written by
+ * ComputerConnect rather than by anything in this directory, so the rule outlives the setup
+ * component that used to share it.
+ */
+.ots-slot--status {
+  min-height: 28px;
 }
 
 /* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */

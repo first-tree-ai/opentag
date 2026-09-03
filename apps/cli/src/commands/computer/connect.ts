@@ -1,16 +1,21 @@
 import { resolve } from "node:path";
 import { resolveOpenTagHome } from "@opentag/client";
+import type { LocalComputerPreparationResult } from "@opentag/shared";
 import type { Command } from "commander";
 import { channelConfig } from "../../core/channel/config.js";
 import { resolveChannelEnvironment } from "../../core/channel/environment.js";
 import * as commandPolicy from "../../core/command/policy.js";
+import { type ComputerConnectResult, runComputerConnect } from "../../core/computer/connect.js";
+import { formatPreparationResultLines } from "../../core/computer/formatting.js";
 import {
-  type ComputerConnectResult,
-  ComputerConnectServiceInstallError,
-  runComputerConnect,
-} from "../../core/computer/connect.js";
-import * as providerCliCore from "../../core/provider-cli/ensure.js";
-import { providerCliAggregateFailure } from "../../core/provider-cli/shared.js";
+  daemonServiceCommand,
+  failedLocalComputerPreparation,
+  LOCAL_COMPUTER_PREPARATION_INCOMPLETE,
+  NO_CODE_REUSE_GUIDANCE,
+  preparationGuidance,
+  runLocalComputerPreparation,
+} from "../../core/computer/preparation.js";
+import { renderProviderCliHumanValue } from "../../core/provider-cli/shared.js";
 
 type ComputerConnectCommandOptions = {
   home?: string;
@@ -20,223 +25,145 @@ type ComputerConnectCommandOptions = {
   json?: boolean;
 };
 
-interface ProviderCliSetupProjection {
-  readonly status: "ready" | "needs_attention" | "skipped";
-  readonly results: providerCliCore.ProviderCliEnsureCommandResult["results"];
-  readonly nextActions: providerCliCore.ProviderCliEnsureCommandResult["nextActions"];
-  readonly reason?: string;
-}
-
 export function registerComputerConnectCommand(computer: Command): void {
   computer
     .command("connect")
-    .description("Connect this Computer and, for targeted onboarding, prepare the Lark and Slack CLIs")
+    .description("Connect this Computer, check the selected Runtime, and prepare Lark and Slack CLIs")
     .argument("<code>", "one-time Computer connect code")
     .option("--server <url>", "OpenTag server URL")
     .option("--home <path>", "OpenTag home directory")
-    .option("--no-start", "store the machine credential without installing the daemon service")
-    .option("--no-prepare-provider-clis", "connect without preparing the Lark and Slack CLIs")
+    .option("--no-start", "skip only daemon service installation/start")
+    .option("--no-prepare-provider-clis", "skip Lark and Slack CLI preparation")
     .option("--json", "print JSON")
     .action(executeComputerConnectCommand);
 }
 
 async function executeComputerConnectCommand(code: string, options: ComputerConnectCommandOptions): Promise<void> {
-  const result = await connectOrPresentFailure(code, options);
-  if (!result) return;
-  if (!shouldPrepareProviderClis(result, options)) {
-    presentConnectResult(result, skippedProviderClis(result, options), options.json === true);
-    process.exitCode = 0;
+  const environment = resolveChannelEnvironment(process.env);
+  const home = resolve(options.home ?? resolveOpenTagHome(environment));
+  const connection = await connectOrPresentFailure(code, home, environment, options);
+  if (!connection) return;
+  if (!connection.agentId) {
+    presentOrdinaryConnection(connection, home, options.json === true);
     return;
   }
-  presentProviderCliSetupStart(result, options.json === true);
-  await prepareProviderClisOrPresentFailure(result, options.json === true);
+  const preparationOptions = {
+    runtimeProvider: connection.runtimeProvider,
+    service: connection.service,
+    serviceError: connection.serviceError,
+    home,
+    env: environment,
+    noStart: options.start === false,
+    prepareProviderClis: options.prepareProviderClis !== false,
+  };
+  let preparation: LocalComputerPreparationResult;
+  try {
+    preparation = await runLocalComputerPreparation({
+      ...preparationOptions,
+      onPhase: options.json
+        ? undefined
+        : (event) => {
+            const provider = event.provider === "feishu" ? "lark" : "slack";
+            const detail = event.detail ? ` — ${event.detail}` : "";
+            process.stdout.write(`${safeLine(`[im-cli:${provider}] ${event.phase}: ${event.status}${detail}`)}\n`);
+          },
+    });
+  } catch (error) {
+    // Preserve the already-saved connection even after a projection failure. Neither exchange
+    // nor ensure is repeated here: the one-time code cannot be reused.
+    preparation = failedLocalComputerPreparation(preparationOptions, error);
+  }
+  presentPreparation(connection, preparation, options.json === true);
 }
 
 async function connectOrPresentFailure(
   code: string,
+  home: string,
+  environment: NodeJS.ProcessEnv,
   options: ComputerConnectCommandOptions,
 ): Promise<ComputerConnectResult | undefined> {
   try {
-    const environment = resolveChannelEnvironment(process.env);
     const serverUrl = options.server ?? environment.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
     if (!serverUrl) throw new Error(`The ${channelConfig.channel} channel requires --server for Computer connect`);
-    return await runComputerConnect({
-      code,
-      home: resolve(options.home ?? resolveOpenTagHome(environment)),
-      noStart: options.start === false,
-      serverUrl,
-    });
+    return await runComputerConnect({ code, home, noStart: options.start === false, serverUrl });
   } catch (error) {
-    presentConnectFailure(error, options.json === true);
+    const commandError = commandPolicy.toCommandError(error, "request");
+    process.exitCode = commandPolicy.presentCommand(
+      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
+      { json: options.json },
+    );
     return undefined;
   }
 }
 
-function presentConnectFailure(error: unknown, json: boolean): void {
-  if (error instanceof ComputerConnectServiceInstallError) {
-    process.exitCode = presentServiceFailure(error, json);
-    return;
-  }
-  const commandError = commandPolicy.toCommandError(error, "request");
-  process.exitCode = commandPolicy.presentCommand(
-    { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
-    { json },
+function preparationError(
+  code: string,
+  message: string,
+  phase: commandPolicy.CommandPhase = "provider",
+): commandPolicy.CommandError {
+  return new commandPolicy.CommandError(
+    // Retryability applies to connect, not to the separate, idempotent repair commands.
+    { code, category: "dependency", retryability: "never", phase },
+    message,
   );
 }
 
-function shouldPrepareProviderClis(result: ComputerConnectResult, options: ComputerConnectCommandOptions): boolean {
-  return options.prepareProviderClis !== false && options.start !== false && result.agentId !== undefined;
+function safeLine(line: string): string {
+  return renderProviderCliHumanValue(commandPolicy.redactSecrets(line), 16384);
 }
 
-function presentProviderCliSetupStart(result: ComputerConnectResult, json: boolean): void {
-  if (json) return;
-  process.stdout.write(`${commandPolicy.redactSecrets(result.message)}\n`);
-  if (result.service) process.stdout.write(`Daemon service ${result.service.serviceId} is ${result.service.state}\n`);
-  process.stdout.write("Preparing Lark and Slack CLIs…\n");
-}
-
-async function prepareProviderClisOrPresentFailure(result: ComputerConnectResult, json: boolean): Promise<void> {
-  try {
-    const providerCli = await providerCliCore.runProviderCliEnsure({
-      provider: "all",
-      json,
-      ...(json ? { stdout: () => undefined, stderr: () => undefined } : {}),
-    });
-    const projection: ProviderCliSetupProjection = {
-      status: providerCli.exitCode === 0 ? "ready" : "needs_attention",
-      results: providerCli.results,
-      nextActions: providerCli.nextActions,
-    };
-    presentConnectResult(result, projection, json);
-    process.exitCode = providerCli.exitCode;
-  } catch (error) {
-    presentUnexpectedProviderCliFailure(result, error, json);
-  }
-}
-
-function presentUnexpectedProviderCliFailure(result: ComputerConnectResult, error: unknown, json: boolean): void {
-  const commandError = commandPolicy.toCommandError(error, "provider");
-  const projection: ProviderCliSetupProjection = {
-    status: "needs_attention",
-    results: [],
-    nextActions: [
-      {
-        provider: "all",
-        command: providerCliRepairAllCommand(),
-        reason: commandError.code,
-      },
-    ],
-  };
-  presentConnectResult(result, projection, json, commandError);
-  process.exitCode = commandPolicy.commandExitCode(commandError);
-}
-
-function skippedProviderClis(
-  result: ComputerConnectResult,
-  options: ComputerConnectCommandOptions,
-): ProviderCliSetupProjection {
-  const reason =
-    options.start === false
-      ? "daemon_not_started"
-      : options.prepareProviderClis === false
-        ? "not_requested"
-        : result.agentId === undefined
-          ? "no_target_agent"
-          : "not_requested";
-  return { status: "skipped", results: [], nextActions: [], reason };
-}
-
-function presentConnectResult(
-  result: ComputerConnectResult,
-  providerClis: ProviderCliSetupProjection,
+function presentPreparation(
+  connection: ComputerConnectResult,
+  preparation: LocalComputerPreparationResult,
   json: boolean,
-  error?: commandPolicy.CommandError,
 ): void {
+  const guidance = preparationGuidance(preparation);
+  const value = { connected: true, connection, preparation, guidance };
+  const error = preparationError(LOCAL_COMPUTER_PREPARATION_INCOMPLETE, NO_CODE_REUSE_GUIDANCE);
+  process.exitCode = preparation.localReady ? 0 : commandPolicy.commandExitCode(error);
   if (json) {
-    const value = {
-      connected: true,
-      connection: result,
-      providerClis,
-    };
-    if (providerClis.status !== "needs_attention" && !error) {
-      commandPolicy.presentCommand({ ok: true, value, exitCode: 0 }, { json: true });
-      return;
-    }
-    const aggregate = providerCliAggregateFailure(providerClis.results.filter((entry) => !entry.ok));
-    const commandError =
-      error ??
-      new commandPolicy.CommandError(
-        {
-          code: "PROVIDER_CLI_SETUP_INCOMPLETE",
-          category: aggregate.category,
-          retryability: aggregate.retryability,
-          phase: "provider",
-        },
-        "Computer connection is active, but local messaging CLI setup needs attention.",
-      );
     commandPolicy.presentCommand(
-      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError), value },
+      preparation.localReady
+        ? { ok: true, value, exitCode: 0 }
+        : { ok: false, value, error, exitCode: commandPolicy.commandExitCode(error) },
       { json: true },
     );
     return;
   }
-  if (providerClis.status === "ready") {
-    process.stdout.write("Local messaging CLI setup is ready. Return to OpenTag and choose Lark or Slack.\n");
-    return;
-  }
-  if (providerClis.status === "needs_attention") {
-    if (error) process.stderr.write(`${error.code}: ${error.message}\n`);
-    process.stderr.write("Computer connection is active, but local messaging CLI setup needs attention.\n");
-    for (const action of providerClis.nextActions) process.stderr.write(`Resume with: ${action.command}\n`);
-    return;
-  }
-  process.stdout.write(`${commandPolicy.redactSecrets(result.message)}\n`);
-  if (result.service) process.stdout.write(`Daemon service ${result.service.serviceId} is ${result.service.state}\n`);
+  const lines = [connection.message, ...formatPreparationResultLines(preparation), ...guidance];
+  const output = `${lines.map(safeLine).join("\n")}\n`;
+  if (preparation.localReady) process.stdout.write(output);
+  else process.stderr.write(output);
 }
 
-function presentServiceFailure(
-  error: ComputerConnectServiceInstallError,
-  json: boolean,
-): commandPolicy.CommandExitCode {
-  const command = `"$HOME/.local/bin/${channelConfig.binName}" daemon restart`;
-  const commandError = new commandPolicy.CommandError(
-    {
-      code: "DAEMON_SERVICE_FAILED",
-      category: "dependency",
-      retryability: "immediate",
-      phase: "startup",
-    },
-    "Daemon service reload failed; machine credentials were preserved.",
+function presentOrdinaryConnection(connection: ComputerConnectResult, home: string, json: boolean): void {
+  const guidance = connection.serviceError
+    ? [
+        NO_CODE_REUSE_GUIDANCE,
+        `Repair: ${daemonServiceCommand("install", home)}`,
+        `Verify: ${daemonServiceCommand("status", home)}`,
+      ]
+    : [];
+  const value = { connected: true, connection, guidance };
+  const error = preparationError(
+    "DAEMON_SERVICE_FAILED",
+    `Daemon service failed; machine credentials were preserved. ${NO_CODE_REUSE_GUIDANCE}`,
+    "startup",
   );
-  const exitCode = commandPolicy.commandExitCode(commandError);
   if (json) {
-    commandPolicy.presentCommand(
-      {
-        ok: false,
-        error: commandError,
-        exitCode,
-        value: {
-          connected: true,
-          connection: error.connectResult,
-          providerClis: {
-            status: "skipped",
-            results: [],
-            nextActions: [{ provider: "all", command, reason: "daemon_service_failed" }],
-            reason: "daemon_service_failed",
-          },
-        },
-      },
+    process.exitCode = commandPolicy.presentCommand(
+      connection.serviceError
+        ? { ok: false, value, error, exitCode: commandPolicy.commandExitCode(error) }
+        : { ok: true, value, exitCode: 0 },
       { json: true },
     );
-    return exitCode;
+    return;
   }
-  process.stdout.write(`${commandPolicy.redactSecrets(error.connectResult.message)}\n`);
-  process.stderr.write(
-    `${commandPolicy.redactSecrets(`Daemon service reload failed; machine credentials were preserved. Run ${command} to retry.`)}\n`,
-  );
-  return exitCode;
-}
-
-function providerCliRepairAllCommand(): string {
-  return `"$HOME/.local/bin/${channelConfig.binName}" provider-cli ensure --provider all`;
+  process.stdout.write(`${safeLine(connection.message)}\n`);
+  if (connection.service)
+    process.stdout.write(
+      `${safeLine(`Daemon service ${connection.service.serviceId} is ${connection.service.state}`)}\n`,
+    );
+  for (const line of guidance) process.stderr.write(`${safeLine(line)}\n`);
+  process.exitCode = connection.serviceError ? commandPolicy.commandExitCode(error) : 0;
 }

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withComputerRuntimeProviderSupport } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -752,6 +753,112 @@ describe("machine authentication and Computer services", () => {
       { provider: "slack", status: "checking" },
     ]);
     expect(() => rejectUnsupportedClientVersion("0.0.1")).toThrow(AuthServiceError);
+  });
+
+  it("answers the exact target Agent runtime provider to marked Clients and keeps the legacy strict shape for unmarked ones", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const markedVersion = withComputerRuntimeProviderSupport("0.0.3");
+    for (const runtimeProvider of ["codex", "claude-code"] as const) {
+      const [markedTarget] = await unit.database
+        .insert(agents)
+        .values({
+          createdByUserId: bootstrap.userId,
+          displayName: `Marked ${runtimeProvider}`,
+          name: `marked-${runtimeProvider}`,
+          runtimeProvider,
+        })
+        .returning({ id: agents.id });
+      if (!markedTarget) throw new Error("marked target Agent fixture missing");
+      const marked = await machine.exchangeConnectCode(
+        exchangeInput(
+          (await machine.issueForAccount(bootstrap.userId, { targetAgentId: markedTarget.id })).code,
+          randomUUID(),
+          markedVersion,
+        ),
+      );
+      expect(marked).toMatchObject({ agentId: markedTarget.id, runtimeProvider });
+      expect(Object.keys(marked).sort()).toEqual([
+        "agentId",
+        "computerId",
+        "credentialId",
+        "installationId",
+        "machineToken",
+        "runtimeProvider",
+      ]);
+
+      const [legacyTarget] = await unit.database
+        .insert(agents)
+        .values({
+          createdByUserId: bootstrap.userId,
+          displayName: `Legacy ${runtimeProvider}`,
+          name: `legacy-${runtimeProvider}`,
+          runtimeProvider,
+        })
+        .returning({ id: agents.id });
+      if (!legacyTarget) throw new Error("legacy target Agent fixture missing");
+      const legacy = await machine.exchangeConnectCode(
+        exchangeInput((await machine.issueForAccount(bootstrap.userId, { targetAgentId: legacyTarget.id })).code),
+      );
+      expect(legacy.agentId).toBe(legacyTarget.id);
+      expect(legacy).not.toHaveProperty("runtimeProvider");
+      expect(Object.keys(legacy).sort()).toEqual([
+        "agentId",
+        "computerId",
+        "credentialId",
+        "installationId",
+        "machineToken",
+      ]);
+      const [bound] = await unit.database.select().from(agents).where(eq(agents.id, legacyTarget.id));
+      expect(bound?.computerId).toBe(legacy.computerId);
+    }
+  });
+
+  it("never reports a runtime provider without a target Agent, even for marked Clients", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const markedVersion = withComputerRuntimeProviderSupport("0.0.3");
+    const exchange = await machine.exchangeConnectCode(
+      exchangeInput((await machine.issueForAccount(bootstrap.userId, {})).code, randomUUID(), markedVersion),
+    );
+    expect(exchange).not.toHaveProperty("agentId");
+    expect(exchange).not.toHaveProperty("runtimeProvider");
+    expect(Object.keys(exchange).sort()).toEqual(["computerId", "credentialId", "installationId", "machineToken"]);
+  });
+
+  it("reports the bound Agent runtime provider again when a marked Client repairs its Computer", async () => {
+    const bootstrap = await account();
+    const machine = new MachineAuthService(unit.database, { now: () => NOW });
+    const markedVersion = withComputerRuntimeProviderSupport("0.0.3");
+    const connected = await machine.exchangeConnectCode(
+      exchangeInput((await machine.issueForAccount(bootstrap.userId, {})).code, randomUUID()),
+    );
+    const [target] = await unit.database
+      .insert(agents)
+      .values({
+        computerId: connected.computerId,
+        createdByUserId: bootstrap.userId,
+        displayName: "Repair target",
+        name: "repair-target",
+        runtimeProvider: "claude-code",
+      })
+      .returning({ id: agents.id });
+    if (!target) throw new Error("repair target Agent fixture missing");
+    const repaired = await machine.exchangeConnectCode(
+      exchangeInput(
+        (
+          await machine.issueForAccount(bootstrap.userId, {
+            mode: "repair",
+            targetAgentId: target.id,
+            targetComputerId: connected.computerId,
+          })
+        ).code,
+        randomUUID(),
+        markedVersion,
+      ),
+    );
+    expect(repaired.computerId).toBe(connected.computerId);
+    expect(repaired).toMatchObject({ agentId: target.id, runtimeProvider: "claude-code" });
   });
 });
 

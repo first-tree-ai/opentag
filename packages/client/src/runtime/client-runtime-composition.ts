@@ -733,13 +733,16 @@ export interface ResolvedCodexFactoryOptions {
   readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => CodexAgentRuntimeFactory;
 }
 
-function claudeCodeProcessEnvironment(
+/**
+ * Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
+ * value equals its own default. Omit the variable only when the resolved home is that default.
+ * Exported so the CLI probes the same environment the daemon runs in.
+ */
+export function claudeCodeProcessEnvironment(
   sourceEnvironment: NodeJS.ProcessEnv,
   claudeCodeHome: string,
   defaultClaudeCodeHome: string,
 ): NodeJS.ProcessEnv {
-  // Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
-  // value equals its own default. Omit the variable only when the resolved home is that default.
   if (claudeCodeHome === defaultClaudeCodeHome) {
     const environment = { ...sourceEnvironment };
     delete environment.CLAUDE_CONFIG_DIR;

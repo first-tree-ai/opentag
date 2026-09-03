@@ -82,6 +82,7 @@
   "AuthV1FrameSchema",
   "AuthV2FrameSchema",
   "BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES",
+  "COMPUTER_RUNTIME_PROVIDER_CAPABILITY",
   "ChannelNameSchema",
   "ClientRuntimeBusinessFrameSchema",
   "ClientRuntimeFrameSchema",
@@ -167,6 +168,10 @@
   "ListAccountComputersResponseSchema",
   "ListAgentsResponseSchema",
   "ListTasksResponseSchema",
+  "LocalComputerPreparationResultSchema",
+  "LocalPreparationActionSchema",
+  "LocalPreparationCheckSchema",
+  "LocalPreparationComponentSchema",
   "MINIMUM_SUPPORTED_CLIENT_VERSION",
   "MeResponseSchema",
   "NormalizedInboundImEventSchema",
@@ -369,6 +374,7 @@
   "agentSuspendPath",
   "agentUsagePath",
   "boundedSerialize",
+  "clientSupportsComputerRuntimeProvider",
   "compareSemVer",
   "computeDirectInputHash",
   "computeReconcilePayloadHash",
@@ -402,5 +408,6 @@
   "runtimeWebSocketUrl",
   "serializeDiagnostic",
   "taskByIdPath",
-  "unsupportedClientVersionMessage"
+  "unsupportedClientVersionMessage",
+  "withComputerRuntimeProviderSupport"
 ]

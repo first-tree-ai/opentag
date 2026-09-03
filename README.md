@@ -1,45 +1,137 @@
+<div align="center">
+
+<img src="https://opentag.build/assets/opentag-logo.png" alt="OpenTag" width="72">
+
 # OpenTag
 
-[简体中文](./README.zh-CN.md)
+**Tag it in the thread. It does the work.**
 
-OpenTag is a new, independent open-source product for connecting instant messaging with AI coding Agents. The project is
-currently **pre-alpha**: its product workflows are still under development and are not ready for production use.
+OpenTag is an open-source AI teammate for Slack and Lark. Mention it in a channel and a real coding
+agent — Claude Code or Codex — picks the message up, works on a machine you control, and answers in
+the same thread. Your subscription, your machine, your code.
 
-This repository currently provides the engineering foundation and first control-plane slice for OpenTag:
+[![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/first-tree-ai/opentag?style=flat)](https://github.com/first-tree-ai/opentag/stargazers)
+[![Node.js](https://img.shields.io/badge/node-22.13%20%7C%2024%20%7C%2026-5FA04E?style=flat&logo=node.js&logoColor=white)](#development)
 
-- a TypeScript monorepo with CLI, Web, client, server, and shared workspaces;
-- a Fastify server with health, readiness, REST, and Computer WebSocket endpoints;
-- a schema-validating client health check;
-- provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
-- one-time Account login codes with sliding stateless refresh JWTs;
-- independently authenticated Computer enrollment and presence;
-- Agent registry with immutable Computer/provider binding and revision fencing;
-- durable Agent Runtime execution, delivery custody, reporting, and recovery;
-- Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
-- durable, best-effort internal Session collaboration with explicit message retry;
-- direct provider CLI credential handoff for Agent-controlled replies and reactions; and
-- a same-origin management Web plus `doctor`, `login`, `agent`, `computer`, and daemon service management commands.
+[Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quickstart](#quickstart) · [Docs](#documentation) · [Development](./DEVELOPMENT.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
-These runtime and messaging paths are implemented but remain pre-alpha. Installation, management, and end-to-end product workflows are still being completed.
+**English | [简体中文](./README.zh-CN.md)**
 
-## Quick start
+</div>
 
-Prerequisites: Node.js 22.13 or newer on the 22.x line, Node.js 24.x, or Node.js 26.x; Corepack; and pnpm 10.12.1.
+```text
+ #product-eng ─────────────────────────────────────────────────────────
+
+  Priya  4:09 PM
+  @OpenTag the signup button is dead on mobile — can you take a look?
+
+  OpenTag  BOT  4:09 PM
+  On it. Claude Code, on serena-mbp.                            👀
+
+  OpenTag  BOT  4:24 PM
+  The CTA sits under the sticky footer below 380px. Fixed the
+  z-index and pushed fix/signup-cta-mobile — screenshots in the
+  thread. Want me to open the PR?
+
+ ──────────────────────────────────────────────────────────────────────
+```
+
+> **Pre-alpha.** The control plane, the local runtime, and the Lark and Slack paths all work
+> end to end today. Install and management workflows are still being finished, and public APIs may
+> change before the first stable release. See [Project status](#project-status).
+
+---
+
+## What is OpenTag?
+
+Your team already talks in Slack or Lark, and you already pay for Claude Code or Codex. But the
+agent lives in a terminal on somebody's laptop. Every request has to be carried there by hand,
+every answer carried back, and the context that made the request make sense stays in the channel
+the agent never sees.
+
+OpenTag puts the agent in the room. It is one bot the whole channel can address: someone tags it,
+OpenTag routes that message to an Agent bound to a machine you enrolled, the agent runs there with
+the credentials already on that machine, and it replies in the thread it was asked in. Nothing is
+proxied through a vendor — OpenTag ships no model and holds no provider key. The server you run is
+a control plane; the work happens on your hardware.
+
+---
+
+## Put it in the room.
+
+*One bot, shared by the channel — not a DM with a robot.*
+
+- **[Lark and Slack](#chat-platforms) →** Bind an Agent to a workspace, invite it to a channel, and tag it.
+- **[Channel and Thread Sessions](./docs/thread-sessions.md) →** Each channel keeps one long-lived Session; threads get their own when a real thread event arrives, with bounded root context so the agent is not guessing.
+- **[Direct and ambient attention](./docs/thread-sessions.md) →** The agent knows whether it was addressed or is just listening, and decides for itself whether to reply, open a thread, or react.
+- **[Replies through the provider's own CLI](./docs/direct-provider-cli.md) →** OpenTag hands the agent scoped IM credentials, so messages and reactions come from the agent's own judgment, not a templated bot response.
+
+## It runs on your machine.
+
+*A Computer is a desk. The code never leaves it.*
+
+- **Computer enrollment →** Generate a 15-minute connect command in the Web, paste it on the machine that should do the work. It stores an enrollment-scoped credential and installs a per-user daemon on Linux and macOS.
+- **Independent machine identity →** Machine credentials are separate from your account login. Signing in never starts a daemon; a daemon credential can never manage your account.
+- **Everything under one home →** Config, runtime state, and Agent work areas live in `${OPENTAG_HOME}`, private by default (`0700` / `0600`). [Layout and recovery](./DEVELOPMENT.md)
+- **Daemon lifecycle →** `daemon start`, `stop`, `restart`, `status`, `uninstall`, plus `doctor` when something looks wrong.
+
+## Bring your own agent and plan.
+
+*OpenTag drives the CLI you already installed and signed in. It does not ship a model.*
+
+- **[Runtimes](#runtimes) →** OpenAI Codex and Claude Code, invoked as the agent CLIs on that machine.
+- **Runtime configuration →** Set a Codex Agent's model, reasoning effort, and maximum Turn duration from the Agent's **Runtime** tab or `agent update`. Leave a field blank and the choice stays with Codex; explicit values are validated by the bound Computer and never silently rewritten.
+- **No key custody →** OpenTag never asks for a provider API key. The agent authenticates the way it already does on that machine.
+
+## Built to not lose work.
+
+*An agent that drops a request is worse than no agent.*
+
+- **Durable delivery custody →** Inbound messages are persisted and handed over with explicit custody, so a restart mid-turn does not silently swallow the request.
+- **Recovery and revision fencing →** Agent/Computer bindings are immutable and fenced by revision; a stale runtime cannot claim work that has moved on.
+- **[Internal Session collaboration](./docs/internal-session-collaboration.md) →** Agents can message each other durably, with explicit retry rather than best-effort silence.
+- **A real test gate →** Agent Runtime holds a 100% coverage gate enforced in CI, on top of the full offline suite, Postgres integration tests, CLI tarball installs, and a production-container health smoke.
+
+## Self-host everything.
+
+*Your server, your database, your rules.*
+
+- **Apache 2.0 →** No hosted-service carve-out, no commercial-use rider. [LICENSE](./LICENSE)
+- **One container →** `ghcr.io/first-tree-ai/opentag`, published per commit. Point it at your own PostgreSQL. [Deployment guide](./docs/deploying.md)
+- **Same-origin Web →** The management UI is served by the same server as the API; there is no third-party front end to trust.
+- **[Observability](./docs/observability.md) →** OpenTelemetry traces and metrics to your own endpoint.
+
+---
+
+## Quickstart
+
+Today OpenTag is built and run from a checkout. Published install channels are still being brought
+up — see [Project status](#project-status).
+
+**Prerequisites:** Node.js 22.13+ (22.x), 24.x, or 26.x · Corepack · pnpm 10.12.1 · Docker (for local PostgreSQL)
+
+**1. Start the server.**
 
 ```bash
 corepack enable
 pnpm install
 docker compose up -d postgres
+
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
+
 pnpm build
 pnpm --filter @opentag/server start
 ```
 
-In another terminal, bootstrap the first Account, then exchange the returned Account login code. The command name and
-`OPENTAG_BOOTSTRAP_WORKSPACE_*` inputs remain compatibility interfaces until Phase 2:
+Migrations run before the server listens. It comes up on `http://127.0.0.1:8000`.
+
+**2. Create the first account and install the CLI.** In another terminal:
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -47,76 +139,174 @@ export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
 export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
 export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
+
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
+opentag-dev login --server http://127.0.0.1:8000 -- <account-login-code>
 ```
 
-Account credentials are management-only and never start the daemon. Open the Web, enter the Agents area, generate a
-15-minute Computer connection command, and run its `opentag-dev computer connect --server ... <code>` invocation on the
-execution host. That command stores an enrollment-scoped machine credential and installs or restarts the per-user daemon
-service on Linux and macOS. Keeping `~/.local/bin` first in `PATH` ensures the service uses this checkout's newly built CLI
-instead of an older shim. `opentag-dev computer list` shows the enrolled Computer as online. Use `daemon stop`, `start`,
-`restart`, `status`, and `uninstall` for lifecycle management. Pass `computer connect --no-start` when only the machine
-credential should be stored. Daemon services are not supported on Windows in v0.1.
+Keep `~/.local/bin` first on `PATH` so the daemon service picks up this checkout's CLI and not an
+older shim. For loopback development without Google credentials, set
+`OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and `OPENTAG_DEV_AUTH_EMAIL` to the bootstrap email; the
+bypass is rejected outside the `dev` environment and never creates accounts.
 
-With the daemon registered, create and inspect an Agent configuration:
+**3. Connect a computer.** Open `http://127.0.0.1:8000/`, sign in, and go to **Agents**. Generate a
+Computer connection command — it is valid for 15 minutes — and run it on the machine that should do
+the work:
 
 ```bash
-pnpm --filter open-tag start agent create \
+opentag-dev computer connect --server http://127.0.0.1:8000 -- <computer-connect-code>
+opentag-dev computer list     # the Computer should read as online
+```
+
+That command stores the machine credential and installs or restarts the per-user daemon. Pass
+`--no-start` to store the credential without installing the service.
+
+**4. Create an agent.**
+
+```bash
+opentag-dev agent create \
   --name code-reviewer \
   --display-name "Code Reviewer" \
   --provider codex
-pnpm --filter open-tag start agent list
+opentag-dev agent list
 ```
 
-This records the Agent identity and Computer binding. Agent Runtime turns start when admitted work is delivered to that Agent.
+**5. Put it in a channel.** Bind the Agent to Lark or Slack from the Web, invite the bot to a
+channel, and tag it. See [Chat platforms](#chat-platforms).
 
-A signed-in Account can manage an available Codex Agent's model, reasoning effort, and maximum Turn duration from the
-Agent's **Runtime** tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
-duration uses OpenTag's 30-minute default. Explicit Codex-native values are validated by the bound Computer when it
-prepares the Runtime and never silently replaced by OpenTag. Claude Code Effective Runtime Snapshots are not yet
-supported.
+Full local workflow, validation commands, and recovery notes: **[DEVELOPMENT.md](./DEVELOPMENT.md)**.
 
-Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
-`http://127.0.0.1:8000/`. The signed-in Account manages Agents, Tasks, Skills, and Integrations available through its
-internal compatibility scope. Computer enrollment and diagnosis live in the Agents area. The accepted product direction
-and product presentation are **Account → Computer enrollment → Agent → IM binding**; Phase 1 does not yet make that a
-strict per-Account schema invariant. OpenTag exposes no Workspace, Admin, or invitation management surface. The database
-still provisions an internal default Workspace and grant as a compatibility seam until Phase 2. Legacy active grants
-may let multiple Accounts manage the same Agents and Computer enrollments until the one-off data split and Phase 2
-establish strict ownership. These compatibility records are not a shared collaboration container.
+---
 
-Internal Session collaboration is an Agent Runtime feature, not a Workspace, Project, or other management entity. It
-does not define cross-Agent ownership or shared files, memory, tasks, secrets, or billing. Context Tree can preserve
-long-term context independently of that real-time Session messaging boundary.
+## Runtimes
 
-For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
-`OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
-`dev` environment and never creates Accounts or compatibility grants.
+OpenTag does not ship a model. It drives the agent CLI already installed and authenticated on the
+enrolled Computer, so switching providers is a field on the Agent, not a migration.
 
-See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
+| Provider | CLI | Runtime configuration |
+| --- | --- | --- |
+| OpenAI Codex | `codex` | Model, reasoning effort, and max Turn duration, validated by the bound Computer |
+| Claude Code | `claude` | Supported as a runtime; Effective Runtime Snapshots are not exposed yet |
 
-## Project status
+## Chat platforms
 
-OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
-first stable release. The current code includes the control plane, local Computer connection, Agent Runtime, durable IM
-delivery, Feishu/Slack inbound routing, Channel/Thread Sessions, and direct provider CLI handoff. Broader product and
-cross-Agent collaboration workflows remain under development.
+| Platform | How it binds | Setup |
+| --- | --- | --- |
+| Lark / Feishu | Custom app, bound from the Agent's IM setup flow in the Web | In-product |
+| Slack | OAuth install plus an events endpoint on your `OPENTAG_PUBLIC_URL` | [Slack App configuration](./docs/slack-app-setup.md) |
+
+Both platforms share the same routing: one Channel Session per Agent and channel, Thread Sessions
+materialized on demand, and replies sent by the agent through the provider's own CLI.
+
+---
+
+## Architecture
+
+```text
+        Slack  ·  Lark / Feishu            Browser (same-origin Web)
+                     │                              │
+                     └──────────────┬───────────────┘
+                                    ▼
+                     ┌──────────────────────────────┐      ┌───────────────┐
+                     │   OpenTag Server (Fastify)   │─────>│  PostgreSQL   │
+                     │   REST · Better Auth · WS    │<─────│               │
+                     └──────────────┬───────────────┘      └───────────────┘
+                                    │  Runtime protocol over WebSocket
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │   OpenTag daemon             │  your laptop or cloud box
+                     │   (per-user service)         │  next to your code
+                     └──────────────┬───────────────┘
+                                    │  spawns
+                     ┌──────────────┴───────────────┐
+                     │   codex  ·  claude           │  your CLI, your plan
+                     └──────────────────────────────┘
+```
+
+| Layer | Stack |
+| --- | --- |
+| Server | Fastify, Better Auth, PostgreSQL migrations, Computer WebSocket endpoint |
+| Web | React, served same-origin by the Server |
+| CLI | Commander; `opentag-dev` from a checkout, `opentag` once install channels ship |
+| Client / daemon | TypeScript runtime that enrolls a Computer and executes Agent Turns |
+| Shared | Zod schemas and HTTP path contracts used by every workspace |
+
+Wire-level details: [Runtime protocol](./docs/runtime-protocol.md).
+
+---
 
 ## Documentation
 
-- [Development guide](./DEVELOPMENT.md)
-- [Server observability](./docs/observability.md)
-- [Direct provider CLI messaging](./docs/direct-provider-cli.md)
-- [Slack App configuration](./docs/slack-app-setup.md)
-- [IM Channel and Thread Sessions](./docs/thread-sessions.md)
-- [Internal Session collaboration](./docs/internal-session-collaboration.md)
-- [Contributing guide](./CONTRIBUTING.md)
-- [Release guide](./docs/releasing.md)
-- [Deployment guide](./docs/deploying.md)
-- [Security policy](./SECURITY.md)
-- [Code of Conduct](./CODE_OF_CONDUCT.md)
+| I want to… | Start here |
+| --- | --- |
+| Get it running locally | [Quickstart](#quickstart) · [Development guide](./DEVELOPMENT.md) |
+| Understand how messages reach an agent | [IM Channel and Thread Sessions](./docs/thread-sessions.md) · [Runtime protocol](./docs/runtime-protocol.md) |
+| Let the agent reply and react on its own | [Direct provider CLI messaging](./docs/direct-provider-cli.md) |
+| Connect Slack | [Slack App configuration](./docs/slack-app-setup.md) |
+| Have agents talk to each other | [Internal Session collaboration](./docs/internal-session-collaboration.md) |
+| Run it on my own infrastructure | [Deployment guide](./docs/deploying.md) · [Observability](./docs/observability.md) |
+| Ship or install a build | [Release guide](./docs/releasing.md) · [Portable release guide](./docs/portable-release.md) |
+| Contribute | [Contributing guide](./CONTRIBUTING.md) · [Code of Conduct](./CODE_OF_CONDUCT.md) |
+| Report a vulnerability | [Security policy](./SECURITY.md) |
+
+Chinese translations live in [`docs/zh-CN/`](./docs/zh-CN).
+
+---
+
+## Development
+
+```bash
+corepack enable
+pnpm install
+pnpm check && pnpm build && pnpm typecheck && pnpm test
+```
+
+`pnpm lint` for lint-only feedback, `pnpm format` to apply Biome formatting. The required pull
+request check is the `CI` fan-in job: the commands above plus source and staging CLI tarball
+installs, a production-container health smoke, and the supported Node.js lines. Agent Runtime keeps
+its own 100% coverage gate.
+
+Start with the [Contributing guide](./CONTRIBUTING.md); the full local workflow is in
+[DEVELOPMENT.md](./DEVELOPMENT.md).
+
+---
+
+## Project status
+
+OpenTag is built in small, validated vertical slices, and `main` moves quickly.
+
+**Working today:** the control plane and same-origin Web; account sign-in on Better Auth;
+independently authenticated Computer enrollment, presence, and the per-user daemon on Linux and
+macOS; the Agent registry with immutable Computer/provider binding and revision fencing; durable
+Agent Runtime execution with delivery custody, reporting, and recovery; Lark and Slack inbound
+normalization with Channel and Thread Session routing; direct provider CLI handoff for
+agent-authored replies and reactions; internal Session collaboration; and the `doctor`, `login`,
+`agent`, `computer`, `session`, and `daemon` commands.
+
+**Not there yet:** published install channels — the npm and portable `curl … | sh` paths described
+in [releasing.md](./docs/releasing.md) and [portable-release.md](./docs/portable-release.md) are
+built but not yet serving a public release, so build from a checkout for now. Windows daemon
+services are out of scope for v0.1. The Tasks, Skills, and Integrations areas of the Web are
+interface previews backed by demo data, not working features. There is no hosted OpenTag; you run
+the server.
+
+The database still provisions an internal default Workspace and grant as a compatibility seam.
+OpenTag exposes no Workspace, Admin, or invitation surface, and the accepted product shape is
+**Account → Computer enrollment → Agent → IM binding**. Legacy active grants may let more than one
+Account manage the same Agents until that seam is removed; they are not a shared collaboration
+container.
+
+---
+
+## Why "OpenTag"
+
+Because the whole product is one gesture. You already know how to ask a colleague for something in
+a channel: you type `@` and their name. OpenTag makes that gesture reach a coding agent — and keeps
+it open, so the agent is one you chose, on a machine you own, under a license that does not take it
+back.
+
+---
 
 ## License
 

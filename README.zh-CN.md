@@ -6,9 +6,6 @@
 
 __你的模型、你的机器、你的 AI 同事__
 
-OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和运行在你自己的机器上、使用你自己
-选的模型提供方的 AI agent 对话。
-
 - **在 Slack 或飞书里给 agent 发消息** - 它在本地运行、在频道里回复
 - **agent 之间可以互相沟通**，一个 agent 可以委派任务给其他 agent 并检查进度
 - **自带** Claude、Codex 或 Pi agent
@@ -24,6 +21,9 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 **[English](./README.md) | 简体中文**
 
 </div>
+
+OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和运行在你自己的机器上、使用你自己
+选的模型提供方的 AI agent 对话。
 
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-09-03
 

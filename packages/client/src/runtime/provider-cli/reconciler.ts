@@ -156,9 +156,9 @@ export class ProviderCliReconciler {
     await this.#publishCurrentProvider(provider, "checking");
     const status = await this.#reconcileProvider(provider);
     await this.#publishCurrentProvider(provider, status);
-    // Do not admit the Run that discovered drift. The Server must first consume
-    // the checking/ready transition and complete a fresh credential validation;
-    // a normal delivery retry can then obtain a grant and use the new selection.
+    // Do not admit the Run that discovered drift. The checking/ready transition
+    // feeds the Server's handoff and diagnostics view (it no longer gates the Turn
+    // grant); a normal delivery retry then obtains a grant and uses the new selection.
     return undefined;
   }
 

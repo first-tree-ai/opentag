@@ -6,9 +6,10 @@
 
 **Open source Claude Tag alternative.**
 
-OpenTag is an AI teammate for Slack and Lark. Mention it in a channel and a real coding
-agent — Claude Code or Codex — picks the message up, works on a machine you control, and answers in
-the same thread. Your subscription, your machine, your code.
+An AI worker in your Slack and Lark. Tag it in a thread and it does the work — running the
+coding agent and model plan you already pay for, with its memory in plain files on your own machine.
+Free and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on your machine,
+not on ours.
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)

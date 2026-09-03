@@ -46,7 +46,7 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 *它就存在你机器上的文件里，而不是一个需要你申请才能看的存储。*
 
 - **来自它所在的每个频道 →** [Thread Session](./docs/zh-CN/thread-sessions.md) 带上有界的根消息与话题历史，Agent 从大家真正说过的话开始。
-- **就是纯文本文件 →** 工作区和运行时状态都在 `${OPENTAG_HOME}` 下，默认私有。没有任何东西被上传到别处替你记住。
+- **就是纯文本文件 →** 工作区和运行时状态都在 `${OPENTAG_HOME}` 下，默认私有。OpenTag 不会把这些文件上传到任何地方。
 - **[Agent 之间互相沟通](./docs/zh-CN/internal-session-collaboration.md) →** 持久化的 internal Session，带显式重试。
 
 ## 它用那台机器上已有的工具干活。

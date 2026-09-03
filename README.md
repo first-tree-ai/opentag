@@ -44,7 +44,7 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 *It lives in files on your machine, not in a store you have to ask for.*
 
 - **From every channel it is in →** [Thread Sessions](./docs/thread-sessions.md) carry bounded root and thread history, so the agent starts from what was actually said.
-- **In plain files →** Work areas and runtime state live under `${OPENTAG_HOME}`, private by default. Nothing is uploaded to be remembered for you.
+- **In plain files →** Work areas and runtime state live under `${OPENTAG_HOME}`, private by default. OpenTag does not upload those files anywhere.
 - **[Agents that talk to each other](./docs/internal-session-collaboration.md) →** Durable internal Sessions with explicit retry.
 
 ## It works with the tools already on that machine.

@@ -61,10 +61,11 @@ function useSettledError(key: string, query: SettlingQuery): Error | null {
 }
 
 /** The Account's Computers. One cache entry, so every surface that needs them shares one read. */
-export function useComputersQuery(watched = false) {
+export function useComputersQuery(watched = false, enabled = true) {
   return useQuery({
     queryKey: queryKeys.computers(),
     queryFn: () => browserApi.computers(),
+    enabled,
     ...(watched ? WATCHED : {}),
   });
 }

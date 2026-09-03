@@ -15,6 +15,7 @@ import {
   computerConnectCodes,
   computerCredentials,
   computers,
+  imBindings,
   users,
 } from "../db/schema/index.js";
 import {
@@ -662,8 +663,9 @@ describe("machine authentication and Computer services", () => {
       { getActiveUserById: vi.fn() },
       { now: () => NOW, presenceTimeoutMs: 1000 },
     );
-    expect(await service.accountInFirstSetup(exchange.computerId)).toBe(true);
-    expect(await service.accountInFirstSetup(randomUUID())).toBe(false);
+    // No Agent is bound yet, and a missing Computer is never eligible.
+    expect(await service.hasActiveAgentWithoutMessagingSetup(exchange.computerId)).toBe(false);
+    expect(await service.hasActiveAgentWithoutMessagingSetup(randomUUID())).toBe(false);
     const frame = {
       type: "computer:register" as const,
       requestId: randomUUID(),
@@ -698,6 +700,7 @@ describe("machine authentication and Computer services", () => {
         runtimeProvider: "codex",
       },
     ]);
+    expect(await service.hasActiveAgentWithoutMessagingSetup(exchange.computerId)).toBe(true);
     expect(await service.heartbeat(exchange, frame.instanceId)).toBe(true);
     expect(await service.heartbeat(exchange, randomUUID())).toBe(false);
     expect(await service.disconnect(exchange.computerId, frame.instanceId)).toBe(true);
@@ -716,7 +719,9 @@ describe("machine authentication and Computer services", () => {
       imCliReadiness: expect.any(Array),
     });
     await unit.database.update(users).set({ setupCompletedAt: NOW }).where(eq(users.id, value.bootstrap.userId));
-    expect(await service.accountInFirstSetup(exchange.computerId)).toBe(false);
+    // Account completion says nothing about this Computer's Agents: eligibility only ends with a
+    // current messaging binding, not with setup_completed_at.
+    expect(await service.hasActiveAgentWithoutMessagingSetup(exchange.computerId)).toBe(true);
     await expect(service.assertActiveCredential(exchange)).resolves.toBeUndefined();
     await unit.database
       .update(computerCredentials)
@@ -724,6 +729,149 @@ describe("machine authentication and Computer services", () => {
       .where(eq(computerCredentials.id, exchange.credentialId));
     await expect(service.assertActiveCredential(exchange)).rejects.toMatchObject({ code: "COMPUTER_NOT_REGISTERED" });
     await expect(service.register(exchange, frame)).rejects.toMatchObject({ code: "COMPUTER_NOT_REGISTERED" });
+  });
+
+  it("keeps a Computer eligible when its Account completed setup before the Computer connected", async () => {
+    const value = await machineFixture();
+    // The Account finished onboarding before this Computer ever registered, so the retired
+    // setup_completed_at gate would have skipped prewarm even though nothing is prepared here.
+    await unit.database.update(users).set({ setupCompletedAt: NOW }).where(eq(users.id, value.bootstrap.userId));
+    const exchange = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
+    const service = new ComputerService(unit.database, { getActiveUserById: vi.fn() }, { now: () => NOW });
+
+    // A missing Computer and a Computer without Agents are not eligible.
+    expect(await service.hasActiveAgentWithoutMessagingSetup(randomUUID())).toBe(false);
+    expect(await service.hasActiveAgentWithoutMessagingSetup(exchange.computerId)).toBe(false);
+
+    await unit.database.insert(agents).values({
+      createdByUserId: value.bootstrap.userId,
+      computerId: exchange.computerId,
+      name: "late-computer",
+      displayName: "Late Computer",
+      runtimeProvider: "codex",
+    });
+
+    expect(await service.hasActiveAgentWithoutMessagingSetup(exchange.computerId)).toBe(true);
+  });
+
+  it("scopes prewarm eligibility to active Agents bound to the exact Computer", async () => {
+    const value = await machineFixture();
+    const service = new ComputerService(unit.database, { getActiveUserById: vi.fn() }, { now: () => NOW });
+    const target = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
+    const secondIssued = await value.machine.issueForAccount(value.bootstrap.userId, {});
+    const other = await value.machine.exchangeConnectCode(exchangeInput(secondIssued.code));
+
+    // Unbound, suspended, and deleted Agents never qualify, and an active Agent bound to another
+    // Computer does not leak eligibility into the target Computer.
+    await unit.database.insert(agents).values([
+      { createdByUserId: value.bootstrap.userId, name: "unbound", displayName: "Unbound", runtimeProvider: "codex" },
+      {
+        createdByUserId: value.bootstrap.userId,
+        computerId: target.computerId,
+        name: "suspended",
+        displayName: "Suspended",
+        runtimeProvider: "codex",
+        status: "suspended",
+      },
+      {
+        createdByUserId: value.bootstrap.userId,
+        computerId: target.computerId,
+        name: "deleted",
+        displayName: "Deleted",
+        runtimeProvider: "codex",
+        status: "deleted",
+      },
+      {
+        createdByUserId: value.bootstrap.userId,
+        computerId: other.computerId,
+        name: "elsewhere",
+        displayName: "Elsewhere",
+        runtimeProvider: "codex",
+      },
+    ]);
+    expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(false);
+    expect(await service.hasActiveAgentWithoutMessagingSetup(other.computerId)).toBe(true);
+
+    // A second Agent with a current messaging binding does not hide the Agent still waiting for
+    // its first setup on the same Computer.
+    const pending = randomUUID();
+    const connected = randomUUID();
+    await unit.database.insert(agents).values([
+      {
+        id: pending,
+        createdByUserId: value.bootstrap.userId,
+        computerId: target.computerId,
+        name: "pending",
+        displayName: "Pending",
+        runtimeProvider: "codex",
+      },
+      {
+        id: connected,
+        createdByUserId: value.bootstrap.userId,
+        computerId: target.computerId,
+        name: "connected",
+        displayName: "Connected",
+        runtimeProvider: "codex",
+      },
+    ]);
+    await unit.database.insert(imBindings).values({
+      agentId: connected,
+      provider: "feishu",
+      status: "active",
+      externalAppId: "cli_target",
+      externalBotId: "ou_target",
+      credentialSchemaVersion: 1,
+      credentialGeneration: 1,
+      activatedAt: NOW,
+      encryptedCredential: "encrypted",
+    });
+    expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(true);
+
+    // Suspending the pending Agent leaves no eligible Agent on the target Computer.
+    await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, pending));
+    expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(false);
+  });
+
+  it("treats every non-disabled binding status as a current messaging setup and disabled rows as history", async () => {
+    const value = await machineFixture();
+    const service = new ComputerService(unit.database, { getActiveUserById: vi.fn() }, { now: () => NOW });
+    const target = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code));
+    const agentId = randomUUID();
+    await unit.database.insert(agents).values({
+      id: agentId,
+      createdByUserId: value.bootstrap.userId,
+      computerId: target.computerId,
+      name: "agent",
+      displayName: "Agent",
+      runtimeProvider: "codex",
+    });
+    expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(true);
+
+    for (const status of ["provisioning", "active", "reauthorization_required", "error"] as const) {
+      await unit.database.insert(imBindings).values(
+        status === "active" || status === "reauthorization_required"
+          ? {
+              agentId,
+              provider: "feishu" as const,
+              status,
+              externalAppId: "cli_current",
+              externalBotId: "ou_current",
+              credentialSchemaVersion: 1,
+              credentialGeneration: 1,
+              activatedAt: NOW,
+              encryptedCredential: "encrypted",
+            }
+          : { agentId, provider: "feishu" as const, status },
+      );
+      // Messaging setup has started or completed, in any current state: no first-setup prewarm.
+      expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(false);
+      await unit.database.delete(imBindings).where(eq(imBindings.agentId, agentId));
+      expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(true);
+    }
+
+    // A disabled binding is history: the Agent may start a fresh setup and stays eligible.
+    await unit.database.insert(imBindings).values({ agentId, provider: "feishu", status: "disabled", disabledAt: NOW });
+    expect(await service.hasActiveAgentWithoutMessagingSetup(target.computerId)).toBe(true);
   });
 
   it("projects readiness for online and offline Computers", async () => {

@@ -6,11 +6,23 @@ export const RUNTIME_DEFAULT_MAX_DURATION_MS = 30 * 60 * 1_000;
 export const RUNTIME_MAX_DURATION_MS = 24 * 60 * 60 * 1_000;
 // Changing this policy requires a migration that advances every active Agent runtime config revision.
 export const OPENTAG_PLATFORM_INSTRUCTIONS = "You run inside OpenTag. IM output is never sent automatically.";
+/** Upper bound on an Agent slug, shared with `AgentNameSchema` so both budgets agree. */
+export const AGENT_SLUG_MAX_LENGTH = 64;
 
 const utf8 = new TextEncoder();
 
 export function runtimeUtf8Length(value: string): number {
   return utf8.encode(value).byteLength;
+}
+
+/**
+ * The trusted platform instruction layer for one Agent. The prompt is the only channel that
+ * reaches an Agent's reasoning, so it is where the Agent learns which `members/<agent-slug>/`
+ * directory in the Context Tree is its own. Callers that hash Agent revision identity must hash
+ * this exact string.
+ */
+export function renderPlatformInstructions(input: { agentSlug: string }): string {
+  return `${OPENTAG_PLATFORM_INSTRUCTIONS}\n\nOpenTag Agent slug: ${input.agentSlug}`;
 }
 
 export function runtimeByteString(maxBytes: number, message: string, minimumBytes = 0) {

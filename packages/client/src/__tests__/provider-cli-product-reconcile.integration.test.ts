@@ -4,6 +4,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process reconciliation needs headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import {
   computeFileIdentity,
   computeTargetFingerprint,

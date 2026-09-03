@@ -1,7 +1,4 @@
-/**
- * The Agent Setup lab page: the four production stage scenarios stay available, and the
- * readiness scenarios render one persistent presentational list whose fixture copy is explicit.
- */
+/** The complete New Agent lab plus the focused readiness-review fixtures. */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -52,8 +49,14 @@ function slot(rowElement: HTMLElement, ui: string): HTMLElement {
   return element as HTMLElement;
 }
 
+async function openControls(): Promise<void> {
+  const trigger = await screen.findByRole("button", { name: "New Agent Lab" });
+  if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
+}
+
 /** Opens the labelled combobox and picks the option by its visible label. */
 async function chooseOption(label: string, optionName: string): Promise<void> {
+  if (label === "Scenario") await openControls();
   const trigger = screen.getByRole("combobox", { name: label });
   fireEvent.click(trigger);
   const option = await screen.findByRole("option", { name: optionName });
@@ -71,32 +74,115 @@ beforeEach(() => mockBrowserApi());
 afterEach(() => vi.restoreAllMocks());
 
 describe("agent setup lab page", () => {
-  it("keeps the four production stage scenarios selectable beside the readiness fixtures", async () => {
+  it("keeps the complete journey controls in the lower-right beside the readiness fixtures", async () => {
     renderLabPage();
 
-    // The default scenario still mounts the production surface.
-    expect(document.querySelector('[data-ui="agent-setup"]')).not.toBeNull();
+    const controls = await screen.findByRole("button", { name: "New Agent Lab" });
+    const lab = controls.closest('[data-ui="onboarding-v2-lab"]');
+    const page = controls.closest('[data-ui="onboarding-v2-lab-page"]');
+    expect(lab?.className).toContain("fixed");
+    expect(lab?.className).toContain("right-3");
+    expect(lab?.className).toContain("bottom-3");
+    expect(page?.className).not.toContain("lg:pr-[27rem]");
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
     expect(document.querySelector('[data-ui="readiness-lab"]')).toBeNull();
+
+    await openControls();
+    expect(page?.className).toContain("lg:pr-[27rem]");
+    expect(screen.getByRole("button", { name: "First Agent" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Additional Agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Manual" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Auto" })).toBeTruthy();
 
     const trigger = screen.getByRole("combobox", { name: "Scenario" });
     fireEvent.click(trigger);
     const options = await screen.findAllByRole("option");
     expect(options.map((option) => option.textContent?.trim() ?? "")).toEqual([
-      "Needs computer",
-      "Needs runtime",
-      "Needs messaging",
-      "Ready",
+      "Full journey · New computer",
+      "Full journey · Existing computer",
+      "Agent creation",
+      "Computer connection",
+      "Runtime setup",
+      "Messaging setup",
+      "Everything ready",
       ...READINESS_SCENARIOS.map((scenario) => READINESS_SCENARIO_LABELS[scenario]),
     ]);
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
 
-    // A production stage choice keeps the production surface and never opens the readiness lab.
-    fireEvent.pointerMove(screen.getByRole("option", { name: "Ready" }), { pointerType: "mouse" });
-    fireEvent.pointerDown(screen.getByRole("option", { name: "Ready" }), { pointerType: "mouse" });
-    fireEvent.pointerUp(screen.getByRole("option", { name: "Ready" }), { pointerType: "mouse" });
-    fireEvent.click(screen.getByRole("option", { name: "Ready" }));
+    await chooseOption("Scenario", "Everything ready");
     await waitFor(() => expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull());
     expect(document.querySelector('[data-ui="readiness-lab"]')).toBeNull();
     expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+  });
+
+  it("shows the real creation choice and only exposes Back to agents for an additional Agent", async () => {
+    renderLabPage();
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back to agents" })).toBeNull();
+
+    await openControls();
+    fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Back to agents" }));
+    expect(
+      await screen.findByText(
+        "The real product would open the Agents list here. The Lab keeps this in-memory run isolated.",
+      ),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Return to Lab" }));
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+  });
+
+  it("carries the runtime selected in the real creation form into First Agent setup", async () => {
+    renderLabPage();
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Claude Code/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect(await screen.findByText("Opening app access for this agent…")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Complete account admission" }));
+    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+
+    await openControls();
+    fireEvent.click(screen.getByRole("button", { name: "Overrides" }));
+    expect(screen.getByRole("combobox", { name: "Agent runtime" }).textContent).toContain("Claude Code");
+
+    fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
+    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
+  });
+
+  it("drives Feishu and Slack without leaving the Lab", async () => {
+    renderLabPage();
+    await chooseOption("Scenario", "Messaging setup");
+
+    fireEvent.click(await screen.findByRole("button", { name: /Feishu|Lark/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Scan (Feishu|Lark) code/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
+    expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open agent" }));
+    expect(
+      await screen.findByText("The real product would open Reviewer here. The Lab keeps this in-memory run isolated."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Return to Lab" }));
+
+    await chooseOption("Scenario", "Messaging setup");
+    fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Finish Slack install" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
+    expect(await screen.findByText("reviewer is ready.")).toBeTruthy();
+    expect(window.location.pathname).not.toContain("slack");
+  });
+
+  it("only offers the connected messaging override when that preset uses it", async () => {
+    renderLabPage();
+    await openControls();
+    fireEvent.click(screen.getByRole("button", { name: "Overrides" }));
+    expect(screen.queryByRole("combobox", { name: "Connected messaging app" })).toBeNull();
+
+    await chooseOption("Scenario", "Everything ready");
+    await chooseOption("Connected messaging app", "Slack");
+    expect(await screen.findByText("Tag @reviewer in Slack to put it to work.")).toBeTruthy();
   });
 
   it("renders the ready checklist with four rows and the exact ready copy", async () => {

@@ -1,7 +1,7 @@
 import type { ComputerRegisterFrame, ListAccountComputersResponse, MeResponse } from "@opentag/shared";
-import { and, asc, eq, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, notExists } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computerCredentials, computers, users } from "../../db/schema/index.js";
+import { agents, computerCredentials, computers, imBindings } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
@@ -34,14 +34,31 @@ export class ComputerService {
     this.#providerReadiness = options.providerReadiness;
   }
 
-  async accountInFirstSetup(computerId: string): Promise<boolean> {
+  /**
+   * First-setup Provider CLI prewarm eligibility for one exact Computer: at least one active Agent
+   * bound to this Computer has no current messaging setup. Every im_bindings row whose status is
+   * not "disabled" - provisioning, active, reauthorization_required, or error - is a current
+   * messaging setup, while a disabled row is history and never gates a fresh setup. The Account's
+   * setup_completed_at says nothing about this Computer's Agents, so it is not consulted here.
+   */
+  async hasActiveAgentWithoutMessagingSetup(computerId: string): Promise<boolean> {
     const [row] = await this.#database
-      .select({ setupCompletedAt: users.setupCompletedAt })
-      .from(computers)
-      .innerJoin(users, eq(users.id, computers.ownerAccountId))
-      .where(eq(computers.id, computerId))
+      .select({ id: agents.id })
+      .from(agents)
+      .where(
+        and(
+          eq(agents.computerId, computerId),
+          eq(agents.status, "active"),
+          notExists(
+            this.#database
+              .select({ id: imBindings.id })
+              .from(imBindings)
+              .where(and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled"))),
+          ),
+        ),
+      )
       .limit(1);
-    return row !== undefined && row.setupCompletedAt === null;
+    return row !== undefined;
   }
 
   async listAccountComputers(

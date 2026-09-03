@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process probes need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import type { AgentRuntimeProbeResult, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";

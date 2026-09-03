@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { DirectImMessageDeliveryRequest, RuntimeImCredentialGrantRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process credential cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { completionForError } from "../runtime/agent-turn-runner.js";
 import { ImCredentialEnvironmentManager, serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import type { RuntimeBusinessFrame } from "../runtime/runtime-connection.js";

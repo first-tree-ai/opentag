@@ -3,7 +3,11 @@ import { readFile, stat } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { Command } from "commander";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process CLI cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { registerProviderCliCommand } from "../commands/provider-cli.js";
 import type { ProviderCliCommandDeps } from "../core/provider-cli/shared.js";
 import { makeManagedFixture, makeTempDir, writeFakeCli } from "./provider-cli-fixtures.js";

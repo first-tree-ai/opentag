@@ -86,7 +86,7 @@ describe("selected Runtime full-probe adapter", () => {
   it("bounds even a non-settling probe, aborts owned work, and returns a repairable failure", async () => {
     const home = await isolatedHome();
     const { probe } = mockFactories(vi.fn(() => new Promise<never>(() => {})));
-    const result = await probeRuntimeComponent({ provider: "codex", environment: { HOME: home }, timeoutMs: 20 });
+    const result = await probeRuntimeComponent({ provider: "codex", environment: { HOME: home }, timeoutMs: 100 });
     expect(result).toMatchObject({ status: "unavailable", blocking: true, diagnosticCode: "runtime_probe_failed" });
     expect(probe.mock.calls[0]?.[0].signal?.aborted).toBe(true);
     expect(result.verifyAction?.command).toContain("runtime-inspect --provider codex");

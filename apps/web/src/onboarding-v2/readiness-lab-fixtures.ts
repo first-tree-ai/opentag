@@ -23,6 +23,10 @@ export const READINESS_SCENARIOS = [
 
 export type ReadinessScenario = (typeof READINESS_SCENARIOS)[number];
 
+export function isReadinessScenario(scenario: string): scenario is ReadinessScenario {
+  return (READINESS_SCENARIOS as readonly string[]).includes(scenario);
+}
+
 export const READINESS_SCENARIO_LABELS: Readonly<Record<ReadinessScenario, string>> = {
   "readiness-waiting": "Checklist: waiting",
   "readiness-checking": "Checklist: checking",

@@ -4,9 +4,9 @@
 
 # OpenTag
 
-**Tag it in the thread. It does the work.**
+**Open source Claude Tag alternative.**
 
-OpenTag is an open-source AI teammate for Slack and Lark. Mention it in a channel and a real coding
+OpenTag is an AI teammate for Slack and Lark. Mention it in a channel and a real coding
 agent — Claude Code or Codex — picks the message up, works on a machine you control, and answers in
 the same thread. Your subscription, your machine, your code.
 

@@ -4,9 +4,9 @@
 
 # OpenTag
 
-**在群里 @ 它一下，活就干了。**
+**Claude Tag 的开源替代品。**
 
-OpenTag 是一个面向 Slack 和飞书的开源 AI 同事。在频道里 @ 它，真正的编码 Agent——Claude Code 或
+OpenTag 是一个面向 Slack 和飞书的 AI 同事。在频道里 @ 它，真正的编码 Agent——Claude Code 或
 Codex——会接下这条消息，在你自己的机器上开工，并回到同一个话题里回复你。用你的订阅、你的机器、你的代码。
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)

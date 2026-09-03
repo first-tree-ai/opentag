@@ -1,4 +1,11 @@
-import type { ListTasksResponse, TaskDetail, TaskStatus, TaskSummary, TaskTurn } from "@opentag/shared/browser";
+import type {
+  ListTasksResponse,
+  TaskDetail,
+  TaskStatus,
+  TaskSummary,
+  TaskTurn,
+  TurnFailureReason,
+} from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ReactNode, useMemo, useState } from "react";
@@ -363,14 +370,19 @@ export function TaskDetailPage({
       </nav>
 
       <header className="grid gap-4" data-ui="task-conversation-header">
-        <div className="flex flex-wrap items-center justify-between gap-3 break-words">
+        {/*
+         * The title is a message excerpt of unpredictable length, so nothing shares its row. The
+         * status is a fact about the Task and sits with the other facts, last, where it reads as
+         * the outcome of what precedes it; equal columns keep it in one place whatever the title
+         * or the Agent name measures.
+         */}
+        <div className="min-w-0 break-words">
           <Text as="h1" size="lg" variant="heading">
             {task.title}
           </Text>
-          <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
         </div>
         <dl
-          className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-2 @min-[60rem]/content:grid-cols-4"
+          className="grid gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"
           aria-label={m.tasks_details()}
         >
           <TaskDetailFact label={m.tasks_agent_label()}>
@@ -397,6 +409,9 @@ export function TaskDetailPage({
             <time dateTime={task.lastActivityAt} title={formatDateTime(task.lastActivityAt)}>
               {formatRelativeTime(task.lastActivityAt)}
             </time>
+          </TaskDetailFact>
+          <TaskDetailFact label={m.tasks_status_label()}>
+            <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
           </TaskDetailFact>
         </dl>
       </header>
@@ -525,7 +540,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
             ) : report?.finalText ? (
               <TaskMessageBody format="markdown" text={report.finalText} />
             ) : report?.errorReason ? (
-              <p className="text-sm text-kumo-danger">{report.errorReason}</p>
+              <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p>
             ) : (
               <p
                 className="text-sm text-kumo-subtle"
@@ -809,6 +824,32 @@ function attentionLabel(value: TaskTurn["attention"]): string {
 
 function deliveryStateLabel(value: TaskTurn["delivery"]["state"]): string {
   return value === "accepted" ? m.tasks_in_progress() : humanizeEnum(value);
+}
+
+/*
+ * The reason is the runtime's vocabulary, one of `TurnFailureReason`, and a reader gets a name
+ * for it. A reason this build does not know yet is still shown, humanized, rather than hidden.
+ */
+const turnFailureLabels: Record<TurnFailureReason, () => string> = {
+  workspace_failed: m.tasks_failure_workspace_failed,
+  configuration_conflict: m.tasks_failure_configuration_conflict,
+  credential_unavailable: m.tasks_failure_credential_unavailable,
+  sandbox_unavailable: m.tasks_failure_sandbox_unavailable,
+  provider_start_failed: m.tasks_failure_provider_start_failed,
+  session_resume_failed: m.tasks_failure_session_resume_failed,
+  provider_protocol_error: m.tasks_failure_provider_protocol_error,
+  provider_failed: m.tasks_failure_provider_failed,
+  provider_empty_result: m.tasks_failure_provider_empty_result,
+  output_too_large: m.tasks_failure_output_too_large,
+  provider_teardown_failed: m.tasks_failure_provider_teardown_failed,
+  turn_state_unknown: m.tasks_failure_turn_state_unknown,
+  turn_timeout: m.tasks_failure_turn_timeout,
+  client_shutdown: m.tasks_failure_client_shutdown,
+};
+
+function turnFailureLabel(reason: string): string {
+  const label = Object.hasOwn(turnFailureLabels, reason) ? turnFailureLabels[reason as TurnFailureReason] : undefined;
+  return label ? label() : humanizeEnum(reason);
 }
 
 function taskStatusLabel(value: TaskStatus): string {

@@ -1,8 +1,8 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { TASK_AUTO_TITLE_MAX_GRAPHEMES } from "@opentag/shared";
+import { TASK_AUTO_TITLE_MAX_GRAPHEMES, TaskTitleSchema } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import { normalizeFeishuMessage } from "../im-bindings/feishu/adapter.js";
-import { deriveTaskTitle } from "./task-title.js";
+import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
 
 describe("deriveTaskTitle", () => {
   const input = {
@@ -50,13 +50,21 @@ describe("deriveTaskTitle", () => {
     ).toBe("Thread task");
   });
 
-  it("truncates by grapheme without splitting joined emoji", () => {
+  it("truncates by grapheme without splitting joined emoji and marks the cut", () => {
     const family = "👨‍👩‍👧‍👦";
     const title = deriveTaskTitle({
       ...input,
       fallbackText: family.repeat(TASK_AUTO_TITLE_MAX_GRAPHEMES + 1),
     });
-    expect(title).toBe(family.repeat(TASK_AUTO_TITLE_MAX_GRAPHEMES));
+    expect(title).toBe(`${family.repeat(TASK_AUTO_TITLE_MAX_GRAPHEMES)}…`);
+    expect(TaskTitleSchema.safeParse(title).success).toBe(true);
+  });
+
+  it("leaves a title that fits the bound unmarked and never marks after a space", () => {
+    const exact = "x".repeat(TASK_AUTO_TITLE_MAX_GRAPHEMES);
+    expect(deriveTaskTitle({ ...input, fallbackText: exact })).toBe(exact);
+    const words = "a ".repeat(TASK_AUTO_TITLE_MAX_GRAPHEMES / 2);
+    expect(deriveTaskTitle({ ...input, fallbackText: `${words}b` })).toBe(`${words.trimEnd()}…`);
   });
 
   it("preserves plain user mentions and email addresses", () => {
@@ -126,5 +134,28 @@ describe("deriveTaskTitle", () => {
         blocks: event.message.content.blocks,
       }),
     ).toBe("@Alice 帮忙看下这个回归");
+  });
+});
+
+describe("messageTextFromBlocks", () => {
+  it("renders a mention by its label in place of the provider placeholder", () => {
+    expect(
+      messageTextFromBlocks([
+        { type: "mention", externalId: "ou_bot", label: "@Agent" },
+        { type: "text", text: " 帮我关掉 446;" },
+      ]),
+    ).toBe("@Agent 帮我关掉 446;");
+  });
+
+  it("leaves a message without mentions, or with any other block kind, to its lossless fallback text", () => {
+    expect(messageTextFromBlocks([{ type: "text", text: "hello" }])).toBeUndefined();
+    expect(messageTextFromBlocks(undefined)).toBeUndefined();
+    expect(
+      messageTextFromBlocks([
+        { type: "mention", externalId: "ou_bot", label: "@Agent" },
+        { type: "text", text: " run " },
+        { type: "code", language: null, text: "pnpm test" },
+      ]),
+    ).toBeUndefined();
   });
 });

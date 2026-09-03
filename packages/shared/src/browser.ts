@@ -9,6 +9,7 @@ export * from "./http-paths.js";
 export * from "./im-binding.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
+export type { TurnFailureReason } from "./runtime-domain.js";
 export * from "./runtime-protocol.js";
 export * from "./sign-in-destination.js";
 export {

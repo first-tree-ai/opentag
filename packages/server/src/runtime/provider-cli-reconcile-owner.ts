@@ -45,6 +45,11 @@ export interface ProviderCliReconcileBindingSource {
     provider: ImCliProvider;
   }): Promise<IntegrationCliValidationGrantMaterial | undefined>;
   listActiveProviderCliRequirements(computerId: string): Promise<readonly ProviderCliRequirementSnapshot[]>;
+  /**
+   * First-setup eligibility for the exact Computer: true while at least one active bound Agent has
+   * no current messaging setup. Evaluated once per (re)registration; a missing or rejected
+   * predicate fails safe to "no prewarm" and never affects active-binding reconcile.
+   */
   shouldPrewarmOfficialProviderClis?(computerId: string): Promise<boolean>;
 }
 
@@ -180,6 +185,13 @@ export class ProviderCliReconcileOwner {
     }
   }
 
+  /**
+   * Sends one inspect-both prewarm for an eligible (re)registration. The frame only asks the
+   * daemon to inspect and report both official Provider CLIs; the foreground targeted connect
+   * remains the first-setup installer. Active-binding requirements stay separate: a sibling Agent
+   * still awaiting messaging setup may qualify this Computer for inspection, but never creates
+   * continuing requirements for an unselected Provider.
+   */
   async #dispatchSetupPrewarm(input: {
     computerId: string;
     installationId: string;

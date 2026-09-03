@@ -127,6 +127,18 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-readiness__line", "box-sizing")).toBe("border-box");
   });
 
+  it("restores compact divided rows for the two-item Step 2 summary", () => {
+    expect(declarationValue(".otv2-readiness--compact", "gap")).toBe("0");
+    expect(declarationValue(".otv2-readiness--compact", "overflow")).toBe("hidden");
+    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__line", "align-items")).toBe("center");
+    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__line", "padding")).toBe("1rem");
+    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__line", "border-top")).toBe(
+      "1px solid var(--color-kumo-line)",
+    );
+    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__title", "height")).toBe("auto");
+    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__detail", "height")).toBe("auto");
+  });
+
   it("fixes the decorative readiness markers at 24px", () => {
     expect(declarationValue(".otv2-readiness__marker", "width")).toBe("24px");
     expect(declarationValue(".otv2-readiness__marker", "height")).toBe("24px");

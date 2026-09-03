@@ -1,7 +1,7 @@
 /** The complete New Agent lab plus the focused readiness-review fixtures. */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { AgentSetupLabPage } from "./agent-setup-lab-page.js";
@@ -43,6 +43,13 @@ function readinessList(): HTMLElement {
   return element as HTMLElement;
 }
 
+function stateSummaryRow(label: string): HTMLElement {
+  const summary = screen.getByRole("region", { name: "Current state" });
+  const term = within(summary).getByText(label, { selector: "dt" });
+  if (!term.parentElement) throw new Error(`Missing state summary row for ${label}`);
+  return term.parentElement;
+}
+
 function slot(rowElement: HTMLElement, ui: string): HTMLElement {
   const element = rowElement.querySelector(`[data-ui="${ui}"]`);
   if (!element) throw new Error(`Missing ${ui} slot`);
@@ -50,14 +57,15 @@ function slot(rowElement: HTMLElement, ui: string): HTMLElement {
 }
 
 async function openControls(): Promise<void> {
-  const trigger = await screen.findByRole("button", { name: "New Agent Lab" });
+  const trigger = document.querySelector<HTMLButtonElement>('[data-ui="onboarding-v2-lab"] button[aria-controls]');
+  if (!trigger) throw new Error("Missing New Agent Lab trigger");
   if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
 }
 
 /** Opens the labelled combobox and picks the option by its visible label. */
 async function chooseOption(label: string, optionName: string): Promise<void> {
-  if (label === "Scenario" || label === "Component fixtures") await openControls();
-  if (label === "Component fixtures") {
+  if (label === "Start from" || label === "Visual edge cases") await openControls();
+  if (label === "Visual edge cases") {
     const section = screen.getByRole("button", { name: label });
     if (section.getAttribute("aria-expanded") !== "true") fireEvent.click(section);
   }
@@ -81,7 +89,9 @@ describe("agent setup lab page", () => {
   it("keeps the complete journey controls in the lower-right beside the readiness fixtures", async () => {
     renderLabPage();
 
-    const controls = await screen.findByRole("button", { name: "New Agent Lab" });
+    const controls = document.querySelector<HTMLButtonElement>('[data-ui="onboarding-v2-lab"] button[aria-controls]');
+    expect(controls).not.toBeNull();
+    if (!controls) throw new Error("Missing New Agent Lab trigger");
     const lab = controls.closest('[data-ui="onboarding-v2-lab"]');
     const page = controls.closest('[data-ui="onboarding-v2-lab-page"]');
     expect(lab?.className).toContain("fixed");
@@ -92,31 +102,86 @@ describe("agent setup lab page", () => {
     expect(document.querySelector('[data-ui="readiness-lab"]')).toBeNull();
 
     await openControls();
+    expect(screen.getByRole("button", { name: "Close" })).toBe(controls);
     expect(page?.className).not.toContain("lg:pr-[27rem]");
     expect(screen.getByRole("button", { name: "First Agent" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Additional Agent" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Manual" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Auto" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Flow progress" }).textContent).toContain("No pending event.");
+    expect(screen.queryByRole("button", { name: "No pending event." })).toBeNull();
+    expect(screen.getByText("Run the complete Agent journey and connect a new Computer.")).toBeTruthy();
+    expect(stateSummaryRow("Computer").textContent).toContain("Waiting");
+    expect(stateSummaryRow("Runtime · Codex").textContent).toContain("Waiting");
+    expect(stateSummaryRow("Messaging support").textContent).toContain("Waiting");
+    expect(stateSummaryRow("Messaging connection").textContent).toContain("Not started");
 
-    const trigger = screen.getByRole("combobox", { name: "Scenario" });
+    const trigger = screen.getByRole("combobox", { name: "Start from" });
     fireEvent.click(trigger);
     const options = await screen.findAllByRole("option");
     expect(options.map((option) => option.textContent?.trim() ?? "")).toEqual([
-      "Full journey · New computer",
-      "Full journey · Existing computer",
-      "Agent creation",
-      "Computer connection",
-      "Runtime setup",
-      "Messaging setup",
-      "Everything ready",
+      "Journey · New computer",
+      "Journey · Existing computer",
+      "Checkpoint · Agent creation",
+      "Checkpoint · Connect computer",
+      "Checkpoint · Reconnect computer",
+      "Checkpoint · Replace computer",
+      "Preparation · Runtime report missing",
+      "Preparation · Runtime checking",
+      "Preparation · Install Runtime",
+      "Preparation · Sign in to Runtime",
+      "Preparation · Fix messaging support",
+      "Preparation ready · Connect messaging",
+      "Messaging · Waiting for handoff",
+      "Messaging · Needs recovery",
+      "Complete · Everything ready",
     ]);
     fireEvent.click(trigger);
     await waitFor(() => expect(screen.queryAllByRole("option")).toHaveLength(0));
 
-    await chooseOption("Scenario", "Everything ready");
+    await chooseOption("Start from", "Complete · Everything ready");
     await waitFor(() => expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull());
     expect(document.querySelector('[data-ui="readiness-lab"]')).toBeNull();
     expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+  });
+
+  it("makes the blocked-messaging and all-preparation-ready combinations explicit", async () => {
+    renderLabPage();
+
+    await chooseOption("Start from", "Preparation · Fix messaging support");
+    expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Journey" })).toBeNull();
+    expect(stateSummaryRow("Computer").textContent).toContain("Ready");
+    expect(stateSummaryRow("Runtime · Codex").textContent).toContain("Ready");
+    expect(stateSummaryRow("Messaging support").textContent).toContain("Needs attention");
+    expect(stateSummaryRow("Messaging connection").textContent).toContain("Not started");
+    expect(screen.getByText("Messaging support", { selector: '[data-ui="readiness-title"] *' })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+
+    await chooseOption("Start from", "Preparation ready · Connect messaging");
+    expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(stateSummaryRow("Computer").textContent).toContain("Ready");
+    expect(stateSummaryRow("Runtime · Codex").textContent).toContain("Ready");
+    expect(stateSummaryRow("Messaging support").textContent).toContain("Ready");
+    expect(stateSummaryRow("Messaging connection").textContent).toContain("Not started");
+    expect(
+      screen.getByText("Computer, Runtime, and messaging support are ready. Choose a messaging app."),
+    ).toBeTruthy();
+  });
+
+  it("separates messaging support from the messaging connection lifecycle", async () => {
+    renderLabPage();
+
+    await chooseOption("Start from", "Messaging · Waiting for handoff");
+    expect(stateSummaryRow("Messaging support").textContent).toContain("Ready");
+    expect(stateSummaryRow("Messaging connection · Lark").textContent).toContain("Waiting for handoff");
+
+    await chooseOption("Start from", "Messaging · Needs recovery");
+    expect(stateSummaryRow("Messaging support").textContent).toContain("Ready");
+    expect(stateSummaryRow("Messaging connection · Lark").textContent).toContain("Needs attention");
+
+    await chooseOption("Start from", "Complete · Everything ready");
+    expect(stateSummaryRow("Messaging connection · Lark").textContent).toContain("Ready");
   });
 
   it("shows the real creation choice and only exposes Back to agents for an additional Agent", async () => {
@@ -148,16 +213,49 @@ describe("agent setup lab page", () => {
     expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
 
     await openControls();
-    fireEvent.click(screen.getByRole("button", { name: "Overrides" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune state" }));
     expect(screen.getByRole("combobox", { name: "Agent runtime" }).textContent).toContain("Claude Code");
+    expect(screen.queryByText("1 changed")).toBeNull();
+
+    await chooseOption("Agent runtime", "Codex");
+    expect(screen.getByText("1 changed")).toBeTruthy();
+    await chooseOption("Agent runtime", "Claude Code");
+    expect(screen.queryByText("1 changed")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
     expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
   });
 
+  it("marks a forced Computer outage as custom until the recovery event restores it", async () => {
+    renderLabPage();
+    await chooseOption("Start from", "Complete · Everything ready");
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune state" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Take computer offline" }));
+    expect(screen.getByText("1 changed")).toBeTruthy();
+    expect(stateSummaryRow("Computer").textContent).toContain("Needs attention");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect computer" }));
+    expect(screen.queryByText("1 changed")).toBeNull();
+    expect(stateSummaryRow("Computer").textContent).toContain("Ready");
+  });
+
+  it("drops an ephemeral Computer override when another control rebuilds the scenario", async () => {
+    renderLabPage();
+    await chooseOption("Start from", "Complete · Everything ready");
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune state" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take computer offline" }));
+
+    await chooseOption("Agent runtime", "Claude Code");
+
+    expect(screen.getByText("1 changed")).toBeTruthy();
+    expect(stateSummaryRow("Computer").textContent).toContain("Ready");
+    expect(stateSummaryRow("Runtime · Claude Code").textContent).toContain("Ready");
+  });
+
   it("drives Feishu and Slack without leaving the Lab", async () => {
     renderLabPage();
-    await chooseOption("Scenario", "Messaging setup");
+    await chooseOption("Start from", "Preparation ready · Connect messaging");
 
     fireEvent.click(await screen.findByRole("button", { name: /Feishu|Lark/ }));
     fireEvent.click(await screen.findByRole("button", { name: /Scan (Feishu|Lark) code/ }));
@@ -169,7 +267,7 @@ describe("agent setup lab page", () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Return to Lab" }));
 
-    await chooseOption("Scenario", "Messaging setup");
+    await chooseOption("Start from", "Preparation ready · Connect messaging");
     fireEvent.click(await screen.findByRole("button", { name: /Slack/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Finish Slack install" }));
     fireEvent.click(await screen.findByRole("button", { name: "Observe messaging handoff" }));
@@ -180,17 +278,19 @@ describe("agent setup lab page", () => {
   it("only offers the connected messaging override when that preset uses it", async () => {
     renderLabPage();
     await openControls();
-    fireEvent.click(screen.getByRole("button", { name: "Overrides" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fine-tune state" }));
     expect(screen.queryByRole("combobox", { name: "Connected messaging app" })).toBeNull();
 
-    await chooseOption("Scenario", "Everything ready");
+    await chooseOption("Start from", "Complete · Everything ready");
     await chooseOption("Connected messaging app", "Slack");
     expect(await screen.findByText("Tag @reviewer in Slack to put it to work.")).toBeTruthy();
+    expect(screen.getByText("1 changed")).toBeTruthy();
+    expect(stateSummaryRow("Messaging connection · Slack").textContent).toContain("Ready");
   });
 
   it("renders the ready checklist with four rows and the exact ready copy", async () => {
     renderLabPage();
-    await chooseOption("Component fixtures", "Checklist: ready");
+    await chooseOption("Visual edge cases", "Checklist: ready");
 
     expect(document.querySelector('[data-ui="agent-setup"]')).toBeNull();
     expect(screen.getByRole("heading", { name: "Readiness checklist" })).toBeTruthy();
@@ -224,7 +324,7 @@ describe("agent setup lab page", () => {
 
   it("relabels the runtime row when Preview Runtime moves to Claude Code", async () => {
     renderLabPage();
-    await chooseOption("Component fixtures", "Checklist: ready");
+    await chooseOption("Visual edge cases", "Checklist: ready");
     const runtimeRow = readinessRow("runtime");
     const computerRow = readinessRow("computer");
 
@@ -251,7 +351,7 @@ describe("agent setup lab page", () => {
 
   it("keeps one persistent list with the same row elements across every fixture scenario", async () => {
     renderLabPage();
-    await chooseOption("Component fixtures", "Checklist: waiting");
+    await chooseOption("Visual edge cases", "Checklist: waiting");
 
     const firstRows = new Map(COMPONENTS.map((component) => [component, readinessRow(component)]));
     const firstList = readinessList();
@@ -259,7 +359,7 @@ describe("agent setup lab page", () => {
     expect(readinessRow("runtime").getAttribute("data-state")).toBe("blocked");
 
     for (const scenario of READINESS_SCENARIOS) {
-      await chooseOption("Component fixtures", READINESS_SCENARIO_LABELS[scenario]);
+      await chooseOption("Visual edge cases", READINESS_SCENARIO_LABELS[scenario]);
       expect(readinessList()).toBe(firstList);
       expect(screen.getByRole("heading", { name: "Readiness checklist" })).toBeTruthy();
       for (const component of COMPONENTS) {
@@ -280,7 +380,7 @@ describe("agent setup lab page", () => {
   it("exposes the long English and Chinese fixture copy", async () => {
     renderLabPage();
 
-    await chooseOption("Component fixtures", "Long English");
+    await chooseOption("Visual edge cases", "Long English");
     const runtimeDetail = slot(readinessRow("runtime"), "readiness-detail").textContent ?? "";
     expect(runtimeDetail).toContain("Wait for a fresh reading");
     expect(runtimeDetail).toContain("OpenTag does not install Runtime CLIs");
@@ -289,7 +389,7 @@ describe("agent setup lab page", () => {
     const feishuDetail = slot(readinessRow("im-cli:feishu"), "readiness-detail").textContent ?? "";
     expect(feishuDetail).toContain("opentag provider-cli inspect --provider feishu");
 
-    await chooseOption("Component fixtures", "中文长文案");
+    await chooseOption("Visual edge cases", "Long Chinese copy");
     const runtimeRow = readinessRow("runtime");
     expect(slot(readinessRow("computer"), "readiness-title").textContent).toBe("电脑就绪");
     // The sample sentences are Chinese; brand names still follow the app locale via the naming helper.
@@ -312,7 +412,7 @@ describe("agent setup lab page", () => {
   it("exposes the passed warning and the genuinely blank details", async () => {
     renderLabPage();
 
-    await chooseOption("Component fixtures", "Passed with warning");
+    await chooseOption("Visual edge cases", "Passed with warning");
     const warningRow = readinessRow("runtime");
     expect(warningRow.getAttribute("data-state")).toBe("passed");
     expect(warningRow.getAttribute("data-status")).toBe("ready");
@@ -321,7 +421,7 @@ describe("agent setup lab page", () => {
     expect(readinessRow("computer").getAttribute("data-state")).toBe("passed");
     expect(readinessRow("im-cli:slack").getAttribute("data-state")).toBe("passed");
 
-    await chooseOption("Component fixtures", "Blank details");
+    await chooseOption("Visual edge cases", "Blank details");
     for (const component of COMPONENTS) {
       const detail = slot(readinessRow(component), "readiness-detail");
       expect(detail.textContent).toBe("");
@@ -334,13 +434,13 @@ describe("agent setup lab page", () => {
 
   it("keeps stale reports blocked and messaging authorization out of preparation fixtures", async () => {
     renderLabPage();
-    await chooseOption("Component fixtures", "Checklist: stale");
+    await chooseOption("Visual edge cases", "Checklist: stale");
     for (const component of COMPONENTS) {
       expect(readinessRow(component).getAttribute("data-state")).toBe("blocked");
       expect(readinessRow(component).getAttribute("data-status")).toBe("stale");
     }
     for (const scenario of READINESS_SCENARIOS) {
-      await chooseOption("Component fixtures", READINESS_SCENARIO_LABELS[scenario]);
+      await chooseOption("Visual edge cases", READINESS_SCENARIO_LABELS[scenario]);
       expect(readinessList().textContent).not.toMatch(
         /workspace authoriz|workspace token|credentials expire|opentag-runtime-(install|upgrade)|review\.invalid/i,
       );

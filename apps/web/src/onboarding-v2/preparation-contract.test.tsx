@@ -124,8 +124,10 @@ function rowDetail(component: string): string {
 function expectCompactRows(): void {
   const list = document.querySelector('[data-ui="readiness-list"]');
   expect(list).not.toBeNull();
+  expect(list?.classList).toContain("otv2-readiness--compact");
   const items = within(list as HTMLElement).getAllByRole("listitem");
   expect(items.map((item) => item.getAttribute("data-component"))).toEqual(["runtime", "messaging-support"]);
+  expect(list?.querySelectorAll('[tabindex="0"]')).toHaveLength(0);
 }
 
 beforeEach(() => {
@@ -219,7 +221,7 @@ describe("F6 shared preparation matrix, Web projection", () => {
     const row = preparationReadinessRows(snapshot).runtime;
     expect(row.status).toBe("install-required");
     expect(row.statusLabel).toBe("Installation required");
-    expect(row.detail).toContain("OpenTag never installs Runtime CLIs");
+    expect(row.detail).toContain("OpenTag won't install it for you");
     expect(row.detail).not.toMatch(/installing|checking the/i);
     expect(snapshot.actions).toEqual([{ kind: "refresh" }]);
   });
@@ -392,7 +394,7 @@ describe("F6 cross-layer gating, page level", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("needs-attention");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Needs attention");
-    expect(rowDetail("messaging-support")).toContain("repair and verification instructions");
+    expect(rowDetail("messaging-support")).toContain("connection command's repair steps");
     expect(rowTitle("messaging-support")).not.toMatch(/Installing|Lark|Slack/);
     // The row never fabricates a checking state for an unavailable report.
     expect(rowTitle("messaging-support")).not.toContain("Checking");

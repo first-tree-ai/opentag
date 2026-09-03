@@ -901,7 +901,7 @@ function ComputerSummary({
 }) {
   return (
     <div
-      className="otv2-computer-summary grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-y border-kumo-line py-2"
+      className="otv2-computer-summary grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 py-2"
       data-ui="agent-setup-computer-summary"
     >
       <span
@@ -1018,9 +1018,13 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
         title={computer.displayName}
         tone="success"
       />
-      <ol aria-label={m.onboarding_v2_prep_title()} className="otv2-readiness" data-ui="readiness-list">
-        <CheckLine check={rows.runtime} component="runtime" position={1} />
-        <CheckLine check={rows.messaging} component="messaging-support" position={2} />
+      <ol
+        aria-label={m.onboarding_v2_prep_title()}
+        className="otv2-readiness otv2-readiness--compact"
+        data-ui="readiness-list"
+      >
+        <CheckLine check={rows.runtime} component="runtime" position={1} scrollable={false} />
+        <CheckLine check={rows.messaging} component="messaging-support" position={2} scrollable={false} />
       </ol>
     </section>
   );

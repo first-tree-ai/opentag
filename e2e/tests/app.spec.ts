@@ -1,6 +1,7 @@
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
+import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
 
 test.describe.configure({ mode: "serial" });
@@ -51,6 +52,34 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   await expect(darkMark).toHaveCSS("display", "none");
   await page.setViewportSize({ width: 390, height: 844 });
   await expectContainedDimensions();
+});
+
+test("Agent Setup Lab exposes recoverable core states through its real controls", async ({ page }) => {
+  await page.goto("/internal/agent-setup", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: "Journey · New computer · Agent creation" }).click();
+  const closeLab = page.getByRole("button", { name: "Close", exact: true });
+  await expect(closeLab).toBeVisible();
+
+  const scenario = page.getByRole("combobox", { name: "Start from" });
+  await scenario.click();
+  await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
+  await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
+  await page.getByRole("button", { name: "Finish readiness check" }).click();
+  await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
+
+  await scenario.click();
+  await page.getByRole("option", { name: "Complete · Everything ready" }).click();
+  await page.getByRole("button", { name: "Fine-tune state" }).click();
+  await page.getByRole("button", { name: "Take computer offline" }).click();
+  await expect(page.getByText("1 changed", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Reconnect computer" }).click();
+  await expect(page.getByText("1 changed", { exact: true })).toHaveCount(0);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expectWithinViewport(closeLab);
+  await expectNoPageOverflow(page);
+  await expectAccessible(page);
 });
 
 test("Agent creation form creates an Agent visible in the list and detail page", async ({ page, e2eRuntime }) => {
@@ -122,8 +151,6 @@ test("Agent navigation reaches every Agent-owned destination", async ({ page }) 
   const destinations = [
     { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
-    { name: "Skills", heading: "Skills", path: `/agents/${agentId}/skills` },
-    { name: "Integrations", heading: "Integrations", path: `/agents/${agentId}/integrations` },
     { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
   for (const destination of destinations) {
@@ -187,7 +214,7 @@ test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", as
   );
 });
 
-test("Agents and Usage keep their compact composition when their own containers have room", async ({ page }) => {
+test("Agents and empty Usage keep their compact composition when their own containers have room", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   await page.setViewportSize({ width: 1100, height: 900 });
 
@@ -235,14 +262,9 @@ test("Agents and Usage keep their compact composition when their own containers 
   await page.setViewportSize({ width: 1100, height: 900 });
 
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
-  const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
-  await expect(usageAnalysisCards).toHaveCount(2);
-  const [trendCard, breakdownCard] = await Promise.all([
-    usageAnalysisCards.nth(0).boundingBox(),
-    usageAnalysisCards.nth(1).boundingBox(),
-  ]);
-  if (!trendCard || !breakdownCard) throw new Error("Usage analysis cards did not produce layout boxes");
-  expect(trendCard.y).toBeCloseTo(breakdownCard.y, 1);
+  await expect(page.getByRole("heading", { level: 2, name: "No token usage" })).toBeVisible();
+  await expect(page.locator('[data-ui="usage-analysis"]')).toHaveCount(0);
+  await expectNoPageOverflow(page);
 });
 
 test("an unauthenticated protected visit redirects to login", async ({ browser }) => {

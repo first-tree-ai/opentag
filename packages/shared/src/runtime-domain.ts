@@ -14,6 +14,7 @@ import {
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
 
 export {
+  AGENT_SLUG_MAX_LENGTH,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_ID_MAX_BYTES,
@@ -24,6 +25,7 @@ export {
   RuntimeMaxDurationMsSchema,
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
+  renderPlatformInstructions,
 } from "./runtime-config.js";
 
 export const RUNTIME_DIRECT_TEXT_MAX_BYTES = 16 * 1024;

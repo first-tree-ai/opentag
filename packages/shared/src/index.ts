@@ -168,6 +168,18 @@ export {
   ProviderReadinessStatusSchema,
 } from "./computer.js";
 export {
+  CONTEXT_TREE_CONFIG_SCHEMA_VERSION,
+  CONTEXT_TREE_PREPARATION_SCHEMA_VERSION,
+  type ContextTreeConfig,
+  ContextTreeConfigSchema,
+  type ContextTreePreparation,
+  ContextTreePreparationSchema,
+  type ContextTreeTarget,
+  ContextTreeTargetSchema,
+  formatContextTreeTarget,
+  parseContextTreeTarget,
+} from "./context-tree.js";
+export {
   type ErrorCategory,
   ErrorCategorySchema,
   type ErrorCode,
@@ -246,6 +258,7 @@ export {
   type RuntimeConfigurationOptions,
 } from "./runtime-configuration-options.js";
 export {
+  AGENT_SLUG_MAX_LENGTH,
   type AgentRuntimeTestCancelFrame,
   AgentRuntimeTestCancelFrameSchema,
   type AgentRuntimeTestRequestFrame,
@@ -343,6 +356,7 @@ export {
   type RuntimeSnapshotHashes,
   type RuntimeUsage,
   RuntimeUsageSchema,
+  renderPlatformInstructions,
   runtimeUsageTotalTokens,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,

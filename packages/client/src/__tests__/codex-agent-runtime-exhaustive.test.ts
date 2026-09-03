@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process lifecycle cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
   AgentApprovalResponse,

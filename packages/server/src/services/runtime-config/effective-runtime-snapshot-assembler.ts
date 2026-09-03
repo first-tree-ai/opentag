@@ -1,9 +1,10 @@
 import {
+  AgentNameSchema,
   AgentRuntimeConfigSchema,
   type EffectiveRuntimeSnapshot,
   EffectiveRuntimeSnapshotSchema,
   hashTuple,
-  OPENTAG_PLATFORM_INSTRUCTIONS,
+  renderPlatformInstructions,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -14,6 +15,7 @@ import { isServerAdmittedAgentRuntimeProvider, serverAgentRuntimeProviderPolicy 
 interface EffectiveRuntimeSnapshotAuthority {
   agentStatus: string;
   agentId: string;
+  agentName: string;
   imBindingStatus: string;
   runtimeConfig: unknown;
   runtimeProvider: string;
@@ -61,6 +63,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       throw new EffectiveRuntimeSnapshotAssemblerError("INVALID_STORED_CONFIG", { cause: parsedConfig.error });
     }
     const config = parsedConfig.data;
+    const platformInstructions = renderAgentPlatformInstructions(authority.agentName);
     const model = authority.sessionKind === "internal" ? (authority.sessionRuntimeModel ?? config.model) : config.model;
     const reasoningEffort =
       authority.sessionKind === "internal"
@@ -73,7 +76,8 @@ export class EffectiveRuntimeSnapshotAssembler {
     const agentRevisionId = revisionId("agent", [
       authority.agentId,
       authority.runtimeProvider,
-      OPENTAG_PLATFORM_INSTRUCTIONS,
+      // The exact rendered platform string, so a slug change produces a new Agent revision.
+      platformInstructions,
       config.instructions,
       authority.agentId,
       "empty_on_create",
@@ -115,7 +119,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       ...(model !== null ? { model } : {}),
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
       instructions: {
-        platform: OPENTAG_PLATFORM_INSTRUCTIONS,
+        platform: platformInstructions,
         agent: config.instructions,
       },
       execution: providerPolicy.execution,
@@ -143,6 +147,7 @@ async function loadAuthority(
       sessionEndedAt: sessions.endedAt,
       imBindingStatus: imBindings.status,
       agentId: agents.id,
+      agentName: agents.name,
       agentStatus: agents.status,
       runtimeProvider: agents.runtimeProvider,
       configRevision: agentRuntimeConfigs.revision,
@@ -161,6 +166,7 @@ async function loadAuthority(
   return {
     agentStatus: row.agentStatus,
     agentId: row.agentId,
+    agentName: row.agentName,
     imBindingStatus: row.imBindingStatus,
     runtimeConfig:
       row.configRevision === null
@@ -180,6 +186,21 @@ async function loadAuthority(
     sessionRuntimeReasoningEffort: row.sessionRuntimeReasoningEffort,
     sessionRuntimeMaxDurationMs: row.sessionRuntimeMaxDurationMs,
   };
+}
+
+/**
+ * Render the trusted platform layer for one Agent.
+ *
+ * The canonical slug is the Agent name. A stored name that no longer satisfies the schema fails
+ * closed rather than reaching a Session as a malformed identity, because the Agent would then
+ * write to the wrong `members/<agent-slug>/` directory in a shared Context Tree.
+ */
+function renderAgentPlatformInstructions(agentName: string): string {
+  const parsed = AgentNameSchema.safeParse(agentName);
+  if (!parsed.success) {
+    throw new EffectiveRuntimeSnapshotAssemblerError("INVALID_STORED_CONFIG", { cause: parsed.error });
+  }
+  return renderPlatformInstructions({ agentSlug: parsed.data });
 }
 
 function revisionId(layer: "agent" | "session", values: readonly unknown[]): string {

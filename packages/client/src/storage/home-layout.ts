@@ -3,6 +3,9 @@ import { join, resolve } from "node:path";
 
 export interface OpenTagHomeLayout {
   config: string;
+  contextTreeBin: string;
+  contextTreeConfigFile: string;
+  contextTreePreparationFile: string;
   daemonState: string;
   data: string;
   home: string;
@@ -28,6 +31,10 @@ export function resolveOpenTagHomeLayout(home = resolveOpenTagHome()): OpenTagHo
   const state = join(resolvedHome, "state");
   return {
     config,
+    // Holds the shim the Context Tree skills invoke by name; OpenTag's own calls bypass it.
+    contextTreeBin: join(resolvedHome, "context-tree", "bin"),
+    contextTreeConfigFile: join(config, "context-tree.json"),
+    contextTreePreparationFile: join(state, "context-tree-preparation.json"),
     daemonState: join(state, "daemon"),
     data,
     home: resolvedHome,

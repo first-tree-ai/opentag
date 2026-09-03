@@ -203,6 +203,16 @@ export {
   writeComputerIdentityAtomically,
 } from "./runtime/computer-identity.js";
 export {
+  type ContextTreeExecFile,
+  ContextTreeManager,
+  type ContextTreeManagerOptions,
+  type ContextTreePackage,
+  type ContextTreeStatus,
+  readContextTreePreparation,
+  resolveContextTreePackage,
+  runContextTreeCli,
+} from "./runtime/context-tree.js";
+export {
   ImCredentialEnvironmentError,
   ImCredentialEnvironmentManager,
   type ImCredentialEnvironmentManagerOptions,
@@ -222,7 +232,7 @@ export {
   type LocalComputerConfigurationInspection,
   type LocalConfigurationStatus,
 } from "./runtime/local-computer-configuration.js";
-export { renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
+export { type ManagedSessionContext, renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
 export {
   ProviderCliAccountError,
   type ProviderCliAccountLayout,

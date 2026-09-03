@@ -1,6 +1,10 @@
 import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Real child-process detection needs headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import {
   computeFileIdentity,
   detectProviderCliCandidates,

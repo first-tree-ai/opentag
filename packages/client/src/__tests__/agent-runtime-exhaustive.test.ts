@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+
+// Real child-process lifecycle cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError } from "../agent-runtime/errors.js";
 import type {

@@ -12,7 +12,7 @@ import { CreationRecoverySection, useCreationRecovery } from "../agent-creation/
 import { ApiError } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button } from "../ui/design-system.js";
-import { AgentSetupPage } from "./agent-setup-page.js";
+import { AgentSetupPage, type AgentSetupPageProps } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
@@ -41,20 +41,28 @@ function draftFromIntent(intent: CreationIntentRecord | undefined): AgentDraft {
 export function AgentSetupSurface({
   accountId,
   agentId,
+  computerAdapter,
+  creationPreview,
   onBackToAgents,
   onAgentAvailable,
+  onExternalNavigation,
   onOpenAgent,
   onReady,
+  refreshSignal,
   reviewMode = false,
   setupAdapter,
   slackOAuthError,
 }: {
   accountId?: string;
   agentId?: string;
+  computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  creationPreview?: (request: CreationIntentRequest) => Promise<{ readonly id: string }>;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
+  onExternalNavigation?: (url: string) => void;
   onOpenAgent?: () => void;
   onReady?: (agentId: string) => Promise<void> | void;
+  refreshSignal?: number;
   reviewMode?: boolean;
   setupAdapter?: AgentSetupAdapter;
   slackOAuthError?: string;
@@ -64,29 +72,43 @@ export function AgentSetupSurface({
       <AgentSetupPage
         adapter={setupAdapter}
         agentId={agentId}
+        computerAdapter={computerAdapter}
+        onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
         onReady={onReady}
+        refreshSignal={refreshSignal}
         reviewMode={reviewMode}
         slackOAuthError={slackOAuthError}
       />
     );
   }
   if (!accountId) throw new Error("Agent creation requires an Account id");
-  return <AgentCreatePage accountId={accountId} onAgentAvailable={onAgentAvailable} onBackToAgents={onBackToAgents} />;
+  return (
+    <AgentCreatePage
+      accountId={accountId}
+      creationPreview={creationPreview}
+      onAgentAvailable={onAgentAvailable}
+      onBackToAgents={onBackToAgents}
+    />
+  );
 }
 
 function AgentCreatePage({
   accountId,
+  creationPreview,
   onAgentAvailable,
   onBackToAgents,
 }: {
   accountId: string;
+  creationPreview?: (request: CreationIntentRequest) => Promise<{ readonly id: string }>;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
-  useEffect(() => pruneSupersededCreationIntents(), []);
+  useEffect(() => {
+    if (!creationPreview) pruneSupersededCreationIntents();
+  }, [creationPreview]);
   const [pendingIntent, setPendingIntent] = useState<CreationIntentRecord | undefined>(() =>
-    readCreationIntent(accountId),
+    creationPreview ? undefined : readCreationIntent(accountId),
   );
   const [draft, setDraft] = useState<AgentDraft>(() => draftFromIntent(pendingIntent));
   const [destinationConfirmed, setDestinationConfirmed] = useState(false);
@@ -102,6 +124,7 @@ function AgentCreatePage({
   }, [draft]);
 
   const create = useCallback(
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the optional Lab branch preserves the production creation lifecycle unchanged.
     async (request: CreationIntentRequest, intent?: CreationIntentRecord) => {
       if (createInFlightRef.current) return;
       createInFlightRef.current = true;
@@ -109,6 +132,11 @@ function AgentCreatePage({
       setError(undefined);
       let record = intent;
       try {
+        if (creationPreview) {
+          const created = await creationPreview(request);
+          await Promise.resolve(onAgentAvailable?.(created.id));
+          return;
+        }
         record ??= await getOrCreateCreationIntent(accountId, request);
         setPendingIntent(record);
         const created = await createAgentOnce(record);
@@ -132,7 +160,7 @@ function AgentCreatePage({
         setSubmitting(false);
       }
     },
-    [accountId, onAgentAvailable],
+    [accountId, creationPreview, onAgentAvailable],
   );
 
   const startOver = useCallback(() => {
@@ -150,7 +178,7 @@ function AgentCreatePage({
       startOver();
     },
     pendingIntent,
-    preview: false,
+    preview: creationPreview !== undefined,
     selectedRequest,
     setDismissedIntentId,
     submitting,

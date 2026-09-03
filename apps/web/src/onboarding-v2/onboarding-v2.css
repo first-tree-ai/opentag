@@ -129,6 +129,12 @@
   width: min(100%, 720px);
 }
 
+/* One stable Computer summary row separates the step copy from its command surface. */
+.otv2-computer-summary {
+  box-sizing: border-box;
+  height: 56px;
+}
+
 /* Cards sit side by side wherever two tracks fit, and stack when they do not. */
 .otv2-choices--grid {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -156,6 +162,10 @@
 }
 
 @media (width <= 640px) {
+  .otv2-computer-summary {
+    height: 72px;
+  }
+
   .otv2-slot--outcome {
     min-height: 71px;
   }

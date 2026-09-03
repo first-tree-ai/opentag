@@ -172,7 +172,7 @@
         "observedAt": "2026-09-01T10:00:00.000Z"
       },
       "web": {
-        "showPreparationSection": true,
+        "showPreparationSection": false,
         "rows": [
           { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
           { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },
@@ -297,7 +297,7 @@
         "observedAt": "2026-09-01T10:00:00.000Z"
       },
       "web": {
-        "showPreparationSection": true,
+        "showPreparationSection": false,
         "rows": [
           { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
           { "component": "runtime", "state": "passed", "status": "ready", "label": "Claude Code ready" },
@@ -1230,7 +1230,7 @@
         "observedAt": "2026-09-01T10:00:00.000Z"
       },
       "web": {
-        "showPreparationSection": true,
+        "showPreparationSection": false,
         "rows": [
           { "component": "computer", "state": "passed", "status": "ready", "label": "Computer ready" },
           { "component": "runtime", "state": "passed", "status": "ready", "label": "Codex ready" },

@@ -1,9 +1,11 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
   type AccountComputerConnectCodeIssueRequest,
+  type AgentRuntimeProvider,
   type ChannelName,
   type ComputerConnectCodeMode,
   type ComputerConnectCodeStatus,
+  clientSupportsComputerRuntimeProvider,
   getChannelConfig,
   isSupportedClientVersion,
   unsupportedClientVersionMessage,
@@ -60,6 +62,11 @@ export interface ComputerConnectExchangeInput {
 export interface ComputerConnectExchangeResult extends ComputerAuthContext {
   agentId?: string;
   machineToken: string;
+  /**
+   * The exact Runtime of the bound target Agent, present only for a marked Client and only when the
+   * code itself targeted an Agent. Unmarked legacy Clients keep the old strict response shape.
+   */
+  runtimeProvider?: AgentRuntimeProvider;
 }
 
 export interface ComputerAuthVerifier {
@@ -152,6 +159,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
 
   async exchangeConnectCode(input: ComputerConnectExchangeInput): Promise<ComputerConnectExchangeResult> {
     rejectUnsupportedClientVersion(input.clientVersion);
+    const clientSupportsRuntimeProvider = clientSupportsComputerRuntimeProvider(input.clientVersion);
     const now = this.#now();
     const tokenHash = hashSecret(input.code);
     const result = await this.#database.transaction(async (transaction) => {
@@ -177,15 +185,13 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           ? await this.#repairComputer(transaction, connectCode, input, now)
           : await this.#createComputer(transaction, connectCode, input, now);
       const targetAgentId = targetAgentIdFromConnectCode(input.code);
-      if (targetAgentId) {
-        await bindConnectTargetAgent(transaction, {
-          accountId: connectCode.issuedByAccountId,
-          agentId: targetAgentId,
-          computerId: computer.id,
-          mode: connectCode.mode,
-          now,
-        });
-      }
+      const boundRuntimeProvider = await bindTargetAgentWhenTargeted(transaction, {
+        accountId: connectCode.issuedByAccountId,
+        agentId: targetAgentId,
+        computerId: computer.id,
+        mode: connectCode.mode,
+        now,
+      });
       const credential = await rotateComputerCredentials(transaction, computer.id, connectCode.issuedByAccountId, now);
       const [consumed] = await transaction
         .update(computerConnectCodes)
@@ -196,7 +202,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         throw invalidMachineCredential("AUTH_CODE_CONSUMED", "The Computer connect code has already been used");
       }
       return {
-        ...(targetAgentId ? { agentId: targetAgentId } : {}),
+        ...targetedIdentityEvidence(targetAgentId, boundRuntimeProvider, clientSupportsRuntimeProvider),
         credentialId: credential.id,
         computerId: computer.id,
         installationId: input.installationId,
@@ -434,6 +440,40 @@ async function assertConnectTargetAgent(
   }
 }
 
+/**
+ * Binds the Agent a targeted code names, when the code names one at all. An untargeted exchange
+ * never touches the Agent row and therefore never yields a `runtimeProvider`.
+ */
+async function bindTargetAgentWhenTargeted(
+  transaction: DatabaseTransaction,
+  input: {
+    accountId: string;
+    agentId: string | undefined;
+    computerId: string;
+    mode: ComputerConnectCodeMode;
+    now: Date;
+  },
+): Promise<AgentRuntimeProvider | undefined> {
+  const { agentId, ...bindInput } = input;
+  if (!agentId) return undefined;
+  return bindConnectTargetAgent(transaction, { ...bindInput, agentId });
+}
+
+/**
+ * The identity evidence the exchange response may carry: `agentId` whenever a target was bound, and
+ * `runtimeProvider` only when that exact Runtime is also understood by the exchanging Client.
+ */
+function targetedIdentityEvidence(
+  agentId: string | undefined,
+  runtimeProvider: AgentRuntimeProvider | undefined,
+  marked: boolean,
+): { agentId?: string; runtimeProvider?: AgentRuntimeProvider } {
+  return {
+    ...(agentId ? { agentId } : {}),
+    ...(marked && runtimeProvider ? { runtimeProvider } : {}),
+  };
+}
+
 async function bindConnectTargetAgent(
   transaction: DatabaseTransaction,
   input: {
@@ -443,9 +483,14 @@ async function bindConnectTargetAgent(
     mode: ComputerConnectCodeMode;
     now: Date;
   },
-): Promise<void> {
+): Promise<AgentRuntimeProvider> {
   const [agent] = await transaction
-    .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
+    .select({
+      computerId: agents.computerId,
+      createdByUserId: agents.createdByUserId,
+      runtimeProvider: agents.runtimeProvider,
+      status: agents.status,
+    })
     .from(agents)
     .where(eq(agents.id, input.agentId))
     .limit(1)
@@ -459,7 +504,8 @@ async function bindConnectTargetAgent(
   ) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
   }
-  if (agent.computerId === input.computerId) return;
+  // The row is already bound to the very Computer this repair names; the lock above is the check.
+  if (agent.computerId === input.computerId) return agent.runtimeProvider;
   const [bound] = await transaction
     .update(agents)
     .set({ computerId: input.computerId, revision: sql`${agents.revision} + 1`, updatedAt: input.now })
@@ -468,6 +514,7 @@ async function bindConnectTargetAgent(
   if (!bound) {
     throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code target is no longer valid");
   }
+  return agent.runtimeProvider;
 }
 
 async function lockOwnedComputer(

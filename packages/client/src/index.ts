@@ -186,12 +186,15 @@ export {
 export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
+  claudeCodeProcessEnvironment,
   createClientRuntime,
   type ProtectedWorkSnapshot,
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
+  type ResolvedCodexFactoryOptions,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
+  resolvedCodexFactory,
 } from "./runtime/client-runtime-composition.js";
 export {
   allocateComputerIdentity,

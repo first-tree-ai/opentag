@@ -23,21 +23,9 @@ AI worker，就在你的 Slack 和飞书。在话题里 @ 它一下，活就干�
 
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-09-02
 
-```text
- #产品研发 ─────────────────────────────────────────────────────────────
-
-  Priya  16:09
-  @OpenTag 移动端的注册按钮点不动了，能看一下吗？
-
-  OpenTag  BOT  16:09
-  在看了。serena-mbp 上跑 Claude Code。                          👀
-
-  OpenTag  BOT  16:24
-  宽度小于 380px 时 CTA 被吸底栏盖住了。已修 z-index，推到
-  fix/signup-cta-mobile，截图在话题里。要我开 PR 吗？
-
- ──────────────────────────────────────────────────────────────────────
-```
+<p align="center">
+  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
+</p>
 
 > **Pre-alpha。** 控制面、本地 Runtime 以及飞书和 Slack 链路今天已经端到端跑通。安装与管理工作流仍在完善，
 > 公开 API 在第一个稳定版本前仍可能变化。参见[项目状态](#项目状态)。
@@ -57,42 +45,43 @@ enrollment 的机器上的 Agent，Agent 在那台机器上、用那台机器上
 
 ---
 
-## 把它放进房间。
+## 自带你自己的订阅。
 
-*一个机器人，整个频道共用——不是和机器人私聊。*
+*中间没有厂商——模型不是、密钥不是、机器也不是。*
+
+- **[Runtime](#runtime) →** Codex 和 Claude Code，以你 enrollment 的那台机器上已安装并登录的 Agent CLI 形式被调用。OpenTag 不附带模型。
+- **不托管密钥 →** OpenTag 从不索要 provider API key。Agent 依旧按它在那台机器上原有的方式认证，用你已经在付费的套餐。
+- **Runtime 配置 →** 在 Agent 的 **Runtime** 页签或 `agent update` 中设置 Codex Agent 的模型、reasoning effort 和单个 Turn 的最长时长。留空即把选择权交回 Codex；显式值由绑定的 Computer 校验，绝不被静默替换。
+- **你的机器就是 Runtime →** 在 Web 里生成 15 分钟有效的连接命令，粘贴到该干活的那台机器上执行。它会保存 enrollment 范围的凭证，并在 Linux 和 macOS 上安装当前用户的 daemon。
+- **独立的机器身份 →** 登录永远不会启动 daemon；daemon 凭证也永远管不了你的账号。
+
+## 团队群里的 AI worker。
+
+*整个频道共用一个机器人——不是和机器人私聊。*
 
 - **[飞书与 Slack](#聊天平台) →** 把 Agent 绑定到工作区，邀请它进频道，然后 @ 它。
-- **[Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md) →** 每个频道保持一个长生命周期 Session；只有真实的话题事件到达时才物化 Thread Session，并带上有界的根消息上下文，Agent 不用猜。
+- **[Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md) →** 每个频道保持一个长生命周期 Session；只有真实的话题事件到达时才物化 Thread Session。
 - **[direct 与 ambient 注意力](./docs/zh-CN/thread-sessions.md) →** Agent 知道自己是被直接叫到，还是只是在旁听，并自行决定回复、开话题还是加 Reaction。
 - **[用 provider 自己的 CLI 回复](./docs/zh-CN/direct-provider-cli.md) →** OpenTag 把受限的 IM 凭证交给 Agent，消息和 Reaction 出自 Agent 自己的判断，而不是模板化的机器人回复。
+- **持久化 delivery custody →** 入站消息先持久化再显式移交托管，Agent/Computer 绑定带 revision fencing——Turn 中途重启不会把请求悄悄吞掉，过期的 Runtime 也无法认领已经易主的工作。
 
-## 它跑在你自己的机器上。
+## 共享知识，归你所有。
 
-*一台 Computer 就是一张工位。代码不离开它。*
+*比一次终端会话活得更久的上下文，就存在你能直接打开的文件里。*
 
-- **Computer enrollment →** 在 Web 里生成 15 分钟有效的连接命令，粘贴到该干活的那台机器上执行。它会保存 enrollment 范围的凭证，并在 Linux 和 macOS 上安装当前用户的 daemon。
-- **独立的机器身份 →** 机器凭证与账号登录彼此独立。登录永远不会启动 daemon；daemon 凭证也永远管不了你的账号。
-- **统一的 Home 目录 →** 配置、运行时状态和 Agent 工作区都在 `${OPENTAG_HOME}` 下，默认私有（`0700` / `0600`）。[目录结构与恢复](./DEVELOPMENT.zh-CN.md)
-- **daemon 生命周期 →** `daemon start`、`stop`、`restart`、`status`、`uninstall`，出问题时还有 `doctor`。
+- **来自每个频道的上下文 →** 每个 Agent 和频道一个 Channel Session，Thread Session 按需物化并带上有界的根消息与话题历史，Agent 从大家真正说过的话开始，而不是从谁手写的摘要开始。
+- **记忆就是纯文本文件 →** Agent 工作区和运行时状态都在你自己机器的 `${OPENTAG_HOME}` 下，默认私有（`0700` / `0600`）。没有任何东西被上传到厂商那里替你记住。
+- **[Agent 之间互相沟通](./docs/zh-CN/internal-session-collaboration.md) →** 持久化的 internal Session 消息，带显式重试，而不是 best-effort 式的沉默。
+- **可以推理的恢复语义 →** 重新连接会轮换凭证并重建 effective snapshot；工作区文件仍由你自己备份。[什么能恢复、什么不能](./DEVELOPMENT.zh-CN.md)
 
-## 自带 Agent 和订阅。
+## 连接你的技术栈。
 
-*OpenTag 驱动你已经装好并登录的 CLI，它本身不附带模型。*
+*同一个 tag 触达你其余的工具。*
 
-- **[Runtime](#runtime) →** OpenAI Codex 和 Claude Code，以那台机器上的 Agent CLI 形式被调用。
-- **Runtime 配置 →** 在 Agent 的 **Runtime** 页签或 `agent update` 中设置 Codex Agent 的模型、reasoning effort 和单个 Turn 的最长时长。留空即把选择权交回 Codex；显式值由绑定的 Computer 校验，绝不被静默替换。
-- **不托管密钥 →** OpenTag 从不索要 provider API key。Agent 依旧按它在那台机器上原有的方式认证。
+- **今天：经由你的机器 →** Agent 就跑在你的 CLI 和凭证已经存在的地方——`gh`、你的云 CLI、你的 checkout——所以触达它们既不需要 OpenTag connector，也不需要把 token 交给第三方。
+- **一等公民的 connector 目录是下一步 →** Web 里的 Integrations 区域是它的界面预览，目前是 demo 数据，参见[项目状态](#项目状态)。
 
-## 为“不丢活”而造。
-
-*会丢请求的 Agent，比没有 Agent 更糟。*
-
-- **持久化 delivery custody →** 入站消息先持久化再显式移交托管，Turn 中途重启不会把请求悄悄吞掉。
-- **恢复与 revision fencing →** Agent/Computer 绑定不可变并带 revision fencing，过期的 Runtime 无法认领已经易主的工作。
-- **[Internal Session collaboration](./docs/zh-CN/internal-session-collaboration.md) →** Agent 之间可以持久化互发消息，带显式重试，而不是 best-effort 式的沉默。
-- **真实的测试门禁 →** 除完整离线用例、PostgreSQL 集成测试、CLI tarball 安装和生产容器健康冒烟外，Agent Runtime 还有 CI 强制的 100% 覆盖率门禁。
-
-## 全部可自托管。
+## 整套都归你。
 
 *你的 Server、你的数据库、你的规则。*
 

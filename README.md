@@ -22,22 +22,9 @@ not on ours.
 
 </div>
 
-```text
- #product-eng ─────────────────────────────────────────────────────────
-
-  Priya  4:09 PM
-  @OpenTag the signup button is dead on mobile — can you take a look?
-
-  OpenTag  BOT  4:09 PM
-  On it. Claude Code, on serena-mbp.                            👀
-
-  OpenTag  BOT  4:24 PM
-  The CTA sits under the sticky footer below 380px. Fixed the
-  z-index and pushed fix/signup-cta-mobile — screenshots in the
-  thread. Want me to open the PR?
-
- ──────────────────────────────────────────────────────────────────────
-```
+<p align="center">
+  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
+</p>
 
 > **Pre-alpha.** The control plane, the local runtime, and the Lark and Slack paths all work
 > end to end today. Install and management workflows are still being finished, and public APIs may
@@ -60,42 +47,43 @@ a control plane; the work happens on your hardware.
 
 ---
 
-## Put it in the room.
+## Bring your own subscription.
 
-*One bot, shared by the channel — not a DM with a robot.*
+*No vendor in the middle — not the model, not the key, not the machine.*
+
+- **[Runtimes](#runtimes) →** Codex and Claude Code, invoked as the agent CLIs already installed and signed in on the machine you enrolled. OpenTag ships no model.
+- **No key custody →** OpenTag never asks for a provider API key. The agent authenticates the way it already does there, on the plan you already pay for.
+- **Runtime configuration →** Set a Codex Agent's model, reasoning effort, and maximum Turn duration from the Agent's **Runtime** tab or `agent update`. Leave a field blank and the choice stays with Codex; explicit values are validated by the bound Computer and never silently rewritten.
+- **Your machine is the runtime →** Generate a 15-minute connect command in the Web, paste it on the machine that should do the work. It stores an enrollment-scoped credential and installs a per-user daemon on Linux and macOS.
+- **Independent machine identity →** Signing in never starts a daemon; a daemon credential can never manage your account.
+
+## An AI worker in your chat.
+
+*One bot the whole channel shares — not a DM with a robot.*
 
 - **[Lark and Slack](#chat-platforms) →** Bind an Agent to a workspace, invite it to a channel, and tag it.
-- **[Channel and Thread Sessions](./docs/thread-sessions.md) →** Each channel keeps one long-lived Session; threads get their own when a real thread event arrives, with bounded root context so the agent is not guessing.
+- **[Channel and Thread Sessions](./docs/thread-sessions.md) →** Each channel keeps one long-lived Session; threads get their own when a real thread event arrives.
 - **[Direct and ambient attention](./docs/thread-sessions.md) →** The agent knows whether it was addressed or is just listening, and decides for itself whether to reply, open a thread, or react.
 - **[Replies through the provider's own CLI](./docs/direct-provider-cli.md) →** OpenTag hands the agent scoped IM credentials, so messages and reactions come from the agent's own judgment, not a templated bot response.
+- **Durable delivery custody →** Inbound messages are persisted and handed over with explicit custody, and Agent/Computer bindings are fenced by revision — a restart mid-turn does not silently swallow the request, and a stale runtime cannot claim work that has moved on.
 
-## It runs on your machine.
+## Shared knowledge, kept by you.
 
-*A Computer is a desk. The code never leaves it.*
+*Context that outlives a terminal session, in files you can open.*
 
-- **Computer enrollment →** Generate a 15-minute connect command in the Web, paste it on the machine that should do the work. It stores an enrollment-scoped credential and installs a per-user daemon on Linux and macOS.
-- **Independent machine identity →** Machine credentials are separate from your account login. Signing in never starts a daemon; a daemon credential can never manage your account.
-- **Everything under one home →** Config, runtime state, and Agent work areas live in `${OPENTAG_HOME}`, private by default (`0700` / `0600`). [Layout and recovery](./DEVELOPMENT.md)
-- **Daemon lifecycle →** `daemon start`, `stop`, `restart`, `status`, `uninstall`, plus `doctor` when something looks wrong.
+- **Context from every channel →** A Channel Session per Agent and channel, Thread Sessions materialized on demand with bounded root and thread history, so the agent starts from what was actually said rather than from a summary someone had to write.
+- **Memory in plain files →** Agent work areas and runtime state live under `${OPENTAG_HOME}` on your own machine, private by default (`0700` / `0600`). Nothing is uploaded to a vendor to be remembered.
+- **[Agents that talk to each other](./docs/internal-session-collaboration.md) →** Durable internal Session messaging with explicit retry, rather than best-effort silence.
+- **Recovery you can reason about →** Reconnecting rotates credentials and rebuilds effective snapshots; work-area files stay yours to back up. [What survives what](./DEVELOPMENT.md)
 
-## Bring your own agent and plan.
+## Connect your stack.
 
-*OpenTag drives the CLI you already installed and signed in. It does not ship a model.*
+*The same tag reaches the rest of your tools.*
 
-- **[Runtimes](#runtimes) →** OpenAI Codex and Claude Code, invoked as the agent CLIs on that machine.
-- **Runtime configuration →** Set a Codex Agent's model, reasoning effort, and maximum Turn duration from the Agent's **Runtime** tab or `agent update`. Leave a field blank and the choice stays with Codex; explicit values are validated by the bound Computer and never silently rewritten.
-- **No key custody →** OpenTag never asks for a provider API key. The agent authenticates the way it already does on that machine.
+- **Through your machine, today →** The agent runs where your CLIs and credentials already are — `gh`, your cloud CLIs, your checkouts — so reaching them needs no OpenTag connector and no token handed to a third party.
+- **A connector catalog is next →** The Integrations area in the Web is the interface preview for it. It is demo data today; see [Project status](#project-status).
 
-## Built to not lose work.
-
-*An agent that drops a request is worse than no agent.*
-
-- **Durable delivery custody →** Inbound messages are persisted and handed over with explicit custody, so a restart mid-turn does not silently swallow the request.
-- **Recovery and revision fencing →** Agent/Computer bindings are immutable and fenced by revision; a stale runtime cannot claim work that has moved on.
-- **[Internal Session collaboration](./docs/internal-session-collaboration.md) →** Agents can message each other durably, with explicit retry rather than best-effort silence.
-- **A real test gate →** Agent Runtime holds a 100% coverage gate enforced in CI, on top of the full offline suite, Postgres integration tests, CLI tarball installs, and a production-container health smoke.
-
-## Self-host everything.
+## Own the whole thing.
 
 *Your server, your database, your rules.*
 

@@ -42,18 +42,22 @@ export const READINESS_SCENARIO_LABELS: Readonly<Record<ReadinessScenario, strin
   "readiness-warning": "Passed with warning",
 };
 
+const READINESS_SCENARIO_COPY: Readonly<Record<ReadinessScenario, () => string>> = {
+  "readiness-waiting": m.onboarding_v2_lab_visual_waiting,
+  "readiness-checking": m.onboarding_v2_lab_visual_checking,
+  "readiness-install-required": m.onboarding_v2_lab_visual_install,
+  "readiness-ready": m.onboarding_v2_lab_visual_ready,
+  "readiness-needs-attention": m.onboarding_v2_lab_visual_needs_attention,
+  "readiness-stale": m.onboarding_v2_lab_visual_stale,
+  "readiness-blank": m.onboarding_v2_lab_visual_blank,
+  "readiness-long-en": m.onboarding_v2_lab_visual_long_en,
+  "readiness-long-zh": m.onboarding_v2_lab_visual_long_zh,
+  "readiness-mixed": m.onboarding_v2_lab_visual_mixed,
+  "readiness-warning": m.onboarding_v2_lab_visual_warning,
+};
+
 export function readinessScenarioLabel(scenario: ReadinessScenario): string {
-  if (scenario === "readiness-waiting") return m.onboarding_v2_lab_visual_waiting();
-  if (scenario === "readiness-checking") return m.onboarding_v2_lab_visual_checking();
-  if (scenario === "readiness-install-required") return m.onboarding_v2_lab_visual_install();
-  if (scenario === "readiness-ready") return m.onboarding_v2_lab_visual_ready();
-  if (scenario === "readiness-needs-attention") return m.onboarding_v2_lab_visual_needs_attention();
-  if (scenario === "readiness-stale") return m.onboarding_v2_lab_visual_stale();
-  if (scenario === "readiness-blank") return m.onboarding_v2_lab_visual_blank();
-  if (scenario === "readiness-long-en") return m.onboarding_v2_lab_visual_long_en();
-  if (scenario === "readiness-long-zh") return m.onboarding_v2_lab_visual_long_zh();
-  if (scenario === "readiness-mixed") return m.onboarding_v2_lab_visual_mixed();
-  return m.onboarding_v2_lab_visual_warning();
+  return READINESS_SCENARIO_COPY[scenario]();
 }
 
 export const PREVIEW_RUNTIMES = ["codex", "claude-code", "long"] as const;

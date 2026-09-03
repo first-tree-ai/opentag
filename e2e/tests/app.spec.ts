@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
-import { usageVisualFixtures } from "./usage-visual-fixtures.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -65,6 +64,7 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   const scenario = page.getByRole("combobox", { name: "Start from" });
   await scenario.click();
   await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
+  await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
   const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness--compact');
   const readinessRows = readiness.locator(":scope > li");
@@ -77,6 +77,8 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await expectWithinViewport(readinessRows.nth(0));
   await expectWithinViewport(readinessRows.nth(1));
   await expectNoPageOverflow(page);
+
+  await page.getByRole("button", { name: /^Preparation · Runtime report missing ·/ }).click();
   await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
   await page.getByRole("button", { name: "Finish readiness check" }).click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
@@ -160,9 +162,6 @@ test("Agent settings persist a change across reload", async ({ page }) => {
 
 test("Agent navigation reaches every Agent-owned destination", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
-  await page.route("**/api/v1/internal/navigation-visibility", async (route) => {
-    await route.fulfill({ json: { integrations: true, skills: true } });
-  });
   const destinations = [
     { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
@@ -278,12 +277,6 @@ test("Agents and Usage keep their compact composition when their own containers 
 
   await page.setViewportSize({ width: 1100, height: 900 });
 
-  const usageFixture = usageVisualFixtures.find((fixture) => fixture.name === "single-spike");
-  if (!usageFixture) throw new Error("Missing single-spike Usage fixture");
-  const { name: _fixtureName, ...usageResponse } = usageFixture;
-  await page.route(`**/api/v1/agents/${agentId}/usage?**`, async (route) => {
-    await route.fulfill({ json: usageResponse });
-  });
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
   const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
   await expect(usageAnalysisCards).toHaveCount(2);

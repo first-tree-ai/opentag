@@ -8,8 +8,10 @@ import {
   storeBoundAccountComputer,
   writeComputerIdentityAtomically,
 } from "@opentag/client";
+import { type AgentRuntimeProvider, withComputerRuntimeProviderSupport } from "@opentag/shared";
 import { CLI_VERSION } from "../../build-info.js";
 import { resolveCommandContext } from "../command/context.js";
+import { redactSecrets } from "../command/policy.js";
 import {
   createDaemonServiceManager,
   type DaemonServiceInfo,
@@ -27,24 +29,33 @@ export interface ComputerConnectOptions {
 
 export interface ComputerConnectResult {
   agentId?: string;
+  /**
+   * The exact Runtime of the bound Agent, present only when the Server answered a Client marked
+   * with {@link withComputerRuntimeProviderSupport}. Never persisted: the machine credential
+   * format is unchanged, and a later exchange re-answers it.
+   */
+  runtimeProvider?: AgentRuntimeProvider;
   computerId: string;
   credentialsPath: string;
   message: string;
   service?: DaemonServiceInfo;
-}
-
-export class ComputerConnectServiceInstallError extends Error {
-  override readonly name = "ComputerConnectServiceInstallError";
-
-  constructor(
-    readonly connectResult: ComputerConnectResult,
-    options?: ErrorOptions,
-  ) {
-    super("Computer connection succeeded, but the daemon service could not be reloaded", options);
-  }
+  /**
+   * Redacted daemon service failure after the machine credential was stored. The connection is
+   * preserved; the caller must keep reporting `connected` and offer idempotent daemon repair
+   * instead of a raw throw that could read as "retry the one-time code".
+   */
+  serviceError?: string;
+  /** Server exchange committed, but local files must be recovered before starting the daemon. */
+  persistenceError?: {
+    stage: "credentials" | "identity";
+    installationId: string;
+    message: string;
+  };
 }
 
 export async function runComputerConnect(options: ComputerConnectOptions): Promise<ComputerConnectResult> {
+  // Validate and mark the Client version before anything consumes the one-time code.
+  const clientVersion = withComputerRuntimeProviderSupport(CLI_VERSION);
   const home = options.home ?? resolveOpenTagHome();
   const serverUrl = normalizeServerUrl(options.serverUrl);
   const currentPlatform = platform();
@@ -63,24 +74,53 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
     displayName: hostname(),
     platform: currentPlatform,
     arch: arch(),
-    clientVersion: CLI_VERSION,
+    clientVersion,
   });
-  await writeComputerIdentityAtomically(home, identity);
-  await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
   const result: ComputerConnectResult = {
-    ...(exchange.agentId ? { agentId: exchange.agentId } : {}),
+    agentId: exchange.agentId,
+    runtimeProvider: exchange.runtimeProvider,
     computerId: exchange.computerId,
     credentialsPath: machineCredentialsPath(home),
     message: exchange.agentId
       ? `Connected Computer ${exchange.computerId} and bound Agent ${exchange.agentId}`
       : `Connected Computer ${exchange.computerId}`,
   };
+  let stage: "credentials" | "identity" = "credentials";
+  try {
+    // Save the non-reconstructable token first. Identity is derivable from this credential, so
+    // repair-local can finish a partial write (including a crash or an error after rename).
+    // These are two durable file writes, not an atomic transaction; never roll back to a token
+    // that the committed exchange may already have revoked.
+    await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
+    stage = "identity";
+    await writeComputerIdentityAtomically(home, identity);
+  } catch (error) {
+    return {
+      ...result,
+      message: `${result.message} on the Server; local persistence is incomplete`,
+      persistenceError: {
+        stage,
+        installationId: identity.computerId,
+        message: safeFailureMessage(error, "Local write failed", exchange.machineToken),
+      },
+    };
+  }
   if (!manager) return result;
 
   try {
     const shouldReload = serviceBefore?.state === "active" || serviceBefore?.state === "unknown";
-    return { ...result, service: shouldReload ? await manager.restart() : await manager.installAndStart() };
+    const service = shouldReload ? await manager.restart() : await manager.installAndStart();
+    return { ...result, service };
   } catch (error) {
-    throw new ComputerConnectServiceInstallError(result, { cause: error });
+    return {
+      ...result,
+      serviceError: safeFailureMessage(error, "Daemon service failed", exchange.machineToken),
+    };
   }
+}
+
+function safeFailureMessage(error: unknown, fallback: string, machineToken: string): string {
+  let message = error instanceof Error ? error.message : String(error);
+  if (machineToken) message = message.replaceAll(machineToken, "[REDACTED]");
+  return redactSecrets(message).trim().slice(0, 512) || fallback;
 }

@@ -246,7 +246,6 @@ export function AgentSetupLabControls({
               </KumoSelectControl>
             </Collapsible.Panel>
           </Collapsible.Root>
-
           <fieldset className="grid gap-2 border-0 p-0 m-0" hidden={readinessFixture}>
             <legend className="text-xs font-medium uppercase text-kumo-subtle">
               {m.onboarding_v2_lab_automation()}

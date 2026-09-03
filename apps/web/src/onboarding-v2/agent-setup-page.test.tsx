@@ -217,10 +217,8 @@ describe("AgentSetupPage stages", () => {
   });
 
   it("offers exactly the Providers the snapshot permits, and no others", async () => {
-    const memory = createMemorySetupAdapter({
-      agent: setupAgent(),
-      imCliReadiness: { feishu: "install", slack: "ready" },
-    });
+    // Omitting the CLI reports presets both required CLIs ready, so the gate has passed.
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
     renderSetup(memory.adapter);
     await settle();
 
@@ -235,10 +233,62 @@ describe("AgentSetupPage stages", () => {
         .getAllByRole("button")
         .map((button) => (/Slack/.test(button.textContent ?? "") ? "slack" : "feishu")),
     ).toEqual(["slack", "feishu"]);
-    const readiness = document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]');
-    expect(readiness).not.toBeNull();
-    expect(within(readiness as HTMLElement).getByText("Preparing")).toBeTruthy();
-    expect(within(readiness as HTMLElement).getByText("Ready")).toBeTruthy();
+    // The CLI readiness list belongs to the local-preparation step, not to Messaging setup.
+    expect(document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]')).toBeNull();
+  });
+
+  it("holds the Provider CLI gate open until both required CLIs are ready", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "install", slack: "ready" },
+    });
+    renderSetup(memory.adapter);
+    await settle();
+
+    // The rail keeps the second step current and Messaging upcoming.
+    const rail = document.querySelector('[data-ui="onboarding-v2-rail"]') as HTMLElement;
+    const current = rail.querySelector('li[data-status="current"]') as HTMLElement;
+    expect(current.textContent).toContain("Prepare computer");
+    expect(screen.getByRole("heading", { name: "Prepare the messaging CLIs on this computer" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Lark/ })).toBeNull();
+
+    // Both required statuses render in the Server-supplied order with exact copy: an install is
+    // installation required, never a fabricated preparing/checking.
+    const list = document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]') as HTMLElement;
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows[0]?.textContent).toContain("Lark CLI");
+    expect(rows[0]?.textContent).toContain("Installation required");
+    expect(rows[1]?.textContent).toContain("Slack CLI");
+    expect(rows[1]?.textContent).toContain("Ready");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+
+  it("shows both missing Provider CLI reports as waiting, not checking", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
+    renderSetup(memory.adapter);
+    await settle();
+
+    const list = document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]') as HTMLElement;
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("Lark CLI");
+    expect(rows[0]?.textContent).toContain("Waiting");
+    expect(rows[1]?.textContent).toContain("Slack CLI");
+    expect(rows[1]?.textContent).toContain("Waiting");
+    expect(within(list).queryByText("Checking")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
+  });
+
+  it("keeps the CLI readiness list visible while the runtime report is missing", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeMissing: true });
+    renderSetup(memory.adapter);
+    await settle();
+
+    expect(screen.getByText("Waiting for Codex to report readiness on Review Mac…")).toBeTruthy();
+    expect(document.querySelector('[data-ui="agent-setup-runtime"]')?.getAttribute("data-state")).toBe("waiting");
+    expect(document.querySelector('[data-ui="onboarding-v2-im-cli-readiness"]')).not.toBeNull();
   });
 
   it("shows the Feishu authorization with its QR, expiry, and cancel from the snapshot", async () => {
@@ -367,6 +417,108 @@ describe("AgentSetupPage blockers", () => {
 });
 
 describe("AgentSetupPage transitions", () => {
+  it("polls needs-provider-clis within a finite budget and then stops", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
+    const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    renderSetup(memory.adapter);
+    await settle();
+    expect(reads).toHaveBeenCalledTimes(1);
+
+    // The documented budget: 30 polls at the 2s interval, then the timer stops on its own.
+    await advance(POLL_MS * 31 + 10);
+    expect(reads.mock.calls.length).toBe(31);
+
+    await advance(POLL_MS * 4);
+    expect(reads.mock.calls.length).toBe(31);
+  });
+
+  it("reopens the bounded observation window on an explicit Check again", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
+    const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    renderSetup(memory.adapter);
+    await settle();
+    expect(reads.mock.calls.length).toBe(1);
+
+    await advance(POLL_MS * 31 + 10);
+    expect(reads.mock.calls.length).toBe(31);
+
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await settle();
+    expect(reads.mock.calls.length).toBe(32);
+
+    await advance(POLL_MS + 10);
+    expect(reads.mock.calls.length).toBe(33);
+  });
+
+  it("does not overlap automatic reads when a bounded poll is slow", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
+    const slow = deferred<AgentSetupSnapshot>();
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation((agentId) => {
+      calls += 1;
+      if (calls === 2) return slow.promise;
+      return modelRead(agentId);
+    });
+    renderSetup(memory.adapter);
+    await settle();
+    expect(calls).toBe(1);
+
+    await advance(POLL_MS * 5);
+    expect(calls).toBe(2);
+
+    slow.resolve(await modelRead(SETUP_AGENT_ID));
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(3);
+  });
+
+  it("keeps automatic reads single-flight across a manual restart and fences the stale reply", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
+    const modelRead = memory.adapter.readSnapshot;
+    const slow = deferred<AgentSetupSnapshot>();
+    let calls = 0;
+    let staleSnapshot: AgentSetupSnapshot | undefined;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation(async (agentId) => {
+      calls += 1;
+      // The first automatic poll hangs; every other read answers from the model.
+      if (calls === 2) return slow.promise;
+      const snapshot = await modelRead(agentId);
+      if (calls === 1) {
+        staleSnapshot = { ...snapshot, agent: { ...snapshot.agent, displayName: "Stale Reviewer" } };
+      }
+      return snapshot;
+    });
+    renderSetup(memory.adapter);
+    await settle();
+    expect(calls).toBe(1);
+    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(2);
+
+    // An explicit Check again supersedes the hanging poll and re-reads immediately.
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await settle();
+    expect(calls).toBe(3);
+    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+
+    // Two more poll intervals while the old automatic read is STILL pending: no automatic read
+    // may start on top of it, even from the restarted observation window.
+    await advance(POLL_MS * 2 + 10);
+    expect(calls).toBe(3);
+
+    // The stale reply lands and must not overwrite the newer manual result.
+    slow.resolve(staleSnapshot as AgentSetupSnapshot);
+    await settle();
+    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Set up Stale Reviewer" })).toBeNull();
+
+    // The beat resumes exactly once per interval once the fence clears.
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(4);
+  });
+
   it("walks Feishu from fresh start to ready and reports it", async () => {
     const onReady = vi.fn();
     const memory = createMemorySetupAdapter({ agent: setupAgent() });

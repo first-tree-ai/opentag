@@ -4,16 +4,18 @@ import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   RUNTIME_PROTOCOL_V2,
+  withComputerRuntimeProviderSupport,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
+import { z } from "zod";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
+import { agents, computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
@@ -470,6 +472,113 @@ describe("Computer connection persistence", () => {
           installationId,
           machineToken: expect.stringMatching(/^otmc_/),
         });
+      } finally {
+        await app.close();
+      }
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("returns the bound Agent runtime provider over the exchange route only to marked Clients", async () => {
+    const value = await fixture();
+    try {
+      const [markedTarget] = await value.database
+        .insert(agents)
+        .values({
+          createdByUserId: value.bootstrap.userId,
+          displayName: "Marked route target",
+          name: "marked-route-target",
+          runtimeProvider: "codex",
+        })
+        .returning({ id: agents.id });
+      const [legacyTarget] = await value.database
+        .insert(agents)
+        .values({
+          createdByUserId: value.bootstrap.userId,
+          displayName: "Legacy route target",
+          name: "legacy-route-target",
+          runtimeProvider: "claude-code",
+        })
+        .returning({ id: agents.id });
+      if (!markedTarget || !legacyTarget) throw new Error("route target Agent fixtures missing");
+      const markedCode = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+        targetAgentId: markedTarget.id,
+      });
+      const legacyCode = await value.machineAuth.issueForAccount(value.bootstrap.userId, {
+        targetAgentId: legacyTarget.id,
+      });
+      const app = createApp({
+        authService: value.auth,
+        computerConnectCode: {
+          downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+          environment: "staging",
+          publicUrl: "https://dev.example.com",
+        },
+        computerService: value.service,
+        machineAuthService: value.machineAuth,
+      });
+      try {
+        const markedVersion = withComputerRuntimeProviderSupport("0.0.3");
+        const marked = await app.inject({
+          method: "POST",
+          url: HTTP_PATHS.computerConnectExchange,
+          payload: {
+            code: markedCode.code,
+            installationId: crypto.randomUUID(),
+            displayName: "workstation",
+            platform: "linux",
+            arch: "x64",
+            clientVersion: markedVersion,
+          },
+        });
+        expect(marked.statusCode).toBe(200);
+        expect(marked.json()).toMatchObject({
+          agentId: markedTarget.id,
+          computerId: expect.any(String),
+          installationId: expect.any(String),
+          machineToken: expect.stringMatching(/^otmc_/),
+          runtimeProvider: "codex",
+        });
+        expect(Object.keys(marked.json()).sort()).toEqual([
+          "agentId",
+          "computerId",
+          "installationId",
+          "machineToken",
+          "runtimeProvider",
+        ]);
+
+        // An unmarked legacy Client keeps the old strict response shape: no runtimeProvider key.
+        const legacy = await app.inject({
+          method: "POST",
+          url: HTTP_PATHS.computerConnectExchange,
+          payload: {
+            code: legacyCode.code,
+            installationId: crypto.randomUUID(),
+            displayName: "workstation",
+            platform: "linux",
+            arch: "x64",
+            clientVersion: "0.0.2",
+          },
+        });
+        expect(legacy.statusCode).toBe(200);
+        expect(legacy.json()).toMatchObject({
+          agentId: legacyTarget.id,
+          machineToken: expect.stringMatching(/^otmc_/),
+        });
+        expect(legacy.json()).not.toHaveProperty("runtimeProvider");
+        expect(Object.keys(legacy.json()).sort()).toEqual(["agentId", "computerId", "installationId", "machineToken"]);
+        // Freeze the published Client parser here, not an omit() of the evolving current schema.
+        const legacyResponse = z
+          .object({
+            agentId: z.string().uuid().optional(),
+            computerId: z.string().uuid(),
+            installationId: z.string().uuid(),
+            machineToken: z.string().min(1).max(4096),
+          })
+          .strict();
+        expect(legacyResponse.parse(legacy.json())).toEqual(legacy.json());
+        expect(legacyResponse.safeParse(marked.json()).success).toBe(false);
       } finally {
         await app.close();
       }

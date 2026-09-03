@@ -255,8 +255,12 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--verbose",
       "--include-partial-messages",
       "--no-chrome",
+      // There is no flag for adding a skill directory, so `project` is what lets a Session see the
+      // Context Tree skills in `<workspace>/.claude/skills`. It also admits that directory's
+      // settings, hooks, agents, commands, and CLAUDE.md, all scoped to OpenTag's own private
+      // workspace; project MCP servers stay excluded by `--strict-mcp-config` below.
       "--setting-sources",
-      "",
+      "project",
       "--strict-mcp-config",
       "--mcp-config",
       hostedToolBridge.configPath,

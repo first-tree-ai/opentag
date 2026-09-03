@@ -2,6 +2,10 @@ import { chmod, mkdir, mkdtemp, readdir, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+
+// Real child-process validation needs headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import {
   classifyLarkAuthStatus,
   classifySlackAuthTest,

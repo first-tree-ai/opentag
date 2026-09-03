@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   RUNTIME_CAPABILITY,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
   RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
   RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION,
@@ -18,8 +19,11 @@ function socket(): WebSocket & { send: ReturnType<typeof vi.fn> } {
   } as unknown as WebSocket & { send: ReturnType<typeof vi.fn> };
 }
 
-async function registered(registry: ConnectionRegistry, options: { capabilities?: boolean; prewarm?: boolean } = {}) {
-  const computerId = randomUUID();
+async function registered(
+  registry: ConnectionRegistry,
+  options: { capabilities?: boolean; prewarm?: boolean; computerId?: string } = {},
+) {
+  const computerId = options.computerId ?? randomUUID();
   const instanceId = randomUUID();
   const installationId = randomUUID();
   const runtimeSocket = socket();
@@ -849,9 +853,10 @@ describe("ProviderCliReconcileOwner", () => {
   it("authorizes a one-time inspection of both official CLIs during first setup", async () => {
     const registry = new ConnectionRegistry();
     const shouldPrewarmOfficialProviderClis = vi.fn(async () => true);
+    const issueIntegrationCliValidationGrant = vi.fn();
     const owner = new ProviderCliReconcileOwner(registry, {
       listActiveProviderCliRequirements: vi.fn(async () => []),
-      issueIntegrationCliValidationGrant: vi.fn(),
+      issueIntegrationCliValidationGrant,
       shouldPrewarmOfficialProviderClis,
     });
     const connection = await registered(registry);
@@ -864,6 +869,8 @@ describe("ProviderCliReconcileOwner", () => {
     });
     expect(JSON.stringify(connection.socket.send.mock.calls[0]?.[0])).not.toContain("xoxb");
     expect(JSON.stringify(connection.socket.send.mock.calls[0]?.[0])).not.toContain("appSecret");
+    // An Agent without messaging setup gets inspection only: no requirement or validation grant.
+    expect(issueIntegrationCliValidationGrant).not.toHaveBeenCalled();
   });
 
   it("does not keep requesting unselected CLI inspection after setup is complete", async () => {
@@ -913,5 +920,194 @@ describe("ProviderCliReconcileOwner", () => {
       agentId,
       integrationId,
     });
+  });
+
+  it.each(["missing", "expired"])("repeats inspection on reconnect with %s observations", async (state) => {
+    const registry = new ConnectionRegistry();
+    const shouldPrewarmOfficialProviderClis = vi.fn(async () => true);
+    const issueIntegrationCliValidationGrant = vi.fn();
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => []),
+      issueIntegrationCliValidationGrant,
+      shouldPrewarmOfficialProviderClis,
+    });
+    const first = await registered(registry);
+    await owner.onComputerRegistered(first);
+    expect(first.socket.send).toHaveBeenCalledTimes(1);
+    const firstFrame = JSON.parse(first.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+
+    if (state === "expired") {
+      const observedAt = Date.now() - RUNTIME_CLIENT_CAPABILITY_TTL_MS - 1;
+      expect(
+        registry.touch(first.computerId, first.instanceId, first.socket, observedAt, undefined, undefined, [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ]),
+      ).toBe(true);
+      expect(registry.imCliReadiness(first.computerId, observedAt)).toHaveLength(2);
+    }
+    expect(registry.imCliReadiness(first.computerId)).toEqual([]);
+
+    // A reconnect whose fresh registration has no observations is eligible again: exactly one new
+    // inspection goes out, and only to the current instance.
+    const second = await registered(registry, { computerId: first.computerId });
+    await owner.onComputerRegistered(second);
+
+    expect(shouldPrewarmOfficialProviderClis).toHaveBeenCalledTimes(2);
+    expect(first.socket.send).toHaveBeenCalledTimes(1);
+    expect(second.socket.send).toHaveBeenCalledTimes(1);
+    const secondFrame = JSON.parse(second.socket.send.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    expect(secondFrame).toMatchObject({ type: "provider-cli:prewarm", providers: ["feishu", "slack"] });
+    expect(secondFrame.requestId).not.toBe(firstFrame.requestId);
+    expect(issueIntegrationCliValidationGrant).not.toHaveBeenCalled();
+  });
+
+  it("sends prewarm only to the exact eligible Computer", async () => {
+    const registry = new ConnectionRegistry();
+    const target = await registered(registry);
+    const other = await registered(registry);
+    const shouldPrewarmOfficialProviderClis = vi.fn(async (computerId: string) => computerId === target.computerId);
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => []),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis,
+    });
+
+    await Promise.all([owner.onComputerRegistered(target), owner.onComputerRegistered(other)]);
+
+    expect(shouldPrewarmOfficialProviderClis).toHaveBeenCalledWith(target.computerId);
+    expect(shouldPrewarmOfficialProviderClis).toHaveBeenCalledWith(other.computerId);
+    expect(target.socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(target.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
+      type: "provider-cli:prewarm",
+      providers: ["feishu", "slack"],
+    });
+    expect(other.socket.send).not.toHaveBeenCalled();
+  });
+
+  it("drops a stale eligibility result after another instance registers", async () => {
+    const registry = new ConnectionRegistry();
+    let resolveFirst!: (eligible: boolean) => void;
+    const firstEligibility = new Promise<boolean>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const shouldPrewarmOfficialProviderClis = vi.fn(async () => true).mockReturnValueOnce(firstEligibility);
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => []),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis,
+    });
+    const first = await registered(registry);
+    const pending = owner.onComputerRegistered(first);
+    await vi.waitFor(() => expect(shouldPrewarmOfficialProviderClis).toHaveBeenCalledTimes(1));
+    const second = await registered(registry, { computerId: first.computerId });
+    await owner.onComputerRegistered(second);
+    resolveFirst(true);
+    await pending;
+
+    expect(first.socket.send).not.toHaveBeenCalled();
+    expect(second.socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(second.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
+      type: "provider-cli:prewarm",
+      providers: ["feishu", "slack"],
+    });
+  });
+
+  it("converges only the selected Provider once a messaging binding exists", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    // Slack is bound and active; feishu was never selected, so no first-setup prewarm is due.
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 2, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(async () => ({
+        expectedIdentity: identity,
+        grant: { provider: "slack" as const, botAccessToken: "xoxb-secret" },
+      })),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    });
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+
+    const dispatched = connection.socket.send.mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as Record<string, unknown>,
+    );
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toMatchObject({
+      type: "provider-cli:requirement",
+      provider: "slack",
+      agentId,
+      integrationId,
+    });
+
+    // The selected Provider converges through artifact and grant; the unselected one never gains
+    // a requirement, a prewarm, or a grant.
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:artifact:status",
+        requestId: dispatched[0]?.requestId as string,
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 2,
+        status: "ready",
+      },
+      contextOf(connection),
+    );
+    const frames = connection.socket.send.mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as Record<string, unknown>,
+    );
+    expect(frames.map((frame) => frame.type)).toEqual(["provider-cli:requirement", "provider-cli:validation:grant"]);
+    expect(frames.every((frame) => frame.provider === "slack")).toBe(true);
+  });
+
+  it("skips the setup prewarm when no eligibility predicate is wired", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+    });
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+
+    // The missing predicate fails safe to "no prewarm"; active-binding reconcile continues.
+    expect(connection.socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
+      type: "provider-cli:requirement",
+      provider: "slack",
+      agentId,
+      integrationId,
+    });
+  });
+
+  it("keeps active-Integration reconcile running when the prewarm send fails", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+    });
+    const connection = await registered(registry);
+    connection.socket.send.mockImplementationOnce((_data: string, cb?: (error?: Error) => void) =>
+      cb?.(new Error("socket closed")),
+    );
+    await owner.onComputerRegistered(connection);
+
+    // The failed prewarm is dropped and the bound requirement is still dispatched.
+    const frames = connection.socket.send.mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as Record<string, unknown>,
+    );
+    expect(frames.map((frame) => frame.type)).toEqual(["provider-cli:prewarm", "provider-cli:requirement"]);
+    expect(frames[1]).toMatchObject({ provider: "slack", agentId, integrationId });
   });
 });

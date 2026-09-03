@@ -118,7 +118,6 @@ function configurationForScenario(current: LabConfiguration, scenario: LabScenar
 /** The production New Agent surface and focused readiness fixtures over a controllable in-memory world. */
 export function AgentSetupLabPage() {
   const [configuration, setConfiguration] = useState<LabConfiguration>(initialConfiguration);
-  const [controlsOpen, setControlsOpen] = useState(false);
   const [navigationTarget, setNavigationTarget] = useState<LabNavigationTarget>();
   const [phase, setPhase] = useState<LabPhase>(() => initialPhase(configuration.scenario));
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime>("codex");
@@ -191,10 +190,7 @@ export function AgentSetupLabPage() {
   }, [configuration.automation, pending, runPending]);
 
   return (
-    <div
-      className={`relative min-h-screen pb-20 sm:pb-0 ${controlsOpen ? "lg:pr-[27rem]" : ""}`}
-      data-ui="onboarding-v2-lab-page"
-    >
+    <div className="relative min-h-screen pb-20 sm:pb-0" data-ui="onboarding-v2-lab-page">
       <LabPreview
         configuration={configuration}
         createPreviewAgent={createPreviewAgent}
@@ -225,7 +221,6 @@ export function AgentSetupLabPage() {
         onMessagingProviderChange={(messagingProvider) =>
           setConfiguration((current) => ({ ...current, messagingProvider, revision: current.revision + 1 }))
         }
-        onOpenChange={setControlsOpen}
         onReset={reset}
         onRunPending={runPending}
         onRuntimeChange={(runtime) =>

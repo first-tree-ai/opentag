@@ -290,7 +290,11 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
     { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
     { file: "account", route: "/account", heading: "Account" },
-    { file: "internal-agent-setup", route: "/internal/agent-setup", heading: "Set up Reviewer" },
+    {
+      file: "internal-agent-setup",
+      route: "/internal/agent-setup",
+      heading: "Where should your agent run?",
+    },
   ];
   const entries: Array<{ file: string; route: string; heading: string }> = [
     { file: "agent-setup", route: "/agents/setup", heading: AGENT_SETUP_CREATE_HEADING },

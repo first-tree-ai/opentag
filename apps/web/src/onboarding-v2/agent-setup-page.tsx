@@ -14,7 +14,12 @@
  * snapshot then offers. There is no direct switch.
  */
 
-import type { AgentSetupAction, AgentSetupSnapshot, ImProvider } from "@opentag/shared/browser";
+import type {
+  AgentSetupAction,
+  AgentSetupSnapshot,
+  ImProvider,
+  ProviderCliHandoffProgress,
+} from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
@@ -33,11 +38,15 @@ import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
-import { COPY, RUNTIME_COPY } from "./copy.js";
 import type { FlowState } from "./flow.js";
-import { ImCliReadinessList, type ImCliStatuses } from "./im-cli-status.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
+import {
+  preparationIsTransitional,
+  preparationReadinessRows,
+  showPreparationSection,
+} from "./preparation-readiness.js";
+import { ReadinessList } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
@@ -46,10 +55,11 @@ const SETUP_POLL_MS = 2_000;
 /** How many times to report readiness before the reader is offered an explicit retry. */
 const READY_REPORT_ATTEMPTS = 3;
 /**
- * The finite budget for automatic local-preparation polls (needs-provider-clis, and Runtime
- * waiting/checking): 30 polls at 2s is roughly a one-minute observation window. Exhaustion stops
- * the timer; an explicit Check again restarts a fresh window. The budget never resets on an
- * unchanged snapshot, and Messaging/offline observation keeps its unbounded beat.
+ * The finite budget for automatic local-preparation polls (a required IM CLI still waiting or
+ * checking behind the gate, a Runtime report missing or still checking): 30 polls at 2s is
+ * roughly a one-minute observation window. Exhaustion stops the timer; an explicit Check again
+ * restarts a fresh window. The budget never resets on an unchanged snapshot, and
+ * Messaging/offline observation keeps its unbounded beat.
  */
 const BOUNDED_POLL_ATTEMPTS = 30;
 
@@ -128,14 +138,21 @@ type SetupPollClass = "bounded" | "unbounded" | undefined;
 
 /**
  * How a snapshot the outside world is still moving should be watched. Messaging authorizing,
- * waiting-handoff, and an offline Computer keep the existing unbounded beat; local preparation
- * (required IM CLI readiness, a Runtime report missing or still checking) polls inside a finite
- * budget because nothing on this page can install or sign a CLI in.
+ * waiting-handoff, and an offline Computer keep the existing unbounded beat. Local preparation
+ * polls inside a finite budget only while a leg is genuinely transitional: a required IM CLI
+ * whose report is missing or still checking, or a Runtime report missing or still
+ * checking. A settled manual-action failure (install, sign-in, unavailable) never polls on its
+ * own — nothing on this page can install, sign in, or repair a CLI. Check again or returning
+ * to this page retrieves a fresh snapshot after an operator acts.
  */
 function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
   if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
   if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return "unbounded";
-  if (snapshot.stage === "needs-provider-clis") return "bounded";
+  if (
+    (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") &&
+    preparationIsTransitional(snapshot)
+  )
+    return "bounded";
   if (snapshot.runtime.kind === "waiting") return "bounded";
   if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return "bounded";
   return undefined;
@@ -446,6 +463,46 @@ function useAgentSetup(
     return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read);
   }, [pollClass, actions.busyKey, pollRestartKey, reader.read]);
 
+  /*
+   * A window or tab returning to view re-reads the canonical snapshot: the outside world (a
+   * daemon reconnect, a Runtime report, a handoff) may have moved it while the reader was away.
+   * The refresh rides the same request lifecycle as every other read — a reply superseded by a
+   * newer read or by an action is discarded, a transient failure over a good snapshot keeps the
+   * last-good snapshot on screen, and the automatic poll window never overlaps itself — and it
+   * is skipped while an action is in flight and when no snapshot is on screen yet (loading,
+   * load-failed, and unavailable keep their own manual flows).
+   */
+  useEffect(() => {
+    if (actions.busyKey !== undefined || reader.phase.kind !== "ready") return;
+    let cancelled = false;
+    let returnRead: Promise<boolean> | undefined;
+    const refreshOnReturn = (): void => {
+      if (document.visibilityState !== "visible" || returnRead !== undefined) return;
+      resetPollBudget();
+      const pending = autoPollInFlight.current;
+      // A return queues one fresh read behind an existing poll, never another concurrent one.
+      const turn =
+        pending === undefined
+          ? reader.read()
+          : pending.then(() => (cancelled || document.visibilityState !== "visible" ? false : reader.read()));
+      returnRead = turn;
+      autoPollInFlight.current = turn;
+      void turn.then(() => {
+        if (returnRead === turn) returnRead = undefined;
+        if (autoPollInFlight.current === turn) autoPollInFlight.current = undefined;
+      });
+    };
+    window.addEventListener("focus", refreshOnReturn);
+    document.addEventListener("visibilitychange", refreshOnReturn);
+    window.addEventListener("pageshow", refreshOnReturn);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshOnReturn);
+      document.removeEventListener("visibilitychange", refreshOnReturn);
+      window.removeEventListener("pageshow", refreshOnReturn);
+    };
+  }, [actions.busyKey, reader.phase.kind, reader.read, resetPollBudget]);
+
   const reload = useCallback(() => void reader.read(), [reader.read]);
   return { ...reader, ...actions, reload, resetPollBudget };
 }
@@ -674,17 +731,18 @@ function AgentSetupSnapshotView({
         <Banner variant="alert" role="alert" description={m.onboarding_v2_setup_observation_failed()} />
       ) : null}
       {controller.refreshError ? <Banner variant="error" role="alert" description={controller.refreshError} /> : null}
-      {stage === "needs-computer" ? (
-        <ComputerSetupSection
-          agentId={agentId}
-          computerAdapter={computerAdapter}
-          onChanged={controller.reload}
-          snapshot={snapshot}
-        />
-      ) : null}
-      {stage === "needs-runtime" ? <RuntimeSetupSection snapshot={snapshot} /> : null}
-      {stage === "needs-runtime" || stage === "needs-provider-clis" ? (
-        <ProviderCliReadinessSection snapshot={snapshot} />
+      {showPreparationSection(snapshot) ? (
+        <>
+          <PreparationSection snapshot={snapshot} />
+          {stage === "needs-computer" ? (
+            <ComputerSetupSection
+              agentId={agentId}
+              computerAdapter={computerAdapter}
+              onChanged={controller.reload}
+              snapshot={snapshot}
+            />
+          ) : null}
+        </>
       ) : null}
       {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
       {stage === "ready" ? (
@@ -762,12 +820,6 @@ function ComputerSetupSection({
             <span className="text-sm text-kumo-subtle">{platformLabel(computer.platform)}</span>
           </div>
         </div>
-        <p className={HINT}>
-          {m.onboarding_v2_setup_computer_rebind({
-            computerName: computer.displayName,
-            name: snapshot.agent.displayName,
-          })}
-        </p>
         {canBind ? (
           <AgentComputerChoice
             adapter={computerConnectAdapter}
@@ -929,70 +981,30 @@ function BoundComputerSection({
   );
 }
 
-function RuntimeSetupSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const { runtime, computer } = snapshot;
-  const runtimeTitle = RUNTIME_COPY[runtime.provider].title;
-  const computerName = computer.kind === "not-bound" ? "" : computer.displayName;
-  const status = runtime.kind === "observed" ? runtime.status : runtime.kind === "waiting" ? "waiting" : "unavailable";
-  return (
-    <section className={SECTION} data-state={status} data-ui="agent-setup-runtime">
-      <header className={SECTION_HEADER}>
-        <Text as="h2" variant="heading">
-          {m.onboarding_v2_setup_runtime_title({ runtime: runtimeTitle })}
-        </Text>
-      </header>
-      {status === "checking" || status === "waiting" ? (
-        <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
-          {status === "checking"
-            ? m.onboarding_v2_setup_runtime_checking({ computerName, runtime: runtimeTitle })
-            : m.onboarding_v2_setup_runtime_waiting({ computerName, runtime: runtimeTitle })}
-        </p>
-      ) : (
-        <div className="grid gap-1">
-          <p className="text-sm text-kumo-strong m-0">{runtimeBlockerCopy(status, runtimeTitle, computerName)}</p>
-          <p className={HINT}>
-            {m.onboarding_v2_check_repair_hint()}{" "}
-            <code className="rounded bg-kumo-recessed px-1 py-0.5">{COPY.check.repairCommand}</code>{" "}
-            {m.onboarding_v2_check_repair_hint_suffix()}
-          </p>
-        </div>
-      )}
-    </section>
-  );
-}
-
 /**
- * The required IM CLI readiness rows during local preparation. Statuses come from the snapshot's
- * canonical component projection — the Server already normalized missing reports to `waiting` —
- * and the row order is the Server-supplied required Provider order.
+ * The second step's unified local-preparation surface: the fixed Computer / selected Runtime /
+ * required messaging CLI rows over the snapshot's canonical component projection, rendered
+ * through the F4 readiness primitive. The rows are the whole state display — the interactive
+ * Computer connect/rebind/repair surface stays a sibling that appears only while its leg needs
+ * work. Once the gate passes, the section remains on screen as the successful-preparation
+ * summary while Messaging is still not-configured, so all four ready rows are visible before the
+ * first IM interaction.
  */
-function ProviderCliReadinessSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const statuses = useMemo(() => {
-    const rows: ImCliStatuses = {};
-    for (const component of snapshot.components) {
-      if (component.kind === "im-cli") rows[component.provider] = component.status;
-    }
-    return rows;
-  }, [snapshot.components]);
+function PreparationSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
+  const rows = useMemo(() => preparationReadinessRows(snapshot), [snapshot]);
+  // At needs-messaging this is the completed summary; the intro below would restate the gate.
+  const summaryOnly = snapshot.stage === "needs-messaging";
   return (
-    <section className={SECTION} data-ui="agent-setup-provider-clis">
+    <section className={SECTION} data-ui="agent-setup-preparation">
       <header className={SECTION_HEADER}>
         <Text as="h2" variant="heading">
-          {m.onboarding_v2_provider_clis_title()}
+          {m.onboarding_v2_prep_title()}
         </Text>
-        <p className={HINT}>{m.onboarding_v2_provider_clis_hint()}</p>
+        {!summaryOnly ? <p className={HINT}>{m.onboarding_v2_prep_intro()}</p> : null}
       </header>
-      <ImCliReadinessList providers={snapshot.requiredImCliProviders} statuses={statuses} />
+      <ReadinessList label={m.onboarding_v2_prep_title()} rows={rows} />
     </section>
   );
-}
-
-function runtimeBlockerCopy(status: string, runtime: string, computerName: string): string {
-  if (status === "install") return m.onboarding_v2_setup_runtime_install({ computerName, runtime });
-  if (status === "sign-in") return m.onboarding_v2_setup_runtime_sign_in({ computerName, runtime });
-  // `ready` never reaches this section: the stage would have moved past it.
-  return m.onboarding_v2_setup_runtime_unavailable({ computerName, runtime });
 }
 
 function MessagingSetupSection({
@@ -1145,6 +1157,19 @@ function SlackAuthorizing({
   );
 }
 
+function messagingHandoffCopy(progress: ProviderCliHandoffProgress, provider: ImProvider): string {
+  if (progress.phase === "preparing_cli") {
+    return m.onboarding_v2_setup_messaging_confirming_computer({ provider: providerTitle(provider) });
+  }
+  if (progress.reason === "upgrade_required") {
+    return m.onboarding_v2_setup_messaging_computer_attention({ provider: providerTitle(provider) });
+  }
+  if (progress.phase === "needs_attention" && !progress.reason) {
+    return m.onboarding_v2_setup_messaging_computer_attention({ provider: providerTitle(provider) });
+  }
+  return providerCliWaitingCopy(progress);
+}
+
 function MessagingHandoff({
   controller,
   messaging,
@@ -1168,7 +1193,9 @@ function MessagingHandoff({
         <span aria-hidden="true" className="ots-pulse shrink-0" />
         {m.onboarding_v2_messaging_confirming()}
       </p>
-      {messaging.progress ? <p className={HINT}>{providerCliWaitingCopy(messaging.progress)}</p> : null}
+      {messaging.progress ? (
+        <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>
+      ) : null}
       {unbind ? (
         <div>
           <Button

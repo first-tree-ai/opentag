@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   type ContextTreeConfig,
@@ -83,6 +83,25 @@ export function contextTreeFailureCode(payload: unknown): string | undefined {
   if (record.ok !== false) return undefined;
   const finding = record.findings?.find((entry) => typeof entry.code === "string")?.code;
   return typeof finding === "string" ? finding : "INVALID_TREE";
+}
+
+/**
+ * Why the Codex host install did not install, or undefined when it did.
+ *
+ * The CLI reports a missing host as a `skipped` entry with an explanatory reason rather than as a
+ * failure, so the payload itself has to be inspected: claiming `ready` while the Agent has no
+ * skills is the worst available outcome.
+ */
+export function codexInstallSkipReason(payload: unknown): string | undefined {
+  if (typeof payload !== "object" || payload === null) return "CODEX_INSTALL_FAILED";
+  const record = payload as {
+    installed?: readonly { host?: unknown }[];
+    skipped?: readonly { host?: unknown; reason?: unknown }[];
+  };
+  if ((record.installed ?? []).some((entry) => entry.host === "codex")) return undefined;
+  const skipped = (record.skipped ?? []).find((entry) => entry.host === "codex");
+  const reason = skipped?.reason;
+  return typeof reason === "string" && reason.length > 0 ? reason : "CODEX_NOT_INSTALLED";
 }
 
 /** `connect` arguments for one target kind, mirroring the CLI's own argument shape. */
@@ -168,6 +187,13 @@ export class ContextTreeManager {
   readonly #platform: NodeJS.Platform;
   readonly #nodePath: string;
   readonly #codexHome: string;
+  /**
+   * The Context Tree CLI installs Codex skills only into `<HOME>/.codex/skills`, so the `HOME`
+   * redirect below is correct exactly when the Codex home's basename is `.codex`. Any other home
+   * (for example `CODEX_HOME=/opt/opentag/codex-home`) cannot be expressed and is reported
+   * rather than silently misinstalled next to it.
+   */
+  readonly #codexHomeIsDefaultNamed: boolean;
   readonly #sessionStartBudgetMs: number;
   readonly #failureCooldownMs: number;
   readonly #ready = new Map<string, { target: string; status: ContextTreeStatus }>();
@@ -187,6 +213,7 @@ export class ContextTreeManager {
     this.#platform = options.platform ?? process.platform;
     this.#nodePath = options.nodePath ?? process.execPath;
     this.#codexHome = resolve(options.codexHome ?? join(homedir(), ".codex"));
+    this.#codexHomeIsDefaultNamed = basename(this.#codexHome) === ".codex";
     this.#sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
     this.#failureCooldownMs = options.failureCooldownMs ?? FAILURE_COOLDOWN_MS;
   }
@@ -236,6 +263,9 @@ export class ContextTreeManager {
 
   async #ensureAgentOnce(cwd: string, config: ContextTreeConfig): Promise<ContextTreeStatus> {
     if (!this.#package) return this.#unavailable("PACKAGE_MISSING", config);
+    // The CLI never reads `CODEX_HOME`; `install --host codex` targets `<HOME>/.codex/skills`.
+    // An unsupported home is diagnosed before any CLI work, so nothing can land in the wrong place.
+    if (!this.#codexHomeIsDefaultNamed) return this.#unavailable("CODEX_HOME_UNSUPPORTED", config);
     const shim = await this.#writeShim().catch((error: unknown) => {
       this.#logger.warn({ err: describe(error) }, "Context Tree shim could not be created");
       return false;
@@ -251,10 +281,13 @@ export class ContextTreeManager {
       // Claude Code loads skills from the workspace because OpenTag passes `--setting-sources
       // project`; Codex loads them from its own home, and only for a host that is present.
       await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false);
-      await this.#run(["install", "--host", "codex"], cwd, false, {
+      const codexInstall = await this.#run(["install", "--host", "codex"], cwd, false, {
         ...process.env,
         HOME: dirname(this.#codexHome),
       });
+      // A skipped Codex host is a diagnosable state, never a silent `ready`.
+      const skipReason = codexInstallSkipReason(codexInstall);
+      if (skipReason !== undefined) return this.#unavailable(skipReason, config);
       this.#logger.info(
         { target: formatContextTreeTarget(config.target), treePath },
         "Context Tree connected for an Agent workspace",

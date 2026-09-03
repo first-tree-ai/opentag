@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ContextTreeExecFile,
   ContextTreeManager,
+  codexInstallSkipReason,
   contextTreeFailureCode,
   resolveContextTreePackage,
 } from "../runtime/context-tree.js";
@@ -15,7 +16,33 @@ afterEach(async () => Promise.all(directories.splice(0).map((path) => rm(path, {
 
 const managed = { kind: "managed", name: "team-context-tree" } as const;
 const treeReply = (treePath: string) => ({ schemaVersion: 1, tree: { kind: "local", path: treePath } });
-const installReply = { installed: [], schemaVersion: 1, skipped: [], version: "0.1.8" };
+/** A successful Codex host install: the `skipped` payload shape is no longer treated as ready. */
+const installReply = {
+  installed: [
+    {
+      host: "codex",
+      path: "/home/user/.codex/skills",
+      skills: [
+        "context-tree-connect",
+        "context-tree-create",
+        "context-tree-publish",
+        "context-tree-read",
+        "context-tree-setup",
+        "context-tree-write",
+      ],
+    },
+  ],
+  schemaVersion: 1,
+  skipped: [],
+  version: "0.1.8",
+};
+const skippedInstallReply = (reason: unknown) =>
+  ({
+    installed: [],
+    schemaVersion: 1,
+    skipped: [{ host: "codex", reason }],
+    version: "0.1.8",
+  }) as unknown;
 
 /** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
 async function writeTarget(home: string, target: unknown): Promise<void> {
@@ -130,6 +157,36 @@ describe("ContextTreeManager", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("reports an unsupported Codex home instead of a misleading ready state", async () => {
+    const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: installReply });
+    const { cwd, manager } = await computer({ execFile, target: managed, codexHome: "/opt/opentag/codex-home" });
+
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({
+      status: "unavailable",
+      reason: "CODEX_HOME_UNSUPPORTED",
+    });
+    // The HOME redirect cannot express this home, so the CLI must not run at all: an install
+    // could otherwise land in a sibling `.codex` the Runtime is not launched against.
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    // The CLI reports a missing host as a skipped entry with an explanatory reason.
+    [
+      skippedInstallReply("/home/user/.codex does not exist; install codex first."),
+      "/home/user/.codex does not exist; install codex first.",
+    ],
+    [skippedInstallReply(""), "CODEX_NOT_INSTALLED"],
+    [{ installed: [], schemaVersion: 1, skipped: [], version: "0.1.8" }, "CODEX_NOT_INSTALLED"],
+  ])("reports an unavailable Codex host install for %j", async (installPayload, reason) => {
+    const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: installPayload });
+    const { cwd, manager } = await computer({ execFile, target: managed });
+
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unavailable", reason });
+    // The tree itself connected before the install, so connect must still have run.
+    expect(calls[0]).toEqual(["connect", "team-context-tree", "--project-path", cwd]);
+  });
+
   it("activates a target recorded after start, and follows every target change", async () => {
     const calls: string[][] = [];
     // Answer `connect` from its own arguments, so the returned path proves which target ran.
@@ -216,7 +273,10 @@ describe("ContextTreeManager", () => {
     let connectCalls = 0;
     const { cwd, manager } = await computer({
       target: managed,
-      sessionStartBudgetMs: 10,
+      // Large enough that the shim write in preparation completes well inside it (so `connect`
+      // has provably started before the budget fires) yet small enough that the gated `connect`
+      // still wins the race and both callers observe PREPARING.
+      sessionStartBudgetMs: 100,
       execFile: async (_file, args) => {
         if (args[1] === "connect") {
           connectCalls += 1;
@@ -352,6 +412,27 @@ describe("contextTreeFailureCode", () => {
     [null, "CLI_FAILED"],
   ])("reads %j as %s", (payload, expected) => {
     expect(contextTreeFailureCode(payload)).toBe(expected);
+  });
+});
+
+describe("codexInstallSkipReason", () => {
+  it.each([
+    // A successful host install.
+    [{ installed: [{ host: "codex" }] }, undefined],
+    // A skipped Codex host carries the CLI's own explanation.
+    [
+      { skipped: [{ host: "codex", reason: "/home/user/.codex does not exist." }] },
+      "/home/user/.codex does not exist.",
+    ],
+    [{ skipped: [{ host: "codex", reason: "" }] }, "CODEX_NOT_INSTALLED"],
+    [{ skipped: [{ host: "codex" }] }, "CODEX_NOT_INSTALLED"],
+    [{ installed: [], skipped: [] }, "CODEX_NOT_INSTALLED"],
+    // Non-object payloads cannot reach the manager (contextTreeFailureCode flags them first),
+    // but the helper still fails closed rather than throwing on property access.
+    [null, "CODEX_INSTALL_FAILED"],
+    ["not-an-object", "CODEX_INSTALL_FAILED"],
+  ])("reads %j as %s", (payload, expected) => {
+    expect(codexInstallSkipReason(payload)).toBe(expected);
   });
 });
 

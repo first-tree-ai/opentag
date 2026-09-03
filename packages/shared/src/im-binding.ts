@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ReceiveModeSchema } from "./agent.js";
+import { IntegrationCredentialExecutionReasonSchema, IntegrationCredentialExecutionStatusSchema } from "./computer.js";
 
 export const ImProviderSchema = z.enum(["feishu", "slack"]);
 
@@ -149,9 +150,66 @@ export const ImBindingSummarySchema = z
   })
   .strict();
 
+export const ProviderCliHandoffPhaseSchema = z.enum(["preparing_cli", "checking_credentials", "needs_attention"]);
+
+export const ProviderCliHandoffProgressSchema = z
+  .object({
+    phase: ProviderCliHandoffPhaseSchema,
+    reason: IntegrationCredentialExecutionReasonSchema.optional(),
+  })
+  .strict();
+
+/**
+ * The machine-readable identity a cross-Provider messaging start fails with: unbind this exact current binding,
+ * then bind any Provider. Mirrors the `messaging-unbind-required` Agent setup blocker.
+ */
+export const ImBindingUnbindRequiredDetailSchema = z
+  .object({
+    currentProvider: ImProviderSchema,
+    currentBindingId: z.string().uuid(),
+    requestedProvider: ImProviderSchema,
+  })
+  .strict()
+  .superRefine((detail, context) => {
+    if (detail.currentProvider === detail.requestedProvider) {
+      context.addIssue({
+        code: "custom",
+        path: ["requestedProvider"],
+        message: "Unbind is required only when the requested Provider differs from the current Provider",
+      });
+    }
+  });
+
+/**
+ * The messaging state a caller observed when it decided on a mutation. Commands carrying one are fenced
+ * against the exact current binding: unbound means no configured binding may exist, bound names the exact
+ * binding identity and credential generation. Keep in parity with AgentSetupExpectedMessagingStateSchema.
+ */
+export const ImBindingMessagingExpectationSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unbound") }).strict(),
+  z
+    .object({
+      kind: z.literal("bound"),
+      provider: ImProviderSchema,
+      bindingId: z.string().uuid(),
+      credentialGeneration: z.number().int().positive(),
+    })
+    .strict(),
+]);
+
+/** Fixed surfaces a Slack OAuth round trip may return to. Keep in parity with AGENT_SETUP_RETURN_SURFACES. */
+export const SLACK_OAUTH_RETURN_SURFACES = ["agent-setup", "agent-messaging-settings"] as const;
+export const SlackOAuthReturnSurfaceSchema = z.enum(SLACK_OAUTH_RETURN_SURFACES);
+
 export const ImBindingHandoffStatusSchema = z.union([
   z.object({ bindingState: z.literal("active"), handoffReady: z.literal(true) }).strict(),
-  z.object({ bindingState: z.literal("active"), handoffReady: z.literal(false) }).strict(),
+  z
+    .object({
+      bindingState: z.literal("active"),
+      handoffReady: z.literal(false),
+      providerCli: ProviderCliHandoffProgressSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       bindingState: z.enum(["provisioning", "reauthorization_required", "error", "disabled"]),
@@ -193,49 +251,35 @@ export const FeishuSetupAttemptSchema = z
   .strict();
 
 export const CreateFeishuSetupAttemptRequestSchema = z
-  .object({ intent: FeishuSetupIntentSchema.default("create") })
+  .object({
+    intent: FeishuSetupIntentSchema.default("create"),
+    expectedMessaging: ImBindingMessagingExpectationSchema.optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.intent === "create" && request.expectedMessaging?.kind === "bound") {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedMessaging"],
+        message: "Feishu create requires the Agent to be unbound",
+      });
+    }
+  });
+
+/** Names the exact current binding the Account asked to unbind, fencing the mutation against a stale view. */
+export const UnbindAgentMessagingRequestSchema = z
+  .object({
+    provider: ImProviderSchema,
+    bindingId: z.string().uuid(),
+  })
   .strict();
 
-export const SlackAppManifestSchema = z.record(z.string(), z.unknown());
-export const SlackConfigurationIntentSchema = z.enum(["create", "reauthorize", "replace"]);
+export const SlackConfigurationIntentSchema = z.enum(["create", "reauthorize"]);
 
 export const SlackIdentityClosureSchema = z
   .object({
     status: z.enum(["pending", "verified"]),
     verifiedAt: z.string().datetime().nullable(),
-  })
-  .strict();
-
-export const SlackAppConfigurationSchema = z
-  .object({
-    agentId: z.string().uuid(),
-    manifest: SlackAppManifestSchema,
-    manifestUrl: z.string().url(),
-    eventsUrl: z.string().url(),
-    requiredBotScopes: z.array(z.string().min(1).max(160)).max(32),
-    subscribedBotEvents: z.array(z.string().min(1).max(160)).max(32),
-    currentBinding: z
-      .object({
-        id: z.string().uuid(),
-        appId: z.string().min(1).max(255),
-        credentialGeneration: z.number().int().min(1),
-      })
-      .strict()
-      .nullable(),
-    distributedOAuthAvailable: z.boolean(),
-  })
-  .strict();
-
-export const ConfigureSlackAppRequestSchema = z
-  .object({
-    intent: SlackConfigurationIntentSchema,
-    expectedBinding: z
-      .object({ id: z.string().uuid(), credentialGeneration: z.number().int().min(1) })
-      .strict()
-      .nullable(),
-    appId: z.string().min(1).max(255),
-    botAccessToken: z.string().min(1).max(4096),
-    signingSecret: z.string().min(1).max(512),
   })
   .strict();
 
@@ -252,7 +296,33 @@ export const SlackConfigurationResultSchema = z
   })
   .strict();
 
-export const StartSlackOAuthRequestSchema = z.object({ intent: SlackConfigurationIntentSchema }).strict();
+export const StartSlackOAuthRequestSchema = z
+  .object({
+    intent: SlackConfigurationIntentSchema,
+    returnSurface: SlackOAuthReturnSurfaceSchema.optional(),
+    expectedMessaging: ImBindingMessagingExpectationSchema.optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.intent === "create" && request.expectedMessaging?.kind === "bound") {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedMessaging"],
+        message: "Slack create requires the Agent to be unbound",
+      });
+    }
+    if (
+      request.intent === "reauthorize" &&
+      request.expectedMessaging !== undefined &&
+      (request.expectedMessaging.kind !== "bound" || request.expectedMessaging.provider !== "slack")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedMessaging"],
+        message: "Slack reauthorization requires the exact current Slack binding",
+      });
+    }
+  });
 
 export const StartSlackOAuthResponseSchema = z
   .object({
@@ -270,6 +340,8 @@ export const ImBindingDiagnosticsSchema = z
     ready: z.boolean(),
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
     providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
+    credentialExecutionReadiness: IntegrationCredentialExecutionStatusSchema,
+    credentialExecutionReason: IntegrationCredentialExecutionReasonSchema.optional(),
     credentialGeneration: z.number().int().min(0),
     credentialStatus: ImBindingCredentialStatusSchema,
     requiredCapabilities: z.array(z.string().min(1).max(160)).max(128),
@@ -316,17 +388,20 @@ export const SlackBindingActivationSchema = z
 export type ImProvider = z.infer<typeof ImProviderSchema>;
 export type ImBindingState = z.infer<typeof ImBindingStateSchema>;
 export type ImBindingIdentity = z.infer<typeof ImBindingIdentitySchema>;
+export type ImBindingUnbindRequiredDetail = z.infer<typeof ImBindingUnbindRequiredDetailSchema>;
+export type ImBindingMessagingExpectation = z.infer<typeof ImBindingMessagingExpectationSchema>;
+export type SlackOAuthReturnSurface = z.infer<typeof SlackOAuthReturnSurfaceSchema>;
 export type ImBindingSummary = z.infer<typeof ImBindingSummarySchema>;
 export type ImBindingHandoffStatus = z.infer<typeof ImBindingHandoffStatusSchema>;
+export type ProviderCliHandoffPhase = z.infer<typeof ProviderCliHandoffPhaseSchema>;
+export type ProviderCliHandoffProgress = z.infer<typeof ProviderCliHandoffProgressSchema>;
 export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;
-export type SlackAppManifest = z.infer<typeof SlackAppManifestSchema>;
 export type SlackConfigurationIntent = z.infer<typeof SlackConfigurationIntentSchema>;
+export type UnbindAgentMessagingRequest = z.infer<typeof UnbindAgentMessagingRequestSchema>;
 export type SlackIdentityClosure = z.infer<typeof SlackIdentityClosureSchema>;
-export type SlackAppConfiguration = z.infer<typeof SlackAppConfigurationSchema>;
-export type ConfigureSlackAppRequest = z.infer<typeof ConfigureSlackAppRequestSchema>;
 export type SlackConfigurationResult = z.infer<typeof SlackConfigurationResultSchema>;
 export type StartSlackOAuthRequest = z.infer<typeof StartSlackOAuthRequestSchema>;
 export type StartSlackOAuthResponse = z.infer<typeof StartSlackOAuthResponseSchema>;

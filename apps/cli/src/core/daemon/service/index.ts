@@ -1,9 +1,10 @@
-import { homedir, userInfo } from "node:os";
+import { userInfo } from "node:os";
 import { resolve } from "node:path";
-import { readMachineCredentials, resolveOpenTagHome } from "@opentag/client";
+import { readMachineCredentials, resolveBoundAccountComputer, resolveOpenTagHome } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
 import { CHANNEL } from "../../../build-info.js";
 import { channelConfig } from "../../channel/config.js";
+import { resolveChannelEnvironment } from "../../channel/environment.js";
 import { inspectDaemonOwner } from "../ownership.js";
 import { createLaunchdBackend } from "./launchd.js";
 import {
@@ -28,6 +29,7 @@ import { DaemonServiceError } from "./types.js";
 export interface DaemonServiceManager {
   installAndStart(): Promise<DaemonServiceInfo>;
   preflight(): Promise<void>;
+  refreshDefinition(): Promise<DaemonServiceInfo>;
   restart(): Promise<DaemonServiceInfo>;
   start(): Promise<DaemonServiceInfo>;
   status(): Promise<DaemonServiceInfo>;
@@ -46,25 +48,25 @@ export interface CreateDaemonServiceManagerOptions {
   username?: string;
 }
 
-type DaemonServiceMutation = "install" | "restart" | "start" | "stop" | "uninstall";
+type DaemonServiceMutation = "install" | "refresh" | "restart" | "start" | "stop" | "uninstall";
 
 export async function createDaemonServiceManager(
   options: CreateDaemonServiceManagerOptions = {},
 ): Promise<DaemonServiceManager> {
-  const environment = options.env ?? process.env;
+  const environment = resolveChannelEnvironment(options.env ?? process.env);
   const platform = options.platform ?? process.platform;
+  const account = userInfo();
   const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(environment)));
   const runner = options.runner ?? defaultServiceRunner;
-  const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? homedir()));
+  const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? account.homedir));
   const channelDefaultHome = await canonicalizeServiceHome(getChannelConfig(CHANNEL, userHome).defaultHome);
   const invocation =
     options.invocation ??
     (platform === "darwin" || platform === "linux"
       ? await resolveCliInvocation({ binName: channelConfig.binName, env: options.env })
       : { args: [], program: process.execPath });
-  const uid = options.uid ?? userInfo().uid;
+  const uid = options.uid ?? account.uid;
   const backend = createBackend({
-    env: options.env,
     home,
     invocation,
     platform,
@@ -72,7 +74,7 @@ export async function createDaemonServiceManager(
     sourcePath: environment.PATH,
     uid,
     userHome,
-    username: options.username,
+    username: options.username ?? account.username,
   });
 
   const status = async (): Promise<DaemonServiceInfo> => attachOwner(await backend.status(), home);
@@ -114,17 +116,19 @@ export async function createDaemonServiceManager(
       } catch (error) {
         throw new DaemonServiceError(
           "CONFIGURATION",
-          "OpenTag Computer credentials are invalid; run computer connect again",
+          "OpenTag Computer credentials are invalid; run opentag connect again",
           { cause: error },
         );
       }
-      if (!credentials?.enrollments.length) {
-        throw new DaemonServiceError("CONFIGURATION", "This Computer is not enrolled; run computer connect first");
+      const bound = resolveBoundAccountComputer(credentials);
+      if (bound.status === "disconnected") {
+        throw new DaemonServiceError("CONFIGURATION", "This Computer is not connected; run opentag connect first");
       }
       return mutate("install", () => backend.installAndStart());
     },
     start: () => mutate("start", () => backend.start()),
     stop: () => mutate("stop", () => backend.stop()),
+    refreshDefinition: () => mutate("refresh", () => backend.refreshDefinition()),
     restart: () => mutate("restart", () => backend.restart()),
     status,
     uninstall: () => mutate("uninstall", () => backend.uninstall()),
@@ -175,7 +179,6 @@ export function formatDaemonServiceInfo(info: DaemonServiceInfo): string {
 }
 
 function createBackend(options: {
-  env?: NodeJS.ProcessEnv;
   home: string;
   invocation: ResolvedCliInvocation;
   platform: NodeJS.Platform;
@@ -195,7 +198,6 @@ function createBackend(options: {
       uid: options.uid,
       userHome: options.userHome,
       ...(options.username ? { username: options.username } : {}),
-      ...(options.env?.XDG_CONFIG_HOME ? { xdgConfigHome: options.env.XDG_CONFIG_HOME } : {}),
     });
   }
   if (options.platform === "darwin") {
@@ -223,6 +225,7 @@ function unsupportedBackend(platform: NodeJS.Platform, home: string, serviceId: 
     platform: "unsupported",
     preflight: unsupported,
     installAndStart: unsupported,
+    refreshDefinition: unsupported,
     start: unsupported,
     stop: unsupported,
     restart: unsupported,

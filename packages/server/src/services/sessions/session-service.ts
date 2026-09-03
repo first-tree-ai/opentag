@@ -13,14 +13,15 @@ import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   sessionDescendants,
   sessionMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../db/schema/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -32,11 +33,21 @@ interface ActiveSessionAuthority {
   agentId: string;
   computerId: string;
   connectionInstanceId: string;
-  workspaceComputerId: string;
+  installationId: string;
 }
 
 function hashSessionMessage(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function internalSessionInputMatches(target: SessionRow, input: CreateInternalSessionWithMessageInput): boolean {
+  return (
+    target.kind === "internal" &&
+    target.createdBySessionId === input.creatorSessionId &&
+    target.runtimeModel === (input.overrides?.model ?? null) &&
+    target.runtimeReasoningEffort === (input.overrides?.reasoningEffort ?? null) &&
+    target.runtimeMaxDurationMs === (input.overrides?.maxDurationMs ?? null)
+  );
 }
 
 export interface EnsureChatSessionInTransactionInput {
@@ -45,15 +56,15 @@ export interface EnsureChatSessionInTransactionInput {
   conversationKind: ImConversationKind;
   kind: Exclude<SessionKind, "internal">;
   threadKey?: string;
-  workspaceComputerId: string;
+  computerId: string;
   now: Date;
 }
 
 export interface CreateInternalSessionWithMessageInput {
   creatorSessionId: string;
-  creatorComputerId: string;
+  creatorInstallationId: string;
   creatorConnectionInstanceId: string;
-  creatorWorkspaceComputerId: string;
+  creatorComputerId: string;
   creatorPlacementGeneration: number;
   messageId: string;
   initialMessage: string;
@@ -63,9 +74,9 @@ export interface CreateInternalSessionWithMessageInput {
 export interface AuthorizeAndRecordSessionMessageInput {
   messageId: string;
   sourceSessionId: string;
-  sourceComputerId: string;
+  sourceInstallationId: string;
   sourceConnectionInstanceId: string;
-  sourceWorkspaceComputerId: string;
+  sourceComputerId: string;
   sourcePlacementGeneration: number;
   targetSessionId: string;
   content: string;
@@ -77,10 +88,10 @@ export interface AuthorizedSessionMessageRoute {
   sourceSessionId: string;
   sourceConnectionInstanceId: string;
   sourcePlacementGeneration: number;
-  sourceWorkspaceComputerId: string;
+  sourceComputerId: string;
   targetSessionId: string;
+  targetInstallationId: string;
   targetComputerId: string;
-  targetWorkspaceComputerId: string;
   targetPlacementGeneration: number;
   targetSessionKind: SessionKind;
   targetCreatorSessionId: string | null;
@@ -121,7 +132,7 @@ function toSession(row: SessionRow): Session {
 function toPlacement(row: PlacementRow): SessionPlacement {
   return {
     sessionId: row.sessionId,
-    workspaceComputerId: row.workspaceComputerId,
+    computerId: row.computerId,
     generation: row.generation,
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -140,11 +151,20 @@ export class SessionService {
   readonly #database: DatabaseClient;
   readonly #afterPlacementLock: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
+  readonly #logger?: Pick<ServiceLogger, "info">;
 
-  constructor(database: DatabaseClient, options: { afterPlacementLock?: () => Promise<void>; now?: () => Date } = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: {
+      afterPlacementLock?: () => Promise<void>;
+      now?: () => Date;
+      logger?: Pick<ServiceLogger, "info">;
+    } = {},
+  ) {
     this.#database = database;
     this.#afterPlacementLock = options.afterPlacementLock;
     this.#now = options.now ?? (() => new Date());
+    this.#logger = options.logger;
   }
 
   async ensureChatSession(
@@ -153,12 +173,12 @@ export class SessionService {
     threadKey?: string,
   ): Promise<{ session: Session; placement: SessionPlacement }> {
     return this.#database.transaction(async (transaction) => {
-      const workspaceComputerId = await this.#resolveComputer(transaction, scope.imBindingId);
+      const computerId = await this.#resolveComputer(transaction, scope.imBindingId);
       return this.ensureChatSessionInTransaction(transaction, {
         ...scope,
         kind,
         ...(threadKey ? { threadKey } : {}),
-        workspaceComputerId,
+        computerId,
         now: this.#now(),
       });
     });
@@ -182,7 +202,7 @@ export class SessionService {
       input.kind,
       input.threadKey,
     );
-    if (existing) return this.#withPlacement(transaction, existing, input.workspaceComputerId, input.now);
+    if (existing) return this.#withPlacement(transaction, existing, input.computerId, input.now);
 
     const [created] = await transaction
       .insert(sessions)
@@ -199,7 +219,7 @@ export class SessionService {
     const session =
       created ?? (await this.#findActive(transaction, input.imBindingId, input.channelId, input.kind, input.threadKey));
     if (!session) throw new Error("Active Session ensure did not converge");
-    return this.#withPlacement(transaction, session, input.workspaceComputerId, input.now);
+    return this.#withPlacement(transaction, session, input.computerId, input.now);
   }
 
   async createInternalSessionWithMessage(
@@ -208,9 +228,9 @@ export class SessionService {
     return this.#database.transaction(async (transaction) => {
       const creator = await this.#activeSource(transaction, {
         sessionId: input.creatorSessionId,
-        computerId: input.creatorComputerId,
+        installationId: input.creatorInstallationId,
         connectionInstanceId: input.creatorConnectionInstanceId,
-        workspaceComputerId: input.creatorWorkspaceComputerId,
+        computerId: input.creatorComputerId,
         placementGeneration: input.creatorPlacementGeneration,
       });
       const contentHash = hashSessionMessage(input.initialMessage);
@@ -223,13 +243,7 @@ export class SessionService {
       if (existing) {
         this.#assertMessageIdentity(existing, input.creatorSessionId, existing.targetSessionId, input.initialMessage);
         const target = await this.#activeTarget(transaction, existing.targetSessionId, creator.session);
-        if (
-          target.session.kind !== "internal" ||
-          target.session.createdBySessionId !== input.creatorSessionId ||
-          target.session.runtimeModel !== (input.overrides?.model ?? null) ||
-          target.session.runtimeReasoningEffort !== (input.overrides?.reasoningEffort ?? null) ||
-          target.session.runtimeMaxDurationMs !== (input.overrides?.maxDurationMs ?? null)
-        ) {
+        if (!internalSessionInputMatches(target.session, input)) {
           throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID has conflicting input");
         }
         const attempt = await this.#beginAttempt(transaction, existing);
@@ -263,7 +277,7 @@ export class SessionService {
         .insert(sessionPlacements)
         .values({
           sessionId: created.id,
-          workspaceComputerId: creator.placement.workspaceComputerId,
+          computerId: creator.placement.computerId,
           generation: 1,
           updatedAt: now,
         })
@@ -335,7 +349,7 @@ export class SessionService {
         session: created,
         placement,
         computerId: creator.computerId,
-        workspaceComputerId: creator.workspaceComputerId,
+        installationId: creator.installationId,
       };
       return {
         session: toSession(created),
@@ -352,9 +366,9 @@ export class SessionService {
     return this.#database.transaction(async (transaction) => {
       const source = await this.#activeSource(transaction, {
         sessionId: input.sourceSessionId,
-        computerId: input.sourceComputerId,
+        installationId: input.sourceInstallationId,
         connectionInstanceId: input.sourceConnectionInstanceId,
-        workspaceComputerId: input.sourceWorkspaceComputerId,
+        computerId: input.sourceComputerId,
         placementGeneration: input.sourcePlacementGeneration,
       });
       const target = await this.#activeTarget(transaction, input.targetSessionId, source.session);
@@ -412,12 +426,15 @@ export class SessionService {
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
     return this.#database.transaction(async (transaction) => {
       const [agent] = await transaction
-        .select({ status: agents.status })
+        .select({ createdByUserId: agents.createdByUserId, status: agents.status })
         .from(agents)
         .where(eq(agents.id, route.agentId))
         .limit(1)
         .for("update");
-      if (agent?.status !== "active") return { admitted: false } as const;
+      if (agent?.status !== "active") {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AGENT_INACTIVE");
+        return { admitted: false } as const;
+      }
 
       const [binding] = await transaction
         .select({ agentId: imBindings.agentId, status: imBindings.status })
@@ -425,7 +442,10 @@ export class SessionService {
         .where(eq(imBindings.id, route.imBindingId))
         .limit(1)
         .for("update");
-      if (binding?.agentId !== route.agentId || binding.status !== "active") return { admitted: false } as const;
+      if (binding?.agentId !== route.agentId || binding.status !== "active") {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_BINDING_INVALID");
+        return { admitted: false } as const;
+      }
 
       const authoritySessionIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
       const authoritySessions = await transaction
@@ -438,15 +458,16 @@ export class SessionService {
         authoritySessions.length !== authoritySessionIds.length ||
         authoritySessions.some(({ endedAt, imBindingId }) => endedAt !== null || imBindingId !== route.imBindingId)
       ) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AUTHORITY_SESSION_INVALID");
         return { admitted: false } as const;
       }
 
       const authorityPlacementIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
       const authorityPlacements = await transaction
         .select({
+          computerId: sessionPlacements.computerId,
           generation: sessionPlacements.generation,
           sessionId: sessionPlacements.sessionId,
-          workspaceComputerId: sessionPlacements.workspaceComputerId,
         })
         .from(sessionPlacements)
         .where(inArray(sessionPlacements.sessionId, authorityPlacementIds))
@@ -456,28 +477,40 @@ export class SessionService {
       const targetPlacement = authorityPlacements.find(({ sessionId }) => sessionId === route.targetSessionId);
       if (
         authorityPlacements.length !== authorityPlacementIds.length ||
-        sourcePlacement?.workspaceComputerId !== route.sourceWorkspaceComputerId ||
+        sourcePlacement?.computerId !== route.sourceComputerId ||
         sourcePlacement.generation !== route.sourcePlacementGeneration ||
-        targetPlacement?.workspaceComputerId !== route.targetWorkspaceComputerId ||
+        targetPlacement?.computerId !== route.targetComputerId ||
         targetPlacement.generation !== route.targetPlacementGeneration
       ) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_PLACEMENT_INVALID");
+        return { admitted: false } as const;
+      }
+
+      const placementComputerIds = [...new Set(authorityPlacements.map(({ computerId }) => computerId))].sort();
+      const placementComputers = await transaction
+        .select({ id: computers.id, ownerAccountId: computers.ownerAccountId })
+        .from(computers)
+        .where(inArray(computers.id, placementComputerIds))
+        .orderBy(computers.id)
+        .for("update");
+      if (
+        placementComputers.length !== placementComputerIds.length ||
+        placementComputers.some(({ ownerAccountId }) => ownerAccountId !== agent.createdByUserId)
+      ) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_COMPUTER_OWNERSHIP_INVALID");
         return { admitted: false } as const;
       }
 
       const [sourceComputer] = await transaction
         .select({
-          currentInstanceId: workspaceComputers.currentInstanceId,
-          revokedAt: workspaceComputers.revokedAt,
+          currentInstanceId: computers.currentInstanceId,
         })
-        .from(workspaceComputers)
-        .where(eq(workspaceComputers.id, route.sourceWorkspaceComputerId))
+        .from(computers)
+        .where(eq(computers.id, route.sourceComputerId))
         .limit(1)
         .for("update");
-      if (
-        !sourceComputer ||
-        sourceComputer.revokedAt !== null ||
-        sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId
-      ) {
+      if (!sourceComputer || sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId) {
+        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_SOURCE_INSTANCE_STALE");
         return { admitted: false } as const;
       }
 
@@ -496,6 +529,21 @@ export class SessionService {
       await dispatched;
       return { admitted: true, result } as const;
     });
+  }
+
+  #logAdmissionRejection(route: AuthorizedSessionMessageRoute, code: string): void {
+    this.#logger?.info(
+      {
+        agentId: route.agentId,
+        code,
+        imBindingId: route.imBindingId,
+        sourceComputerId: route.sourceComputerId,
+        sourceSessionId: route.sourceSessionId,
+        targetComputerId: route.targetComputerId,
+        targetSessionId: route.targetSessionId,
+      },
+      "Session collaboration dispatch admission rejected",
+    );
   }
 
   async recordMessageOutcome(input: {
@@ -598,7 +646,7 @@ export class SessionService {
     `);
   }
 
-  async movePlacement(sessionId: string, workspaceComputerId: string): Promise<SessionPlacement> {
+  async movePlacement(sessionId: string, computerId: string): Promise<SessionPlacement> {
     return this.#database.transaction(async (transaction) => {
       const [current] = await transaction
         .select({ placement: sessionPlacements })
@@ -649,7 +697,11 @@ export class SessionService {
         .where(and(eq(imMessageDeliveries.sessionId, sessionId), eq(imMessageDeliveries.state, "pending")));
       const [placement] = await transaction
         .update(sessionPlacements)
-        .set({ workspaceComputerId, generation, updatedAt: now })
+        .set({
+          computerId,
+          generation,
+          updatedAt: now,
+        })
         .where(eq(sessionPlacements.sessionId, sessionId))
         .returning();
       if (!placement) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session placement was not found");
@@ -657,7 +709,7 @@ export class SessionService {
     });
   }
 
-  async assertPlacement(sessionId: string, workspaceComputerId: string, generation: number): Promise<void> {
+  async assertPlacement(sessionId: string, computerId: string, generation: number): Promise<void> {
     const [placement] = await this.#database
       .select({ sessionId: sessionPlacements.sessionId })
       .from(sessionPlacements)
@@ -665,7 +717,7 @@ export class SessionService {
       .where(
         and(
           eq(sessionPlacements.sessionId, sessionId),
-          eq(sessionPlacements.workspaceComputerId, workspaceComputerId),
+          eq(sessionPlacements.computerId, computerId),
           eq(sessionPlacements.generation, generation),
           isNull(sessions.endedAt),
         ),
@@ -678,9 +730,9 @@ export class SessionService {
     transaction: DatabaseTransaction,
     input: {
       sessionId: string;
-      computerId: string;
+      installationId: string;
       connectionInstanceId: string;
-      workspaceComputerId: string;
+      computerId: string;
       placementGeneration: number;
     },
   ): Promise<ActiveSessionAuthority> {
@@ -689,22 +741,17 @@ export class SessionService {
         session: sessions,
         placement: sessionPlacements,
         agentId: agents.id,
-        computerId: workspaceComputers.computerId,
-        connectionInstanceId: workspaceComputers.currentInstanceId,
-        workspaceComputerId: workspaceComputers.id,
+        agentCreatedByUserId: agents.createdByUserId,
+        installationId: computers.currentInstallationId,
+        computerOwnerAccountId: computers.ownerAccountId,
+        connectionInstanceId: computers.currentInstanceId,
+        computerId: computers.id,
       })
       .from(sessions)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
           eq(sessions.id, input.sessionId),
@@ -716,10 +763,13 @@ export class SessionService {
       .limit(1)
       .for("update");
     if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    if (source.computerOwnerAccountId !== source.agentCreatedByUserId) {
+      throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session Computer requires Agent rebind");
+    }
     if (
-      source.computerId !== input.computerId ||
+      source.installationId !== input.installationId ||
       source.connectionInstanceId !== input.connectionInstanceId ||
-      source.workspaceComputerId !== input.workspaceComputerId ||
+      source.computerId !== input.computerId ||
       source.placement.generation !== input.placementGeneration
     ) {
       throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
@@ -731,30 +781,28 @@ export class SessionService {
     transaction: DatabaseTransaction,
     targetSessionId: string,
     sourceSession: SessionRow,
-  ): Promise<{ session: SessionRow; placement: PlacementRow; computerId: string; workspaceComputerId: string }> {
+  ): Promise<{ session: SessionRow; placement: PlacementRow; computerId: string; installationId: string }> {
     const [target] = await transaction
       .select({
         session: sessions,
         placement: sessionPlacements,
-        computerId: workspaceComputers.computerId,
-        workspaceComputerId: workspaceComputers.id,
+        agentCreatedByUserId: agents.createdByUserId,
+        installationId: computers.currentInstallationId,
+        computerOwnerAccountId: computers.ownerAccountId,
+        computerId: computers.id,
       })
       .from(sessions)
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(
-        workspaceComputers,
-        and(
-          eq(workspaceComputers.workspaceId, agents.workspaceId),
-          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      )
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(and(eq(sessions.id, targetSessionId), isNull(sessions.endedAt)))
       .limit(1)
       .for("update");
     if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
+    if (target.computerOwnerAccountId !== target.agentCreatedByUserId) {
+      throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session Computer requires Agent rebind");
+    }
     if (
       target.session.imBindingId !== sourceSession.imBindingId ||
       target.session.channelId !== sourceSession.channelId ||
@@ -807,7 +855,7 @@ export class SessionService {
 
   #route(
     source: ActiveSessionAuthority,
-    target: { session: SessionRow; placement: PlacementRow; computerId: string; workspaceComputerId: string },
+    target: { session: SessionRow; placement: PlacementRow; computerId: string; installationId: string },
   ): AuthorizedSessionMessageRoute {
     return {
       agentId: source.agentId,
@@ -815,10 +863,10 @@ export class SessionService {
       sourceSessionId: source.session.id,
       sourceConnectionInstanceId: source.connectionInstanceId,
       sourcePlacementGeneration: source.placement.generation,
-      sourceWorkspaceComputerId: source.workspaceComputerId,
+      sourceComputerId: source.computerId,
       targetSessionId: target.session.id,
+      targetInstallationId: target.installationId,
       targetComputerId: target.computerId,
-      targetWorkspaceComputerId: target.workspaceComputerId,
       targetPlacementGeneration: target.placement.generation,
       targetSessionKind: target.session.kind,
       targetCreatorSessionId: target.session.createdBySessionId,
@@ -834,7 +882,7 @@ export class SessionService {
       .limit(1);
     if (!candidate) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
     const [agent] = await transaction
-      .select({ workspaceComputerId: agents.workspaceComputerId })
+      .select({ computerId: agents.computerId })
       .from(agents)
       .where(and(eq(agents.id, candidate.agentId), eq(agents.status, "active")))
       .limit(1)
@@ -848,7 +896,11 @@ export class SessionService {
       )
       .limit(1);
     if (!binding) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
-    return agent.workspaceComputerId;
+    // Placement derives the Computer from the Agent, so an Agent that has none cannot host a Session.
+    if (agent.computerId === null) {
+      throw new SessionServiceError("AGENT_COMPUTER_NOT_BOUND", "The Agent is not bound to a Computer");
+    }
+    return agent.computerId;
   }
 
   async #findActive(
@@ -877,7 +929,7 @@ export class SessionService {
   async #withPlacement(
     transaction: DatabaseTransaction,
     session: SessionRow,
-    workspaceComputerId: string,
+    computerId: string,
     now = this.#now(),
   ): Promise<{ session: Session; placement: SessionPlacement }> {
     const [existing] = await transaction
@@ -890,7 +942,12 @@ export class SessionService {
       (
         await transaction
           .insert(sessionPlacements)
-          .values({ sessionId: session.id, workspaceComputerId, generation: 1, updatedAt: now })
+          .values({
+            sessionId: session.id,
+            computerId,
+            generation: 1,
+            updatedAt: now,
+          })
           .onConflictDoNothing()
           .returning()
       )[0];

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  AgentRuntimeTestResultFrameSchema,
   AgentTraceBatchSchema,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
+  computeReconcilePayloadHash,
   computeRuntimeImMessageSemanticHash,
   computeRuntimeImSteerInputHash,
   computeRuntimeSnapshotHashes,
@@ -13,6 +15,7 @@ import {
   EffectiveRuntimeSnapshotSchema,
   ImMessageDeliveryResultSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
+  RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
   runtimeUsageTotalTokens,
@@ -38,7 +41,7 @@ describe("runtime domain contract", () => {
     const reconcile = {
       type: "session:reconcile",
       requestId: randomUUID(),
-      computerId: randomUUID(),
+      installationId: randomUUID(),
       sessionId: "session-1",
       agentId: "agent-1",
       placementGeneration: 1,
@@ -110,7 +113,7 @@ describe("runtime domain contract", () => {
       SessionReconcileRequestSchema.parse({
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: randomUUID(),
+        installationId: randomUUID(),
         sessionId: "session-1",
         agentId: "agent-1",
         placementGeneration: 1,
@@ -121,7 +124,7 @@ describe("runtime domain contract", () => {
       SessionReconcileRequestSchema.parse({
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: randomUUID(),
+        installationId: randomUUID(),
         sessionId: "session-1",
         agentId: "agent-1",
         placementGeneration: 1,
@@ -230,6 +233,18 @@ describe("runtime domain contract", () => {
     ).toBe(computeRuntimeImMessageSemanticHash(steer));
     expect(computeRuntimeImSteerInputHash(steer)).toMatch(/^[a-f0-9]{64}$/);
 
+    const observerDelivery = { ...delivery, replyRole: "observer" as const };
+    const observerSteer = { ...steer, replyRole: "observer" as const };
+    expect(DirectImMessageDeliveryRequestSchema.parse(observerDelivery)).toEqual(observerDelivery);
+    expect(RuntimeImSteerRequestSchema.parse(observerSteer)).toEqual(observerSteer);
+    expect(computeDirectInputHash(observerDelivery)).not.toBe(computeDirectInputHash(delivery));
+    expect(computeRuntimeImMessageSemanticHash(observerDelivery)).toBe(
+      computeRuntimeImMessageSemanticHash(observerSteer),
+    );
+    expect(computeRuntimeImMessageSemanticHash(observerDelivery)).not.toBe(
+      computeRuntimeImMessageSemanticHash(delivery),
+    );
+
     const steered = {
       type: "im:steer:result" as const,
       requestId: steer.requestId,
@@ -301,6 +316,30 @@ describe("runtime domain contract", () => {
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
   });
 
+  it("hashes the reconcile payload from its complete identity tuple", () => {
+    const request = {
+      type: "session:reconcile" as const,
+      requestId: "44444444-4444-4444-8444-444444444444",
+      installationId: "55555555-5555-4555-8555-555555555555",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 2,
+      sessionKind: "internal" as const,
+      creatorSessionId: "66666666-6666-4666-8666-666666666666",
+      desired: "ready" as const,
+      runtime: snapshot(),
+    };
+    expect(computeReconcilePayloadHash(request)).toBe(
+      "973599fac890f01fa6d0f46a8a0e1410622287f1e80606523af19644b7992400",
+    );
+    expect(
+      computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),
+    ).not.toBe(computeReconcilePayloadHash(request));
+    expect(computeReconcilePayloadHash({ ...request, desired: "stopped", runtime: undefined })).toBe(
+      "27e33a25c9891fad2b548720db65feb9a61d65655ed54015314995687db7c54f",
+    );
+  });
+
   it("B-06 rejects unsafe IDs and sequence boundaries without coercion", () => {
     const valid = directDelivery(snapshot());
     for (const sessionId of ["", "../session", "a/b", "a\\b", "a".repeat(129)]) {
@@ -356,6 +395,90 @@ describe("runtime domain contract", () => {
         content: { kind: "text", text: `${"你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3))}你` },
       }),
     ).toThrow();
+  });
+
+  it("validates optional v2 outbox context without weakening v1 credential grants", () => {
+    const requestId = randomUUID();
+    const base = {
+      type: "im:credential:result" as const,
+      requestId,
+      status: "succeeded" as const,
+      credentialGeneration: 1,
+      grant: { provider: "slack" as const, botAccessToken: "xoxb-secret" },
+    };
+    expect(RuntimeImCredentialGrantResultSchema.parse(base)).toEqual(base);
+    expect(
+      RuntimeImCredentialGrantResultSchema.parse({
+        ...base,
+        outboxContext: {
+          provider: "slack",
+          sessionKind: "thread",
+          channelId: "C1",
+          threadTs: "1710000000.000001",
+        },
+      }),
+    ).toMatchObject({ outboxContext: { sessionKind: "thread", channelId: "C1" } });
+    expect(() =>
+      RuntimeImCredentialGrantResultSchema.parse({
+        ...base,
+        outboxContext: { provider: "slack", sessionKind: "thread", channelId: "C1" },
+      }),
+    ).toThrow();
+    expect(() =>
+      RuntimeImCredentialGrantResultSchema.parse({
+        ...base,
+        outboxContext: { provider: "feishu", sessionKind: "channel", chatId: "oc_1" },
+      }),
+    ).toThrow();
+  });
+
+  it("validates Agent Runtime test frames without a result or diagnostic payload", () => {
+    const requestId = randomUUID();
+    const computerId = randomUUID();
+    const request = {
+      type: "agent-runtime:test" as const,
+      requestId,
+      computerId,
+      provider: "claude-code" as const,
+    };
+    expect(ServerRuntimeBusinessFrameSchema.parse(request)).toEqual(request);
+    expect(
+      ServerRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test:cancel",
+        requestId,
+      }),
+    ).toEqual({ type: "agent-runtime:test:cancel", requestId });
+    expect(() =>
+      ServerRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test",
+        requestId,
+        computerId,
+        provider: "codex",
+        prompt: "override",
+      }),
+    ).toThrow();
+    expect(() =>
+      ClientRuntimeBusinessFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+      }),
+    ).toThrow();
+    expect(() =>
+      AgentRuntimeTestResultFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "passed",
+        code: "provider_failed",
+      }),
+    ).toThrow(/forbids a failure code/);
+    expect(() =>
+      AgentRuntimeTestResultFrameSchema.parse({
+        type: "agent-runtime:test:result",
+        requestId,
+        status: "failed",
+      }),
+    ).toThrow(/requires a failure code/);
   });
 });
 

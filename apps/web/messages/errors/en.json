@@ -1,0 +1,11 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "errors_application_description": "OpenTag could not load the application. Reload the page and try again.",
+  "errors_back_to_agents": "Back to Agents",
+  "errors_page_not_found": "Page not found",
+  "errors_page_unavailable": "The requested OpenTag page is not available.",
+  "errors_route_description": "OpenTag could not load this page. Try again, or return to Agents and continue from there.",
+  "errors_something_went_wrong": "Something went wrong",
+  "errors_try_again": "Try again",
+  "errors_unknown_application_error": "Unknown application error"
+}

@@ -1,15 +1,12 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, mkdir, realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { promisify } from "node:util";
+import { delimiter, join, resolve } from "node:path";
 import {
   type AgentRuntimeProvider,
   computeRuntimeSnapshotHashes,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
-  type RuntimeImCliReadinessObservation,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
@@ -36,6 +33,15 @@ import {
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AdmissionController } from "./admission-controller.js";
+import { AgentRuntimeAvailabilityTester } from "./agent-runtime-availability-tester.js";
+import {
+  AgentRuntimeExecutableDiscoveryError,
+  AgentRuntimeExecutableNotFoundError,
+  canAdvanceRuntimeCandidate,
+  iterateAgentRuntimeExecutables,
+  type ResolveAgentRuntimeExecutableOptions,
+  type ResolvedAgentRuntimeExecutable,
+} from "./agent-runtime-installation.js";
 import {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
@@ -47,7 +53,19 @@ import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
+import { resolveAccountHome } from "./provider-cli/account-layout.js";
+import { ProviderCliManager } from "./provider-cli/manager.js";
+import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
+import { ProviderCliTurnPlanManager } from "./provider-cli/turn-plan-manager.js";
+import { resolveProviderCliTurnRunnerInvocation } from "./provider-cli/turn-runner.js";
+import { ProviderCliValidationRunner } from "./provider-cli/validation-runner.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import {
+  FileRuntimeDurabilityStore,
+  RuntimeDurabilityMetrics,
+  type RuntimeDurabilityStore,
+} from "./runtime-durability.js";
+import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
@@ -58,13 +76,61 @@ import { TurnReportOwner } from "./turn-report-owner.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
-const execFileAsync = promisify(execFile);
 
 interface SharedProviderRefresh {
   readonly controller: AbortController;
   readonly promise: Promise<boolean>;
   settled: boolean;
   waiters: number;
+}
+
+export interface LoginShellDiscovery {
+  readonly options: ResolveAgentRuntimeExecutableOptions;
+  enable(): void;
+}
+
+/**
+ * Every local state whose interruption could lose or duplicate an accepted Turn, pending Turn
+ * completion/report custody, or an accepted IM delivery — aggregated from the authoritative owners
+ * (Session reconciler activity and recoveries, Turn custody, Turn runner, Turn reports, and the
+ * Session message inbox) rather than from any heuristic. `total === 0` is the only upgrade gate.
+ */
+export interface ProtectedWorkSnapshot {
+  /** Live per-Session Turn activity recorded by the Session reconciler. */
+  sessionActivities: number;
+  /** Unresolved Turns recovered from durable state that still owe a completion report. */
+  pendingRecoveries: number;
+  /** Accepted Turns still under local custody (not yet recorded as reported). */
+  custodyTurns: number;
+  /** Turns the runner is currently executing or reporting. */
+  activeTurns: number;
+  /** Turn Reports awaiting Server confirmation. */
+  pendingReports: number;
+  /** Accepted Session messages that have not reached a terminal state, including retry backoff. */
+  queuedSessionMessages: number;
+  /** Total protected items; zero means no protected work remains. */
+  total: number;
+}
+
+export function createLoginShellDiscovery(): LoginShellDiscovery {
+  let enabled = false;
+  function includeLoginShell(): boolean {
+    return enabled;
+  }
+  return {
+    options: { includeLoginShell },
+    enable() {
+      enabled = true;
+    },
+  };
+}
+
+interface SharedProviderRefreshContext {
+  readonly connection: RuntimeConnection;
+  readonly providers: AgentRuntimeProviderRegistry;
+  readonly readinessSignal: AbortSignal;
+  readonly providerProbeDeadlineMs: number;
+  readonly sharedProviderRefreshes: Map<string, SharedProviderRefresh>;
 }
 
 async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
@@ -85,8 +151,98 @@ async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSig
   }
 }
 
+function providerProbeDeadline(value: number | undefined): number {
+  const deadline = value ?? DEFAULT_PROVIDER_PROBE_DEADLINE_MS;
+  if (!Number.isSafeInteger(deadline) || deadline < 1) {
+    throw new Error("Agent Runtime provider probe deadline must be a positive safe integer");
+  }
+  return deadline;
+}
+
+function startSharedProviderRefresh(context: SharedProviderRefreshContext, providerId: string): SharedProviderRefresh {
+  const controller = new AbortController();
+  let resolveOwner!: (available: boolean) => void;
+  let rejectOwner!: (reason: unknown) => void;
+  const promise = new Promise<boolean>((resolvePromise, rejectPromise) => {
+    resolveOwner = resolvePromise;
+    rejectOwner = rejectPromise;
+  });
+  const owner: SharedProviderRefresh = { controller, promise, settled: false, waiters: 0 };
+  context.sharedProviderRefreshes.set(providerId, owner);
+  const deadlineError = new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`);
+  const deadlineTimer = setTimeout(() => controller.abort(deadlineError), context.providerProbeDeadlineMs);
+  deadlineTimer.unref();
+  const operation = runSharedProviderRefresh(context, providerId, owner, deadlineError, deadlineTimer);
+  void operation.then(resolveOwner, rejectOwner);
+  void owner.promise.catch(() => undefined);
+  return owner;
+}
+
+async function runSharedProviderRefresh(
+  context: SharedProviderRefreshContext,
+  providerId: string,
+  owner: SharedProviderRefresh,
+  deadlineError: Error,
+  deadlineTimer: ReturnType<typeof setTimeout>,
+): Promise<boolean> {
+  let releaseReadiness: (() => void) | undefined;
+  try {
+    const provider = providerId as AgentRuntimeProvider;
+    if (context.providers.isReady(providerId)) {
+      releaseReadiness = context.connection.leaseProviderReadiness({ provider, status: "ready" });
+    }
+    if (!releaseReadiness) context.connection.setProviderReadiness({ provider, status: "checking" });
+    const ownerSignal = AbortSignal.any([context.readinessSignal, owner.controller.signal]);
+    let settled: { available: boolean } | { error: unknown };
+    try {
+      settled = { available: await context.providers.refresh(providerId, ownerSignal) };
+    } catch (error) {
+      settled = { error };
+    }
+    return resolveSharedProviderRefreshResult(context, providerId, owner, deadlineError, settled);
+  } finally {
+    owner.settled = true;
+    clearTimeout(deadlineTimer);
+    releaseReadiness?.();
+    if (context.sharedProviderRefreshes.get(providerId) === owner) context.sharedProviderRefreshes.delete(providerId);
+  }
+}
+
+function resolveSharedProviderRefreshResult(
+  context: SharedProviderRefreshContext,
+  providerId: string,
+  owner: SharedProviderRefresh,
+  deadlineError: Error,
+  settled: { available: boolean } | { error: unknown },
+): boolean {
+  if (context.sharedProviderRefreshes.get(providerId) !== owner) {
+    if ("error" in settled) throw settled.error;
+    owner.controller.signal.throwIfAborted();
+    return settled.available;
+  }
+  if ("error" in settled) {
+    if (context.readinessSignal.aborted || owner.controller.signal.reason !== deadlineError) throw settled.error;
+    const result: AgentRuntimeProbeResult = {
+      ready: false,
+      issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
+    };
+    context.providers.invalidate(providerId, result);
+    context.connection.setProviderReadiness(providerReadiness(providerId as AgentRuntimeProvider, false, result));
+    return false;
+  }
+  context.connection.setProviderReadiness(
+    providerReadiness(providerId as AgentRuntimeProvider, settled.available, context.providers.probeResult(providerId)),
+  );
+  return settled.available;
+}
+
 export interface CreateClientRuntimeOptions {
   readonly api?: Pick<OpenTagApi, "openImResource">;
+  readonly serverDurability?: {
+    readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
+    readonly machineToken: string;
+    readonly now?: () => number;
+  };
   readonly capabilityRefreshIntervalMs?: number;
   readonly providerProbeDeadlineMs?: number;
   readonly clientVersion: string;
@@ -94,8 +250,6 @@ export interface CreateClientRuntimeOptions {
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
   readonly claudeCodeHome?: string;
-  readonly larkCliCommand?: string;
-  readonly slackCliCommand?: string;
   readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
@@ -104,50 +258,65 @@ export interface CreateClientRuntimeOptions {
   readonly logger?: ClientLogger;
   readonly signal?: AbortSignal;
   readonly machineToken?: string;
+  readonly durabilityStore?: RuntimeDurabilityStore;
+  readonly durabilityMetrics?: RuntimeDurabilityMetrics;
 }
 
 export class ComposedClientRuntime {
+  readonly #admission: AdmissionController;
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: ImCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly reportOwner: TurnReportOwner;
+  readonly durabilityMetrics: RuntimeDurabilityMetrics;
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
+  readonly #providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
+  readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
   readonly #refreshCapability: () => Promise<void>;
   readonly #capabilityRefreshIntervalMs: number;
   readonly #capabilityAbort: AbortController;
   #capabilityTimer?: ReturnType<typeof setInterval>;
   #capabilityRefreshInFlight?: Promise<void>;
+  #shutdownPromise?: Promise<void>;
   #stopped = false;
 
   constructor(
     runtime: ClientRuntime,
     components: {
+      admission: AdmissionController;
       bindingStore: SessionBindingStore;
       custody: TurnCustodyOwner;
       credentialEnvironment: ImCredentialEnvironmentManager;
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
+      durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
       refreshCapability: () => Promise<void>;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
+      providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
+      providerCliTurnPlans?: { recover(): Promise<void> };
     },
   ) {
     this.#runtime = runtime;
+    this.#admission = components.admission;
+    this.#providerCliReconciler = components.providerCliReconciler;
+    this.#providerCliTurnPlans = components.providerCliTurnPlans;
     this.bindingStore = components.bindingStore;
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
     this.reconciler = components.reconciler;
     this.sessionMessageInbox = components.sessionMessageInbox;
     this.reportOwner = components.reportOwner;
+    this.durabilityMetrics = components.durabilityMetrics;
     this.runner = components.runner;
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
@@ -161,31 +330,89 @@ export class ComposedClientRuntime {
     try {
       await this.#runtime.run();
     } finally {
-      this.#stopCapabilityMonitor();
-      this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
-      await this.#capabilityRefreshInFlight?.catch(() => undefined);
-      this.sessionMessageInbox.stop();
-      this.runner.stop();
-      await this.runner.settled();
-      await this.sessionMessageInbox.settled();
-      try {
-        await this.runtimeManager.close();
-      } finally {
-        this.reportOwner.stop();
-        await this.credentialEnvironment.close();
-      }
+      await this.#shutdown();
     }
+  }
+
+  /**
+   * Authoritative protected-work snapshot for the automatic-upgrade gate. The Session module owns
+   * the bounded lifetime of every counted unit (Turn budgets, delivery deadlines, report retries
+   * with terminal outcomes), so a caller may wait on `total === 0` indefinitely without adding a
+   * force timeout of its own.
+   */
+  protectedWork(): ProtectedWorkSnapshot {
+    const reconcilerWork = this.reconciler.protectedWorkSnapshot();
+    const snapshot = {
+      sessionActivities: reconcilerWork.activities.length,
+      pendingRecoveries: reconcilerWork.recoveries.length,
+      custodyTurns: this.custody.liveTurnCount,
+      activeTurns: this.runner.activeCount,
+      pendingReports: this.reportOwner.pendingCount,
+      queuedSessionMessages: this.sessionMessageInbox.pendingCount,
+      total: 0,
+    };
+    snapshot.total =
+      snapshot.sessionActivities +
+      snapshot.pendingRecoveries +
+      snapshot.custodyTurns +
+      snapshot.activeTurns +
+      snapshot.pendingReports +
+      snapshot.queuedSessionMessages;
+    return snapshot;
+  }
+
+  /**
+   * Close admission before the updater reads its zero-work snapshot. Already accepted Session
+   * messages may still reserve capacity and drain; every new direct or Session delivery receives a
+   * retryable `client_busy` result. The returned release function is used only when the attempt is
+   * abandoned or fails — a successful install stays quiesced until supervisor handoff.
+   */
+  quiesceForUpdate(): () => void {
+    this.#admission.pause();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#admission.resume();
+    };
   }
 
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
+    const shutdown = this.#shutdown();
+    this.#runtime.stop();
+    /* v8 ignore next -- shutdown failures surface through runtime state, not this detached promise. */
+    void shutdown.catch(() => undefined);
+  }
+
+  #shutdown(): Promise<void> {
+    this.#stopped = true;
+    this.#shutdownPromise ??= this.#performShutdown();
+    return this.#shutdownPromise;
+  }
+
+  async #performShutdown(): Promise<void> {
     this.#stopCapabilityMonitor();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
-    void Promise.allSettled([this.runtimeManager.close(), this.credentialEnvironment.close()]);
-    this.#runtime.stop();
+    await Promise.all([
+      this.#capabilityRefreshInFlight?.catch(() => undefined),
+      this.runner.settled(),
+      this.sessionMessageInbox.settled(),
+    ]);
+    try {
+      await this.runtimeManager.close();
+    } finally {
+      this.reportOwner.stop();
+      await this.reportOwner.settled();
+      await this.credentialEnvironment.close();
+      // Recovery may remove PATH sentinels, so it must run only after all Runs
+      // and Agent Runtime processes have stopped using their launch bin.
+      await this.#providerCliTurnPlans?.recover();
+      await this.#providerCliReconciler?.close();
+    }
   }
 
   #startCapabilityMonitor(): void {
@@ -197,6 +424,8 @@ export class ComposedClientRuntime {
       void refresh
         .catch(() => undefined)
         .finally(() => {
+          void this.#providerCliReconciler?.refreshPublishedImCliReadiness().catch(() => undefined);
+          /* v8 ignore else -- only the newest refresh clears the in-flight slot. */
           if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
         });
     }, this.#capabilityRefreshIntervalMs);
@@ -219,8 +448,9 @@ export async function createClientRuntime(
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
   const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
   const configuredClaudeCodeHome = resolve(
-    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? join(defaultHome, ".claude"),
+    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
   );
   await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
   await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
@@ -230,10 +460,12 @@ export async function createClientRuntime(
   const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
   options.signal?.throwIfAborted();
   const codexEnvironment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
-  const claudeCodeEnvironment = claudeCodeAgentRuntimeEnvironment({
-    ...sourceEnvironment,
-    CLAUDE_CONFIG_DIR: claudeCodeHome,
-  });
+  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
+  const claudeCodeEnvironment = claudeCodeProcessEnvironment(
+    sourceEnvironment,
+    claudeCodeHome,
+    canonicalDefaultClaudeCodeHome,
+  );
   const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
     codex: codexHome,
     "claude-code": claudeCodeHome,
@@ -242,6 +474,8 @@ export async function createClientRuntime(
     codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
     "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
   };
+  const loginShellDiscovery = createLoginShellDiscovery();
+  const discovery = loginShellDiscovery.options;
   const factories =
     options.factories ??
     (options.factory
@@ -251,12 +485,14 @@ export async function createClientRuntime(
             clientVersion: options.clientVersion,
             command: codexCommand,
             codexHome,
+            discovery,
             environment: codexEnvironment,
             sourceEnvironment,
           }),
           resolvedClaudeCodeFactory({
             claudeCodeHome,
             command: claudeCodeCommand,
+            discovery,
             environment: claudeCodeEnvironment,
             sourceEnvironment,
           }),
@@ -268,79 +504,8 @@ export async function createClientRuntime(
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
-  const providerProbeDeadlineMs = options.providerProbeDeadlineMs ?? DEFAULT_PROVIDER_PROBE_DEADLINE_MS;
-  if (!Number.isSafeInteger(providerProbeDeadlineMs) || providerProbeDeadlineMs < 1) {
-    throw new Error("Agent Runtime provider probe deadline must be a positive safe integer");
-  }
+  const providerProbeDeadlineMs = providerProbeDeadline(options.providerProbeDeadlineMs);
   const sharedProviderRefreshes = new Map<string, SharedProviderRefresh>();
-  const startSharedProviderRefresh = (providerId: string): SharedProviderRefresh => {
-    const controller = new AbortController();
-    let resolveOwner!: (available: boolean) => void;
-    let rejectOwner!: (reason: unknown) => void;
-    const promise = new Promise<boolean>((resolvePromise, rejectPromise) => {
-      resolveOwner = resolvePromise;
-      rejectOwner = rejectPromise;
-    });
-    const owner: SharedProviderRefresh = {
-      controller,
-      promise,
-      settled: false,
-      waiters: 0,
-    };
-    sharedProviderRefreshes.set(providerId, owner);
-    const deadlineError = new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`);
-    const deadlineTimer = setTimeout(() => {
-      controller.abort(deadlineError);
-    }, providerProbeDeadlineMs);
-    deadlineTimer.unref();
-    const provider = providerId as AgentRuntimeProvider;
-    const operation = (async () => {
-      let releaseReadiness: (() => void) | undefined;
-      try {
-        releaseReadiness = providers.isReady(providerId)
-          ? connection.leaseProviderReadiness({ provider, status: "ready" })
-          : undefined;
-        if (!releaseReadiness) connection.setProviderReadiness({ provider, status: "checking" });
-        const ownerSignal = AbortSignal.any([readinessSignal, controller.signal]);
-        let settled: { available: boolean } | { error: unknown };
-        try {
-          settled = { available: await providers.refresh(providerId, ownerSignal) };
-        } catch (error) {
-          settled = { error };
-        }
-        const isCurrentOwner = sharedProviderRefreshes.get(providerId) === owner;
-        if (!isCurrentOwner) {
-          if ("error" in settled) throw settled.error;
-          controller.signal.throwIfAborted();
-          return settled.available;
-        }
-        if ("error" in settled) {
-          if (readinessSignal.aborted || controller.signal.reason !== deadlineError) {
-            throw settled.error;
-          }
-          const result: AgentRuntimeProbeResult = {
-            ready: false,
-            issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
-          };
-          providers.invalidate(providerId, result);
-          connection.setProviderReadiness(providerReadiness(provider, false, result));
-          return false;
-        }
-        connection.setProviderReadiness(
-          providerReadiness(provider, settled.available, providers.probeResult(providerId)),
-        );
-        return settled.available;
-      } finally {
-        owner.settled = true;
-        clearTimeout(deadlineTimer);
-        releaseReadiness?.();
-        if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
-      }
-    })();
-    void operation.then(resolveOwner, rejectOwner);
-    void owner.promise.catch(() => undefined);
-    return owner;
-  };
   const liveSharedProviderRefresh = (providerId: string): SharedProviderRefresh | undefined => {
     const owner = sharedProviderRefreshes.get(providerId);
     if (!owner || owner.settled || owner.controller.signal.aborted) return undefined;
@@ -349,13 +514,19 @@ export async function createClientRuntime(
   const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
     signal?.throwIfAborted();
     readinessSignal.throwIfAborted();
-    const owner = liveSharedProviderRefresh(providerId) ?? startSharedProviderRefresh(providerId);
+    const owner =
+      liveSharedProviderRefresh(providerId) ??
+      startSharedProviderRefresh(
+        { connection, providers, readinessSignal, providerProbeDeadlineMs, sharedProviderRefreshes },
+        providerId,
+      );
     owner.waiters += 1;
     try {
       return await waitForSharedRefresh(owner.promise, signal);
     } finally {
       owner.waiters -= 1;
       if (owner.waiters === 0 && !owner.settled) {
+        /* v8 ignore else -- the shared map still holds this owner while its last waiter unwinds. */
         if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
         owner.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
       }
@@ -364,20 +535,6 @@ export async function createClientRuntime(
   const refreshCapability = async (): Promise<void> => {
     const results = await Promise.allSettled([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
-      refreshImCliReadiness(
-        connection,
-        "feishu",
-        options.larkCliCommand ?? "lark-cli",
-        sourceEnvironment,
-        readinessSignal,
-      ),
-      refreshImCliReadiness(
-        connection,
-        "slack",
-        options.slackCliCommand ?? "slack",
-        sourceEnvironment,
-        readinessSignal,
-      ),
     ]);
     readinessSignal.throwIfAborted();
     const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
@@ -402,18 +559,43 @@ export async function createClientRuntime(
     capabilityAbort.abort(error);
     throw error;
   }
+  loginShellDiscovery.enable();
 
   const bindingStore = new SessionBindingStore({
     home: options.home,
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
-  const reportOwner = new TurnReportOwner({ connection });
+  const durabilityStore =
+    options.durabilityStore ??
+    (options.serverDurability
+      ? new ServerRuntimeDurabilityStore(options.serverDurability)
+      : new FileRuntimeDurabilityStore(options.home));
+  const durabilityMetrics = options.durabilityMetrics ?? new RuntimeDurabilityMetrics();
+  const reportOwner = new TurnReportOwner({
+    connection,
+    metrics: durabilityMetrics,
+    persistence: durabilityStore,
+  });
   const credentialEnvironment = new ImCredentialEnvironmentManager({
     connection,
     home: options.home,
     logger: moduleLogger("im-credential-environment"),
   });
+  const providerCliReconciler = new ProviderCliReconciler({
+    connection,
+    manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
+    signal: readinessSignal,
+    validation: new ProviderCliValidationRunner({ home: options.home }),
+  });
+  await mkdir(options.home, { recursive: true, mode: 0o700 });
+  const providerCliTurnPlans = new ProviderCliTurnPlanManager({
+    accountHome: resolveAccountHome(),
+    openTagHome: options.home,
+    readySelection: providerCliReconciler.readySelectionForRun.bind(providerCliReconciler),
+    runnerInvocation: resolveProviderCliTurnRunnerInvocation(),
+  });
+  await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
@@ -423,11 +605,14 @@ export async function createClientRuntime(
     home: options.home,
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
+    providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
+    inheritedPath: sourceEnvironment.PATH,
+    slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
     workspace,
   });
   const reconciler = new SessionReconciler({
-    computerId: connection.computerId,
+    installationId: connection.installationId,
     preparation: runtimeManager,
     localPolicy: runtimeManager,
   });
@@ -435,9 +620,15 @@ export async function createClientRuntime(
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
     cliCommand: options.cliCommand ?? "opentag",
+    credentialEnvironment,
+    imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
+    metrics: durabilityMetrics,
+    persistence: durabilityStore,
     reconciler,
     runtimeManager,
+    turnPlan: providerCliTurnPlans,
   });
+  await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
   const resourceFetcher = new ImResourceFetcher({
     instanceId: connection.instanceId,
     api: options.api,
@@ -457,6 +648,8 @@ export async function createClientRuntime(
   const custody = new TurnCustodyOwner({
     admission,
     bindingStore,
+    imDeliveryVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imDelivery),
+    imSteerVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imSteer),
     reconciler,
     preflight,
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
@@ -473,24 +666,33 @@ export async function createClientRuntime(
     resourceFetcher,
     runtimeManager,
     credentialEnvironment,
+    turnPlan: providerCliTurnPlans,
+  });
+  const availabilityTester = new AgentRuntimeAvailabilityTester({
+    factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
+    availabilityTester,
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
+    admission,
     bindingStore,
     custody,
     credentialEnvironment,
     sessionMessageInbox,
     reconciler,
     reportOwner,
+    durabilityMetrics,
     runner,
     runtimeManager,
     workspace,
     refreshCapability,
+    providerCliReconciler,
+    providerCliTurnPlans,
     capabilityAbort,
     capabilityRefreshIntervalMs: Math.max(
       10,
@@ -521,62 +723,32 @@ export function providerReadiness(
   return { provider, status: "unavailable" };
 }
 
-export async function refreshImCliReadiness(
-  connection: Pick<RuntimeConnection, "setImCliReadiness">,
-  provider: RuntimeImCliReadinessObservation["provider"],
-  configuredCommand: string,
-  environment: NodeJS.ProcessEnv,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (signal?.aborted) return;
-  connection.setImCliReadiness({ provider, status: "checking" });
-  const probe = (async () => {
-    let command: string;
-    try {
-      command = await resolveExecutable(configuredCommand, environment);
-    } catch {
-      return "install" as const;
-    }
-    const execution = { env: environment, signal, timeout: 10_000, windowsHide: true } as const;
-    try {
-      if (provider === "feishu") {
-        await execFileAsync(command, ["--version"], execution);
-        await execFileAsync(command, ["im", "--help"], execution);
-      } else {
-        await execFileAsync(command, ["version"], execution);
-        await execFileAsync(command, ["api", "--help"], execution);
-      }
-      return "ready" as const;
-    } catch {
-      return "unavailable" as const;
-    }
-  })();
-  let onAbort: (() => void) | undefined;
-  const status = await (signal
-    ? Promise.race([
-        probe,
-        new Promise<"aborted">((resolve) => {
-          if (signal.aborted) {
-            resolve("aborted");
-            return;
-          }
-          onAbort = () => resolve("aborted");
-          signal.addEventListener("abort", onAbort, { once: true });
-        }),
-      ]).finally(() => {
-        if (onAbort) signal.removeEventListener("abort", onAbort);
-      })
-    : probe);
-  if (status === "aborted" || signal?.aborted) return;
-  connection.setImCliReadiness({ provider, status });
-}
-
 export interface ResolvedCodexFactoryOptions {
   readonly clientVersion: string;
   readonly codexHome: string;
   readonly command: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => CodexAgentRuntimeFactory;
+}
+
+function claudeCodeProcessEnvironment(
+  sourceEnvironment: NodeJS.ProcessEnv,
+  claudeCodeHome: string,
+  defaultClaudeCodeHome: string,
+): NodeJS.ProcessEnv {
+  // Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
+  // value equals its own default. Omit the variable only when the resolved home is that default.
+  if (claudeCodeHome === defaultClaudeCodeHome) {
+    const environment = { ...sourceEnvironment };
+    delete environment.CLAUDE_CONFIG_DIR;
+    return claudeCodeAgentRuntimeEnvironment(environment);
+  }
+  return claudeCodeAgentRuntimeEnvironment({
+    ...sourceEnvironment,
+    CLAUDE_CONFIG_DIR: claudeCodeHome,
+  });
 }
 
 function productionProviderRegistration(
@@ -609,27 +781,124 @@ function productionProviderRegistration(
     : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
 }
 
+function withSearchBinOnPath(
+  environment: NodeJS.ProcessEnv,
+  resolved: ResolvedAgentRuntimeExecutable,
+  pathDelimiter: string = delimiter,
+): NodeJS.ProcessEnv {
+  if (resolved.source === "explicit" || !resolved.searchDir) return environment;
+  const current = environment.PATH;
+  if (!current) return { ...environment, PATH: resolved.searchDir };
+  if (current === resolved.searchDir || current.startsWith(`${resolved.searchDir}${pathDelimiter}`)) {
+    return environment;
+  }
+  return { ...environment, PATH: `${resolved.searchDir}${pathDelimiter}${current}` };
+}
+
+function translateExecutableDiscoveryError(
+  error: unknown,
+  signal: AbortSignal | undefined,
+  artifactMessage: string,
+): AgentRuntimeProbeResult {
+  if (signal?.aborted) throw error;
+  if (error instanceof AgentRuntimeExecutableNotFoundError) {
+    return {
+      ready: false,
+      issues: [{ code: "artifact_missing", message: artifactMessage }],
+    };
+  }
+  if (error instanceof AgentRuntimeExecutableDiscoveryError) {
+    return {
+      ready: false,
+      issues: [{ code: "temporarily_unavailable", message: artifactMessage }],
+    };
+  }
+  throw error;
+}
+
+interface ResolvedFactoryProbeOptions<TFactory extends AgentRuntimeFactory> {
+  readonly provider: AgentRuntimeProvider;
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidate: (command: string, environment: NodeJS.ProcessEnv) => TFactory;
+  readonly artifactMessage: string;
+  readonly onReady: (factory: TFactory) => void;
+}
+
+async function probeResolvedFactory<TFactory extends AgentRuntimeFactory>(
+  request: AgentRuntimeProbeRequest,
+  options: ResolvedFactoryProbeOptions<TFactory>,
+): Promise<AgentRuntimeProbeResult> {
+  request.signal?.throwIfAborted();
+  let lastBinaryResult: AgentRuntimeProbeResult | undefined;
+  const candidates = iterateAgentRuntimeExecutables(
+    options.provider,
+    options.command,
+    options.sourceEnvironment,
+    options.discovery,
+  );
+  while (true) {
+    const candidateStep = await nextExecutableCandidate(candidates, request.signal, options.artifactMessage);
+    if ("result" in candidateStep) return candidateStep.result;
+    if (candidateStep.step.done) break;
+    request.signal?.throwIfAborted();
+    const environment = withSearchBinOnPath(
+      options.environment,
+      candidateStep.step.value,
+      options.discovery?.pathDelimiter ?? delimiter,
+    );
+    const candidate = options.createCandidate(candidateStep.step.value.path, environment);
+    const result = await candidate.probe(request);
+    if (result.ready) {
+      options.onReady(candidate);
+      return result;
+    }
+    if (!canAdvanceRuntimeCandidate(result)) return result;
+    lastBinaryResult = result;
+  }
+  return lastBinaryResult ?? { ready: false, issues: [{ code: "artifact_missing", message: options.artifactMessage }] };
+}
+
+async function nextExecutableCandidate(
+  candidates: AsyncGenerator<ResolvedAgentRuntimeExecutable>,
+  signal: AbortSignal | undefined,
+  artifactMessage: string,
+): Promise<
+  { readonly step: IteratorResult<ResolvedAgentRuntimeExecutable> } | { readonly result: AgentRuntimeProbeResult }
+> {
+  try {
+    return { step: await candidates.next() };
+  } catch (error) {
+    return { result: translateExecutableDiscoveryError(error, signal, artifactMessage) };
+  }
+}
+
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string, environment: NodeJS.ProcessEnv) =>
+      new CodexAgentRuntimeFactory({
+        clientVersion: options.clientVersion,
+        process: { command, env: environment, expectedCodexHome: options.codexHome },
+      }));
   return {
     manifest: CODEX_AGENT_RUNTIME_MANIFEST,
-    async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
-      let command: string;
-      try {
-        request.signal?.throwIfAborted();
-        command = await resolveExecutable(options.command, options.sourceEnvironment);
-      } catch (error) {
-        if (request.signal?.aborted) throw error;
-        return { ready: false, issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }] };
-      }
-      const candidate = new CodexAgentRuntimeFactory({
-        clientVersion: options.clientVersion,
-        process: { command, env: options.environment, expectedCodexHome: options.codexHome },
-      });
-      const result = await candidate.probe(request);
-      if (result.ready) readyFactory = candidate;
-      return result;
-    },
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "codex",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Codex CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyCodexFactory(readyFactory).create(request);
     },
@@ -649,31 +918,33 @@ export interface ResolvedClaudeCodeFactoryOptions {
   readonly command: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => ClaudeCodeAgentRuntimeFactory;
 }
 
 export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOptions): AgentRuntimeFactory {
   let readyFactory: ClaudeCodeAgentRuntimeFactory | undefined;
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string, environment: NodeJS.ProcessEnv) =>
+      new ClaudeCodeAgentRuntimeFactory({
+        process: { command, env: environment },
+      }));
   return {
     manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
-    async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
-      let command: string;
-      try {
-        request.signal?.throwIfAborted();
-        command = await resolveExecutable(options.command, options.sourceEnvironment);
-      } catch (error) {
-        if (request.signal?.aborted) throw error;
-        return {
-          ready: false,
-          issues: [{ code: "artifact_missing", message: "Claude Code CLI could not be executed" }],
-        };
-      }
-      const candidate = new ClaudeCodeAgentRuntimeFactory({
-        process: { command, env: options.environment },
-      });
-      const result = await candidate.probe(request);
-      if (result.ready) readyFactory = candidate;
-      return result;
-    },
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "claude-code",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Claude Code CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
     create(request: CreateAgentRuntimeRequest) {
       return requireReadyClaudeCodeFactory(readyFactory).create(request);
     },
@@ -692,30 +963,6 @@ function requireReadyClaudeCodeFactory(
 
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
-}
-
-export async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
-  if (isAbsolute(command)) {
-    await access(command, constants.X_OK);
-    return realpath(command);
-  }
-  const path = environment.PATH;
-  if (!path) throw new Error("PATH is unavailable while locating an Agent Runtime provider");
-  /* v8 ignore next -- executable suffix probing is a Windows-only branch. */
-  const extensions = process.platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
-  for (const directory of path.split(delimiter)) {
-    if (!directory) continue;
-    for (const extension of extensions) {
-      const candidate = join(directory, `${command}${extension}`);
-      try {
-        await access(candidate, constants.X_OK);
-        return await realpath(candidate);
-      } catch {
-        // Continue through the explicit PATH allowlist.
-      }
-    }
-  }
-  throw new Error("A compatible Agent Runtime provider executable is unavailable");
 }
 
 interface ClientRuntimePreflightDependencies {

@@ -288,7 +288,7 @@ function reconcileRequest(agentId: string, sessionId: string): SessionReconcileR
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId: "computer-1",
+    installationId: "computer-1",
     sessionId,
     agentId,
     placementGeneration: 1,

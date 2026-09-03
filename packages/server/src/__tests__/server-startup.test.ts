@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   appOptions: undefined as unknown,
   onClose: undefined as (() => Promise<void>) | undefined,
   database: undefined as unknown,
-  selectedAgents: [] as Array<{ workspaceComputerId: string; runtimeProvider: "codex" | "claude-code" }>,
+  selectedAgents: [] as Array<{ computerId: string; runtimeProvider: "codex" | "claude-code" }>,
   sql: { end: vi.fn() },
   parseServerConfig: vi.fn(),
   migrateDatabase: vi.fn(),
@@ -18,6 +18,11 @@ const state = vi.hoisted(() => ({
   registrySupportsProvider: vi.fn(),
   registryProviderReadiness: vi.fn(),
   registryImCliReadiness: vi.fn(),
+  registryCloseComputer: vi.fn(),
+  machineAuthOptions: undefined as unknown,
+  agentOptions: undefined as unknown,
+  domainRequestReconcile: vi.fn(),
+  sessionCliPrepareReconcile: vi.fn(),
   imBindingOptions: undefined as unknown,
   imBindingGetAgentComputerId: vi.fn(),
   feishuConnectionOptions: undefined as unknown,
@@ -31,7 +36,6 @@ const state = vi.hoisted(() => ({
   workerStop: vi.fn(),
   domainOptions: undefined as unknown,
   issueRuntimeCredentialGrant: vi.fn(),
-  googleOptions: undefined as unknown,
   devAuthArgs: undefined as unknown,
   slackAdapterOptions: undefined as unknown,
 }));
@@ -71,7 +75,15 @@ vi.mock("../runtime/connection-registry.js", () => ({
     imCliReadiness(computerId: string) {
       return state.registryImCliReadiness(computerId);
     }
-    closeEnrollment() {}
+    providerCliArtifactReadiness(computerId: string) {
+      return state.registryImCliReadiness(computerId);
+    }
+    providerCliCredentialReadiness() {
+      return [];
+    }
+    closeComputer(computerId: string) {
+      return state.registryCloseComputer(computerId);
+    }
   },
   RuntimeRegistrySendError: class extends Error {},
 }));
@@ -90,29 +102,80 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
     }
   },
 }));
+vi.mock("../runtime/agent-runtime-test-owner.js", () => ({ AgentRuntimeTestOwner: class {} }));
+vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
+  ProviderCliReconcileOwner: class {
+    ensureActiveReadiness() {
+      return Promise.resolve();
+    }
+    onAgentPlacementChanged() {
+      return Promise.resolve();
+    }
+  },
+}));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
+vi.mock("../runtime/agent-session-stopper.js", () => ({
+  stopAgentSessions: vi.fn(
+    async (
+      _database: unknown,
+      targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
+      dependencies: {
+        currentInstanceId(computerId: string): string | undefined;
+        requestReconcile(
+          computerId: string,
+          instanceId: string | undefined,
+          request: unknown,
+          onDispatched?: () => void,
+        ): Promise<unknown>;
+      },
+    ) => {
+      for (const target of targets) {
+        const instanceId = dependencies.currentInstanceId(target.computerId);
+        await dependencies.requestReconcile(target.computerId, instanceId, {
+          type: "session:reconcile",
+          desired: "stopped",
+        });
+      }
+    },
+  ),
+}));
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
   RuntimeDomainOwner: class {
     constructor(_registry: unknown, _store: unknown, options: unknown) {
       state.domainOptions = options;
     }
+    requestReconcile(computerId: string, instanceId: string | undefined, request: unknown, onDispatched?: () => void) {
+      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched);
+    }
   },
   RuntimeDomainRequestError: class extends Error {},
 }));
-vi.mock("../services/agents/index.js", () => ({ AgentService: class {}, AgentServiceError: class extends Error {} }));
-vi.mock("../services/auth/index.js", () => ({
-  AuthIdentityService: class {},
-  AuthService: class {
-    constructor(
-      _database: unknown,
-      readonly tokens: unknown,
-    ) {}
+vi.mock("../services/sessions/index.js", () => ({
+  SessionCliProofError: class extends Error {},
+  SessionCliProofService: class {
+    prepareReconcile(computerId: string, connectionInstanceId: string, request: unknown) {
+      return state.sessionCliPrepareReconcile(computerId, connectionInstanceId, request);
+    }
   },
+  SessionCollaborationService: class {},
+  SessionService: class {},
+  SessionServiceError: class extends Error {},
+}));
+vi.mock("../services/agents/index.js", () => ({
+  AgentRuntimeTestService: class {},
+  AgentService: class {
+    constructor(_database: unknown, options: unknown) {
+      state.agentOptions = options;
+    }
+  },
+  AgentServiceError: class extends Error {},
+  AgentSetupService: class {},
+}));
+vi.mock("../services/auth/index.js", () => ({
+  AuthService: class {},
   AuthServiceError: class extends Error {},
-  AuthTokenService: class {},
   ConnectCodeService: class {},
-  DefaultGoogleIdentityClient: class {},
   DevBrowserAuthService: class {
     constructor(...args: unknown[]) {
       state.devAuthArgs = args;
@@ -123,17 +186,23 @@ vi.mock("../services/auth/index.js", () => ({
     for (const secret of knownSecrets) if (secret) detail = detail.replaceAll(secret, "[REDACTED]");
     return detail;
   },
-  GoogleBrowserAuthService: class {
-    constructor(options: unknown) {
-      state.googleOptions = options;
-    }
-  },
-  OAuthFlowService: class {},
   PostAuthenticationService: class {},
+}));
+vi.mock("../services/channel-target/index.js", () => ({
+  createChannelTargetPoller: () => ({
+    get: () => undefined,
+    start: () => undefined,
+    stop: () => undefined,
+    refresh: async () => undefined,
+  }),
 }));
 vi.mock("../services/computers/index.js", () => ({
   ComputerService: class {},
-  MachineAuthService: class {},
+  MachineAuthService: class {
+    constructor(_database: unknown, options: unknown) {
+      state.machineAuthOptions = options;
+    }
+  },
 }));
 vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
@@ -175,7 +244,7 @@ vi.mock("../services/im-bindings/index.js", () => ({
     constructor(_database: unknown, _cipher: unknown, options: unknown) {
       state.imBindingOptions = options;
     }
-    getAgentWorkspaceComputerId(agentId: string) {
+    getAgentComputerId(agentId: string) {
       return state.imBindingGetAgentComputerId(agentId);
     }
     issueRuntimeCredentialGrant(request: unknown, computerId: string) {
@@ -195,14 +264,12 @@ vi.mock("../services/im-bindings/slack/index.js", () => ({
   },
 }));
 vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
-vi.mock("../services/workspaces/index.js", () => ({
-  WorkspaceAdminService: class {},
-  WorkspaceSetupService: class {},
+vi.mock("../services/setup/index.js", () => ({
+  AccountSetupService: class {},
 }));
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";
-import * as authModule from "../services/auth/index.js";
 
 const originalSecrets = {
   database: process.env.OPENTAG_DATABASE_URL,
@@ -216,8 +283,11 @@ const originalExitCode = process.exitCode;
 
 function defaultConfig() {
   return {
-    accessTokenTtlSeconds: 900,
     autoMigrate: true,
+    channelTarget: {
+      downloadBaseUrl: "https://download.test/releases",
+      pollIntervalMs: 300_000,
+    },
     databaseUrl: "postgres://db-user:db-password@localhost/opentag",
     encryptionKey: new Uint8Array(32),
     channel: {
@@ -244,7 +314,7 @@ function defaultConfig() {
     },
     port: 8000,
     publicUrl: "https://opentag.example.com",
-    refreshTokenTtlSeconds: 2_592_000,
+    sessionTtlSeconds: 2_592_000,
   };
 }
 
@@ -254,13 +324,12 @@ beforeEach(() => {
   state.config = defaultConfig();
   state.appOptions = undefined;
   state.onClose = undefined;
-  state.selectedAgents = [{ workspaceComputerId: "workspace-computer-1", runtimeProvider: "codex" }];
+  state.selectedAgents = [{ computerId: "computer-1", runtimeProvider: "codex" }];
   state.imBindingOptions = undefined;
   state.feishuConnectionOptions = undefined;
   state.feishuSetupOptions = undefined;
   state.workerOptions = undefined;
   state.domainOptions = undefined;
-  state.googleOptions = undefined;
   state.devAuthArgs = undefined;
   state.slackAdapterOptions = undefined;
   state.sql = { end: vi.fn(async () => state.events.push("sql:end")) };
@@ -349,21 +418,14 @@ describe("Server startup", () => {
     ]);
 
     const appOptions = state.appOptions as {
-      browserAuth: { devSignIn: unknown; google: unknown; secureCookies: boolean };
+      browserAuth: { devSignIn: unknown; googleSignIn: unknown; secureCookies: boolean };
       slackEvents: { createAdapter(binding: unknown): unknown };
     };
     expect(appOptions.browserAuth).toMatchObject({ secureCookies: true });
     expect(appOptions.browserAuth.devSignIn).toBe(true);
-    expect(appOptions.browserAuth.google).toBeDefined();
+    // Google sign-in is a flag now: the whole flow lives in Better Auth, so there is no service to hand a route.
+    expect(appOptions.browserAuth.googleSignIn).toBe(true);
     expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
-    expect(state.googleOptions).toMatchObject({ publicUrl: state.config.publicUrl });
-    /*
-     * The retained legacy callback only ever completes a flow that started before this revision deployed, and it
-     * writes its result into the legacy cookies. Handing it the bridged issuer would put a session token there:
-     * authenticated through the fallback, invisible to `getSession`, and therefore beyond what sign-out can revoke.
-     */
-    const googleIssuer = (state.googleOptions as { tokenIssuer: { tokens: unknown } }).tokenIssuer;
-    expect(googleIssuer.tokens).toBeInstanceOf(authModule.AuthTokenService);
 
     const slackBinding = {
       botAccessToken: "xoxb-current",
@@ -387,7 +449,7 @@ describe("Server startup", () => {
       }
     ).imCliReadiness;
     state.registryImCliReadiness.mockReturnValue([
-      { observation: { provider: "feishu", status: "ready" }, observedAt: Date.now() },
+      { observation: { agentId: "agent-1", provider: "feishu", status: "ready" }, observedAt: Date.now() },
     ]);
     await expect(imCliReadiness("agent-1", "feishu")).resolves.toBe("ready");
     state.registryImCliReadiness.mockReturnValue([]);
@@ -432,9 +494,8 @@ describe("Server startup", () => {
           placementGeneration: 3,
         },
         {
-          computerId: "computer-1",
-          workspaceComputerId: "workspace-computer-1",
-          workspaceId: "workspace-1",
+          computerId: "workspace-computer-1",
+          installationId: "computer-1",
           instanceId: "instance-1",
         },
       ),
@@ -442,9 +503,8 @@ describe("Server startup", () => {
     expect(state.issueRuntimeCredentialGrant).toHaveBeenCalledWith(
       expect.objectContaining({ type: "im:credential", requestId: "request-1" }),
       expect.objectContaining({
-        computerId: "computer-1",
-        workspaceComputerId: "workspace-computer-1",
-        workspaceId: "workspace-1",
+        computerId: "workspace-computer-1",
+        installationId: "computer-1",
       }),
     );
 
@@ -466,6 +526,47 @@ describe("Server startup", () => {
     ]);
   });
 
+  it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {
+    await startServer();
+
+    const machineAuth = state.machineAuthOptions as {
+      onCredentialRotated(computerId: string): Promise<void>;
+    };
+    state.registryCloseComputer.mockResolvedValue(true);
+    await machineAuth.onCredentialRotated("computer-9");
+    expect(state.registryCloseComputer).toHaveBeenCalledWith("computer-9");
+
+    const prepareReconcile = (
+      state.domainOptions as {
+        prepareReconcile(computerId: string, connectionInstanceId: string, request: unknown): Promise<unknown>;
+      }
+    ).prepareReconcile;
+    state.sessionCliPrepareReconcile.mockResolvedValue({ type: "session:reconcile" });
+    const reconcile = { type: "session:reconcile", desired: "ready" };
+    await prepareReconcile("computer-2", "instance-2", reconcile);
+    expect(state.sessionCliPrepareReconcile).toHaveBeenCalledWith("computer-2", "instance-2", reconcile);
+
+    const stopSessions = (
+      state.agentOptions as {
+        stopSessions(
+          targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
+        ): Promise<void>;
+      }
+    ).stopSessions;
+    state.registryCurrentInstanceId.mockReturnValue("instance-3");
+    state.domainRequestReconcile.mockResolvedValue({ status: "stopped" });
+    await stopSessions([
+      { agentId: "agent-1", computerId: "computer-1", placementGeneration: 2, sessionId: "session-1" },
+    ]);
+    expect(state.registryCurrentInstanceId).toHaveBeenCalledWith("computer-1");
+    expect(state.domainRequestReconcile).toHaveBeenCalledWith(
+      "computer-1",
+      "instance-3",
+      expect.objectContaining({ desired: "stopped" }),
+      undefined,
+    );
+  });
+
   it("verifies checked-in migrations before listening when auto-migrate is disabled", async () => {
     state.config = { ...defaultConfig(), autoMigrate: false, google: undefined, devAuth: undefined };
 
@@ -477,9 +578,10 @@ describe("Server startup", () => {
       state.config.migrationsDirectory,
     );
     expect(state.events.indexOf("migration:verify")).toBeLessThan(state.events.indexOf("listen"));
-    const browserAuth = (state.appOptions as { browserAuth: { google?: unknown; dev?: unknown } }).browserAuth;
-    expect(browserAuth.google).toBeUndefined();
-    expect(browserAuth.dev).toBeUndefined();
+    const browserAuth = (state.appOptions as { browserAuth: { googleSignIn?: unknown; devSignIn?: unknown } })
+      .browserAuth;
+    expect(browserAuth.googleSignIn).toBe(false);
+    expect(browserAuth.devSignIn).toBe(false);
   });
 
   it.each([

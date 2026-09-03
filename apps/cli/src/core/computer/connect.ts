@@ -1,13 +1,15 @@
 import { arch, hostname, platform } from "node:os";
 import {
+  allocateComputerIdentity,
   machineCredentialsPath,
   normalizeServerUrl,
-  OpenTagApi,
-  resolveComputerIdentity,
+  type OpenTagApi,
   resolveOpenTagHome,
-  storeMachineEnrollmentCredential,
+  storeBoundAccountComputer,
+  writeComputerIdentityAtomically,
 } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
+import { resolveCommandContext } from "../command/context.js";
 import {
   createDaemonServiceManager,
   type DaemonServiceInfo,
@@ -24,6 +26,8 @@ export interface ComputerConnectOptions {
 }
 
 export interface ComputerConnectResult {
+  agentId?: string;
+  computerId: string;
   credentialsPath: string;
   message: string;
   service?: DaemonServiceInfo;
@@ -50,20 +54,26 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   const manager = options.noStart ? undefined : (options.manager ?? (await createDaemonServiceManager({ home })));
   await manager?.preflight();
   const serviceBefore = await manager?.status();
-  const identity = await resolveComputerIdentity(home, serverUrl);
-  const api = options.api ?? new OpenTagApi(serverUrl);
-  const enrollment = await api.exchangeComputerConnectCode({
+  const identity = await allocateComputerIdentity(home, serverUrl);
+  const api = options.api ?? (await resolveCommandContext({ home, serverUrl })).api;
+  if (!api) throw new Error("Command context did not resolve an API");
+  const exchange = await api.exchangeComputerConnectCode({
     code: options.code,
-    computerId: identity.computerId,
+    installationId: identity.computerId,
     displayName: hostname(),
     platform: currentPlatform,
     arch: arch(),
     clientVersion: CLI_VERSION,
   });
-  await storeMachineEnrollmentCredential({ ...enrollment, serverUrl }, home);
+  await writeComputerIdentityAtomically(home, identity);
+  await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
   const result: ComputerConnectResult = {
+    ...(exchange.agentId ? { agentId: exchange.agentId } : {}),
+    computerId: exchange.computerId,
     credentialsPath: machineCredentialsPath(home),
-    message: "Connected this Computer",
+    message: exchange.agentId
+      ? `Connected Computer ${exchange.computerId} and bound Agent ${exchange.agentId}`
+      : `Connected Computer ${exchange.computerId}`,
   };
   if (!manager) return result;
 

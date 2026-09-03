@@ -18,7 +18,7 @@ identity rewrite, and the same version coordinate as the npm package it accompan
 ## Installing
 
 ~~~bash
-curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh
+curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
 ~~~
 
 The installer resolves the channel's `latest.json`, downloads the tarball for the detected platform, verifies its
@@ -68,6 +68,41 @@ bin/<binName>           Artifact-local shim, used before the payload is activate
 The bundled CLI has no `node_modules`: `apps/cli` declares no runtime dependencies, and the build fails closed if that
 ever changes rather than shipping an artifact that only breaks when a user runs it.
 
+## Automatic upgrades
+
+Portable is the only install mode with fully supported automatic upgrades; an npm-global install never upgrades
+itself and uses the manual `opentag upgrade` / `opentag upgrade --check` commands instead. One exact target per
+channel, no cohorts or canaries: the Server polls the channel's published `latest.json` and advertises that exact
+target to connected Clients on v2 heartbeat results (the `runtime.channelTarget` capability — see
+[runtime-protocol.md](./runtime-protocol.md)).
+
+The daemon's updater follows a strict contract:
+
+- **Exact target identity, monotonic precedence.** Only an exact version-string match is already current, so a target
+  that differs only by SemVer build metadata is still installed. SemVer precedence is used only to reject an older
+  target; the target must also belong to the Client's own channel, and an automatic downgrade never happens.
+- **Protected work comes first.** Before installing, the updater waits indefinitely until the Session module reports
+  no protected work — no accepted Turn under local custody, no pending Turn completion or report, and no accepted
+  IM delivery could be lost or duplicated by the handoff. The Session module bounds every one of those units (Turn
+  budgets, delivery deadlines, report retries with terminal outcomes), so the updater adds no force timeout of its
+  own. New-work admission is closed before the zero-work snapshot; deliveries accepted before that point continue
+  draining, while later deliveries receive a retryable busy result.
+- **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
+  an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
+  newer target or a manual `opentag upgrade`, which prevents retry and restart storms.
+- **The existing layout does the work.** The install downloads the immutable version manifest (never the channel
+  pointer), verifies the published SHA-256, extracts into a fresh immutable version directory, smoke-checks the new
+  runtime, rewrites the stable shim, and moves `current` in one atomic switch — the same mechanics as `install.sh`.
+- **Service refresh and handoff.** After the switch, the updater runs `daemon refresh-service` through the newly
+  installed binary so the supervisor definition is rewritten by the version that will run next, without restarting
+  anything itself. It then exits with the reserved supervisor-restart exit code `75`: systemd maps it to a clean
+  forced restart (`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`), and launchd restarts it through
+  `KeepAlive.SuccessfulExit=false`. The stable shim means the restarted service runs the new version with the
+  OpenTag home, Account credentials, Computer connection, Agents, and placement untouched.
+
+Current version, target, updater state, and the last attempt with its failure reason are visible in
+`opentag daemon status`.
+
 ## Published object layout
 
 ~~~text
@@ -79,7 +114,7 @@ ever changes rather than shipping an artifact that only breaks when a user runs 
 ~~~
 
 Default coordinates are the `opentag-release` bucket under the `releases` prefix, served from
-`https://download.opentag.build/releases`.
+`https://storage.googleapis.com/opentag-release/releases`.
 
 Everything under a version prefix is immutable and written with a create-only precondition
 (`--if-generation-match=0`) plus a `--content-md5` digest, so Cloud Storage rejects both a silent overwrite and a
@@ -186,7 +221,7 @@ Required repository variables:
 | `OPENTAG_PORTABLE_GCS_BUCKET` | Bucket name (default `opentag-release`) |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | Object prefix before the channel segment (default `releases`) |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | Project used for `gcloud` calls |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Public base URL (default `https://download.opentag.build/releases`) |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Public base URL (default `https://storage.googleapis.com/opentag-release/releases`) |
 | `OPENTAG_PORTABLE_PLATFORMS` | Optional platform filter for the build |
 
 Publishing uses workload identity federation, so no service-account key is stored in the repository. The service
@@ -207,8 +242,9 @@ the public verification gate fails and the channel pointers are deliberately lef
 
 - The installer needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`. Linux and macOS on x64 and arm64 are
   supported; Windows is not.
-- After activation the installer runs `daemon ensure-service`. Exit code 3 means the CLI deferred service setup until
-  `login` creates credentials, which is the normal first-install path and not a failure.
+- The installer only installs or upgrades OpenTag. The onboarding command runs `opentag connect`, which exchanges the
+  one-time Computer code, binds its explicit Agent/Computer target, and then installs or restarts the daemon service.
+  Provider CLI detection and installation belongs to that active daemon, never to `install.sh`.
 - Any released version can be installed directly with `sh install.sh --version <version>`, which reads that version's
   immutable manifest and never consults the channel pointer. This is how a rollback is performed, and how the release
   gate installs a release before it is advertised.

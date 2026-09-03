@@ -3,8 +3,7 @@ import {
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
-  AGENT_SLACK_CONFIGURATION_TEMPLATE,
-  ConfigureSlackAppRequestSchema,
+  AGENT_IM_BINDING_UNBIND_TEMPLATE,
   CreateFeishuSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
@@ -14,8 +13,7 @@ import {
   ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
-  SlackAppConfigurationSchema,
-  SlackConfigurationResultSchema,
+  UnbindAgentMessagingRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -23,7 +21,6 @@ import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plu
 import type { UserAuthService } from "../services/auth/index.js";
 import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
-import type { SlackConfigurationService } from "../services/im-bindings/slack/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
@@ -41,7 +38,6 @@ export function registerImBindingRoutes(
   authService: UserAuthService,
   imBindings: ImBindingService,
   feishu: FeishuSetupService | undefined,
-  slack: SlackConfigurationService | undefined,
   authOptions?: UserAuthPreHandlerOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
@@ -68,7 +64,12 @@ export function registerImBindingRoutes(
     app.post(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const input = parseRequest(CreateFeishuSetupAttemptRequestSchema, request.body ?? {});
-      const attempt = await feishu.createOrReuse(authenticatedUserId(request), agentId, input.intent);
+      const attempt = await feishu.createOrReuse(
+        authenticatedUserId(request),
+        agentId,
+        input.intent,
+        input.expectedMessaging,
+      );
       return reply.code(201).send(FeishuSetupAttemptSchema.parse(attempt));
     });
 
@@ -87,20 +88,12 @@ export function registerImBindingRoutes(
     });
   }
 
-  if (slack) {
-    app.get(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(AgentParamsSchema, request.params);
-      const configuration = await slack.get(authenticatedUserId(request), agentId);
-      return reply.code(200).send(SlackAppConfigurationSchema.parse(configuration));
-    });
-
-    app.put(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(AgentParamsSchema, request.params);
-      const input = parseRequest(ConfigureSlackAppRequestSchema, request.body);
-      const configured = await slack.configure(authenticatedUserId(request), agentId, input);
-      return reply.code(200).send(SlackConfigurationResultSchema.parse(configured));
-    });
-  }
+  app.post(AGENT_IM_BINDING_UNBIND_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const input = parseRequest(UnbindAgentMessagingRequestSchema, request.body ?? {});
+    await imBindings.unbindForAgent(authenticatedUserId(request), agentId, input);
+    return reply.code(204).send();
+  });
 
   app.post(`${IM_BINDING_BY_ID_TEMPLATE}/disable`, { preHandler }, async (request, reply) => {
     const { imBindingId } = parseRequest(ImBindingParamsSchema, request.params);

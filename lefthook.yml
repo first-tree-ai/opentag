@@ -1,0 +1,39 @@
+# Local Git quality gates.
+#
+# Hooks are written into the shared Git hooks directory by `scripts/install-git-hooks.mjs`, which the
+# root `prepare` lifecycle runs on every `pnpm install`. Create `lefthook-local.yml` for personal
+# overrides; set `LEFTHOOK=0` to bypass a single command.
+#
+# `post-checkout` is deliberately absent: it bootstraps a brand new worktree before its `node_modules`
+# exists, so it cannot depend on the lefthook binary. It lives in `scripts/git-hooks/post-checkout`.
+
+assert_lefthook_installed: true
+
+pre-commit:
+  parallel: false
+  skip:
+    - merge
+    - rebase
+  jobs:
+    - name: biome
+      glob:
+        - "*.{js,jsx,mjs,cjs,ts,tsx,mts,cts,json,jsonc,css}"
+      run: pnpm exec biome check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+      stage_fixed: true
+      fail_text: "Biome reported problems it cannot fix automatically. Fix them and stage the result."
+
+pre-push:
+  parallel: true
+  jobs:
+    - name: lint
+      run: pnpm exec biome lint .
+      fail_text: "Lint rules failed. Run `pnpm lint` for details."
+    - name: format
+      run: pnpm exec biome format .
+      fail_text: "Formatting drifted. Run `pnpm format` and commit the result."
+    - name: check
+      run: pnpm check
+      fail_text: "Repository checks failed. Run `pnpm check` for details."
+    - name: typecheck
+      run: pnpm typecheck
+      fail_text: "Type-checking failed. Run `pnpm typecheck` for details."

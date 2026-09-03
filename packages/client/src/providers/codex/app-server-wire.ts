@@ -1,16 +1,33 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const CODEX_APP_SERVER_MAX_LINE_BYTES = 1024 * 1024;
+export const CODEX_APP_SERVER_MAX_STDERR_BYTES = 64 * 1024;
 export const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
 
 export class CodexAppServerError extends Error {
+  readonly errno?: string;
+  readonly exitCode?: number | null;
+  readonly signal?: NodeJS.Signals | null;
+  readonly killed?: boolean;
+
   constructor(
     readonly code: "aborted" | "exited" | "protocol" | "spawn" | "timeout" | "write",
     message: string,
+    evidence: {
+      readonly errno?: string;
+      readonly exitCode?: number | null;
+      readonly signal?: NodeJS.Signals | null;
+      readonly killed?: boolean;
+    } = {},
   ) {
     super(message);
     this.name = "CodexAppServerError";
+    if (evidence.errno !== undefined) this.errno = evidence.errno;
+    if (evidence.exitCode !== undefined) this.exitCode = evidence.exitCode;
+    if (evidence.signal !== undefined) this.signal = evidence.signal;
+    if (evidence.killed !== undefined) this.killed = evidence.killed;
   }
 }
 
@@ -31,7 +48,9 @@ export interface CodexSpawnOptions {
   env: NodeJS.ProcessEnv;
   expectedCodexHome?: string;
   maxLineBytes?: number;
+  maxStderrBytes?: number;
   requestTimeoutMs?: number;
+  logger?: ClientLogger;
   spawnProcess?: (
     command: string,
     args: readonly string[],
@@ -89,7 +108,9 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #expectedCodexHome?: string;
   readonly #maxLineBytes: number;
+  readonly #maxStderrBytes: number;
   readonly #requestTimeoutMs: number;
+  readonly #logger: ClientLogger;
   readonly #pending = new Map<number, PendingRequest>();
   readonly #listeners = new Set<(message: CodexAppServerMessage) => void>();
   readonly #serverRequestListeners = new Set<(request: CodexAppServerRequest) => void>();
@@ -100,6 +121,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #exit: Promise<void>;
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
+  #stderr = Buffer.alloc(0);
   #nextId = 1;
   #closed = false;
   #closing = false;
@@ -109,13 +131,10 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   constructor(options: CodexSpawnOptions) {
     this.#expectedCodexHome = options.expectedCodexHome;
     this.#maxLineBytes = options.maxLineBytes ?? CODEX_APP_SERVER_MAX_LINE_BYTES;
+    this.#maxStderrBytes = options.maxStderrBytes ?? CODEX_APP_SERVER_MAX_STDERR_BYTES;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? CODEX_APP_SERVER_REQUEST_TIMEOUT_MS;
-    if (!Number.isSafeInteger(this.#maxLineBytes) || this.#maxLineBytes < 1024) {
-      throw new Error("maxLineBytes must be a safe integer of at least 1024");
-    }
-    if (!Number.isSafeInteger(this.#requestTimeoutMs) || this.#requestTimeoutMs < 1) {
-      throw new Error("requestTimeoutMs must be a positive safe integer");
-    }
+    validateOptions(this.#maxLineBytes, this.#maxStderrBytes, this.#requestTimeoutMs);
+    this.#logger = options.logger ?? createLogger("provider-codex");
     this.#exit = new Promise<void>((resolve) => {
       this.#resolveExit = resolve;
     });
@@ -126,20 +145,27 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         { cwd: options.cwd, env: options.env, detached: process.platform !== "win32" },
       );
     } catch (error) {
-      throw new CodexAppServerError("spawn", error instanceof Error ? error.message : "Codex could not be started");
+      this.#logger.debug({ code: "spawn_failed", error: String(error) }, "Codex App Server process spawn failed");
+      throw new CodexAppServerError(
+        "spawn",
+        error instanceof Error ? error.message : "Codex could not be started",
+        spawnEvidence(error),
+      );
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
-    this.#child.stderr.on("data", () => undefined);
-    this.#child.on("error", (error) => this.#fail(new CodexAppServerError("spawn", error.message)));
-    this.#child.on("exit", () => {
+    this.#child.stderr.on("data", (chunk: Buffer) => this.#onStderr(chunk));
+    this.#child.on("error", (error) =>
+      this.#fail(new CodexAppServerError("spawn", error.message, spawnEvidence(error))),
+    );
+    this.#child.on("exit", (exitCode, signal) => {
       this.#closed = true;
       this.#resolveExit?.();
       this.#resolveExit = undefined;
       if (!this.#failure && !this.#closing) {
         const error =
           this.#buffer.byteLength > 0
-            ? new CodexAppServerError("protocol", "Codex exited with a truncated JSONL line")
-            : new CodexAppServerError("exited", "Codex App Server exited");
+            ? new CodexAppServerError("protocol", this.#exitMessage("Codex exited with a truncated JSONL line"))
+            : new CodexAppServerError("exited", this.#exitMessage(), { exitCode, signal });
         this.#fail(error);
       }
     });
@@ -201,6 +227,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     return new Promise<unknown>((resolve, reject) => {
       const cleanup = () => {
         const pending = this.#pending.get(id);
+        /* v8 ignore else -- cleanup only runs while its own pending entry is registered. */
         if (pending) clearTimeout(pending.timer);
         this.#pending.delete(id);
         signal?.removeEventListener("abort", onAbort);
@@ -309,6 +336,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       try {
         message = JSON.parse(line.toString("utf8"));
       } catch {
+        this.#logger.debug({ code: "stdout_malformed_json" }, "Codex protocol output was rejected");
         this.#fail(new CodexAppServerError("protocol", "Codex emitted malformed JSONL"));
         return;
       }
@@ -322,6 +350,23 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     if (this.#buffer.byteLength > this.#maxLineBytes) {
       this.#fail(new CodexAppServerError("protocol", "Codex emitted an oversized JSONL line"));
     }
+  }
+
+  #onStderr(chunk: Buffer): void {
+    if (chunk.byteLength >= this.#maxStderrBytes) {
+      this.#stderr = Buffer.from(chunk.subarray(chunk.byteLength - this.#maxStderrBytes));
+      return;
+    }
+    const combined = Buffer.concat([this.#stderr, chunk]);
+    this.#stderr =
+      combined.byteLength > this.#maxStderrBytes
+        ? combined.subarray(combined.byteLength - this.#maxStderrBytes)
+        : combined;
+  }
+
+  #exitMessage(prefix = "Codex App Server exited"): string {
+    const stderr = this.#stderr.toString("utf8").trim();
+    return stderr ? `${prefix}: ${stderr}` : prefix;
   }
 
   #onMessage(message: Record<string, unknown>): void {
@@ -352,7 +397,11 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         for (const listener of this.#serverRequestListeners) {
           try {
             listener(request);
-          } catch {
+          } catch (error) {
+            this.#logger.debug(
+              { code: "server_request_listener_failed", error: String(error) },
+              "Codex server request listener failed",
+            );
             this.#pendingServerRequests.delete(message.id);
             this.#fail(new CodexAppServerError("protocol", "A Codex server request listener failed"));
             return;
@@ -371,7 +420,11 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     for (const listener of this.#listeners) {
       try {
         listener(message);
-      } catch {
+      } catch (error) {
+        this.#logger.debug(
+          { code: "protocol_listener_failed", error: String(error) },
+          "Codex protocol listener failed",
+        );
         this.#fail(new CodexAppServerError("protocol", "A Codex protocol listener rejected a message"));
         return;
       }
@@ -380,11 +433,25 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
 
   async #handleServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      await this.respondServerRequest(id, { decision: "cancel" }).catch(() => undefined);
+      await this.respondServerRequest(id, { decision: "cancel" }).catch(
+        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+          this.#logger.debug(
+            { code: "approval_response_failed", error: String(error) },
+            "Codex approval response failed",
+          );
+        },
+      );
       return;
     }
     if (method === "item/tool/requestUserInput") {
-      await this.respondServerRequest(id, { answers: {} }).catch(() => undefined);
+      await this.respondServerRequest(id, { answers: {} }).catch(
+        /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+          this.#logger.debug(
+            { code: "user_input_response_failed", error: String(error) },
+            "Codex user input response failed",
+          );
+        },
+      );
       return;
     }
     if (method === "item/tool/call") {
@@ -393,7 +460,14 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         await this.respondServerRequest(id, {
           contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }],
           success: false,
-        }).catch(() => undefined);
+        }).catch(
+          /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+            this.#logger.debug(
+              { code: "tool_unavailable_response_failed", error: String(error) },
+              "Codex unavailable tool response failed",
+            );
+          },
+        );
         return;
       }
       try {
@@ -404,15 +478,35 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
           contentItems: [{ type: "inputText", text }],
           success: result.success,
         });
-      } catch {
+      } catch (error) {
+        this.#logger.debug({ code: "tool_request_failed", error: String(error) }, "Codex dynamic tool request failed");
         await this.respondServerRequest(id, {
           contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }],
           success: false,
-        }).catch(() => undefined);
+        }).catch(
+          /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (
+            responseError: unknown,
+          ) => {
+            this.#logger.debug(
+              {
+                code: "tool_error_response_failed",
+                error: String(responseError),
+              },
+              "Codex dynamic tool error response failed",
+            );
+          },
+        );
       }
       return;
     }
-    await this.rejectServerRequest(id, -32601, "Unsupported unattended server request").catch(() => undefined);
+    await this.rejectServerRequest(id, -32601, "Unsupported unattended server request").catch(
+      /* v8 ignore next -- best-effort responses on a wire that may already be closing. */ (error: unknown) => {
+        this.#logger.debug(
+          { code: "unsupported_request_response_failed", error: String(error) },
+          "Codex unsupported request response failed",
+        );
+      },
+    );
     this.#fail(new CodexAppServerError("protocol", `Codex requested an unsupported method: ${method}`));
   }
 
@@ -450,13 +544,21 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     for (const listener of this.#listeners) {
       try {
         listener({ method: "opentag/processError", params: { error } });
-      } catch {
+      } catch (listenerError) {
+        this.#logger.debug(
+          {
+            code: "process_error_listener_failed",
+            error: String(listenerError),
+          },
+          "Codex process error listener failed",
+        );
         // The process boundary is already failed; listener failures cannot widen it.
       }
     }
     if (!this.#closed) {
       signalWatchedProcess(this.#child, "SIGTERM");
       const timer = setTimeout(() => {
+        /* v8 ignore else -- the SIGKILL escalation timer only matters while the child is still open. */
         if (!this.#closed) signalWatchedProcess(this.#child, "SIGKILL");
       }, 1_000);
       timer.unref();
@@ -487,8 +589,26 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
     timer.unref();
   });
   const settled = await Promise.race([promise.then(() => true as const), timeout]);
+  /* v8 ignore else -- the timer is always armed before the race settles. */
   if (timer) clearTimeout(timer);
   return settled;
+}
+
+function spawnEvidence(error: unknown): { readonly errno?: string } {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return typeof code === "string" ? { errno: code } : {};
+}
+
+function validateOptions(maxLineBytes: number, maxStderrBytes: number, requestTimeoutMs: number): void {
+  if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes < 1024) {
+    throw new Error("maxLineBytes must be a safe integer of at least 1024");
+  }
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) {
+    throw new Error("requestTimeoutMs must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(maxStderrBytes) || maxStderrBytes < 0) {
+    throw new Error("maxStderrBytes must be a non-negative safe integer");
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -1,8 +1,15 @@
-export type { SlackIngressBinding, VerifiedFeishuBinding } from "./im-binding-service.js";
+export type {
+  AgentSetupBindingState,
+  SlackInboundRoute,
+  SlackIngressBinding,
+  SlackInstallationIngress,
+  VerifiedFeishuBinding,
+} from "./im-binding-service.js";
 export {
   disableImBindingInTransaction,
   ImBindingService,
   ImBindingServiceError,
+  ImBindingUnbindRequiredError,
 } from "./im-binding-service.js";
 export type {
   ImProviderAdapter,

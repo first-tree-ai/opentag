@@ -20,7 +20,7 @@ declare module "fastify" {
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 export interface UserAuthPreHandlerOptions {
-  /** Present once Better Auth issues sessions; credentials it did not issue still resolve through the legacy path. */
+  /** Better Auth owns every Account session; without it nothing authenticates. */
   betterAuth?: OpenTagBetterAuth;
   publicOrigin?: string;
   secureCookies?: boolean;
@@ -47,9 +47,7 @@ export async function resolveAuthenticatedUserId(
     // instead of at whatever authority check happens to come after the caller's side effects.
     if (session) return (await authService.getActiveUserById(session.user.id)).user.id;
   }
-  const accessCookie = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.access];
-  if (!accessCookie) return undefined;
-  return (await authService.getAuthenticatedUser(accessCookie)).me.user.id;
+  return undefined;
 }
 
 export function createUserAuthPreHandler(authService: UserAuthService, options: UserAuthPreHandlerOptions = {}) {
@@ -77,38 +75,29 @@ export function createUserAuthPreHandler(authService: UserAuthService, options: 
       if (!SAFE_METHODS.has(request.method)) requireBrowserMutationSecurity(request, options.publicOrigin);
     };
 
-    if (options.betterAuth) {
-      /*
-       * Asked for its headers, not just its answer: Better Auth extends a session as it is used and reports the
-       * refreshed cookie this way. Taking the result alone would let the row keep moving while the browser's cookie
-       * expired on its original schedule — an active user signed out, with the renewed row left behind.
-       */
-      const { headers, response: session } = await options.betterAuth.api.getSession({
-        headers: fromNodeHeaders(request.headers),
-        returnHeaders: true,
-      });
-      if (session) {
-        requireBrowserOrigin();
-        const renewed = headers.getSetCookie();
-        if (renewed.length > 0) appendSetCookies(reply, renewed);
-        renewBrowserCsrfCookie(request, reply, options);
-        /*
-         * What the session carries is only an identity: suspension and Workspace grants are resolved live from the
-         * database on every request, so revoking either takes effect immediately.
-         */
-        request.authContext = {
-          me: await authService.getActiveUserById(session.user.id),
-          tokenExpiresAt: session.session.expiresAt,
-        };
-        return;
-      }
-    }
+    /*
+     * Asked for its headers, not just its answer: Better Auth extends a session as it is used and reports the
+     * refreshed cookie this way. Taking the result alone would let the row keep moving while the browser's cookie
+     * expired on its original schedule — an active user signed out, with the renewed row left behind.
+     */
+    const resolved = await options.betterAuth?.api.getSession({
+      headers: fromNodeHeaders(request.headers),
+      returnHeaders: true,
+    });
+    if (!resolved?.response) throw invalidCredential("AUTH_INVALID_TOKEN", "Authentication is required");
 
-    // Credentials issued before the cutover, still valid until they expire.
-    const accessCookie = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.access];
-    if (!accessCookie) throw invalidCredential("AUTH_INVALID_TOKEN", "Authentication is required");
     requireBrowserOrigin();
-    request.authContext = await authService.getAuthenticatedUser(accessCookie);
+    const renewed = resolved.headers.getSetCookie();
+    if (renewed.length > 0) appendSetCookies(reply, renewed);
+    renewBrowserCsrfCookie(request, reply, options);
+    /*
+     * What the session carries is only an identity: the Account's active state is resolved live from the database on
+     * every request, so suspension takes effect immediately.
+     */
+    request.authContext = {
+      me: await authService.getActiveUserById(resolved.response.user.id),
+      tokenExpiresAt: resolved.response.session.expiresAt,
+    };
   };
 }
 

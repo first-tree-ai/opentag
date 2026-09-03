@@ -1,0 +1,119 @@
+@import "@fontsource/dm-sans/400.css";
+@import "@fontsource/dm-sans/500.css";
+@import "@fontsource/dm-sans/600.css";
+@import "@fontsource/sora/600.css";
+@import "@fontsource/sora/700.css";
+@import "@cloudflare/kumo/styles/tailwind";
+@import "tailwindcss";
+@import "./ui/kumo-theme.css";
+@import "./ui/typography.css";
+@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+
+/* OpenTag brand tokens. Keep usage constraints next to the values so a new surface does not
+ * accidentally turn an inaccessible accent into body copy. */
+:root[data-theme="opentag"],
+[data-theme="opentag"] {
+  --brand: #8fdd14; /* logo green — fills, color blocks, icons ONLY; never a text color */
+  --brand-display: #649a0e; /* display green — text at >= 24px only (large headings) */
+  --brand-ink: #3a5c04; /* body-level green — green text at normal sizes uses this */
+  --brand-soft: #edf5dc; /* selected/current surfaces only; never a generic hover or stripe */
+  --bg: #f8f7f0; /* main app background (warm off-white, NOT pure white) */
+  --card: #fdfcf6; /* card / surface background */
+  --surface-elevated: #fbfaf4; /* raised surfaces between the canvas and cards */
+  --surface-recessed: #f0efe7; /* code, disabled, and inset surfaces */
+  --surface-tint: #f6f5ee; /* table stripes and quiet neutral emphasis */
+  --surface-hover: #eeede5; /* transient hover/pressed feedback */
+  --fg: #16211b; /* primary text */
+  --fg-2: #3a453e; /* secondary text */
+  --muted-fg: #626b60; /* muted text */
+  --border: #e0e2d3; /* default border */
+  --border-strong: #c9ccbb; /* strong border */
+  --dark: #0b101d; /* dark section background */
+  --on-dark: #f8f7f0; /* text on dark sections */
+}
+
+/* Kumo semantic base. These aliases make the application canvas, surfaces, text, and borders
+ * inherit the OpenTag palette without changing Kumo component internals. */
+:root[data-theme="opentag"],
+[data-theme="opentag"] {
+  --color-kumo-canvas: var(--bg);
+  --color-kumo-elevated: var(--surface-elevated);
+  --color-kumo-recessed: var(--surface-recessed);
+  --color-kumo-base: var(--card);
+  --color-kumo-tint: var(--surface-tint);
+  --color-kumo-contrast: var(--fg);
+  --color-kumo-overlay: var(--card);
+  --color-kumo-control: var(--card);
+  --color-kumo-interact: var(--border-strong);
+  --color-kumo-fill: var(--border);
+  --color-kumo-fill-hover: var(--surface-hover);
+  --color-kumo-line: var(--border);
+  --color-kumo-hairline: var(--border);
+  --color-kumo-focus: var(--brand-ink);
+  --text-color-kumo-default: var(--fg);
+  --text-color-kumo-inverse: var(--on-dark);
+  --text-color-kumo-strong: var(--fg);
+  --text-color-kumo-subtle: var(--fg-2);
+  --text-color-kumo-inactive: var(--muted-fg);
+  --text-color-kumo-placeholder: var(--muted-fg);
+  --text-color-kumo-link: var(--brand-ink);
+}
+
+/* OpenTag application boundary. Component styling belongs to Kumo. */
+:root {
+  color: var(--fg);
+  background: var(--bg);
+  font-family:
+    "DM Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-width: 320px;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+.app-mobile-header {
+  display: flex;
+}
+
+.app-error-boundary {
+  min-height: 100%;
+  place-items: center;
+}
+
+.app-error-boundary__card {
+  width: 100%;
+  max-width: 36rem;
+  margin-inline: auto;
+}
+
+@media (min-width: 48rem) {
+  .app-mobile-header {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+  }
+}

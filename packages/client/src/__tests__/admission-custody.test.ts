@@ -20,6 +20,21 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("AdmissionController", () => {
+  it("quiesces new work while allowing already accepted work to reserve", () => {
+    const admission = new AdmissionController();
+    admission.pause();
+    expect(admission.paused).toBe(true);
+    expect(admission.reserve("new-session", "agent-1")).toEqual({ accepted: false, reason: "client_busy" });
+
+    const acceptedWork = admission.reserve("accepted-session", "agent-1", { acceptedWork: true });
+    expect(acceptedWork.accepted).toBe(true);
+    if (acceptedWork.accepted) acceptedWork.reservation.release();
+
+    admission.resume();
+    expect(admission.paused).toBe(false);
+    expect(admission.reserve("new-session", "agent-1").accepted).toBe(true);
+  });
+
   it("C-20/C-21 enforces one Session and ten concurrent Sessions per Agent without a queue", () => {
     const admission = new AdmissionController();
     const reservations = Array.from({ length: 10 }, (_, index) => admission.reserve(`session-${index}`, "agent-1"));
@@ -280,6 +295,66 @@ describe("TurnCustodyOwner", () => {
     });
     expect(owner.admission.snapshot().client).toBe(1);
   });
+
+  it("rejects observer custody before remembering it under v1 and retries after v2 negotiation", async () => {
+    const fixture = await custodyFixture();
+    let version = 1;
+    const start = vi.fn(async () => undefined);
+    const steer = vi.fn(async (request: RuntimeImSteerRequest) => ({
+      type: "im:steer:result" as const,
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status: "steered" as const,
+    }));
+    const owner = new TurnCustodyOwner({
+      bindingStore: fixture.store,
+      id: () => "turn-observer",
+      imDeliveryVersion: () => version,
+      imSteerVersion: () => version,
+      reconciler: fixture.reconciler,
+      start,
+      steer,
+    });
+    const observer = {
+      ...delivery(fixture.runtime, "delivery-observer", randomUUID()),
+      replyRole: "observer" as const,
+    };
+    await expect(owner.accept(observer)).resolves.toMatchObject({
+      result: { status: "rejected", reason: "session_not_ready" },
+    });
+    expect(start).not.toHaveBeenCalled();
+    expect(owner.admission.snapshot().client).toBe(0);
+
+    version = 2;
+    await expect(owner.accept(observer)).resolves.toMatchObject({ result: { status: "accepted" } });
+    const steerRequest: RuntimeImSteerRequest = {
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: "delivery-observer-steer",
+      imMessageId: "message-observer-steer",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 1,
+      rootDeliveryId: "delivery-observer",
+      expectedTurnId: "turn-observer",
+      attention: "ambient",
+      replyRole: "observer",
+      content: { kind: "text", text: "observe", providerRef: providerRef("message-observer-steer") },
+    };
+    version = 1;
+    await expect(owner.acceptSteer(steerRequest)).resolves.toMatchObject({
+      status: "deferred",
+      reason: "steer_unsupported",
+    });
+    expect(steer).not.toHaveBeenCalled();
+    version = 2;
+    await expect(owner.acceptSteer(steerRequest)).resolves.toMatchObject({ status: "steered" });
+    expect(steer).toHaveBeenCalledOnce();
+  });
 });
 
 async function custodyFixture() {
@@ -288,12 +363,12 @@ async function custodyFixture() {
   const computerId = randomUUID();
   const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-  const reconciler = new SessionReconciler({ computerId, preparation: workspace });
+  const reconciler = new SessionReconciler({ installationId: computerId, preparation: workspace });
   const runtime = snapshot();
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

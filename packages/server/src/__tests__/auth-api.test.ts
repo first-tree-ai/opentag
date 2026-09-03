@@ -2,9 +2,9 @@ import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { ConnectCodeIssuer, UserAuthService } from "../services/auth/index.js";
+import { signedInBrowser } from "./signed-in-browser.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -32,18 +32,13 @@ function createAuthService(): UserAuthService {
           email: "admin@example.com",
           displayName: "Admin",
         },
-        workspaces: [
-          {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-20T00:00:00.000Z",
-          },
-        ],
+        setupCompletedAt: null,
       },
     }),
-    getActiveUserById: vi.fn(),
+    getActiveUserById: vi.fn().mockResolvedValue({
+      user: { id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", email: "admin@example.com", displayName: "Admin" },
+      setupCompletedAt: null,
+    }),
     updateSelfProfile: vi.fn().mockResolvedValue({
       id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
       email: "admin@example.com",
@@ -76,7 +71,7 @@ describe("auth HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.authConnectExchange,
-      payload: { code: "1234567890abcdef", workspaceId: "caller-authority" },
+      payload: { code: "1234567890abcdef", accountId: "caller-authority" },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR", category: "validation" } });
@@ -114,7 +109,22 @@ describe("auth HTTP API", () => {
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
 
-  it("authenticates /api/v1/me and returns ordered Workspace data", async () => {
+  it("refreshes a bearer session through the strict response contract", async () => {
+    const authService = createAuthService();
+    const app = createApp({ authService });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authRefresh,
+      payload: { refreshToken: "refresh-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ accessToken: "next-access", refreshToken: "next-refresh" });
+    expect(authService.refresh).toHaveBeenCalledWith("refresh-token");
+  });
+
+  it("authenticates /api/v1/me with the Account projection", async () => {
     const authService = createAuthService();
     const app = createApp({ authService });
     apps.push(app);
@@ -128,7 +138,15 @@ describe("auth HTTP API", () => {
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ workspaces: [{ name: "example", displayName: "Example" }] });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      user: {
+        id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+        email: "admin@example.com",
+        displayName: "Admin",
+      },
+      setupCompletedAt: null,
+    });
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
   });
 
@@ -167,9 +185,9 @@ describe("auth HTTP API", () => {
     const authService = createAuthService();
     const app = createApp({
       authService,
+      betterAuth: signedInBrowser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e"),
       browserAuth: {
         publicOrigin: "https://dev.example.com",
-        refreshTokenTtlSeconds: 3600,
         sessionTtlSeconds: 3600,
         secureCookies: true,
       },
@@ -179,7 +197,7 @@ describe("auth HTTP API", () => {
     const rejected = await app.inject({
       method: "PATCH",
       url: HTTP_PATHS.me,
-      headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
+      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf" },
       payload: { displayName: "Updated Admin" },
     });
     expect(rejected.statusCode).toBe(403);
@@ -189,7 +207,7 @@ describe("auth HTTP API", () => {
       method: "PATCH",
       url: HTTP_PATHS.me,
       headers: {
-        cookie: "opentag_access=access; opentag_csrf=csrf",
+        cookie: "opentag.session_token=session; opentag_csrf=csrf",
         origin: "https://dev.example.com",
         "x-opentag-csrf": "csrf",
       },
@@ -243,9 +261,9 @@ describe("auth HTTP API", () => {
     };
     const app = createApp({
       authService,
+      betterAuth: signedInBrowser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e"),
       browserAuth: {
         publicOrigin: "https://dev.example.com",
-        refreshTokenTtlSeconds: 3600,
         sessionTtlSeconds: 3600,
         secureCookies: true,
       },
@@ -256,7 +274,7 @@ describe("auth HTTP API", () => {
     const rejected = await app.inject({
       method: "POST",
       url: HTTP_PATHS.meConnectCodes,
-      headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
+      headers: { cookie: "opentag.session_token=session; opentag_csrf=csrf" },
     });
     expect(rejected.statusCode).toBe(403);
     expect(issuer.issueForUser).not.toHaveBeenCalled();
@@ -265,7 +283,7 @@ describe("auth HTTP API", () => {
       method: "POST",
       url: HTTP_PATHS.meConnectCodes,
       headers: {
-        cookie: "opentag_access=access; opentag_csrf=csrf",
+        cookie: "opentag.session_token=session; opentag_csrf=csrf",
         origin: "https://dev.example.com",
         "x-opentag-csrf": "csrf",
       },

@@ -1,7 +1,7 @@
 # OpenTag Portable 发布指南
 
 > Canonical source: [../portable-release.md](../portable-release.md)
-> Last synced with: 2026-08-25
+> Last synced with: 2026-09-02
 
 Portable release 是一份自包含的 OpenTag 安装包：每个平台一个 tarball，同时携带 bundle 后的 CLI **和它自己的
 Node.js runtime**，因此没有 Node.js、没有 npm、没有任何 package manager 的机器也能安装并运行 OpenTag。它发布到
@@ -18,7 +18,7 @@ identity 改写和相同的 version coordinate，coordinate 的推导方式见 [
 ## 安装
 
 ~~~bash
-curl -fsSL https://download.opentag.build/releases/prod/install.sh | sh
+curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
 ~~~
 
 installer 会解析 channel 的 `latest.json`，下载所检测平台对应的 tarball，校验其已发布的 SHA-256，解压，运行一次新
@@ -66,6 +66,34 @@ bin/<binName>           artifact 本地 shim，在 payload 激活之前使用
 bundle 后的 CLI 没有 `node_modules`：`apps/cli` 不声明任何 runtime dependency，一旦这一点发生变化，构建会 fail
 closed，而不是产出一个只在用户运行时才崩溃的 artifact。
 
+## 自动升级
+
+portable 是唯一拥有完整支持的自动升级的安装模式；npm-global 安装永远不会自我升级，只能使用手动的
+`opentag upgrade` / `opentag upgrade --check` 命令。每个 channel 只有一个精确目标，没有灰度队列或 canary：Server
+轮询该 channel 已发布的 `latest.json`，并通过 v2 heartbeat result（`runtime.channelTarget` capability——见
+[runtime-protocol.md](./runtime-protocol.md)）把这个精确目标广播给已连接的 Client。
+
+daemon 的 updater 遵循严格的契约：
+
+- **精确目标身份，单调 precedence。** 只有 version 字符串完全一致才算已是当前目标，因此仅 SemVer build metadata
+  不同的目标仍会安装。SemVer precedence 只用于拒绝更旧的目标；目标还必须属于 Client 自身 channel，且绝不会自动降级。
+- **受保护工作优先。** 安装之前，updater 会无限期等待，直到 Session 模块报告没有受保护的工作——交接不会丢失或
+  重复任何已接受的 Turn、待完成的 Turn 完成/报告托管，或已接受的 IM 投递。Session 模块为每一类工作项都设定了
+  上限（Turn 预算、投递截止时间、带终态结果的报告重试），因此 updater 自己不再添加强制超时。读取零工作快照前会
+  先关闭新工作准入；此前已经接受的投递继续排空，之后到达的投递则收到可重试的 busy 结果。
+- **每个目标只尝试一次。** 任何安装工作开始之前，尝试就会被持久化记录。失败——包括被中断的尝试——会进入
+  blocked 状态且绝不自动重试：updater 等待更新的目标或手动 `opentag upgrade`，从而避免重试与重启风暴。
+- **复用现有布局。** 安装下载不可变的版本 manifest（绝不读取 channel 指针），校验已发布的 SHA-256，解压到全新的
+  不可变版本目录，对新 runtime 做冒烟检查，重写稳定 shim，并通过一次原子切换移动 `current`——与 `install.sh`
+  完全相同的机制。
+- **服务刷新与交接。** 切换之后，updater 通过新安装的二进制运行 `daemon refresh-service`，让 supervisor 定义由
+  即将运行的版本重写，且自身不触发任何重启。随后以便留的 supervisor 重启退出码 `75` 退出：systemd 将其映射为
+  干净的强制重启（`SuccessExitStatus=0 75` + `RestartForceExitStatus=75`），launchd 通过
+  `KeepAlive.SuccessfulExit=false` 重启。由于稳定 shim 的存在，重启后的服务运行新版本，而 OpenTag home、Account
+  凭据、Computer connection、Agent 与 placement 全部保持不变。
+
+当前版本、目标、updater 状态以及最近一次尝试及其失败原因都可以在 `opentag daemon status` 中查看。
+
 ## 已发布对象结构
 
 ~~~text
@@ -77,7 +105,7 @@ closed，而不是产出一个只在用户运行时才崩溃的 artifact。
 ~~~
 
 默认 coordinate 是 `opentag-release` bucket 的 `releases` prefix，通过
-`https://download.opentag.build/releases` 对外提供。
+`https://storage.googleapis.com/opentag-release/releases` 对外提供。
 
 version prefix 下的一切都是不可变的，写入时带 create-only precondition（`--if-generation-match=0`）以及
 `--content-md5` digest，因此 Cloud Storage 会同时拒绝静默覆盖和损坏的上传。只有 `latest.json` 与 `install.sh` 可变；
@@ -176,7 +204,7 @@ preflight，使不可变 prefix 冲突在 release 仍可重试时就失败；随
 | `OPENTAG_PORTABLE_GCS_BUCKET` | bucket 名称（默认 `opentag-release`） |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | channel 段之前的 object prefix（默认 `releases`） |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | 执行 `gcloud` 调用所用的 project |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://download.opentag.build/releases`） |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://storage.googleapis.com/opentag-release/releases`） |
 | `OPENTAG_PORTABLE_PLATFORMS` | 可选的构建平台过滤 |
 
 发布使用 workload identity federation，因此仓库中不保存任何 service-account key。该 service account 需要 bucket 上的
@@ -195,8 +223,9 @@ bucket 必须在 download base URL 上公开提供 release prefix。在此之前
 
 - installer 需要 `curl` 或 `wget`、`tar`，以及 `sha256sum` 或 `shasum`。支持 x64 与 arm64 上的 Linux 和 macOS；不支持
   Windows。
-- 激活之后 installer 会运行 `daemon ensure-service`。exit code 3 表示 CLI 把 service 安装推迟到 `login` 创建
-  credential 之后，这是首次安装的正常路径，不是失败。
+- installer 只负责安装或升级 OpenTag。onboarding 命令随后运行 `opentag connect`：兑换一次性 Computer code，绑定其中
+  明确指定的 Agent / Computer，并安装或重启 daemon service。Provider CLI 的检测与安装由活跃 daemon 负责，绝不属于
+  `install.sh`。
 - 任何已发布的 version 都可以用 `sh install.sh --version <version>` 直接安装，它读取该 version 的不可变 manifest，
   完全不查 channel 指针。回滚就是这样做的，release gate 也用同一条路径在对外宣称之前先安装一次。
 - 已存在的 version 目录永不就地改写，因为 `current` 可能经由它解析。强制重装会落到一个新目录，`current` 原子地移到

@@ -4,11 +4,14 @@ import { join } from "node:path";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
+import { createProgram } from "../cli/program.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
+import * as daemonShared from "../commands/daemon/shared.js";
 import { executeDaemonServiceCommand } from "../commands/daemon/shared.js";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
+import * as daemonRuntime from "../core/daemon/runtime.js";
 import { runDaemonServiceEntry } from "../core/daemon/runtime.js";
 import { createDaemonServiceManager, type DaemonServiceManager } from "../core/daemon/service/index.js";
 import type { ServiceRunner } from "../core/daemon/service/types.js";
@@ -20,12 +23,43 @@ describe("daemon service commands", () => {
     const daemon = program.commands.find((command) => command.name() === "daemon");
     expect(daemon).toBeDefined();
     const visible = daemon?.commands
-      .filter((command) => !["ensure-service", "service-run"].includes(command.name()))
+      .filter((command) => !["ensure-service", "refresh-service", "service-run"].includes(command.name()))
       .map((command) => command.name());
     expect(visible).toEqual(["install", "start", "stop", "restart", "status", "uninstall"]);
     expect(daemon?.helpInformation()).not.toContain("service-run");
     expect(daemon?.helpInformation()).not.toContain("ensure-service");
+    expect(daemon?.helpInformation()).not.toContain("refresh-service");
     expect(daemon?.helpInformation()).not.toMatch(/^\s+run\b/mu);
+  });
+
+  it("dispatches every daemon lifecycle wrapper to its shared executor", async () => {
+    const execute = vi.spyOn(daemonShared, "executeDaemonServiceCommand").mockResolvedValue(0);
+    const serviceRun = vi.spyOn(daemonRuntime, "runDaemonServiceEntry").mockResolvedValue(0);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      for (const [command, action] of [
+        ["install", "installAndStart"],
+        ["start", "start"],
+        ["stop", "stop"],
+        ["restart", "restart"],
+        ["status", "status"],
+        ["uninstall", "uninstall"],
+      ] as const) {
+        await createProgram().parseAsync(["node", "opentag", "daemon", command]);
+        expect(execute).toHaveBeenLastCalledWith(action);
+        await createProgram().parseAsync(["node", "opentag", "daemon", command, "--json"]);
+        expect(execute).toHaveBeenLastCalledWith(action, { json: true });
+      }
+      await createProgram().parseAsync(["node", "opentag", "daemon", "service-run"]);
+      await createProgram().parseAsync(["node", "opentag", "daemon", "ensure-service"]);
+      expect(serviceRun).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previousExitCode;
+      execute.mockRestore();
+      serviceRun.mockRestore();
+    }
   });
 
   it("maps status to a stable exit code and redacted presentation", async () => {
@@ -44,6 +78,34 @@ describe("daemon service commands", () => {
     const manager = fakeManager("inactive");
     manager.stop = vi.fn(async () => ({ ...(await manager.status()), state: "unknown" as const }));
     await expect(executeDaemonServiceCommand("stop", { manager, writeOutput: () => undefined })).resolves.toBe(1);
+  });
+
+  it("presents daemon service results and failures as JSON", async () => {
+    const manager = fakeManager("active");
+    const output: string[] = [];
+    const errors: string[] = [];
+    await expect(
+      executeDaemonServiceCommand("status", { manager, json: true, writeOutput: (message) => output.push(message) }),
+    ).resolves.toBe(0);
+    const failing = fakeManager("active");
+    failing.status = vi.fn().mockRejectedValue(new Error("connection refused"));
+    await expect(
+      executeDaemonServiceCommand("status", {
+        manager: failing,
+        json: true,
+        writeError: (message) => errors.push(message),
+      }),
+    ).resolves.toBe(3);
+    expect(output.join("\n")).toContain('"ok":true');
+    expect(errors.join("\n")).toContain('"category":"unavailable"');
+  });
+
+  it("uses the documented lifecycle exit states", async () => {
+    const active = fakeManager("active");
+    expect(await executeDaemonServiceCommand("stop", { manager: active, writeOutput: () => undefined })).toBe(0);
+    expect(await executeDaemonServiceCommand("uninstall", { manager: active, writeOutput: () => undefined })).toBe(0);
+    const inactive = fakeManager("inactive");
+    expect(await executeDaemonServiceCommand("start", { manager: inactive, writeOutput: () => undefined })).toBe(0);
   });
 
   it("treats deterministic service configuration failures as clean service exits", async () => {
@@ -157,6 +219,7 @@ function fakeManager(state: "active" | "inactive"): DaemonServiceManager {
   return {
     installAndStart: vi.fn(async () => ({ ...info, state: "active" as const })),
     preflight: vi.fn(async () => undefined),
+    refreshDefinition: vi.fn(async () => ({ ...info, state: "active" as const })),
     restart: vi.fn(async () => ({ ...info, state: "active" as const })),
     start: vi.fn(async () => ({ ...info, state: "active" as const })),
     status: vi.fn(async () => info),

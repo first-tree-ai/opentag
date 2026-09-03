@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import { z } from "zod";
+import { normalizeServerUrl } from "../api.js";
 import { resolveOpenTagHome, resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { readPrivateJson, writePrivateJson } from "../storage/private-json-file.js";
 
@@ -13,6 +15,24 @@ export interface StoredCredentials {
 
 export const CREDENTIALS_FILE_NAME = "credentials.json";
 
+const nonEmptyToken = z
+  .string()
+  .min(1)
+  .refine((value) => value.trim().length > 0, "Token must not be blank");
+const expiry = z
+  .string()
+  .datetime({ offset: true })
+  .refine((value) => Date.parse(value) >= Date.UTC(2000, 0, 1), "Token expiry is too weak");
+
+export const StoredCredentialsSchema = z
+  .object({
+    accessToken: nonEmptyToken,
+    accessTokenExpiresAt: expiry,
+    refreshToken: nonEmptyToken,
+    serverUrl: z.string().min(1),
+  })
+  .strict();
+
 export function credentialsPath(home = resolveOpenTagHome()): string {
   return join(resolveOpenTagHomeLayout(home).config, CREDENTIALS_FILE_NAME);
 }
@@ -21,25 +41,23 @@ export function readCredentials(home = resolveOpenTagHome()): Promise<StoredCred
   return readPrivateJson(home, credentialsPath(home), validateCredentials);
 }
 
-export function writeCredentialsAtomically(credentials: StoredCredentials, home = resolveOpenTagHome()): Promise<void> {
-  validateCredentials(credentials);
-  return writePrivateJson(home, credentialsPath(home), credentials);
+export async function writeCredentialsAtomically(
+  credentials: StoredCredentials,
+  home = resolveOpenTagHome(),
+): Promise<void> {
+  await writePrivateJson(home, credentialsPath(home), normalizeCredentials(credentials));
 }
 
 function validateCredentials(value: unknown): StoredCredentials {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("The OpenTag credentials file is invalid");
+  try {
+    return normalizeCredentials(StoredCredentialsSchema.parse(value));
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("The OpenTag server URL")) throw error;
+    throw new Error("The OpenTag credentials file is invalid", { cause: error });
   }
-  const record = value as Record<string, unknown>;
-  if (
-    Object.keys(record).length !== 4 ||
-    typeof record.accessToken !== "string" ||
-    typeof record.accessTokenExpiresAt !== "string" ||
-    Number.isNaN(Date.parse(record.accessTokenExpiresAt)) ||
-    typeof record.refreshToken !== "string" ||
-    typeof record.serverUrl !== "string"
-  ) {
-    throw new Error("The OpenTag credentials file is invalid");
-  }
-  return record as unknown as StoredCredentials;
+}
+
+function normalizeCredentials(value: unknown): StoredCredentials {
+  const parsed = StoredCredentialsSchema.parse(value);
+  return { ...parsed, serverUrl: normalizeServerUrl(parsed.serverUrl) };
 }

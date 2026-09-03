@@ -1,38 +1,44 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { ProviderReadinessStatus } from "@opentag/shared";
-import { and, eq, isNull, sql as sqlExpression } from "drizzle-orm";
+import type { InternalNavigationVisibility, ProviderReadinessStatus } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
-import { BetterAuthSessionTokens, BridgedSessionTokens } from "./auth/session-tokens.js";
+import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { accountLegacyUpgrades, agents, workspaceComputers } from "./db/schema/index.js";
-import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
+import { agents, computers } from "./db/schema/index.js";
+import {
+  createBackgroundFailureSupervisor,
+  createServerDiagnosticReporter,
+  createServiceLoggerPort,
+  initTelemetry,
+  shutdownTelemetry,
+} from "./observability/index.js";
+import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
+import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
-import { AgentService } from "./services/agents/index.js";
+import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
-  AuthIdentityService,
   AuthService,
-  type AuthTokenProvider,
-  AuthTokenService,
   ConnectCodeService,
-  DefaultGoogleIdentityClient,
   DevBrowserAuthService,
   formatStartupError,
-  GoogleBrowserAuthService,
-  OAuthFlowService,
   PostAuthenticationService,
 } from "./services/auth/index.js";
+import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
+import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
+import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
 import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
@@ -46,12 +52,12 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "./services/im-bindings/slack/index.js";
-import { OnboardingResetService } from "./services/onboarding-lab/index.js";
+import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
+import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import { AccountSetupService } from "./services/setup/index.js";
 import { TaskService } from "./services/tasks/index.js";
-import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
-import { WorkspaceAdminService, WorkspaceSetupService } from "./services/workspaces/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -74,6 +80,7 @@ export {
 } from "./db/migrate.js";
 export {
   ConnectionRegistry,
+  type ConnectionRegistryOptions,
   type RuntimeConnectionEntry,
   RuntimeRegistrySendError,
 } from "./runtime/connection-registry.js";
@@ -86,10 +93,17 @@ export {
   type RuntimeDomainOwnerOptions,
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
-export { AgentService, AgentServiceError } from "./services/agents/index.js";
-export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
+export {
+  DEFAULT_RUNTIME_DURABLE_WORK_RETENTION_MS,
+  DEFAULT_RUNTIME_DURABLE_WORK_TERMINAL_LIMIT,
+  PostgresRuntimeDurableWorkStore,
+  RuntimeDurableWorkConflictError,
+  type RuntimeDurableWorkStoreOptions,
+} from "./runtime/runtime-durable-work-store.js";
+export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
+export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
-export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-lab/index.js";
+export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
 export {
   SessionCliProofService,
   SessionCollaborationService,
@@ -97,10 +111,17 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 
-/** The bridge is constructed before Better Auth exists; this makes the ordering mistake loud rather than silent. */
-function requireSessionTokens(tokens: AuthTokenProvider | undefined): AuthTokenProvider {
-  if (!tokens) throw new Error("Session tokens were used before Better Auth was constructed");
-  return tokens;
+class StagingInternalNavigationVisibilityService {
+  #value: InternalNavigationVisibility = { integrations: false, skills: false };
+
+  read(): InternalNavigationVisibility {
+    return this.#value;
+  }
+
+  update(value: InternalNavigationVisibility): InternalNavigationVisibility {
+    this.#value = { ...value };
+    return this.#value;
+  }
 }
 
 export async function startServer(): Promise<void> {
@@ -108,6 +129,12 @@ export async function startServer(): Promise<void> {
   let app: ReturnType<typeof createApp> | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
+  const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
+  const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
+    logger: (payload, message) => app?.log.error(payload, message),
+    onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
+    onCounter: (name, labels) => app?.log.info({ name, ...labels }, "Background failure counter"),
+  });
 
   try {
     knownSecrets.push(
@@ -132,102 +159,161 @@ export async function startServer(): Promise<void> {
     readiness.complete("migration");
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
-    const workspaceAdmins = new WorkspaceAdminAccess(database);
-    const legacyTokens = new AuthTokenService(
-      config.jwtSecret,
-      config.accessTokenTtlSeconds,
-      config.refreshTokenTtlSeconds,
-    );
-    // Assigned below, once Better Auth exists; the bridge reads it lazily so the two can be constructed in either order.
-    let sessionTokens: AuthTokenProvider | undefined;
-    const authService = new AuthService(
-      database,
-      new BridgedSessionTokens(
-        {
-          issuePairForUser: (userId) => requireSessionTokens(sessionTokens).issuePairForUser(userId),
-          rotate: (token, userId) => requireSessionTokens(sessionTokens).rotate(token, userId),
-          verifyAccess: (token) => requireSessionTokens(sessionTokens).verifyAccess(token),
-          verifyRefresh: (token) => requireSessionTokens(sessionTokens).verifyRefresh(token),
-        },
-        legacyTokens,
-      ),
-      { workspaceAdmins },
-    );
-    const connectCodeService = new ConnectCodeService(database);
-    const registry = new ConnectionRegistry();
-    const machineAuthService = new MachineAuthService(database, {
-      onCredentialRotated: async (workspaceComputerId) => {
-        await registry.closeEnrollment(workspaceComputerId);
-      },
-      workspaceAdmins,
+    const postAuthentication = new PostAuthenticationService(database);
+    const imCallPolicy = new ExternalCallPolicy({
+      allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
+      maxConcurrency: 16,
+      onMetric: (metric) => app?.log.info({ metric }, "IM provider call metric"),
     });
-    const computerService = new ComputerService(database, authService);
-    const workspaceService = new WorkspaceAdminService(database, { providerReadiness: registry, workspaceAdmins });
+    /*
+     * Registration gets its own pool, because it is the one call here that waits on a person.
+     *
+     * The policy holds a concurrency slot for the whole call, and a registration is open from the
+     * moment the QR appears until someone has scanned, signed in and approved — or until the code
+     * expires an hour later, since closing a tab cancels nothing. Sharing the pool that carries
+     * message delivery would let people standing at a connect screen exhaust it, and ordinary
+     * delivery would then queue behind them and time out waiting for capacity.
+     *
+     * Its concurrency bounds how many people may be mid-connect at once, which is a different
+     * quantity from how many requests may be in flight, and deserves its own number.
+     */
+    const feishuRegistrationPolicy = new ExternalCallPolicy({
+      allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
+      maxConcurrency: 64,
+      onMetric: (metric) => app?.log.info({ metric }, "Feishu registration call metric"),
+    });
+    const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
+    const betterAuth = createBetterAuth(database, {
+      onSessionCreating: async (userId) => {
+        await postAuthentication.ensureAccountReady(userId);
+      },
+      publicUrl: config.publicUrl,
+      secret: config.betterAuthSecret,
+      secureCookies: isHostedEnvironment(config.environment),
+      sessionTtlSeconds: config.sessionTtlSeconds,
+      ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
+      ...(config.emailPasswordAuth ? { emailPassword: true } : {}),
+      ...(config.google ? { google: config.google } : {}),
+    });
+    const authService = new AuthService(database, new BetterAuthSessionTokens(betterAuth, database));
+    const connectCodeService = new ConnectCodeService(database);
+    const registry = new ConnectionRegistry({ logger: serviceLogger("runtime-registry") });
+    const channelTargetPoller = createChannelTargetPoller({
+      channel: config.environment,
+      downloadBaseUrl: config.channelTarget.downloadBaseUrl,
+      intervalMs: config.channelTarget.pollIntervalMs,
+      logger: {
+        info: (bindings: Record<string, unknown>, message: string) => app?.log.info(bindings, message),
+        warn: (bindings: Record<string, unknown>, message: string) => app?.log.warn(bindings, message),
+      },
+    });
+    const machineAuthService = new MachineAuthService(database, {
+      onCredentialRotated: async (computerId) => {
+        await registry.closeComputer(computerId);
+      },
+    });
+    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })
+        .select({ computerId: computers.id, runtimeProvider: agents.runtimeProvider })
         .from(agents)
-        .innerJoin(
-          workspaceComputers,
-          and(
-            eq(workspaceComputers.workspaceId, agents.workspaceId),
-            eq(workspaceComputers.id, agents.workspaceComputerId),
-            isNull(workspaceComputers.revokedAt),
-          ),
-        )
+        .innerJoin(computers, eq(computers.id, agents.computerId))
         .where(eq(agents.id, agentId))
         .limit(1);
-      const currentInstanceId = agent ? registry.currentInstanceId(agent.workspaceComputerId) : undefined;
+      const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
       if (!agent || !currentInstanceId) return "unavailable";
       return (
         registry
-          .providerReadiness(agent.workspaceComputerId)
+          .providerReadiness(agent.computerId)
           .find(({ observation }) => observation.provider === agent.runtimeProvider)?.observation.status ?? "checking"
       );
     };
     const runtimeReadyForAgent = async (agentId: string): Promise<boolean> =>
       (await agentRuntimeReadinessForAgent(agentId)) === "ready";
+    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
+    const refreshProviderCliReadiness = (agentId: string, computerId: string): void => {
+      void providerCliReconcileOwner?.ensureActiveReadiness({ agentId, computerId }).catch(() => {
+        reportDiagnostic("PROVIDER_CLI_READINESS_REFRESH_FAILED");
+      });
+    };
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
-      imCliReadiness: async (agentId, provider) => {
-        const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
-        if (!workspaceComputerId) return "unavailable";
-        const observations = registry.imCliReadiness(workspaceComputerId);
+      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+        const computerId = await imBindingService.getAgentComputerId(agentId);
+        if (!computerId) return "unavailable";
+        refreshProviderCliReadiness(agentId, computerId);
+        const observations = registry.providerCliArtifactReadiness(computerId);
         return (
-          observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
+          observations.find(
+            ({ observation }) =>
+              observation.agentId === agentId &&
+              observation.provider === provider &&
+              observation.integrationId === integrationId &&
+              observation.credentialGeneration === credentialGeneration,
+          )?.observation.status ?? "checking"
         );
       },
-      workspaceAdmins,
+      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+        const computerId = await imBindingService.getAgentComputerId(agentId);
+        if (!computerId) return { status: "unconfirmed" };
+        refreshProviderCliReadiness(agentId, computerId);
+        const observations = registry.providerCliCredentialReadiness(computerId);
+        const observation = observations.find(
+          ({ observation }) =>
+            observation.agentId === agentId &&
+            observation.provider === provider &&
+            observation.integrationId === integrationId &&
+            observation.credentialGeneration === credentialGeneration,
+        )?.observation;
+        return observation
+          ? { status: observation.status, ...(observation.reason ? { reason: observation.reason } : {}) }
+          : { status: "unconfirmed" };
+      },
+      onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
+      logger: serviceLogger("im-binding"),
     });
-    const workspaceSetupService = new WorkspaceSetupService(database, imBindingService, { workspaceAdmins });
+    const accountSetupService = new AccountSetupService(database);
     const imMessageInbox = new ImMessageInbox(database);
-    const sessionService = new SessionService(database);
+    const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
+    });
+    const sessionService = new SessionService(database, { logger: serviceLogger("session") });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
+      logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
-      prepareReconcile: (workspaceComputerId, connectionInstanceId, request) =>
-        sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
+      prepareReconcile: (computerId, connectionInstanceId, request) =>
+        sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
+    const durableWorkStore = new PostgresRuntimeDurableWorkStore(database);
+    providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
+      issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
+      shouldPrewarmOfficialProviderClis: (computerId) => computerService.accountInFirstSetup(computerId),
+    });
+    const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
       domain: domainOwner,
       onDiagnostic: reportDiagnostic,
       registry,
       sessions: sessionService,
+      logger: serviceLogger("session-collaboration"),
     });
     const agentService = new AgentService(database, {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
+      onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
-          currentInstanceId: (workspaceComputerId) => registry.currentInstanceId(workspaceComputerId),
-          requestReconcile: (workspaceComputerId, instanceId, request, onDispatched) =>
-            domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
+          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+          requestReconcile: (computerId, instanceId, request, onDispatched) =>
+            domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
         }),
-      workspaceAdmins,
     });
+    const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
     const feishuConnections = new FeishuConnectionManager({
       database,
       inbox: imMessageInbox,
@@ -235,23 +321,29 @@ export async function startServer(): Promise<void> {
       imBindings: imBindingService,
       runtimeReady: runtimeReadyForAgent,
       onDiagnostic: reportDiagnostic,
+      policy: imCallPolicy,
+      supervisor: backgroundFailureSupervisor,
+      receipts: feishuInboundReceipts,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
       cipher: applicationCipher,
       instanceId,
       imBindings: imBindingService,
-      registrations: new DefaultFeishuRegistrationGateway(),
+      registrations: new DefaultFeishuRegistrationGateway(undefined, feishuRegistrationPolicy),
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
+      supervisor: backgroundFailureSupervisor,
     });
-    const slackApi = new DefaultSlackApiClient();
+    const agentSetupService = new AgentSetupService(database, agentService, imBindingService, feishuSetupService, {
+      providerReadiness: registry,
+      slackOAuthAvailable: config.slackOAuth !== undefined,
+    });
+    const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
       database,
-      distributedOAuthAvailable: Boolean(config.slackOAuth),
       imBindings: imBindingService,
-      publicOrigin: config.publicUrl,
     });
     const slackOAuthService = config.slackOAuth
       ? new SlackOAuthService({
@@ -263,103 +355,45 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
-    const imResourceService = new ImResourceService(database, resolveImAdapter);
+    const imResourceService = new ImResourceService(database, resolveImAdapter, imCallPolicy);
+    const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
+      onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
+    });
+    const imDeliveryLogger = serviceLogger("im-delivery");
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,
+      logger: imDeliveryLogger,
+      onMetric: (metric) => imDeliveryLogger.info({ metric }, "IM delivery worker metric"),
       registry,
       onDiagnostic: reportDiagnostic,
+      supervisor: backgroundFailureSupervisor,
     });
-    const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
-    const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
-    const betterAuth = createBetterAuth(database, {
-      onSessionCreating: async (userId) => {
-        await postAuthentication.ensureAccountReady(userId);
-      },
-      publicUrl: config.publicUrl,
-      secret: config.betterAuthSecret,
-      secureCookies: isHostedEnvironment(config.environment),
-      sessionTtlSeconds: config.sessionTtlSeconds,
-      ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
-      ...(config.google ? { google: config.google } : {}),
-      /*
-       * Verified against the legacy provider alone, never the bridge: this endpoint exists to retire a credential the
-       * previous revision issued, and a Better Auth session presented here is already what it would upgrade to. The
-       * live Account read is what keeps a suspended Account from refreshing its way back in.
-       */
-      legacyUpgrade: {
-        resolveCredential: async (refreshToken) => {
-          const identity = await legacyTokens.verifyRefresh(refreshToken);
-          return {
-            expiresAt: identity.expiresAt,
-            userId: (await authService.getActiveUserById(identity.userId)).user.id,
-          };
-        },
-        /*
-         * One statement decides the winner, so a replay or a raced tab converges without a lock — and therefore
-         * without a connection waiting on one. The conflict branch rewrites the key with its own value: a no-op that
-         * exists only so `RETURNING` reports the row already there, since `DO NOTHING` returns nothing at all.
-         */
-        recordExchange: async ({ expiresAt, sessionToken, tokenHash }) => {
-          const [recorded] = await database
-            .insert(accountLegacyUpgrades)
-            .values({ expiresAt, sessionToken, tokenHash })
-            .onConflictDoUpdate({
-              target: accountLegacyUpgrades.tokenHash,
-              set: { tokenHash: sqlExpression`${accountLegacyUpgrades.tokenHash}` },
-            })
-            .returning({ winner: accountLegacyUpgrades.sessionToken });
-          if (!recorded) throw new Error("The legacy upgrade record did not return a session");
-          return recorded.winner;
-        },
-      },
-    });
-    sessionTokens = new BetterAuthSessionTokens(betterAuth, database);
-    const google = config.google
-      ? new GoogleBrowserAuthService({
+    const setupResetService = config.stagingSetupReset
+      ? new OnboardingResetService({
+          agents: agentService,
           database,
-          flow: new OAuthFlowService(config.jwtSecret),
-          google: new DefaultGoogleIdentityClient(config.google.clientId, config.google.clientSecret),
-          identities: identityService,
-          postAuthentication,
-          publicUrl: config.publicUrl,
-          /*
-           * Deliberately the legacy issuer, not the bridge. This route only ever completes a flow that started before
-           * this revision deployed, and it writes its result into the legacy cookies. A session token written there
-           * authenticates through the fallback but is invisible to `getSession`, so sign-out could not revoke it —
-           * a pre-cutover flow therefore finishes exactly as it would have, and that browser moves across on its next
-           * refresh, where the upgrade puts the replacement in Better Auth's own cookie.
-           */
-          tokenIssuer: new AuthService(database, legacyTokens, { workspaceAdmins }),
+          environment: config.environment,
+          registry,
         })
       : undefined;
-    const stagingOnboardingLab = config.stagingOnboardingLab
-      ? {
-          reset: new OnboardingResetService({
-            agents: agentService,
-            database,
-            environment: config.environment,
-            ...(config.stagingOnboardingLab.accountId ? { labAccountId: config.stagingOnboardingLab.accountId } : {}),
-            registry,
-            workspaceAdmins,
-          }),
-        }
-      : undefined;
+    const internalNavigationService = new StagingInternalNavigationVisibilityService();
     app = createApp({
+      loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
-      accountScope: workspaceAdmins,
       agentService,
+      agentSetupService,
+      agentRuntimeTestService,
       authService,
       browserAuth: {
         devSignIn: Boolean(dev),
-        google,
+        googleSignIn: Boolean(config.google),
+        passwordSignIn: config.emailPasswordAuth,
         publicOrigin: config.publicUrl,
-        refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
-        sessionTtlSeconds: config.sessionTtlSeconds,
         secureCookies: isHostedEnvironment(config.environment),
+        sessionTtlSeconds: config.sessionTtlSeconds,
       },
       connectCode: {
         environment: config.environment,
@@ -367,6 +401,7 @@ export async function startServer(): Promise<void> {
         publicUrl: config.publicUrl,
       },
       computerConnectCode: {
+        downloadBaseUrl: config.channelTarget.downloadBaseUrl,
         environment: config.environment,
         publicUrl: config.publicUrl,
       },
@@ -374,7 +409,6 @@ export async function startServer(): Promise<void> {
       machineAuthService,
       imBindingService,
       feishuSetupService,
-      slackConfigurationService,
       taskService,
       ...(slackOAuthService
         ? {
@@ -388,7 +422,14 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
-      runtime: { registry, domainOwner },
+      runtime: {
+        registry,
+        domainOwner,
+        agentRuntimeTestOwner,
+        providerCliReconcileOwner,
+        channelTarget: () => channelTargetPoller.get(),
+      },
+      runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,
@@ -397,6 +438,7 @@ export async function startServer(): Promise<void> {
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
+        receipts: slackWebhookReceipts,
         ...(config.slackOAuth ? { firstPartySigningSecret: config.slackOAuth.signingSecret } : {}),
         createAdapter: (binding) =>
           new SlackAdapter({
@@ -408,13 +450,13 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(stagingOnboardingLab ? { stagingOnboardingLab } : {}),
-      workspaceService,
-      workspaceSetupService,
+      ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
+      accountSetupService,
     });
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    channelTargetPoller.start();
     const closeForSignal = () => {
       void app?.close();
     };
@@ -423,6 +465,7 @@ export async function startServer(): Promise<void> {
     app.addHook("onClose", async () => {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
+      channelTargetPoller.stop();
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();

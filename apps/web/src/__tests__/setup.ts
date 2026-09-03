@@ -1,5 +1,10 @@
 import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
+import { overwriteGetLocale, overwriteSetLocale } from "../paraglide/runtime.js";
+
+// Tests assert the published English copy; pin locale resolution and disable navigation in jsdom.
+overwriteGetLocale(() => "en");
+overwriteSetLocale(() => undefined);
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -20,6 +25,38 @@ Object.defineProperty(window, "localStorage", {
   value: memoryStorage(),
 });
 
+Object.defineProperty(window, "matchMedia", {
+  configurable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+    dispatchEvent: () => false,
+  }),
+});
+
+// The router scrolls to the top of every navigation, which jsdom does not implement and reports as
+// an unhandled error on each route change. Scroll position is not something these tests assert on.
+Object.defineProperty(window, "scrollTo", { configurable: true, value: () => undefined });
+
+if (!Element.prototype.getAnimations) {
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [],
+  });
+}
+
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", TestResizeObserver);
+
 vi.stubGlobal("fetch", vi.fn());
 
 afterEach(async () => {
@@ -30,4 +67,10 @@ afterEach(async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   vi.mocked(fetch).mockReset();
   window.history.replaceState({}, "", "/");
+  // memoryStorage() is shared by every test file, so clear the generated locale preference between tests.
+  window.localStorage.clear();
+  // A popup that was still open when its tree unmounted leaves behind the scroll lock it applied to
+  // <body>. Nothing else in these tests writes an inline body style, so the next test starts in a
+  // document no earlier test has locked.
+  document.body.removeAttribute("style");
 });

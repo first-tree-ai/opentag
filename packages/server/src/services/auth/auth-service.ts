@@ -9,10 +9,9 @@ import {
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { accountCliLoginCodes, users } from "../../db/schema/index.js";
-import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 import { hashSecret } from "./security.js";
-import type { AuthTokenProvider } from "./tokens.js";
+import type { AuthTokenProvider } from "./token-provider.js";
 
 export interface AuthServiceOptions {
   now?: () => Date;
@@ -43,23 +42,28 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
   readonly #authTokens: AuthTokenProvider;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(
-    database: DatabaseClient,
-    authTokens: AuthTokenProvider,
-    options: AuthServiceOptions & { workspaceAdmins?: WorkspaceAdminAccess } = {},
-  ) {
+  constructor(database: DatabaseClient, authTokens: AuthTokenProvider, options: AuthServiceOptions = {}) {
     this.#database = database;
     this.#authTokens = authTokens;
     this.#now = options.now ?? (() => new Date());
-    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
+  /**
+   * Spends a connect code, then issues the session it bought.
+   *
+   * The code is consumed and committed before anything is issued, which fixes both halves of a split that used to be
+   * invisible: issuing first left a live session behind whenever the consume or the commit failed — with the code
+   * still reusable, so one code could buy a second credential — and it held a row lock across a call that needs its
+   * own connection, so enough concurrent exchanges of one code could occupy the pool waiting on each other.
+   *
+   * The remaining failure is a spent code with no session, and that is the right direction for a one-time credential:
+   * the caller asks for another code rather than holding one that has already been redeemed.
+   */
   async exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
     const now = this.#now();
     const codeHash = hashSecret(code);
-    return this.#database.transaction(async (transaction) => {
+    const userId = await this.#database.transaction(async (transaction) => {
       const [connectCode] = await transaction
         .select()
         .from(accountCliLoginCodes)
@@ -92,7 +96,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
         );
       }
 
-      const tokenPair = await this.#authTokens.issuePairForUser(user.id);
+      // Conditional, so a code two callers reach at once is redeemed by exactly one of them.
       const [consumed] = await transaction
         .update(accountCliLoginCodes)
         .set({ consumedAt: now })
@@ -101,8 +105,11 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       if (!consumed) {
         throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
       }
-      return { ...tokenPair, tokenType: "Bearer" as const };
+      return user.id;
     });
+
+    // Outside the transaction: the credential store has its own connection, and nothing here holds a row lock now.
+    return { ...(await this.#authTokens.issuePairForUser(userId)), tokenType: "Bearer" as const };
   }
 
   async refresh(refreshToken: string): Promise<RefreshTokenResponse> {
@@ -147,21 +154,9 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
 
-    /**
-     * Authentication proves the Account identity, not ownership of every stored resource. A legacy or revoked
-     * Account may have no active Workspace grant, and resource-scoped authority is always checked separately.
-     */
-    const activeWorkspaces = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
-
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },
-      workspaces: activeWorkspaces.map((workspace) => ({
-        id: workspace.workspaceId,
-        name: workspace.workspaceName,
-        displayName: workspace.workspaceDisplayName,
-        setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
-        grantedAt: workspace.grantedAt.toISOString(),
-      })),
+      setupCompletedAt: user.setupCompletedAt?.toISOString() ?? null,
     };
   }
 }

@@ -36,6 +36,25 @@ describe("SessionCollaborationService", () => {
     });
   });
 
+  it("logs an assembler failure while preserving the runtime_not_ready response", async () => {
+    const fixture = serviceFixture();
+    fixture.assembler.assembleForSession.mockRejectedValue(new Error("assembler failed"));
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(fixture.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "SESSION_COLLABORATION_RUNTIME_ASSEMBLY_FAILED",
+        messageId: fixture.messageId,
+        sessionId: fixture.targetSessionId,
+        targetSessionId: fixture.targetSessionId,
+      }),
+      "Session collaboration internal failure",
+    );
+  });
+
   it("records a busy target as unreachable capacity", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestSessionMessageDelivery.mockResolvedValue({
@@ -75,6 +94,20 @@ describe("SessionCollaborationService", () => {
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
   });
 
+  it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {
+    const fixture = serviceFixture({ targetSessionKind: "channel" });
+    fixture.registry.capabilityVersion.mockReturnValue(1);
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "outbox_unavailable",
+    });
+    expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unreachable", errorCode: "outbox_unavailable" }),
+    );
+  });
+
   it("records an uncertain delivery timeout as unknown and keeps it unknown if outcome fencing fails", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestSessionMessageDelivery.mockRejectedValue(
@@ -86,6 +119,14 @@ describe("SessionCollaborationService", () => {
       status: "unknown",
       code: "outcome_write_failed",
     });
+    expect(fixture.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "SESSION_COLLABORATION_OUTCOME_WRITE_FAILED",
+        messageId: fixture.messageId,
+        outcome: "unknown",
+      }),
+      "Session collaboration internal failure",
+    );
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
     );
@@ -105,14 +146,20 @@ describe("SessionCollaborationService", () => {
   });
 });
 
-function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "accepted" | "unknown" } = {}) {
+function serviceFixture(
+  options: {
+    attemptCount?: number | null;
+    lastOutcome?: "accepted" | "unknown";
+    targetSessionKind?: "channel" | "thread" | "internal";
+  } = {},
+) {
   const sourceSessionId = randomUUID();
   const targetSessionId = randomUUID();
   const messageId = randomUUID();
   const agentId = randomUUID();
   const imBindingId = randomUUID();
-  const targetWorkspaceComputerId = randomUUID();
   const targetComputerId = randomUUID();
+  const targetInstallationId = randomUUID();
   const instanceId = randomUUID();
   const source: SessionCliSourceContext = {
     agentId,
@@ -121,7 +168,7 @@ function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "
     placementGeneration: 1,
     sessionId: sourceSessionId,
     sessionKind: "channel",
-    workspaceComputerId: randomUUID(),
+    installationId: randomUUID(),
   };
   const attempt = {
     route: {
@@ -130,9 +177,9 @@ function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "
       sourceSessionId,
       targetSessionId,
       targetComputerId,
-      targetWorkspaceComputerId,
+      targetInstallationId,
       targetPlacementGeneration: 1,
-      targetSessionKind: "internal" as const,
+      targetSessionKind: options.targetSessionKind ?? ("internal" as const),
       targetCreatorSessionId: sourceSessionId,
     },
     message: {
@@ -185,22 +232,30 @@ function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "
     }),
   };
   const onDiagnostic = vi.fn();
+  const logger = { error: vi.fn() };
+  const registry = {
+    capabilityVersion: vi.fn().mockReturnValue(2),
+    currentInstanceId: vi.fn().mockReturnValue(instanceId),
+    supportsCapability: vi.fn().mockReturnValue(true),
+  };
+  const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
   return {
+    assembler,
     domain,
     messageId,
     onDiagnostic,
+    logger,
+    registry,
     sessions,
     source,
     targetSessionId,
     service: new SessionCollaborationService({
-      assembler: { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) },
+      assembler,
       domain: domain as never,
       onDiagnostic,
-      registry: {
-        currentInstanceId: vi.fn().mockReturnValue(instanceId),
-        supportsCapability: vi.fn().mockReturnValue(true),
-      },
+      registry,
       sessions: sessions as never,
+      logger,
     }),
   };
 }

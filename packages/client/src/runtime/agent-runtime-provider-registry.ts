@@ -8,6 +8,9 @@ import {
   type AgentRuntimePolicy,
   type AgentRuntimeProbeResult,
 } from "../agent-runtime/types.js";
+import { createLogger } from "../observability/logger.js";
+
+const logger = createLogger("runtime-provider-registry");
 
 export interface AgentRuntimeProviderRegistration {
   readonly artifactIdentity: string;
@@ -115,6 +118,10 @@ export class AgentRuntimeProviderRegistry {
       return true;
     } catch (error) {
       if (signal?.aborted) throw error;
+      logger.debug(
+        { code: "provider_refresh_failed", providerId, error: String(error) },
+        "Agent Runtime provider refresh failed",
+      );
       this.#ready.delete(providerId);
       return false;
     }
@@ -137,6 +144,14 @@ export class AgentRuntimeProviderRegistry {
         try {
           await provider.verifyArtifact?.(controller.signal);
         } catch (error) {
+          logger.debug(
+            {
+              code: "provider_artifact_verification_failed",
+              providerId,
+              error: String(error),
+            },
+            "Agent Runtime provider artifact verification failed",
+          );
           if (this.#probes.get(providerId) === record) {
             this.#probeResults.set(providerId, {
               ready: false,
@@ -158,7 +173,12 @@ export class AgentRuntimeProviderRegistry {
         record.settled = true;
         if (this.#probes.get(providerId) === record) this.#probes.delete(providerId);
       });
-      void promise.catch(() => undefined);
+      void promise.catch((error: unknown) => {
+        logger.debug(
+          { code: "provider_probe_failed", providerId, error: String(error) },
+          "Agent Runtime provider probe failed",
+        );
+      });
       record = { controller, promise, settled: false, waiters: 0 };
       probe = record;
       this.#probes.set(providerId, probe);
@@ -170,6 +190,7 @@ export class AgentRuntimeProviderRegistry {
       probe.waiters -= 1;
       if (probe.waiters === 0 && !probe.settled) {
         probe.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
+        /* v8 ignore else -- the registry still maps this probe while its last waiter unwinds. */
         if (this.#probes.get(providerId) === probe) this.#probes.delete(providerId);
       }
     }

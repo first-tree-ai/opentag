@@ -1,6 +1,6 @@
-import type { ListWorkspaceComputersResponse } from "@opentag/shared";
+import type { ListAccountComputersResponse } from "@opentag/shared";
 
-export function formatComputerList(response: ListWorkspaceComputersResponse): string {
+export function formatComputerList(response: ListAccountComputersResponse): string {
   if (response.computers.length === 0) return "No Computers registered";
   return response.computers
     .map((computer) =>

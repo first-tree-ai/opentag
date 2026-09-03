@@ -1,0 +1,11 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "errors_application_description": "OpenTag 无法加载应用。请刷新页面后重试。",
+  "errors_back_to_agents": "返回 Agent 列表",
+  "errors_page_not_found": "页面未找到",
+  "errors_page_unavailable": "请求的 OpenTag 页面不可用。",
+  "errors_route_description": "OpenTag 无法加载此页面。请重试，或返回 Agent 列表继续操作。",
+  "errors_something_went_wrong": "出了点问题",
+  "errors_try_again": "再试一次",
+  "errors_unknown_application_error": "未知应用错误"
+}

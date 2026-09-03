@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import type { AgentTraceBatch, TurnReportHashInput, TurnReportRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import {
+  type DurableFailure,
+  type DurableWorkRecord,
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityMetrics,
+  type RuntimeRetryScheduler,
+} from "../runtime/runtime-durability.js";
 import { TurnTraceBuffer } from "../runtime/trace-buffer.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 
@@ -58,6 +65,203 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
+  it("waits for an in-flight durable write before shutdown settles", async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolveWrite) => {
+      releaseWrite = resolveWrite;
+    });
+    let writeStarted!: () => void;
+    const started = new Promise<void>((resolveStarted) => {
+      writeStarted = resolveStarted;
+    });
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        writeStarted();
+        await writeGate;
+      }),
+    };
+    const owner = new TurnReportOwner({ connection: new FakeConnection("stopped"), persistence });
+    const report = owner.create(reportInput());
+    const submitted = owner.submit(report, vi.fn());
+    await started;
+
+    const stopped = expect(submitted).rejects.toThrow("stopped");
+    owner.stop();
+    let settled = false;
+    const shutdown = owner.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseWrite();
+    await shutdown;
+    await stopped;
+    expect(persistence.write).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a duplicate Turn Report with a different immutable identity", async () => {
+    const owner = new TurnReportOwner({ connection: new FakeConnection("stopped") });
+    const report = owner.create(reportInput());
+    const other = { ...report, requestId: "00000000-0000-4000-8000-000000000002" };
+    const pending = owner.submit(report, vi.fn());
+
+    await expect(owner.submit(other, vi.fn())).rejects.toThrow("already owns this Turn");
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+  });
+
+  it("hydrates terminal fences, expired records, and interrupted sends", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const seed = new TurnReportOwner({ connection: new FakeConnection("stopped") });
+    const conflictReport = seed.create(reportInput({ turnId: "turn-conflict" }));
+    const expiredReport = seed.create(reportInput({ turnId: "turn-expired" }));
+    const runningReport = seed.create(reportInput({ turnId: "turn-running" }));
+    seed.stop();
+    const terminalFailure: DurableFailure = {
+      category: "conflict",
+      code: "conflict",
+      message: "conflict",
+      phase: "request",
+      requestId: conflictReport.requestId,
+      retryability: "never",
+    };
+    await store.write(reportRecord(conflictReport, "failed", { lastError: terminalFailure }));
+    await store.write(reportRecord(expiredReport, "accepted", { acceptedAt: 1 }));
+    await store.write(reportRecord(runningReport, "running"));
+
+    const owner = new TurnReportOwner({
+      connection: new FakeConnection("stopped"),
+      now: () => 10_000,
+      persistence: store,
+      retryPolicy: { maxAgeMs: 100, maxAttempts: 5 },
+    });
+    await owner.ready();
+
+    expect(owner.get(conflictReport.turnId)?.serverStatus).toBe("conflict");
+    expect(owner.getState(expiredReport.turnId)?.status).toBe("dead-letter");
+    expect(owner.getState(runningReport.turnId)?.status).toBe("retryable");
+    expect(owner.pendingCount).toBe(2);
+    const pending = [owner.submit(conflictReport, vi.fn()), owner.submit(runningReport, vi.fn())];
+    owner.stop();
+    await Promise.allSettled(pending);
+  });
+
+  it("dead-letters structured transport failures without leaking unbounded messages", async () => {
+    const report = new TurnReportOwner({ connection: new FakeConnection("registered") }).create(reportInput());
+    const error = {
+      category: "unavailable",
+      code: "transport_blocked",
+      phase: "transport",
+      requestId: report.requestId,
+      retryability: "never",
+      message: 42,
+    };
+    const connection = new FakeConnection("registered", error);
+    const owner = new TurnReportOwner({ connection, retryPolicy: { maxAttempts: 5, maxAgeMs: 10_000 } });
+    const submitted = owner.submit(report, vi.fn());
+
+    await expect(submitted).rejects.toMatchObject({ name: "RuntimeDurabilityFailure", code: "transport_blocked" });
+    expect(owner.getState(report.turnId)).toMatchObject({
+      status: "dead-letter",
+      lastError: { code: "transport_blocked", message: "Runtime operation failed" },
+    });
+    owner.stop();
+  });
+
+  it("classifies persistence failures with the fallback durable error code", async () => {
+    const report = new TurnReportOwner({ connection: new FakeConnection("stopped") }).create(reportInput());
+    const failures: DurableFailure[] = [];
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        throw new Error("disk full");
+      }),
+    };
+    const owner = new TurnReportOwner({
+      connection: new FakeConnection("stopped"),
+      onFailure: (failure) => failures.push(failure),
+      persistence,
+      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+    });
+    const submitted = owner.submit(report, vi.fn());
+
+    await expect(submitted).rejects.toMatchObject({ code: "runtime_failed", retryability: "backoff" });
+    expect(failures).toEqual([expect.objectContaining({ code: "runtime_failed", phase: "persistence" })]);
+    owner.stop();
+  });
+
+  it("bounds confirmation retries and records a dead-letter state with injected time", async () => {
+    const scheduled: Array<() => void> = [];
+    const scheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        scheduled.push(task);
+        return { cancel: () => undefined };
+      },
+    };
+    const store = new MemoryRuntimeDurabilityStore();
+    const metrics = new RuntimeDurabilityMetrics();
+    const connection = new FakeConnection("registered");
+    const owner = new TurnReportOwner({
+      connection,
+      metrics,
+      persistence: store,
+      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 100 },
+      scheduler,
+    });
+    const report = owner.create(reportInput());
+    const submitted = owner.submit(report, vi.fn().mockRejectedValue(new Error("fsync failed")));
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(1));
+    const result = {
+      type: "turn:report:result" as const,
+      requestId: report.requestId,
+      turnId: report.turnId,
+      status: "recorded" as const,
+      resultHash: report.resultHash,
+    };
+    await owner.handleResult(result);
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(2));
+    await owner.handleResult(result);
+    await expect(submitted).rejects.toMatchObject({ name: "RuntimeDurabilityFailure" });
+    expect(owner.getState(report.turnId)?.status).toBe("dead-letter");
+    expect(owner.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    owner.stop();
+  });
+
+  it("resumes persisted Reports after restart and confirms exactly once", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const firstConnection = new FakeConnection("registered");
+    const first = new TurnReportOwner({ connection: firstConnection, persistence: store });
+    const report = first.create(reportInput());
+    const pending = first.submit(
+      report,
+      vi.fn(async () => undefined),
+    );
+    await vi.waitFor(() => expect(firstConnection.sent).toHaveLength(1));
+    first.stop();
+    await expect(pending).rejects.toThrow("stopped");
+
+    const resumedConnection = new FakeConnection("registered");
+    const resumed = new TurnReportOwner({ connection: resumedConnection, persistence: store });
+    await resumed.ready();
+    const confirm = vi.fn(async () => undefined);
+    const recovered = resumed.submit(report, confirm);
+    await vi.waitFor(() => expect(resumedConnection.sent.length).toBeGreaterThanOrEqual(1));
+    await resumed.handleResult({
+      type: "turn:report:result",
+      requestId: report.requestId,
+      turnId: report.turnId,
+      status: "already_recorded",
+      resultHash: report.resultHash,
+    });
+    await recovered;
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(resumed.getState(report.turnId)?.status).toBe("succeeded");
+    resumed.stop();
+  });
+
   it("D-17/D-19 resends one immutable Report after registration and reconciliation wake-up", async () => {
     const connection = new FakeConnection("stopped");
     const owner = new TurnReportOwner({ connection, id: () => REPORT_REQUEST_ID });
@@ -180,10 +384,10 @@ describe("TurnReportOwner", () => {
 class FakeConnection {
   readonly sent: Array<{ frame: unknown; options?: { priority?: string } }> = [];
   readonly #listeners = new Set<(state: RuntimeConnectionState) => void>();
-  readonly #rejectSends: boolean;
+  readonly #rejectSends: boolean | Error | unknown;
   state: RuntimeConnectionState;
 
-  constructor(state: RuntimeConnectionState, rejectSends = false) {
+  constructor(state: RuntimeConnectionState, rejectSends: boolean | Error | unknown = false) {
     this.state = state;
     this.#rejectSends = rejectSends;
   }
@@ -196,7 +400,7 @@ class FakeConnection {
 
   async send(frame: unknown, options?: { priority?: string }): Promise<void> {
     this.sent.push({ frame, options });
-    if (this.#rejectSends) throw new Error("socket unavailable");
+    if (this.#rejectSends) throw this.#rejectSends instanceof Error ? this.#rejectSends : this.#rejectSends;
   }
 
   setState(state: RuntimeConnectionState): void {
@@ -205,7 +409,7 @@ class FakeConnection {
   }
 }
 
-function reportInput(): TurnReportHashInput {
+function reportInput(overrides: Partial<TurnReportHashInput> = {}): TurnReportHashInput {
   return {
     deliveryId: "delivery-1",
     turnId: "turn-1",
@@ -217,6 +421,24 @@ function reportInput(): TurnReportHashInput {
     finalText: "done",
     usage: { inputTokens: 2, outputTokens: 1 },
     traceSummary: { lastSequence: 3, droppedEvents: 1 },
+    ...overrides,
+  };
+}
+
+function reportRecord(
+  report: TurnReportRequest,
+  status: DurableWorkRecord["status"],
+  overrides: Partial<DurableWorkRecord<TurnReportRequest>> = {},
+): DurableWorkRecord<TurnReportRequest> {
+  return {
+    acceptedAt: 10_000,
+    attempts: 0,
+    key: report.turnId,
+    kind: "turn-report",
+    payload: report,
+    status,
+    updatedAt: 10_000,
+    ...overrides,
   };
 }
 

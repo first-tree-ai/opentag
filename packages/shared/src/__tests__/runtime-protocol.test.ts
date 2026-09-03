@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AuthResultFrameSchema,
   AuthV1FrameSchema,
   AuthV2FrameSchema,
   ClientRuntimeFrameSchema,
@@ -19,6 +20,58 @@ import {
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
+  it("requires the Computer identity on a successful auth result and an error code on failure", () => {
+    const ok = {
+      type: "auth:result" as const,
+      requestId: crypto.randomUUID(),
+      ok: true,
+      computerId: crypto.randomUUID(),
+      installationId: crypto.randomUUID(),
+    };
+    expect(AuthResultFrameSchema.parse(ok)).toEqual(ok);
+    expect(() => AuthResultFrameSchema.parse({ ...ok, computerId: undefined })).toThrow(
+      "requires the Computer identity",
+    );
+    expect(() => AuthResultFrameSchema.parse({ ...ok, installationId: undefined })).toThrow(
+      "requires the Computer identity",
+    );
+    const rejected = {
+      type: "auth:result" as const,
+      requestId: ok.requestId,
+      ok: false,
+      errorCode: "AUTH_INVALID_TOKEN" as const,
+    };
+    expect(AuthResultFrameSchema.parse(rejected)).toEqual(rejected);
+    expect(() => AuthResultFrameSchema.parse({ type: "auth:result", requestId: ok.requestId, ok: false })).toThrow(
+      "requires an error code",
+    );
+  });
+
+  it("negotiates credential grants across v1 and v2", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.imCredentialGrant]: 1 });
+  });
+
+  it("negotiates observer-safe IM delivery and steer independently from owner-compatible v1", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 2 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 2 });
+    expect(
+      negotiateRuntimeCapabilities(
+        {
+          [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 1 },
+          [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 1 },
+        },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.imDelivery]: 1, [RUNTIME_CAPABILITY.imSteer]: 1 });
+  });
+
   it("keeps the v1 handshake strict after the credential-grant capability replacement", () => {
     expect(
       ServerRuntimeFrameSchema.parse({
@@ -42,7 +95,7 @@ describe("runtime protocol", () => {
     const register = {
       type: "computer:register",
       requestId: crypto.randomUUID(),
-      computerId: crypto.randomUUID(),
+      installationId: crypto.randomUUID(),
       instanceId: crypto.randomUUID(),
       displayName: "host",
       platform: "linux",
@@ -82,7 +135,7 @@ describe("runtime protocol", () => {
         providerReadiness: { version: 1, providers: ["codex"] },
       }),
     ).toMatchObject({ providerReadiness: { version: 1, providers: ["codex"] } });
-    expect(() => ClientRuntimeFrameSchema.parse({ ...register, workspaceId: crypto.randomUUID() })).toThrow();
+    expect(() => ClientRuntimeFrameSchema.parse({ ...register, accountId: crypto.randomUUID() })).toThrow();
   });
 
   it("validates extensible v2 offers while keeping security fields strict", () => {
@@ -141,7 +194,10 @@ describe("runtime protocol", () => {
     expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
     expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
     expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(2);
-    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(1);
+    expect(negotiated[RUNTIME_CAPABILITY.imDelivery]).toBe(2);
+    expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(2);
+    expect(negotiated[RUNTIME_CAPABILITY.agentRuntimeTest]).toBe(1);
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.agentRuntimeTest]).toEqual({ min: 1, max: 1 });
     expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
     expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
   });
@@ -175,5 +231,48 @@ describe("runtime protocol", () => {
     ).toThrow();
     expect(runtimeFrameByteLength("你")).toBe(3);
     expect(runtimeFrameByteLength("x".repeat(RUNTIME_MAX_FRAME_BYTES))).toBe(RUNTIME_MAX_FRAME_BYTES);
+  });
+
+  it("advertises the channel target only on v2 heartbeat results with an exact SemVer", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.channelTarget]).toEqual({ min: 1, max: 1 });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.channelTarget]).toEqual({ min: 1, max: 1 });
+    expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.channelTarget);
+    expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.channelTarget);
+
+    const heartbeatResult = {
+      type: "heartbeat:result",
+      requestId: crypto.randomUUID(),
+      ok: true,
+      serverTime: new Date().toISOString(),
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      connectionId: crypto.randomUUID(),
+    };
+    const parsed = ServerRuntimeFrameSchema.parse({
+      ...heartbeatResult,
+      channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" },
+    });
+    expect(parsed).toMatchObject({ channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" } });
+    expect(ServerRuntimeFrameSchema.parse(heartbeatResult)).toMatchObject({ ok: true });
+    expect(() =>
+      ServerRuntimeFrameSchema.parse({
+        ...heartbeatResult,
+        channelTarget: { channel: "staging", version: "latest" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ServerRuntimeFrameSchema.parse({
+        ...heartbeatResult,
+        channelTarget: { channel: "production", version: "0.0.3" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ServerRuntimeFrameSchema.parse({
+        type: "heartbeat:result",
+        requestId: crypto.randomUUID(),
+        ok: true,
+        serverTime: new Date().toISOString(),
+        channelTarget: { channel: "staging", version: "0.0.3-staging.1.1" },
+      }),
+    ).toThrow();
   });
 });

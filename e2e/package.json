@@ -1,0 +1,17 @@
+{
+  "name": "@opentag/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test --project=journey --workers=1",
+    "e2e:headed": "playwright test --project=journey --workers=1 --headed",
+    "e2e:journey": "playwright test --project=journey --workers=1",
+    "test:e2e:smoke": "playwright test --project=smoke --workers=4"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@opentag/shared": "workspace:*",
+    "@playwright/test": "1.62.1"
+  }
+}

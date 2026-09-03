@@ -29,6 +29,61 @@ describe("RotatingFileStream", () => {
     expect(await readFile(join(directory, "client.log.2"), "utf8")).toBe("two\n");
   });
 
+  it("keeps young backups beyond the size ring until the retention floor expires", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    // The storage ceiling is stated explicitly: the retention floor may hold more than maxBackups
+    // files, but only inside a byte budget the operator controls.
+    const stream = new RotatingFileStream(directory, {
+      maxBackups: 1,
+      maxBytes: 5,
+      minRetentionMs: 60_000,
+      maxTotalBytes: 1_024,
+    });
+    stream.write("one\n");
+    stream.write("two\n");
+    stream.write("three\n");
+    stream.close();
+
+    expect(await readFile(join(directory, "client.log.1"), "utf8")).toBe("two\n");
+    expect(await readFile(join(directory, "client.log.2"), "utf8")).toBe("one\n");
+  });
+
+  it("enforces a hard storage ceiling even while backups are younger than the retention floor", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    // Ceiling fits two 4-byte backups; a third rotation must evict the oldest despite the floor.
+    const stream = new RotatingFileStream(directory, {
+      maxBackups: 1,
+      maxBytes: 5,
+      minRetentionMs: 60 * 60 * 1000,
+      maxTotalBytes: 8,
+    });
+    stream.write("one\n");
+    stream.write("two\n");
+    stream.write("three\n");
+    stream.write("four\n");
+    stream.close();
+
+    // The newest backup is always kept; older ones are evicted until the retained bytes fit the
+    // ceiling, even though every backup here is far younger than the one-hour floor.
+    expect(await readFile(join(directory, "client.log.1"), "utf8")).toBe("three\n");
+    expect(await retainedBackupBytes(directory)).toBeLessThanOrEqual(8);
+    await expect(readFile(join(directory, "client.log.3"), "utf8")).rejects.toThrow();
+  });
+
+  it("defaults the ceiling to the pre-retention-floor cap", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    const stream = new RotatingFileStream(directory, { maxBackups: 2, maxBytes: 5, minRetentionMs: 60 * 60 * 1000 });
+    for (const line of ["one\n", "two\n", "three\n", "four\n", "five\n"]) stream.write(line);
+    stream.close();
+
+    // maxBytes * maxBackups = 10 bytes is the inherited cap, so growth stays bounded.
+    expect(await retainedBackupBytes(directory)).toBeLessThanOrEqual(10);
+    await expect(readFile(join(directory, "client.log.3"), "utf8")).rejects.toThrow();
+  });
+
   it("switches permanently to stderr fallback when the file sink cannot open", async () => {
     const root = await temporaryDirectory();
     const blocked = join(root, "not-a-directory");
@@ -144,6 +199,18 @@ describe("RotatingFileStream", () => {
     expect(() => stream.write("safe\n")).not.toThrow();
   });
 });
+
+/** Total bytes held by every retained backup, which is what the storage ceiling actually bounds. */
+async function retainedBackupBytes(directory: string): Promise<number> {
+  let total = 0;
+  for (let index = 1; ; index += 1) {
+    try {
+      total += (await readFile(join(directory, `client.log.${index}`))).byteLength;
+    } catch {
+      return total;
+    }
+  }
+}
 
 async function temporaryDirectory(): Promise<string> {
   // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.

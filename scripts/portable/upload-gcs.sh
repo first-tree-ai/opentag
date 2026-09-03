@@ -112,6 +112,8 @@ process.stdout.write(value);
 
 asset_entries() {
   local manifest="$1"
+  # The JavaScript source uses template literals and must not be shell-expanded.
+  # shellcheck disable=SC2016
   node -e '
 const fs = require("node:fs");
 const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -125,6 +127,8 @@ for (const asset of assets) {
 }
 
 derive_download_base_url() {
+  # The JavaScript source uses template literals and must not be shell-expanded.
+  # shellcheck disable=SC2016
   node -e '
 const fs = require("node:fs");
 const latest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -190,6 +194,8 @@ download_url() {
 
 asset_checksums() {
   local manifest="$1"
+  # The JavaScript source uses template literals and must not be shell-expanded.
+  # shellcheck disable=SC2016
   node -e '
 const fs = require("node:fs");
 const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -409,6 +415,8 @@ check_remote_object_matches() {
   local described
   described="$(run_gcloud objects describe "gs://$BUCKET/$key" --raw --format=json)" ||
     die "failed to describe gs://$BUCKET/$key"
+  # The JavaScript source uses template literals and must not be shell-expanded.
+  # shellcheck disable=SC2016
   node -e '
 const described = JSON.parse(process.argv[1]);
 const [key, expectedSize, expectedSha, expectedMd5] = process.argv.slice(2);

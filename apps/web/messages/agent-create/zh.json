@@ -1,0 +1,18 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agent_create_check_ambiguous": "有多个名为 @{name} 的活跃 Agent，无法在此确定具体目标。已保存的尝试保持不变。",
+  "agent_create_check_failed": "无法检查创建结果",
+  "agent_create_check_not_found": "尚无名为 @{name} 的活跃 Agent，已保存的尝试未完成。请重试或将其丢弃。",
+  "agent_create_check_result_action": "检查结果",
+  "agent_create_checking_action": "正在检查…",
+  "agent_create_checking_result_label": "正在检查创建结果",
+  "agent_create_create_agent_action": "创建 Agent",
+  "agent_create_creating_action": "正在创建…",
+  "agent_create_creating_agent_label": "正在创建 Agent",
+  "agent_create_discard_action": "丢弃并重新开始",
+  "agent_create_failed": "Agent 创建失败",
+  "agent_create_recovery_description": "此前创建 {displayName} 的尝试在结果返回此浏览器之前被中断。在你做出选择之前不会执行任何操作：检查 Agent 是否已创建、重试同一尝试，或丢弃已保存的尝试。",
+  "agent_create_recovery_title": "创建尝试已中断",
+  "agent_create_retry_action": "重试创建",
+  "agent_create_retry_route_unavailable": "重试会使用原来的 Agent 名称和 Runtime。请选择相同的值后继续。"
+}

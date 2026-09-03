@@ -8,12 +8,32 @@ import {
   TurnReportResultSchema,
 } from "@opentag/shared";
 import type { RuntimeConnection, RuntimeConnectionState } from "./runtime-connection.js";
+import {
+  DEFAULT_RUNTIME_RETRY_POLICY,
+  type DurableFailure,
+  type DurableWorkRecord,
+  defaultRuntimeRetryScheduler,
+  durableFailureFromUnknown,
+  RuntimeDurabilityFailure,
+  type RuntimeDurabilityMetrics,
+  type RuntimeDurabilityStore,
+  type RuntimeRetryPolicy,
+  type RuntimeRetryScheduler,
+  retryDelay,
+  retryExhausted,
+} from "./runtime-durability.js";
 
 export interface TurnReportOwnerOptions {
   connection: Pick<RuntimeConnection, "send" | "state" | "subscribeState">;
   id?: () => string;
   maxPending?: number;
+  metrics?: RuntimeDurabilityMetrics;
+  now?: () => number;
+  onFailure?(failure: DurableFailure): void;
+  persistence?: RuntimeDurabilityStore;
+  retryPolicy?: Partial<RuntimeRetryPolicy>;
   retryDelayMs?: number;
+  scheduler?: RuntimeRetryScheduler;
 }
 
 export type TurnReportTerminalStatus = "conflict" | "stale_generation";
@@ -28,17 +48,17 @@ export type TurnReportRearmClaim = Pick<
 >;
 
 interface PendingReport {
-  confirm(): Promise<void> | void;
+  confirm?: () => Promise<void> | void;
   confirming: boolean;
   promise: Promise<void>;
   report: TurnReportRequest;
   resolve(): void;
   reject(error: Error): void;
   resendRequested: boolean;
-  retryTimer?: ReturnType<typeof setTimeout>;
   sending: boolean;
   serverStatus?: TurnReportTerminalStatus;
   terminalListeners: Set<NonNullable<TurnReportSubmitOptions["onTerminal"]>>;
+  record: DurableWorkRecord<TurnReportRequest>;
 }
 
 export class TurnReportOwnerStoppedError extends Error {
@@ -53,8 +73,18 @@ export class TurnReportOwner {
   readonly #id: () => string;
   readonly #maxPending: number;
   readonly #retryDelayMs: number;
+  readonly #metrics?: RuntimeDurabilityMetrics;
+  readonly #now: () => number;
+  readonly #onFailure?: TurnReportOwnerOptions["onFailure"];
+  readonly #persistence?: RuntimeDurabilityStore;
+  readonly #retryPolicy: RuntimeRetryPolicy;
+  readonly #scheduler: RuntimeRetryScheduler;
+  readonly #inFlight = new Set<Promise<unknown>>();
   readonly #pending = new Map<string, PendingReport>();
+  readonly #records = new Map<string, DurableWorkRecord<TurnReportRequest>>();
+  readonly #retryTimers = new Map<string, { cancel(): void }>();
   readonly #unsubscribe: () => void;
+  readonly #readyPromise: Promise<void>;
   #stopped = false;
 
   constructor(options: TurnReportOwnerOptions) {
@@ -62,17 +92,39 @@ export class TurnReportOwner {
     this.#id = options.id ?? randomUUID;
     this.#maxPending = options.maxPending ?? 99;
     this.#retryDelayMs = options.retryDelayMs ?? 5_000;
+    this.#metrics = options.metrics;
+    this.#now = options.now ?? Date.now;
+    this.#onFailure = options.onFailure;
+    this.#persistence = options.persistence;
+    this.#retryPolicy = normalizeRetryPolicy({
+      ...options.retryPolicy,
+      ...(options.retryDelayMs ? { baseDelayMs: options.retryDelayMs } : {}),
+    });
+    this.#scheduler = options.scheduler ?? defaultRuntimeRetryScheduler;
     if (!Number.isSafeInteger(this.#maxPending) || this.#maxPending < 1) {
       throw new Error("Turn Report pending limit must be a positive safe integer");
     }
     if (!Number.isSafeInteger(this.#retryDelayMs) || this.#retryDelayMs < 1) {
       throw new Error("Turn Report retry delay must be a positive safe integer");
     }
+    this.#readyPromise = this.#hydrate();
     this.#unsubscribe = this.#connection.subscribeState((state) => this.#onConnectionState(state));
   }
 
   get pendingCount(): number {
     return this.#pending.size;
+  }
+
+  ready(): Promise<void> {
+    return this.#readyPromise;
+  }
+
+  getState(turnId: string): DurableWorkRecord<TurnReportRequest> | undefined {
+    return this.#records.get(turnId);
+  }
+
+  metricsSnapshot(): ReturnType<RuntimeDurabilityMetrics["snapshot"]> | undefined {
+    return this.#metrics?.snapshot();
   }
 
   create(input: TurnReportHashInput): TurnReportRequest {
@@ -94,22 +146,43 @@ export class TurnReportOwner {
     const report = TurnReportRequestSchema.parse(reportInput);
     const existing = this.#pending.get(report.turnId);
     if (existing) {
-      if (existing.report.requestId !== report.requestId || existing.report.resultHash !== report.resultHash) {
-        return Promise.reject(new Error("A different Turn Report already owns this Turn"));
-      }
-      if (options.onTerminal) {
-        if (existing.serverStatus) this.#notifyTerminal(options.onTerminal, existing.serverStatus);
-        else existing.terminalListeners.add(options.onTerminal);
-      }
-      if (this.#connection.state === "registered" && !existing.serverStatus) {
-        if (existing.sending) existing.resendRequested = true;
-        else this.#send(existing);
-      }
-      return existing.promise;
+      return this.#reusePending(existing, report, confirm, options);
     }
+    const stored = this.#records.get(report.turnId);
+    if (stored?.status === "succeeded") return Promise.resolve();
     if (this.#pending.size >= this.#maxPending) {
       return Promise.reject(new Error("The Turn Report owner reached its pending limit"));
     }
+    return this.#createPending(report, confirm, options, stored);
+  }
+
+  #reusePending(
+    existing: PendingReport,
+    report: TurnReportRequest,
+    confirm: () => Promise<void> | void,
+    options: TurnReportSubmitOptions,
+  ): Promise<void> {
+    if (existing.report.requestId !== report.requestId || existing.report.resultHash !== report.resultHash) {
+      return Promise.reject(new Error("A different Turn Report already owns this Turn"));
+    }
+    if (options.onTerminal) {
+      if (existing.serverStatus) this.#notifyTerminal(options.onTerminal, existing.serverStatus);
+      else existing.terminalListeners.add(options.onTerminal);
+    }
+    existing.confirm = confirm;
+    if (this.#connection.state === "registered" && !existing.serverStatus) {
+      if (existing.sending) existing.resendRequested = true;
+      else this.#send(existing);
+    }
+    return existing.promise;
+  }
+
+  #createPending(
+    report: TurnReportRequest,
+    confirm: () => Promise<void> | void,
+    options: TurnReportSubmitOptions,
+    stored?: DurableWorkRecord<TurnReportRequest>,
+  ): Promise<void> {
     let resolvePromise: (() => void) | undefined;
     let rejectPromise: ((error: Error) => void) | undefined;
     const promise = new Promise<void>((resolve, reject) => {
@@ -126,9 +199,24 @@ export class TurnReportOwner {
       resolve: () => resolvePromise?.(),
       reject: (error) => rejectPromise?.(error),
       terminalListeners: new Set(options.onTerminal ? [options.onTerminal] : []),
+      record: stored ?? {
+        acceptedAt: this.#now(),
+        attempts: 0,
+        key: report.turnId,
+        kind: "turn-report",
+        payload: report,
+        status: "accepted",
+        updatedAt: this.#now(),
+      },
     };
     this.#pending.set(report.turnId, pending);
-    if (this.#connection.state === "registered") this.#send(pending);
+    void this.#track(
+      this.#persist(pending.record)
+        .then(() => {
+          if (this.#connection.state === "registered") this.#send(pending);
+        })
+        .catch((error) => this.#handleFailure(pending, "persist", error)),
+    );
     return promise;
   }
 
@@ -140,22 +228,35 @@ export class TurnReportOwner {
     if (result.status === "conflict" || result.status === "stale_generation") {
       pending.serverStatus = result.status;
       this.#clearRetry(pending);
+      const failure: DurableFailure = {
+        category: "conflict",
+        code: result.status,
+        message: `Server rejected the Turn Report: ${result.status}`,
+        phase: "request",
+        requestId: pending.report.requestId,
+        retryability: "never",
+      };
+      this.#emitFailure(failure);
+      await this.#transition(pending, "failed", {
+        lastError: failure,
+      });
       const listeners = [...pending.terminalListeners];
       pending.terminalListeners.clear();
       for (const listener of listeners) this.#notifyTerminal(listener, result.status);
       return true;
     }
-    if (pending.confirming) return true;
+    if (pending.confirming || !pending.confirm) return true;
     pending.confirming = true;
     try {
       await pending.confirm();
       if (this.#pending.get(result.turnId) !== pending) return true;
       this.#pending.delete(result.turnId);
       this.#clearRetry(pending);
+      await this.#transition(pending, "succeeded", { nextAttemptAt: undefined });
       pending.resolve();
-    } catch {
+    } catch (error) {
       pending.confirming = false;
-      this.#scheduleRetry(pending);
+      await this.#handleFailure(pending, "confirmation", error);
     }
     return true;
   }
@@ -183,6 +284,8 @@ export class TurnReportOwner {
     if (this.#stopped) return;
     this.#stopped = true;
     this.#unsubscribe();
+    for (const timer of this.#retryTimers.values()) timer.cancel();
+    this.#retryTimers.clear();
     const error = new TurnReportOwnerStoppedError();
     for (const pending of this.#pending.values()) {
       this.#clearRetry(pending);
@@ -191,57 +294,199 @@ export class TurnReportOwner {
     this.#pending.clear();
   }
 
+  async settled(): Promise<void> {
+    await this.#readyPromise.catch(() => undefined);
+    while (this.#inFlight.size > 0) {
+      await Promise.allSettled([...this.#inFlight]);
+    }
+  }
+
   #onConnectionState(state: RuntimeConnectionState): void {
     if (state !== "registered" || this.#stopped) return;
-    for (const pending of this.#pending.values()) {
-      this.#clearRetry(pending);
-      if (pending.sending) pending.resendRequested = true;
-      else this.#send(pending);
-    }
+    void this.#track(
+      this.#readyPromise.then(() => {
+        for (const pending of this.#pending.values()) {
+          this.#clearRetry(pending);
+          if (pending.sending) pending.resendRequested = true;
+          else this.#send(pending);
+        }
+      }),
+    );
   }
 
   #send(pending: PendingReport): void {
     if (pending.sending || this.#stopped || pending.serverStatus) return;
     this.#clearRetry(pending);
     pending.sending = true;
-    void this.#connection
-      .send(pending.report, { priority: "report" })
-      .catch(() => undefined)
-      .finally(() => {
-        pending.sending = false;
-        if (
-          pending.resendRequested &&
-          this.#pending.get(pending.report.turnId) === pending &&
-          this.#connection.state === "registered"
-        ) {
-          pending.resendRequested = false;
-          this.#send(pending);
-        } else if (this.#pending.get(pending.report.turnId) === pending) {
-          this.#scheduleRetry(pending);
-        }
-      });
+    void this.#track(
+      this.#transition(pending, "running")
+        .then(() => this.#connection.send(pending.report, { priority: "report" }))
+        .catch((error) => this.#handleFailure(pending, "transport", error))
+        .finally(() => {
+          pending.sending = false;
+          if (
+            pending.resendRequested &&
+            this.#pending.get(pending.report.turnId) === pending &&
+            this.#connection.state === "registered"
+          ) {
+            pending.resendRequested = false;
+            this.#send(pending);
+          } else if (this.#pending.get(pending.report.turnId) === pending && !pending.serverStatus) {
+            const record = this.#records.get(pending.report.turnId);
+            if (record) this.#scheduleRetry(pending, record);
+          }
+        }),
+    );
   }
 
-  #scheduleRetry(pending: PendingReport): void {
-    if (
-      pending.retryTimer ||
-      this.#stopped ||
-      pending.serverStatus ||
-      this.#pending.get(pending.report.turnId) !== pending
-    ) {
-      return;
-    }
-    pending.retryTimer = setTimeout(() => {
-      pending.retryTimer = undefined;
-      if (this.#connection.state === "registered") this.#send(pending);
-    }, this.#retryDelayMs);
-    pending.retryTimer.unref();
+  #scheduleRetry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): void {
+    if (this.#retryTimers.has(record.key) || this.#stopped || pending.serverStatus) return;
+    const delay = Math.max(0, (record.nextAttemptAt ?? this.#now()) - this.#now());
+    const timer = this.#scheduler.schedule(delay, () => {
+      this.#retryTimers.delete(record.key);
+      if (this.#connection.state !== "registered") return;
+      const current = this.#records.get(record.key);
+      if (!current || current.status === "succeeded" || pending.serverStatus) return;
+      if (current.status === "retryable") {
+        void this.#track(
+          this.#transition(pending, "accepted")
+            .then(() => this.#send(pending))
+            .catch(() => undefined),
+        );
+      } else {
+        void this.#track(this.#handleFailure(pending, "transport", new Error("Turn Report acknowledgement timed out")));
+      }
+    });
+    this.#retryTimers.set(record.key, timer);
   }
 
   #clearRetry(pending: PendingReport): void {
-    if (!pending.retryTimer) return;
-    clearTimeout(pending.retryTimer);
-    pending.retryTimer = undefined;
+    const timer = this.#retryTimers.get(pending.report.turnId);
+    if (!timer) return;
+    timer.cancel();
+    this.#retryTimers.delete(pending.report.turnId);
+  }
+
+  async #hydrate(): Promise<void> {
+    if (!this.#persistence) return;
+    const records = await this.#persistence.list<TurnReportRequest>("turn-report");
+    for (const stored of records) {
+      const parsed = TurnReportRequestSchema.safeParse(stored.payload);
+      if (!parsed.success) continue;
+      let record = { ...stored, payload: parsed.data } as DurableWorkRecord<TurnReportRequest>;
+      this.#records.set(record.key, record);
+      if (record.status === "succeeded" || record.status === "dead-letter") continue;
+      if (
+        record.status === "failed" &&
+        (record.lastError?.code === "conflict" || record.lastError?.code === "stale_generation")
+      ) {
+        this.#addHydratedPending(record, record.lastError.code);
+        continue;
+      }
+      if (retryExhausted(this.#retryPolicy, record, this.#now())) {
+        record = { ...record, status: "dead-letter", nextAttemptAt: undefined, updatedAt: this.#now() };
+        await this.#persist(record);
+        continue;
+      }
+      if (record.status === "running") {
+        record = { ...record, status: "retryable", nextAttemptAt: this.#now(), updatedAt: this.#now() };
+        await this.#persist(record);
+      }
+      this.#addHydratedPending(record);
+    }
+  }
+
+  #addHydratedPending(record: DurableWorkRecord<TurnReportRequest>, serverStatus?: TurnReportTerminalStatus): void {
+    let resolvePromise!: () => void;
+    let rejectPromise!: (error: Error) => void;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    this.#pending.set(record.key, {
+      report: record.payload,
+      confirm: undefined,
+      confirming: false,
+      sending: false,
+      resendRequested: false,
+      promise,
+      resolve: resolvePromise,
+      reject: rejectPromise,
+      record,
+      ...(serverStatus ? { serverStatus } : {}),
+      terminalListeners: new Set(),
+    });
+  }
+
+  async #transition(
+    pending: PendingReport,
+    status: DurableWorkRecord<TurnReportRequest>["status"],
+    fields: Partial<DurableWorkRecord<TurnReportRequest>> = {},
+  ): Promise<DurableWorkRecord<TurnReportRequest>> {
+    const record = this.#records.get(pending.report.turnId) ?? pending.record;
+    const next = { ...record, ...fields, status, updatedAt: this.#now(), payload: pending.report };
+    pending.record = next;
+    this.#records.set(next.key, next);
+    this.#metrics?.transition("turn-report", record.status, status);
+    await this.#persist(next);
+    return next;
+  }
+
+  async #handleFailure(pending: PendingReport, phase: string, error: unknown): Promise<void> {
+    if (this.#stopped || pending.serverStatus) return;
+    const record = this.#records.get(pending.report.turnId) ?? pending.record;
+    const failure = durableFailureFromUnknown(
+      pending.report.requestId,
+      phase,
+      error,
+      phase === "confirmation"
+        ? "confirmation_failed"
+        : phase === "transport"
+          ? "transport_unavailable"
+          : "runtime_failed",
+    );
+    this.#emitFailure(failure);
+    const attempts = record.attempts + 1;
+    const now = this.#now();
+    const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
+    if (failure.retryability === "never" || retryExhausted(this.#retryPolicy, candidate, now)) {
+      await this.#transition(pending, "dead-letter", { ...candidate, nextAttemptAt: undefined }).catch(() => undefined);
+      pending.reject(new RuntimeDurabilityFailure(failure));
+      this.#pending.delete(pending.report.turnId);
+      return;
+    }
+    let retryable: DurableWorkRecord<TurnReportRequest>;
+    try {
+      retryable = await this.#transition(pending, "retryable", {
+        ...candidate,
+        nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
+      });
+    } catch {
+      return;
+    }
+    this.#scheduleRetry(pending, retryable);
+  }
+
+  async #persist(record: DurableWorkRecord<TurnReportRequest>): Promise<void> {
+    this.#records.set(record.key, record);
+    await this.#persistence?.write(record);
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#inFlight.add(operation);
+    void operation.then(
+      () => this.#inFlight.delete(operation),
+      () => this.#inFlight.delete(operation),
+    );
+    return operation;
+  }
+
+  #emitFailure(failure: DurableFailure): void {
+    try {
+      this.#onFailure?.(failure);
+    } catch {
+      // Observers cannot alter the durable Report state machine.
+    }
   }
 
   #notifyTerminal(
@@ -265,4 +510,13 @@ function reportMatchesRearmClaim(report: TurnReportRequest, claim: TurnReportRea
     report.sessionId === claim.sessionId &&
     report.turnId === claim.turnId
   );
+}
+
+function normalizeRetryPolicy(overrides: Partial<RuntimeRetryPolicy>): RuntimeRetryPolicy {
+  const policy = { ...DEFAULT_RUNTIME_RETRY_POLICY, ...overrides };
+  for (const [name, value] of Object.entries(policy)) {
+    if (!Number.isSafeInteger(value) || value < 1)
+      throw new Error(`Runtime retry ${name} must be a positive safe integer`);
+  }
+  return policy;
 }

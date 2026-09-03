@@ -24,17 +24,26 @@ import { safeFeishuSetupErrorCode } from "../../services/im-bindings/feishu/erro
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
 import { ImBindingServiceError } from "../../services/im-bindings/im-binding-service.js";
 import { OPENTAG_ATTR } from "../attributes.js";
+import { BackgroundFailureSupervisor } from "../background-failure-supervisor.js";
 import { traceDeliveryClaim } from "../delivery-tracing.js";
+import { createServerDiagnosticReporter } from "../diagnostics.js";
 import { traceFeishuInbound } from "../feishu-tracing.js";
 import { initTelemetry, isTelemetryEnabled, parseHeaderString, shutdownTelemetry } from "../logfire-init.js";
 import {
+  emitRootSpan,
+  endSpan,
   normalizeTelemetryAttrs,
   setActiveSpanAttributes,
   tracePromise,
   withRootSpan,
   withSpan,
 } from "../otel-helpers.js";
-import { endRuntimeConnectionSpan, startRuntimeConnectionSpan, withRuntimeFrameSpan } from "../ws-tracing.js";
+import {
+  endRuntimeConnectionSpan,
+  setRuntimeConnectionAttrs,
+  startRuntimeConnectionSpan,
+  withRuntimeFrameSpan,
+} from "../ws-tracing.js";
 
 const exporter = new InMemorySpanExporter();
 const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
@@ -201,9 +210,144 @@ describe("span helpers", () => {
       ok: true,
     });
   });
+
+  it("bounds nested values and keeps malformed telemetry from escaping", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const malformed = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("cannot enumerate");
+        },
+      },
+    );
+    const normalized = normalizeTelemetryAttrs({
+      long: "x".repeat(600),
+      strings: ["one", "two"],
+      mixed: ["safe", 1],
+      circular,
+      malformed,
+    });
+
+    expect(normalized.long).toMatch(/^x{512}\.\.\.\[truncated\]$/u);
+    expect(normalized.strings).toEqual(["one", "two"]);
+    expect(normalized.mixed).toContain("safe");
+    expect(normalized.circular).toContain("[circular]");
+    expect(normalized).not.toHaveProperty("malformed");
+  });
+
+  it("contains failures from telemetry implementations and diagnostic callbacks", async () => {
+    const recordException = vi.fn(() => {
+      throw new Error("record failed");
+    });
+    const setStatus = vi.fn(() => {
+      throw new Error("status failed");
+    });
+    const end = vi.fn().mockImplementationOnce(() => {
+      throw new Error("end failed");
+    });
+    const span = {
+      end,
+      instrumentationScope: { name: "@opentag/server" },
+      recordException,
+      setAttributes: vi.fn(),
+      setStatus,
+    };
+    const tracer = trace.getTracer("@opentag/server", "0.1.0");
+    const activeSpanSpy = vi.spyOn(tracer, "startActiveSpan").mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (value: typeof span) => unknown;
+      return callback(span) as never;
+    });
+    const startSpanSpy = vi.spyOn(tracer, "startSpan").mockImplementation(() => {
+      throw new Error("start failed");
+    });
+    const failure = new Error("business failure");
+    try {
+      await expect(withRootSpan("defensive", undefined, () => Promise.reject(failure))).rejects.toBe(failure);
+      await expect(
+        tracePromise(
+          "defensive.promise",
+          undefined,
+          () => Promise.reject(failure),
+          undefined,
+          () => {
+            throw new Error("classification failed");
+          },
+        ),
+      ).rejects.toBe(failure);
+      emitRootSpan("defensive.root");
+      endSpan({
+        end: () => {
+          throw new Error("end failed");
+        },
+      } as never);
+      const socket = {} as WebSocket;
+      startSpanSpy.mockImplementationOnce(() => span as never);
+      span.setAttributes.mockImplementationOnce(() => {
+        throw new Error("connection attributes failed");
+      });
+      startRuntimeConnectionSpan(socket);
+      setRuntimeConnectionAttrs(socket, { safe: "value" });
+      endRuntimeConnectionSpan(socket);
+    } finally {
+      activeSpanSpy.mockRestore();
+      startSpanSpy.mockRestore();
+    }
+
+    const activeContextSpy = vi.spyOn(trace, "getActiveSpan").mockReturnValue({
+      setAttributes: () => {
+        throw new Error("attributes failed");
+      },
+    } as never);
+    setActiveSpanAttributes({ safe: "value" });
+    activeContextSpy.mockRestore();
+
+    const logger = vi.fn(() => {
+      throw new Error("logger failed");
+    });
+    createServerDiagnosticReporter(logger as never)("diagnostic.failed");
+  });
 });
 
 describe("background and WebSocket tracing", () => {
+  it("supervises the Feishu maintenance timer with one event and counter", async () => {
+    const events: unknown[] = [];
+    const counters: unknown[] = [];
+    const supervisor = new BackgroundFailureSupervisor({
+      onEvent: (event) => events.push(event),
+      onCounter: (name, labels) => counters.push({ name, labels }),
+    });
+    const database = {
+      update: vi.fn(() => ({
+        set: vi.fn(() => ({ where: vi.fn().mockResolvedValue([]) })),
+      })),
+    };
+    const imBindings = {
+      listFeishuConnectionIds: vi.fn().mockRejectedValue(new Error("maintenance failed")),
+    };
+    const manager = new FeishuConnectionManager({
+      database: database as never,
+      inbox: {} as never,
+      instanceId: randomUUID(),
+      imBindings: imBindings as never,
+      supervisor,
+    });
+    manager.start();
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(counters).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "diagnostic.error",
+      error: {
+        code: "FEISHU_CONNECTION_MAINTENANCE_FAILED",
+        category: "internal",
+        retryability: "backoff",
+        phase: "scheduler",
+      },
+    });
+    await manager.stop();
+  });
+
   it("keeps raw Feishu setup failures out of persisted diagnostics, logger codes, and traces", async () => {
     const agentId = randomUUID();
     const rawFailure = Object.assign(new Error("FEISHU_PRIVATE_APP_SECRET"), {
@@ -215,11 +359,12 @@ describe("background and WebSocket tracing", () => {
     });
     const diagnosticWrites: Array<Record<string, unknown>> = [];
     const loggerCodes: string[] = [];
-    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }], []];
+    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }]];
     const database = {
       select: vi.fn(() => resolvedQuery(selectRows.shift() ?? [])),
       transaction: vi.fn(async (run: (transaction: unknown) => Promise<unknown>) =>
         run({
+          select: vi.fn(() => resolvedQuery([])),
           insert: vi.fn(() => ({
             values: vi.fn((values: Record<string, unknown>) => ({
               returning: vi.fn().mockResolvedValue([
@@ -400,6 +545,25 @@ describe("background and WebSocket tracing", () => {
     expect(span?.status.code).toBe(2);
   });
 
+  it("names steer and recovery delivery claims while preserving their payloads", async () => {
+    const dispatch = vi.fn(async () => undefined);
+    await traceDeliveryClaim(
+      { id: "delivery-steer", kind: "steer", claimToken: "claim", rootDeliveryId: "root", expectedTurnId: "turn" },
+      dispatch,
+    );
+    await traceDeliveryClaim({ id: "delivery-recovery", kind: "recovery" }, dispatch);
+
+    expect(dispatch).toHaveBeenNthCalledWith(1, {
+      id: "delivery-steer",
+      kind: "steer",
+      claimToken: "claim",
+      rootDeliveryId: "root",
+      expectedTurnId: "turn",
+    });
+    expect(dispatch).toHaveBeenNthCalledWith(2, { id: "delivery-recovery", kind: "recovery" });
+    expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual(["im.delivery.steer", "im.delivery.recover"]);
+  });
+
   it("does not create heartbeat frame spans and ends connection and business frame spans", async () => {
     const socket = {} as WebSocket;
     startRuntimeConnectionSpan(socket);
@@ -503,7 +667,7 @@ describe("background and WebSocket tracing", () => {
       database: database as never,
       inbox,
       instanceId: randomUUID(),
-      imBindings: {} as never,
+      imBindings: { notifyProviderCliRequirementChanged: vi.fn().mockResolvedValue(undefined) } as never,
       createAdapter: () =>
         ({
           channel: {
@@ -582,9 +746,8 @@ describe("background and WebSocket tracing", () => {
     });
     const machine = {
       credentialId: randomUUID(),
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     };
     const registry = new ConnectionRegistry();
     const app = createApp({
@@ -626,7 +789,7 @@ describe("background and WebSocket tracing", () => {
     const registration = {
       type: "computer:register",
       requestId: randomUUID(),
-      computerId: machine.computerId,
+      installationId: machine.installationId,
       instanceId: randomUUID(),
       displayName: "test",
       platform: "linux",
@@ -658,14 +821,14 @@ describe("background and WebSocket tracing", () => {
     const overloadedRequestId = randomUUID();
     socket.send(JSON.stringify({ type: "test:work", requestId: overloadedRequestId, key: "slow" }));
     expect(await frames.next()).toMatchObject({ type: "test:result", requestId: overloadedRequestId, status: "busy" });
-    expect(registry.currentInstanceId(machine.workspaceComputerId)).toBe(registration.instanceId);
+    expect(registry.currentInstanceId(machine.computerId)).toBe(registration.instanceId);
     socket.close();
     // The client socket's own close event proves nothing about the server: the server observes the
     // close on a separate socket object, and only that handler aborts the session, closes the
     // scheduler, and drops the registry entry. Releasing the held work before then lets it complete
     // against a connection the server still considers live, which is traced as "handled". Wait for
     // the registry entry to disappear so the release always happens after the server-observed close.
-    await vi.waitFor(() => expect(registry.currentInstanceId(machine.workspaceComputerId)).toBeUndefined(), {
+    await vi.waitFor(() => expect(registry.currentInstanceId(machine.computerId)).toBeUndefined(), {
       timeout: 5_000,
     });
     releaseSlow?.();
@@ -696,13 +859,11 @@ describe("background and WebSocket tracing", () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
-    const workspaceId = randomUUID();
     const frames: unknown[] = [];
     await registry.register(
       {
         computerId,
-        workspaceComputerId: computerId,
-        workspaceId,
+        installationId: computerId,
         instanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket(frames),
@@ -721,8 +882,7 @@ describe("background and WebSocket tracing", () => {
     const owner = new RuntimeDomainOwner(registry, custody as never, { requestTimeoutMs: 1_000 });
     const context = {
       computerId,
-      workspaceComputerId: computerId,
-      workspaceId,
+      installationId: computerId,
       instanceId,
       signal: new AbortController().signal,
     };
@@ -813,8 +973,7 @@ describe("background and WebSocket tracing", () => {
     await failingRegistry.register(
       {
         computerId: failingComputerId,
-        workspaceComputerId: failingComputerId,
-        workspaceId,
+        installationId: failingComputerId,
         instanceId: failingInstanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket([], new Error("plain Runtime send payload with private prompt")),
@@ -840,7 +999,9 @@ describe("background and WebSocket tracing", () => {
         custody as never,
       );
       typedFailureRequests.push({ expectedCode, requestId: request.requestId });
-      await expect(typedFailureOwner.requestReconcile(request.computerId, randomUUID(), request)).rejects.toBe(error);
+      await expect(typedFailureOwner.requestReconcile(request.installationId, randomUUID(), request)).rejects.toBe(
+        error,
+      );
       typedFailureOwner.close();
     }
 
@@ -918,26 +1079,6 @@ describe("HTTP tracing", () => {
     expect(JSON.stringify(httpSpans[0]?.attributes)).not.toContain("query-secret");
   });
 
-  it("redacts bearer tokens from retired invitation URLs", async () => {
-    const app = createApp();
-    const previewToken = "P".repeat(43);
-    const acceptToken = "A".repeat(43);
-    await app.inject({ method: "GET", url: `/api/v1/admin-invitations/${previewToken}/preview` });
-    await app.inject({
-      method: "POST",
-      url: `/api/v1/admin-invitations/${acceptToken}/accept`,
-    });
-    await app.close();
-
-    const spans = exporter.getFinishedSpans().filter((span) => span.name.endsWith("unmatched"));
-    expect(spans).toHaveLength(2);
-    const exported = JSON.stringify(spans.map((span) => span.attributes));
-    expect(exported).not.toContain(previewToken);
-    expect(exported).not.toContain(acceptToken);
-    expect(exported).toContain("/api/v1/admin-invitations/[REDACTED]/preview");
-    expect(exported).toContain("/api/v1/admin-invitations/[REDACTED]/accept");
-  });
-
   it("does not trace health or readiness probes", async () => {
     const app = createApp();
     await app.inject({ method: "GET", url: "/healthz" });
@@ -998,7 +1139,7 @@ function runtimeAuthService() {
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       me: {
         user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
-        workspaces: [],
+        setupCompletedAt: null,
       },
       tokenExpiresAt: new Date(Date.now() + 60_000),
     }),
@@ -1032,12 +1173,12 @@ function runtimeSnapshot(agentId: string): EffectiveRuntimeSnapshot {
   };
 }
 
-function runtimeReconcileRequest(computerId: string): SessionReconcileRequest {
+function runtimeReconcileRequest(installationId: string): SessionReconcileRequest {
   const agentId = randomUUID();
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId,
     sessionId: randomUUID(),
     agentId,
     placementGeneration: 1,

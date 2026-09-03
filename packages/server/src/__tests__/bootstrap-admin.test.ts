@@ -4,8 +4,6 @@ import { BootstrapAdminInputSchema } from "../admin/bootstrap.js";
 const validInput = {
   displayName: "Bootstrap Admin",
   email: "admin@example.com",
-  workspaceDisplayName: "Example",
-  workspaceName: "example",
 };
 
 describe("initial admin bootstrap contract", () => {

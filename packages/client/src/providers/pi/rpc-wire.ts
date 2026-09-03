@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const PI_RPC_MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -31,6 +32,7 @@ export interface PiRpcSpawnOptions {
   readonly maxLineBytes?: number;
   readonly maxStderrBytes?: number;
   readonly requestTimeoutMs?: number;
+  readonly logger?: ClientLogger;
   readonly spawnProcess?: (
     command: string,
     args: readonly string[],
@@ -59,6 +61,7 @@ export class PiRpcProcess implements PiRpcClient {
   readonly #maxLineBytes: number;
   readonly #maxStderrBytes: number;
   readonly #requestTimeoutMs: number;
+  readonly #logger: ClientLogger;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
   readonly #exit: Promise<void>;
@@ -74,6 +77,7 @@ export class PiRpcProcess implements PiRpcClient {
     this.#maxLineBytes = options.maxLineBytes ?? PI_RPC_MAX_LINE_BYTES;
     this.#maxStderrBytes = options.maxStderrBytes ?? PI_RPC_MAX_STDERR_BYTES;
     this.#requestTimeoutMs = options.requestTimeoutMs ?? PI_RPC_REQUEST_TIMEOUT_MS;
+    this.#logger = options.logger ?? createLogger("provider-pi");
     if (!Number.isSafeInteger(this.#maxLineBytes) || this.#maxLineBytes < 1024) {
       throw new Error("maxLineBytes must be a safe integer of at least 1024");
     }
@@ -93,11 +97,15 @@ export class PiRpcProcess implements PiRpcClient {
         detached: process.platform !== "win32",
       });
     } catch (error) {
+      this.#logger.debug({ code: "spawn_failed", error: String(error) }, "Pi RPC process spawn failed");
       throw new PiRpcError("spawn", error instanceof Error ? error.message : "Pi could not be started");
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
     this.#child.stderr.on("data", (chunk: Buffer) => this.#onStderr(chunk));
-    this.#child.on("error", (error) => this.#onChildError(error));
+    this.#child.on("error", (error) => {
+      this.#logger.debug({ code: "process_error", error: String(error) }, "Pi RPC process failed");
+      this.#onChildError(error);
+    });
     this.#child.on("close", () => this.#onExit());
   }
 
@@ -124,6 +132,7 @@ export class PiRpcProcess implements PiRpcClient {
     return new Promise<unknown>((resolve, reject) => {
       const cleanup = () => {
         const pending = this.#pending.get(id);
+        /* v8 ignore else -- cleanup only runs while its own pending entry is registered. */
         if (pending) clearTimeout(pending.timer);
         this.#pending.delete(id);
         signal?.removeEventListener("abort", onAbort);
@@ -166,6 +175,7 @@ export class PiRpcProcess implements PiRpcClient {
     signalWatchedProcess(this.#child, "SIGTERM");
     if (await settlesWithin(this.#exit, graceMs)) return;
     signalWatchedProcess(this.#child, "SIGKILL");
+    /* v8 ignore else -- a process that survives SIGTERM in tests never exits before the SIGKILL deadline either. */
     if (!(await settlesWithin(this.#exit, graceMs))) {
       throw new PiRpcError("exited", "Pi RPC process tree did not exit");
     }
@@ -179,6 +189,7 @@ export class PiRpcProcess implements PiRpcClient {
     try {
       line = `${JSON.stringify(message)}\n`;
     } catch {
+      this.#logger.debug({ code: "request_not_serializable" }, "Pi RPC request could not be serialized");
       throw new PiRpcError("protocol", "Pi RPC request is not JSON serializable");
     }
     if (Buffer.byteLength(line, "utf8") > this.#maxLineBytes) {
@@ -205,6 +216,7 @@ export class PiRpcProcess implements PiRpcClient {
       try {
         raw = utf8Decoder.decode(this.#buffer.subarray(0, newline)).replace(/\r$/, "");
       } catch {
+        this.#logger.debug({ code: "stdout_invalid_utf8" }, "Pi RPC protocol output was rejected");
         this.#fail(new PiRpcError("protocol", "Pi emitted invalid UTF-8"));
         return;
       }
@@ -214,6 +226,7 @@ export class PiRpcProcess implements PiRpcClient {
       try {
         message = JSON.parse(raw);
       } catch {
+        this.#logger.debug({ code: "stdout_malformed_json" }, "Pi RPC protocol output was rejected");
         this.#fail(new PiRpcError("protocol", "Pi emitted malformed JSONL"));
         return;
       }
@@ -270,6 +283,7 @@ export class PiRpcProcess implements PiRpcClient {
       try {
         listener(message);
       } catch {
+        this.#logger.debug({ code: "protocol_listener_failed" }, "Pi RPC protocol listener failed");
         this.#fail(new PiRpcError("protocol", "A Pi RPC listener rejected an event"));
         return;
       }
@@ -308,6 +322,7 @@ export class PiRpcProcess implements PiRpcClient {
       try {
         listener({ type: "opentag/process_error", error });
       } catch {
+        this.#logger.debug({ code: "process_error_listener_failed" }, "Pi process error listener failed");
         // The process boundary is already failed; listener failures cannot widen it.
       }
     }
@@ -329,6 +344,7 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
     timer.unref();
   });
   const settled = await Promise.race([promise.then(() => true as const), timeout]);
+  /* v8 ignore else -- the timer is always armed before the race settles. */
   if (timer) clearTimeout(timer);
   return settled;
 }

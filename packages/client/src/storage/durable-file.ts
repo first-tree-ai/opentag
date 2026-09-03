@@ -75,11 +75,17 @@ export async function readSecureFile(path: string): Promise<string | undefined> 
 export async function readDurableJson<T>(path: string, validate: (value: unknown) => T): Promise<T | undefined> {
   const content = await readSecureFile(path);
   if (content === undefined) return undefined;
+  let parsed: unknown;
   try {
-    return validate(JSON.parse(content));
+    parsed = JSON.parse(content);
+  } catch {
+    throw new RuntimeStorageError("invalid", "Runtime storage contains invalid JSON");
+  }
+  try {
+    return validate(parsed);
   } catch (error) {
     if (error instanceof RuntimeStorageError) throw error;
-    throw new RuntimeStorageError("invalid", "Runtime storage contains invalid JSON");
+    throw new RuntimeStorageError("invalid", "Runtime storage contains data that does not match its schema");
   }
 }
 

@@ -1,34 +1,70 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentAdminConfigSchema,
+  AgentCreationIntentResultSchema,
   AgentDetailSchema,
   AgentNameSchema,
   AgentRuntimeConfigSchema,
+  AgentRuntimeTestRequestSchema,
+  AgentRuntimeTestResponseSchema,
   AgentSummarySchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
+  RebindAgentComputerRequestSchema,
   UpdateAgentRequestSchema,
 } from "../agent.js";
+import { AgentNameSchema as BrowserAgentNameSchema } from "../browser.js";
 import {
+  ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
+  ACCOUNT_AGENTS_PATH,
+  ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
+  ACCOUNT_COMPUTERS_PATH,
+  ACCOUNT_SETUP_COMPLETE_PATH,
+  ACCOUNT_TASKS_PATH,
   AGENT_BY_ID_TEMPLATE,
+  AGENT_COMPUTER_REBIND_TEMPLATE,
+  AGENT_CONFIG_TEMPLATE,
+  AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
+  AGENT_IM_BINDING_CONFIG_TEMPLATE,
+  AGENT_IM_BINDING_HANDOFF_TEMPLATE,
+  AGENT_IM_BINDING_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
+  AGENT_RUNTIME_TEST_TEMPLATE,
+  AGENT_SLACK_EVENTS_TEMPLATE,
+  AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
+  accountAgentCreationIntentPath,
   agentByIdPath,
+  agentComputerRebindPath,
+  agentConfigPath,
+  agentFeishuSetupAttemptsPath,
+  agentImBindingConfigPath,
+  agentImBindingHandoffPath,
+  agentImBindingPath,
   agentReactivatePath,
+  agentRuntimeTestPath,
+  agentSlackEventsPath,
+  agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
-  WORKSPACE_AGENTS_TEMPLATE,
-  workspaceAgentsPath,
+  feishuSetupAttemptCancelPath,
+  feishuSetupAttemptPath,
+  HTTP_PATHS,
+  imBindingDiagnosticsPath,
+  imBindingDisablePath,
+  RUNTIME_IM_RESOURCE_TEMPLATE,
+  runtimeImResourcePath,
+  runtimeWebSocketUrl,
+  taskByIdPath,
 } from "../http-paths.js";
 import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from "../runtime-config.js";
 
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agent = {
   id: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
-  workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
   createdByUserId: "bfcdab09-b57a-44ac-a170-09f7c3af20df",
   computerId,
   name: "code-reviewer",
@@ -120,6 +156,26 @@ describe("Agent contracts", () => {
         runtimeProvider: agent.runtimeProvider,
       }),
     ).toThrow();
+  });
+
+  it("creates an Agent with no Computer and projects the absent binding as null", () => {
+    const created = CreateAgentRequestSchema.parse({
+      displayName: agent.displayName,
+      name: agent.name,
+      runtimeProvider: agent.runtimeProvider,
+    });
+    expect(created.computerId).toBeUndefined();
+    expect(AgentAdminConfigSchema.parse({ ...agent, computerId: null })).toMatchObject({ computerId: null });
+    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: _computerId, ...base } = agent;
+    const unbound = {
+      ...base,
+      createdBy: { userId: createdByUserId, displayName: "Creator" },
+      computer: null,
+    };
+    expect(AgentSummarySchema.parse(unbound)).toEqual(unbound);
+    // Absent and null stay distinct: `computer` is always stated, so a reader never has to guess
+    // whether an Agent has no Computer or the field was dropped in transit.
+    expect(() => AgentSummarySchema.parse({ ...base, createdBy: unbound.createdBy })).toThrow();
   });
 
   it("rejects unexpected authority and immutable update fields", () => {
@@ -222,6 +278,54 @@ describe("Agent contracts", () => {
     expect(() => AgentUsageWindowDaysSchema.parse(14)).toThrow();
   });
 
+  it("rejects inconsistent detailed usage relationships", () => {
+    const usage = {
+      windowDays: 30,
+      startedAt: "2026-07-25T12:00:00.000Z",
+      endedAt: "2026-08-24T12:00:00.000Z",
+      tasks: 2,
+      measuredTasks: 1,
+      failed: 0,
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      tokens: 14,
+      daily: [
+        {
+          date: "2026-08-23",
+          tasks: 2,
+          measuredTasks: 1,
+          inputTokens: 10,
+          cachedInputTokens: 2,
+          outputTokens: 4,
+          tokens: 14,
+        },
+        {
+          date: "2026-08-24",
+          tasks: 1,
+          measuredTasks: 1,
+          inputTokens: 1,
+          cachedInputTokens: 0,
+          outputTokens: 1,
+          tokens: 2,
+        },
+      ],
+    };
+    expect(() => AgentUsageDetailSchema.parse({ ...usage, failed: 3 })).toThrow("Failed Tasks cannot exceed Tasks");
+    expect(() => AgentUsageDetailSchema.parse({ ...usage, measuredTasks: 3 })).toThrow(
+      "Measured Tasks cannot exceed Tasks",
+    );
+    expect(() => AgentUsageDetailSchema.parse({ ...usage, startedAt: "2026-08-25T12:00:00.000Z" })).toThrow(
+      "Usage start cannot follow usage end",
+    );
+    expect(() => AgentUsageDetailSchema.parse({ ...usage, daily: [{ ...usage.daily[0], measuredTasks: 3 }] })).toThrow(
+      "Measured Tasks cannot exceed Tasks",
+    );
+    expect(() =>
+      AgentUsageDetailSchema.parse({ ...usage, daily: [usage.daily[0], usage.daily[1], usage.daily[1]] }),
+    ).toThrow("Daily usage dates must be unique and ordered");
+  });
+
   it("enforces runtime config UTF-8 and duration boundaries", () => {
     expect(() =>
       CreateAgentRequestSchema.parse({
@@ -273,9 +377,14 @@ describe("Agent contracts", () => {
   });
 
   it("shares route templates and encoded path builders", () => {
-    expect(WORKSPACE_AGENTS_TEMPLATE).toBe("/api/v1/workspaces/:workspaceId/agents");
+    expect(AgentCreationIntentResultSchema.parse({ kind: "found", agentId: agent.id })).toEqual({
+      kind: "found",
+      agentId: agent.id,
+    });
+    expect(AgentCreationIntentResultSchema.parse({ kind: "not-found" })).toEqual({ kind: "not-found" });
+    expect(ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE).toBe("/api/v1/agents/creation-intents/:creationIntentId");
+    expect(accountAgentCreationIntentPath("intent/value")).toBe("/api/v1/agents/creation-intents/intent%2Fvalue");
     expect(AGENT_BY_ID_TEMPLATE).toBe("/api/v1/agents/:agentId");
-    expect(workspaceAgentsPath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/agents");
     expect(agentByIdPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue");
     expect(AGENT_SUSPEND_TEMPLATE).toBe("/api/v1/agents/:agentId/suspend");
     expect(agentSuspendPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/suspend");
@@ -283,5 +392,78 @@ describe("Agent contracts", () => {
     expect(agentReactivatePath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/reactivate");
     expect(AGENT_USAGE_TEMPLATE).toBe("/api/v1/agents/:agentId/usage");
     expect(agentUsagePath("agent/value", 30)).toBe("/api/v1/agents/agent%2Fvalue/usage?days=30");
+    expect(AGENT_COMPUTER_REBIND_TEMPLATE).toBe("/api/v1/agents/:agentId/computer/rebind");
+    expect(agentComputerRebindPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/computer/rebind");
+    expect(RebindAgentComputerRequestSchema.parse({ computerId })).toEqual({ computerId });
+    expect(() =>
+      RebindAgentComputerRequestSchema.parse({
+        computerId,
+        accountId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+      }),
+    ).toThrow();
+    expect(AgentRuntimeTestRequestSchema.parse({ expectedRevision: 1, expectedRuntimeConfigRevision: 2 })).toEqual({
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 2,
+    });
+    expect(() =>
+      AgentRuntimeTestRequestSchema.parse({
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 2,
+        prompt: "nope",
+      }),
+    ).toThrow();
+    expect(AgentRuntimeTestResponseSchema.parse({ status: "passed" })).toEqual({ status: "passed" });
+    expect(AgentRuntimeTestResponseSchema.parse({ status: "failed", code: "busy" })).toEqual({
+      status: "failed",
+      code: "busy",
+    });
+    expect(() =>
+      AgentRuntimeTestResponseSchema.parse({ status: "failed", code: "ENOENT", detail: "secret" }),
+    ).toThrow();
+    expect(BrowserAgentNameSchema.parse("browser-barrel")).toBe("browser-barrel");
+  });
+
+  it("builds every Account, Agent, IM, and runtime path", () => {
+    expect(HTTP_PATHS.accountAgents).toBe(ACCOUNT_AGENTS_PATH);
+    expect(HTTP_PATHS.accountComputers).toBe(ACCOUNT_COMPUTERS_PATH);
+    expect(HTTP_PATHS.accountComputerConnectCodes).toBe(ACCOUNT_COMPUTER_CONNECT_CODES_PATH);
+    expect(HTTP_PATHS.accountSetupComplete).toBe(ACCOUNT_SETUP_COMPLETE_PATH);
+    expect(HTTP_PATHS.accountTasks).toBe(ACCOUNT_TASKS_PATH);
+    expect(HTTP_PATHS.agentById).toBe(AGENT_BY_ID_TEMPLATE);
+    expect(AGENT_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/config");
+    expect(agentConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/config");
+    expect(AGENT_RUNTIME_TEST_TEMPLATE).toBe("/api/v1/agents/:agentId/runtime-test");
+    expect(agentRuntimeTestPath("a/b")).toBe("/api/v1/agents/a%2Fb/runtime-test");
+    expect(agentImBindingPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding");
+    expect(AGENT_IM_BINDING_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding");
+    expect(agentImBindingHandoffPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/handoff");
+    expect(AGENT_IM_BINDING_HANDOFF_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/handoff");
+    expect(agentImBindingConfigPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/config");
+    expect(AGENT_IM_BINDING_CONFIG_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/config");
+    expect(agentFeishuSetupAttemptsPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/feishu/setup-attempts");
+    expect(feishuSetupAttemptCancelPath("attempt/value")).toBe(
+      "/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue/cancel",
+    );
+    expect(AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/feishu/setup-attempts");
+    expect(feishuSetupAttemptPath("attempt/value")).toBe("/api/v1/im-bindings/feishu/setup-attempts/attempt%2Fvalue");
+    expect(agentSlackOAuthStartPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/slack/oauth/start");
+    expect(AGENT_SLACK_OAUTH_START_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/slack/oauth/start");
+    expect(agentSlackEventsPath("a/b")).toBe("/api/v1/agents/a%2Fb/im-binding/slack/events");
+    expect(AGENT_SLACK_EVENTS_TEMPLATE).toBe("/api/v1/agents/:agentId/im-binding/slack/events");
+    expect(imBindingDisablePath("binding/value")).toBe("/api/v1/im-bindings/binding%2Fvalue/disable");
+    expect(imBindingDiagnosticsPath("binding/value")).toBe("/api/v1/im-bindings/binding%2Fvalue/diagnostics");
+    expect(taskByIdPath("session/value")).toBe("/api/v1/sessions/session%2Fvalue");
+    expect(
+      runtimeImResourcePath("message/value", 2, {
+        sessionId: "session",
+        instanceId: "instance",
+        placementGeneration: 3,
+      }),
+    ).toBe(
+      "/api/v1/runtime/im-messages/message%2Fvalue/resources/2?sessionId=session&instanceId=instance&placementGeneration=3",
+    );
+    expect(RUNTIME_IM_RESOURCE_TEMPLATE).toContain(":imMessageId");
+    expect(runtimeWebSocketUrl("https://example.test/base")).toBe("wss://example.test/api/v1/computer/ws");
+    expect(runtimeWebSocketUrl("http://example.test")).toBe("ws://example.test/api/v1/computer/ws");
   });
 });

@@ -1,18 +1,18 @@
 export const API_V1_PREFIX = "/api/v1";
-export const WORKSPACE_AGENTS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/agents`;
-const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
-export const WORKSPACE_SETUP_COMPLETE_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
+export const AGENT_SETUP_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/setup`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
+export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/rebind`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
 export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/handoff`;
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
+export const AGENT_IM_BINDING_UNBIND_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/unbind`;
 export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
 export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/:attemptId`;
-export const AGENT_SLACK_CONFIGURATION_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/configuration`;
 export const AGENT_SLACK_OAUTH_START_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/oauth/start`;
 export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/events`;
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
@@ -23,19 +23,18 @@ export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-message
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
-export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
-export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
-/** Staging-only Onboarding Lab interface; the Account comes only from the authenticated session. */
-export const INTERNAL_ONBOARDING_LAB_PATH = `${API_V1_PREFIX}/internal/onboarding-lab`;
-
+export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`;
 /**
- * Account-native management collections. Ownership comes only from the authenticated Account, so these
- * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
+ * Account-native management collections. Ownership comes only from the authenticated Account.
  */
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
+export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
+export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
+export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
+export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/navigation-visibility`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 
@@ -44,6 +43,8 @@ export const HTTP_PATHS = {
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
+  accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
+  internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
@@ -51,9 +52,13 @@ export const HTTP_PATHS = {
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
-  authBrowserRefresh: `${API_V1_PREFIX}/auth/browser/refresh`,
   authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
-  authGoogleCallback: `${API_V1_PREFIX}/auth/google/callback`,
+  /*
+   * Below `/auth/email/` rather than Better Auth's own `/sign-in/email`, so these stay OpenTag routes that call into
+   * the library server-side. Nothing under the base path is published except the OAuth callback.
+   */
+  authEmailSignIn: `${API_V1_PREFIX}/auth/email/sign-in`,
+  authEmailSignUp: `${API_V1_PREFIX}/auth/email/sign-up`,
   authGoogleStart: `${API_V1_PREFIX}/auth/google/start`,
   authProviders: `${API_V1_PREFIX}/auth/providers`,
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,
@@ -61,38 +66,37 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
-  internalOnboardingLab: INTERNAL_ONBOARDING_LAB_PATH,
+  runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
-  workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,
 } as const;
 
 export function taskByIdPath(sessionId: string): string {
   return `${ACCOUNT_TASKS_PATH}/${encodeURIComponent(sessionId)}`;
 }
 
-export function workspaceSetupCompletePath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/setup/complete`;
-}
-
-export function workspaceComputersPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computers`;
-}
-
-export function workspaceComputerConnectCodesPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computer-connect-codes`;
-}
-
-export function workspaceAgentsPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/agents`;
+export function accountComputerConnectCodePath(connectCodeId: string): string {
+  return `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/${encodeURIComponent(connectCodeId)}`;
 }
 
 export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
 }
 
+export function accountAgentCreationIntentPath(creationIntentId: string): string {
+  return `${ACCOUNT_AGENTS_PATH}/creation-intents/${encodeURIComponent(creationIntentId)}`;
+}
+
+export function agentSetupPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/setup`;
+}
+
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentRuntimeTestPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/runtime-test`;
 }
 
 export function agentUsagePath(agentId: string, windowDays: number): string {
@@ -108,6 +112,10 @@ export function agentReactivatePath(agentId: string): string {
   return `${agentByIdPath(agentId)}/reactivate`;
 }
 
+export function agentComputerRebindPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/computer/rebind`;
+}
+
 export function agentImBindingPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding`;
 }
@@ -120,6 +128,10 @@ export function agentImBindingConfigPath(agentId: string): string {
   return `${agentImBindingPath(agentId)}/config`;
 }
 
+export function agentImBindingUnbindPath(agentId: string): string {
+  return `${agentImBindingPath(agentId)}/unbind`;
+}
+
 export function agentFeishuSetupAttemptsPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/feishu/setup-attempts`;
 }
@@ -128,8 +140,8 @@ export function feishuSetupAttemptPath(attemptId: string): string {
   return `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
 }
 
-export function agentSlackConfigurationPath(agentId: string): string {
-  return `${agentByIdPath(agentId)}/im-binding/slack/configuration`;
+export function feishuSetupAttemptCancelPath(attemptId: string): string {
+  return `${feishuSetupAttemptPath(attemptId)}/cancel`;
 }
 
 export function agentSlackOAuthStartPath(agentId: string): string {
@@ -165,4 +177,8 @@ export function runtimeWebSocketUrl(serverUrl: string): string {
   const url = new URL(HTTP_PATHS.computerRuntimeWebSocket, serverUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+}
+
+export function runtimeDurableWorkPath(kind: string, key: string): string {
+  return `${RUNTIME_DURABLE_WORK_PATH}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`;
 }

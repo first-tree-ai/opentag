@@ -18,7 +18,7 @@ export const AgentNameSchema = z
     "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
-const AgentCreationIntentIdSchema = z.string().uuid();
+export const AgentCreationIntentIdSchema = z.string().uuid();
 export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code"] as const;
 export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
@@ -70,12 +70,6 @@ export const UpdateAgentRuntimeConfigSchema = z
 const AgentIdentitySchema = z
   .object({
     id: z.string().uuid(),
-    /**
-     * @deprecated The management scope is derived from the authenticated Account. Optional so that
-     * removing it at the ownership cutover is not a breaking contract change for already-published
-     * clients; no Account-native consumer reads it.
-     */
-    workspaceId: z.string().uuid().optional(),
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
@@ -93,21 +87,39 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
       displayName: z.string().min(1),
     })
     .strict(),
+  /**
+   * `null` while the Agent has no Computer. An Agent is created before its Computer exists, so the
+   * binding is a later fact rather than a creation precondition, and a reader that cannot tell
+   * "not bound yet" from "bound to a machine we could not read" reports the wrong recovery.
+   */
   computer: z
     .object({
       computerId: z.string().uuid(),
       displayName: z.string().min(1),
       platform: z.enum(["darwin", "linux", "win32"]),
     })
-    .strict(),
+    .strict()
+    .nullable(),
+  /**
+   * Present when the Agent creator does not own the bound Computer. The Agent stays visible; execution
+   * is rejected until the creator rebinds it to an owned Computer.
+   */
+  requiresComputerRebind: z.boolean().optional(),
 }).strict();
 
+export const RebindAgentComputerRequestSchema = z
+  .object({
+    computerId: z.string().uuid(),
+  })
+  .strict();
+
 export const AGENT_USAGE_WINDOW_DAYS = 30;
-export const AGENT_USAGE_WINDOW_OPTIONS = [7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
+export const AGENT_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
 export const AgentUsageWindowDaysSchema = z.union([
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[0]),
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[1]),
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[2]),
+  z.literal(AGENT_USAGE_WINDOW_OPTIONS[3]),
 ]);
 
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
@@ -212,7 +224,7 @@ export const AgentListItemSchema = AgentSummarySchema.extend({
 
 export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
   createdByUserId: z.string().uuid(),
-  computerId: z.string().uuid(),
+  computerId: z.string().uuid().nullable(),
   revision: z.number().int().min(1),
   runtimeConfig: AgentRuntimeConfigSchema,
 }).strict();
@@ -223,10 +235,26 @@ export const CreateAgentRequestSchema = z
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
-    computerId: z.string().uuid(),
+    /**
+     * Optional: the Computer binding is changeable after creation, so requiring it here would state
+     * a creation-time precondition the product does not have. An Agent created without one exists
+     * and can be configured; it cannot run until a Computer is bound.
+     */
+    computerId: z.string().uuid().optional(),
     runtimeConfig: CreateAgentRuntimeConfigSchema.optional(),
   })
   .strict();
+
+/** Read-only reconciliation of one exact pre-Agent creation identity. */
+export const AgentCreationIntentResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("not-found") }).strict(),
+  z
+    .object({
+      kind: z.literal("found"),
+      agentId: z.string().uuid(),
+    })
+    .strict(),
+]);
 
 export const UpdateAgentRequestSchema = z
   .object({
@@ -247,6 +275,34 @@ export const ListAgentsResponseSchema = z
   })
   .strict();
 
+export const AGENT_RUNTIME_TEST_FAILURE_CODES = [
+  "stale_configuration",
+  "computer_unavailable",
+  "capability_missing",
+  "busy",
+  "timeout",
+  "cancelled",
+  "interaction_or_tool",
+  "provider_start_failed",
+  "provider_failed",
+] as const;
+export const AgentRuntimeTestFailureCodeSchema = z.enum(AGENT_RUNTIME_TEST_FAILURE_CODES);
+export const AgentRuntimeTestRequestSchema = z
+  .object({
+    expectedRevision: z.number().int().min(1),
+    expectedRuntimeConfigRevision: z.number().int().min(1),
+  })
+  .strict();
+export const AgentRuntimeTestResponseSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("passed") }).strict(),
+  z
+    .object({
+      status: z.literal("failed"),
+      code: AgentRuntimeTestFailureCodeSchema,
+    })
+    .strict(),
+]);
+
 export type AgentName = z.infer<typeof AgentNameSchema>;
 export type AgentDisplayName = z.infer<typeof AgentDisplayNameSchema>;
 export type AgentRuntimeProvider = z.infer<typeof AgentRuntimeProviderSchema>;
@@ -264,5 +320,10 @@ export type AgentUsageDetail = z.infer<typeof AgentUsageDetailSchema>;
 export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
+export type AgentCreationIntentResult = z.infer<typeof AgentCreationIntentResultSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
+export type RebindAgentComputerRequest = z.infer<typeof RebindAgentComputerRequestSchema>;
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;
+export type AgentRuntimeTestFailureCode = z.infer<typeof AgentRuntimeTestFailureCodeSchema>;
+export type AgentRuntimeTestRequest = z.infer<typeof AgentRuntimeTestRequestSchema>;
+export type AgentRuntimeTestResponse = z.infer<typeof AgentRuntimeTestResponseSchema>;

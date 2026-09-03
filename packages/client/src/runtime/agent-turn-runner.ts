@@ -6,6 +6,7 @@ import {
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
+  redactForLog,
   type TurnFailureReason,
   type TurnReportHashInput,
   type TurnReportRequest,
@@ -18,6 +19,9 @@ import {
   type ImCredentialEnvironmentManager,
 } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
+import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
+import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
+import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "./session-runtime-manager.js";
@@ -36,6 +40,10 @@ export interface AgentTurnRunnerOptions {
   readonly resourceFetcher?: ImResourceFetcher;
   readonly runtimeManager: SessionRuntimeManager;
   readonly credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
+  readonly turnPlan?: {
+    cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
+    prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
+  };
 }
 
 interface RunningTurn {
@@ -65,6 +73,7 @@ export class AgentTurnRunner {
   readonly #resourceFetcher?: ImResourceFetcher;
   readonly #runtimeManager: SessionRuntimeManager;
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
+  readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
 
@@ -79,6 +88,7 @@ export class AgentTurnRunner {
     this.#resourceFetcher = options.resourceFetcher;
     this.#runtimeManager = options.runtimeManager;
     this.#credentialEnvironment = options.credentialEnvironment;
+    this.#turnPlan = options.turnPlan;
   }
 
   get activeCount(): number {
@@ -95,7 +105,9 @@ export class AgentTurnRunner {
       promise: Promise.resolve(),
     };
     turn.promise = this.#run(turn, abort.signal)
-      .catch(() => undefined)
+      .catch(
+        /* v8 ignore next -- turn failures are reported through completion events, not this promise. */ () => undefined,
+      )
       .finally(() => this.#turns.delete(owner.turnId));
     this.#turns.set(owner.turnId, turn);
   }
@@ -179,6 +191,7 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
+    /* v8 ignore next -- the turn-timeout callback only fires for wall-clock overruns tests cannot wait out. */
     const timer = setTimeout(() => timeout.abort("turn_timeout"), turnTimeoutMs(owner.request, this.#now()));
     timer.unref();
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
@@ -192,6 +205,7 @@ export class AgentTurnRunner {
     let completion: TurnCompletion;
     let terminalObserved = false;
     let releaseObserver: () => void = () => undefined;
+    let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     try {
       await this.#bindingStore.updateUnresolved(
         owner.request.agentId,
@@ -199,7 +213,16 @@ export class AgentTurnRunner {
         owner.turnId,
         "starting",
       );
-      await this.#credentialEnvironment.prepare(owner.request, signal);
+      const credentials = await this.#credentialEnvironment.prepare(owner.request, signal);
+      if (this.#turnPlan && this.#runtimeManager.sessionKind(owner.request.sessionId) === "visible") {
+        turnPlanInput = {
+          provider: credentials.provider,
+          sessionId: owner.request.sessionId,
+          runId: owner.turnId,
+          ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
+        };
+        await this.#turnPlan.prepare(turnPlanInput);
+      }
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
       turn.runtime = runtime;
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
@@ -244,9 +267,15 @@ export class AgentTurnRunner {
         },
         "Turn failed",
       );
+      /* v8 ignore else -- a terminal event observed before the failure already recorded the outcome. */
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
       releaseObserver();
+      if (turnPlanInput) {
+        /* v8 ignore next -- turn-plan teardown is best-effort. */
+        await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
+      }
+      /* v8 ignore next -- credential teardown is best-effort. */
       await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
       clearTimeout(timer);
     }
@@ -281,7 +310,15 @@ export class AgentTurnRunner {
     }
     void this.#reportOwner
       .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        this.#logger.warn(
+          {
+            ...fields,
+            reason: redactForLog(error instanceof Error ? error.message : "Unknown Turn Report submission failure"),
+          },
+          "Turn Report submission failed",
+        );
+      });
   }
 }
 
@@ -294,38 +331,14 @@ export function buildAgentInput(
   if (!runtime) throw new Error("A steer input requires the root runtime snapshot");
   const sessionInstructions = runtime.instructions.session?.trim() || "No additional Session instructions.";
   const provider = request.content.providerRef.provider;
-  const providerCommand = provider === "feishu" ? "lark-cli" : "slack api";
-  const providerBodyInstructions =
-    provider === "feishu"
-      ? [
-          "For lark-cli text and Markdown bodies, intended line breaks must reach the CLI as real newline characters; never write literal `\\n` sequences for layout.",
-          "Before sending, inspect the body: if it has no real newline and contains two or more literal `\\n` sequences, treat it as malformed and rebuild it instead of sending. Do not blindly replace `\\n`, because code or prose may intentionally discuss that token.",
-          "Keep rich or multiline bodies out of ordinary inline shell quoting. Populate a task-specific variable with shell-native, non-interpolating multiline syntax, then pass the variable as one quoted `--text` or `--markdown` argument.",
-          "POSIX shell pattern:",
-          "```bash",
-          "IFS= read -r -d '' OPENTAG_LARK_BODY <<'EOF' || true",
-          "first line",
-          "",
-          'second line with `code`, $variables, "quotes", and apostrophes',
-          "EOF",
-          'lark-cli ... --markdown "$OPENTAG_LARK_BODY"',
-          "```",
-          "PowerShell pattern:",
-          "```powershell",
-          "$OpenTagLarkBody = @'",
-          "first line",
-          "",
-          'second line with `code`, $variables, "quotes", and apostrophes',
-          "'@",
-          "lark-cli ... --markdown $OpenTagLarkBody",
-          "```",
-          "Replace `...` with the version-specific lark-cli subcommand and provider-native target options before running it.",
-        ]
-      : [];
   const attentionMeaning =
     request.attention === "direct"
       ? "A human explicitly addressed this Agent/Session. Handle the message normally, then choose whether to reply, react, send proactively, or take no provider action."
       : "This Agent overheard the message. Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.";
+  const observer = request.replyRole === "observer";
+  const replyRoleMeaning = observer
+    ? "A Thread Session owns the provider reply for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message."
+    : "This Session is the reply owner for this message. It may reply, react, send another provider message, or take no provider action.";
   // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
   // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
   const context = [
@@ -335,20 +348,20 @@ export function buildAgentInput(
     `Session: ${request.sessionId}`,
     `Agent revision: ${runtime.revision.agent.sequence}/${runtime.revision.agent.id}`,
     `Session revision: ${runtime.revision.session.sequence}/${runtime.revision.session.id}`,
-    'Who reads your output: inside OpenTag, the "user" your underlying agent addresses — the reader of everything you produce apart from running a provider CLI command, including the text that closes this Turn — is the OpenTag runtime. This is your runtime console; ordinary output is not delivered to the IM participant.',
-    `The IM participant is a separate audience. The official ${providerCommand} CLI is your outbox and the only path from this Turn to that audience.`,
-    "The console addresses OpenTag; running the provider CLI performs the provider action. Describing a reply, reaction, or proactive message in your output only records it in OpenTag; it does not deliver it.",
-    "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
-    `To write to this ${provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
-    ...providerBodyInstructions,
-    "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
-    "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",
-    "If a provider result is unknown, query the provider before deciding whether to retry.",
+    ...buildProviderOutboxInstructions({
+      actionInstruction: observer
+        ? "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization."
+        : "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
+      provider,
+      target: request.content.providerRef,
+      targetLabel: "Current provider reference",
+    }),
     `Attention: ${request.attention}`,
     `Attention meaning: ${attentionMeaning}`,
     "Attention does not change provider CLI or credential availability for this Turn.",
-    `Current provider reference: ${JSON.stringify(request.content.providerRef)}`,
-    `For version-specific commands and native formats, run ${provider === "feishu" ? "lark-cli im --help" : "slack api --help"}.`,
+    `Reply role: ${observer ? "observer" : "owner"}`,
+    `Reply role meaning: ${replyRoleMeaning}`,
+    "Reply role constrains provider actions for this delivery; it does not change this Session's authority or credential availability.",
     "Session instructions:",
     sessionInstructions,
     "</opentag-im-context>",
@@ -424,7 +437,7 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
   if (abortReason === "turn_timeout") {
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
   }
-  if (error instanceof ImCredentialEnvironmentError) {
+  if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
     return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {

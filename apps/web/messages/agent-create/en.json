@@ -1,0 +1,18 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "agent_create_check_ambiguous": "More than one active Agent is named @{name}, so the exact one cannot be chosen here. The saved attempt is unchanged.",
+  "agent_create_check_failed": "The creation result could not be checked",
+  "agent_create_check_not_found": "No active Agent named @{name} exists yet, so the saved attempt did not finish. Retry it or discard it.",
+  "agent_create_check_result_action": "Check result",
+  "agent_create_checking_action": "Checking…",
+  "agent_create_checking_result_label": "Checking the creation result",
+  "agent_create_create_agent_action": "Create Agent",
+  "agent_create_creating_action": "Creating…",
+  "agent_create_creating_agent_label": "Creating Agent",
+  "agent_create_discard_action": "Discard and start over",
+  "agent_create_failed": "Agent creation failed",
+  "agent_create_recovery_description": "A previous attempt to create {displayName} was interrupted before its result reached this browser. Nothing happens until you choose: check whether the Agent was created, retry the same attempt, or discard the saved attempt.",
+  "agent_create_recovery_title": "Creation attempt interrupted",
+  "agent_create_retry_action": "Retry creation",
+  "agent_create_retry_route_unavailable": "Retry uses the original Agent name and Runtime. Select those same values to continue."
+}

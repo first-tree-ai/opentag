@@ -53,6 +53,27 @@ const PublicUrlSchema = z
     return url.origin;
   });
 
+const DownloadBaseUrlSchema = z
+  .string()
+  .trim()
+  .transform((value, context) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      context.addIssue({ code: "custom", message: "Must be an HTTP(S) URL" });
+      return z.NEVER;
+    }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      context.addIssue({
+        code: "custom",
+        message: "Must be an HTTP(S) URL without credentials, query, or fragment",
+      });
+      return z.NEVER;
+    }
+    return url.toString().replace(/\/+$/, "");
+  });
+
 const EncryptionKeySchema = z
   .string()
   .min(1)
@@ -65,19 +86,8 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
-/** An empty value means the staging Onboarding Lab stays unconfigured; any other value must be an Account UUID. */
-const StagingOnboardingAccountIdSchema = z
-  .string()
-  .trim()
-  .default("")
-  .transform((value, context) => {
-    if (value === "") return undefined;
-    if (!z.string().uuid().safeParse(value).success) {
-      context.addIssue({ code: "custom", message: "Must be an Account UUID" });
-      return z.NEVER;
-    }
-    return value;
-  });
+const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
+export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
 
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
@@ -86,7 +96,6 @@ export function isHostedEnvironment(environment: ChannelName): boolean {
 const ServerEnvironmentSchema = z
   .object({
     BETTER_AUTH_SECRET: z.string().min(32),
-    OPENTAG_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
@@ -94,6 +103,13 @@ const ServerEnvironmentSchema = z
     OPENTAG_ENV_EXPLICIT: z.boolean(),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
+    /*
+     * Defaults to off because turning it on opens Account creation to anyone who can reach the server. Every other
+     * sign-in method the server offers requires something a deployment already granted — a Google client, a loopback
+     * development bypass, a connect code — so this is the first one whose default could hand out Accounts, and that
+     * has to be a decision rather than an inheritance.
+     */
+    OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: booleanString("false"),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
@@ -102,28 +118,31 @@ const ServerEnvironmentSchema = z
     OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
+    /*
+     * Where the Server polls the channel's exact latest target for Client upgrade advertisement.
+     * This is the same authority the portable installer consumes; release tooling keeps the npm
+     * dist-tag at the same coordinate, so one target serves both install modes.
+     */
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default(
+      "https://storage.googleapis.com/opentag-release/releases",
+    ),
+    OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(300_000),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,
     OPENTAG_OTEL_ENDPOINT: OtlpEndpointSchema,
     OPENTAG_OTEL_ENVIRONMENT: z.string().trim().min(1).optional(),
     OPENTAG_OTEL_HEADERS: z.string().default(""),
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
-    OPENTAG_REFRESH_TOKEN_TTL_SECONDS: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(60 * 60 * 24 * 30),
+    OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     /*
-     * Defaults to what the refresh token's lifetime was, because that is the number this replaces: how long a client
-     * may be idle and still be signed in. It is defaulted so no deployment has to be configured before the revision
-     * that reads it.
+     * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
+     * may be idle and still be signed in.
      */
     OPENTAG_SESSION_TTL_SECONDS: z.coerce
       .number()
       .int()
       .positive()
       .default(60 * 60 * 24 * 30),
-    OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: StagingOnboardingAccountIdSchema,
   })
   .strict()
   .superRefine((value, context) => {
@@ -168,12 +187,6 @@ const ServerEnvironmentSchema = z
       context.addIssue({
         code: "custom",
         message: "BETTER_AUTH_SECRET must differ from OPENTAG_JWT_SECRET",
-      });
-    }
-    if (value.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID && value.OPENTAG_ENV !== "staging") {
-      context.addIssue({
-        code: "custom",
-        message: "OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID requires OPENTAG_ENV=staging",
       });
     }
     const devAuthConfigured = value.OPENTAG_DEV_AUTH_BYPASS_ENABLED || Boolean(value.OPENTAG_DEV_AUTH_EMAIL);
@@ -227,18 +240,27 @@ export function parseSlackRedirectUrl(value: string, publicOrigin: string): stri
 }
 
 export interface ServerConfig {
-  accessTokenTtlSeconds: number;
   autoMigrate: boolean;
-  /** Signs Better Auth sessions and cookies. Distinct from `jwtSecret` so the two can be rotated independently. */
+  /** Signs every Account session and its cookies. */
   betterAuthSecret: string;
+  /** Where the Server reads the channel's exact latest Client target, and how often. */
+  channelTarget: { downloadBaseUrl: string; pollIntervalMs: number };
   databaseUrl: string;
   encryptionKey: Uint8Array;
   channel: ChannelConfig;
   environment: ChannelName;
   devAuth?: { email: string };
+  /**
+   * Whether an address and password may both create an Account and sign one in.
+   *
+   * One flag rather than two: a deployment that accepts passwords but refuses to issue them would have no way to give
+   * anyone the first one, since nothing else in the product sets a password.
+   */
+  emailPasswordAuth: boolean;
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
   host: string;
+  /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
   migrationsDirectory: string;
   observability: {
@@ -249,18 +271,16 @@ export interface ServerConfig {
       sampleRate: number;
     };
   };
+  logLevel: ServerLogLevel;
   port: number;
   publicUrl: string;
-  /** Lifetime of the credentials the previous revision issued; they are only verified now, never issued. */
-  refreshTokenTtlSeconds: number;
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
-   * Present on every staging deployment. Scenario Preview is fixed client-side fixtures, so it needs
-   * no Account configuration; `accountId` names the one Account that additionally owns the reset,
-   * and stays absent until a deployment configures it.
+   * Whether this deployment lets an Account undo its own setup and walk onboarding again. It takes
+   * no configuration: the reset acts only on the Account that asks for it.
    */
-  stagingOnboardingLab?: { accountId?: string };
+  stagingSetupReset: boolean;
 }
 
 export interface DatabaseConfig {
@@ -288,7 +308,6 @@ export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseCon
 export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig {
   const parsed = ServerEnvironmentSchema.parse({
     BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
-    OPENTAG_ACCESS_TOKEN_TTL_SECONDS: environment.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
@@ -296,6 +315,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_ENV_EXPLICIT: environment.OPENTAG_ENV !== undefined,
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
+    OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
@@ -304,21 +324,25 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
+    OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: environment.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
     OPENTAG_PORT: environment.OPENTAG_PORT,
     OPENTAG_PUBLIC_URL: environment.OPENTAG_PUBLIC_URL,
     OPENTAG_OTEL_ENDPOINT: environment.OPENTAG_OTEL_ENDPOINT,
     OPENTAG_OTEL_ENVIRONMENT: environment.OPENTAG_OTEL_ENVIRONMENT,
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
-    OPENTAG_REFRESH_TOKEN_TTL_SECONDS: environment.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
+    OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
-    OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: environment.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID,
   });
 
   return {
-    accessTokenTtlSeconds: parsed.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
     betterAuthSecret: parsed.BETTER_AUTH_SECRET,
+    channelTarget: {
+      downloadBaseUrl: parsed.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
+      pollIntervalMs: parsed.OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS,
+    },
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
@@ -326,6 +350,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     ...(parsed.OPENTAG_DEV_AUTH_BYPASS_ENABLED && parsed.OPENTAG_DEV_AUTH_EMAIL
       ? { devAuth: { email: parsed.OPENTAG_DEV_AUTH_EMAIL } }
       : {}),
+    emailPasswordAuth: parsed.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     ...(parsed.OPENTAG_GOOGLE_CLIENT_ID && parsed.OPENTAG_GOOGLE_CLIENT_SECRET
       ? { google: { clientId: parsed.OPENTAG_GOOGLE_CLIENT_ID, clientSecret: parsed.OPENTAG_GOOGLE_CLIENT_SECRET } }
       : {}),
@@ -345,6 +370,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
+    logLevel: parsed.OPENTAG_LOG_LEVEL,
     observability: {
       tracing: {
         endpoint: parsed.OPENTAG_OTEL_ENDPOINT,
@@ -355,14 +381,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     },
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
-    refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
-    ...(parsed.OPENTAG_ENV === "staging"
-      ? {
-          stagingOnboardingLab: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID
-            ? { accountId: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID }
-            : {},
-        }
-      : {}),
+    stagingSetupReset: parsed.OPENTAG_ENV === "staging",
   };
 }

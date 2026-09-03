@@ -1,5 +1,40 @@
-import { describe, expect, it } from "vitest";
+import type {
+  AccountComputerSummary,
+  AgentAdminConfig,
+  AgentSummary,
+  ImBindingHandoffStatus,
+  ImBindingSummary,
+} from "@opentag/shared/browser";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { formatCompactNumber, formatElapsedCompact, formatRelativeTime, initials } from "../i18n/format.js";
 import { orderAgentIds } from "./agent-list-order.js";
+import {
+  type AgentAvailability,
+  type AgentDetailView,
+  type AgentListItem,
+  markAgentDetailUnconfirmed,
+  markAgentListUnconfirmed,
+  projectAgentAvailability,
+} from "./agents/agent-model.js";
+import {
+  agentAvailabilityRecovery,
+  agentAvailabilitySummary,
+  agentCardStatus,
+  agentRecoveryMessage,
+  agentStatusPresentation,
+  agentUseInstruction,
+  computerRecoveryMessage,
+  messagingChannelLabel,
+  messagingConnectionLabel,
+  messagingConnectionTone,
+  platformLabel,
+  runtimeProviderName,
+  sharedConversationDestination,
+  sharedConversationLabel,
+  titleCase,
+} from "./agents/agent-presentation.js";
+import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink, agentUsageLink } from "./agents/agent-routes.js";
+import { agentSettingsSummary } from "./agents/agent-settings/sections.js";
 
 describe("Agent list order", () => {
   it("takes the incoming priority order on the first render", () => {
@@ -21,5 +56,454 @@ describe("Agent list order", () => {
   it("returns the same order when applied to its own result", () => {
     const once = orderAgentIds(["c", "a", "b"], ["a", "b"]);
     expect(orderAgentIds(["c", "a", "b"], once)).toEqual(once);
+  });
+});
+
+describe("Agent availability model and presentation", () => {
+  /*
+   * These assertions compare an interval against the clock -- "8m ago", "2m", "1 minute ago" -- so a
+   * live clock makes each one a race it cannot win: a full minute of real delay between building the
+   * fixture and reading the string turns 8m into 9m. Pinning removes the dependency rather than
+   * widening a tolerance around it.
+   */
+  beforeEach(() => vi.setSystemTime(new Date("2026-09-02T12:00:00.000Z")));
+  afterEach(() => vi.useRealTimers());
+
+  const boundComputerId = "22222222-2222-4222-8222-222222222222";
+  const agent = {
+    id: "11111111-1111-4111-8111-111111111111",
+    name: "reviewer",
+    displayName: "Code Reviewer",
+    runtimeProvider: "codex",
+    status: "active",
+    updatedAt: "2026-08-20T00:00:00.000Z",
+    activity: { state: "idle" },
+    computer: { computerId: boundComputerId, displayName: "Desk Mac", platform: "darwin" },
+  } as unknown as AgentSummary;
+  const computer = {
+    computerId: boundComputerId,
+    connectionStatus: "online",
+    lastSeenAt: "2026-08-20T00:00:00.000Z",
+    providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+  } as unknown as AccountComputerSummary;
+  const binding = (bindingState: string, provider = "feishu", displayName: string | null = "OpenTag") =>
+    ({
+      id: "33333333-3333-4333-8333-333333333333",
+      agentId: agent.id,
+      provider,
+      bindingState,
+      bot: { displayName, avatarUrl: null },
+      receiveMode: "mention_only",
+      lastInboundAt: null,
+      lastValidatedAt: "2026-08-20T00:00:00.000Z",
+      lastRuntimeObservationAt: null,
+    }) as unknown as ImBindingSummary;
+  const handoff = (handoffReady: boolean, bindingState = "active") =>
+    ({ bindingState, handoffReady }) as ImBindingHandoffStatus;
+  const detail = (availability: AgentAvailability): AgentDetailView =>
+    ({ ...agent, availability, messaging: { kind: "ready", value: binding("active") } }) as never;
+
+  it("projects every Computer, runtime, binding, and handoff state", () => {
+    expect(
+      projectAgentAvailability(
+        { ...agent, status: "suspended" },
+        computer,
+        binding("active"),
+        handoff(true),
+        true,
+        true,
+      ).state,
+    ).toBe("suspended");
+    expect(projectAgentAvailability(agent, undefined, undefined, undefined, false, false)).toMatchObject({
+      state: "unconfirmed",
+      reason: "computer_unconfirmed",
+    });
+    expect(
+      projectAgentAvailability(agent, { ...computer, connectionStatus: "offline" }, undefined, undefined, true, true),
+    ).toMatchObject({
+      state: "action_required",
+      reason: "computer_offline",
+    });
+    expect(
+      projectAgentAvailability(agent, { ...computer, providerReadiness: [] }, undefined, undefined, true, true),
+    ).toMatchObject({
+      state: "unconfirmed",
+      reason: "runtime_unconfirmed",
+    });
+    for (const status of ["checking", "install", "sign-in", "unavailable"] as const) {
+      expect(
+        projectAgentAvailability(
+          agent,
+          { ...computer, providerReadiness: [{ provider: "codex", status, observedAt: null }] },
+          undefined,
+          undefined,
+          true,
+          true,
+        ),
+      ).toMatchObject({ state: "action_required", reason: "runtime_unavailable" });
+    }
+    expect(projectAgentAvailability(agent, computer, binding("active"), handoff(true), false, true).reason).toBe(
+      "handoff_unconfirmed",
+    );
+    expect(projectAgentAvailability(agent, computer, undefined, undefined, true, true).reason).toBe("im_not_connected");
+    expect(projectAgentAvailability(agent, computer, binding("provisioning"), handoff(false), true, true).state).toBe(
+      "setting_up",
+    );
+    expect(
+      projectAgentAvailability(agent, computer, binding("reauthorization_required"), handoff(false), true, true).reason,
+    ).toBe("im_reauthorization_required");
+    expect(projectAgentAvailability(agent, computer, binding("error"), handoff(false), true, true).reason).toBe(
+      "im_error",
+    );
+    expect(projectAgentAvailability(agent, computer, binding("disabled"), handoff(false), true, true).reason).toBe(
+      "im_disabled",
+    );
+    expect(projectAgentAvailability(agent, computer, binding("active"), handoff(false), true, true).reason).toBe(
+      "handoff_unavailable",
+    );
+    expect(projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true)).toMatchObject({
+      state: "ready",
+      reason: null,
+    });
+  });
+
+  it("marks stale list/detail evidence unconfirmed", () => {
+    const listAgent = {
+      ...agent,
+      computer: { ...agent.computer },
+      activity: { state: "idle" },
+      usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
+    };
+    const listValue = {
+      agents: [
+        {
+          ...listAgent,
+          availability: projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true),
+          evidenceConfirmed: true,
+        } as never,
+      ],
+    } as { agents: AgentListItem[] };
+    expect(markAgentListUnconfirmed(listValue).agents[0]).toMatchObject({
+      evidenceConfirmed: false,
+      availability: { reason: "agent_unconfirmed" },
+    });
+    const detailValue = detail(projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true));
+    expect(markAgentDetailUnconfirmed(detailValue)).toMatchObject({
+      messaging: { kind: "unconfirmed" },
+      availability: { reason: "agent_unconfirmed", dependencies: { computer: { state: "unconfirmed" } } },
+    });
+  });
+
+  it("presents provider, messaging, recovery, and formatting states", () => {
+    const base = detail(projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true));
+    expect(agentStatusPresentation(base)).toEqual({ label: "Ready", tone: "success" });
+    expect(
+      agentStatusPresentation({ ...base, activity: { state: "working", startedAt: "2026-08-20T00:00:00.000Z" } }),
+    ).toEqual({
+      label: "Working",
+      tone: "info",
+    });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "suspended", reason: "agent_suspended" },
+      }),
+    ).toEqual({ label: "Suspended", tone: "neutral" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "unconfirmed", reason: "runtime_unconfirmed" },
+      }),
+    ).toEqual({ label: "Computer unknown", tone: "neutral" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "unconfirmed", reason: "agent_unconfirmed" },
+      }),
+    ).toEqual({ label: "Status unknown", tone: "neutral" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
+      }),
+    ).toEqual({ label: "Computer offline", tone: "warning" });
+    for (const status of ["checking", "install", "sign-in", "unavailable"] as const) {
+      expect(
+        agentStatusPresentation({
+          ...base,
+          availability: {
+            ...base.availability,
+            state: "action_required",
+            reason: "runtime_unavailable",
+            dependencies: { ...base.availability.dependencies, runtime: { provider: "claude-code", status } },
+          },
+        }),
+      ).toMatchObject({ label: expect.any(String) });
+    }
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "setting_up", reason: "im_provisioning" },
+      }),
+    ).toMatchObject({ label: "Messaging setting up" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "action_required", reason: "im_reauthorization_required" },
+      }),
+    ).toMatchObject({ label: "Messaging needs re-authorization" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "action_required", reason: "handoff_unavailable" },
+      }),
+    ).toMatchObject({ label: "Cannot receive messages" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "not_connected", reason: "im_not_connected" },
+      }),
+    ).toMatchObject({ label: "Messaging disconnected", tone: "neutral" });
+    expect(
+      agentStatusPresentation({
+        ...base,
+        availability: { ...base.availability, state: "action_required", reason: null },
+      }),
+    ).toEqual({ label: "Messaging disconnected", tone: "warning" });
+
+    for (const status of ["install", "sign-in", "checking", "unavailable"] as const) {
+      expect(
+        computerRecoveryMessage({
+          ...base,
+          availability: {
+            ...base.availability,
+            reason: "runtime_unavailable",
+            dependencies: { ...base.availability.dependencies, runtime: { provider: "codex", status } },
+          },
+        }),
+      ).toContain("Codex");
+    }
+    expect(
+      computerRecoveryMessage({
+        ...base,
+        availability: {
+          ...base.availability,
+          reason: "computer_offline",
+          dependencies: {
+            ...base.availability.dependencies,
+            computer: { state: "action_required", lastConfirmedAt: null },
+          },
+        },
+      }),
+    ).toContain("not running");
+    expect(
+      computerRecoveryMessage({
+        ...base,
+        availability: {
+          ...base.availability,
+          reason: "computer_offline",
+          dependencies: {
+            ...base.availability.dependencies,
+            computer: { state: "unconfirmed", lastConfirmedAt: null },
+          },
+        },
+      }),
+    ).toContain("could not confirm");
+    expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
+    expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
+    expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");
+    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe("Permissions required");
+    expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
+    expect(sharedConversationLabel("feishu")).toBe("Group chats");
+    expect(sharedConversationLabel("slack")).toBe("Channels");
+    /*
+     * Exact, and both branches in both numbers, so the complete visible sentence is pinned: anything
+     * added, dropped or reworded around the brand fails here, which `toContain("Lark")` did not.
+     *
+     * What they deliberately do not prove is where the brand came from. Replacing the helper call
+     * with the same correctly-spelled literals leaves all four green, because the rendered text is
+     * identical either way -- no assertion about output can see sourcing. That guarantee needs a
+     * structural check (#335), not a stronger expectation here.
+     */
+    expect(sharedConversationDestination("feishu")).toBe("a Lark group chat");
+    expect(sharedConversationDestination("feishu", true)).toBe("connected Lark group chats");
+    expect(sharedConversationDestination("slack")).toBe("a Slack channel");
+    expect(sharedConversationDestination("slack", true)).toBe("connected Slack channels");
+    expect(agentAvailabilitySummary(base)).toBe("Available in Lark");
+    expect(
+      agentAvailabilitySummary({
+        ...base,
+        availability: {
+          ...base.availability,
+          dependencies: {
+            ...base.availability.dependencies,
+            channel: { state: "connected", provider: null, botDisplayName: null },
+          },
+        },
+      }),
+    ).toBe("Ready for new work");
+    expect(agentAvailabilitySummary({ ...base, availability: { ...base.availability, state: "suspended" } })).toBe(
+      "Not receiving new work",
+    );
+    /*
+     * The notice renders only for a suspended Agent, so this is the only reading it has. The
+     * assertions this replaces called it with `state: "ready"` and `state: "not_connected"` --
+     * states it can never be called in, which is how thirteen unreachable branches kept looking
+     * covered.
+     */
+    expect(agentRecoveryMessage()).toBe("This Agent is paused. Resume it to start receiving messages again.");
+    expect(agentUseInstruction(base, "feishu")).toBe(
+      "Send @reviewer a direct message, or mention it in a Lark group chat.",
+    );
+    expect(agentUseInstruction({ ...base, receiveMode: "all_message" }, "slack")).toContain(
+      "every message in connected Slack channels",
+    );
+    expect(
+      agentAvailabilityRecovery({
+        ...base,
+        availability: { ...base.availability, reason: "agent_suspended", state: "suspended" },
+      }),
+    ).toMatchObject({ label: "Pause or delete Agent" });
+    expect(
+      agentAvailabilityRecovery({
+        ...base,
+        availability: { ...base.availability, reason: "im_error", state: "action_required" },
+      }),
+    ).toMatchObject({ label: "View messaging" });
+    expect(
+      agentAvailabilityRecovery({
+        ...base,
+        availability: { ...base.availability, reason: "computer_offline", state: "action_required" },
+      }),
+    ).toMatchObject({ label: "View Computer" });
+    expect(
+      agentAvailabilityRecovery({
+        ...base,
+        availability: { ...base.availability, reason: "agent_unconfirmed", state: "unconfirmed" },
+      }),
+    ).toBeUndefined();
+    expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
+      detail: undefined,
+      label: "Ready for new work",
+      priority: 3,
+      tone: "success",
+    });
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date(Date.now() - 8 * 60_000).toISOString() },
+        evidenceConfirmed: true,
+      } as never),
+    ).toEqual({
+      detail: "Working now · started 8m ago",
+      label: "Ready for new work",
+      priority: 3,
+      tone: "success",
+    });
+    expect(agentCardStatus({ ...base, evidenceConfirmed: false } as never)).toMatchObject({
+      label: "Status unavailable",
+    });
+    expect(
+      agentCardStatus({
+        ...base,
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "not_connected" },
+      } as never),
+    ).toEqual({ label: "Messaging not connected", priority: 2, tone: "neutral" });
+    expect(
+      agentCardStatus({
+        ...base,
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "runtime_unavailable" },
+      } as never),
+    ).toMatchObject({ label: "Codex unavailable", priority: 0, tone: "warning" });
+    expect(
+      agentCardStatus({
+        ...base,
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "im_error" },
+      } as never),
+    ).toEqual({ label: "Messaging connection failed", priority: 0, tone: "warning" });
+    expect(
+      agentCardStatus({
+        ...base,
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "setting_up", reason: "im_provisioning" },
+      } as never),
+    ).toMatchObject({ label: "Setting up messaging", priority: 2, tone: "info" });
+    expect(titleCase("runtime_unavailable")).toBe("Runtime Unavailable");
+    expect(platformLabel("darwin")).toBe("macOS");
+    expect(platformLabel("win32")).toBe("Windows");
+    expect(platformLabel("linux")).toBe("Linux");
+    expect(runtimeProviderName("codex")).toBe("Codex");
+    expect(runtimeProviderName("claude-code")).toBe("Claude Code");
+    expect(initials("Ada Lovelace")).toBe("AL");
+    expect(initials(" ")).toBe("OT");
+    expect(formatCompactNumber(1_500)).toContain("1.5");
+    expect(formatCompactNumber(12)).toBe("12");
+    expect(formatElapsedCompact(new Date(Date.now() - 2 * 60_000).toISOString())).toBe("2m");
+    expect(formatElapsedCompact(new Date(Date.now() - 2 * 60 * 60_000).toISOString())).toBe("2h");
+    expect(formatElapsedCompact(new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString())).toBe("2d");
+    expect(formatRelativeTime(new Date(Date.now() - 60_000).toISOString())).toBe("1 minute ago");
+    expect(formatRelativeTime(new Date(Date.now() - 2 * 60 * 60_000).toISOString())).toBe("2 hours ago");
+    expect(formatRelativeTime(new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString())).toBe("2 days ago");
+  });
+
+  it("builds typed Agent links and settings summaries", () => {
+    const base = detail(projectAgentAvailability(agent, computer, binding("active"), handoff(true), true, true));
+    expect(agentDetailLink(agent.id).to).toBe("/agents/$agentId");
+    expect(agentUsageLink(agent.id).to).toBe("/agents/$agentId/usage");
+    expect(agentSettingsLink(agent.id).to).toBe("/agents/$agentId/settings");
+    expect(agentSettingsSectionLink(agent.id, "computer").params.section).toBe("computer");
+    const config = {
+      id: agent.id,
+      createdByUserId: "user",
+      computerId: boundComputerId,
+      name: agent.name,
+      displayName: agent.displayName,
+      runtimeProvider: agent.runtimeProvider,
+      receiveMode: agent.receiveMode,
+      status: agent.status,
+      revision: 1,
+      runtimeConfig: { revision: 1, instructions: "Custom", model: null, reasoningEffort: null, maxDurationMs: null },
+      createdAt: agent.updatedAt,
+      updatedAt: agent.updatedAt,
+    } satisfies AgentAdminConfig;
+    expect(agentSettingsSummary(detail(base.availability), config, "instructions")).toBe("Custom instructions");
+    expect(
+      agentSettingsSummary(
+        detail(base.availability),
+        { ...config, runtimeConfig: { ...config.runtimeConfig, instructions: " " } },
+        "instructions",
+      ),
+    ).toBe("No custom instructions");
+    expect(agentSettingsSummary(detail(base.availability), config, "execution")).toContain("Provider defaults");
+    expect(
+      agentSettingsSummary(
+        detail(base.availability),
+        { ...config, runtimeConfig: { ...config.runtimeConfig, model: null, reasoningEffort: "high" } },
+        "execution",
+      ),
+    ).toContain("Provider default · High");
+    expect(
+      agentSettingsSummary(
+        detail(base.availability),
+        { ...config, runtimeConfig: { ...config.runtimeConfig, model: "custom", reasoningEffort: null } },
+        "execution",
+      ),
+    ).toContain("Provider default");
+    expect(
+      agentSettingsSummary({ ...detail(base.availability), messaging: { kind: "unconfirmed" } }, config, "messaging"),
+    ).toBe("Messaging status is temporarily unavailable");
+    expect(
+      agentSettingsSummary(
+        { ...detail(base.availability), messaging: { kind: "ready", value: undefined } },
+        config,
+        "messaging",
+      ),
+    ).toBe("No messaging app connected");
+    expect(agentSettingsSummary(detail(base.availability), config, "identity")).toBe(agent.displayName);
+    expect(agentSettingsSummary(detail(base.availability), config, "computer")).toContain("macOS");
+    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Active · Accepting requests");
   });
 });

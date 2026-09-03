@@ -9,6 +9,9 @@ coverage/
 *.tsbuildinfo
 .portable-release/
 
+# Local tooling overrides
+lefthook-local.yml
+
 # Local environment and logs
 .env
 .env.*
@@ -20,9 +23,23 @@ yarn-debug.log*
 yarn-error.log*
 /run_*.sh
 
+# Generated Web i18n output
+apps/web/src/paraglide/
+apps/web/project.inlang/cache/
+
+# Playwright E2E output and temporary runtime metadata
+e2e/screenshots/
+e2e/.auth/
+e2e/.runtime.json
+e2e/playwright-report/
+e2e/test-results/
+
 # OS and editor files
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Agent orchestration scratch state - never commit
+.dispatch/

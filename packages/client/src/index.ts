@@ -62,25 +62,32 @@ export {
   writeCredentialsAtomically,
 } from "./auth/credentials.js";
 export {
+  type BoundAccountComputerResolution,
   MACHINE_CREDENTIALS_FILE_NAME,
-  type MachineEnrollmentCredential,
+  type MachineComputerCredential,
   machineCredentialsPath,
   readMachineCredentials,
+  readMachineCredentialsStrict,
+  resolveBoundAccountComputer,
   type StoredMachineCredentials,
-  storeMachineEnrollmentCredential,
+  storeBoundAccountComputer,
   writeMachineCredentialsAtomically,
 } from "./auth/machine-credentials.js";
 export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
 export {
   checkServerHealth,
+  SERVER_HEALTH_TIMEOUT_MS,
   ServerHealthConfigurationError,
   ServerHealthHttpError,
   ServerHealthNetworkError,
   ServerHealthResponseError,
+  ServerHealthTimeoutError,
 } from "./health.js";
 export {
   type ClientLogBindings,
   type ClientLogger,
+  type CreateLoggerOptions,
+  configureClientLoggerContext,
   configureClientLoggerForService,
   createLogger,
 } from "./observability/logger.js";
@@ -111,6 +118,7 @@ export {
 } from "./providers/codex/agent-runtime.js";
 export {
   CODEX_APP_SERVER_MAX_LINE_BYTES,
+  CODEX_APP_SERVER_MAX_STDERR_BYTES,
   CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
   type CodexAppServerClient,
   CodexAppServerError,
@@ -147,6 +155,20 @@ export {
   type AdmissionSnapshot,
 } from "./runtime/admission-controller.js";
 export {
+  type AgentRuntimeCliInstallation,
+  AgentRuntimeExecutableDiscoveryError,
+  AgentRuntimeExecutableNotFoundError,
+  type AgentRuntimeExecutableSource,
+  codexDesktopAppBinDirs,
+  iterateAgentRuntimeExecutables,
+  type ProbeAgentRuntimeCliInstallationsOptions,
+  probeAgentRuntimeCliInstallations,
+  type ResolveAgentRuntimeExecutableOptions,
+  type ResolvedAgentRuntimeExecutable,
+  resolveAgentRuntimeExecutable,
+  wellKnownAgentRuntimeBinDirs,
+} from "./runtime/agent-runtime-installation.js";
+export {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
   AgentRuntimeProviderUnavailableError,
@@ -165,26 +187,198 @@ export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
   createClientRuntime,
+  type ProtectedWorkSnapshot,
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
 } from "./runtime/client-runtime-composition.js";
 export {
+  allocateComputerIdentity,
   COMPUTER_IDENTITY_FILE_NAME,
   type ComputerIdentity,
   computerIdentityPath,
   readComputerIdentity,
   resolveComputerIdentity,
+  writeComputerIdentityAtomically,
 } from "./runtime/computer-identity.js";
 export {
   ImCredentialEnvironmentError,
   ImCredentialEnvironmentManager,
   type ImCredentialEnvironmentManagerOptions,
+  type ImCredentialGrantSubject,
+  type PreparedImCredentialEnvironment,
   serializeEnvironment,
 } from "./runtime/im-credential-environment-manager.js";
 export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
+export {
+  type IntegrationCliId,
+  type IntegrationCliInstallation,
+  type ProbeIntegrationCliInstallationsOptions,
+  probeIntegrationCliInstallations,
+} from "./runtime/integration-cli-installation.js";
+export {
+  inspectLocalComputerConfiguration,
+  type LocalComputerConfigurationInspection,
+  type LocalConfigurationStatus,
+} from "./runtime/local-computer-configuration.js";
 export { renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
+export {
+  ProviderCliAccountError,
+  type ProviderCliAccountLayout,
+  providerCliArtifactId,
+  providerCliLauncherPath,
+  providerCliLockFilePath,
+  providerCliStateFilePath,
+  providerCliVersionDirPath,
+  resolveAccountHome,
+  resolveProviderCliAccountLayout,
+} from "./runtime/provider-cli/account-layout.js";
+export {
+  catalogExecutableDigests,
+  findCatalogArtifact,
+  findProviderCliCatalogEntry,
+  PROVIDER_CLI_CATALOG,
+  type ProviderCliCatalogArtifact,
+  type ProviderCliCatalogEntry,
+  type ProviderCliProbeContract,
+  requireProviderCliCatalogEntry,
+} from "./runtime/provider-cli/catalog.js";
+export {
+  detectProviderCliCandidates,
+  type IgnoredProviderCliCandidate,
+  type ProviderCliCandidate,
+  type ProviderCliDetection,
+  type ProviderCliDetectOptions,
+  rankProviderCliCandidates,
+  verifyProviderCliCandidateFingerprint,
+} from "./runtime/provider-cli/detector.js";
+export {
+  executableFormatSupportsHost,
+  inspectExecutableFormat,
+  type ProviderCliExecutableFormat,
+} from "./runtime/provider-cli/executable-format.js";
+export {
+  computeFileIdentity,
+  computeTargetFingerprint,
+  MAX_PROVIDER_CLI_EXECUTABLE_BYTES,
+  type ProviderCliFileIdentity,
+} from "./runtime/provider-cli/fingerprint.js";
+export {
+  createProviderCliFetcher,
+  defaultProviderCliFetcher,
+  type ProviderCliFetcher,
+  ProviderCliInstallError,
+  ProviderCliInstaller,
+  type ProviderCliInstallerOptions,
+  type ProviderCliManagedInstall,
+  resolveProviderCliArtifactUrl,
+} from "./runtime/provider-cli/installer.js";
+export {
+  inspectGlobalCommand,
+  inspectProviderCliLauncher,
+  type ProviderCliGlobalCommandStatus,
+  reconcileProviderCliLauncher,
+  reconcileProviderCliShim,
+  renderProviderCliLauncher,
+  renderProviderCliShim,
+} from "./runtime/provider-cli/launcher.js";
+export {
+  ProviderCliLockBusyError,
+  withProviderCliLock,
+} from "./runtime/provider-cli/lock.js";
+export {
+  type ProviderCliEnsureOptions,
+  ProviderCliManager,
+  type ProviderCliManagerDeps,
+  type ProviderCliPhaseEvent,
+} from "./runtime/provider-cli/manager.js";
+export {
+  defaultProviderCliExecFile,
+  type ProviderCliExecFile,
+  type ProviderCliProbeOutcome,
+  probeProviderCliExecutable,
+  providerCliProbeEnvironment,
+} from "./runtime/provider-cli/probe.js";
+export {
+  PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS,
+  PROVIDER_CLI_LOCK_BUSY_RETRY_DELAY_MS,
+  ProviderCliReconciler,
+  type ProviderCliReconcilerOptions,
+} from "./runtime/provider-cli/reconciler.js";
+export {
+  PROVIDER_CLI_SELECTION_SCHEMA_VERSION,
+  type ProviderCliSelection,
+  type ProviderCliSelectionRecord,
+  providerCliSelectionTargetPath,
+  readProviderCliSelection,
+  writeProviderCliSelection,
+} from "./runtime/provider-cli/selection-store.js";
+export {
+  extractProviderCliExecutable,
+  ProviderCliArchiveError,
+} from "./runtime/provider-cli/tar.js";
+export {
+  type ProviderCliTurnLauncherSpec,
+  renderProviderCliTurnLauncher,
+} from "./runtime/provider-cli/turn-launcher.js";
+export {
+  deriveProviderCliHomeNamespace,
+  deriveProviderCliSessionKey,
+  MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES,
+  MAX_PROVIDER_CLI_TURN_PLAN_BYTES,
+  PROVIDER_CLI_TURN_PLAN_SCHEMA_VERSION,
+  type ProviderCliTurnPlan,
+  type ProviderCliTurnPlanCommand,
+  ProviderCliTurnPlanError,
+  type ProviderCliTurnPlanErrorCode,
+  parseProviderCliTurnPlan,
+  providerCliCommandForProvider,
+  readProviderCliTurnPlan,
+} from "./runtime/provider-cli/turn-plan.js";
+export {
+  type ProviderCliPreparedTurnPlan,
+  ProviderCliTurnPlanManager,
+  type ProviderCliTurnPlanManagerDeps,
+  type ProviderCliTurnPlanPrepareInput,
+} from "./runtime/provider-cli/turn-plan-manager.js";
+export {
+  type ExecuteProviderCliTurnPlanOptions,
+  executeProviderCliTurnPlan,
+  parseProviderCliTurnRunnerArgv,
+  resolveProviderCliTurnRunnerInvocation,
+  runProviderCliTurnRunner,
+} from "./runtime/provider-cli/turn-runner.js";
+export {
+  mapProviderCliLocalStateToReadiness,
+  type ProviderCliCandidateReport,
+  type ProviderCliDiagnostic,
+  type ProviderCliDiagnosticCode,
+  type ProviderCliEnsureAction,
+  type ProviderCliEnsureResult,
+  type ProviderCliInspection,
+  type ProviderCliLocalState,
+  type ProviderCliPhase,
+  type ProviderCliPhaseRecord,
+  type ProviderCliProvider,
+  type ProviderCliTrust,
+  type ProviderCliWarning,
+  type ProviderCliWarningCode,
+} from "./runtime/provider-cli/types.js";
+export {
+  classifyLarkAuthStatus,
+  classifySlackAuthTest,
+  classifySpawnFailure,
+  extractBoundedJson,
+} from "./runtime/provider-cli/validation-classify.js";
+export {
+  deriveProviderCliValidationRequestKey,
+  exchangeFeishuTenantToken,
+  FeishuTokenExchangeError,
+  type ProviderCliValidationRequest,
+  ProviderCliValidationRunner,
+  type ProviderCliValidationRunnerOptions,
+} from "./runtime/provider-cli/validation-runner.js";
 export {
   type RuntimeBusinessFrame,
   RuntimeConnection,
@@ -198,12 +392,35 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  DEFAULT_RUNTIME_RETRY_POLICY,
+  type DurableFailure,
+  type DurableRetryability,
+  type DurableWorkKind,
+  type DurableWorkRecord,
+  type DurableWorkStatus,
+  defaultRuntimeRetryScheduler,
+  FileRuntimeDurabilityStore,
+  MemoryRuntimeDurabilityStore,
+  RuntimeDurabilityFailure,
+  RuntimeDurabilityMetrics,
+  type RuntimeDurabilityMetricsSnapshot,
+  type RuntimeDurabilityStore,
+  type RuntimeRetryPolicy,
+  type RuntimeRetryScheduler,
+  retryDelay,
+  retryExhausted,
+} from "./runtime/runtime-durability.js";
+export {
   type AgentRuntimePaths,
   agentRuntimePaths,
   deriveRuntimeKey,
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
+export {
+  ServerRuntimeDurabilityStore,
+  type ServerRuntimeDurabilityStoreOptions,
+} from "./runtime/server-runtime-durability-store.js";
 export {
   type CustodyResult,
   type LocalSessionBinding,
@@ -226,6 +443,7 @@ export {
   buildSessionMessageInput,
   SessionMessageInbox,
   type SessionMessageInboxOptions,
+  type SessionMessageTurnContext,
 } from "./runtime/session-message-inbox.js";
 export {
   type AgentRuntimeState,
@@ -233,6 +451,7 @@ export {
   type RuntimePreparation,
   type SessionActivity,
   type SessionActivityPhase,
+  type SessionProtectedWorkSnapshot,
   SessionReconciler,
   type SessionReconcilerOptions,
   type SessionRuntimeState,
@@ -265,6 +484,14 @@ export {
   type TurnReportSubmitOptions,
   type TurnReportTerminalStatus,
 } from "./runtime/turn-report-owner.js";
+export {
+  type ProtectedWorkCount,
+  UpdateManager,
+  type UpdateManagerOptions,
+  type UpdaterAttempt,
+  type UpdaterStateName,
+  type UpdaterStateSnapshot,
+} from "./runtime/update-manager.js";
 export {
   assertRealDirectory,
   assertWithin,

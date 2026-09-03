@@ -1,1 +1,74 @@
-* @baixiaohang @yuezengwu
+# Code owners for OpenTag. See CONTRIBUTING.md, section "Code ownership".
+#
+# Last matching pattern wins. Each pattern also carries a mode (gate / territory
+# / exempt) declared in .github/ownership-modes.json and enforced by the
+# ownership-gate required status check; a pattern with no mode entry there is
+# treated as gate. Gate is the DEFAULT: anything new, anywhere, is mutually
+# reviewed until a reviewed edit of these two files relaxes it (fail-safe all
+# the way down).
+#
+# Ownership is derived from change history and recalculated monthly.
+# baixiaohang is on leave; bestony holds that territory until the recalculation.
+
+# Gate by default: mutual review, no author self-exemption.
+*                           @bestony @yuezengwu
+
+# Territory carve-outs: routine chores, owner-author self-merges on green CI.
+/.editorconfig              @bestony @yuezengwu
+/.gitignore                 @bestony @yuezengwu
+/LICENSE                    @bestony @yuezengwu
+
+# Docs fast lane: territory. Overrides the gate for markdown anywhere outside web.
+*.md                        @yuezengwu @bestony @Gandy2025 @liuchao-001
+
+# Exempt: dependency manifests, no owners on purpose. GitHub auto-requests a
+# review from the owners of every file a pull request touches, which put a human
+# on the reviewer list of every dependabot bump. Ownerless is the only lever
+# that reaches that behaviour: the auto-request runs off this file alone and
+# cannot tell dependabot from anyone else.
+#
+# `package.json` is depth-agnostic because dependabot bumps the workspace
+# manifests, not only the root one.
+#
+# The block sits BETWEEN *.md and the gate pins, and both edges are load-bearing.
+# Below *.md: a manifest inside a directory whose name ends in .md would
+# otherwise be reached by *.md but named by this rule, and the gate resolves that
+# disagreement by falling back to gate mode over an ownerless rule -- a red check
+# no approval can clear. Above the pins: a manifest ever added under .github/ or
+# packages/server/drizzle/ keeps the pin's gate instead of escaping through here.
+#
+# This does not make a dependabot pull request self-mergeable. The ownership
+# gate separately requires an owner approval from any author without write
+# access, bots included, whatever files the pull request touches.
+package.json
+/pnpm-lock.yaml
+
+# Gate pins. Both sit BELOW *.md because the markdown fast lane would otherwise
+# win for the one markdown file each of them contains, and a pin that a later
+# rule overrides protects nothing. check-ownership-policy.mjs fails the build if
+# a later rule ever wins for a file beneath either pattern.
+#
+# .github holds the ownership gate itself, the CI workflows that decide what
+# "green CI" means, and the pull request template. It must not be reachable
+# through the documentation fast lane.
+/.github/                   @bestony @yuezengwu
+
+# Irreversible migrations and the CURRENT_MIGRATION_COUNT ratchet stay gated
+# even if a broader rule is ever relaxed.
+/packages/server/drizzle/   @bestony @yuezengwu
+
+# Gate carve-back: root policy / agent-instruction files are behavior, not docs
+# (AGENTS/CLAUDE steer the agents working in this repo; CONTRIBUTING documents
+# this policy itself; SECURITY is the disclosure policy).
+# zh-CN mirrors move with their canonical documents.
+/AGENTS.md                  @yuezengwu @bestony
+/CLAUDE.md                  @yuezengwu @bestony
+/CONTRIBUTING.md            @yuezengwu @bestony
+/CONTRIBUTING.zh-CN.md      @yuezengwu @bestony
+/SECURITY.md                @yuezengwu @bestony
+/SECURITY.zh-CN.md          @yuezengwu @bestony
+
+# Exempt: no owners on purpose. Placed last so it carves web out of the gate and
+# also overrides *.md inside web: nothing under apps/web requires code-owner
+# approval or auto-requests reviewers.
+/apps/web/

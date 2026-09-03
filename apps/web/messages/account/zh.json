@@ -1,0 +1,22 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "account_account_not_refreshed": "账户未刷新",
+  "account_discard": "放弃更改",
+  "account_display_name": "显示名称",
+  "account_display_name_description": "此身份信息会显示在 OpenTag 的各处。",
+  "account_email": "邮箱",
+  "account_email_description": "此处无法修改登录邮箱。",
+  "account_error_profile_save_failed": "无法保存账户资料",
+  "account_error_refresh_failed": "显示名称已保存。OpenTag 无法刷新账户，因此页面其余部分仍显示之前的名称。",
+  "account_language_description": "选择 OpenTag 界面使用的语言。",
+  "account_language_label": "语言",
+  "account_page_description": "管理个人账户详情。",
+  "account_page_title": "账户",
+  "account_profile_saved": "账户资料已保存。",
+  "account_profile_title": "账户资料",
+  "account_refreshing": "刷新中…",
+  "account_retry_refresh": "重试刷新",
+  "account_save_profile": "保存账户资料",
+  "account_saving": "保存中…",
+  "account_unsaved_changes": "未保存的更改"
+}

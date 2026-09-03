@@ -61,6 +61,28 @@ before the first deployment.
 - **Container HTTP port** `8000`, matching the port the image exposes.
 - **PostgreSQL**, either a CapRover one-click Postgres App or an external instance reachable from the host.
 - **Persistent storage** is not required by the server image itself, but the database App needs it.
+
+### Container log rotation
+
+The server image does not control Docker's logging driver. Configure the Docker daemon on every Swarm node that may run
+the server, or set the equivalent CapRover logging option, before the first deployment. The concrete Docker daemon gate is
+`/etc/docker/daemon.json`:
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+```
+
+Restart or reload the Docker daemon according to the host operating system after changing this file. The `max-size` and
+`max-file` values above are the intended server limits; Docker does not read them from image labels. The `logging:` block
+in this repository's `docker-compose.yml` applies to the local Postgres service only and does not configure the CapRover
+server container.
+
 - **Environment variables** on the App:
 
 | Variable | Staging value |
@@ -70,10 +92,16 @@ before the first deployment.
 | `OPENTAG_PORT` | `8000` |
 | `OPENTAG_PUBLIC_URL` | The App's HTTPS URL; hosted environments reject plain HTTP |
 | `OPENTAG_DATABASE_URL` | `postgresql://…` for the Staging database |
-| `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging |
-| `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging and distinct from `OPENTAG_JWT_SECRET` |
+| `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging; signs every Account session |
+| `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://storage.googleapis.com/opentag-release/releases` |
+| `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
+
+The two optional variables control how the Server learns the exact channel latest target it advertises to connected
+Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL and keeps
+advertising the last known target through any outage. The dev channel never advertises a target.
 
 Enable HTTPS and force HTTPS on the App before setting `OPENTAG_PUBLIC_URL`; the server refuses to start in a hosted
 environment whose public URL is not HTTPS. Staging secrets must not be shared with any other environment.

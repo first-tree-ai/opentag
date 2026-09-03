@@ -1,14 +1,14 @@
 import { EventEmitter } from "node:events";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setImmediate as waitImmediate } from "node:timers/promises";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const clientMocks = vi.hoisted(() => ({
   configureClientLoggerForService: vi.fn(),
   createClientRuntime: vi.fn(),
+  createLogger: vi.fn(),
   readMachineCredentials: vi.fn(),
   resolveComputerIdentity: vi.fn(),
 }));
@@ -21,6 +21,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
   return {
     ...original,
     configureClientLoggerForService: clientMocks.configureClientLoggerForService,
+    createLogger: clientMocks.createLogger.mockImplementation(original.createLogger),
     OpenTagApi: class {},
     createClientRuntime: clientMocks.createClientRuntime,
     readMachineCredentials: clientMocks.readMachineCredentials,
@@ -52,13 +53,43 @@ describe("daemon service runtime", () => {
     process.env.OPENTAG_SERVICE_MODE = "1";
     clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not enrolled");
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not connected");
 
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledOnce();
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
   });
 
-  it("does not configure or touch the service log when daemon ownership is already held", async () => {
+  it("logs malformed daemon environment lines without exposing their values", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-malformed-env-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "BROKEN\n", { mode: 0o600 });
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+    clientMocks.readMachineCredentials.mockResolvedValue(undefined);
+
+    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not connected");
+    expect(entries).toContainEqual(expect.objectContaining({ message: "Malformed daemon environment line ignored" }));
+  });
+
+  it("logs an invalid daemon environment at the service entry while returning a clean exit", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-invalid-env-entry-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "OPENTAG_SERVER_URL=https://example.test\n", { mode: 0o644 });
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+
+    await expect(runDaemonServiceEntry({ home, logger: recordingLogger(entries) })).resolves.toBe(0);
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        fields: expect.objectContaining({ category: "configuration", instanceId: expect.any(String) }),
+        message: "Daemon service configuration prevented startup; inspect daemon status",
+      }),
+    );
+  });
+
+  it("configures the service log before reporting an already-held daemon owner", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-log-"));
     directories.push(home);
     process.env.OPENTAG_SERVICE_MODE = "1";
@@ -71,8 +102,7 @@ describe("daemon service runtime", () => {
       await owner.release();
     }
 
-    expect(clientMocks.configureClientLoggerForService).not.toHaveBeenCalled();
-    await expect(access(join(home, "logs", "client.log"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
     expect(entries).toContainEqual(
       expect.objectContaining({
         fields: expect.objectContaining({
@@ -82,6 +112,37 @@ describe("daemon service runtime", () => {
         message: "Daemon is already running; inspect daemon status",
       }),
     );
+  });
+
+  it("uses a dual logger for an already-held daemon owner", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-dual-"));
+    directories.push(home);
+    const owner = await acquireDaemonOwner(home, "existing-instance");
+
+    try {
+      await expect(runDaemonService({ home })).rejects.toThrow("already running");
+    } finally {
+      await owner.release();
+    }
+
+    expect(clientMocks.createLogger).toHaveBeenCalledWith("daemon", { destination: "dual" });
+  });
+
+  it("logs an already-held owner exactly once at the service entry", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-owned-entry-once-"));
+    directories.push(home);
+    const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
+    const owner = await acquireDaemonOwner(home, "existing-instance");
+
+    try {
+      await expect(runDaemonServiceEntry({ home, logger: recordingLogger(entries) })).resolves.toBe(0);
+    } finally {
+      await owner.release();
+    }
+
+    expect(
+      entries.filter(({ message }) => message === "Daemon is already running; inspect daemon status"),
+    ).toHaveLength(1);
   });
 
   it("does not start after a signal arrives during startup", async () => {
@@ -144,93 +205,72 @@ describe("daemon service runtime", () => {
     await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
 
     expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
-    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.1" });
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.2" });
     expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();
   });
 
-  it("starts one independent Runtime per Workspace enrollment", async () => {
-    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-multi-enrollment-"));
+  it("fails closed when the retired credential format cannot be read", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-retired-credentials-"));
     directories.push(home);
     const signals = new EventEmitter();
-    const credentials = machineCredentials();
-    const firstEnrollment = credentials.enrollments[0];
-    if (!firstEnrollment) throw new Error("expected a machine enrollment fixture");
-    credentials.enrollments.push({
-      ...firstEnrollment,
-      workspaceComputerId: "00000000-0000-4000-8000-000000000004",
-      workspaceId: "00000000-0000-4000-8000-000000000005",
-      machineToken: `otmc_${"b".repeat(64)}`,
-    });
-    clientMocks.readMachineCredentials.mockResolvedValue(credentials);
+    clientMocks.readMachineCredentials.mockRejectedValue(new Error("unsupported format"));
     clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
-    const run = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
-    clientMocks.createClientRuntime
-      .mockResolvedValueOnce({ run: run[0], stop: vi.fn() })
-      .mockResolvedValueOnce({ run: run[1], stop: vi.fn() });
 
-    await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
-
-    expect(clientMocks.createClientRuntime).toHaveBeenCalledTimes(2);
-    expect(clientMocks.createClientRuntime.mock.calls.map((call) => call[1].machineToken).sort()).toEqual(
-      credentials.enrollments.map(({ machineToken }) => machineToken).sort(),
-    );
-    expect(run[0]).toHaveBeenCalledOnce();
-    expect(run[1]).toHaveBeenCalledOnce();
+    await expect(
+      runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process }),
+    ).rejects.toThrow("run opentag connect again");
+    expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
   });
 
-  it("keeps a healthy Workspace runtime alive after another enrollment fails", async () => {
-    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-isolated-enrollment-"));
+  it("fails closed when the local Computer identity cannot be read", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-invalid-identity-"));
     directories.push(home);
-    const signals = new EventEmitter();
-    const credentials = machineCredentials();
-    const firstEnrollment = credentials.enrollments[0];
-    if (!firstEnrollment) throw new Error("expected a machine enrollment fixture");
-    credentials.enrollments.push({
-      ...firstEnrollment,
-      workspaceComputerId: "00000000-0000-4000-8000-000000000004",
-      workspaceId: "00000000-0000-4000-8000-000000000005",
-      machineToken: `otmc_${"b".repeat(64)}`,
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockRejectedValue(new Error("malformed identity"));
+
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow(
+      "local Computer identity is invalid",
+    );
+  });
+
+  it("rejects a machine credential that belongs to another Computer", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-identity-mismatch-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue({
+      ...computerIdentity(),
+      computerId: "00000000-0000-4000-8000-000000000099",
     });
-    clientMocks.readMachineCredentials.mockResolvedValue(credentials);
+
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("belongs to another Computer");
+  });
+
+  it("reports unsupported daemon platforms after loading credentials", async () => {
+    const originalPlatform = process.platform;
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-unsupported-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
     clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
-    let finishHealthy: (() => void) | undefined;
-    const healthyRun = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          finishHealthy = resolve;
-        }),
-    );
-    const failedStop = vi.fn();
-    const healthyStop = vi.fn(() => finishHealthy?.());
-    clientMocks.createClientRuntime
-      .mockResolvedValueOnce({
-        run: vi.fn(async () => Promise.reject(new Error("credential revoked"))),
-        stop: failedStop,
-      })
-      .mockResolvedValueOnce({ run: healthyRun, stop: healthyStop });
+    try {
+      Object.defineProperty(process, "platform", { configurable: true, value: "freebsd" });
+      await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow(
+        "Unsupported daemon service platform",
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { configurable: true, value: originalPlatform });
+    }
+  });
 
-    const daemon = runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
-    let settled = false;
-    void daemon.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
-    await vi.waitFor(() => expect(healthyRun).toHaveBeenCalledOnce());
-    await waitImmediate();
+  it("returns success from the service entry after a clean runtime", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-entry-success-"));
+    directories.push(home);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    clientMocks.createClientRuntime.mockResolvedValue({ run: vi.fn(async () => undefined), stop: vi.fn() });
 
-    expect(settled).toBe(false);
-    expect(failedStop).not.toHaveBeenCalled();
-    expect(healthyStop).not.toHaveBeenCalled();
-
-    signals.emit("SIGTERM");
-    await daemon;
-    expect(healthyStop).toHaveBeenCalledOnce();
+    await expect(runDaemonServiceEntry({ home, logger: noopLogger() })).resolves.toBe(0);
   });
 
   it("logs ownership release failures safely and returns a failed service exit", async () => {
@@ -262,7 +302,7 @@ describe("daemon service runtime", () => {
       expect.objectContaining({
         fields: expect.objectContaining({
           category: "ownership_release",
-          computerId: "00000000-0000-4000-8000-000000000001",
+          installationId: "00000000-0000-4000-8000-000000000001",
           instanceId: expect.any(String),
         }),
         message: "Daemon ownership release failed",
@@ -282,7 +322,7 @@ describe("daemon service runtime", () => {
     });
     clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not enrolled");
+    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not connected");
 
     expect(entries).toContainEqual(
       expect.objectContaining({ fields: expect.objectContaining({ category: "configuration" }) }),
@@ -315,7 +355,7 @@ describe("daemon service runtime", () => {
         logger: recordingLogger(entries),
         signals: signals as unknown as NodeJS.Process,
       }),
-    ).rejects.toThrow("not enrolled");
+    ).rejects.toThrow("not connected");
 
     expect(entriesAtRelease).toBeGreaterThan(0);
     expect(entries).toHaveLength(entriesAtRelease);
@@ -373,7 +413,7 @@ describe("daemon service runtime", () => {
       expect.objectContaining({
         fields: expect.objectContaining({
           category: "unexpected",
-          computerId: "00000000-0000-4000-8000-000000000001",
+          installationId: "00000000-0000-4000-8000-000000000001",
           instanceId: expect.any(String),
         }),
         message: "Daemon stopped because of an unexpected internal failure",
@@ -393,16 +433,13 @@ function computerIdentity() {
 
 function machineCredentials() {
   return {
-    version: 1 as const,
-    enrollments: [
-      {
-        workspaceComputerId: "00000000-0000-4000-8000-000000000002",
-        workspaceId: "00000000-0000-4000-8000-000000000003",
-        computerId: computerIdentity().computerId,
-        machineToken: `otmc_${"a".repeat(64)}`,
-        serverUrl: computerIdentity().serverUrl,
-      },
-    ],
+    version: 3 as const,
+    computer: {
+      computerId: "00000000-0000-4000-8000-000000000002",
+      installationId: computerIdentity().computerId,
+      machineToken: `otmc_${"a".repeat(64)}`,
+      serverUrl: computerIdentity().serverUrl,
+    },
   };
 }
 

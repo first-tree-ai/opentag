@@ -16,12 +16,21 @@ import { join, resolve } from "node:path";
 export const CLIENT_LOG_FILE_NAME = "client.log";
 export const CLIENT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 export const CLIENT_LOG_BACKUPS = 7;
+export const CLIENT_LOG_MIN_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface RotatingFileStreamOptions {
   fallbackWrite?: (chunk: string) => void;
   operations?: Partial<RotatingFileOperations>;
   maxBackups?: number;
   maxBytes?: number;
+  minRetentionMs?: number;
+  /**
+   * Hard ceiling on the bytes held by all backups. The retention floor decides *which* backups to
+   * keep; this decides how many may exist at all, so enabling a time floor can never let diagnostics
+   * fill the host disk. Defaults to `maxBytes * maxBackups`, i.e. the cap that applied before a
+   * retention floor existed.
+   */
+  maxTotalBytes?: number;
 }
 
 export interface RotatingFileOperations {
@@ -54,6 +63,8 @@ export class RotatingFileStream {
   readonly #fallbackWrite: (chunk: string) => void;
   readonly #maxBackups: number;
   readonly #maxBytes: number;
+  readonly #minRetentionMs: number;
+  readonly #maxTotalBytes: number;
   readonly #operations: RotatingFileOperations;
   #bytes = 0;
   #failed = false;
@@ -66,11 +77,19 @@ export class RotatingFileStream {
     this.#operations = { ...defaultOperations, ...options.operations };
     this.#maxBackups = options.maxBackups ?? CLIENT_LOG_BACKUPS;
     this.#maxBytes = options.maxBytes ?? CLIENT_LOG_MAX_BYTES;
+    this.#minRetentionMs = options.minRetentionMs ?? 0;
+    this.#maxTotalBytes = options.maxTotalBytes ?? this.#maxBytes * this.#maxBackups;
+    if (!Number.isSafeInteger(this.#maxTotalBytes) || this.#maxTotalBytes < 1) {
+      throw new Error("Client log total size ceiling must be a positive safe integer");
+    }
     if (!Number.isSafeInteger(this.#maxBackups) || this.#maxBackups < 1) {
       throw new Error("Client log backup count must be a positive safe integer");
     }
     if (!Number.isSafeInteger(this.#maxBytes) || this.#maxBytes < 1) {
       throw new Error("Client log size limit must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(this.#minRetentionMs) || this.#minRetentionMs < 0) {
+      throw new Error("Client log retention floor must be a non-negative safe integer");
     }
     this.#open();
   }
@@ -111,12 +130,88 @@ export class RotatingFileStream {
 
   #rotate(): void {
     this.close();
+    if (this.#minRetentionMs > 0) {
+      this.#rotateWithRetentionFloor();
+      this.#openLogFile();
+      return;
+    }
     this.#removeIfPresent(`${this.path}.${this.#maxBackups}`);
     for (let index = this.#maxBackups - 1; index >= 1; index -= 1) {
       this.#renameIfPresent(`${this.path}.${index}`, `${this.path}.${index + 1}`);
     }
     this.#renameIfPresent(this.path, `${this.path}.1`);
     this.#openLogFile();
+  }
+
+  #rotateWithRetentionFloor(): void {
+    const cutoff = Date.now() - this.#minRetentionMs;
+    this.#pruneExpiredBackups(cutoff);
+    let highest = this.#highestBackupIndex();
+    if (highest >= this.#maxBackups && this.#isBackupExpired(highest, cutoff)) {
+      this.#removeIfPresent(`${this.path}.${highest}`);
+      highest -= 1;
+    }
+    for (let index = highest; index >= 1; index -= 1) {
+      this.#renameIfPresent(`${this.path}.${index}`, `${this.path}.${index + 1}`);
+    }
+    this.#renameIfPresent(this.path, `${this.path}.1`);
+    this.#enforceStorageCeiling();
+  }
+
+  /**
+   * Drop the oldest backups until the retained bytes fit the ceiling, even when they are younger
+   * than the retention floor. The floor is a target, never a licence to grow without bound: a
+   * high-volume day would otherwise add a full-size backup on every rotation for the whole window.
+   */
+  #enforceStorageCeiling(): void {
+    let total = 0;
+    const highest = this.#highestBackupIndex();
+    for (let index = 1; index <= highest; index += 1) {
+      total += this.#backupSize(index);
+    }
+    for (let index = highest; index >= 1 && total > this.#maxTotalBytes; index -= 1) {
+      total -= this.#backupSize(index);
+      this.#removeIfPresent(`${this.path}.${index}`);
+    }
+  }
+
+  #backupSize(index: number): number {
+    try {
+      return this.#operations.lstat(`${this.path}.${index}`).size;
+    } catch {
+      return 0;
+    }
+  }
+
+  #pruneExpiredBackups(cutoff: number): void {
+    const highest = this.#highestBackupIndex();
+    for (let index = 1; index <= highest; index += 1) {
+      if (this.#isBackupExpired(index, cutoff)) this.#removeIfPresent(`${this.path}.${index}`);
+    }
+  }
+
+  #highestBackupIndex(): number {
+    let highest = 0;
+    for (let index = 1; index <= this.#maxBackups + 100_000; index += 1) {
+      try {
+        const status = this.#operations.lstat(`${this.path}.${index}`);
+        if (!status.isFile() || status.isSymbolicLink()) throw new Error("Client log backup must be a regular file");
+        highest = index;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+        throw error;
+      }
+    }
+    return highest;
+  }
+
+  #isBackupExpired(index: number, cutoff: number): boolean {
+    try {
+      return this.#operations.lstat(`${this.path}.${index}`).mtimeMs <= cutoff;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+      throw error;
+    }
   }
 
   #ensurePrivateDirectory(): void {

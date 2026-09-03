@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  type RuntimeImSteerRequest,
   type SessionReconcileRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -21,6 +23,205 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("SessionBindingStore", () => {
+  it("covers custody duplicate, steer receipt, runtime binding, and result guard paths", async () => {
+    expect(
+      () =>
+        new SessionBindingStore({
+          home: "/tmp/opentag",
+          providerArtifactIdentity: () => "a".repeat(64),
+          recordedInputLimit: 0,
+        }),
+    ).toThrow("recordedInputLimit must be a positive safe integer");
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 1);
+    const inputHash = computeDirectInputHash(request);
+    await fixture.store.recordAccepted(request, inputHash, "turn-1");
+    await expect(fixture.store.recordAccepted(request, inputHash, "turn-1")).resolves.toMatchObject({
+      status: "existing",
+      unresolvedTurn: { turnId: "turn-1" },
+    });
+    await expect(
+      fixture.store.recordAccepted({ ...request, requestId: randomUUID() }, sha256("wrong"), "turn-2"),
+    ).rejects.toThrow("Another unresolved turn owns the Session");
+    await expect(fixture.store.recordAccepted(request, "not-a-hash", "turn-1")).rejects.toThrow();
+    await expect(fixture.store.getAbsorbedReceipt(request)).resolves.toBeUndefined();
+    await expect(
+      fixture.store.getSteerReceipt(steerRequest("delivery-unknown", "turn-1"), sha256("missing")),
+    ).resolves.toBeUndefined();
+
+    const steer = steerRequest("delivery-2", "turn-1");
+    const steerHash = computeRuntimeImMessageSemanticHash(steer);
+    await expect(fixture.store.recordSteer(steer, steerHash)).resolves.toMatchObject({
+      kind: "steer",
+      deliveryId: "delivery-2",
+    });
+    await expect(fixture.store.recordSteer(steer, steerHash)).resolves.toMatchObject({ deliveryId: "delivery-2" });
+    await expect(fixture.store.recordSteer({ ...steer, requestId: randomUUID() }, sha256("different"))).rejects.toThrow(
+      "recorded with different input",
+    );
+    await expect(fixture.store.getSteerReceipt(steer, steerHash)).resolves.toMatchObject({
+      rootDeliveryId: "delivery-1",
+    });
+    await expect(fixture.store.getSteerReceipt(steer, sha256("different"))).rejects.toThrow(
+      "recorded with different input",
+    );
+    await expect(fixture.store.recordSteer(steerRequest("delivery-3", "other-turn"), steerHash)).rejects.toThrow(
+      "steer target does not match",
+    );
+    await expect(
+      fixture.store.saveRuntimeBinding("agent-1", "session-1", sha256("snapshot"), {
+        providerId: "codex",
+        schemaVersion: 1,
+        payload: { threadId: "thread-1" },
+      }),
+    ).rejects.toThrow("does not match the Session");
+    const hashes = computeRuntimeSnapshotHashes(fixture.runtime);
+    await expect(
+      fixture.store.saveRuntimeBinding("agent-1", "session-1", hashes.effectiveSnapshotHash, {
+        providerId: "codex",
+        schemaVersion: 1,
+        payload: { threadId: "thread-1" },
+      }),
+    ).resolves.toMatchObject({ runtimeBinding: { providerId: "codex" } });
+    await expect(fixture.store.updateUnresolved("agent-1", "session-1", "missing-turn", "running")).rejects.toThrow(
+      "does not match",
+    );
+    const report = turnReport(request, "turn-1");
+    const wrongReport = turnReport({ ...request, deliveryId: "delivery-other" }, "turn-1");
+    await expect(
+      fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", { report: wrongReport }),
+    ).rejects.toThrow("does not match the unresolved custody");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+    await expect(
+      fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+        report: { ...report, requestId: randomUUID() },
+        resultHash: report.resultHash,
+      }),
+    ).rejects.toThrow("cannot be replaced");
+    await expect(
+      fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+        report,
+        resultHash: sha256("other"),
+      }),
+    ).rejects.toThrow("does not match the update");
+    await expect(fixture.store.recordResult("agent-1", "session-1", "turn-1", sha256("other"))).rejects.toThrow(
+      "does not match",
+    );
+    await fixture.store.recordResult("agent-1", "session-1", "turn-1", report.resultHash);
+    const completed = await fixture.store.recordResult("agent-1", "session-1", "turn-1", report.resultHash);
+    expect(completed).not.toHaveProperty("unresolvedTurn");
+    await expect(fixture.store.recordAccepted(request, inputHash, "turn-1")).resolves.toMatchObject({
+      status: "recorded",
+    });
+    await expect(fixture.store.recordAccepted(request, sha256("different"), "turn-1")).rejects.toThrow(
+      "recorded with different input",
+    );
+    await expect(fixture.store.recordResult("agent-1", "session-1", "turn-1", sha256("different"))).rejects.toThrow(
+      "recorded result hash cannot be replaced",
+    );
+    await expect(fixture.store.recordResult("agent-1", "session-1", "unknown-turn", report.resultHash)).rejects.toThrow(
+      "does not match the Session binding",
+    );
+  });
+
+  it("rejects stale preparation and binding changes while preserving the durable snapshot", async () => {
+    const fixture = await bindingFixture();
+    const hashes = computeRuntimeSnapshotHashes(fixture.runtime);
+    await expect(
+      fixture.store.prepare({ ...fixture.reconcile, requestId: randomUUID(), placementGeneration: 0 }, hashes),
+    ).rejects.toThrow("placement generation is stale");
+    await expect(
+      fixture.store.prepare(
+        {
+          ...fixture.reconcile,
+          requestId: randomUUID(),
+          runtime: {
+            ...fixture.runtime,
+            revision: { ...fixture.runtime.revision, session: { sequence: 0, id: "old" } },
+          },
+        },
+        hashes,
+      ),
+    ).rejects.toThrow("runtime revision is stale");
+    await expect(
+      fixture.store.prepare(
+        {
+          ...fixture.reconcile,
+          requestId: randomUUID(),
+          runtime: {
+            ...fixture.runtime,
+            revision: { ...fixture.runtime.revision, session: { sequence: 1, id: "other" } },
+          },
+        },
+        hashes,
+      ),
+    ).rejects.toThrow("revision conflicts");
+
+    const unresolvedRequest = delivery(fixture.runtime, 70);
+    await fixture.store.recordAccepted(unresolvedRequest, computeDirectInputHash(unresolvedRequest), "turn-70");
+    await expect(
+      fixture.store.prepare({ ...fixture.reconcile, requestId: randomUUID(), placementGeneration: 2 }, hashes),
+    ).rejects.toThrow("unresolved turn fences binding changes");
+    const unresolvedResultHash = sha256("turn-70-result");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-70", "reporting", {
+      resultHash: unresolvedResultHash,
+    });
+    await fixture.store.recordResult("agent-1", "session-1", "turn-70", unresolvedResultHash);
+
+    const storedPath = snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash);
+    await writeFile(
+      storedPath,
+      JSON.stringify({ ...fixture.runtime, instructions: { ...fixture.runtime.instructions, agent: "changed" } }),
+      "utf8",
+    );
+    const cleanStore = new SessionBindingStore({
+      home: fixture.home,
+      providerArtifactIdentity: () => fixture.homeIdentity,
+    });
+    await expect(cleanStore.prepare(fixture.reconcile, hashes)).rejects.toThrow(
+      "stored runtime snapshot hash conflicts",
+    );
+  });
+
+  it("absorbs matching redelivery through a recorded steer and validates delivery identities", async () => {
+    const fixture = await bindingFixture();
+    const root = delivery(fixture.runtime, 1);
+    await fixture.store.recordAccepted(root, computeDirectInputHash(root), "turn-1");
+    const steer = steerRequest("delivery-steer", "turn-1");
+    const steerHash = computeRuntimeImMessageSemanticHash(steer);
+    await fixture.store.recordSteer(steer, steerHash);
+    const redelivery: DirectImMessageDeliveryRequest = {
+      ...root,
+      deliveryId: steer.deliveryId,
+      imMessageId: steer.imMessageId,
+      content: steer.content,
+    };
+    await expect(fixture.store.recordAccepted(redelivery, steerHash, "turn-1")).resolves.toMatchObject({
+      status: "absorbed",
+      recorded: { deliveryId: "delivery-steer" },
+    });
+    await expect(
+      fixture.store.recordAccepted(
+        { ...redelivery, content: { ...redelivery.content, text: "changed" } },
+        steerHash,
+        "turn-1",
+      ),
+    ).rejects.toThrow("recorded with different input");
+    await expect(fixture.store.getAbsorbedReceipt(redelivery)).resolves.toMatchObject({ deliveryId: "delivery-steer" });
+    await expect(
+      fixture.store.getAbsorbedReceipt({ ...redelivery, content: { ...redelivery.content, text: "changed" } }),
+    ).rejects.toThrow("recorded with different input");
+    await expect(
+      fixture.store.recordAccepted({ ...root, placementGeneration: 2 }, computeDirectInputHash(root), "turn-other"),
+    ).rejects.toThrow("delivery does not match");
+    await expect(fixture.store.getSteerReceipt({ ...steer, placementGeneration: 2 }, steerHash)).rejects.toThrow(
+      "steer delivery does not match",
+    );
+  });
+
   it("C-16/C-17 persists immutable identities without storing a Home path or credential", async () => {
     const fixture = await bindingFixture();
     const binding = await fixture.store.read("agent-1", "session-1");
@@ -41,7 +242,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => "b".repeat(64),
     });
     const mismatchedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: mismatchedStore });
-    const mismatched = new SessionReconciler({ computerId: fixture.computerId, preparation: mismatchedWorkspace });
+    const mismatched = new SessionReconciler({ installationId: fixture.computerId, preparation: mismatchedWorkspace });
     await expect(mismatched.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
       /identity|binding/i,
     );
@@ -51,7 +252,10 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => undefined,
     });
     const unavailableWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: unavailableStore });
-    const unavailable = new SessionReconciler({ computerId: fixture.computerId, preparation: unavailableWorkspace });
+    const unavailable = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: unavailableWorkspace,
+    });
     await expect(unavailable.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
       "artifact identity is unavailable",
     );
@@ -91,21 +295,36 @@ describe("SessionBindingStore", () => {
 
   it("C-18 retains only the most recent 64 recorded input tombstones", async () => {
     const fixture = await bindingFixture();
-    for (let index = 0; index < 65; index += 1) {
-      const request = delivery(fixture.runtime, index);
-      const inputHash = computeDirectInputHash(request);
-      const turnId = `turn-${index}`;
-      const resultHash = sha256(`result-${index}`);
-      await fixture.store.recordAccepted(request, inputHash, turnId);
-      await fixture.store.updateUnresolved("agent-1", "session-1", turnId, "reporting", { resultHash });
-      await fixture.store.recordResult("agent-1", "session-1", turnId, resultHash);
-    }
-    const binding = await fixture.store.read("agent-1", "session-1");
-    expect(binding?.recentRecordedInputs).toHaveLength(64);
-    expect(binding?.recentRecordedInputs[0]?.deliveryId).toBe("delivery-1");
-    expect(binding?.recentRecordedInputs.at(-1)?.deliveryId).toBe("delivery-64");
-    const raw = await readFile(sessionBindingPath(fixture.home, "agent-1", "session-1"), "utf8");
-    expect(raw).not.toContain("direct text 64");
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const binding = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    binding.recentRecordedInputs = Array.from({ length: 64 }, (_, index) => ({
+      kind: "turn",
+      deliveryId: `delivery-${index}`,
+      inputHash: sha256(`input-${index}`),
+      requestId: randomUUID(),
+      resultHash: sha256(`result-${index}`),
+      turnId: `turn-${index}`,
+    }));
+    binding.unresolvedTurn = {
+      requestId: randomUUID(),
+      deliveryId: "delivery-64",
+      inputHash: sha256("input-64"),
+      turnId: "turn-64",
+      phase: "reporting",
+      resultHash: sha256("result-64"),
+    };
+    await writeFile(path, `${JSON.stringify(binding)}\n`, "utf8");
+
+    const recorded = await fixture.store.recordResult("agent-1", "session-1", "turn-64", sha256("result-64"));
+    expect(recorded.recentRecordedInputs).toHaveLength(64);
+    expect(recorded.recentRecordedInputs[0]?.deliveryId).toBe("delivery-1");
+    expect(recorded.recentRecordedInputs.at(-1)?.deliveryId).toBe("delivery-64");
+    expect(recorded).not.toHaveProperty("unresolvedTurn");
+
+    const persisted = await fixture.store.read("agent-1", "session-1");
+    expect(persisted).toMatchObject({
+      recentRecordedInputs: expect.arrayContaining([expect.objectContaining({ deliveryId: "delivery-64" })]),
+    });
   });
 
   it("C-19 enforces monotonic unresolved phases and reopens disk-only custody as recovery", async () => {
@@ -126,7 +345,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => fixture.homeIdentity,
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
-    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    const reopened = new SessionReconciler({ installationId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
       status: "recovery_required",
       turn: { deliveryId: "delivery-1", turnId: "turn-1" },
@@ -144,7 +363,7 @@ describe("SessionBindingStore", () => {
       providerArtifactIdentity: () => fixture.homeIdentity,
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
-    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    const reopened = new SessionReconciler({ installationId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
       status: "ready",
     });
@@ -237,7 +456,7 @@ describe("SessionBindingStore", () => {
       payload: { threadId: "legacy-thread" },
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: fixture.store });
-    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    const reopened = new SessionReconciler({ installationId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
       status: "ready",
     });
@@ -405,12 +624,12 @@ async function unpreparedBindingFixture() {
   const homeIdentity = "a".repeat(64);
   const store = new SessionBindingStore({ home, providerArtifactIdentity: () => homeIdentity });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-  const reconciler = new SessionReconciler({ computerId, preparation: workspace });
+  const reconciler = new SessionReconciler({ installationId: computerId, preparation: workspace });
   const runtime = snapshot();
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
@@ -457,6 +676,33 @@ function delivery(runtime: EffectiveRuntimeSnapshot, index: number): DirectImMes
       },
     },
     runtime,
+  };
+}
+
+function steerRequest(deliveryId: string, expectedTurnId: string): RuntimeImSteerRequest {
+  return {
+    type: "im:steer",
+    requestId: randomUUID(),
+    deliveryId,
+    imMessageId: `message-${deliveryId}`,
+    sessionId: "session-1",
+    agentId: "agent-1",
+    placementGeneration: 1,
+    rootDeliveryId: "delivery-1",
+    expectedTurnId,
+    attention: "direct",
+    content: {
+      kind: "text",
+      text: "steer text",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "workspace-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
   };
 }
 

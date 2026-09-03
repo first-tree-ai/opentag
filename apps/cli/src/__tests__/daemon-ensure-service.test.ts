@@ -1,3 +1,4 @@
+import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { ENSURE_SERVICE_DEFERRED_EXIT_CODE, executeDaemonEnsureService } from "../commands/daemon/ensure-service.js";
 
@@ -48,6 +49,55 @@ describe("daemon ensure-service command", () => {
         writeError,
       }),
     ).resolves.toBe(1);
-    expect(writeError).toHaveBeenCalledWith("restart failed");
+    expect(writeError).toHaveBeenCalledWith(expect.stringContaining("INTERNAL_ERROR: restart failed"));
+  });
+
+  it("renders deferred, ready, and failure results as JSON", async () => {
+    const output: string[] = [];
+    const error: string[] = [];
+    await expect(
+      executeDaemonEnsureService({
+        json: true,
+        reconcileService: async () => ({
+          reason: "unsupported-platform",
+          service: { ...service, state: "not-installed" },
+          status: "deferred",
+        }),
+        writeOutput: (message) => output.push(message),
+      }),
+    ).resolves.toBe(ENSURE_SERVICE_DEFERRED_EXIT_CODE);
+    await expect(
+      executeDaemonEnsureService({
+        json: true,
+        reconcileService: async () => ({ action: "installed-or-repaired", service, status: "ready" }),
+        writeOutput: (message) => output.push(message),
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      executeDaemonEnsureService({
+        json: true,
+        reconcileService: async () => {
+          throw new Error("connection refused");
+        },
+        writeError: (message) => error.push(message),
+      }),
+    ).resolves.toBe(3);
+    expect(output.join("\n")).toContain('"ok":true');
+    expect(output.join("\n")).toContain("not supported");
+    expect(error.join("\n")).toContain('"category":"unavailable"');
+  });
+
+  it("dispatches the hidden Commander wrapper", async () => {
+    const program = new Command().name("opentag");
+    const { registerDaemonEnsureServiceCommand } = await import("../commands/daemon/ensure-service.js");
+    registerDaemonEnsureServiceCommand(program.command("daemon"));
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      await program.parseAsync(["node", "opentag", "daemon", "ensure-service", "--json"]);
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.exitCode = previousExitCode;
+    }
   });
 });

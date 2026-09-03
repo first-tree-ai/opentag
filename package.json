@@ -5,39 +5,44 @@
   "type": "module",
   "packageManager": "pnpm@10.12.1",
   "engines": {
-    "node": "^22.13.0 || ^24.0.0 || ^26.0.0"
+    "node": "^22.22.2 || ^24.15.0 || ^26.0.0"
   },
   "scripts": {
-    "build": "turbo run build",
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "worktree:setup": "node scripts/worktree-bootstrap.mjs --force",
+    "toolchain:check": "node scripts/toolchain-check.mjs",
+    "build": "turbo run build && pnpm --silent bundle:report",
+    "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/third-party-notices.mjs --check",
+    "check": "biome check . && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",
     "test": "node --test --test-concurrency=1 scripts/__tests__/*.test.mjs && turbo run test --concurrency=2",
-    "test:coverage": "pnpm build && vitest run --config vitest.coverage.config.ts --maxWorkers=1",
+    "test:e2e": "pnpm build && pnpm --filter @opentag/e2e e2e:journey",
+    "test:e2e:smoke": "pnpm build && pnpm --filter @opentag/e2e test:e2e:smoke",
+    "test:e2e:doctor-docker": "node scripts/e2e/doctor-docker.mjs",
+    "test:coverage": "pnpm build && node scripts/unit-coverage.mjs",
     "check:node-compat": "pnpm build && pnpm test && node scripts/node-compat-smoke.mjs",
+    "check:schema-drift": "node scripts/check-schema-drift.mjs",
     "notices:write": "node scripts/third-party-notices.mjs --write"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.0",
-    "@types/node": "^22.15.0",
-    "@vitest/coverage-v8": "3.2.7",
-    "tsdown": "^0.21.4",
+    "@biomejs/biome": "^2.5.11",
+    "@types/node": "^26.4.0",
+    "@vitest/coverage-v8": "4.1.11",
+    "lefthook": "^2.1.12",
+    "tsdown": "^0.22.14",
     "tsx": "^4.21.0",
-    "turbo": "^2.5.0",
-    "typescript": "^5.8.0",
-    "vitest": "^3.2.0"
+    "turbo": "^2.10.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {
-      "@babel/helper-string-parser": "8.0.0-rc.2",
-      "@babel/helper-validator-identifier": "8.0.0-rc.2",
-      "@babel/parser": "8.0.0-rc.2",
-      "@babel/types": "8.0.0-rc.2",
       "ast-kit": "3.0.0-beta.1",
       "rollup": "4.59.0",
-      "tsdown": "0.21.4"
+      "tsdown": "0.22.14"
     }
   }
 }

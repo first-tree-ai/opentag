@@ -8,13 +8,12 @@
 
 An AI worker in your Slack and Lark. Tag it in a thread and it does the work, running the coding
 agent and model plan you already pay for, with its memory in plain files on your own machine. Free
-and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on your machine. Cloud
-coming soon.
+and Apache 2.0: own your tag, own your memory, bring your own plan. It runs on your machine.
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/first-tree-ai/opentag?style=flat)](https://github.com/first-tree-ai/opentag/stargazers)
-[![Node.js](https://img.shields.io/badge/node-22.13%20%7C%2024%20%7C%2026-5FA04E?style=flat&logo=node.js&logoColor=white)](#contributing)
+[![Node.js](https://img.shields.io/badge/node-22.22%20%7C%2024%20%7C%2026-5FA04E?style=flat&logo=node.js&logoColor=white)](#contributing)
 
 [Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quickstart](#quickstart) · [Docs](#documentation) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
@@ -23,7 +22,7 @@ coming soon.
 </div>
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
+  <img src="docs/assets/opentag-walkthrough.svg" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
 </p>
 
 ---
@@ -40,28 +39,27 @@ OpenTag puts it in the room: one bot the whole channel shares, running on a mach
 
 ---
 
-## Org memory you can audit.
+## Context you can open.
 
-*OpenTag builds and maintains your org's context for you, in a repo you own.*
+*It lives in files on your machine, not in a store you have to ask for.*
 
-- **A repo on your own GitHub →** OpenTag creates the context repo on the account you pick and keeps it current as work happens in your channels.
-- **Git native →** Branches, diffs, history, review. Your context is versioned like everything else you own.
-- **Written in Markdown →** No proprietary store and no export button. Open it in any editor, hand it to any agent, use the tree however you want.
-- **For agents, by agents →** The agents doing the work write the context down, so the next one starts where the last one stopped.
+- **From every channel it is in →** [Thread Sessions](./docs/thread-sessions.md) carry bounded root and thread history, so the agent starts from what was actually said.
+- **In plain files →** Work areas and runtime state live under `${OPENTAG_HOME}`, private by default. Nothing is uploaded to be remembered for you.
+- **[Agents that talk to each other](./docs/internal-session-collaboration.md) →** Durable internal Sessions with explicit retry.
 
-## It already has every connector you do, no setup needed.
+## It works with the tools already on that machine.
 
-*Whatever it can already reach, the room can reach.*
+*No OpenTag connector to configure, because there is no OpenTag connector in the way.*
 
-- **Your whole toolbox →** Git hosts, issue trackers, calendars, cloud CLIs, and the internal scripts nobody would ever build a connector for. Pull up the issue, check the calendar, open the pull request.
-- **Your credentials, your machine →** `gh`, your cloud CLIs, your checkouts. Nothing to install and authorize first, and no token handed to a third party.
+- **Whatever its runtime can invoke →** A tool that is installed, signed in, and visible to the provider runtime on that Computer can be used from the thread, subject to that tool's own permissions. OpenTag does not discover or expose tools for it.
+- **No credential custody →** OpenTag never asks for a provider API key. Those CLIs authenticate to their own providers exactly as they do when you run them yourself.
 
 ## Own the whole thing.
 
 *Own your tag, own your context, bring your own plan.*
 
 - **No model lock-in →** [Codex and Claude Code](#runtimes) run as the CLIs already signed in on your machine. OpenTag ships no model and never asks for a provider key.
-- **Own your org's context →** It accumulates on hardware you control, not in a vendor account you can be locked out of.
+- **Context stays local →** It accumulates on hardware you control, not in a vendor account you can be locked out of.
 - **Own the tag →** Apache 2.0, no hosted-service carve-out and no commercial-use rider. [LICENSE](./LICENSE)
 - **Run it anywhere →** `ghcr.io/first-tree-ai/opentag`, published per commit, pointed at your own PostgreSQL. [Deployment guide](./docs/deploying.md)
 
@@ -75,10 +73,12 @@ The one prerequisite: the machine that will run agents needs an [agent CLI](#run
 ```bash
 git clone https://github.com/first-tree-ai/opentag.git && cd opentag
 pnpm install && ./scripts/dev-install.sh
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
 ```
 
-Needs Node.js 22.13+, Corepack, and pnpm 10.12.1. `dev-install.sh` puts `opentag-dev` on your
-`PATH`. Published npm and one-line installers are on the way.
+Needs Node.js 22.22.2 or newer on the 22.x line, 24.15.0+, or 26.x, plus Corepack and pnpm 10.12.1.
+`dev-install.sh` links `opentag-dev` into `~/.local/bin`, so keep that directory first on `PATH` in
+your shell profile as well. See [Project status](#project-status) for published install channels.
 
 <details>
 <summary><b>Running the server</b></summary>
@@ -92,11 +92,15 @@ export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
 export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-pnpm build && pnpm --filter @opentag/server start
-pnpm --filter @opentag/server bootstrap:admin   # prints the first account login code
+export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+
+pnpm build
+pnpm --filter @opentag/server bootstrap:admin   # migrates, creates the first Account, prints its login code
+pnpm --filter @opentag/server start             # runs in the foreground; leave it running
 ```
 
-Migrations run before the server listens. The [deployment guide](./docs/deploying.md) covers running
+Bootstrap migrates an empty database itself, so run it before the server takes over the terminal. The [deployment guide](./docs/deploying.md) covers running
 it on your own infrastructure instead.
 
 </details>
@@ -116,7 +120,7 @@ opentag-dev computer connect --server <your-server> -- <computer-connect-code>
 opentag-dev computer list     # the Computer should read as online
 ```
 
-It stores an enrollment-scoped credential and installs a per-user daemon on Linux and macOS.
+It stores a connection-scoped machine credential and installs a per-user daemon on Linux and macOS.
 
 **3. Create an agent.**
 
@@ -133,7 +137,7 @@ Full walkthrough: [DEVELOPMENT.md](./DEVELOPMENT.md) · [Chat platforms](#chat-p
 ## Runtimes
 
 OpenTag does not ship a model. It drives the agent CLI already installed and authenticated on the
-enrolled Computer, so switching providers is a field on the Agent, not a migration.
+connected Computer, so switching providers is a field on the Agent, not a migration.
 
 | Provider | CLI | Runtime configuration |
 | --- | --- | --- |
@@ -180,7 +184,7 @@ materialized on demand, and replies sent by the agent through the provider's own
 | Server | Fastify, Better Auth, PostgreSQL migrations, Computer WebSocket endpoint |
 | Web | React, served same-origin by the Server |
 | CLI | Commander; `opentag-dev` from a checkout, `opentag` once install channels ship |
-| Client / daemon | TypeScript runtime that enrolls a Computer and executes Agent Turns |
+| Client / daemon | TypeScript runtime that connects a Computer and executes Agent Turns |
 | Shared | Zod schemas and HTTP path contracts used by every workspace |
 
 Wire-level details: [Runtime protocol](./docs/runtime-protocol.md).
@@ -199,9 +203,25 @@ Wire-level details: [Runtime protocol](./docs/runtime-protocol.md).
 | Run it on my own infrastructure | [Deployment guide](./docs/deploying.md) · [Observability](./docs/observability.md) |
 | Ship or install a build | [Release guide](./docs/releasing.md) · [Portable release guide](./docs/portable-release.md) |
 | Contribute | [Contributing guide](./CONTRIBUTING.md) · [Code of Conduct](./CODE_OF_CONDUCT.md) |
-| Report a vulnerability | [Security policy](./SECURITY.md) |
+| Follow work an agent is doing | [Tasks](./docs/tasks.md) |
+| Report a vulnerability | [Security policy](./SECURITY.md) · [Trademarks](./TRADEMARKS.md) |
 
 Chinese translations live in [`docs/zh-CN/`](./docs/zh-CN).
+
+---
+
+## Project status
+
+OpenTag is pre-alpha. The control plane, the local Computer connection and daemon, Agent Runtime,
+durable IM delivery, Feishu and Slack inbound routing, Channel and Thread Sessions, and direct
+provider CLI handoff are all implemented. Public APIs and package boundaries may change before the
+first stable release.
+
+Not there yet: the npm and portable install channels described in [releasing.md](./docs/releasing.md)
+and [portable-release.md](./docs/portable-release.md) are built but not publicly serving, so build
+from a checkout. Windows daemon services are out of scope for v0.1. The Skills and Integrations
+areas of the Web are interface previews backed by demo data. There is no hosted OpenTag; you run the
+server.
 
 ---
 
@@ -227,3 +247,8 @@ through the [Security policy](./SECURITY.md) rather than a public issue.
 ## License
 
 OpenTag is licensed under the [Apache License 2.0](./LICENSE).
+
+Marks belonging to other companies appear here and in the interface to identify their products. See
+[TRADEMARKS.md](./TRADEMARKS.md) for what each one is and the conditions we keep to. Claude and
+Claude Code are trademarks of Anthropic PBC; OpenTag is an independent project and is not affiliated
+with, sponsored by, or endorsed by Anthropic.

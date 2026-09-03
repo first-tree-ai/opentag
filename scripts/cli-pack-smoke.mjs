@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -172,9 +172,48 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
     if (!computerConnectHelp.stdout.includes("--no-start")) {
       throw new Error("CLI Computer connect help is missing --no-start");
     }
-    const doctor = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], { expectedStatus: 1 });
-    if (!doctor.stderr.includes("Network error:")) {
-      throw new Error("CLI doctor smoke did not report the expected network failure");
+    const doctorHome = join(temporaryRoot, "doctor-home");
+    await mkdir(doctorHome, { mode: 0o700 });
+    const doctor = run(binaryPath, ["doctor"], {
+      env: {
+        OPENTAG_HOME: doctorHome,
+        OPENTAG_SERVER_URL: "http://127.0.0.1:1",
+      },
+      expectedStatus: 1,
+    });
+    for (const expectedOutput of [
+      "OpenTag Doctor",
+      "OpenTag Home:",
+      "(environment)",
+      "Local configuration",
+      "not checked because there is no connected Server",
+      "Not evaluated",
+    ]) {
+      if (!doctor.stdout.includes(expectedOutput)) {
+        throw new Error(`CLI doctor smoke is missing expected output: ${expectedOutput}`);
+      }
+    }
+    if (doctor.stdout.includes("127.0.0.1:1")) {
+      throw new Error("CLI doctor smoke used OPENTAG_SERVER_URL instead of the connected Server");
+    }
+    if (doctor.stderr !== "") {
+      throw new Error(`CLI doctor diagnostics must be written to stdout, got stderr:\n${doctor.stderr}`);
+    }
+    if ((await readdir(doctorHome)).length !== 0) {
+      throw new Error("CLI doctor smoke mutated its OpenTag Home");
+    }
+
+    // Unknown options are Commander usage errors: the common CLI validation contract
+    // exits with EXIT_CODES.usage (2), not a command failure (1).
+    const removedDoctorOption = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], {
+      env: { OPENTAG_HOME: doctorHome },
+      expectedStatus: 2,
+    });
+    if (
+      !removedDoctorOption.stderr.includes("unknown option") ||
+      !removedDoctorOption.stderr.includes("--server-url")
+    ) {
+      throw new Error("CLI doctor smoke accepted the removed --server-url option");
     }
 
     const installedManifest = JSON.parse(

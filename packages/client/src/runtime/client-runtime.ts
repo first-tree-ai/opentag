@@ -1,4 +1,7 @@
 import {
+  type AgentRuntimeTestRequestFrame,
+  type AgentRuntimeTestResultFrame,
+  AgentRuntimeTestResultFrameSchema,
   type DirectImMessageDeliveryRequest,
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
@@ -6,6 +9,7 @@ import {
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   RuntimeImSteerResultSchema,
+  type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
@@ -18,6 +22,20 @@ import {
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import { SessionReconciler } from "./session-reconciler.js";
+
+type ResidualBusinessFrame = Extract<
+  ServerRuntimeBusinessFrame,
+  {
+    type:
+      | "provider-cli:prewarm"
+      | "provider-cli:requirement"
+      | "provider-cli:validation:grant"
+      | "provider-cli:cancel"
+      | "agent-runtime:test"
+      | "agent-runtime:test:cancel"
+      | "turn:report:result";
+  }
+>;
 
 export interface DeliveryDecision {
   result: ImMessageDeliveryResult;
@@ -32,6 +50,12 @@ export interface ClientRuntimeOptions {
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequest,
   ): Promise<SessionMessageDeliveryResult> | SessionMessageDeliveryResult;
+  availabilityTester?: {
+    run(
+      request: AgentRuntimeTestRequestFrame,
+      signal: AbortSignal,
+    ): Promise<AgentRuntimeTestResultFrame> | AgentRuntimeTestResultFrame;
+  };
   onReconcileResultSendFailed?(
     request: SessionReconcileRequest,
     result: SessionReconcileResult,
@@ -51,13 +75,14 @@ export class ClientRuntime {
   readonly #options: ClientRuntimeOptions;
   readonly #logger: ClientLogger;
   readonly #abort = new AbortController();
+  readonly #tests = new Map<string, AbortController>();
   #unsubscribe?: () => void;
 
   constructor(connection: RuntimeConnection, options: ClientRuntimeOptions = {}) {
     this.#connection = connection;
     this.#options = options;
     this.#logger = options.logger ?? createLogger("client-runtime");
-    this.reconciler = options.reconciler ?? new SessionReconciler({ computerId: connection.computerId });
+    this.reconciler = options.reconciler ?? new SessionReconciler({ installationId: connection.installationId });
   }
 
   async run(): Promise<void> {
@@ -159,7 +184,49 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "im:credential:result") return;
-    await this.#options.handleTurnReportResult?.(frame);
+    await this.#handleResidualFrame(frame);
+  }
+
+  async #handleResidualFrame(frame: ResidualBusinessFrame): Promise<void> {
+    if (frame.type.startsWith("provider-cli:")) return;
+    if (frame.type === "agent-runtime:test") {
+      await this.#runAgentRuntimeTest(frame);
+      return;
+    }
+    if (frame.type === "agent-runtime:test:cancel") {
+      this.#tests.get(frame.requestId)?.abort();
+      return;
+    }
+    if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
+  }
+
+  async #runAgentRuntimeTest(frame: AgentRuntimeTestRequestFrame): Promise<void> {
+    const controller = new AbortController();
+    this.#tests.set(frame.requestId, controller);
+    const onStop = () => controller.abort();
+    this.#abort.signal.addEventListener("abort", onStop, { once: true });
+    let result: AgentRuntimeTestResultFrame;
+    try {
+      result = AgentRuntimeTestResultFrameSchema.parse(
+        (await this.#options.availabilityTester?.run(frame, controller.signal)) ?? {
+          type: "agent-runtime:test:result",
+          requestId: frame.requestId,
+          status: "failed",
+          code: "capability_missing",
+        },
+      );
+    } catch {
+      result = {
+        type: "agent-runtime:test:result",
+        requestId: frame.requestId,
+        status: "failed",
+        code: "provider_failed",
+      };
+    } finally {
+      this.#abort.signal.removeEventListener("abort", onStop);
+      this.#tests.delete(frame.requestId);
+    }
+    await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
   }
 }
 

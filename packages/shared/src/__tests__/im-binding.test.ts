@@ -1,21 +1,30 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  ConfigureSlackAppRequestSchema,
+  AGENT_SETUP_RETURN_SURFACES,
+  AgentSetupExpectedMessagingStateSchema,
+  AgentSetupReturnSurfaceSchema,
+} from "../agent-setup.js";
+import {
+  CreateFeishuSetupAttemptRequestSchema,
   FEISHU_REQUIRED_TENANT_SCOPES,
   FeishuSetupAttemptSchema,
   hasRequiredFeishuTenantScopes,
   hasRequiredSlackBotScopes,
   ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
+  ImBindingMessagingExpectationSchema,
   ImBindingSummarySchema,
+  ImBindingUnbindRequiredDetailSchema,
+  SLACK_OAUTH_RETURN_SURFACES,
   SLACK_REQUIRED_BOT_SCOPES,
   SLACK_SUBSCRIBED_BOT_EVENTS,
-  SlackAppConfigurationSchema,
   SlackBindingActivationSchema,
   SlackConfigurationResultSchema,
+  SlackOAuthReturnSurfaceSchema,
   StartSlackOAuthRequestSchema,
   StartSlackOAuthResponseSchema,
+  UnbindAgentMessagingRequestSchema,
 } from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
 
@@ -146,30 +155,38 @@ describe("IM binding contracts", () => {
     expect(() => ImBindingSummarySchema.parse({ ...base, lastConfirmedAt: base.lastValidatedAt })).toThrow();
   });
 
-  it("keeps Slack configuration stateless and secrets out of the response", () => {
-    const configuration = {
-      agentId: crypto.randomUUID(),
-      manifest: { display_information: { name: "Reviewer" } },
-      manifestUrl: "https://api.slack.com/apps?new_app=1",
-      eventsUrl: "https://opentag.example/api/v1/agents/agent/im-binding/slack/events",
-      requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
-      subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
-      currentBinding: null,
-      distributedOAuthAvailable: false,
-    };
-    expect(SlackAppConfigurationSchema.parse(configuration)).toEqual(configuration);
-    expect(() => SlackAppConfigurationSchema.parse({ ...configuration, signingSecret: "secret" })).toThrow();
-    const request = {
-      intent: "create" as const,
-      expectedBinding: null,
-      appId: "A1",
-      botAccessToken: "xoxb-secret",
-      signingSecret: "signing-secret",
-    };
-    expect(ConfigureSlackAppRequestSchema.parse(request)).toEqual(request);
-    expect(() => ConfigureSlackAppRequestSchema.parse({ ...request, intent: "setup" })).toThrow();
+  it("keeps Slack OAuth start and activation results free of secrets and replace intent", () => {
     expect(StartSlackOAuthRequestSchema.parse({ intent: "create" })).toEqual({ intent: "create" });
+    expect(StartSlackOAuthRequestSchema.parse({ intent: "reauthorize" })).toEqual({ intent: "reauthorize" });
+    expect(() => StartSlackOAuthRequestSchema.parse({ intent: "replace" })).toThrow();
     expect(() => StartSlackOAuthRequestSchema.parse({ intent: "create", state: "secret" })).toThrow();
+    expect(StartSlackOAuthRequestSchema.parse({ intent: "create", returnSurface: "agent-setup" })).toEqual({
+      intent: "create",
+      returnSurface: "agent-setup",
+    });
+    expect(
+      StartSlackOAuthRequestSchema.parse({ intent: "reauthorize", returnSurface: "agent-messaging-settings" }),
+    ).toEqual({ intent: "reauthorize", returnSurface: "agent-messaging-settings" });
+    const expectedMessaging = {
+      kind: "bound" as const,
+      provider: "slack" as const,
+      bindingId: crypto.randomUUID(),
+      credentialGeneration: 4,
+    };
+    expect(StartSlackOAuthRequestSchema.parse({ intent: "reauthorize", expectedMessaging })).toEqual({
+      intent: "reauthorize",
+      expectedMessaging,
+    });
+    expect(() => StartSlackOAuthRequestSchema.parse({ intent: "create", expectedMessaging })).toThrow(
+      "Slack create requires the Agent to be unbound",
+    );
+    // No arbitrary return URL: the return surface is a fixed enum, never caller-controlled navigation.
+    expect(() =>
+      StartSlackOAuthRequestSchema.parse({ intent: "create", returnSurface: "https://evil.example.com/callback" }),
+    ).toThrow();
+    expect(() =>
+      StartSlackOAuthRequestSchema.parse({ intent: "create", returnUrl: "https://evil.example.com" }),
+    ).toThrow();
     expect(() =>
       StartSlackOAuthResponseSchema.parse({
         authorizationUrl: "https://slack.com/oauth/v2/authorize",
@@ -177,12 +194,23 @@ describe("IM binding contracts", () => {
         sessionBinding: "secret",
       }),
     ).toThrow();
-    const { intent: _intent, ...missingIntent } = request;
-    expect(() => ConfigureSlackAppRequestSchema.parse(missingIntent)).toThrow();
+    expect(() =>
+      SlackBindingActivationSchema.parse({
+        intent: "replace",
+        agentId: crypto.randomUUID(),
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: ["chat:write"],
+        botAccessToken: "xoxb-secret",
+        signingSecret: "signing-secret",
+        installedAt: "2026-08-19T00:00:00.000Z",
+      }),
+    ).toThrow();
     expect(
       SlackConfigurationResultSchema.parse({
         imBindingId: crypto.randomUUID(),
-        agentId: configuration.agentId,
+        agentId: crypto.randomUUID(),
         appId: "A1",
         teamId: "T1",
         botUserId: "U1",
@@ -191,6 +219,19 @@ describe("IM binding contracts", () => {
         identityClosure: { status: "pending", verifiedAt: null },
       }).identityClosure,
     ).toEqual({ status: "pending", verifiedAt: null });
+    expect(() =>
+      SlackConfigurationResultSchema.parse({
+        imBindingId: crypto.randomUUID(),
+        agentId: crypto.randomUUID(),
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        credentialGeneration: 1,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+        signingSecret: "secret",
+      }),
+    ).toThrow();
   });
 
   it("defines a strict handoff projection without changing the strict summary contract", () => {
@@ -202,11 +243,29 @@ describe("IM binding contracts", () => {
       ImBindingHandoffStatusSchema.parse({ bindingState: "reauthorization_required", handoffReady: false }),
     ).toEqual({ bindingState: "reauthorization_required", handoffReady: false });
     expect(() => ImBindingHandoffStatusSchema.parse({ bindingState: "error", handoffReady: true })).toThrow();
+    expect(
+      ImBindingHandoffStatusSchema.parse({
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: { phase: "preparing_cli" },
+      }),
+    ).toEqual({
+      bindingState: "active",
+      handoffReady: false,
+      providerCli: { phase: "preparing_cli" },
+    });
     expect(() =>
       ImBindingHandoffStatusSchema.parse({
         bindingState: "active",
         handoffReady: false,
         credentialGeneration: 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      ImBindingHandoffStatusSchema.parse({
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: { phase: "needs_attention", path: "/usr/bin/slack" },
       }),
     ).toThrow();
     expect(() =>
@@ -226,6 +285,90 @@ describe("IM binding contracts", () => {
     ).toThrow();
   });
 
+  it("fences Feishu setup commands with an optional exact messaging expectation", () => {
+    expect(CreateFeishuSetupAttemptRequestSchema.parse({})).toEqual({ intent: "create" });
+    expect(
+      CreateFeishuSetupAttemptRequestSchema.parse({ intent: "create", expectedMessaging: { kind: "unbound" } }),
+    ).toEqual({ intent: "create", expectedMessaging: { kind: "unbound" } });
+    const bindingId = crypto.randomUUID();
+    const reauthorize = {
+      intent: "reauthorize" as const,
+      expectedMessaging: { kind: "bound" as const, provider: "feishu" as const, bindingId, credentialGeneration: 2 },
+    };
+    expect(CreateFeishuSetupAttemptRequestSchema.parse(reauthorize)).toEqual(reauthorize);
+    expect(
+      CreateFeishuSetupAttemptRequestSchema.parse({
+        intent: "replace",
+        expectedMessaging: { kind: "bound", provider: "feishu", bindingId, credentialGeneration: 1 },
+      }),
+    ).toMatchObject({ intent: "replace" });
+    expect(() =>
+      CreateFeishuSetupAttemptRequestSchema.parse({
+        intent: "create",
+        expectedMessaging: { kind: "bound", provider: "feishu", bindingId, credentialGeneration: 1 },
+      }),
+    ).toThrow("Feishu create requires the Agent to be unbound");
+    expect(() =>
+      CreateFeishuSetupAttemptRequestSchema.parse({ intent: "create", expectedMessaging: { kind: "gone" } }),
+    ).toThrow();
+    expect(() =>
+      CreateFeishuSetupAttemptRequestSchema.parse({
+        intent: "reauthorize",
+        expectedMessaging: { kind: "bound", provider: "feishu", bindingId, credentialGeneration: 0 },
+      }),
+    ).toThrow();
+  });
+
+  it("keeps the command messaging expectation in parity with the Agent setup contract", () => {
+    const documents: unknown[] = [
+      { kind: "unbound" },
+      { kind: "bound", provider: "feishu", bindingId: crypto.randomUUID(), credentialGeneration: 1 },
+      { kind: "bound", provider: "slack", bindingId: crypto.randomUUID(), credentialGeneration: 7 },
+      { kind: "unbound", bindingId: crypto.randomUUID() },
+      { kind: "bound", provider: "feishu", bindingId: "not-a-uuid", credentialGeneration: 1 },
+      { kind: "bound", provider: "feishu", bindingId: crypto.randomUUID(), credentialGeneration: 0 },
+      { kind: "bound", provider: "teams", bindingId: crypto.randomUUID(), credentialGeneration: 1 },
+      { kind: "detached" },
+    ];
+    for (const document of documents) {
+      const command = ImBindingMessagingExpectationSchema.safeParse(document);
+      const setup = AgentSetupExpectedMessagingStateSchema.safeParse(document);
+      expect(command.success, JSON.stringify(document)).toBe(setup.success);
+      if (command.success && setup.success) expect(command.data).toEqual(setup.data);
+    }
+  });
+
+  it("keeps the Slack OAuth return surfaces in parity with the Agent setup contract", () => {
+    expect(SLACK_OAUTH_RETURN_SURFACES).toEqual(AGENT_SETUP_RETURN_SURFACES);
+    for (const surface of AGENT_SETUP_RETURN_SURFACES) {
+      expect(SlackOAuthReturnSurfaceSchema.parse(surface)).toBe(AgentSetupReturnSurfaceSchema.parse(surface));
+    }
+    expect(() => SlackOAuthReturnSurfaceSchema.parse("slack-app")).toThrow();
+  });
+
+  it("fences an unbind command to an exact Provider and binding identity", () => {
+    const bindingId = crypto.randomUUID();
+    expect(UnbindAgentMessagingRequestSchema.parse({ provider: "slack", bindingId })).toEqual({
+      provider: "slack",
+      bindingId,
+    });
+    expect(() => UnbindAgentMessagingRequestSchema.parse({ provider: "slack" })).toThrow();
+    expect(() =>
+      UnbindAgentMessagingRequestSchema.parse({ provider: "slack", bindingId, credentialGeneration: 3 }),
+    ).toThrow();
+  });
+
+  it("requires a cross-Provider identity for an unbind-required detail", () => {
+    const detail = {
+      currentProvider: "feishu" as const,
+      currentBindingId: crypto.randomUUID(),
+      requestedProvider: "slack" as const,
+    };
+    expect(ImBindingUnbindRequiredDetailSchema.parse(detail)).toEqual(detail);
+    expect(() => ImBindingUnbindRequiredDetailSchema.parse({ ...detail, requestedProvider: "feishu" })).toThrow();
+    expect(() => ImBindingUnbindRequiredDetailSchema.parse({ ...detail, currentBindingId: "not-a-uuid" })).toThrow();
+  });
+
   it("reports exact credential generation zero and capability gaps in diagnostics", () => {
     const diagnostics = {
       imBindingId: crypto.randomUUID(),
@@ -233,6 +376,7 @@ describe("IM binding contracts", () => {
       ready: false,
       agentRuntimeReadiness: "ready" as const,
       providerCliReadiness: "ready" as const,
+      credentialExecutionReadiness: "unconfirmed" as const,
       credentialGeneration: 0,
       credentialStatus: "invalid" as const,
       requiredCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],

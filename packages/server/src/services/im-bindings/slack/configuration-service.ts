@@ -1,20 +1,30 @@
 import {
-  agentSlackEventsPath,
-  type ConfigureSlackAppRequest,
   type ErrorCategory,
   SLACK_REQUIRED_BOT_SCOPES,
-  SLACK_SUBSCRIBED_BOT_EVENTS,
-  type SlackAppConfiguration,
   type SlackBindingActivation,
+  type SlackConfigurationIntent,
   type SlackConfigurationResult,
 } from "@opentag/shared";
 import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
-import type { ImBindingService } from "../im-binding-service.js";
+import { type ImBindingService, ImBindingUnbindRequiredError } from "../im-binding-service.js";
 import type { SlackApiClient, SlackInstallationInspection } from "./adapter.js";
 
 type QueryExecutor = DatabaseClient | DatabaseTransaction;
+
+export interface SlackOAuthExpectedBinding {
+  id: string;
+  credentialGeneration: number;
+}
+
+export interface SlackOAuthActivationInput {
+  intent: SlackConfigurationIntent;
+  expectedBinding: SlackOAuthExpectedBinding | null;
+  appId: string;
+  botAccessToken: string;
+  signingSecret: string;
+}
 
 export class SlackConfigurationServiceError extends Error {
   constructor(
@@ -32,17 +42,13 @@ export class SlackConfigurationService {
   readonly #afterConfigurationTransaction?: () => Promise<void>;
   readonly #beforeConfigurationTransaction?: () => Promise<void>;
   readonly #database: DatabaseClient;
-  readonly #distributedOAuthAvailable: boolean;
   readonly #imBindings: ImBindingService;
   readonly #now: () => Date;
-  readonly #publicOrigin: string;
 
   constructor(input: {
     api: SlackApiClient;
     database: DatabaseClient;
     imBindings: ImBindingService;
-    publicOrigin: string;
-    distributedOAuthAvailable?: boolean;
     now?: () => Date;
     afterConfigurationTransaction?: () => Promise<void>;
     beforeConfigurationTransaction?: () => Promise<void>;
@@ -51,29 +57,28 @@ export class SlackConfigurationService {
     this.#afterConfigurationTransaction = input.afterConfigurationTransaction;
     this.#beforeConfigurationTransaction = input.beforeConfigurationTransaction;
     this.#database = input.database;
-    this.#distributedOAuthAvailable = input.distributedOAuthAvailable === true;
     this.#imBindings = input.imBindings;
     this.#now = input.now ?? (() => new Date());
-    this.#publicOrigin = input.publicOrigin;
   }
 
-  async get(callerUserId: string, agentId: string): Promise<SlackAppConfiguration> {
+  async currentBinding(callerUserId: string, agentId: string): Promise<SlackOAuthExpectedBinding | null> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const { agent, current } = await this.#facts(agentId);
+    await this.#agent(agentId, this.#database);
+    const current = await this.#current(agentId, this.#database, false);
     if (current && current.provider !== "slack") {
-      throw new SlackConfigurationServiceError(
-        "IM_BINDING_PROVIDER_IMMUTABLE",
-        409,
-        "Disable the current IM binding before configuring Slack",
-      );
+      throw new ImBindingUnbindRequiredError({
+        currentProvider: current.provider,
+        currentBindingId: current.id,
+        requestedProvider: "slack",
+      });
     }
-    return this.#configuration(agentId, agent.displayName, current);
+    return this.#expectedBinding(current);
   }
 
   async configure(
     callerUserId: string,
     agentId: string,
-    input: ConfigureSlackAppRequest,
+    input: SlackOAuthActivationInput,
   ): Promise<SlackConfigurationResult> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const installation = await this.#inspect(input.botAccessToken);
@@ -81,22 +86,19 @@ export class SlackConfigurationService {
     await this.#beforeConfigurationTransaction?.();
 
     const configured = await this.#database.transaction(async (transaction) => {
-      // Token inspection is external. Reacquire live Workspace authority and serialize the Agent's
+      // Token inspection is external. Reacquire live Account authority and serialize the Agent's
       // binding immediately before committing the inspected credential snapshot.
       await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
       await this.#agent(agentId, transaction);
       const current = await this.#current(agentId, transaction, true);
       if (current && current.provider !== "slack") {
-        throw new SlackConfigurationServiceError(
-          "IM_BINDING_PROVIDER_IMMUTABLE",
-          409,
-          "Disable the current IM binding before configuring Slack",
-        );
+        throw new ImBindingUnbindRequiredError({
+          currentProvider: current.provider,
+          currentBindingId: current.id,
+          requestedProvider: "slack",
+        });
       }
-      const configuredCurrent =
-        current?.encryptedCredential && current.credentialGeneration >= 1 && current.externalAppId
-          ? current
-          : undefined;
+      const configuredCurrent = this.#configuredCurrent(current);
       const expected = input.expectedBinding;
       if (
         (expected === null && configuredCurrent) ||
@@ -108,10 +110,10 @@ export class SlackConfigurationService {
         throw new SlackConfigurationServiceError(
           "SLACK_CONFIGURATION_CONFLICT",
           409,
-          "The Slack binding changed since the configuration was read",
+          "The Slack binding changed since authorization started",
         );
       }
-      this.#validateIntent(input, installation, configuredCurrent);
+      this.#validateIntent(input, configuredCurrent);
 
       const activation: SlackBindingActivation = {
         intent: input.intent,
@@ -128,6 +130,7 @@ export class SlackConfigurationService {
       return this.#imBindings.activateSlack(activation, installation.botId, transaction);
     });
     await this.#afterConfigurationTransaction?.();
+    await this.#imBindings.notifyProviderCliRequirementChanged(agentId).catch(() => undefined);
     return configured;
   }
 
@@ -161,11 +164,7 @@ export class SlackConfigurationService {
     }
   }
 
-  #validateIntent(
-    input: ConfigureSlackAppRequest,
-    installation: SlackInstallationInspection,
-    current: typeof imBindings.$inferSelect | undefined,
-  ): void {
+  #validateIntent(input: SlackOAuthActivationInput, current: typeof imBindings.$inferSelect | undefined): void {
     if (input.intent === "create") {
       if (current) {
         throw new SlackConfigurationServiceError(
@@ -180,29 +179,7 @@ export class SlackConfigurationService {
       throw new SlackConfigurationServiceError(
         "SLACK_CONFIGURATION_CONFLICT",
         409,
-        `Slack ${input.intent} requires a current configured binding`,
-      );
-    }
-    if (input.intent === "replace") {
-      if (input.appId === current.externalAppId) {
-        throw new SlackConfigurationServiceError(
-          "SLACK_CONFIGURATION_CONFLICT",
-          409,
-          "Change App requires a different Slack App ID",
-        );
-      }
-      return;
-    }
-    if (
-      input.appId !== current.externalAppId ||
-      installation.teamId !== current.externalTeamId ||
-      installation.botUserId !== current.externalBotId
-    ) {
-      throw new SlackConfigurationServiceError(
-        "SLACK_BINDING_IDENTITY_MISMATCH",
-        409,
-        "Reauthorization must preserve the current Slack App, Team, and Bot identity",
-        "credential",
+        "Slack reauthorize requires a current configured binding",
       );
     }
   }
@@ -228,23 +205,28 @@ export class SlackConfigurationService {
     }
   }
 
-  async #facts(agentId: string): Promise<{
-    agent: { displayName: string };
-    current: typeof imBindings.$inferSelect | undefined;
-  }> {
-    const agent = await this.#agent(agentId, this.#database);
-    const current = await this.#current(agentId, this.#database, false);
-    return { agent, current };
-  }
-
+  /**
+   * Reads the Agent every Slack configuration path needs, and refuses one that has no Computer.
+   * The check lives here rather than at the start of the flow because both ends need it: an Account
+   * that installs the Slack App first and only then learns the Agent has nowhere to run has been
+   * asked for work that could not have succeeded, and an Agent unbound between start and callback
+   * would otherwise commit a route to a Computer that no longer exists.
+   */
   async #agent(agentId: string, executor: QueryExecutor): Promise<{ displayName: string }> {
     const [agent] = await executor
-      .select({ displayName: agents.displayName })
+      .select({ computerId: agents.computerId, displayName: agents.displayName })
       .from(agents)
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!agent) throw new SlackConfigurationServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
-    return agent;
+    if (agent.computerId === null) {
+      throw new SlackConfigurationServiceError(
+        "AGENT_COMPUTER_NOT_BOUND",
+        409,
+        "Connect a Computer to this Agent before connecting Slack",
+      );
+    }
+    return { displayName: agent.displayName };
   }
 
   async #current(
@@ -265,57 +247,22 @@ export class SlackConfigurationService {
     return row;
   }
 
-  #configuration(
-    agentId: string,
-    displayName: string,
-    current: typeof imBindings.$inferSelect | undefined,
-  ): SlackAppConfiguration {
-    const eventsUrl = new URL(agentSlackEventsPath(agentId), this.#publicOrigin).toString();
-    const name = `${displayName} - OpenTag`.slice(0, 35);
-    const manifest: Record<string, unknown> = {
-      _metadata: { major_version: 1 },
-      display_information: { name },
-      features: {
-        app_home: {
-          home_tab_enabled: false,
-          messages_tab_enabled: true,
-          messages_tab_read_only_enabled: false,
-        },
-        bot_user: { display_name: name, always_online: false },
-      },
-      oauth_config: { scopes: { bot: [...SLACK_REQUIRED_BOT_SCOPES] } },
-      settings: {
-        event_subscriptions: { request_url: eventsUrl, bot_events: [...SLACK_SUBSCRIBED_BOT_EVENTS] },
-        org_deploy_enabled: false,
-        socket_mode_enabled: false,
-        token_rotation_enabled: false,
-      },
-    };
-    const manifestUrl = new URL("https://api.slack.com/apps");
-    manifestUrl.searchParams.set("new_app", "1");
-    manifestUrl.searchParams.set("manifest_json", JSON.stringify(manifest));
-    const configuredCurrent =
-      current?.provider === "slack" &&
-      current.encryptedCredential &&
+  #configuredCurrent(current: typeof imBindings.$inferSelect | undefined): typeof imBindings.$inferSelect | undefined {
+    return current?.provider === "slack" &&
+      current.slackInstallationId &&
       current.credentialGeneration >= 1 &&
       current.externalAppId
-        ? current
-        : undefined;
-    return {
-      agentId,
-      manifest,
-      manifestUrl: manifestUrl.toString(),
-      eventsUrl,
-      requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
-      subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
-      currentBinding: configuredCurrent
-        ? {
-            id: configuredCurrent.id,
-            appId: configuredCurrent.externalAppId as string,
-            credentialGeneration: configuredCurrent.credentialGeneration,
-          }
-        : null,
-      distributedOAuthAvailable: this.#distributedOAuthAvailable,
-    };
+      ? current
+      : undefined;
+  }
+
+  #expectedBinding(current: typeof imBindings.$inferSelect | undefined): SlackOAuthExpectedBinding | null {
+    const configuredCurrent = this.#configuredCurrent(current);
+    return configuredCurrent
+      ? {
+          id: configuredCurrent.id,
+          credentialGeneration: configuredCurrent.credentialGeneration,
+        }
+      : null;
   }
 }

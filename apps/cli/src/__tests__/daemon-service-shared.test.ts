@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadDaemonEnvironment } from "../core/daemon/environment.js";
+import { applyDaemonEnvironment, loadDaemonEnvironment } from "../core/daemon/environment.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
 import {
   acquireProcessFileLease,
   inspectDarwinProcessIdentity,
+  inspectProcessFileLease,
+  inspectProcessIdentity,
+  ProcessLeaseMalformedError,
   ProcessLeaseUnverifiableError,
 } from "../core/daemon/process-lease.js";
 import {
@@ -17,11 +20,19 @@ import {
   canonicalizeServiceHome,
   deriveServiceIdentity,
   escapeXml,
+  invocationArguments,
+  isManagerNotLoaded,
+  pathExists,
+  preflightHomeDirectory,
   quotePosix,
   quoteSystemdEnvironment,
   quoteSystemdToken,
+  readRegularFile,
   resolveCliInvocation,
+  resolveServiceManagerExecutable,
   runRequired,
+  serviceError,
+  sleep,
   writeFileAtomically,
 } from "../core/daemon/service/shared.js";
 
@@ -102,12 +113,118 @@ describe("daemon service primitives", () => {
     expect(servicePath.filter((entry) => entry === "/usr/bin")).toHaveLength(1);
   });
 
+  it("resolves a bare service-manager name only through reviewed absolute locations", async () => {
+    const inspected: string[] = [];
+
+    await expect(
+      resolveServiceManagerExecutable("launchctl", "darwin", {
+        access: async (path) => {
+          inspected.push(`access:${path}`);
+        },
+        stat: async (path) => {
+          inspected.push(`stat:${path}`);
+          return { isFile: () => true };
+        },
+      }),
+    ).resolves.toBe("/bin/launchctl");
+
+    expect(inspected).toEqual(["stat:/bin/launchctl", "access:/bin/launchctl"]);
+    expect(inspected).not.toContain("stat:launchctl");
+  });
+
+  it("supports the governed NixOS systemd manager location", async () => {
+    const inspected: string[] = [];
+
+    await expect(
+      resolveServiceManagerExecutable("systemctl", "linux", {
+        access: async (path) => {
+          inspected.push(`access:${path}`);
+        },
+        stat: async (path) => {
+          inspected.push(`stat:${path}`);
+          return { isFile: () => path === "/run/current-system/systemd/bin/systemctl" };
+        },
+      }),
+    ).resolves.toBe("/run/current-system/systemd/bin/systemctl");
+
+    expect(inspected).toEqual([
+      "stat:/run/current-system/systemd/bin/systemctl",
+      "access:/run/current-system/systemd/bin/systemctl",
+    ]);
+  });
+
+  it("rejects unsupported, absolute, inaccessible, and non-file service managers", async () => {
+    await expect(resolveServiceManagerExecutable("launchctl", "freebsd")).rejects.toThrow("not governed");
+    await expect(
+      resolveServiceManagerExecutable("/usr/bin/launchctl", "darwin", {
+        stat: async () => ({ isFile: () => true }),
+        access: async () => undefined,
+      }),
+    ).rejects.toThrow("not supported");
+    await expect(
+      resolveServiceManagerExecutable("systemctl", "linux", {
+        stat: async (path) => ({ isFile: () => path.endsWith("/bin") }),
+        access: async () => undefined,
+      }),
+    ).rejects.toThrow("unavailable at supported");
+    await expect(
+      resolveServiceManagerExecutable("systemctl", "linux", {
+        stat: async () => ({ isFile: () => true }),
+        access: async (path) => {
+          if (path.endsWith("/systemctl")) throw new Error("no execute bit");
+        },
+      }),
+    ).rejects.toThrow("unavailable at supported");
+  });
+
+  it("resolves a Node script invocation when no installed binary is available", async () => {
+    await expect(
+      resolveCliInvocation({
+        binName: "missing-opentag",
+        env: { PATH: "" },
+        argv: ["node", "relative.mjs"],
+        cwd: "/tmp",
+      }),
+    ).resolves.toEqual({ args: ["/tmp/relative.mjs"], program: process.execPath });
+    await expect(resolveCliInvocation({ binName: "missing", env: { PATH: "" }, argv: ["node"] })).rejects.toThrow(
+      "entry script",
+    );
+    await expect(
+      resolveCliInvocation({ binName: "missing", env: { PATH: "" }, argv: ["node", "script.mjs"], execPath: "node" }),
+    ).rejects.toThrow("must be absolute");
+    expect(invocationArguments({ program: "/usr/bin/node", args: ["script.mjs"] })).toEqual([
+      "/usr/bin/node",
+      "script.mjs",
+      "daemon",
+      "service-run",
+    ]);
+    await expect(
+      resolveCliInvocation({
+        binName: "missing",
+        env: { PATH: `${join(tmpdir(), "missing-directory")}` },
+        argv: ["node", "script.mjs"],
+      }),
+    ).resolves.toMatchObject({ args: [expect.stringContaining("script.mjs")] });
+  });
+
   it("atomically replaces files and leaves no temporary files", async () => {
     const root = await temporaryDirectory("opentag-atomic-");
     const path = join(root, "nested", "service");
     await writeFileAtomically(path, "first", 0o600);
     await writeFileAtomically(path, "second", 0o600);
     expect(await readFile(path, "utf8")).toBe("second");
+  });
+
+  it("writes atomically beneath a private containment root and reads regular files safely", async () => {
+    const root = await temporaryDirectory("opentag-contained-atomic-");
+    const path = join(root, "config", "service");
+    await writeFileAtomically(path, "contained", 0o600, 0o700, root);
+    await expect(readRegularFile(path)).resolves.toBe("contained");
+    await expect(readRegularFile(join(root, "missing"))).resolves.toBeUndefined();
+    await mkdir(join(root, "directory"));
+    await expect(readRegularFile(join(root, "directory"))).rejects.toThrow("regular file");
+    await symlink(path, join(root, "link"));
+    await expect(readRegularFile(join(root, "link"))).rejects.toThrow("regular file");
   });
 
   it("cleans the temporary file when atomic replacement fails", async () => {
@@ -304,7 +421,166 @@ describe("daemon service primitives", () => {
     await lease.release();
   });
 
+  it("rejects an unverifiable current process and classifies lease inspection states", async () => {
+    const home = await temporaryDirectory("opentag-lease-inspection-");
+    const path = join(home, "lease.json");
+    const record = {
+      leaseId: "recorded",
+      pid: process.pid,
+      processStartId: "recorded-start",
+      startedAt: new Date(0).toISOString(),
+    };
+    const options = {
+      fileName: "lease.json",
+      getId: (value: TestLeaseRecord) => value.leaseId,
+      parseRecord: parseTestLease,
+    };
+    await expect(
+      acquireProcessFileLease(home, {
+        ...options,
+        createRecord: (processStartId) => ({ ...record, leaseId: "new", processStartId }),
+        getProcessIdentity: async () => ({ state: "unverifiable" as const }),
+      }),
+    ).rejects.toBeInstanceOf(ProcessLeaseUnverifiableError);
+    await expect(inspectProcessFileLease(home, options)).resolves.toEqual({ state: "missing" });
+
+    await writeFile(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    await expect(
+      inspectProcessFileLease(home, {
+        ...options,
+        getProcessIdentity: async () => ({ id: "recorded-start", state: "identified" as const }),
+      }),
+    ).resolves.toMatchObject({ state: "live", record });
+    await expect(
+      inspectProcessFileLease(home, {
+        ...options,
+        getProcessIdentity: async () => ({ id: "different-start", state: "identified" as const }),
+      }),
+    ).resolves.toMatchObject({ state: "stale", record });
+    await expect(
+      inspectProcessFileLease(home, {
+        ...options,
+        getProcessIdentity: async () => ({ state: "unverifiable" as const }),
+      }),
+    ).rejects.toThrow("Cannot verify whether process");
+  });
+
+  it("fails closed for malformed acquisition guards and release records", async () => {
+    const home = await temporaryDirectory("opentag-lease-guard-");
+    const path = join(home, "lease.json");
+    const baseOptions = {
+      createRecord: (processStartId: string) => ({
+        leaseId: "new",
+        pid: process.pid,
+        processStartId,
+        startedAt: new Date().toISOString(),
+      }),
+      fileName: "lease.json",
+      getId: (value: TestLeaseRecord) => value.leaseId,
+      parseRecord: parseTestLease,
+    };
+    await writeFile(join(home, ".lease.json.acquire"), "{}\n", { mode: 0o600 });
+    await expect(
+      acquireProcessFileLease(home, {
+        ...baseOptions,
+        getProcessIdentity: async () => ({ id: "current", state: "identified" as const }),
+      }),
+    ).rejects.toBeInstanceOf(ProcessLeaseMalformedError);
+    await rm(join(home, ".lease.json.acquire"));
+
+    await writeFile(
+      join(home, ".lease.json.acquire"),
+      `${JSON.stringify({
+        guardId: "guard",
+        pid: process.pid,
+        processStartId: "old",
+        startedAt: new Date(0).toISOString(),
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await expect(
+      acquireProcessFileLease(home, {
+        ...baseOptions,
+        getProcessIdentity: async () => ({ id: "different", state: "identified" as const }),
+      }),
+    ).rejects.toThrow("stale process lease acquisition guard");
+    await rm(join(home, ".lease.json.acquire"));
+
+    const lease = await acquireProcessFileLease(home, {
+      ...baseOptions,
+      getProcessIdentity: async () => ({ id: "current", state: "identified" as const }),
+    });
+    await rm(path);
+    await expect(lease.release()).resolves.toBeUndefined();
+    const second = await acquireProcessFileLease(home, {
+      ...baseOptions,
+      getProcessIdentity: async () => ({ id: "current", state: "identified" as const }),
+    });
+    await writeFile(path, "not json\n", { mode: 0o600 });
+    await expect(second.release()).rejects.toThrow("process lease record is malformed");
+  });
+
+  it("covers platform-specific process identity fallbacks", async () => {
+    const linuxReads: string[] = [];
+    const linuxStat = `4242 (opentag test) S ${Array.from({ length: 18 }, () => "0").join(" ")} 36178`;
+    await expect(
+      inspectProcessIdentity(4242, {
+        isProcessAlive: () => true,
+        platform: "linux",
+        readLinuxProcessFile: async (path) => {
+          linuxReads.push(path);
+          return path.endsWith("/stat") ? linuxStat : "test-boot-id\n";
+        },
+      }),
+    ).resolves.toEqual({ id: "linux:test-boot-id:36178", state: "identified" });
+    expect(linuxReads).toEqual(["/proc/4242/stat", "/proc/sys/kernel/random/boot_id"]);
+
+    const linuxHome = await temporaryDirectory("opentag-lease-linux-");
+    await expect(
+      acquireProcessFileLease(linuxHome, {
+        createRecord: (processStartId) => ({
+          leaseId: "linux",
+          pid: process.pid,
+          processStartId,
+          startedAt: new Date().toISOString(),
+        }),
+        fileName: "lease.json",
+        getId: (value: TestLeaseRecord) => value.leaseId,
+        getProcessIdentity: (pid) =>
+          inspectProcessIdentity(pid, {
+            isProcessAlive: () => true,
+            platform: "linux",
+            readLinuxProcessFile: async () => {
+              throw new Error("injected procfs read failure");
+            },
+          }),
+        parseRecord: parseTestLease,
+      }),
+    ).rejects.toBeInstanceOf(ProcessLeaseUnverifiableError);
+
+    const otherHome = await temporaryDirectory("opentag-lease-other-platform-");
+    const lease = await acquireProcessFileLease(otherHome, {
+      createRecord: (processStartId) => ({
+        leaseId: "other",
+        pid: process.pid,
+        processStartId,
+        startedAt: new Date().toISOString(),
+      }),
+      fileName: "lease.json",
+      getId: (value: TestLeaseRecord) => value.leaseId,
+      getProcessIdentity: (pid) => inspectProcessIdentity(pid, { isProcessAlive: () => true, platform: "freebsd" }),
+      parseRecord: parseTestLease,
+    });
+    expect(lease.record.processStartId).toMatch(/^self:/u);
+    await lease.release();
+  });
+
   it("keeps Darwin process identity stable across parent locale and timezone changes", async () => {
+    const childEnvironments: NodeJS.ProcessEnv[] = [];
+    const readProcessStart = async (_pid: number, environment: NodeJS.ProcessEnv) => {
+      childEnvironments.push(environment);
+      return "Mon Jan  1 00:00:00 2024";
+    };
     const original = {
       LANG: process.env.LANG,
       LC_ALL: process.env.LC_ALL,
@@ -314,15 +590,31 @@ describe("daemon service primitives", () => {
       process.env.LANG = "fr_FR.UTF-8";
       process.env.LC_ALL = "fr_FR.UTF-8";
       process.env.TZ = "Pacific/Honolulu";
-      const first = await inspectDarwinProcessIdentity(process.pid);
+      const first = await inspectDarwinProcessIdentity(4242, { isProcessAlive: () => true, readProcessStart });
 
       process.env.LANG = "ja_JP.UTF-8";
       process.env.LC_ALL = "ja_JP.UTF-8";
       process.env.TZ = "Asia/Tokyo";
-      const second = await inspectDarwinProcessIdentity(process.pid);
+      const second = await inspectDarwinProcessIdentity(4242, { isProcessAlive: () => true, readProcessStart });
 
       expect(first).toMatchObject({ state: "identified" });
       expect(second).toEqual(first);
+      expect(childEnvironments).toHaveLength(2);
+      for (const environment of childEnvironments) {
+        expect(environment).toMatchObject({ LANG: "C", LC_ALL: "C", TZ: "UTC" });
+      }
+      await expect(
+        inspectDarwinProcessIdentity(4242, {
+          isProcessAlive: () => true,
+          readProcessStart: async () => undefined,
+        }),
+      ).resolves.toEqual({ state: "unverifiable" });
+      await expect(
+        inspectDarwinProcessIdentity(4242, {
+          isProcessAlive: () => false,
+          readProcessStart: async () => undefined,
+        }),
+      ).resolves.toEqual({ state: "gone" });
     } finally {
       restoreEnvironment("LANG", original.LANG);
       restoreEnvironment("LC_ALL", original.LC_ALL);
@@ -348,6 +640,67 @@ describe("daemon service primitives", () => {
         12,
       ),
     ).rejects.toThrow("timed out after 12ms");
+    await expect(
+      runRequired(
+        { run: async () => ({ code: 3, stderr: "", stdout: "", timedOut: false }) },
+        "manager",
+        [],
+        "service stop",
+      ),
+    ).rejects.toThrow("service stop failed: exited with code 3");
+    await expect(
+      runRequired(
+        { run: async () => ({ code: 0, stderr: "", stdout: "ok", timedOut: false }) },
+        "manager",
+        [],
+        "service start",
+      ),
+    ).resolves.toEqual({
+      code: 0,
+      stderr: "",
+      stdout: "ok",
+      timedOut: false,
+    });
+  });
+
+  it("classifies manager state and validates service homes", async () => {
+    expect(isManagerNotLoaded({ code: 1, stdout: "not loaded", stderr: "", timedOut: false })).toBe(true);
+    expect(isManagerNotLoaded({ code: 1, stdout: "could not find service", stderr: "", timedOut: false })).toBe(true);
+    expect(isManagerNotLoaded({ code: 1, stdout: "NOT FOUND", stderr: "", timedOut: false })).toBe(true);
+    expect(isManagerNotLoaded({ code: 1, stdout: "no such process", stderr: "", timedOut: false })).toBe(true);
+    expect(isManagerNotLoaded({ code: 0, stdout: "not loaded", stderr: "", timedOut: false })).toBe(false);
+    expect(serviceError("CONFIGURATION", "bad", "cause")).toMatchObject({ code: "CONFIGURATION", message: "bad" });
+    await expect(pathExists(process.execPath)).resolves.toBe(true);
+    await expect(pathExists(join(tmpdir(), "opentag-no-such-path"))).resolves.toBe(false);
+    await expect(preflightHomeDirectory("relative-home")).rejects.toThrow("must be absolute");
+    const root = await temporaryDirectory("opentag-preflight-");
+    await expect(preflightHomeDirectory(join(root, "new", "home"))).resolves.toBeUndefined();
+    await expect(preflightHomeDirectory(join(root, "new", "home"))).resolves.toBeUndefined();
+    await writeFile(join(root, "file"), "not a directory");
+    await expect(preflightHomeDirectory(join(root, "file", "nested"))).rejects.toThrow("not writable");
+    const symlinkTarget = join(root, "symlink-target");
+    await mkdir(symlinkTarget);
+    await symlink(symlinkTarget, join(root, "symlink-home"));
+    await expect(preflightHomeDirectory(join(root, "symlink-home"))).rejects.toThrow("real directory");
+    await expect(canonicalizeServiceHome("relative-home")).rejects.toThrow("must be absolute");
+    await expect(canonicalizeServiceHome(`${root}\0`)).rejects.toThrow("Cannot canonicalize");
+    await expect(pathExists("\0")).rejects.toBeDefined();
+    await expect(sleep(0)).resolves.toBeUndefined();
+  });
+
+  it("maps malformed and unverifiable service leases and validates target IDs", async () => {
+    const home = await temporaryDirectory("opentag-service-lease-errors-");
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.serviceState, { recursive: true, mode: 0o700 });
+    await writeFile(paths.serviceOperation, "{}\n", { mode: 0o600 });
+    await expect(acquireServiceOperationLease(home)).rejects.toThrow("malformed");
+    await writeFile(paths.serviceOperation, "[]\n", { mode: 0o600 });
+    await expect(acquireServiceOperationLease(home)).rejects.toThrow("malformed");
+    await expect(acquireServiceTargetLease(home, "Invalid ID")).rejects.toThrow("service ID is invalid");
+    await rm(paths.serviceOperation, { force: true });
+    const lease = await acquireServiceOperationLease(home);
+    await expect(acquireServiceOperationLease(home)).rejects.toThrow("already running");
+    await lease.release();
   });
 });
 
@@ -391,6 +744,43 @@ describe("daemon.env", () => {
     await symlink(external, paths.config, "dir");
 
     await expect(loadDaemonEnvironment(home, {})).rejects.toThrow(/real director/i);
+  });
+
+  it("parses quoted values, preserves pinned keys, and applies a missing daemon.env", async () => {
+    const home = await temporaryDirectory("opentag-env-values-");
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    const base = { PINNED: "from-base" };
+    await writeFile(
+      paths.daemonEnvironment,
+      [
+        "SINGLE='value'",
+        'DOUBLE="line\\nnext\\tcolumn\\"quoted"',
+        "EMPTY=",
+        "UNQUOTED=plain",
+        "BROKEN_SINGLE='value",
+        'BROKEN_DOUBLE="value',
+        "HAS_QUOTE=bad'value",
+        "PINNED=from-file",
+      ].join("\n"),
+      { mode: 0o600 },
+    );
+    const loaded = await loadDaemonEnvironment(home, base);
+    expect(loaded.env).toMatchObject({
+      SINGLE: "value",
+      DOUBLE: 'line\nnext\tcolumn"quoted',
+      EMPTY: "",
+      UNQUOTED: "plain",
+      PINNED: "from-base",
+    });
+    expect(loaded.appliedKeys).toEqual(["SINGLE", "DOUBLE", "EMPTY", "UNQUOTED"]);
+    expect(loaded.malformedLineNumbers).toEqual([5, 6, 7]);
+
+    await rm(paths.daemonEnvironment);
+    const environment = { BASE: "yes" };
+    const applied = await applyDaemonEnvironment(home, environment);
+    expect(applied.env).toEqual(environment);
+    expect(applied.appliedKeys).toEqual([]);
   });
 });
 

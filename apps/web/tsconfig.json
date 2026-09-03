@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
+    "allowJs": true,
     "composite": true,
     "jsx": "react-jsx",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
@@ -12,5 +13,5 @@
     "types": ["vite/client", "vitest/globals"]
   },
   "references": [{ "path": "../../packages/shared" }],
-  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.js", "vite.config.ts"]
 }

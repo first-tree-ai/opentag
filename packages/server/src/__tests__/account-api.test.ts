@@ -1,29 +1,21 @@
-import {
-  HTTP_PATHS,
-  PROVIDER_READINESS_V1_HEADER,
-  workspaceAgentsPath,
-  workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
-  workspaceSetupCompletePath,
-} from "@opentag/shared";
+import { accountComputerConnectCodePath, HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AccountScopeResolver } from "../api/account.js";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
-import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
+import type { UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
+import { OnboardingResetError } from "../services/onboarding-reset/index.js";
+import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
-import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/workspaces/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const authorization = { authorization: "Bearer access" };
 
 const agent = {
   id: agentId,
-  workspaceId,
   createdByUserId: userId,
   computerId,
   name: "code-reviewer",
@@ -44,7 +36,6 @@ const agent = {
 };
 const agentListItem = {
   id: agentId,
-  workspaceId,
   name: agent.name,
   displayName: agent.displayName,
   runtimeProvider: agent.runtimeProvider,
@@ -65,7 +56,7 @@ const computerSummary = {
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:00.000Z",
   observedAt: "2026-08-19T00:00:00.000Z",
-  enrolledAt: "2026-08-18T00:00:00.000Z",
+  createdAt: "2026-08-18T00:00:00.000Z",
   agentIds: [agentId],
 };
 const createAgentPayload = {
@@ -102,15 +93,7 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        workspaces: [
-          {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-20T00:00:00.000Z",
-          },
-        ],
+        setupCompletedAt: null,
       },
     }),
   };
@@ -118,10 +101,9 @@ function authService(): UserAuthService {
 
 function services() {
   return {
-    accountScope: { resolveCompatibilityWorkspaceId: vi.fn().mockResolvedValue(workspaceId) },
     agentService: {
-      createForWorkspace: vi.fn().mockResolvedValue(agent),
-      listForWorkspace: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
+      createForAccount: vi.fn().mockResolvedValue(agent),
+      listForAccount: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
       getById: vi.fn(),
       getUsageById: vi.fn(),
       getConfigById: vi.fn(),
@@ -131,14 +113,29 @@ function services() {
       deleteById: vi.fn(),
     },
     machineAuthService: {
-      issueForWorkspaceAdmin: vi.fn().mockResolvedValue({
+      issueForAccount: vi.fn().mockResolvedValue({
+        connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
         code: "connect-code-value",
         expiresIn: 900,
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
+        mode: "create",
+      }),
+      exchangeConnectCode: vi.fn().mockResolvedValue({
+        computerId,
+        credentialId: "credential-id",
+        installationId: "5e4c5b1b-1c3d-4a2b-8c9d-9f3b7a1c2d4e",
+        machineToken: "machine-token",
+      }),
+      getConnectCodeStatusForAccount: vi.fn().mockResolvedValue({
+        connectCodeId: "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f",
+        state: "pending",
+        computerId: null,
+        redeemedAt: null,
       }),
     },
     taskService: {
       list: vi.fn().mockResolvedValue({ tasks: [taskSummary], nextCursor: null }),
+      updateTitle: vi.fn().mockResolvedValue(taskSummary),
       get: vi.fn().mockResolvedValue({
         task: taskSummary,
         turns: [],
@@ -147,33 +144,257 @@ function services() {
         nextCursor: null,
       }),
     },
-    workspaceService: {
-      listComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
+    computerService: {
+      listAccountComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
     },
-    workspaceSetupService: {
+    accountSetupService: {
       complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
+      completeForAccount: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-19T00:00:00.000Z" }),
     },
   };
 }
 
-function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
+function appWith(
+  overrides: Partial<ReturnType<typeof services>> = {},
+  setupReset?: { enabled?: boolean; reboard: ReturnType<typeof vi.fn>; resetOnboarding: ReturnType<typeof vi.fn> },
+  internalNavigationService?: {
+    read: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+  },
+) {
   const service = { ...services(), ...overrides };
   const app = createApp({
+    ...(setupReset ? { setupResetService: setupReset as never } : {}),
+    ...(internalNavigationService ? { internalNavigationService: internalNavigationService as never } : {}),
     authService: authService(),
-    accountScope: service.accountScope as unknown as AccountScopeResolver,
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
     taskService: service.taskService as unknown as TaskService,
-    // The legacy connect-code route is gated behind the runtime Computer service; the Account-native
-    // route is not, so the equivalence comparison needs both registered.
-    computerService: {} as unknown as ComputerService,
-    workspaceService: service.workspaceService as unknown as WorkspaceAdminService,
-    workspaceSetupService: service.workspaceSetupService as unknown as WorkspaceSetupService,
-    computerConnectCode: { environment: "dev", publicUrl: "https://opentag.example" },
+    computerService: service.computerService as unknown as ComputerService,
+    accountSetupService: service.accountSetupService as unknown as AccountSetupService,
+    computerConnectCode: {
+      downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+      environment: "dev",
+      publicUrl: "https://opentag.example",
+    },
   });
   apps.push(app);
   return { app, service };
 }
+
+describe("staging-wide internal navigation", () => {
+  function navigationService() {
+    let value = { integrations: false, skills: false };
+    return {
+      read: vi.fn(() => value),
+      update: vi.fn((updated: typeof value) => {
+        value = { ...updated };
+        return value;
+      }),
+    };
+  }
+
+  it("reads and updates one deployment-wide value", async () => {
+    const navigation = navigationService();
+    const { app } = appWith({}, undefined, navigation);
+
+    const initial = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+    });
+    const updated = await app.inject({
+      method: "PUT",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+      payload: { integrations: true, skills: false },
+    });
+    const nextRead = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+    });
+
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toEqual({ integrations: false, skills: false });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toEqual({ integrations: true, skills: false });
+    expect(nextRead.json()).toEqual({ integrations: true, skills: false });
+    expect(navigation.update).toHaveBeenCalledExactlyOnceWith({ integrations: true, skills: false });
+  });
+
+  it("is absent when the staging-only service is not supplied", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.internalNavigationVisibility,
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("requires authentication and a complete setting", async () => {
+    const navigation = navigationService();
+    const { app } = appWith({}, undefined, navigation);
+
+    const [unauthenticated, malformed] = await Promise.all([
+      app.inject({
+        method: "PUT",
+        url: HTTP_PATHS.internalNavigationVisibility,
+        payload: { integrations: true, skills: true },
+      }),
+      app.inject({
+        method: "PUT",
+        url: HTTP_PATHS.internalNavigationVisibility,
+        headers: authorization,
+        payload: { skills: true },
+      }),
+    ]);
+
+    expect(unauthenticated.statusCode).toBe(401);
+    expect(malformed.statusCode).toBe(400);
+    expect(navigation.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("undoing setup on the authenticated Account", () => {
+  function resetService(enabled = true) {
+    return {
+      enabled,
+      reboard: vi.fn().mockResolvedValue(undefined),
+      resetOnboarding: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
+  it("answers reachability, so a client can ask before it offers the operations", async () => {
+    const { app } = appWith({}, resetService());
+
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountSetupReset, headers: authorization });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
+  });
+
+  it("answers a deployment that has the routes but not the feature exactly like one that never had them", async () => {
+    const setupReset = resetService(false);
+    const { app } = appWith({}, setupReset);
+
+    const [read, run, malformed] = await Promise.all([
+      app.inject({ method: "GET", url: HTTP_PATHS.accountSetupReset, headers: authorization }),
+      app.inject({
+        method: "POST",
+        url: HTTP_PATHS.accountSetupReset,
+        headers: authorization,
+        payload: { mode: "all" },
+      }),
+      // The body is never parsed here: a malformed request must not be able to tell the two apart.
+      app.inject({ method: "POST", url: HTTP_PATHS.accountSetupReset, headers: authorization, payload: {} }),
+    ]);
+
+    expect(read.statusCode).toBe(404);
+    expect(run.statusCode).toBe(404);
+    expect(malformed.statusCode).toBe(404);
+    expect(setupReset.resetOnboarding).not.toHaveBeenCalled();
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("routes each mode to the operation it names", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const all = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+    expect(all.statusCode).toBe(204);
+    expect(setupReset.resetOnboarding).toHaveBeenCalledWith(userId);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+
+    const reboard = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard" },
+    });
+    expect(reboard.statusCode).toBe(204);
+    expect(setupReset.reboard).toHaveBeenCalledWith(userId);
+    expect(setupReset.resetOnboarding).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the Account from the token, so no body can name another one", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard", accountId: "11111111-1111-4111-8111-111111111111" },
+    });
+
+    // Rejected outright rather than ignored: a caller who thought they were choosing an Account
+    // should be told they were not.
+    expect(response.statusCode).toBe(400);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("requires authentication", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      payload: { mode: "reboard" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(setupReset.reboard).not.toHaveBeenCalled();
+  });
+
+  it("reports a refused reset as the deterministic conflict the service raised", async () => {
+    const setupReset = resetService();
+    const { app } = appWith({}, setupReset);
+    setupReset.resetOnboarding.mockRejectedValueOnce(
+      new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "The Account still has active OpenTag resources"),
+    );
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "all" },
+    });
+
+    // A refusal the caller can act on, not a failure: the reset stopped before clearing setup, so
+    // the same request is worth making again once the Account is quiet.
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "ONBOARDING_RESET_UNVERIFIED",
+        category: "deterministic",
+        message: "The Account still has active OpenTag resources",
+      },
+    });
+  });
+
+  it("is not registered when the deployment does not offer it", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupReset,
+      headers: authorization,
+      payload: { mode: "reboard" },
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+});
 
 describe("Account-native management collections", () => {
   it("lists and reads read-only Tasks in the authenticated Account scope", async () => {
@@ -187,7 +408,7 @@ describe("Account-native management collections", () => {
     expect(list.statusCode).toBe(200);
     expect(list.headers["cache-control"]).toBe("no-store");
     expect(list.json()).toEqual({ tasks: [taskSummary], nextCursor: null });
-    expect(service.taskService.list).toHaveBeenCalledWith(workspaceId, {
+    expect(service.taskService.list).toHaveBeenCalledWith(userId, {
       agentId,
       kind: "channel",
       limit: 25,
@@ -200,7 +421,40 @@ describe("Account-native management collections", () => {
     });
     expect(detail.statusCode).toBe(200);
     expect(detail.headers["cache-control"]).toBe("no-store");
-    expect(service.taskService.get).toHaveBeenCalledWith(workspaceId, taskSummary.id, { limit: 50 });
+    expect(service.taskService.get).toHaveBeenCalledWith(userId, taskSummary.id, { limit: 50 });
+  });
+
+  it("updates and clears a Task title in the authenticated Account scope", async () => {
+    const { app, service } = appWith();
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+      payload: { title: "Renamed Task" },
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.headers["cache-control"]).toBe("no-store");
+    expect(update.json()).toEqual({ task: taskSummary });
+    expect(service.taskService.updateTitle).toHaveBeenCalledWith(userId, taskSummary.id, "Renamed Task");
+
+    const clear = await app.inject({
+      method: "PATCH",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+      payload: { title: null },
+    });
+    expect(clear.statusCode).toBe(200);
+    expect(service.taskService.updateTitle).toHaveBeenLastCalledWith(userId, taskSummary.id, null);
+
+    const invalid = await app.inject({
+      method: "PATCH",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+      payload: { title: "   " },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(service.taskService.updateTitle).toHaveBeenCalledTimes(2);
   });
 
   it("creates and lists Agents without a client-selected scope", async () => {
@@ -214,61 +468,40 @@ describe("Account-native management collections", () => {
     });
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
-    expect(service.agentService.createForWorkspace).toHaveBeenCalledWith(userId, workspaceId, createAgentPayload);
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).toHaveBeenCalledWith(userId);
+    expect(service.agentService.createForAccount).toHaveBeenCalledWith(userId, createAgentPayload);
 
     const list = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
-    expect(service.agentService.listForWorkspace).toHaveBeenCalledWith(userId, workspaceId);
+    expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
   });
 
-  it("returns the same resources as the legacy Workspace-scoped routes", async () => {
-    const { app } = appWith();
-
-    const [accountAgents, legacyAgents] = await Promise.all([
-      app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization }),
-      app.inject({ method: "GET", url: workspaceAgentsPath(workspaceId), headers: authorization }),
-    ]);
-    expect(accountAgents.statusCode).toBe(legacyAgents.statusCode);
-    expect(accountAgents.json()).toEqual(legacyAgents.json());
-
-    const [accountComputers, legacyComputers] = await Promise.all([
-      app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization }),
-      app.inject({ method: "GET", url: workspaceComputersPath(workspaceId), headers: authorization }),
-    ]);
-    expect(accountComputers.statusCode).toBe(legacyComputers.statusCode);
-    expect(accountComputers.json()).toEqual(legacyComputers.json());
-
-    const [accountSetup, legacySetup] = await Promise.all([
-      app.inject({
-        method: "POST",
-        url: HTTP_PATHS.accountSetupComplete,
-        headers: authorization,
-        payload: { agentId },
-      }),
-      app.inject({
-        method: "POST",
-        url: workspaceSetupCompletePath(workspaceId),
-        headers: authorization,
-        payload: { agentId },
-      }),
-    ]);
-    expect(accountSetup.statusCode).toBe(legacySetup.statusCode);
-    expect(accountSetup.json()).toEqual(legacySetup.json());
-
-    const [accountCode, legacyCode] = await Promise.all([
-      app.inject({ method: "POST", url: HTTP_PATHS.accountComputerConnectCodes, headers: authorization }),
-      app.inject({
-        method: "POST",
-        url: workspaceComputerConnectCodesPath(workspaceId),
-        headers: authorization,
-      }),
-    ]);
-    expect(accountCode.statusCode).toBe(201);
-    expect(accountCode.statusCode).toBe(legacyCode.statusCode);
-    expect(accountCode.json()).toEqual(legacyCode.json());
-    expect(accountCode.headers["cache-control"]).toBe("no-store");
+  it("exchanges a Computer connect code and withholds the credential id", async () => {
+    const { app, service } = appWith();
+    const installationId = "5e4c5b1b-1c3d-4a2b-8c9d-9f3b7a1c2d4e";
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.computerConnectExchange,
+      payload: {
+        arch: "arm64",
+        clientVersion: "1.0.0",
+        code: "sixteen-character-code",
+        installationId,
+        displayName: "Laptop",
+        platform: "darwin",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ computerId, installationId, machineToken: "machine-token" });
+    expect(service.machineAuthService.exchangeConnectCode).toHaveBeenCalledWith({
+      arch: "arm64",
+      clientVersion: "1.0.0",
+      code: "sixteen-character-code",
+      installationId,
+      displayName: "Laptop",
+      platform: "darwin",
+    });
   });
 
   it("forwards the provider readiness opt-in header", async () => {
@@ -278,10 +511,10 @@ describe("Account-native management collections", () => {
       url: HTTP_PATHS.accountComputers,
       headers: { ...authorization, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
-    expect(service.workspaceService.listComputers).toHaveBeenCalledWith(userId, workspaceId, true);
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, true);
 
     await app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization });
-    expect(service.workspaceService.listComputers).toHaveBeenLastCalledWith(userId, workspaceId, false);
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
   });
 
   it("rejects a client-selected scope on every creation route", async () => {
@@ -293,7 +526,7 @@ describe("Account-native management collections", () => {
       { url: HTTP_PATHS.accountSetupComplete, base: { agentId } },
     ];
     for (const route of routes) {
-      for (const selector of [{ workspaceId }, { accountId: userId }]) {
+      for (const selector of [{ accountId: userId }]) {
         const response = await app.inject({
           method: "POST",
           url: route.url,
@@ -309,10 +542,9 @@ describe("Account-native management collections", () => {
       }
     }
 
-    expect(service.agentService.createForWorkspace).not.toHaveBeenCalled();
-    expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
-    expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
+    expect(service.agentService.createForAccount).not.toHaveBeenCalled();
+    expect(service.machineAuthService.issueForAccount).not.toHaveBeenCalled();
+    expect(service.accountSetupService.completeForAccount).not.toHaveBeenCalled();
   });
 
   it("still issues a connect code for an empty or absent body", async () => {
@@ -327,40 +559,56 @@ describe("Account-native management collections", () => {
       });
       expect(response.statusCode).toBe(201);
     }
-    expect(service.machineAuthService.issueForWorkspaceAdmin).toHaveBeenCalledTimes(2);
+    expect(service.machineAuthService.issueForAccount).toHaveBeenCalledTimes(2);
   });
 
-  it("does not disclose whether an Account has no compatibility scope", async () => {
-    const { app, service } = appWith({
-      accountScope: {
-        resolveCompatibilityWorkspaceId: vi
-          .fn()
-          .mockRejectedValue(
-            new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404),
-          ),
-      },
-    });
-
-    for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers]) {
-      const response = await app.inject({ method: "GET", url, headers: authorization });
-      expect(response.statusCode).toBe(404);
-      expect(response.json().error.code).toBe("RESOURCE_NOT_FOUND");
-    }
-    expect(service.agentService.listForWorkspace).not.toHaveBeenCalled();
-    expect(service.workspaceService.listComputers).not.toHaveBeenCalled();
-  });
-
-  it("keeps the legacy routes usable for older clients", async () => {
+  it("forwards an explicit Agent target without letting the client choose Account scope", async () => {
     const { app, service } = appWith();
-    const response = await app.inject({
+
+    const create = await app.inject({
       method: "POST",
-      url: workspaceAgentsPath(workspaceId),
+      url: HTTP_PATHS.accountComputerConnectCodes,
       headers: authorization,
-      payload: createAgentPayload,
+      payload: { mode: "create", targetAgentId: agentId },
     });
-    expect(response.statusCode).toBe(201);
-    expect(service.agentService.createForWorkspace).toHaveBeenCalledWith(userId, workspaceId, createAgentPayload);
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
+    const repair = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountComputerConnectCodes,
+      headers: authorization,
+      payload: { mode: "repair", targetAgentId: agentId, targetComputerId: computerId },
+    });
+
+    expect(create.statusCode).toBe(201);
+    expect(repair.statusCode).toBe(201);
+    expect(service.machineAuthService.issueForAccount).toHaveBeenNthCalledWith(1, userId, {
+      mode: "create",
+      targetAgentId: agentId,
+    });
+    expect(service.machineAuthService.issueForAccount).toHaveBeenNthCalledWith(2, userId, {
+      mode: "repair",
+      targetAgentId: agentId,
+      targetComputerId: computerId,
+    });
+  });
+
+  it("lists Account-owned collections from authenticated Account authority", async () => {
+    const { app, service } = appWith();
+
+    for (const url of [HTTP_PATHS.accountAgents, HTTP_PATHS.accountComputers, HTTP_PATHS.accountTasks]) {
+      const response = await app.inject({ method: "GET", url, headers: authorization });
+      expect(response.statusCode).toBe(200);
+    }
+    const setup = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountSetupComplete,
+      headers: authorization,
+      payload: { agentId },
+    });
+    expect(setup.statusCode).toBe(200);
+    expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, false);
+    expect(service.taskService.list).toHaveBeenCalledWith(userId, { limit: 50 });
+    expect(service.accountSetupService.completeForAccount).toHaveBeenCalledWith(userId, agentId);
   });
 
   it("requires an authenticated Account on every collection", async () => {
@@ -376,16 +624,102 @@ describe("Account-native management collections", () => {
       const response = await app.inject({ method, url });
       expect(response.statusCode).toBe(401);
     }
-    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
+    expect(service.agentService.listForAccount).not.toHaveBeenCalled();
   });
 
-  it("registers no Account-native collection without the compatibility resolver", async () => {
+  it("registers Account-native collections without the compatibility resolver", async () => {
+    const service = services();
     const app = createApp({
       authService: authService(),
-      agentService: services().agentService as unknown as AgentService,
+      agentService: service.agentService as unknown as AgentService,
     });
     apps.push(app);
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(service.agentService.listForAccount).toHaveBeenCalledWith(userId);
+  });
+
+  it("names the issued code's non-secret id in the issue response", async () => {
+    const { app } = appWith();
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.accountComputerConnectCodes,
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().connectCodeId).toBe("7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f");
+  });
+});
+
+describe("the connect-code redemption status read", () => {
+  const connectCodeId = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
+
+  it("answers pending before redemption under the issuing Account's authority", async () => {
+    const { app, service } = appWith();
+
+    const response = await app.inject({
+      method: "GET",
+      url: accountComputerConnectCodePath(connectCodeId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({ connectCodeId, state: "pending", computerId: null, redeemedAt: null });
+    expect(service.machineAuthService.getConnectCodeStatusForAccount).toHaveBeenCalledWith(userId, connectCodeId);
+  });
+
+  it("answers the exact Computer after redemption, and nothing secret", async () => {
+    const { app, service } = appWith();
+    service.machineAuthService.getConnectCodeStatusForAccount.mockResolvedValueOnce({
+      connectCodeId,
+      state: "redeemed",
+      computerId,
+      redeemedAt: "2026-08-19T00:01:00.000Z",
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: accountComputerConnectCodePath(connectCodeId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toEqual({ connectCodeId, state: "redeemed", computerId, redeemedAt: "2026-08-19T00:01:00.000Z" });
+    expect(Object.keys(body).sort()).toEqual(["computerId", "connectCodeId", "redeemedAt", "state"]);
+  });
+
+  it("fails closed when the code is not the caller's own", async () => {
+    const { app, service } = appWith();
+    service.machineAuthService.getConnectCodeStatusForAccount.mockRejectedValueOnce(
+      new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404),
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: accountComputerConnectCodePath(connectCodeId),
+      headers: authorization,
+    });
+
     expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("RESOURCE_NOT_FOUND");
+  });
+
+  it("rejects a malformed code id and an unauthenticated caller", async () => {
+    const { app, service } = appWith();
+
+    const malformed = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountComputerConnectCodes}/not-a-uuid`,
+      headers: authorization,
+    });
+    expect(malformed.statusCode).toBe(400);
+
+    const anonymous = await app.inject({ method: "GET", url: accountComputerConnectCodePath(connectCodeId) });
+    expect(anonymous.statusCode).toBe(401);
+    expect(service.machineAuthService.getConnectCodeStatusForAccount).not.toHaveBeenCalled();
   });
 });

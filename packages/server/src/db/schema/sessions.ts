@@ -13,7 +13,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { workspaceComputers } from "./computers.js";
+import { computers } from "./computers.js";
 import { imBindings, imConversationKind } from "./im-bindings.js";
 
 export const sessionKind = pgEnum("session_kind", ["channel", "thread", "internal"]);
@@ -29,6 +29,8 @@ export const sessions = pgTable(
     conversationKind: imConversationKind("conversation_kind").notNull(),
     kind: sessionKind("kind").notNull(),
     threadKey: text("thread_key"),
+    manualTitle: text("manual_title"),
+    generatedTitle: text("generated_title"),
     createdBySessionId: uuid("created_by_session_id").references((): AnyPgColumn => sessions.id, {
       onDelete: "restrict",
     }),
@@ -67,6 +69,14 @@ export const sessions = pgTable(
       sql`${table.runtimeReasoningEffort} is null or octet_length(${table.runtimeReasoningEffort}) between 1 and 64`,
     ),
     check("sessions_revision_positive", sql`${table.revision} >= 1`),
+    check(
+      "sessions_manual_title_bounds",
+      sql`${table.manualTitle} is null or char_length(${table.manualTitle}) between 1 and 120`,
+    ),
+    check(
+      "sessions_generated_title_bounds",
+      sql`${table.generatedTitle} is null or char_length(${table.generatedTitle}) between 1 and 120`,
+    ),
   ],
 );
 
@@ -76,14 +86,14 @@ export const sessionPlacements = pgTable(
     sessionId: uuid("session_id")
       .primaryKey()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    workspaceComputerId: uuid("workspace_computer_id")
+    computerId: uuid("computer_id")
       .notNull()
-      .references(() => workspaceComputers.id, { onDelete: "restrict" }),
+      .references(() => computers.id, { onDelete: "restrict" }),
     generation: bigint("generation", { mode: "number" }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    index("session_placements_workspace_computer_id_idx").on(table.workspaceComputerId),
+    index("session_placements_computer_id_idx").on(table.computerId),
     check("session_placements_generation_positive", sql`${table.generation} >= 1`),
   ],
 );

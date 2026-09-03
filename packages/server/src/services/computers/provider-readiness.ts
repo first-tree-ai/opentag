@@ -1,9 +1,10 @@
-import type {
-  ComputerConnectionStatus,
-  ComputerImCliReadinessCollection,
-  ComputerProviderReadinessCollection,
-  RuntimeImCliReadinessObservation,
-  RuntimeProviderReadinessObservation,
+import {
+  type ComputerConnectionStatus,
+  type ComputerImCliReadinessCollection,
+  type ComputerProviderReadinessCollection,
+  IM_CLI_PROVIDERS,
+  type RuntimeImCliReadinessObservation,
+  type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../runtime-config/index.js";
 
@@ -16,6 +17,16 @@ export interface ProviderReadinessSource {
     computerId: string,
     now: number,
   ): readonly { observation: RuntimeImCliReadinessObservation; observedAt: number }[];
+  providerCliArtifactReadiness?(
+    computerId: string,
+    now: number,
+  ): readonly {
+    observation: {
+      provider: RuntimeImCliReadinessObservation["provider"];
+      status: RuntimeImCliReadinessObservation["status"];
+    };
+    observedAt: number;
+  }[];
 }
 
 export function projectComputerImCliReadiness(
@@ -24,14 +35,15 @@ export function projectComputerImCliReadiness(
   observedAt: Date,
   source?: ProviderReadinessSource,
 ): ComputerImCliReadinessCollection {
-  const providers = ["feishu", "slack"] as const;
   if (connectionStatus === "offline") {
-    return providers.map((provider) => ({ provider, status: "unavailable", observedAt: null }));
+    return IM_CLI_PROVIDERS.map((provider) => ({ provider, status: "unavailable", observedAt: null }));
   }
-  const snapshots = source?.imCliReadiness?.(computerId, observedAt.getTime()) ?? [];
-  const byProvider = new Map(snapshots.map((snapshot) => [snapshot.observation.provider, snapshot]));
-  return providers.map((provider) => {
-    const snapshot = byProvider.get(provider);
+  const artifacts = source?.providerCliArtifactReadiness?.(computerId, observedAt.getTime()) ?? [];
+  const generic = source?.imCliReadiness?.(computerId, observedAt.getTime()) ?? [];
+  const artifactByProvider = new Map(artifacts.map((snapshot) => [snapshot.observation.provider, snapshot]));
+  const genericByProvider = new Map(generic.map((snapshot) => [snapshot.observation.provider, snapshot]));
+  return IM_CLI_PROVIDERS.map((provider) => {
+    const snapshot = artifactByProvider.get(provider) ?? genericByProvider.get(provider);
     return snapshot
       ? {
           provider,

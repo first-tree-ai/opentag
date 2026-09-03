@@ -13,6 +13,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
   type RuntimeImCliReadinessCollection,
@@ -28,11 +29,12 @@ import {
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type ClientOptions, type RawData } from "ws";
+import WebSocket, { type ClientOptions } from "ws";
 import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
+import { notifyTarget, protocolRejectionFields, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -114,6 +116,7 @@ export interface RuntimeConnectionOptions {
   logger?: ClientLogger;
   machineToken: string;
   now?: () => number;
+  onChannelTarget?: (target: RuntimeChannelTarget) => void;
   parseBusinessFrame?: (value: unknown) => RuntimeBusinessFrame | undefined;
   platform: "darwin" | "linux" | "win32";
   queueLimits?: Partial<RuntimeQueueLimits>;
@@ -191,7 +194,7 @@ export class RuntimeConnection {
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
     this.#logger = (options.logger ?? createLogger("connection")).child({
-      computerId: options.computer.computerId,
+      installationId: options.computer.computerId,
       instanceId: options.instanceId,
     });
     this.#scheduler = options.scheduler ?? defaultScheduler;
@@ -208,7 +211,7 @@ export class RuntimeConnection {
     return this.#state;
   }
 
-  get computerId(): string {
+  get installationId(): string {
     return this.#options.computer.computerId;
   }
 
@@ -218,6 +221,10 @@ export class RuntimeConnection {
 
   supportsCapability(capability: string): boolean {
     return this.#state === "registered" && this.#negotiatedCapabilities[capability] !== undefined;
+  }
+
+  capabilityVersion(capability: string): number | undefined {
+    return this.#state === "registered" ? this.#negotiatedCapabilities[capability] : undefined;
   }
 
   setVerifiedCapabilities(
@@ -361,7 +368,7 @@ export class RuntimeConnection {
           }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
-              { attempt: attempt + 1, category: "protocol", state: this.#state },
+              protocolRejectionFields(attempt, this.#state, error.message),
               "Runtime connection was rejected",
             );
             throw error;
@@ -371,14 +378,14 @@ export class RuntimeConnection {
               { attempt: attempt + 1, category: error.category, state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run computer connect again`, true);
+            throw new RuntimeConnectionError(`${error.message}; run opentag connect again`, true);
           }
           if (error instanceof Error && error.message.includes("not logged in")) {
             this.#logger.error(
               { attempt: attempt + 1, category: "credential", state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run computer connect first`, true);
+            throw new RuntimeConnectionError(`${error.message}; run opentag connect first`, true);
           }
           attempt += 1;
           const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
@@ -506,7 +513,7 @@ export class RuntimeConnection {
             {
               type: "heartbeat",
               requestId,
-              computerId: this.#options.computer.computerId,
+              installationId: this.#options.computer.computerId,
               instanceId,
               capabilities: this.#currentCapabilities(),
               ...(protocolVersion === RUNTIME_PROTOCOL_V2 ? { protocolVersion: RUNTIME_PROTOCOL_V2 } : {}),
@@ -654,7 +661,7 @@ export class RuntimeConnection {
           const registration = {
             type: "computer:register",
             requestId: registerRequestId,
-            computerId: this.#options.computer.computerId,
+            installationId: this.#options.computer.computerId,
             instanceId,
             displayName: this.#options.displayName,
             platform: this.#options.platform,
@@ -739,6 +746,13 @@ export class RuntimeConnection {
           }
           pendingHeartbeatRequestId = undefined;
           if (heartbeatResultTimer) this.#scheduler.clearTimeout(heartbeatResultTimer);
+          notifyTarget(
+            protocolVersion,
+            this.#negotiatedCapabilities,
+            frame,
+            this.#options.onChannelTarget,
+            this.#logger,
+          );
           scheduleHeartbeat();
           return;
         }
@@ -1010,21 +1024,6 @@ function connectionErrorCategory(error: unknown): string {
   if (error instanceof RuntimeConnectionError) return error.fatal ? "protocol" : "transport";
   if (error instanceof RuntimeSendError) return error.code;
   return "unexpected";
-}
-
-function rawDataBuffer(data: RawData): Buffer {
-  if (Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (Array.isArray(data)) return Buffer.concat(data);
-  return Buffer.from(data);
-}
-
-function safeJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
 }
 
 function withoutConnectionId(value: unknown): unknown {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { ensurePrivateDirectory, validatePrivateDirectory } from "@opentag/client";
+import { buildChildEnvironment } from "../command/environment.js";
 
 export interface ProcessLeaseRecord {
   pid: number;
@@ -30,6 +31,18 @@ export interface ProcessLeaseOptions<T extends ProcessLeaseRecord> {
 }
 
 export type ProcessIdentityInspection = { id: string; state: "identified" } | { state: "gone" | "unverifiable" };
+
+export interface ProcessIdentityInspectionDependencies {
+  inspectDarwin?: (pid: number) => Promise<ProcessIdentityInspection>;
+  isProcessAlive?: (pid: number) => boolean;
+  platform?: NodeJS.Platform;
+  readLinuxProcessFile?: (path: string) => Promise<string>;
+}
+
+export interface DarwinProcessIdentityInspectionDependencies {
+  isProcessAlive?: (pid: number) => boolean;
+  readProcessStart?: (pid: number, environment: NodeJS.ProcessEnv) => Promise<string | undefined>;
+}
 
 export class ProcessLeaseBusyError extends Error {
   override readonly name = "ProcessLeaseBusyError";
@@ -237,13 +250,19 @@ function parseMutationGuard(value: unknown): LeaseMutationGuard {
   return record as unknown as LeaseMutationGuard;
 }
 
-async function inspectProcessIdentity(pid: number): Promise<ProcessIdentityInspection> {
-  if (!isProcessAlive(pid)) return { state: "gone" };
-  if (process.platform === "linux") {
+export async function inspectProcessIdentity(
+  pid: number,
+  dependencies: ProcessIdentityInspectionDependencies = {},
+): Promise<ProcessIdentityInspection> {
+  const processIsAlive = dependencies.isProcessAlive ?? isProcessAlive;
+  if (!processIsAlive(pid)) return { state: "gone" };
+  const platform = dependencies.platform ?? process.platform;
+  if (platform === "linux") {
+    const readProcessFile = dependencies.readLinuxProcessFile ?? ((path: string) => readFile(path, "utf8"));
     try {
       const [stat, bootId] = await Promise.all([
-        readFile(`/proc/${pid}/stat`, "utf8"),
-        readFile("/proc/sys/kernel/random/boot_id", "utf8"),
+        readProcessFile(`/proc/${pid}/stat`),
+        readProcessFile("/proc/sys/kernel/random/boot_id"),
       ]);
       const fields = stat
         .slice(stat.lastIndexOf(")") + 2)
@@ -254,34 +273,43 @@ async function inspectProcessIdentity(pid: number): Promise<ProcessIdentityInspe
         ? { id: `linux:${bootId.trim()}:${startTicks}`, state: "identified" }
         : { state: "unverifiable" };
     } catch {
-      return isProcessAlive(pid) ? { state: "unverifiable" } : { state: "gone" };
+      return processIsAlive(pid) ? { state: "unverifiable" } : { state: "gone" };
     }
   }
-  if (process.platform === "darwin") {
-    return inspectDarwinProcessIdentity(pid);
+  if (platform === "darwin") {
+    return (dependencies.inspectDarwin ?? inspectDarwinProcessIdentity)(pid);
   }
   return pid === process.pid
     ? { id: `self:${Math.floor(performance.timeOrigin)}`, state: "identified" }
     : { state: "unverifiable" };
 }
 
-export async function inspectDarwinProcessIdentity(pid: number): Promise<ProcessIdentityInspection> {
-  return new Promise((resolveIdentity) => {
+export async function inspectDarwinProcessIdentity(
+  pid: number,
+  dependencies: DarwinProcessIdentityInspectionDependencies = {},
+): Promise<ProcessIdentityInspection> {
+  const environment = buildChildEnvironment(process.env, {
+    keys: ["LANG", "LC_ALL", "TZ"],
+    overrides: { LANG: "C", LC_ALL: "C", TZ: "UTC" },
+  });
+  const startedAt = await (dependencies.readProcessStart ?? readDarwinProcessStart)(pid, environment);
+  if (startedAt) return { id: `darwin:${startedAt}`, state: "identified" };
+  return (dependencies.isProcessAlive ?? isProcessAlive)(pid) ? { state: "unverifiable" } : { state: "gone" };
+}
+
+function readDarwinProcessStart(pid: number, environment: NodeJS.ProcessEnv): Promise<string | undefined> {
+  return new Promise((resolveStart) => {
     execFile(
       "ps",
       ["-o", "lstart=", "-p", String(pid)],
       {
         encoding: "utf8",
-        env: { ...process.env, LANG: "C", LC_ALL: "C", TZ: "UTC" },
+        env: environment,
         timeout: 5_000,
       },
       (error, stdout) => {
         const startedAt = String(stdout ?? "").trim();
-        if (!error && startedAt) {
-          resolveIdentity({ id: `darwin:${startedAt}`, state: "identified" });
-          return;
-        }
-        resolveIdentity(isProcessAlive(pid) ? { state: "unverifiable" } : { state: "gone" });
+        resolveStart(!error && startedAt ? startedAt : undefined);
       },
     );
   });

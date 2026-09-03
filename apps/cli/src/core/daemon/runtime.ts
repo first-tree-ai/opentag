@@ -5,24 +5,54 @@ import {
   configureClientLoggerForService,
   createClientRuntime,
   createLogger,
-  OpenTagApi,
   RuntimeConnection,
   RuntimeConnectionError,
   readMachineCredentials,
+  resolveBoundAccountComputer,
   resolveComputerIdentity,
   resolveOpenTagHome,
+  type UpdateManager,
+  type UpdaterStateSnapshot,
 } from "@opentag/client";
-import { CLI_VERSION } from "../../build-info.js";
+import type { RuntimeChannelTarget } from "@opentag/shared";
+import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
-import { applyDaemonEnvironment } from "./environment.js";
+import { resolveChannelEnvironment } from "../channel/environment.js";
+import { resolveCommandContext } from "../command/context.js";
+import { createPortableAutoUpdater } from "../update/auto-update.js";
+import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
+import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environment.js";
+import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
+
+export interface DaemonAutoUpdateOverrides {
+  /** Force attaching or skipping the updater; defaults to portable installs on non-dev channels. */
+  attach?: boolean;
+  installMode?: InstallMode;
+  installTarget?: (target: string) => Promise<void>;
+  refreshService?: () => Promise<void>;
+  stateStore?: {
+    loadState(): Promise<UpdaterStateSnapshot | undefined>;
+    saveState(state: UpdaterStateSnapshot): Promise<void>;
+  };
+  checkIntervalMs?: number;
+  /** Observe a target immediately after startup (deterministic tests). */
+  initialTarget?: RuntimeChannelTarget;
+}
+
+export interface DaemonServiceRunResult {
+  /** True when the daemon stopped to let the supervisor restart it onto a newly installed version. */
+  supervisorRestartRequested: boolean;
+}
 
 export interface DaemonRuntimeOptions {
   home?: string;
   logger?: ClientLogger;
   signals?: NodeJS.Process;
+  /** Automatic-upgrade control: `false` disables it; overrides exist for deterministic tests. */
+  autoUpdate?: false | DaemonAutoUpdateOverrides;
 }
 
 interface DaemonRuntime {
@@ -38,6 +68,23 @@ interface DaemonSignals {
 interface ClientLoggerGate {
   disable(): void;
   logger: ClientLogger;
+}
+
+interface DaemonMutableState {
+  channelTargetObserver?: (target: RuntimeChannelTarget) => void;
+  handoffRequested: boolean;
+  terminalLogger?: ClientLogger;
+  updater?: UpdateManager;
+}
+
+interface DaemonLifecycleContext {
+  currentPlatform: NodeJS.Platform;
+  daemonEnvironment: NodeJS.ProcessEnv;
+  gatedRuntimeLogger: ClientLoggerGate;
+  home: string;
+  logger: ClientLogger;
+  options: DaemonRuntimeOptions;
+  state: DaemonMutableState;
 }
 
 export async function runDaemonLifecycle(
@@ -73,8 +120,9 @@ export class DaemonRuntimeConfigurationError extends Error {
   override readonly name = "DaemonRuntimeConfigurationError";
 }
 
-export async function runDaemonService(options: DaemonRuntimeOptions = {}): Promise<void> {
-  const home = options.home ?? resolveOpenTagHome();
+export async function runDaemonService(options: DaemonRuntimeOptions = {}): Promise<DaemonServiceRunResult> {
+  const environment = resolveChannelEnvironment(process.env);
+  const home = options.home ?? resolveOpenTagHome(environment);
   const paths = resolveDaemonPaths(home);
   const signals = options.signals ?? process;
   const instanceId = randomUUID();
@@ -84,26 +132,22 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     instanceId,
     platform: currentPlatform,
   };
-  let ownership: Awaited<ReturnType<typeof acquireDaemonOwner>>;
-  try {
-    ownership = await acquireDaemonOwner(home, instanceId);
-  } catch (error) {
-    const logger = (options.logger ?? createLogger("daemon", { destination: "stderr" })).child(baseBindings);
-    logTerminalFailure(logger, error);
-    throw error;
-  }
 
   let lifecycleLogger: ClientLogger | undefined;
-  let terminalLogger: ClientLogger | undefined;
   let runtimeLoggerGate: ClientLoggerGate | undefined;
+  const state: DaemonMutableState = { handoffRequested: false };
+  let ownership: Awaited<ReturnType<typeof acquireOwnership>> | undefined;
   let failure: unknown;
   let failed = false;
   try {
-    const environmentResult = await applyDaemonEnvironment(home, process.env);
-    if (process.env.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
+    const environmentResult = await applyDaemonEnvironment(home, environment);
+    const daemonEnvironment = buildDaemonChildEnvironment(environmentResult);
+    if (daemonEnvironment.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
+    ownership = await acquireOwnership(home, instanceId);
+
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
     lifecycleLogger = logger;
-    terminalLogger = logger;
+    state.terminalLogger = logger;
     const gatedRuntimeLogger = createClientLoggerGate(logger);
     runtimeLoggerGate = gatedRuntimeLogger;
     const environmentLogger = logger.child({ module: "environment" });
@@ -112,117 +156,25 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       environmentLogger.warn({ lineNumber }, "Malformed daemon environment line ignored");
     }
     logger.info({}, "Daemon startup started");
-    await runDaemonLifecycle(async (signal) => {
-      let credentials: Awaited<ReturnType<typeof readMachineCredentials>>;
-      try {
-        credentials = await readMachineCredentials(home);
-      } catch (error) {
-        throw new DaemonRuntimeConfigurationError(
-          "OpenTag Computer credentials are invalid; run computer connect again",
-          {
-            cause: error,
-          },
-        );
-      }
-      signal.throwIfAborted();
-      if (!credentials?.enrollments.length) {
-        throw new DaemonRuntimeConfigurationError("This Computer is not enrolled; run computer connect first");
-      }
-      const serverUrls = new Set(credentials.enrollments.map((credential) => credential.serverUrl));
-      if (serverUrls.size !== 1) {
-        throw new DaemonRuntimeConfigurationError("One OpenTag home cannot connect to multiple Servers");
-      }
-      const serverUrl = credentials.enrollments[0]?.serverUrl;
-      if (!serverUrl) throw new DaemonRuntimeConfigurationError("This Computer is not enrolled");
-      let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
-      try {
-        identity = await resolveComputerIdentity(home, serverUrl);
-      } catch (error) {
-        throw new DaemonRuntimeConfigurationError("The local Computer identity is invalid", { cause: error });
-      }
-      signal.throwIfAborted();
-      if (currentPlatform !== "darwin" && currentPlatform !== "linux") {
-        throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
-      }
-      terminalLogger = logger.child({ computerId: identity.computerId });
-      const runtimes = await Promise.all(
-        credentials.enrollments.map(async (credential) => {
-          if (credential.computerId !== identity.computerId) {
-            throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
-          }
-          const connectionInstanceId = randomUUID();
-          const runtimeLogger = gatedRuntimeLogger.logger.child({
-            computerId: identity.computerId,
-            instanceId: connectionInstanceId,
-            workspaceComputerId: credential.workspaceComputerId,
-            workspaceId: credential.workspaceId,
-          });
-          const api = new OpenTagApi(credential.serverUrl);
-          const connection = new RuntimeConnection({
-            arch: arch(),
-            clientVersion: CLI_VERSION,
-            computer: identity,
-            displayName: hostname(),
-            instanceId: connectionInstanceId,
-            logger: runtimeLogger.child({ module: "connection" }),
-            machineToken: credential.machineToken,
-            platform: currentPlatform,
-          });
-          const runtime = await createClientRuntime(connection, {
-            home,
-            clientVersion: CLI_VERSION,
-            cliCommand: channelConfig.binName,
-            logger: runtimeLogger,
-            signal,
-            api,
-            machineToken: credential.machineToken,
-          });
-          void connection.whenRegistered(signal).then(
-            () => runtimeLogger.info({}, "Workspace Computer runtime is ready"),
-            () => undefined,
-          );
-          return { credential, logger: runtimeLogger, runtime };
-        }),
-      );
-      return {
-        run: async () => {
-          const results = await Promise.allSettled(
-            runtimes.map(async ({ credential, logger: runtimeLogger, runtime }) => {
-              try {
-                await runtime.run();
-              } catch (error) {
-                runtimeLogger.warn(
-                  { category: "enrollment_runtime_stopped", workspaceComputerId: credential.workspaceComputerId },
-                  "Workspace Computer runtime stopped independently",
-                );
-                throw error;
-              }
-            }),
-          );
-          const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-          if (failure) throw failure.reason;
-        },
-        stop: () => {
-          for (const { runtime } of runtimes) runtime.stop();
-        },
-      };
-    }, signals);
+    const context = { currentPlatform, daemonEnvironment, gatedRuntimeLogger, home, logger, options, state };
+    await runDaemonLifecycle((signal) => createDaemonRuntime(context, signal), signals);
   } catch (error) {
     const logger =
-      terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "stderr" })).child(baseBindings);
+      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logTerminalFailure(logger, error);
     failure = error;
     failed = true;
   }
 
   lifecycleLogger?.info({}, "Daemon stopping");
+  state.updater?.stop();
   lifecycleLogger?.info({}, "Daemon runtime stopped");
   runtimeLoggerGate?.disable();
   try {
-    await ownership.release();
+    await ownership?.release();
   } catch (error) {
     const logger =
-      terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "stderr" })).child(baseBindings);
+      state.terminalLogger ?? (options.logger ?? createLogger("daemon", { destination: "dual" })).child(baseBindings);
     logger.error({ category: "ownership_release" }, "Daemon ownership release failed");
     if (!failed) {
       failure = error;
@@ -230,12 +182,128 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     }
   }
   if (failed) throw failure;
+  return { supervisorRestartRequested: state.handoffRequested };
 }
 
-export async function runDaemonServiceEntry(options: DaemonRuntimeOptions = {}): Promise<0 | 1> {
+async function acquireOwnership(
+  home: string,
+  instanceId: string,
+): Promise<Awaited<ReturnType<typeof acquireDaemonOwner>>> {
+  return acquireDaemonOwner(home, instanceId);
+}
+
+async function createDaemonRuntime(context: DaemonLifecycleContext, signal: AbortSignal): Promise<DaemonRuntime> {
+  const { credential, identity, supportedPlatform } = await readDaemonIdentity(
+    context.home,
+    context.currentPlatform,
+    signal,
+  );
+  context.state.terminalLogger = context.logger.child({
+    computerId: credential.computerId,
+    installationId: identity.computerId,
+  });
+  const connectionInstanceId = randomUUID();
+  const runtimeLogger = context.gatedRuntimeLogger.logger.child({
+    computerId: credential.computerId,
+    installationId: identity.computerId,
+    instanceId: connectionInstanceId,
+  });
+  const apiContext = await resolveCommandContext({ home: context.home, serverUrl: credential.serverUrl });
+  if (!apiContext.api) throw new Error("Command context did not resolve an API");
+  const connection = new RuntimeConnection({
+    arch: arch(),
+    clientVersion: CLI_VERSION,
+    computer: identity,
+    displayName: hostname(),
+    instanceId: connectionInstanceId,
+    logger: runtimeLogger.child({ module: "connection" }),
+    machineToken: credential.machineToken,
+    onChannelTarget: (target) => context.state.channelTargetObserver?.(target),
+    platform: supportedPlatform,
+  });
+  const runtime = await createClientRuntime(connection, {
+    home: context.home,
+    environment: context.daemonEnvironment,
+    clientVersion: CLI_VERSION,
+    cliCommand: channelConfig.binName,
+    logger: runtimeLogger,
+    signal,
+    api: apiContext.api,
+    machineToken: credential.machineToken,
+  });
+  context.state.updater = await attachAutoUpdater(context, runtime, runtimeLogger);
+  void connection.whenRegistered(signal).then(
+    () => runtimeLogger.info({}, "Computer runtime is ready"),
+    () => undefined,
+  );
+  return { run: () => runtime.run(), stop: () => runtime.stop() };
+}
+
+async function readDaemonIdentity(home: string, currentPlatform: NodeJS.Platform, signal: AbortSignal) {
+  let credentials: Awaited<ReturnType<typeof readMachineCredentials>>;
   try {
-    await runDaemonService(options);
-    return 0;
+    credentials = await readMachineCredentials(home);
+  } catch (error) {
+    throw new DaemonRuntimeConfigurationError("OpenTag Computer credentials are invalid; run opentag connect again", {
+      cause: error,
+    });
+  }
+  signal.throwIfAborted();
+  const bound = resolveBoundAccountComputer(credentials);
+  if (bound.status === "disconnected") {
+    throw new DaemonRuntimeConfigurationError("This Computer is not connected; run opentag connect first");
+  }
+  let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
+  try {
+    identity = await resolveComputerIdentity(home, bound.credential.serverUrl);
+  } catch (error) {
+    throw new DaemonRuntimeConfigurationError("The local Computer identity is invalid", { cause: error });
+  }
+  signal.throwIfAborted();
+  if (currentPlatform !== "darwin" && currentPlatform !== "linux") {
+    throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
+  }
+  if (bound.credential.installationId !== identity.computerId) {
+    throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
+  }
+  return { credential: bound.credential, identity, supportedPlatform: currentPlatform };
+}
+
+async function attachAutoUpdater(
+  context: DaemonLifecycleContext,
+  runtime: Awaited<ReturnType<typeof createClientRuntime>>,
+  runtimeLogger: ClientLogger,
+): Promise<UpdateManager | undefined> {
+  const autoUpdate = context.options.autoUpdate === false ? undefined : (context.options.autoUpdate ?? {});
+  const installMode = autoUpdate?.installMode ?? detectInstallMode(process.env);
+  const shouldAttach =
+    autoUpdate !== undefined && installMode.mode === "portable" && (autoUpdate.attach ?? CHANNEL !== "dev");
+  if (!shouldAttach || installMode.mode !== "portable") return undefined;
+  const updater = createPortableAutoUpdater({
+    home: context.home,
+    installMode,
+    protectedWork: () => runtime.protectedWork(),
+    quiesce: () => runtime.quiesceForUpdate(),
+    onHandoff: () => {
+      context.state.handoffRequested = true;
+      runtime.stop();
+    },
+    logger: runtimeLogger.child({ module: "updater" }),
+    ...(autoUpdate.installTarget ? { installTarget: autoUpdate.installTarget } : {}),
+    ...(autoUpdate.refreshService ? { refreshService: autoUpdate.refreshService } : {}),
+    ...(autoUpdate.stateStore ? { stateStore: autoUpdate.stateStore } : {}),
+    ...(autoUpdate.checkIntervalMs ? { checkIntervalMs: autoUpdate.checkIntervalMs } : {}),
+  });
+  await updater.syncRunningVersion();
+  context.state.channelTargetObserver = (target) => updater.observe(target);
+  if (autoUpdate.initialTarget) updater.observe(autoUpdate.initialTarget);
+  return updater;
+}
+
+export async function runDaemonServiceEntry(options: DaemonRuntimeOptions = {}): Promise<0 | 1 | 75> {
+  try {
+    const result = await runDaemonService(options);
+    return result.supervisorRestartRequested ? SUPERVISOR_RESTART_EXIT_CODE : 0;
   } catch (error) {
     return isExpectedDaemonStop(error) ? 0 : 1;
   }
@@ -252,14 +320,14 @@ function isExpectedDaemonStop(error: unknown): boolean {
 
 function daemonOperatorMessage(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) {
-    return "Daemon configuration is invalid; run computer connect or inspect daemon status";
+    return "Daemon configuration is invalid; run opentag connect or inspect daemon status";
   }
   if (error instanceof DaemonOwnerStartupError) {
     return error.code === "BUSY"
       ? "Daemon is already running; inspect daemon status"
       : "Daemon ownership prevented startup; inspect daemon status";
   }
-  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run computer connect again";
+  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run opentag connect again";
   return "Daemon service configuration prevented startup; inspect daemon status";
 }
 

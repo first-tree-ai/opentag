@@ -3,18 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  type MachineEnrollmentCredential,
+  type MachineComputerCredential,
   machineCredentialsPath,
   readMachineCredentials,
-  storeMachineEnrollmentCredential,
+  resolveBoundAccountComputer,
+  storeBoundAccountComputer,
   writeMachineCredentialsAtomically,
 } from "../auth/machine-credentials.js";
+import { computerIdentityPath, writeComputerIdentityAtomically } from "../runtime/computer-identity.js";
+import { inspectLocalComputerConfiguration } from "../runtime/local-computer-configuration.js";
 
-const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
-const OTHER_WORKSPACE_ID = "b1c2d3e4-5f60-4a71-8b92-0c1d2e3f4a5b";
 const COMPUTER_ID = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
-const ENROLLMENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
-const OTHER_ENROLLMENT_ID = "2b74b32f-07d8-4585-a2fb-5ebc1677b35d";
+const INSTALLATION_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const SERVER_URL = "https://opentag.example";
 
 const homes: string[] = [];
@@ -29,144 +29,229 @@ async function newHome(): Promise<string> {
   return home;
 }
 
-function credential(overrides: Partial<MachineEnrollmentCredential> = {}): MachineEnrollmentCredential {
+function credential(overrides: Partial<MachineComputerCredential> = {}): MachineComputerCredential {
   return {
-    workspaceComputerId: ENROLLMENT_ID,
     computerId: COMPUTER_ID,
-    machineToken: `otmc_${ENROLLMENT_ID}.secret`,
+    installationId: INSTALLATION_ID,
+    machineToken: `otmc_${COMPUTER_ID}.secret`,
     serverUrl: SERVER_URL,
     ...overrides,
   };
 }
 
-/** Seeds the credentials file directly so entry shapes the current writer cannot produce are covered. */
-async function seed(home: string, enrollments: readonly unknown[]): Promise<void> {
-  await storeMachineEnrollmentCredential(credential(), home);
-  await writeFile(machineCredentialsPath(home), JSON.stringify({ version: 1, enrollments }), "utf8");
+async function seedUnsupported(home: string): Promise<void> {
+  await storeBoundAccountComputer(credential(), home);
+  await writeFile(machineCredentialsPath(home), JSON.stringify({ version: 99, computer: credential() }), "utf8");
 }
 
 describe("machine credentials", () => {
-  it("round-trips an enrollment written with and without the legacy scope", async () => {
+  it("writes a single Computer credential with its installation identity", async () => {
     const home = await newHome();
-
-    await storeMachineEnrollmentCredential(credential({ workspaceId: WORKSPACE_ID }), home);
-    expect((await readMachineCredentials(home))?.enrollments).toEqual([credential({ workspaceId: WORKSPACE_ID })]);
-
-    await storeMachineEnrollmentCredential(credential(), home);
+    await storeBoundAccountComputer(credential(), home);
     const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments).toEqual([credential()]);
-    expect(stored?.enrollments[0]).not.toHaveProperty("workspaceId");
+    expect(stored).toEqual({ version: 3, computer: credential() });
+    expect(JSON.parse(await readFile(machineCredentialsPath(home), "utf8"))).toEqual({
+      version: 3,
+      computer: credential(),
+    });
   });
 
-  it("reads a file holding both pre-cutover and post-cutover entries", async () => {
+  it("rejects an unsupported credential version", async () => {
     const home = await newHome();
-    await seed(home, [
-      { ...credential({ workspaceId: WORKSPACE_ID }) },
-      { ...credential({ workspaceComputerId: OTHER_ENROLLMENT_ID }) },
-    ]);
-
-    const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments.map((entry) => entry.workspaceComputerId)).toEqual([ENROLLMENT_ID, OTHER_ENROLLMENT_ID]);
-    expect(stored?.enrollments[0]?.workspaceId).toBe(WORKSPACE_ID);
-    expect(stored?.enrollments[1]?.workspaceId).toBeUndefined();
+    await seedUnsupported(home);
+    await expect(readMachineCredentials(home)).rejects.toThrow("unsupported format");
+    expect(resolveBoundAccountComputer(undefined)).toEqual({ status: "disconnected" });
+    expect(resolveBoundAccountComputer({ version: 3, computer: credential() })).toEqual({
+      status: "bound",
+      credential: credential(),
+    });
   });
 
-  it("drops an unusable entry instead of stranding every other enrollment", async () => {
+  it("rewrites an unsupported file only after an explicit fresh Computer binding", async () => {
     const home = await newHome();
-    await seed(home, [
-      { workspaceComputerId: "not-a-uuid", computerId: COMPUTER_ID, machineToken: "otmc_x.y", serverUrl: SERVER_URL },
-      { ...credential(), machineToken: "bearer-not-a-machine-token" },
-      { ...credential({ workspaceId: "also-not-a-uuid" }) },
-      { ...credential({ workspaceComputerId: OTHER_ENROLLMENT_ID }) },
-    ]);
-
-    const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments.map((entry) => entry.workspaceComputerId)).toEqual([OTHER_ENROLLMENT_ID]);
+    await seedUnsupported(home);
+    await expect(readMachineCredentials(home)).rejects.toThrow("unsupported format");
+    await storeBoundAccountComputer(credential(), home);
+    expect(await readMachineCredentials(home)).toEqual({ version: 3, computer: credential() });
   });
 
-  it("still rejects a file whose envelope is not credentials at all", async () => {
+  it("refuses to write a credential the reader would reject", async () => {
     const home = await newHome();
-    await storeMachineEnrollmentCredential(credential(), home);
-    await writeFile(machineCredentialsPath(home), JSON.stringify({ version: 9, enrollments: [] }), "utf8");
-
-    await expect(readMachineCredentials(home)).rejects.toThrow("credentials file is invalid");
-  });
-
-  it("replaces the credential it supersedes rather than accumulating", async () => {
-    const home = await newHome();
-    await storeMachineEnrollmentCredential(credential({ workspaceId: WORKSPACE_ID }), home);
-
-    // Same enrollment, rotated token.
-    await storeMachineEnrollmentCredential(
-      credential({ workspaceId: WORKSPACE_ID, machineToken: `otmc_${ENROLLMENT_ID}.rotated` }),
-      home,
-    );
-    expect((await readMachineCredentials(home))?.enrollments).toEqual([
-      credential({ workspaceId: WORKSPACE_ID, machineToken: `otmc_${ENROLLMENT_ID}.rotated` }),
-    ]);
-
-    // Re-enrolment into the same legacy scope under a new enrollment id.
-    await storeMachineEnrollmentCredential(
-      credential({ workspaceComputerId: OTHER_ENROLLMENT_ID, workspaceId: WORKSPACE_ID }),
-      home,
-    );
-    expect((await readMachineCredentials(home))?.enrollments).toEqual([
-      credential({ workspaceComputerId: OTHER_ENROLLMENT_ID, workspaceId: WORKSPACE_ID }),
-    ]);
-  });
-
-  /**
-   * The reader drops entries it cannot use, so a writer that skipped validation could resolve happily
-   * while leaving bytes the very next read discards. These pin the write side to the stricter policy.
-   */
-  it("refuses to write an entry its own reader would discard", async () => {
-    const home = await newHome();
-    await storeMachineEnrollmentCredential(credential(), home);
-
     await expect(
       writeMachineCredentialsAtomically(
-        { version: 1, enrollments: [{ workspaceComputerId: "not-a-uuid" } as never] },
+        { version: 3, computer: { ...credential(), installationId: "not-a-uuid" } },
         home,
       ),
-    ).rejects.toThrow("Refusing to write an unusable OpenTag Computer credential (entry 0)");
-
-    // The rejected write must not have touched the credential already on disk.
-    expect((await readMachineCredentials(home))?.enrollments).toEqual([credential()]);
+    ).rejects.toThrow("unusable OpenTag Computer credential");
   });
 
-  it("refuses to write a duplicate enrollment the reader would collapse", async () => {
-    const home = await newHome();
-
-    await expect(
-      writeMachineCredentialsAtomically({ version: 1, enrollments: [credential(), credential()] }, home),
-    ).rejects.toThrow("Refusing to write a duplicate OpenTag Computer enrollment (entry 1)");
-    expect(await readMachineCredentials(home)).toBeUndefined();
-  });
-
-  it("persists exactly what the reader returns", async () => {
-    const home = await newHome();
-    await writeMachineCredentialsAtomically(
-      {
-        version: 1,
-        enrollments: [{ ...credential({ workspaceId: WORKSPACE_ID }), stale: "dropped" } as never],
+  it("reports a completely unconfigured Home without touching the filesystem", async () => {
+    const home = join(await newHome(), "not-created");
+    await expect(inspectLocalComputerConfiguration(home)).resolves.toEqual({
+      identity: { status: "missing", detail: "Computer identity is not configured" },
+      credentials: { status: "missing", detail: "No Computer credentials are configured" },
+      binding: {
+        status: "invalid",
+        credentialCount: 0,
+        detail: "A valid identity and Computer credential are required before their binding can be verified",
       },
-      home,
-    );
-
-    const onDisk = JSON.parse(await readFile(machineCredentialsPath(home), "utf8"));
-    expect(onDisk).toEqual(await readMachineCredentials(home));
-    expect(onDisk.enrollments[0]).not.toHaveProperty("stale");
+    });
   });
 
-  it("keeps a second Account's enrollment of the same Computer", async () => {
+  it("recognizes a canonical identity and matching credential binding", async () => {
     const home = await newHome();
-    await storeMachineEnrollmentCredential(credential({ workspaceId: WORKSPACE_ID }), home);
-    await storeMachineEnrollmentCredential(
-      credential({ workspaceComputerId: OTHER_ENROLLMENT_ID, workspaceId: OTHER_WORKSPACE_ID }),
-      home,
-    );
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(credential(), home);
 
-    const stored = await readMachineCredentials(home);
-    expect(stored?.enrollments.map((entry) => entry.workspaceComputerId)).toEqual([ENROLLMENT_ID, OTHER_ENROLLMENT_ID]);
+    await expect(inspectLocalComputerConfiguration(home)).resolves.toEqual({
+      identity: {
+        status: "valid",
+        value: { version: 2, computerId: INSTALLATION_ID, serverUrl: SERVER_URL },
+      },
+      credentials: { status: "valid", value: { version: 3, computer: credential() } },
+      binding: { status: "valid", credentialCount: 1, serverUrl: SERVER_URL },
+    });
+  });
+
+  it("distinguishes missing, malformed, and non-canonical identity data", async () => {
+    const missingIdentityHome = await newHome();
+    await storeBoundAccountComputer(credential(), missingIdentityHome);
+    await expect(inspectLocalComputerConfiguration(missingIdentityHome)).resolves.toMatchObject({
+      identity: { status: "missing" },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+
+    const malformedHome = await newHome();
+    await writeComputerIdentityAtomically(malformedHome, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(credential(), malformedHome);
+    await writeFile(computerIdentityPath(malformedHome), "{not-json", "utf8");
+    await expect(inspectLocalComputerConfiguration(malformedHome)).resolves.toMatchObject({
+      identity: { status: "invalid", detail: expect.stringContaining("Expected property name") },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+
+    const nonCanonicalHome = await newHome();
+    await writeComputerIdentityAtomically(nonCanonicalHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: "https://opentag.example/",
+    });
+    await storeBoundAccountComputer(credential(), nonCanonicalHome);
+    await expect(inspectLocalComputerConfiguration(nonCanonicalHome)).resolves.toMatchObject({
+      identity: { status: "invalid", detail: "Computer identity contains a non-canonical Server origin" },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+
+    const invalidIdentityUrlHome = await newHome();
+    await writeComputerIdentityAtomically(invalidIdentityUrlHome, {
+      version: 2,
+      computerId: COMPUTER_ID,
+      serverUrl: "not-a-url",
+    });
+    await storeBoundAccountComputer(credential(), invalidIdentityUrlHome);
+    await expect(inspectLocalComputerConfiguration(invalidIdentityUrlHome)).resolves.toMatchObject({
+      identity: { status: "invalid", detail: "Computer identity contains an invalid Server origin" },
+      credentials: { status: "valid" },
+      binding: { status: "invalid", credentialCount: 1 },
+    });
+  });
+
+  it("reports invalid origins, mismatched IDs, and mismatched Server origins", async () => {
+    const invalidCredentialHome = await newHome();
+    await writeComputerIdentityAtomically(invalidCredentialHome, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await writeFile(
+      machineCredentialsPath(invalidCredentialHome),
+      JSON.stringify({ version: 3, computer: credential({ serverUrl: "https://opentag.example/" }) }),
+      "utf8",
+    );
+    await expect(inspectLocalComputerConfiguration(invalidCredentialHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "invalid", detail: "A stored Computer credential contains a non-canonical Server origin" },
+      binding: { status: "invalid", credentialCount: 0 },
+    });
+
+    const invalidCredentialUrlHome = await newHome();
+    await writeComputerIdentityAtomically(invalidCredentialUrlHome, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await writeFile(
+      machineCredentialsPath(invalidCredentialUrlHome),
+      JSON.stringify({ version: 3, computer: credential({ serverUrl: "not-a-url" }) }),
+      "utf8",
+    );
+    await expect(inspectLocalComputerConfiguration(invalidCredentialUrlHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "invalid", detail: "A stored Computer credential contains an invalid Server origin" },
+      binding: { status: "invalid", credentialCount: 0 },
+    });
+
+    const mismatchedIdHome = await newHome();
+    await writeComputerIdentityAtomically(mismatchedIdHome, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(
+      credential({ installationId: "85fe9af3-d1c6-472b-b78c-8a7ccf512751" }),
+      mismatchedIdHome,
+    );
+    await expect(inspectLocalComputerConfiguration(mismatchedIdHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "valid" },
+      binding: {
+        status: "invalid",
+        credentialCount: 1,
+        detail: "Stored Computer credentials do not belong to the local Computer identity",
+      },
+    });
+
+    const mismatchedOriginHome = await newHome();
+    await writeComputerIdentityAtomically(mismatchedOriginHome, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await storeBoundAccountComputer(credential({ serverUrl: "https://other.example" }), mismatchedOriginHome);
+    await expect(inspectLocalComputerConfiguration(mismatchedOriginHome)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "valid" },
+      binding: {
+        status: "invalid",
+        credentialCount: 1,
+        detail: "The Computer identity and stored credential refer to different Server origins",
+      },
+    });
+  });
+
+  it("fails closed when either strict reader rejects a corrupted credentials file", async () => {
+    const home = await newHome();
+    await writeComputerIdentityAtomically(home, {
+      version: 2,
+      computerId: INSTALLATION_ID,
+      serverUrl: SERVER_URL,
+    });
+    await writeFile(machineCredentialsPath(home), "{not-json", "utf8");
+    await expect(inspectLocalComputerConfiguration(home)).resolves.toMatchObject({
+      identity: { status: "valid" },
+      credentials: { status: "invalid", detail: expect.stringContaining("Expected property name") },
+      binding: { status: "invalid", credentialCount: 0 },
+    });
   });
 });

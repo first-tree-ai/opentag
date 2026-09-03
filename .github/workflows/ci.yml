@@ -14,9 +14,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  PRIMARY_NODE_VERSION: "24"
-
 jobs:
   checks:
     name: Checks
@@ -50,8 +47,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
@@ -60,13 +60,56 @@ jobs:
         run: pnpm check
 
       - name: Build
-        run: pnpm build
+        run: pnpm exec turbo run build --summarize && pnpm --silent bundle:report
 
       - name: Type-check
-        run: pnpm typecheck
+        run: pnpm exec turbo run typecheck --summarize
 
       - name: Test
-        run: pnpm test
+        run: node --test --test-concurrency=1 scripts/__tests__/*.test.mjs && pnpm exec turbo run test --concurrency=2 --summarize
+
+      - name: Summarize Turbo cache provenance
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
+          import { join } from "node:path";
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          if (!summaryPath) process.exit(0);
+          const runsDirectory = ".turbo/runs";
+          let files = [];
+          try {
+            files = readdirSync(runsDirectory)
+              .filter((file) => file.endsWith(".json"))
+              .map((file) => ({ file, mtime: statSync(join(runsDirectory, file)).mtimeMs }))
+              .sort((left, right) => left.mtime - right.mtime);
+          } catch {
+            appendFileSync(summaryPath, "\n### Turbo cache provenance\n\nNo Turbo run summaries were produced.\n");
+            process.exit(0);
+          }
+
+          const rows = new Map();
+          for (const { file } of files) {
+            const run = JSON.parse(readFileSync(join(runsDirectory, file), "utf8"));
+            for (const task of run.tasks ?? []) {
+              const command = run.execution?.command ?? "turbo run";
+              rows.set(`${command}:${task.taskId}`, {
+                result: task.cache?.status === "HIT" ? "cache hit" : "executed",
+                task: task.taskId,
+              });
+            }
+          }
+
+          const body = [...rows.values()]
+            .sort((left, right) => left.task.localeCompare(right.task))
+            .map(({ task, result }) => `| ${task} | ${result} |`)
+            .join("\n");
+          appendFileSync(
+            summaryPath,
+            `\n### Turbo cache provenance\n\n| Task | Result |\n| --- | --- |\n${body || "| (none) | executed |"}\n`,
+          );
+          NODE
 
       - name: Test PostgreSQL integration
         run: pnpm --filter @opentag/server test:integration
@@ -83,6 +126,60 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  browser-smoke:
+    name: Browser Smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_VERSION: "1.62.1"
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.PLAYWRIGHT_BROWSERS_PATH }}
+          key: ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}-
+
+      - name: Install pinned Chromium
+        run: pnpm --filter @opentag/e2e exec playwright install --with-deps chromium
+
+      - name: Run browser smoke
+        run: pnpm test:e2e:smoke
+
+      - name: Upload browser smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a0 # v7.0.1
+        with:
+          name: browser-smoke-artifacts-${{ github.sha }}
+          path: |
+            e2e/test-results/**
+            e2e/playwright-report/**
+          if-no-files-found: warn
+          retention-days: 14
+
   node-compatibility:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -90,8 +187,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - node: "22.13.0"
-            name: Node 22.13.0 Compatibility
+          - node: "22.22.2"
+            name: Node 22.22.2 Compatibility
+          - node: "24"
+            name: Node 24 Compatibility
           - node: "26"
             name: Node 26 Compatibility
     steps:
@@ -130,8 +229,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --config.engine-strict=true
@@ -181,6 +283,8 @@ jobs:
       - name: Restore and prepare production identity
         run: |
           git checkout -- apps/cli/package.json apps/cli/src/build-info.ts
+          # The JavaScript source uses template literals and must not be shell-expanded.
+          # shellcheck disable=SC2016
           node -e '
             const fs = require("node:fs");
             const path = "apps/cli/package.json";
@@ -214,8 +318,11 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          node-version-file: .node-version
           cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
 
       - name: Build source CLI and dependencies
         run: |
@@ -233,7 +340,7 @@ jobs:
             --env POSTGRES_USER=opentag \
             --env POSTGRES_PASSWORD=opentag \
             postgres:17-alpine
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if docker exec opentag-postgres-ci pg_isready --username opentag --dbname opentag; then
               exit 0
             fi
@@ -243,6 +350,7 @@ jobs:
           exit 1
 
       - name: Start container
+        # Container Smoke runs one server process, so assert the documented single-process boundary explicitly.
         run: >-
           docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
           --env OPENTAG_DATABASE_URL=postgresql://opentag:opentag@opentag-postgres-ci:5432/opentag
@@ -250,12 +358,15 @@ jobs:
           --env BETTER_AUTH_SECRET=ci-only-better-auth-secret-at-least-32-characters
           --env OPENTAG_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           --env OPENTAG_PUBLIC_URL=https://localhost:18000
+          --env OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true
           opentag-server:ci
 
       - name: Wait for readiness endpoint
         run: |
-          for attempt in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if response=$(curl --fail --silent http://127.0.0.1:18000/readyz); then
+              # The JavaScript source uses template literals and must not be shell-expanded.
+              # shellcheck disable=SC2016
               node -e '
                 const readiness = JSON.parse(process.argv[1]);
                 if (readiness.status !== "ready") {
@@ -272,6 +383,8 @@ jobs:
       - name: Smoke production Web App entrypoints and Computer runtime
         run: |
           curl --fail --silent http://127.0.0.1:18000/ | grep -q "<title>OpenTag</title>"
+          # The JavaScript source must stay single-quoted so the shell does not rewrite its strings.
+          # shellcheck disable=SC2016
           node -e '
             const response = await fetch("http://127.0.0.1:18000/api/v1/not-a-route");
             const body = await response.text();
@@ -283,17 +396,14 @@ jobs:
           bootstrap=$(docker exec \
             --env OPENTAG_BOOTSTRAP_EMAIL=admin@example.com \
             --env OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin \
-            --env OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example \
-            --env OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example \
             opentag-server-ci node packages/server/dist/admin/bootstrap-cli.mjs)
           connect_code=$(node -e '
             const result = JSON.parse(process.argv[1]);
-            if (!result.userId || !result.workspaceId || !result.connectCode || !result.expiresAt) {
+            if (!result.userId || !result.connectCode || !result.expiresAt) {
               throw new Error("Bootstrap output is incomplete");
             }
             process.stdout.write(result.connectCode);
           ' "$bootstrap")
-          workspace_id=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceId)' "$bootstrap")
 
           runtime_home=$(mktemp -d)
           daemon_log="$runtime_home/daemon.log"
@@ -312,11 +422,13 @@ jobs:
           test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/credentials.json"
           test ! -e "$runtime_home/computer.json"
+          # The JavaScript source uses template literals and must not be shell-expanded.
+          # shellcheck disable=SC2016
           machine_connect_code=$(node --input-type=module -e '
             import { readFileSync } from "node:fs";
             const credentials = JSON.parse(readFileSync(process.argv[1], "utf8"));
             const response = await fetch(
-              `http://127.0.0.1:18000/api/v1/workspaces/${process.argv[2]}/computer-connect-codes`,
+              "http://127.0.0.1:18000/api/v1/computer-connect-codes",
               { method: "POST", headers: { authorization: `Bearer ${credentials.accessToken}` } },
             );
             if (!response.ok) throw new Error(`Computer connect-code issue failed: ${response.status}`);
@@ -324,7 +436,7 @@ jobs:
             const match = bootstrapCommand.match(/ -- ([A-Za-z0-9_-]+)$/u);
             if (!match) throw new Error("Computer connect bootstrap command did not contain a code");
             process.stdout.write(match[1]);
-          ' "$runtime_home/config/credentials.json" "$workspace_id")
+          ' "$runtime_home/config/credentials.json")
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer connect \
             --server http://127.0.0.1:18000 --no-start -- "$machine_connect_code"
           test -f "$runtime_home/config/computer.json"
@@ -348,11 +460,38 @@ jobs:
           OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$runtime_home/second.log" 2>&1
           grep -q "already running" "$runtime_home/second.log"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'
-          computer_id=$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
+          computer_list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list)
+          printf '%s\n' "$computer_list" | grep -q $'\tonline\t'
+          installation_id=$(node -p \
+            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
             "$runtime_home/config/computer.json")
+          computer_id=$(node -p \
+            "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computer.computerId" \
+            "$runtime_home/config/computer-credentials.json")
+          test "$installation_id" != "$computer_id"
+          printf '%s\n' "$computer_list" | awk -F '\t' -v computer_id="$computer_id" \
+            '$2 == computer_id { found = 1 } END { exit found ? 0 : 1 }'
+          if printf '%s\n' "$computer_list" | awk -F '\t' -v installation_id="$installation_id" \
+            '$2 == installation_id { found = 1 } END { exit found ? 0 : 1 }'; then
+            echo "Account Computer list exposed the local installation ID" >&2
+            exit 1
+          fi
           test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/computer.json"
+
+          if OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
+            --name installation-id-agent \
+            --display-name "Installation ID Agent" \
+            --provider codex \
+            --computer "$installation_id" \
+            >"$runtime_home/installation-id-agent.out" \
+            2>"$runtime_home/installation-id-agent.err"; then
+            echo "Agent creation accepted a local installation ID" >&2
+            exit 1
+          fi
+          grep -q "is not owned by this Account" "$runtime_home/installation-id-agent.err"
+          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list)" = \
+            "No Agents registered"
 
           agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
             --name ci-agent \
@@ -412,6 +551,72 @@ jobs:
           docker rm --force opentag-postgres-ci || true
           docker network rm opentag-ci || true
 
+  workflow-validation:
+    name: Workflow and Shell Validation
+    runs-on: ubuntu-latest
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      SHELLCHECK_VERSION: "0.11.0"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/actionlint"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}" \
+            --output "$archive_path"
+          mkdir -p "$install_dir"
+          tar --extract --gzip --file "$archive_path" --directory "$install_dir"
+          chmod +x "$install_dir/actionlint"
+          echo "$install_dir" >> "$GITHUB_PATH"
+
+      - name: Install pinned ShellCheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          archive_path="$RUNNER_TEMP/$archive"
+          install_dir="$RUNNER_TEMP/shellcheck"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}" \
+            --output "$archive_path"
+          mkdir -p "$install_dir"
+          tar --extract --xz --file "$archive_path" --directory "$install_dir"
+          chmod +x "$install_dir/shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          echo "$install_dir/shellcheck-v${SHELLCHECK_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Validate GitHub Actions workflows
+        run: actionlint
+
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          shellcheck scripts/**/*.sh
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository with TruffleHog
+        uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
+        with:
+          version: "3.97.1"
+
   ci:
     name: CI
     if: always()
@@ -420,6 +625,9 @@ jobs:
       - node-compatibility
       - cli-pack-smoke
       - container-smoke
+      - browser-smoke
+      - workflow-validation
+      - secret-scan
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs
@@ -428,8 +636,12 @@ jobs:
           NODE_COMPATIBILITY_RESULT: ${{ needs.node-compatibility.result }}
           CLI_PACK_RESULT: ${{ needs.cli-pack-smoke.result }}
           CONTAINER_RESULT: ${{ needs.container-smoke.result }}
+          BROWSER_SMOKE_RESULT: ${{ needs.browser-smoke.result }}
+          WORKFLOW_VALIDATION_RESULT: ${{ needs.workflow-validation.result }}
+          SECRET_SCAN_RESULT: ${{ needs.secret-scan.result }}
         run: |
-          for result in "$CHECKS_RESULT" "$NODE_COMPATIBILITY_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT"; do
+          for result in "$CHECKS_RESULT" "$NODE_COMPATIBILITY_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT" \
+            "$BROWSER_SMOKE_RESULT" "$WORKFLOW_VALIDATION_RESULT" "$SECRET_SCAN_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "Required CI job did not succeed: $result" >&2
               exit 1

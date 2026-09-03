@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ImBindingUnbindRequiredDetailSchema } from "./im-binding.js";
 
 export const ErrorCategorySchema = z.enum(["credential", "deterministic", "validation", "transient", "rate_limit"]);
 
@@ -15,19 +16,27 @@ export const ErrorCodeSchema = z.enum([
   "AUTH_EMAIL_CONFLICT",
   "AUTH_USER_SUSPENDED",
   "AUTH_USER_MISMATCH",
-  "WORKSPACE_SETUP_AGENT_NOT_FOUND",
-  "WORKSPACE_SETUP_NOT_READY",
+  "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+  "ACCOUNT_SETUP_NOT_READY",
+  "AGENT_COMPUTER_NOT_BOUND",
   "AGENT_FORBIDDEN",
   "AGENT_CREATION_INTENT_CONFLICT",
   "AGENT_NAME_CONFLICT",
   "AGENT_LIFECYCLE_CONFLICT",
   "AGENT_REVISION_CONFLICT",
+  "AGENT_REBIND_BLOCKED",
   "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
   "ONBOARDING_RESET_UNVERIFIED",
+  "IM_BINDING_CONFIGURATION_CONFLICT",
   "IM_BINDING_FORBIDDEN",
+  "IM_BINDING_GENERATION_STALE",
   "IM_BINDING_NOT_FOUND",
   "IM_BINDING_PROVIDER_IMMUTABLE",
   "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+  "IM_BINDING_TEMPORARILY_UNAVAILABLE",
+  "IM_BINDING_UNBIND_REQUIRED",
+  "FEISHU_APP_ALREADY_BOUND",
+  "FEISHU_BINDING_IDENTITY_MISMATCH",
   "FEISHU_UPSTREAM_UNAVAILABLE",
   "SLACK_APP_TEAM_ALREADY_BOUND",
   "SLACK_AUTH_IDENTITY_INCOMPLETE",
@@ -37,6 +46,7 @@ export const ErrorCodeSchema = z.enum([
   "SLACK_OAUTH_FAILED",
   "SLACK_SCOPE_REAUTH_REQUIRED",
   "SLACK_UPSTREAM_UNAVAILABLE",
+  "CLIENT_VERSION_UNSUPPORTED",
   "COMPUTER_IDENTITY_CONFLICT",
   "COMPUTER_NOT_FOUND",
   "COMPUTER_NOT_REGISTERED",
@@ -70,8 +80,18 @@ export const ErrorDetailSchema = z
     requestId: z.string().min(1).optional(),
     retryAfterSeconds: z.number().int().positive().optional(),
     issues: z.array(ValidationIssueSchema).optional(),
+    unbindRequired: ImBindingUnbindRequiredDetailSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((detail, context) => {
+    if (detail.unbindRequired && detail.code !== "IM_BINDING_UNBIND_REQUIRED") {
+      context.addIssue({
+        code: "custom",
+        path: ["unbindRequired"],
+        message: "Only an unbind-required failure carries the unbind identity",
+      });
+    }
+  });
 
 export const ErrorEnvelopeSchema = z
   .object({

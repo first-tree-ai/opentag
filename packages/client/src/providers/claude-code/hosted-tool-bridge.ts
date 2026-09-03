@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentHostedTools, JsonValue } from "../../agent-runtime/types.js";
 import { assertJsonValue } from "../../agent-runtime/validation.js";
+import { createLogger } from "../../observability/logger.js";
 
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MCP_PROTOCOL_VERSION = "2025-03-26";
+const logger = createLogger("provider-claude-mcp");
 
 export interface ClaudeCodeHostedToolBridge {
   readonly allowedTools: readonly string[];
@@ -40,7 +42,11 @@ export async function startClaudeCodeHostedToolBridge(
           runId,
           signal,
           token,
-        }).catch(() => {
+        }).catch((error: unknown) => {
+          logger.debug(
+            { code: "request_handling_failed", error: String(error) },
+            "Claude Code MCP request handling failed",
+          );
           /* v8 ignore next 2 -- only a socket failure after response headers can reach the destroy branch. */
           if (!response.headersSent) writeJson(response, 500, jsonRpcError(null, -32603, "Internal error"));
           else response.destroy();
@@ -66,6 +72,10 @@ export async function startClaudeCodeHostedToolBridge(
     await writeFile(configPath, `${JSON.stringify(configuration)}\n`, { encoding: "utf8", mode: 0o600 });
     /* v8 ignore start -- deterministic setup tests cannot induce an owned 0600 temp-file write failure. */
   } catch (error) {
+    logger.debug(
+      { code: "bridge_start_failed", error: String(error) },
+      "Claude Code hosted tool bridge startup failed",
+    );
     await Promise.allSettled([
       ...(server ? [closeServer(server)] : []),
       rm(directory, { recursive: true, force: true }),
@@ -85,7 +95,13 @@ export async function startClaudeCodeHostedToolBridge(
       ]).then((results) => {
         /* v8 ignore start -- owned server/temp-directory cleanup failures are OS-level and not deterministically injectable. */
         const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-        if (failures.length > 0) throw new AggregateError(failures, "Claude Code hosted tool bridge cleanup failed");
+        if (failures.length > 0) {
+          logger.debug(
+            { code: "bridge_cleanup_failed", failureCount: failures.length },
+            "Claude Code MCP cleanup failed",
+          );
+          throw new AggregateError(failures, "Claude Code hosted tool bridge cleanup failed");
+        }
         /* v8 ignore stop */
       });
       return closePromise;
@@ -123,7 +139,8 @@ async function handleRequest(
   let body: unknown;
   try {
     body = JSON.parse(await readBody(request));
-  } catch {
+  } catch (error) {
+    logger.debug({ code: "request_parse_failed", error: String(error) }, "Claude Code MCP request body was invalid");
     writeJson(response, 400, jsonRpcError(null, -32700, "Parse error"));
     return;
   }
@@ -176,6 +193,7 @@ async function handleRequest(
       assertJsonValue(candidate, "MCP tool arguments");
       input = candidate as JsonValue;
     } catch (error) {
+      logger.debug({ code: "tool_input_invalid", error: String(error) }, "Claude Code MCP tool input was invalid");
       writeJson(response, 200, failedToolResult(id, (error as Error).message));
       return;
     }

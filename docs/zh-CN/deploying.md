@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-08-20
+> Last synced with: 2026-09-02
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI 的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -56,6 +56,26 @@ Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在
 - **Container HTTP port** 为 `8000`，与镜像暴露的端口一致。
 - **PostgreSQL**：CapRover 的一键 Postgres App，或主机可达的外部实例。
 - **持久化存储**：server 镜像本身不需要，但数据库 App 需要。
+
+### 容器日志轮转
+
+server 镜像不能控制 Docker 的 logging driver。首次部署前，请在所有可能运行 server 的 Swarm node 上配置 Docker
+daemon，或设置等效的 CapRover logging 选项。Docker daemon 的具体配置入口是 `/etc/docker/daemon.json`：
+
+```json
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+```
+
+修改该文件后，按主机操作系统的要求重启或重新加载 Docker daemon。上面的 `max-size` 与 `max-file` 是 server 的预期
+限制；Docker 不会从镜像 label 读取它们。本仓库 `docker-compose.yml` 中的 `logging:` block 只作用于本地 Postgres
+service，不会配置 CapRover 的 server container。
+
 - App 上的**环境变量**：
 
 | 变量 | Staging 取值 |
@@ -65,10 +85,16 @@ Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在
 | `OPENTAG_PORT` | `8000` |
 | `OPENTAG_PUBLIC_URL` | App 的 HTTPS URL；hosted environment 拒绝纯 HTTP |
 | `OPENTAG_DATABASE_URL` | Staging 数据库的 `postgresql://…` |
-| `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用 |
-| `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `OPENTAG_JWT_SECRET` 不同 |
+| `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用；签发全部 Account session |
+| `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://storage.googleapis.com/opentag-release/releases` |
+| `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
+
+这两个可选变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询下载
+base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继续广播最后一次已知的目标。dev channel 从不广播
+目标。
 
 设置 `OPENTAG_PUBLIC_URL` 之前，先在 App 上启用 HTTPS 并强制 HTTPS；在 hosted environment 中，public URL 不是 HTTPS
 时 server 会拒绝启动。Staging 的 secret 不得与任何其他环境共用。

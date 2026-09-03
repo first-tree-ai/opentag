@@ -1,19 +1,19 @@
-import { Transform } from "node:stream";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
+  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
-  workspaceComputers,
 } from "../../db/schema/index.js";
 import type { ComputerAuthContext } from "../computers/index.js";
 import type { ImProviderAdapter, ReadableResource } from "../im-bindings/index.js";
 import { ImBindingServiceError } from "../im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
+import { ExternalCallPolicy, limitReadableStream } from "./external-call-policy.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 
@@ -24,13 +24,16 @@ export interface AuthorizedImResource extends ReadableResource {
 export class ImResourceService {
   readonly #database: DatabaseClient;
   readonly #resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
+  readonly #policy: ExternalCallPolicy;
 
   constructor(
     database: DatabaseClient,
     resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>,
+    policy: ExternalCallPolicy = new ExternalCallPolicy(),
   ) {
     this.#database = database;
     this.#resolveAdapter = resolveAdapter;
+    this.#policy = policy;
   }
 
   async open(
@@ -75,19 +78,16 @@ export class ImResourceService {
           sessionPlacements,
           and(
             eq(sessionPlacements.sessionId, sessions.id),
-            eq(sessionPlacements.workspaceComputerId, computerAuth.workspaceComputerId),
+            eq(sessionPlacements.computerId, computerAuth.computerId),
             eq(sessionPlacements.generation, runtime.placementGeneration),
           ),
         )
         .innerJoin(
-          workspaceComputers,
+          computers,
           and(
-            eq(workspaceComputers.id, computerAuth.workspaceComputerId),
-            eq(workspaceComputers.workspaceId, computerAuth.workspaceId),
-            eq(workspaceComputers.workspaceId, agents.workspaceId),
-            eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
-            eq(workspaceComputers.currentInstanceId, runtime.instanceId),
-            isNull(workspaceComputers.revokedAt),
+            eq(computers.id, computerAuth.computerId),
+            eq(computers.id, sessionPlacements.computerId),
+            eq(computers.currentInstanceId, runtime.instanceId),
           ),
         )
         .where(and(eq(imMessages.id, imMessageId), eq(imBindings.status, "active"), eq(agents.status, "active")))
@@ -115,28 +115,27 @@ export class ImResourceService {
           "IM_BINDING_TEMPORARILY_UNAVAILABLE",
           503,
           "The IM binding is temporarily unavailable",
+          "transient",
         );
       },
     );
-    const opened = await adapter.fetchResource({
-      messageExternalId: scope.message.externalMessageId,
-      providerResourceKey: resource.providerResourceKey,
-      kind: resource.kind,
-    });
+    const opened = await this.#policy.run(
+      `im.resource.${scope.imBinding.provider}`,
+      () =>
+        adapter.fetchResource({
+          messageExternalId: scope.message.externalMessageId,
+          providerResourceKey: resource.providerResourceKey,
+          kind: resource.kind,
+        }),
+      { circuitKey: `im-resource:${scope.imBinding.id}` },
+    );
     if (opened.sizeBytes !== undefined && opened.sizeBytes > MAX_RESOURCE_BYTES) {
       opened.stream.destroy();
       throw new ImBindingServiceError("VALIDATION_ERROR", 413, "The IM resource exceeds the size limit");
     }
-    let observed = 0;
-    const limiter = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        observed += chunk.byteLength;
-        callback(observed <= MAX_RESOURCE_BYTES ? null : new Error("IM_RESOURCE_TOO_LARGE"), chunk);
-      },
-    });
     return {
       ...opened,
-      stream: opened.stream.pipe(limiter),
+      stream: limitReadableStream(opened.stream, MAX_RESOURCE_BYTES, "IM_RESOURCE_TOO_LARGE"),
       kind: resource.kind,
       filename: opened.filename ?? resource.filename ?? undefined,
       mediaType: opened.mediaType ?? resource.mediaType ?? undefined,

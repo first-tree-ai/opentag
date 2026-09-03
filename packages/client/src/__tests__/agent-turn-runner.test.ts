@@ -17,10 +17,12 @@ import {
 } from "../runtime/agent-turn-runner.js";
 import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
+import { ProviderCliTurnPlanError } from "../runtime/provider-cli/turn-plan.js";
 import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("AgentTurnRunner", () => {
   it("compiles only dynamic Session, message, history, and resource context into AgentInput", () => {
@@ -93,6 +95,22 @@ describe("AgentTurnRunner", () => {
     expect(feishuInput.items[0]?.text).toContain("$OpenTagLarkBody = @'\nfirst line\n\nsecond line");
     expect(feishuInput.items[0]?.text).toContain('lark-cli ... --markdown "$OPENTAG_LARK_BODY"');
     expect(input.items[0]?.text).not.toContain("OPENTAG_LARK_BODY");
+    expect(input.items[0]?.text).toContain("slack api chat.postMessage --json");
+    expect(input.items[0]?.text).toContain("never key=value pairs");
+    expect(input.items[0]?.text).toContain(
+      "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update",
+    );
+    expect(input.items[0]?.text).toContain("Thread placement is a Session policy decision");
+    expect(input.items[0]?.text).toContain("`text` (at most 4,000 characters)");
+    expect(input.items[0]?.text).toContain("`markdown_text` (at most 12,000 characters)");
+    expect(input.items[0]?.text).toContain("at most 1 message per second per channel");
+    expect(input.items[0]?.text).toContain("<@U...>");
+    expect(input.items[0]?.text).toContain("conversations.history and similar reads are rate-limited");
+    expect(input.items[0]?.text).toContain("Never print credentials, tokens, or the environment file");
+    expect(input.items[0]?.text).not.toMatch(/xox[bpa]-/);
+    expect(Buffer.byteLength(input.items[0]?.text ?? "", "utf8")).toBeLessThan(16 * 1024);
+    expect(feishuInput.items[0]?.text).not.toContain("slack api chat.postMessage --json");
+    expect(feishuInput.items[0]?.text).not.toContain("Never print credentials, tokens, or the environment file");
     expect(() => buildAgentInput(steerRequest())).toThrow("A steer input requires the root runtime snapshot");
   });
 
@@ -104,6 +122,22 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain("overheard the message");
     expect(context).toContain("avoid meaningless, duplicate, intrusive");
     expect(context).toContain("Attention does not change provider CLI or credential availability");
+  });
+
+  it("compiles observer role independently from attention without removing Session credentials", () => {
+    const request = { ...delivery(), attention: "ambient" as const, replyRole: "observer" as const };
+    const context = buildAgentInput(request).items[0]?.text;
+    expect(context).toContain("Attention: ambient");
+    expect(context).toContain("Reply role: observer");
+    expect(context).toContain("A Thread Session owns the provider reply");
+    expect(context).toContain("do not reply, react, or perform any other provider mutation");
+    expect(context).toContain("The CLI and credentials remain available");
+    expect(context).toContain("does not change this Session's authority or credential availability");
+
+    const ownerContext = buildAgentInput(delivery()).items[0]?.text;
+    expect(ownerContext).toContain("Reply role: owner");
+    expect(ownerContext).toContain("may reply, react, send another provider message, or take no provider action");
+    expect(ownerContext).not.toContain("must reply");
   });
 
   it("exposes provider-native thread facts without adding a provider reply policy", () => {
@@ -277,6 +311,97 @@ describe("AgentTurnRunner", () => {
     expect(runner.activeCount).toBe(0);
   });
 
+  it("logs a failed Turn Report submission without blocking Turn completion", async () => {
+    const logs: RecordedLog[] = [];
+    let rejectSubmit!: (error: Error) => void;
+    const submit = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSubmit = reject;
+        }),
+    );
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "f".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: {
+        updateUnresolved: vi.fn(async () => {
+          throw new Error("disk failed");
+        }),
+      } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      logger: recordingLogger(logs),
+      reportOwner: { create, submit } as unknown as TurnReportOwner,
+      runtimeManager: {} as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(submit).toHaveBeenCalledOnce();
+    expect(logs.some((entry) => entry.message === "Turn Report submission failed")).toBe(false);
+
+    rejectSubmit(new Error("report transport failed"));
+    await vi.waitFor(() =>
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "Turn Report submission failed",
+          fields: expect.objectContaining({
+            agentId: "agent-1",
+            deliveryId: "delivery-1",
+            sessionId: "session-1",
+            turnId: "turn-1",
+            reason: "report transport failed",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("logs an unknown reason for a non-Error Turn Report submission rejection", async () => {
+    const logs: RecordedLog[] = [];
+    const submit = vi.fn(() => Promise.reject("boom"));
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "g".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: {
+        updateUnresolved: vi.fn(async () => {
+          throw new Error("disk failed");
+        }),
+      } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      logger: recordingLogger(logs),
+      reportOwner: { create, submit } as unknown as TurnReportOwner,
+      runtimeManager: {} as SessionRuntimeManager,
+      credentialEnvironment: credentialEnvironment(),
+    });
+
+    runner.start(liveOwner({ ...delivery(), deliveryId: "delivery-non-error" }));
+    await runner.settled();
+    await vi.waitFor(() =>
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          level: "warn",
+          message: "Turn Report submission failed",
+          fields: expect.objectContaining({
+            deliveryId: "delivery-non-error",
+            reason: "Unknown Turn Report submission failure",
+          }),
+        }),
+      ),
+    );
+  });
+
   it("keeps unresolved custody when the reporting transition fails", async () => {
     let observer: AgentRuntimeEventSink | undefined;
     const onRuntimeEvent = vi.fn(async () => undefined);
@@ -359,6 +484,110 @@ describe("AgentTurnRunner", () => {
     runner.start(liveOwner(request));
     await runner.settled();
     expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        executionEffects: "not_started",
+        errorReason: "credential_unavailable",
+      }),
+    );
+  });
+
+  it("prepares a visible Turn plan before Agent Runtime and refuses drifted selections without starting it", async () => {
+    const order: string[] = [];
+    const prompt = vi.fn(async () => {
+      order.push("prompt");
+      return { runId: "turn-1", status: "completed" as const, output: [] };
+    });
+    const ensureRuntime = vi.fn(async () => {
+      order.push("runtime");
+      return {
+        prompt,
+        observe: () => () => undefined,
+      };
+    });
+    const turnPlan = {
+      prepare: vi.fn(async () => {
+        order.push("plan");
+        return { sessionDir: "/tmp/plans" };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("plan-cleanup");
+      }),
+    };
+    const credentials = {
+      prepare: vi.fn(async () => {
+        order.push("credentials");
+        return {
+          path: "/tmp/provider-env.sh",
+          provider: "slack" as const,
+          slackConfigDir: "/tmp/slack-config",
+        };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("credential-cleanup");
+      }),
+    };
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "e".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime,
+        cwd: () => "/workspace",
+        observe: () => () => undefined,
+        sessionKind: () => "visible",
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: credentials,
+      turnPlan,
+    });
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(order).toEqual(["credentials", "plan", "runtime", "prompt", "plan-cleanup", "credential-cleanup"]);
+    expect(turnPlan.prepare).toHaveBeenCalledWith({
+      provider: "slack",
+      sessionId: "session-1",
+      runId: "turn-1",
+      configDir: "/tmp/slack-config",
+    });
+
+    const driftedEnsure = vi.fn();
+    const drifted = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: driftedEnsure,
+        sessionKind: () => "visible",
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      turnPlan: {
+        prepare: async () => {
+          throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
+        },
+        cleanup: vi.fn(async () => undefined),
+      },
+    });
+    drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
+    await drifted.settled();
+    expect(driftedEnsure).not.toHaveBeenCalled();
+    expect(create).toHaveBeenLastCalledWith(
       expect.objectContaining({
         outcome: "failed",
         executionEffects: "not_started",
@@ -602,7 +831,7 @@ function steerRequest(): RuntimeImSteerRequest {
 
 function credentialEnvironment() {
   return {
-    prepare: vi.fn(async () => "/tmp/provider-env.sh"),
+    prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "slack" as const })),
     cleanup: vi.fn(async () => undefined),
   };
 }

@@ -1,12 +1,14 @@
 import {
+  accountAgentCreationIntentPath,
   agentByIdPath,
+  agentComputerRebindPath,
   agentConfigPath,
   agentReactivatePath,
   agentSuspendPath,
   agentUsagePath,
+  HTTP_PATHS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
-  workspaceAgentsPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
@@ -15,13 +17,11 @@ import { AgentServiceError } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
-  workspaceId,
   createdByUserId: userId,
   computerId,
   name: "code-reviewer",
@@ -98,15 +98,7 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        workspaces: [
-          {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-20T00:00:00.000Z",
-          },
-        ],
+        setupCompletedAt: null,
       },
     }),
   };
@@ -114,14 +106,16 @@ function authService(): UserAuthService {
 
 function agentService() {
   return {
-    createForWorkspace: vi.fn().mockResolvedValue(agent),
-    listForWorkspace: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
+    createForAccount: vi.fn().mockResolvedValue(agent),
+    getCreationIntentResultForAccount: vi.fn().mockResolvedValue({ kind: "found", agentId }),
+    listForAccount: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
     getById: vi.fn().mockResolvedValue(agentDetail),
     getUsageById: vi.fn().mockResolvedValue(agentUsage),
     getConfigById: vi.fn().mockResolvedValue(agent),
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     suspendById: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
     reactivateById: vi.fn().mockResolvedValue({ ...agent, revision: 3 }),
+    rebindById: vi.fn().mockResolvedValue({ ...agent, computerId }),
     deleteById: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -135,11 +129,11 @@ function appWith(service = agentService()) {
 const authorization = { authorization: "Bearer access" };
 
 describe("Agent HTTP API", () => {
-  it("creates and lists Workspace Agents through strict contracts", async () => {
+  it("creates and lists Account Agents through strict contracts", async () => {
     const { app, service } = appWith();
     const create = await app.inject({
       method: "POST",
-      url: workspaceAgentsPath(workspaceId),
+      url: HTTP_PATHS.accountAgents,
       headers: authorization,
       payload: {
         creationIntentId,
@@ -152,7 +146,7 @@ describe("Agent HTTP API", () => {
     });
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
-    expect(service.createForWorkspace).toHaveBeenCalledWith(userId, workspaceId, {
+    expect(service.createForAccount).toHaveBeenCalledWith(userId, {
       creationIntentId,
       name: "code-reviewer",
       displayName: "Code Reviewer",
@@ -161,10 +155,20 @@ describe("Agent HTTP API", () => {
       runtimeConfig: { model: "gpt-5.6" },
     });
 
-    const list = await app.inject({ method: "GET", url: workspaceAgentsPath(workspaceId), headers: authorization });
+    const list = await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents, headers: authorization });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
-    expect(service.listForWorkspace).toHaveBeenCalledWith(userId, workspaceId);
+    expect(service.listForAccount).toHaveBeenCalledWith(userId);
+
+    const reconciled = await app.inject({
+      method: "GET",
+      url: accountAgentCreationIntentPath(creationIntentId),
+      headers: authorization,
+    });
+    expect(reconciled.statusCode).toBe(200);
+    expect(reconciled.headers["cache-control"]).toBe("no-store");
+    expect(reconciled.json()).toEqual({ kind: "found", agentId });
+    expect(service.getCreationIntentResultForAccount).toHaveBeenCalledWith(userId, creationIntentId);
   });
 
   it("gets, CAS-updates, suspends, reactivates, and deletes an Agent", async () => {
@@ -199,6 +203,14 @@ describe("Agent HTTP API", () => {
     expect(reactivated.statusCode).toBe(200);
     expect(reactivated.json()).toMatchObject({ status: "active", revision: 3 });
     expect(service.reactivateById).toHaveBeenCalledWith(userId, agentId);
+    const rebound = await app.inject({
+      method: "POST",
+      url: agentComputerRebindPath(agentId),
+      headers: authorization,
+      payload: { computerId },
+    });
+    expect(rebound.statusCode).toBe(200);
+    expect(service.rebindById).toHaveBeenCalledWith(userId, agentId, computerId);
     const deleted = await app.inject({ method: "DELETE", url: agentByIdPath(agentId), headers: authorization });
     expect(deleted.statusCode).toBe(204);
     expect(deleted.body).toBe("");
@@ -219,10 +231,10 @@ describe("Agent HTTP API", () => {
 
   it("rejects missing credentials, invalid params, and immutable authority fields", async () => {
     const { app, service } = appWith();
-    expect((await app.inject({ method: "GET", url: workspaceAgentsPath(workspaceId) })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: HTTP_PATHS.accountAgents })).statusCode).toBe(401);
     const invalidParam = await app.inject({
       method: "GET",
-      url: workspaceAgentsPath("not-a-uuid"),
+      url: `${HTTP_PATHS.accountAgents}/not-a-uuid`,
       headers: authorization,
     });
     expect(invalidParam.statusCode).toBe(400);
@@ -240,7 +252,7 @@ describe("Agent HTTP API", () => {
     const { app, service } = appWith();
     const response = await app.inject({
       method: "POST",
-      url: workspaceAgentsPath(workspaceId),
+      url: HTTP_PATHS.accountAgents,
       headers: authorization,
       payload: {
         name: "Bestony",
@@ -265,7 +277,7 @@ describe("Agent HTTP API", () => {
         ],
       },
     });
-    expect(service.createForWorkspace).not.toHaveBeenCalled();
+    expect(service.createForAccount).not.toHaveBeenCalled();
   });
 
   it("rejects instructions that cannot fit beside the required platform policy", async () => {
@@ -274,7 +286,7 @@ describe("Agent HTTP API", () => {
     const tooLarge = `${"界".repeat(Math.floor((RUNTIME_INSTRUCTIONS_MAX_BYTES - platformBytes) / 3))}aaaa`;
     const create = await app.inject({
       method: "POST",
-      url: workspaceAgentsPath(workspaceId),
+      url: HTTP_PATHS.accountAgents,
       headers: authorization,
       payload: {
         computerId,
@@ -285,7 +297,7 @@ describe("Agent HTTP API", () => {
       },
     });
     expect(create.statusCode).toBe(400);
-    expect(service.createForWorkspace).not.toHaveBeenCalled();
+    expect(service.createForAccount).not.toHaveBeenCalled();
 
     const update = await app.inject({
       method: "PATCH",
@@ -320,7 +332,7 @@ describe("Agent HTTP API", () => {
     const { app } = appWith();
     const response = await app.inject({
       method: "POST",
-      url: workspaceAgentsPath(workspaceId),
+      url: HTTP_PATHS.accountAgents,
       headers: { ...authorization, "content-type": "application/json" },
       payload: "{",
     });

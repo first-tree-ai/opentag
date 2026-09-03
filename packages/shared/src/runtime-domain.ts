@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { type AgentRuntimeProvider, AgentRuntimeProviderSchema } from "./agent.js";
+import { type AgentRuntimeProvider, AgentRuntimeProviderSchema, AgentRuntimeTestFailureCodeSchema } from "./agent.js";
+import { IM_CLI_PROVIDERS, ImCliProviderSchema, ProviderCliValidationResultReasonSchema } from "./computer.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -10,7 +11,7 @@ import {
   RuntimeReasoningEffortSchema,
   runtimeUtf8Length as utf8Length,
 } from "./runtime-config.js";
-import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
+import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
 
 export {
   OPENTAG_PLATFORM_INSTRUCTIONS,
@@ -44,6 +45,45 @@ export const RuntimeOpaqueIdSchema = z
   .regex(opaqueIdPattern, "Runtime IDs must be opaque, path-safe ASCII identifiers");
 export const RuntimeSequenceSchema = z.number().int().safe().nonnegative();
 export const RuntimeSha256Schema = z.string().regex(/^[a-f0-9]{64}$/, "Expected a lowercase SHA-256 digest");
+
+export const RuntimeDurableWorkKindSchema = z.enum(["session-message", "turn-report"]);
+export const RuntimeDurableWorkStatusSchema = z.enum([
+  "accepted",
+  "running",
+  "succeeded",
+  "retryable",
+  "failed",
+  "dead-letter",
+]);
+export const RuntimeDurableFailureSchema = z
+  .object({
+    category: z.string().min(1).max(64),
+    code: z.string().min(1).max(128),
+    message: z
+      .string()
+      .min(1)
+      .max(2 * 1024),
+    phase: z.string().min(1).max(64),
+    requestId: z.string().min(1).max(128),
+    retryability: z.enum(["retryable", "terminal"]),
+  })
+  .strict();
+export const RuntimeDurableWorkRecordSchema = z
+  .object({
+    attempts: RuntimeSequenceSchema,
+    acceptedAt: RuntimeSequenceSchema,
+    key: RuntimeOpaqueIdSchema,
+    kind: RuntimeDurableWorkKindSchema,
+    lastError: RuntimeDurableFailureSchema.optional(),
+    nextAttemptAt: RuntimeSequenceSchema.optional(),
+    payload: z.unknown(),
+    status: RuntimeDurableWorkStatusSchema,
+    updatedAt: RuntimeSequenceSchema,
+  })
+  .strict();
+export const RuntimeDurableWorkListResponseSchema = z
+  .object({ items: z.array(RuntimeDurableWorkRecordSchema).max(1024) })
+  .strict();
 
 export const RuntimeRevisionSchema = z
   .object({
@@ -135,7 +175,7 @@ export const SessionReconcileRequestSchema = z
   .object({
     type: z.literal("session:reconcile"),
     requestId: RuntimeRequestIdSchema,
-    computerId: z.string().uuid(),
+    installationId: z.string().uuid(),
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
@@ -347,6 +387,7 @@ export const DirectImMessageDeliveryRequestSchema = z
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
     attention: z.enum(["direct", "ambient"]),
+    replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
     runtime: EffectiveRuntimeSnapshotSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
@@ -370,6 +411,7 @@ export const RuntimeImSteerRequestSchema = z
     rootDeliveryId: RuntimeOpaqueIdSchema,
     expectedTurnId: RuntimeOpaqueIdSchema,
     attention: z.enum(["direct", "ambient"]),
+    replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -402,25 +444,76 @@ const RuntimeImCredentialGrantSchema = z.discriminatedUnion("provider", [
     .strict(),
 ]);
 
-export const RuntimeImCredentialGrantResultSchema = z.discriminatedUnion("status", [
-  z
-    .object({
-      type: z.literal("im:credential:result"),
-      requestId: RuntimeRequestIdSchema,
-      status: z.literal("succeeded"),
-      credentialGeneration: z.number().int().safe().positive(),
-      grant: RuntimeImCredentialGrantSchema,
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("im:credential:result"),
-      requestId: RuntimeRequestIdSchema,
-      status: z.literal("rejected"),
-      code: z.enum(["binding_inactive", "credential_stale", "placement_stale", "agent_mismatch"]),
-    })
-    .strict(),
-]);
+export const RuntimeImOutboxContextSchema = z
+  .discriminatedUnion("provider", [
+    z
+      .object({
+        provider: z.literal("feishu"),
+        sessionKind: z.enum(["channel", "thread"]),
+        chatId: RuntimeProviderExternalIdSchema,
+        threadId: RuntimeProviderExternalIdSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        provider: z.literal("slack"),
+        sessionKind: z.enum(["channel", "thread"]),
+        channelId: RuntimeProviderExternalIdSchema,
+        threadTs: RuntimeProviderExternalIdSchema.optional(),
+      })
+      .strict(),
+  ])
+  .superRefine((context, refinement) => {
+    const threadReference = context.provider === "feishu" ? context.threadId : context.threadTs;
+    if ((context.sessionKind === "thread") !== Boolean(threadReference)) {
+      refinement.addIssue({
+        code: "custom",
+        path: [context.provider === "feishu" ? "threadId" : "threadTs"],
+        message: `${context.provider === "feishu" ? "Feishu" : "Slack"} thread outbox context must match the Session kind`,
+      });
+    }
+  });
+
+export const RuntimeImCredentialGrantResultSchema = z
+  .discriminatedUnion("status", [
+    z
+      .object({
+        type: z.literal("im:credential:result"),
+        requestId: RuntimeRequestIdSchema,
+        status: z.literal("succeeded"),
+        credentialGeneration: z.number().int().safe().positive(),
+        grant: RuntimeImCredentialGrantSchema,
+        outboxContext: RuntimeImOutboxContextSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("im:credential:result"),
+        requestId: RuntimeRequestIdSchema,
+        status: z.literal("rejected"),
+        code: z.enum([
+          "binding_inactive",
+          "credential_stale",
+          "provider_cli_unready",
+          "placement_stale",
+          "agent_mismatch",
+        ]),
+      })
+      .strict(),
+  ])
+  .superRefine((result, context) => {
+    if (
+      result.status === "succeeded" &&
+      result.outboxContext &&
+      result.outboxContext.provider !== result.grant.provider
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["outboxContext", "provider"],
+        message: "The outbox context provider must match the credential grant provider",
+      });
+    }
+  });
 
 const ImMessageDeliveryResultBaseSchema = z.object({
   type: z.literal("im:deliver:result"),
@@ -624,6 +717,242 @@ export const TurnReportResultSchema = z
   })
   .strict();
 
+export const AgentRuntimeTestRequestFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:test"),
+    requestId: RuntimeRequestIdSchema,
+    computerId: z.string().uuid(),
+    provider: AgentRuntimeProviderSchema,
+    model: RuntimeModelSchema.optional(),
+    reasoningEffort: RuntimeReasoningEffortSchema.optional(),
+  })
+  .strict();
+
+export const AgentRuntimeTestCancelFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:test:cancel"),
+    requestId: RuntimeRequestIdSchema,
+  })
+  .strict();
+
+export const AgentRuntimeTestResultFrameSchema = z
+  .object({
+    type: z.literal("agent-runtime:test:result"),
+    requestId: RuntimeRequestIdSchema,
+    status: z.enum(["passed", "failed"]),
+    code: AgentRuntimeTestFailureCodeSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status === "passed" && frame.code !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: "A passed Agent Runtime test forbids a failure code",
+      });
+    }
+    if (frame.status === "failed" && frame.code === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: "A failed Agent Runtime test requires a failure code",
+      });
+    }
+  });
+
+export const ProviderCliExpectedIdentitySchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("feishu"),
+      appId: z.string().min(1).max(255),
+      botOpenId: z.string().min(1).max(255),
+      teamBrand: z.enum(["feishu", "lark"]),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("slack"),
+      teamId: z.string().min(1).max(255),
+      botUserId: z.string().min(1).max(255),
+      botId: z.string().min(1).max(255),
+    })
+    .strict(),
+]);
+
+const providerCliFenceShape = {
+  requestId: RuntimeRequestIdSchema,
+  provider: ImCliProviderSchema,
+  agentId: z.string().uuid(),
+  integrationId: z.string().uuid(),
+  credentialGeneration: z.number().int().safe().positive(),
+};
+
+export const ProviderCliPrewarmFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:prewarm"),
+    requestId: RuntimeRequestIdSchema,
+    providers: z
+      .array(ImCliProviderSchema)
+      .min(1)
+      .max(IM_CLI_PROVIDERS.length)
+      .superRefine((providers, context) => {
+        const seen = new Set<string>();
+        for (const [index, provider] of providers.entries()) {
+          if (seen.has(provider)) {
+            context.addIssue({
+              code: "custom",
+              path: [index],
+              message: "IM CLI prewarm providers must be unique",
+            });
+          }
+          seen.add(provider);
+          const previous = providers[index - 1];
+          if (previous !== undefined && IM_CLI_PROVIDERS.indexOf(provider) < IM_CLI_PROVIDERS.indexOf(previous)) {
+            context.addIssue({
+              code: "custom",
+              path: [index],
+              message: "IM CLI prewarm providers must use canonical Provider order",
+            });
+          }
+        }
+      }),
+  })
+  .strict();
+
+export const ProviderCliRequirementFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:requirement"),
+    operation: z.literal(RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION),
+    ...providerCliFenceShape,
+    expectedIdentity: ProviderCliExpectedIdentitySchema,
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.expectedIdentity.provider !== frame.provider) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedIdentity", "provider"],
+        message: "The expected identity provider must match the requirement provider",
+      });
+    }
+  });
+
+export const ProviderCliArtifactStatusFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:artifact:status"),
+    ...providerCliFenceShape,
+    status: z.enum(["checking", "ready", "unavailable"]),
+  })
+  .strict();
+
+const IntegrationCliValidationGrantMaterialSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("feishu"),
+      appId: byteString(512, "Feishu App ID exceeds the 512-byte limit", 1),
+      appSecret: byteString(4096, "Feishu App secret exceeds the 4 KiB limit", 1),
+      teamBrand: z.enum(["feishu", "lark"]),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("slack"),
+      botAccessToken: byteString(4096, "Slack Bot token exceeds the 4 KiB limit", 1),
+    })
+    .strict(),
+]);
+
+export const ProviderCliValidationGrantFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:validation:grant"),
+    ...providerCliFenceShape,
+    requirementRequestId: RuntimeRequestIdSchema,
+    expiresAt: z.string().datetime({ offset: true }),
+    expectedIdentity: ProviderCliExpectedIdentitySchema,
+    grant: IntegrationCliValidationGrantMaterialSchema,
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.expectedIdentity.provider !== frame.provider) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedIdentity", "provider"],
+        message: "The expected identity provider must match the grant provider",
+      });
+    }
+    if (frame.grant.provider !== frame.provider) {
+      context.addIssue({
+        code: "custom",
+        path: ["grant", "provider"],
+        message: "The grant provider must match the frame provider",
+      });
+    }
+  });
+
+export const ProviderCliCancelFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:cancel"),
+    requestId: RuntimeRequestIdSchema,
+    requirementRequestId: RuntimeRequestIdSchema,
+    provider: ImCliProviderSchema,
+    agentId: z.string().uuid(),
+    integrationId: z.string().uuid(),
+    credentialGeneration: z.number().int().safe().positive(),
+  })
+  .strict();
+
+export const ProviderCliValidationResultFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:validation:result"),
+    ...providerCliFenceShape,
+    status: z.enum(["retrying", "ready", "needs_attention"]),
+    reason: ProviderCliValidationResultReasonSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status === "ready" && frame.reason !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A ready credential execution result forbids a reason",
+      });
+    }
+    if (frame.status === "retrying" && frame.reason === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A retrying credential execution result requires a reason",
+      });
+    }
+    if (
+      frame.status === "retrying" &&
+      frame.reason !== undefined &&
+      frame.reason !== "provider_unreachable" &&
+      frame.reason !== "rate_limited" &&
+      frame.reason !== "validation_busy" &&
+      frame.reason !== "validation_expired" &&
+      frame.reason !== "artifact_changed"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A retrying credential execution result requires a retryable reason",
+      });
+    }
+    if (
+      frame.status === "needs_attention" &&
+      (frame.reason === "validation_busy" ||
+        frame.reason === "validation_expired" ||
+        frame.reason === "artifact_changed")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A terminal credential execution result forbids internal retry reasons",
+      });
+    }
+  });
+
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
@@ -631,6 +960,12 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionMessageDeliveryRequestSchema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
+  AgentRuntimeTestRequestFrameSchema,
+  AgentRuntimeTestCancelFrameSchema,
+  ProviderCliPrewarmFrameSchema,
+  ProviderCliRequirementFrameSchema,
+  ProviderCliValidationGrantFrameSchema,
+  ProviderCliCancelFrameSchema,
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
@@ -641,10 +976,17 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
   RuntimeImCredentialGrantRequestSchema,
+  ProviderCliArtifactStatusFrameSchema,
+  ProviderCliValidationResultFrameSchema,
 ]);
 
 export type RuntimeRevision = z.infer<typeof RuntimeRevisionSchema>;
 export type RuntimeUsage = z.infer<typeof RuntimeUsageSchema>;
+export type RuntimeDurableWorkKind = z.infer<typeof RuntimeDurableWorkKindSchema>;
+export type RuntimeDurableWorkStatus = z.infer<typeof RuntimeDurableWorkStatusSchema>;
+export type RuntimeDurableFailure = z.infer<typeof RuntimeDurableFailureSchema>;
+export type RuntimeDurableWorkRecord = z.infer<typeof RuntimeDurableWorkRecordSchema>;
+export type RuntimeDurableWorkListResponse = z.infer<typeof RuntimeDurableWorkListResponseSchema>;
 export type EffectiveRuntimeSnapshot = z.infer<typeof EffectiveRuntimeSnapshotSchema>;
 export type InputRejectReason = z.infer<typeof InputRejectReasonSchema>;
 export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>;
@@ -660,6 +1002,7 @@ export type RuntimeImHistoryItem = z.infer<typeof RuntimeImHistoryItemSchema>;
 export type RuntimeProviderMessageRef = z.infer<typeof RuntimeProviderMessageRefSchema>;
 export type RuntimeImCredentialGrantRequest = z.infer<typeof RuntimeImCredentialGrantRequestSchema>;
 export type RuntimeImCredentialGrantResult = z.infer<typeof RuntimeImCredentialGrantResultSchema>;
+export type RuntimeImOutboxContext = z.infer<typeof RuntimeImOutboxContextSchema>;
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
@@ -668,6 +1011,16 @@ export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;
 export type TurnReportResult = z.infer<typeof TurnReportResultSchema>;
+export type AgentRuntimeTestRequestFrame = z.infer<typeof AgentRuntimeTestRequestFrameSchema>;
+export type AgentRuntimeTestCancelFrame = z.infer<typeof AgentRuntimeTestCancelFrameSchema>;
+export type AgentRuntimeTestResultFrame = z.infer<typeof AgentRuntimeTestResultFrameSchema>;
+export type ProviderCliExpectedIdentity = z.infer<typeof ProviderCliExpectedIdentitySchema>;
+export type ProviderCliPrewarmFrame = z.infer<typeof ProviderCliPrewarmFrameSchema>;
+export type ProviderCliRequirementFrame = z.infer<typeof ProviderCliRequirementFrameSchema>;
+export type ProviderCliArtifactStatusFrame = z.infer<typeof ProviderCliArtifactStatusFrameSchema>;
+export type ProviderCliCancelFrame = z.infer<typeof ProviderCliCancelFrameSchema>;
+export type ProviderCliValidationGrantFrame = z.infer<typeof ProviderCliValidationGrantFrameSchema>;
+export type ProviderCliValidationResultFrame = z.infer<typeof ProviderCliValidationResultFrameSchema>;
 export type ServerRuntimeBusinessFrame = z.infer<typeof ServerRuntimeBusinessFrameSchema>;
 export type ClientRuntimeBusinessFrame = z.infer<typeof ClientRuntimeBusinessFrameSchema>;
 
@@ -721,7 +1074,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
 
 export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): string {
   const frame = DirectImMessageDeliveryRequestSchema.parse(input);
-  return hashTuple([
+  const payload = [
     1,
     frame.imMessageId,
     frame.sessionId,
@@ -736,7 +1089,8 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.content.resources ?? [],
     computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash,
     frame.deadlineAt ?? null,
-  ]);
+  ];
+  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
 }
 
 export function computeRuntimeImMessageSemanticHash(
@@ -746,7 +1100,7 @@ export function computeRuntimeImMessageSemanticHash(
     input.type === "im:deliver"
       ? DirectImMessageDeliveryRequestSchema.parse(input)
       : RuntimeImSteerRequestSchema.parse(input);
-  return hashTuple([
+  const payload = [
     1,
     frame.imMessageId,
     frame.sessionId,
@@ -757,7 +1111,8 @@ export function computeRuntimeImMessageSemanticHash(
     frame.content.text,
     frame.content.providerRef,
     frame.deadlineAt ?? null,
-  ]);
+  ];
+  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
 }
 
 export function computeRuntimeImSteerInputHash(input: RuntimeImSteerRequest): string {
@@ -775,7 +1130,7 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
   const frame = SessionReconcileRequestSchema.parse(input);
   return hashTuple([
     1,
-    frame.computerId,
+    frame.installationId,
     frame.sessionId,
     frame.agentId,
     frame.placementGeneration,

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "format_daily_tokens": "{date}：{tokens} Tokens",
+  "format_days_ago": "{count}天前",
+  "format_elapsed_days": "{count}天",
+  "format_elapsed_hours": "{count}小时",
+  "format_elapsed_minutes": "{count}分钟",
+  "format_hours_ago": "{count}小时前",
+  "format_just_now": "刚刚",
+  "format_minutes_ago": "{count}分钟前"
+}

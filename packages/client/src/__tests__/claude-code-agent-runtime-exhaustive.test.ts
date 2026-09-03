@@ -354,6 +354,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: withPolicy({ tools: { mode: "allow-list", names: ["Read"] } }),
         message: "does not implement the common tool allow-list contract",
       },
+      {
+        request: {
+          ...withPolicy({ tools: { mode: "allow-list", names: [] } }),
+          hostedTools: {
+            definitions: [],
+            handler: async () => ({ success: true, content: [] }),
+          },
+        },
+        message: "does not implement the common tool allow-list contract",
+      },
       { request: withConfiguration({ model: " " }), message: "model" },
       { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
@@ -407,13 +417,21 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         throw new Error("missing");
       },
     });
-    await expect(probe.probe({ configuration: { reasoningEffort: "bad" } })).resolves.toEqual({
-      ready: false,
-      issues: [
-        { code: "configuration_invalid", message: "Claude Code reasoning effort is unsupported" },
-        { code: "artifact_missing", message: "Claude Code CLI could not be executed" },
-      ],
-    });
+    await expect(probe.probe({ configuration: { reasoningEffort: "bad" } })).rejects.toThrow("missing");
+    await expect(
+      new ClaudeCodeAgentRuntimeFactory({
+        probeRunner: async () => {
+          throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "temporarily_unavailable" }] });
+    await expect(
+      new ClaudeCodeAgentRuntimeFactory({
+        probeRunner: async () => {
+          throw Object.assign(new Error("crash"), { signal: "SIGSEGV" });
+        },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
   });
 
   it("maps unrestricted policy and configuration override arguments", async () => {
@@ -428,6 +446,13 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
           expect(argumentAfter(args, "--permission-mode")).toBe("bypassPermissions");
           expect(args).not.toContain("--settings");
           expect(args).not.toContain("--tools");
+        },
+      },
+      {
+        request: withPolicy({ tools: { mode: "allow-list", names: [] } }),
+        expected: (args) => {
+          expect(argumentAfter(args, "--tools")).toBe("");
+          expect(args).not.toContain("--settings");
         },
       },
       {
@@ -647,7 +672,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       new ClaudeCodeAgentRuntimeFactory({ process: { command: brokenCommand, env: { PATH: process.env.PATH } } }).probe(
         {},
       ),
-    ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    ).rejects.toThrow("Claude Code CLI returned no version");
 
     const authStarted = join(directory, "auth-started");
     const hangingAuthCommand = join(directory, "claude-hanging-auth");
@@ -856,6 +881,8 @@ function comprehensiveMessages(): readonly Record<string, unknown>[] {
         content: [
           { type: "text", text: "" },
           { type: "text", text: "fallback" },
+          // Unrecognized assistant block types (e.g. thinking) are silently ignored.
+          { type: "thinking", thinking: "internal" },
         ],
       },
     },

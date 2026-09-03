@@ -169,6 +169,104 @@
       "when": 1787870418663,
       "tag": "0023_motionless_gideon",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1787885742102,
+      "tag": "0024_icy_warlock",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1787976615603,
+      "tag": "0025_retire_legacy_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1787995618306,
+      "tag": "0026_wakeful_wildside",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1788005515125,
+      "tag": "0027_backfill_account_owned_resources",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1788005894809,
+      "tag": "0028_overjoyed_speedball",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1788076586983,
+      "tag": "0029_tiresome_bedlam",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1788077592745,
+      "tag": "0030_low_ulik",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1788161887121,
+      "tag": "0031_majestic_shiva",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1788186258806,
+      "tag": "0032_durable_turn_storage",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1788196536534,
+      "tag": "0033_clear_default_agent_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1788208560698,
+      "tag": "0034_legal_kat_farrell",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1788220725651,
+      "tag": "0035_dark_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1788226671075,
+      "tag": "0036_first_the_stranger",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1788231695621,
+      "tag": "0037_drop_workspace_ownership_persistence",
+      "breakpoints": true
     }
   ]
 }

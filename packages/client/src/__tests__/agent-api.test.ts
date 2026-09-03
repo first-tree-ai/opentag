@@ -1,14 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../api.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const createdByUserId = "bfcdab09-b57a-44ac-a170-09f7c3af20df";
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
-  workspaceId,
   createdByUserId,
   computerId,
   name: "code-reviewer",
@@ -78,6 +77,140 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("OpenTagApi Agent methods", () => {
+  it("covers computer, session, optional binding, and resource API surfaces", async () => {
+    const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const computerId = "9fd8c3db-9fb6-4e0b-8ca9-f0f830c4a1a5";
+    const sessionId = "d8e7b4dc-e6f7-4c84-a63b-4f4a39ccfdb9";
+    const attempt = {
+      id: "f645f26d-9184-4f2f-98a1-4ee83ae6a603",
+      agentId,
+      intent: "create",
+      state: "awaiting_user",
+      qrUrl: null,
+      expiresAt: "2026-08-19T01:00:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+    const token = { accessToken: "access", refreshToken: "refresh", tokenType: "Bearer", expiresIn: 3_600 };
+    const me = {
+      user: { id: createdByUserId, email: "user@example.com", displayName: "User" },
+      setupCompletedAt: null,
+    };
+    const computers = {
+      computers: [
+        {
+          computerId,
+          displayName: "Laptop",
+          platform: "linux",
+          connectionStatus: "online",
+          connectedAt: "2026-08-19T00:00:00.000Z",
+          lastSeenAt: "2026-08-19T00:00:00.000Z",
+          observedAt: "2026-08-19T00:00:00.000Z",
+          createdAt: "2026-08-18T00:00:00.000Z",
+          agentIds: [agentId],
+        },
+      ],
+    };
+    const command = { messageId: randomUUID(), status: "accepted", sessionId };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, machineToken: "otmc_secret" }))
+      .mockResolvedValueOnce(jsonResponse(token))
+      .mockResolvedValueOnce(jsonResponse(me))
+      .mockResolvedValueOnce(jsonResponse(computers))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse(attempt))
+      .mockResolvedValueOnce(new Response("resource-body"))
+      .mockResolvedValueOnce(jsonResponse(command, 202))
+      .mockResolvedValueOnce(jsonResponse(command, 202))
+      .mockResolvedValueOnce(jsonResponse({ items: [] }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+    await expect(
+      api.exchangeComputerConnectCode({
+        code: "1234567890abcdef",
+        installationId,
+        displayName: "Laptop",
+        platform: "linux",
+        arch: "x64",
+        clientVersion: "0.0.1",
+      }),
+    ).resolves.toMatchObject({ computerId, installationId });
+    await expect(api.refresh("refresh-token")).resolves.toEqual(token);
+    await expect(api.me("access-token")).resolves.toEqual(me);
+    await expect(api.listAccountComputers("access-token")).resolves.toEqual(computers);
+    await expect(api.getAgentImBindingConfig("access-token", agentId)).resolves.toBeUndefined();
+    await expect(api.cancelFeishuSetupAttempt("access-token", attempt.id)).resolves.toEqual(attempt);
+    await expect(
+      api.openImResource("machine-token", "message-1", 0, {
+        sessionId,
+        instanceId: randomUUID(),
+        placementGeneration: 1,
+      }),
+    ).resolves.toBeInstanceOf(Response);
+    await expect(api.createInternalSession("proof", { messageId: randomUUID(), message: "hello" })).resolves.toEqual(
+      command,
+    );
+    await expect(
+      api.sendSessionMessage("proof", { messageId: randomUUID(), targetSessionId: sessionId, message: "hello" }),
+    ).resolves.toEqual(command);
+    await expect(api.listInternalSessions("proof", { recursive: true, limit: 10, cursor: "next" })).resolves.toEqual({
+      items: [],
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(10);
+  });
+
+  it("maps network, optional-response, no-content, and fallback HTTP failures", async () => {
+    const network = new OpenTagApi(
+      "https://opentag.example",
+      vi.fn<typeof fetch>().mockRejectedValue(new Error("offline")),
+    );
+    await expect(network.listAgents("access")).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      category: "transient",
+    });
+
+    const optionalInvalid = new OpenTagApi(
+      "https://opentag.example",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({})),
+    );
+    await expect(optionalInvalid.getAgentImBinding("access", agentId)).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+
+    const noContent = new OpenTagApi(
+      "https://opentag.example",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({}, 200)),
+    );
+    await expect(noContent.deleteAgent("access", agentId)).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+
+    for (const [status, category] of [
+      [400, "validation"],
+      [429, "rate_limit"],
+      [503, "transient"],
+    ] as const) {
+      const api = new OpenTagApi(
+        "https://opentag.example",
+        vi.fn<typeof fetch>().mockResolvedValue(new Response("not-json", { status })),
+      );
+      await expect(api.listAgents("access")).rejects.toMatchObject({ category });
+    }
+
+    const resourceFailure = new OpenTagApi(
+      "https://opentag.example",
+      vi.fn<typeof fetch>().mockResolvedValue(new Response("not-json", { status: 500 })),
+    );
+    await expect(
+      resourceFailure.openImResource("machine-token", "message-1", 0, {
+        sessionId: randomUUID(),
+        instanceId: randomUUID(),
+        placementGeneration: 1,
+      }),
+    ).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+    });
+  });
+
   it("uses shared Agent paths, methods, bearer auth, and bodies", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
@@ -89,6 +222,8 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(jsonResponse({ ...agent, displayName: "Reviewer", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, status: "suspended", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, revision: 3 }))
+      .mockResolvedValueOnce(jsonResponse({ ...agent, computerId, revision: 4 }))
+      .mockResolvedValueOnce(jsonResponse({ status: "passed" }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
@@ -111,6 +246,11 @@ describe("OpenTagApi Agent methods", () => {
     });
     await api.suspendAgent("access", agentId);
     await api.reactivateAgent("access", agentId);
+    await api.rebindAgentComputer("access", agentId, computerId);
+    await api.testAgentRuntime("access", agentId, {
+      expectedRevision: 1,
+      expectedRuntimeConfigRevision: 1,
+    });
     await api.deleteAgent("access", agentId);
 
     expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
@@ -122,6 +262,8 @@ describe("OpenTagApi Agent methods", () => {
       [`https://opentag.example/api/v1/agents/${agentId}`, "PATCH"],
       [`https://opentag.example/api/v1/agents/${agentId}/suspend`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}/reactivate`, "POST"],
+      [`https://opentag.example/api/v1/agents/${agentId}/computer/rebind`, "POST"],
+      [`https://opentag.example/api/v1/agents/${agentId}/runtime-test`, "POST"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "DELETE"],
     ]);
     for (const [, init] of fetchImpl.mock.calls) {
@@ -140,6 +282,7 @@ describe("OpenTagApi Agent methods", () => {
       expectedRevision: 1,
       runtimeConfig: { model: null, reasoningEffort: "high" },
     });
+    expect(JSON.parse(String(fetchImpl.mock.calls[8]?.[1]?.body))).toEqual({ computerId });
   });
 
   it("preserves typed Agent errors", async () => {
@@ -213,7 +356,7 @@ describe("OpenTagApi Agent methods", () => {
         name: "Bestony",
         runtimeProvider: "codex",
       }),
-    ).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN", status: 400, message: "Authentication failed" });
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR", category: "validation", status: 400 });
   });
 
   it("rejects an invalid success response", async () => {
@@ -250,6 +393,7 @@ describe("OpenTagApi Agent methods", () => {
           ready: false,
           agentRuntimeReadiness: "ready",
           providerCliReadiness: "install",
+          credentialExecutionReadiness: "unconfirmed",
           credentialGeneration: 1,
           credentialStatus: "valid",
           requiredCapabilities: [],
@@ -272,7 +416,12 @@ describe("OpenTagApi Agent methods", () => {
     await api.getFeishuSetupAttempt("access", attemptId);
     await api.getImBindingDiagnostics("access", imBindingId);
     await api.disableImBinding("access", imBindingId);
-    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
+    expect(
+      fetchImpl.mock.calls.map(([url, init]) => [
+        new URL(url instanceof Request ? url.url : url).pathname,
+        init?.method ?? "GET",
+      ]),
+    ).toEqual([
       [`/api/v1/agents/${agentId}/im-binding`, "GET"],
       [`/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`, "POST"],
       [`/api/v1/im-bindings/feishu/setup-attempts/${attemptId}`, "GET"],
@@ -282,107 +431,23 @@ describe("OpenTagApi Agent methods", () => {
     expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 
-  it("uses the stateless Slack guide and one atomic configuration write", async () => {
-    const imBindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
-    const requiredBotScopes = [
-      "app_mentions:read",
-      "channels:history",
-      "chat:write",
-      "files:read",
-      "groups:history",
-      "im:history",
-      "mpim:history",
-    ];
-    const subscribedBotEvents = [
-      "app_mention",
-      "app_uninstalled",
-      "message.channels",
-      "message.groups",
-      "message.im",
-      "message.mpim",
-      "tokens_revoked",
-    ];
-    const configuration = {
-      agentId,
-      manifest: {
-        oauth_config: { scopes: { bot: requiredBotScopes } },
-        settings: { event_subscriptions: { bot_events: subscribedBotEvents } },
-      },
-      manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
-      eventsUrl: `https://opentag.example/api/v1/agents/${agentId}/im-binding/slack/events`,
-      requiredBotScopes,
-      subscribedBotEvents,
-      currentBinding: null,
-      distributedOAuthAvailable: false,
-    };
-    const detail = {
-      id: imBindingId,
-      agentId,
-      provider: "slack",
-      bindingState: "active",
-      bot: { displayName: "Reviewer", avatarUrl: null },
-      receiveMode: "mention_only",
-      lastInboundAt: null,
-      lastValidatedAt: null,
-      lastRuntimeObservationAt: null,
-      identity: {
-        provider: "slack",
-        appId: "A1",
-        teamId: "T1",
-        enterpriseId: null,
-        botUserId: "U1",
-        appIdEvidence: "configured",
-      },
-      credentialGeneration: 1,
-      grantedCapabilities: requiredBotScopes,
-      reauthorizationRequired: false,
-      lastErrorCode: null,
-    };
-    const input = {
-      intent: "create" as const,
-      expectedBinding: null,
-      appId: "A1",
-      botAccessToken: "xoxb-secret",
-      signingSecret: "signing-secret",
-    };
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse(configuration))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          imBindingId: detail.id,
-          agentId,
-          appId: "A1",
-          teamId: "T1",
-          botUserId: "U1",
-          credentialGeneration: 1,
-          bindingState: "active",
-          identityClosure: { status: "pending", verifiedAt: null },
-        }),
-      );
-    const api = new OpenTagApi("https://opentag.example", fetchImpl);
-
-    await expect(api.getSlackAppConfiguration("access", agentId)).resolves.toEqual(configuration);
-    await expect(api.configureSlackApp("access", agentId, input)).resolves.toMatchObject({
-      imBindingId: detail.id,
-      credentialGeneration: 1,
-      identityClosure: { status: "pending", verifiedAt: null },
-    });
-    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
-      [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "GET"],
-      [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "PUT"],
-    ]);
-    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(input));
-
-    fetchImpl.mockResolvedValueOnce(
+  it("starts first-party Slack OAuth without a customer-owned configuration write", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(
       jsonResponse({
         authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
         expiresAt: "2026-08-19T00:10:00.000Z",
       }),
     );
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
     await expect(api.startSlackOAuth("access", agentId, { intent: "create" })).resolves.toMatchObject({
       authorizationUrl: expect.stringContaining("https://slack.com/oauth/v2/authorize"),
     });
-    expect(fetchImpl.mock.calls.at(-1)?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
+    expect(
+      fetchImpl.mock.calls.map(([url, init]) => [
+        new URL(url instanceof Request ? url.url : url).pathname,
+        init?.method ?? "GET",
+      ]),
+    ).toEqual([[`/api/v1/agents/${agentId}/im-binding/slack/oauth/start`, "POST"]]);
+    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 });

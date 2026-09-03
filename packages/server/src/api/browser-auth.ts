@@ -1,48 +1,31 @@
 import { isIP } from "node:net";
-import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
+import {
+  AuthProvidersResponseSchema,
+  EmailSignInRequestSchema,
+  EmailSignUpRequestSchema,
+  ErrorCodeSchema,
+  HTTP_PATHS,
+} from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
-import { betterAuthFailure, callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
-import { DEV_SIGN_IN_PATH, LEGACY_UPGRADE_PATH } from "../auth/internal-sign-in.js";
+import { callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { DEV_SIGN_IN_PATH } from "../auth/internal-sign-in.js";
 import {
-  BROWSER_COOKIE_NAMES,
-  clearBrowserSessionCookies,
-  clearLegacyCredentialCookies,
-  clearOAuthContextCookie,
-  parseCookies,
+  clearBrowserCsrfCookie,
   requireBrowserMutationSecurity,
-  requireRefreshCookie,
+  requireBrowserOrigin,
   setBrowserCsrfCookie,
-  setBrowserSessionCookies,
-  setOAuthContextCookie,
 } from "../services/auth/browser-cookies.js";
-import { AuthServiceError, invalidCredential } from "../services/auth/errors.js";
-import type { GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError } from "../services/auth/errors.js";
 import { validateOAuthNext } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const StartQuerySchema = z.object({ next: z.string().max(1024).optional() }).strict();
-const CallbackQuerySchema = z
-  .object({
-    code: z.string().min(1).max(4096).optional(),
-    error: z.string().min(1).max(256).optional(),
-    error_description: z.string().max(1024).optional(),
-    state: z.string().min(1).max(4096),
-  })
-  .superRefine((value, context) => {
-    if ((value.code === undefined) === (value.error === undefined)) {
-      context.addIssue({
-        code: "custom",
-        message: "Exactly one of code or error is required",
-        path: ["code"],
-      });
-    }
-  });
 
 export interface BrowserAuthRoutesOptions {
-  /** Present once Better Auth owns the browser session; the legacy paths stay for credentials it did not issue. */
+  /** Better Auth owns every browser session; without it there is no way to sign in. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   /**
    * Whether the loopback-only development sign-in is configured.
@@ -51,13 +34,61 @@ export interface BrowserAuthRoutesOptions {
    * may ask for it at all.
    */
   devSignIn?: boolean;
-  google?: GoogleBrowserAuthService;
+  googleSignIn?: boolean;
+  /** Whether an address and password may register an Account and sign one in. */
+  passwordSignIn?: boolean;
   publicOrigin: string;
-  /** Lifetime of the credentials the previous revision issued, and of the cookies that still carry them. */
-  refreshTokenTtlSeconds: number;
   secureCookies: boolean;
-  /** Lifetime of a Better Auth session, and therefore of the double-submit token that has to outlast it. */
+  /** Bounds the double-submit token, so it lasts exactly as long as the session it accompanies. */
   sessionTtlSeconds: number;
+  /**
+   * Shared attempt budget. Clustered deployments must provide a shared limiter implementation at the gateway. When
+   * `OPENTAG_ENV=prod`, the process-local fallback is rejected unless `OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true` is
+   * set as an explicit deployment assertion.
+   */
+  rateLimiter?: BrowserAuthRateLimiter;
+}
+
+export interface BrowserAuthRateLimiter {
+  check(key: string): void;
+}
+
+const RATE_LIMIT_FAILURE_METADATA = Symbol("opentag.rateLimitFailureMetadata");
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+
+interface RateLimitFailureMetadata {
+  keyKind: "email" | "ip";
+  limiter: BrowserAuthRateLimiter;
+  windowMs: number;
+}
+
+type RateLimitFailure = AuthServiceError & {
+  [RATE_LIMIT_FAILURE_METADATA]?: RateLimitFailureMetadata;
+};
+
+function checkRateLimit(
+  limiter: BrowserAuthRateLimiter,
+  key: string,
+  keyKind: RateLimitFailureMetadata["keyKind"],
+): void {
+  try {
+    limiter.check(key);
+  } catch (error) {
+    if (error instanceof AuthServiceError && error.code === "RATE_LIMITED") {
+      const candidateWindowMs = (limiter as { windowMs?: unknown }).windowMs;
+      const windowMs = typeof candidateWindowMs === "number" ? candidateWindowMs : DEFAULT_RATE_LIMIT_WINDOW_MS;
+      Object.defineProperty(error, RATE_LIMIT_FAILURE_METADATA, {
+        configurable: true,
+        value: { keyKind, limiter, windowMs },
+      });
+    }
+    throw error;
+  }
+}
+
+export function rateLimitFailureMetadata(error: unknown): RateLimitFailureMetadata | undefined {
+  if (!(error instanceof AuthServiceError) || error.code !== "RATE_LIMITED") return undefined;
+  return (error as RateLimitFailure)[RATE_LIMIT_FAILURE_METADATA];
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -73,17 +104,35 @@ function isLoopbackAddress(value: string): boolean {
   return isIP(ipv4) === 4 && ipv4.startsWith("127.");
 }
 
-class RouteRateLimiter {
+/**
+ * A per-process attempt budget, and only that.
+ *
+ * What it is for is making a single server unattractive to hammer, and keeping one caller from spending another's
+ * budget within a window. What it is **not** is a deployment-wide guarantee: every replica keeps its own counters and a
+ * restart clears them, so an attacker with more than one route to the fleet gets more than one budget. Bounding
+ * password guessing across a deployment needs a shared store or a gateway in front, and this class should not be read
+ * as standing in for either.
+ *
+ * Entry count is capped because some keys are attacker-chosen. A key space the caller controls — an email address, for
+ * one — is unbounded, so an unbounded map would be a way to spend the server's memory rather than merely its patience.
+ * Expired entries are dropped first, and the oldest survivors after that; evicting a live counter can only ever grant
+ * attempts, never deny them, so the cap costs enforcement rather than availability.
+ */
+export class RouteRateLimiter {
   readonly #entries = new Map<string, { count: number; resetAt: number }>();
   constructor(
     readonly limit = 20,
     readonly windowMs = 5 * 60 * 1000,
+    readonly maxEntries = 10_000,
   ) {}
 
   check(key: string): void {
     const now = Date.now();
     const current = this.#entries.get(key);
     if (!current || current.resetAt <= now) {
+      // Re-inserted rather than mutated, so the insertion order Map preserves is also the eviction order below.
+      this.#entries.delete(key);
+      this.#evict(now);
       this.#entries.set(key, { count: 1, resetAt: now + this.windowMs });
       return;
     }
@@ -92,14 +141,122 @@ class RouteRateLimiter {
       throw new AuthServiceError("RATE_LIMITED", "rate_limit", "Too many browser sign-in attempts", 429);
     }
   }
+
+  /** Exposed for the test that holds the bound; nothing in the routes reads it. */
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  #evict(now: number): void {
+    if (this.#entries.size < this.maxEntries) return;
+    for (const [key, entry] of this.#entries) {
+      if (entry.resetAt <= now) this.#entries.delete(key);
+    }
+    // Still full of live counters, so age decides: Map iterates in insertion order, and each entry is inserted once.
+    while (this.#entries.size >= this.maxEntries) {
+      const oldest = this.#entries.keys().next();
+      if (oldest.done) return;
+      this.#entries.delete(oldest.value);
+    }
+  }
 }
 
-export function registerBrowserAuthRoutes(
-  app: FastifyInstance,
-  authService: UserAuthService,
-  options: BrowserAuthRoutesOptions,
-): void {
-  const limiter = new RouteRateLimiter();
+const processRateLimiter = new RouteRateLimiter();
+
+function assertRateLimiterBoundary(options: BrowserAuthRoutesOptions): void {
+  if (options.rateLimiter) return;
+  if (process.env.OPENTAG_ENV === "prod" && process.env.OPENTAG_BROWSER_AUTH_SINGLE_PROCESS !== "true") {
+    throw new Error(
+      "Browser authentication requires a shared rate limiter in production; set OPENTAG_BROWSER_AUTH_SINGLE_PROCESS=true only for a single-process deployment",
+    );
+  }
+}
+
+/**
+ * Whether a Better Auth failure was a decision about the request or a failure to answer it at all.
+ *
+ * The distinction has to survive: a credential path that reports a database outage as "wrong password" tells the
+ * person to retype a correct password, tells the browser not to retry, and hides the incident from whoever is meant to
+ * notice it. Only a refusal the library actually made may be reported as one.
+ */
+function transientFailure(response: Response): AuthServiceError | undefined {
+  if (response.status === 429) {
+    return new AuthServiceError("RATE_LIMITED", "rate_limit", "Too many browser sign-in attempts", 429);
+  }
+  if (response.status >= 500) {
+    /*
+     * The library's own message is not forwarded. It is written for a developer reading a stack trace and can name
+     * internals; that a sign-in could not be completed is the whole of what a caller needs.
+     */
+    return new AuthServiceError("SERVICE_UNAVAILABLE", "transient", "Sign-in is temporarily unavailable", 503);
+  }
+  return undefined;
+}
+
+/**
+ * An OpenTag decision the library only carried, rather than one of its own.
+ *
+ * `onSessionCreating` raises `AUTH_USER_SUSPENDED` from inside Better Auth, and that answer should reach the caller
+ * intact. Only codes that parse as OpenTag's own survive this: the library's vocabulary — `INVALID_EMAIL_OR_PASSWORD`
+ * and the rest — does not, so nothing it decided leaks through here.
+ */
+function preservedDecision(body: unknown, status: number): AuthServiceError | undefined {
+  const envelope = body as { code?: unknown; message?: unknown } | undefined;
+  const code = ErrorCodeSchema.safeParse(envelope?.code);
+  if (!code.success || typeof envelope?.message !== "string") return undefined;
+  return new AuthServiceError(code.data, "deterministic", envelope.message, status);
+}
+
+/**
+ * Restates a refused registration.
+ *
+ * Registration cannot hide that an address is taken and still tell the caller what to do about it, so the duplicate is
+ * reported as the conflict it is — the one disclosure any self-serve registration without a verification step makes.
+ * Everything else is a rejected request rather than a conflict: reporting them all as "already exists" would make
+ * every other cause unreadable, and would tell someone registering a free address to go recover an Account that does
+ * not exist.
+ */
+async function signUpFailure(response: Response): Promise<AuthServiceError> {
+  const transient = transientFailure(response);
+  if (transient) return transient;
+  const body = await response.json().catch(() => undefined);
+  const preserved = preservedDecision(body, response.status);
+  if (preserved) return preserved;
+  const code = (body as { code?: unknown } | undefined)?.code;
+  const duplicate =
+    response.status === 409 || (typeof code === "string" && code.toUpperCase().includes("ALREADY_EXISTS"));
+  if (duplicate) {
+    return new AuthServiceError(
+      "AUTH_EMAIL_CONFLICT",
+      "deterministic",
+      "An Account already exists for that email address",
+      409,
+    );
+  }
+  return new AuthServiceError("VALIDATION_ERROR", "validation", "The registration was refused", 400);
+}
+
+/**
+ * Restates a refused sign-in.
+ *
+ * One answer for an unknown address and a wrong password alike, because distinguishing them would turn this endpoint
+ * into a way to ask which addresses hold Accounts. That uniformity covers the library's refusals only. A server that
+ * could not answer says so, or the transient case is unreachable to both the browser and whoever operates it; and a
+ * suspension is reported as itself, because reaching it took a password the caller already had.
+ */
+async function signInFailure(response: Response): Promise<AuthServiceError> {
+  const transient = transientFailure(response);
+  if (transient) return transient;
+  const preserved = preservedDecision(await response.json().catch(() => undefined), response.status);
+  return (
+    preserved ??
+    new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The email address or password is incorrect", 401)
+  );
+}
+
+export function registerBrowserAuthRoutes(app: FastifyInstance, options: BrowserAuthRoutesOptions): void {
+  assertRateLimiterBoundary(options);
+  const limiter = options.rateLimiter ?? processRateLimiter;
 
   /** Development sign-in is offered only to a loopback client reaching a loopback host, on a server configured for it. */
   const devSignInAvailable = (request: FastifyRequest): boolean =>
@@ -107,26 +264,35 @@ export function registerBrowserAuthRoutes(
 
   app.get(HTTP_PATHS.authProviders, async (request, reply) => {
     const devAvailable = devSignInAvailable(request);
-    return reply.code(200).send(
-      AuthProvidersResponseSchema.parse({
-        providers: [
-          {
-            id: "google",
-            enabled: Boolean(options.google),
-            startUrl: options.google ? HTTP_PATHS.authGoogleStart : null,
-          },
-          {
-            id: "dev",
-            enabled: devAvailable,
-            startUrl: devAvailable ? HTTP_PATHS.authDevCallback : null,
-          },
-        ],
-      }),
-    );
+    return reply
+      .header("Cache-Control", "no-store")
+      .code(200)
+      .send(
+        AuthProvidersResponseSchema.parse({
+          providers: [
+            {
+              id: "google",
+              enabled: Boolean(options.googleSignIn),
+              startUrl: options.googleSignIn ? HTTP_PATHS.authGoogleStart : null,
+            },
+            {
+              id: "dev",
+              enabled: devAvailable,
+              startUrl: devAvailable ? HTTP_PATHS.authDevCallback : null,
+            },
+            // A form rather than a link, so there is no URL to start it from; the caller posts to the two email routes.
+            {
+              id: "password",
+              enabled: Boolean(options.passwordSignIn),
+              startUrl: null,
+            },
+          ],
+        }),
+      );
   });
 
   app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
-    limiter.check(`${request.ip}:dev`);
+    checkRateLimit(limiter, `${request.ip}:dev`, "ip");
     const betterAuth = options.betterAuth;
     if (!devSignInAvailable(request) || !betterAuth) {
       throw new AuthServiceError(
@@ -163,111 +329,100 @@ export function registerBrowserAuthRoutes(
       maxAgeSeconds: options.sessionTtlSeconds,
       secure: options.secureCookies,
     });
-    return reply.redirect(destination, 302);
+    return reply.header("Cache-Control", "no-store").redirect(destination, 302);
   });
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
-    limiter.check(`${request.ip}:start`);
+    checkRateLimit(limiter, `${request.ip}:start`, "ip");
+    const betterAuth = options.betterAuth;
+    if (!options.googleSignIn || !betterAuth) {
+      throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
+    }
     const { next } = parseRequest(StartQuerySchema, request.query);
     const destination = validateOAuthNext(next);
-
-    if (options.betterAuth) {
-      /*
-       * Better Auth expects the client to POST for a URL and navigate itself. The login page is a plain link, so this
-       * route does the POST server-side and redirects — which also keeps the provider's state and PKCE cookies on the
-       * response, and keeps `validateOAuthNext` as the single gate on where sign-in may land.
-       */
-      const response = await callBetterAuth(options.betterAuth.instance, options.betterAuth.publicUrl, request, {
-        method: "POST",
-        path: "/sign-in/social",
-        body: { callbackURL: destination, provider: "google" },
-      });
-      const payload = (await response.json().catch(() => undefined)) as { url?: string } | undefined;
-      if (!response.ok || !payload?.url) {
-        throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
-      }
-      copyBetterAuthCookies(reply, response);
-      return reply.redirect(payload.url, 302);
-    }
-
-    if (!options.google) {
+    /*
+     * Better Auth expects the client to POST for a URL and navigate itself. The login page is a plain link, so this
+     * route does the POST server-side and redirects — which also keeps the provider's state and PKCE cookies on the
+     * response, and keeps `validateOAuthNext` as the single gate on where sign-in may land.
+     */
+    const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+      method: "POST",
+      path: "/sign-in/social",
+      body: { callbackURL: destination, provider: "google" },
+    });
+    const payload = (await response.json().catch(() => undefined)) as { url?: string } | undefined;
+    if (!response.ok || !payload?.url) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
     }
-    const result = await options.google.start(next);
-    setOAuthContextCookie(reply, result.context, options.secureCookies);
-    return reply.redirect(result.authorizationUrl, 302);
+    copyBetterAuthCookies(reply, response);
+    return reply.header("Cache-Control", "no-store").redirect(payload.url, 302);
   });
 
-  app.get(HTTP_PATHS.authGoogleCallback, async (request, reply) => {
-    limiter.check(`${request.ip}:callback`);
-    if (!options.google) {
-      throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
-    }
-    const callback = parseRequest(CallbackQuerySchema, request.query);
-    const context = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.oauthContext];
-    if (!context) {
+  /**
+   * Signs a request in and hands the browser both halves of what it needs to act.
+   *
+   * Better Auth issues the session cookie; the double-submit token is OpenTag's and is minted here, because every
+   * later mutation requires it and a browser that arrived with none would otherwise be able to read and nothing else.
+   */
+  const establishBrowserSession = (reply: Parameters<typeof setBrowserCsrfCookie>[0], response: Response): void => {
+    copyBetterAuthCookies(reply, response);
+    setBrowserCsrfCookie(reply, {
+      maxAgeSeconds: options.sessionTtlSeconds,
+      secure: options.secureCookies,
+    });
+  };
+
+  const requirePasswordAuth = (): NonNullable<BrowserAuthRoutesOptions["betterAuth"]> => {
+    if (!options.passwordSignIn || !options.betterAuth) {
       throw new AuthServiceError(
-        "AUTH_OAUTH_FAILED",
-        "credential",
-        "The browser sign-in flow is invalid or expired",
-        401,
+        "AUTH_PROVIDER_DISABLED",
+        "deterministic",
+        "Email and password sign-in is not enabled",
+        404,
       );
     }
-    const result = await options.google.callback(
-      {
-        ...(callback.code !== undefined ? { code: callback.code } : {}),
-        ...(callback.error !== undefined ? { error: callback.error } : {}),
-        state: callback.state,
-      },
-      context,
-      {
-        onVerified: () => clearOAuthContextCookie(reply, options.secureCookies),
-      },
-    );
-    setBrowserSessionCookies(reply, result.tokens, {
-      refreshTtlSeconds: options.refreshTokenTtlSeconds,
-      secure: options.secureCookies,
+    return options.betterAuth;
+  };
+
+  app.post(HTTP_PATHS.authEmailSignUp, async (request, reply) => {
+    const betterAuth = requirePasswordAuth();
+    requireBrowserOrigin(request, options.publicOrigin);
+    checkRateLimit(limiter, `${request.ip}:sign-up`, "ip");
+    const body = parseRequest(EmailSignUpRequestSchema, request.body);
+    const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+      method: "POST",
+      path: "/sign-up/email",
+      // `name` is Better Auth's field for what OpenTag stores as `displayName`; the instance maps it to that column.
+      body: { email: body.email, name: body.displayName, password: body.password },
     });
-    return reply.redirect(result.next, 302);
+    if (!response.ok) {
+      throw await signUpFailure(response);
+    }
+    establishBrowserSession(reply, response);
+    return reply.header("Cache-Control", "no-store").code(204).send();
   });
 
-  app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {
-    requireBrowserMutationSecurity(request, options.publicOrigin);
-    const refreshToken = requireRefreshCookie(request);
-    const betterAuth = options.betterAuth;
-    if (betterAuth) {
-      /*
-       * Only a browser that has not signed in since the cutover still holds this cookie, so refreshing it is that
-       * browser's one chance to move across. It is spent on a Better Auth session rather than another legacy pair:
-       * anything else leaves a session sign-out cannot revoke, or a credential that stops working when the legacy
-       * secret is retired.
-       */
-      const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
-        method: "POST",
-        path: LEGACY_UPGRADE_PATH,
-        body: { refreshToken },
-      });
-      if (!response.ok) {
-        throw await betterAuthFailure(
-          response,
-          invalidCredential("AUTH_INVALID_TOKEN", "The refresh token is invalid"),
-        );
-      }
-      copyBetterAuthCookies(reply, response);
-      setBrowserCsrfCookie(reply, {
-        maxAgeSeconds: options.sessionTtlSeconds,
-        secure: options.secureCookies,
-      });
-      // Retired only now that the replacement is on the reply, so a failure above leaves the browser able to retry.
-      clearLegacyCredentialCookies(reply, options.secureCookies);
-      return reply.code(204).send();
-    }
-    const tokens = await authService.refresh(refreshToken);
-    setBrowserSessionCookies(reply, tokens, {
-      refreshTtlSeconds: options.refreshTokenTtlSeconds,
-      secure: options.secureCookies,
+  app.post(HTTP_PATHS.authEmailSignIn, async (request, reply) => {
+    const betterAuth = requirePasswordAuth();
+    requireBrowserOrigin(request, options.publicOrigin);
+    checkRateLimit(limiter, `${request.ip}:sign-in`, "ip");
+    const body = parseRequest(EmailSignInRequestSchema, request.body);
+    /*
+     * Also bounded per address, so guessing one Account's password cannot be spread across many source addresses.
+     * The cost is that an attacker can spend a victim's budget and lock them out for the window; against unbounded
+     * distributed guessing at a single known address, that is the better failure.
+     */
+    checkRateLimit(limiter, `sign-in:${body.email}`, "email");
+    const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+      method: "POST",
+      path: "/sign-in/email",
+      body: { email: body.email, password: body.password },
     });
-    return reply.code(204).send();
+    if (!response.ok) {
+      throw await signInFailure(response);
+    }
+    establishBrowserSession(reply, response);
+    return reply.header("Cache-Control", "no-store").code(204).send();
   });
 
   app.post(HTTP_PATHS.authBrowserLogout, async (request, reply) => {
@@ -299,7 +454,8 @@ export function registerBrowserAuthRoutes(
       copyBetterAuthCookies(reply, response);
     }
     // Cleared unconditionally: a browser mid-rollout can hold either credential, and signing out must end both.
-    clearBrowserSessionCookies(reply, options.secureCookies);
-    return reply.code(204).send();
+    // The double-submit token is OpenTag's, not Better Auth's, so signing out has to retire it here.
+    clearBrowserCsrfCookie(reply, options.secureCookies);
+    return reply.header("Cache-Control", "no-store").code(204).send();
   });
 }

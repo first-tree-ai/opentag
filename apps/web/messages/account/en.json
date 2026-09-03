@@ -1,0 +1,22 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "account_account_not_refreshed": "Account not refreshed",
+  "account_discard": "Discard",
+  "account_display_name": "Display name",
+  "account_display_name_description": "This identity is used throughout OpenTag.",
+  "account_email": "Email",
+  "account_email_description": "Your sign-in email cannot be changed here.",
+  "account_error_profile_save_failed": "Unable to save the account profile",
+  "account_error_refresh_failed": "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
+  "account_language_description": "Choose the language used throughout OpenTag.",
+  "account_language_label": "Language",
+  "account_page_description": "Manage your personal account details.",
+  "account_page_title": "Account",
+  "account_profile_saved": "Account profile saved.",
+  "account_profile_title": "Account profile",
+  "account_refreshing": "Refreshing…",
+  "account_retry_refresh": "Retry refresh",
+  "account_save_profile": "Save account profile",
+  "account_saving": "Saving…",
+  "account_unsaved_changes": "Unsaved changes"
+}

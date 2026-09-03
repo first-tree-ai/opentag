@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { commandExitCode, presentCommand, toCommandError } from "../../core/command/policy.js";
 import {
   formatSessionCommandError,
   formatSessionCommandResult,
@@ -49,8 +50,20 @@ export function registerSessionCommand(program: Command): void {
     .option("--since <timestamp>", "include Sessions active since this ISO-8601 timestamp")
     .option("--json", "print JSON")
     .action(async (options) => {
-      const result = await runSessionList(options);
-      process.stdout.write(`${options.json ? JSON.stringify(result) : formatSessionList(result)}\n`);
+      try {
+        const result = await runSessionList(options);
+        if (options.json) {
+          process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
+        } else {
+          process.stdout.write(`${formatSessionList(result)}\n`);
+        }
+      } catch (error) {
+        const commandError = toCommandError(error, "request");
+        process.exitCode = presentCommand(
+          { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+          { json: options.json === true },
+        );
+      }
     });
 }
 
@@ -66,9 +79,17 @@ async function runCommand(
   try {
     writeCommandResult(await operation(), options);
   } catch (error) {
-    if (!(error instanceof SessionCommandRequestError)) throw error;
-    process.stderr.write(`${formatSessionCommandError(error, options.json ?? false)}\n`);
-    process.exitCode = 1;
+    if (error instanceof SessionCommandRequestError) {
+      process.stderr.write(`${formatSessionCommandError(error, options.json ?? false)}\n`);
+      const commandError = toCommandError(error.cause, "request");
+      process.exitCode = commandExitCode(commandError);
+      return;
+    }
+    const commandError = toCommandError(error, "request");
+    process.exitCode = presentCommand(
+      { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+      { json: options.json === true },
+    );
   }
 }
 

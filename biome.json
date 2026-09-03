@@ -1,7 +1,26 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.11/schema.json",
   "files": {
-    "includes": ["**", "!**/node_modules", "!**/dist", "!**/coverage", "!**/.turbo", "!packages/server/drizzle"]
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/coverage",
+      "!**/.turbo",
+      "!e2e/playwright-report",
+      "!e2e/screenshots",
+      "!e2e/test-results",
+      "!packages/server/drizzle",
+      "!apps/web/src/routeTree.gen.ts",
+      "!apps/web/src/paraglide",
+      "!apps/web/project.inlang/cache",
+      "!apps/web/project.inlang/.meta.json"
+    ]
+  },
+  "vcs": {
+    "clientKind": "git",
+    "enabled": true,
+    "useIgnoreFile": true
   },
   "formatter": {
     "enabled": true,
@@ -15,15 +34,26 @@
       "semicolons": "always"
     }
   },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
   "linter": {
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "correctness": {
+        "noUndeclaredDependencies": "error"
+      },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "warn"
+      },
       "suspicious": {
         "noExplicitAny": "error"
       },
       "style": {
-        "noNonNullAssertion": "warn",
+        "noNonNullAssertion": "error",
         "useImportType": "error"
       }
     }

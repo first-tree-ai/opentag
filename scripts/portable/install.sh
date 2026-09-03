@@ -9,7 +9,7 @@ set -eu
 # pinned to the channel they belong to.
 
 PORTABLE_CHANNEL="${OPENTAG_PORTABLE_CHANNEL:-prod}"
-DOWNLOAD_BASE_URL="${OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https://download.opentag.build/releases}"
+DOWNLOAD_BASE_URL="${OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https://storage.googleapis.com/opentag-release/releases}"
 DEFAULT_PREFIX="${HOME}/.local/share/opentag/${PORTABLE_CHANNEL}"
 DEFAULT_BIN_DIR="${HOME}/.local/bin"
 PATH_MODE="auto"
@@ -318,6 +318,8 @@ rewrite_path_block() {
   {
     cat "$tmp"
     printf '\n%s\n' "$START_MARKER"
+    # The profile must receive a literal $PATH for expansion by the future shell.
+    # shellcheck disable=SC2016
     printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
     printf '%s\n' "$END_MARKER"
   } >"${tmp}.new"
@@ -343,7 +345,7 @@ maybe_edit_path() {
       return 0
     fi
     printf 'Add %s to PATH in %s? [Y/n] ' "$BIN_DIR" "$profile"
-    read answer || answer="n"
+    read -r answer || answer="n"
     case "$answer" in
       ""|y|Y|yes|YES) ;;
       *)
@@ -371,27 +373,6 @@ print_path_guidance() {
   else
     log "Add this to your shell profile: export PATH=\"$BIN_DIR:\$PATH\""
   fi
-}
-
-# Service reconciliation is best-effort by design: exit code 3 means the CLI deliberately deferred
-# setup until login creates credentials, and any other failure must not fail an install that already
-# produced a working command.
-ensure_daemon_service() {
-  bin_name="$1"
-  status=0
-  "$BIN_DIR/$bin_name" daemon ensure-service || status=$?
-  case "$status" in
-    0) return 0 ;;
-    3)
-      log "Daemon service setup is deferred until you run: $bin_name login <connect-code>"
-      return 0
-      ;;
-    *)
-      log "Daemon service reconciliation failed (exit $status)."
-      log "Run \"$BIN_DIR/$bin_name login <connect-code>\" to refresh credentials and service state."
-      return 0
-      ;;
-  esac
 }
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/opentag-portable.XXXXXX")"
@@ -426,10 +407,10 @@ BIN_NAME="$(json_string "$MANIFEST_FILE" binName)"
 # drops trailing slashes and dot segments without resolving a caller-selected symlink prefix, which
 # matches the lexical absolute paths recorded in the shims.
 if [ -d "$PREFIX" ]; then
-  PREFIX="$(CDPATH= cd -L "$PREFIX" && pwd -L)"
+  PREFIX="$(CDPATH="" cd -L "$PREFIX" && pwd -L)"
 fi
 if [ -d "$BIN_DIR" ]; then
-  BIN_DIR="$(CDPATH= cd -L "$BIN_DIR" && pwd -L)"
+  BIN_DIR="$(CDPATH="" cd -L "$BIN_DIR" && pwd -L)"
 fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
@@ -453,8 +434,8 @@ ASSET_SIZE="$(json_number "$ASSET_FILE" size)"
 [ -n "$ASSET_SIZE" ] || die "asset missing size"
 
 mkdir -p "$PREFIX/versions" "$PREFIX/.tmp" "$BIN_DIR"
-PREFIX="$(CDPATH= cd -L "$PREFIX" && pwd -L)"
-BIN_DIR="$(CDPATH= cd -L "$BIN_DIR" && pwd -L)"
+PREFIX="$(CDPATH="" cd -L "$PREFIX" && pwd -L)"
+BIN_DIR="$(CDPATH="" cd -L "$BIN_DIR" && pwd -L)"
 TARBALL="$WORK_DIR/payload.tar.gz"
 log "Downloading OpenTag ${VERSION} for ${PLATFORM}"
 download_to "$ASSET_URL" "$TARBALL"
@@ -540,7 +521,6 @@ fi
 PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
-ensure_daemon_service "$BIN_NAME"
 
 log "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"
 log "Command: $BIN_DIR/$BIN_NAME"

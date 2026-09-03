@@ -7,6 +7,7 @@ import {
   type HeartbeatFrame,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
+  RUNTIME_CAPABILITY,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
@@ -14,11 +15,13 @@ import {
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RUNTIME_V0_CAPABILITIES,
+  type RuntimeChannelTarget,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
+  redactForLog,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,
   ServerWelcomeV1FrameSchema,
@@ -33,6 +36,7 @@ import {
   startRuntimeConnectionSpan,
   startRuntimeFrameSpan,
 } from "../observability/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
@@ -44,8 +48,7 @@ export type RuntimeServerBusinessFrame = Readonly<Record<string, unknown>> & { r
 
 export interface RuntimeBusinessContext {
   computerId: string;
-  workspaceComputerId: string;
-  workspaceId: string;
+  installationId: string;
   connectionId?: string;
   instanceId: string;
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
@@ -66,9 +69,16 @@ export interface RuntimeBusinessOptions {
 export interface RuntimeSessionOptions {
   authTimeoutMs?: number;
   business?: RuntimeBusinessOptions;
+  /**
+   * Exact channel latest target to advertise on v2 heartbeat results. Consulted per heartbeat, and
+   * only sent when the `runtime.channelTarget` capability was negotiated.
+   */
+  channelTarget?: () => RuntimeChannelTarget | undefined;
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
+  logger?: ServiceLogger;
   now?: () => Date;
+  onRegistered?: (input: { computerId: string; installationId: string; instanceId: string }) => Promise<void> | void;
   providerReadiness?: readonly AgentRuntimeProvider[];
   registerTimeoutMs?: number;
 }
@@ -78,9 +88,14 @@ export class RuntimeSession {
   readonly #computers: ComputerService;
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
-  readonly #options: Required<Omit<RuntimeSessionOptions, "business" | "now">> & {
+  readonly #logger?: ServiceLogger;
+  readonly #options: Required<
+    Omit<RuntimeSessionOptions, "business" | "channelTarget" | "logger" | "now" | "onRegistered">
+  > & {
     business?: RuntimeBusinessOptions;
+    channelTarget?: () => RuntimeChannelTarget | undefined;
     now: () => Date;
+    onRegistered?: RuntimeSessionOptions["onRegistered"];
   };
   readonly #abort = new AbortController();
   readonly #businessScheduler?: KeyedTaskScheduler;
@@ -89,9 +104,8 @@ export class RuntimeSession {
   #handshakeInFlight = false;
   #heartbeatInFlight = false;
   #authContext?: ComputerAuthContext;
+  #installationId?: string;
   #computerId?: string;
-  #workspaceComputerId?: string;
-  #workspaceId?: string;
   #connectionId?: string;
   #instanceId?: string;
   #protocolVersion?: RuntimeProtocolVersion;
@@ -108,6 +122,7 @@ export class RuntimeSession {
     this.#auth = auth;
     this.#computers = computers;
     this.#registry = registry;
+    this.#logger = options.logger;
     const heartbeat = ServerWelcomeV1FrameSchema.parse({
       type: "server:welcome",
       protocolVersion: RUNTIME_PROTOCOL_V1,
@@ -118,9 +133,11 @@ export class RuntimeSession {
     this.#options = {
       authTimeoutMs: positiveTimeout(options.authTimeoutMs ?? 5_000, "authTimeoutMs"),
       business: options.business,
+      channelTarget: options.channelTarget,
       heartbeatIntervalMs: heartbeat.heartbeatIntervalMs,
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
+      onRegistered: options.onRegistered,
       providerReadiness: Object.freeze([...(options.providerReadiness ?? [])]),
       registerTimeoutMs: positiveTimeout(options.registerTimeoutMs ?? 5_000, "registerTimeoutMs"),
     };
@@ -138,7 +155,21 @@ export class RuntimeSession {
     this.#armTimeout(this.#options.authTimeoutMs, "RUNTIME_AUTH_TIMEOUT", "Authentication timed out");
     this.#socket.on("message", (data, isBinary) => this.#onMessage(data, isBinary));
     this.#socket.on("close", (code) => void this.#onClose(code));
-    this.#socket.on("error", () => undefined);
+    this.#socket.on("error", (error) => {
+      try {
+        this.#logger?.error(
+          {
+            errorType: error instanceof Error ? error.name : "UnknownError",
+            reason: redactForLog(
+              error instanceof Error ? error.message : "The runtime socket emitted an unknown error",
+            ),
+          },
+          "Runtime socket transport error",
+        );
+      } catch {
+        // Logging must never change ws error-event swallowing semantics.
+      }
+    });
   }
 
   #onMessage(data: RawData, isBinary: boolean): void {
@@ -275,9 +306,8 @@ export class RuntimeSession {
         type: "auth:result",
         requestId: frame.requestId,
         ok: true,
-        workspaceComputerId: authenticated.workspaceComputerId,
-        workspaceId: authenticated.workspaceId,
         computerId: authenticated.computerId,
+        installationId: authenticated.installationId,
       });
       this.#send(
         this.#protocolVersion === RUNTIME_PROTOCOL_V2
@@ -310,12 +340,12 @@ export class RuntimeSession {
   }
 
   async #register(frame: ComputerRegisterFrame): Promise<void> {
+    // #register runs only in the await-register state, which #authenticate enters immediately after
+    // assigning #authContext. A missing context here is a programming invariant violation, never a
+    // Client protocol event, so it must not be answered with a protocol close.
     const authContext = this.#authContext;
-    if (!authContext) {
-      this.#fail("PROTOCOL_ERROR", "Missing authenticated Computer enrollment", 4400, frame.requestId);
-      return;
-    }
-    if (frame.computerId !== authContext.computerId) {
+    if (!authContext) throw new Error("Computer registration requires an authenticated Computer");
+    if (frame.installationId !== authContext.installationId) {
       this.#fail(
         "COMPUTER_IDENTITY_CONFLICT",
         "The Computer identity does not match the machine credential",
@@ -360,9 +390,8 @@ export class RuntimeSession {
           active: false,
           capabilities: frame.capabilities,
           capabilitiesUpdatedAt: this.#options.now().getTime(),
-          computerId: frame.computerId,
-          workspaceComputerId: authContext.workspaceComputerId,
-          workspaceId: authContext.workspaceId,
+          computerId: authContext.computerId,
+          installationId: frame.installationId,
           connectionId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
@@ -380,16 +409,16 @@ export class RuntimeSession {
         () => this.#computers.register(authContext, frame),
         () => {
           if (this.#isClosing()) return;
-          this.#computerId = frame.computerId;
-          this.#workspaceComputerId = authContext.workspaceComputerId;
-          this.#workspaceId = authContext.workspaceId;
+          this.#installationId = frame.installationId;
+          this.#computerId = authContext.computerId;
           this.#connectionId = connectionId;
           this.#instanceId = frame.instanceId;
           this.#negotiatedCapabilities = negotiatedCapabilities ?? {};
           setRuntimeConnectionAttrs(
             this.#socket,
             runtimeAttrs({
-              computerId: frame.computerId,
+              computerId: authContext.computerId,
+              installationId: frame.installationId,
               connectionId,
               instanceId: frame.instanceId,
               protocolVersion: this.#protocolVersion,
@@ -409,14 +438,22 @@ export class RuntimeSession {
                 }
               : { type: "computer:register:result", requestId: frame.requestId, ok: true },
           );
-          if (!this.#registry.activate(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
+          if (!this.#registry.activate(authContext.computerId, frame.instanceId, this.#socket)) {
             this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
+            return;
           }
+          void Promise.resolve(
+            this.#options.onRegistered?.({
+              computerId: authContext.computerId,
+              installationId: frame.installationId,
+              instanceId: frame.instanceId,
+            }),
+          ).catch(() => undefined);
         },
       );
       if (this.#isClosing()) {
-        if (this.#registry.remove(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
-          await this.#computers.disconnect(authContext.workspaceComputerId, frame.instanceId).catch(() => undefined);
+        if (this.#registry.remove(authContext.computerId, frame.instanceId, this.#socket)) {
+          await this.#computers.disconnect(authContext.computerId, frame.instanceId).catch(() => undefined);
         }
         return;
       }
@@ -426,10 +463,10 @@ export class RuntimeSession {
   }
 
   async #heartbeat(frame: HeartbeatFrame): Promise<void> {
-    const { requestId, computerId, instanceId, capabilities, providerReadiness, imCliReadiness } = frame;
+    const { requestId, installationId, instanceId, capabilities, providerReadiness, imCliReadiness } = frame;
     try {
       const authContext = this.#authContext;
-      if (!authContext || computerId !== this.#computerId || instanceId !== this.#instanceId) {
+      if (!authContext || installationId !== this.#installationId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
@@ -437,7 +474,7 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, requestId);
         return;
       }
-      if (!this.#registry.isCurrent(authContext.workspaceComputerId, instanceId, this.#socket)) {
+      if (!this.#registry.isCurrent(authContext.computerId, instanceId, this.#socket)) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }
@@ -447,7 +484,7 @@ export class RuntimeSession {
       }
       if (
         !this.#registry.touch(
-          authContext.workspaceComputerId,
+          authContext.computerId,
           instanceId,
           this.#socket,
           this.#options.now().getTime(),
@@ -460,6 +497,7 @@ export class RuntimeSession {
         return;
       }
       if (this.#isClosing()) return;
+      const channelTarget = this.#channelTarget();
       this.#send(
         this.#protocolVersion === RUNTIME_PROTOCOL_V2
           ? {
@@ -469,12 +507,23 @@ export class RuntimeSession {
               serverTime: this.#options.now().toISOString(),
               protocolVersion: RUNTIME_PROTOCOL_V2,
               connectionId: this.#connectionId,
+              ...(channelTarget ? { channelTarget } : {}),
             }
           : { type: "heartbeat:result", requestId, ok: true, serverTime: this.#options.now().toISOString() },
       );
     } catch (error) {
       this.#handleRequestError(error, requestId);
     }
+  }
+
+  #channelTarget(): RuntimeChannelTarget | undefined {
+    if (
+      this.#protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+      this.#negotiatedCapabilities[RUNTIME_CAPABILITY.channelTarget] === undefined
+    ) {
+      return undefined;
+    }
+    return this.#options.channelTarget?.();
   }
 
   #acceptsProviderReadiness(providerReadiness: RuntimeProviderReadinessCollection | undefined): boolean {
@@ -488,15 +537,7 @@ export class RuntimeSession {
     const business = this.#options.business;
     const scheduler = this.#businessScheduler;
     const authContext = this.#authContext;
-    if (
-      !business ||
-      !scheduler ||
-      !authContext ||
-      !this.#computerId ||
-      !this.#workspaceComputerId ||
-      !this.#workspaceId ||
-      !this.#instanceId
-    ) {
+    if (!business || !scheduler || !authContext || !this.#installationId || !this.#computerId || !this.#instanceId) {
       this.#fail("PROTOCOL_ERROR", "The runtime business frame type is unknown", 4400, requestId);
       return;
     }
@@ -514,8 +555,7 @@ export class RuntimeSession {
     }
     const context: RuntimeBusinessContext = {
       computerId: this.#computerId,
-      workspaceComputerId: this.#workspaceComputerId,
-      workspaceId: this.#workspaceId,
+      installationId: this.#installationId,
       connectionId: this.#connectionId,
       instanceId: this.#instanceId,
       negotiatedCapabilities: { ...this.#negotiatedCapabilities },
@@ -569,7 +609,7 @@ export class RuntimeSession {
       !context.signal.aborted &&
       this.#state === "registered" &&
       context.connectionId === this.#connectionId &&
-      this.#registry.isCurrent(context.workspaceComputerId, context.instanceId, this.#socket)
+      this.#registry.isCurrent(context.computerId, context.instanceId, this.#socket)
     );
   }
 
@@ -590,11 +630,11 @@ export class RuntimeSession {
     this.#businessScheduler?.close();
     this.#clearHandshakeTimer();
     if (
-      this.#workspaceComputerId &&
+      this.#computerId &&
       this.#instanceId &&
-      this.#registry.remove(this.#workspaceComputerId, this.#instanceId, this.#socket)
+      this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
     ) {
-      await this.#computers.disconnect(this.#workspaceComputerId, this.#instanceId).catch(() => undefined);
+      await this.#computers.disconnect(this.#computerId, this.#instanceId).catch(() => undefined);
     }
   }
 
@@ -653,6 +693,19 @@ export class RuntimeSession {
 
   #fail(code: RuntimeErrorFrame["code"], message: string, closeCode: number, requestId?: string): void {
     if (this.#isClosing()) return;
+    try {
+      this.#logger?.warn(
+        {
+          code,
+          closeCode,
+          reason: redactForLog(message),
+          ...(requestId ? { requestId } : {}),
+        },
+        "Runtime session terminated",
+      );
+    } catch {
+      // Logging must never prevent the runtime connection from closing.
+    }
     this.#state = "closing";
     this.#abort.abort();
     this.#businessScheduler?.close();
@@ -689,7 +742,7 @@ function runtimeBusinessFrameAttrs(
     sessionId: stringField(frame, "sessionId"),
     agentId: stringField(frame, "agentId"),
     computerId: runtime.computerId,
-    workspaceComputerId: runtime.workspaceComputerId,
+    installationId: runtime.installationId,
     instanceId: runtime.instanceId,
     placementGeneration: numberField(frame, "placementGeneration"),
   });

@@ -1,9 +1,10 @@
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "@opentag/shared";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
-import { devSignInPlugin, type LegacyUpgradeOptions, legacyUpgradePlugin } from "./internal-sign-in.js";
+import { devSignInPlugin } from "./internal-sign-in.js";
 
 /**
  * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
@@ -20,12 +21,8 @@ export interface BetterAuthConfig {
    * Runs before any session row exists, and must throw to prevent one.
    *
    * Better Auth owns account creation on its own sign-in paths, so this is where OpenTag decides whether an Account
-   * may hold a session at all — which is a question about identity, not authority. A suspended Account is refused, and
-   * an Account that has never been provisioned gets its default Workspace before it can sign in.
-   *
-   * It deliberately does not require an *active* Workspace grant. Revoking every grant removes an Account's authority,
-   * not its ability to sign in: it can still authenticate and see that it has no Workspace, and re-provisioning it
-   * here would hand the revoked authority straight back. Routes derive authority from grants read live per request.
+   * may hold a session at all. A suspended Account is refused; an active Account may authenticate, while resource
+   * routes derive authority directly from that Account's ownership.
    */
   onSessionCreating: (userId: string) => Promise<void>;
   /** Origin the browser reaches the server on; also the only trusted origin. */
@@ -45,14 +42,14 @@ export interface BetterAuthConfig {
    * Supplied only when development sign-in is configured, so the endpoint does not exist on a server without it.
    */
   devSignIn?: () => Promise<string>;
-  google?: { clientId: string; clientSecret: string };
   /**
-   * Verifies a refresh credential the previous revision issued and answers whose it is.
+   * Whether an address and password may create an Account and sign one in.
    *
-   * Supplied while the compatibility window is open. It must reject anything it cannot verify: it is the only thing
-   * standing between the upgrade endpoint and an unauthenticated session.
+   * Off leaves the endpoints undefined rather than merely unreachable, so a route that forgets to check cannot reach a
+   * credential path the deployment did not ask for.
    */
-  legacyUpgrade?: LegacyUpgradeOptions;
+  emailPassword?: boolean;
+  google?: { clientId: string; clientSecret: string };
 }
 
 export type OpenTagBetterAuth = ReturnType<typeof createBetterAuth>;
@@ -133,6 +130,26 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
         },
       },
     },
+    /*
+     * Bounds come from the shared schema the request was already validated against, so the library cannot apply a
+     * different floor underneath and turn an accepted password into a rejected one.
+     *
+     * `requireEmailVerification` stays off because nothing in the product can send mail: switching it on without a
+     * sender would accept a registration and then refuse every sign-in it enables, with no way to clear the state.
+     * `emailVerified` therefore stays false for these Accounts, which is exactly what it means — no provider has
+     * asserted the address.
+     */
+    ...(config.emailPassword
+      ? {
+          emailAndPassword: {
+            enabled: true,
+            autoSignIn: true,
+            minPasswordLength: PASSWORD_MIN_LENGTH,
+            maxPasswordLength: PASSWORD_MAX_LENGTH,
+            requireEmailVerification: false,
+          },
+        }
+      : {}),
     ...(config.google
       ? {
           socialProviders: {
@@ -144,7 +161,6 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
       bearer(),
       ...(config.devSignIn ? [devSignInPlugin(config.devSignIn)] : []),
-      ...(config.legacyUpgrade ? [legacyUpgradePlugin(config.legacyUpgrade)] : []),
     ],
   });
 }

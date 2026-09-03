@@ -1,0 +1,178 @@
+/*
+ * What is left of this surface's own styling after it was written in utilities.
+ *
+ * Everything expressible as a class — layout, colour, radius, type, and every reserved height the
+ * flow depends on — now sits on the element itself. What stayed is the styling that is driven by
+ * an attribute the page already publishes for assistive technology (`aria-pressed`, `data-status`).
+ * Stating those as variants would spread one decision across a dozen class lists; stating them here
+ * keeps each in one place.
+ *
+ * Only what belongs to this flow alone lives here. The styling of the setup pieces it shares with
+ * Agent settings — the command block, the check rows, the QR frame, the waiting dot — travels with
+ * those pieces in `../setup/setup.css`.
+ */
+
+/* Brand mark ------------------------------------------------------------- */
+
+/*
+ * The OpenTag mark is drawn inline so it inherits the theme, which means its parts are named here
+ * rather than in the shape. An undefined custom property makes the whole presentation attribute
+ * invalid, so the mark would fall back to solid black rather than to a sensible colour.
+ */
+:root {
+  --otv2-mark-tint: var(--brand);
+  --otv2-mark-surface: var(--card);
+  --otv2-mark-ink: var(--brand-ink);
+}
+
+/* Codex follows OpenTag's explicit theme, not the operating system's colour preference. */
+.otv2-codex-mark--light {
+  display: block;
+}
+
+.otv2-codex-mark--dark {
+  display: none;
+}
+
+:root[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--light,
+[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--light,
+[data-theme="opentag"] [data-mode="dark"] .otv2-codex-mark--light {
+  display: none;
+}
+
+:root[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--dark,
+[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--dark,
+[data-theme="opentag"] [data-mode="dark"] .otv2-codex-mark--dark {
+  display: block;
+}
+
+/* Choice cards ----------------------------------------------------------- */
+
+.otv2-choice {
+  color: inherit;
+  font: inherit;
+  text-align: start;
+
+  /* Buttons do not inherit the document's wrapping, so a card's copy has to opt back in or a
+     narrow viewport scrolls sideways instead of wrapping. */
+  white-space: normal;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+/* Kumo's base Button is 36px tall. The shell scope gives this rule enough specificity to replace
+   that utility height: a choice is a two-line card and must grow with its copy. */
+.otv2-shell .otv2-choice {
+  height: auto;
+  min-height: 80px;
+}
+
+.otv2-choice:hover:not(:disabled) {
+  background: var(--color-kumo-fill-hover);
+}
+
+.otv2-choice:disabled {
+  background: var(--color-kumo-recessed);
+  cursor: not-allowed;
+  /* Kumo dims disabled buttons as a whole. This card already communicates its unavailable state
+     through its surface and muted copy, so keep the explanatory text readable. */
+  opacity: 1;
+}
+
+.otv2-choice[aria-pressed="true"] {
+  border-color: var(--color-kumo-brand);
+  background: var(--brand-soft);
+}
+
+/* Nothing here shrinks under a click; it answers with colour instead. */
+.otv2-choice:active:not(:disabled) {
+  transform: none;
+  background: var(--color-kumo-fill-hover);
+}
+
+.otv2-shell button:active {
+  transform: none;
+}
+
+/* Progress rail ---------------------------------------------------------- */
+
+.otv2-rail__step {
+  border-top: 2px solid var(--color-kumo-line);
+}
+
+.otv2-rail__step[data-status="current"],
+.otv2-rail__step[data-status="complete"] {
+  border-top-color: var(--color-kumo-brand);
+}
+
+.otv2-rail__marker {
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+}
+
+.otv2-rail__step[data-status="current"] .otv2-rail__marker {
+  background: var(--color-kumo-brand);
+  color: var(--text-color-kumo-inverse);
+}
+
+/* Measurements ----------------------------------------------------------- */
+
+/*
+ * The numbers the flow depends on. They live here because this app compiles no utilities of its
+ * own: it ships Kumo's prebuilt sheet, so a bracketed class would be inert.
+ */
+
+/* The reading frame. */
+.otv2-frame {
+  width: min(100%, 720px);
+}
+
+/* Cards sit side by side wherever two tracks fit, and stack when they do not. */
+.otv2-choices--grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* The first option leads on a row of its own, so it reads as the recommended one. */
+.otv2-lead {
+  grid-column: 1 / -1;
+}
+
+/*
+ * Anything that changes length while someone is reading is given the height of its tallest state,
+ * so the step's footer keeps one position. These are measured, not chosen.
+ */
+.otv2-slot--outcome {
+  min-height: 50px;
+}
+
+.otv2-slot--signin {
+  min-height: 40px;
+}
+
+.otv2-field-error {
+  min-height: 20px;
+}
+
+@media (width <= 640px) {
+  .otv2-slot--outcome {
+    min-height: 71px;
+  }
+
+  .otv2-field-error {
+    min-height: 34px;
+  }
+}
+
+/* And below this one the repair summary takes a second pair of lines. */
+@media (width <= 359px) {
+  .otv2-slot--outcome {
+    min-height: 114px;
+  }
+}
+
+/* Slack's published button, at the size Slack publishes it. */
+.otv2-slack-install img {
+  height: 40px;
+}

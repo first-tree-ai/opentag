@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
@@ -64,7 +64,11 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const request = {
       ...reconcile(computerId, snapshot(1)),
       sessionKind: "internal" as const,
@@ -74,6 +78,7 @@ describe("SessionRuntimeManager", () => {
 
     expect(manager.requiresSessionPreparation(request)).toBe(false);
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.sessionKind(request.sessionId)).toBe("internal");
     await manager.ensureRuntime(request.sessionId);
 
     expect(proofManager.materialize).toHaveBeenCalledWith(request.sessionId, request.sessionCliProof);
@@ -81,8 +86,13 @@ describe("SessionRuntimeManager", () => {
       OPENTAG_HOME: home,
       OPENTAG_SESSION_PROOF_FILE: "/tmp/session-proof.json",
     });
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([factory.created[0]?.workspace.cwd]);
     expect(factory.created[0]?.hostedTools).toBeUndefined();
     expect(factory.created[0]?.systemPrompt).toContain("opentag-dev session send");
+    expect(factory.created[0]?.systemPrompt).toContain(
+      "OpenTag internal Sessions and Provider-native subagents are separate mechanisms",
+    );
+    expect(factory.created[0]?.systemPrompt).toContain("do not substitute a Provider-native subagent");
     expect(factory.created[0]?.systemPrompt).toContain(request.creatorSessionId);
     expect(manager.requiresSessionPreparation(request)).toBe(false);
     const rotated = {
@@ -97,6 +107,202 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
   });
 
+  it("grants only the active Slack config leaf to visible Sessions and never to internal or Feishu", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-slack-writable-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const slackLeaf = resolve(home, "data/runtime/provider-credentials/session-1-slack-config");
+    const parentCredentials = resolve(home, "data/runtime/provider-credentials");
+    const factory = new FakeFactory();
+    const resolved: string[] = [];
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      slackConfigWritableRoot: (sessionId) => {
+        resolved.push(sessionId);
+        return slackLeaf;
+      },
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+
+    const visible = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(visible)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(visible.sessionId);
+    expect(resolved).toEqual([visible.sessionId]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([factory.created[0]?.workspace.cwd, slackLeaf]);
+    expect(factory.created[0]?.workspace.writableRoots).not.toContain(parentCredentials);
+    expect(factory.created[0]?.workspace.environment).toMatchObject({
+      OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
+    });
+
+    const internalFactory = new FakeFactory();
+    const internalResolved: string[] = [];
+    const internalManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(internalFactory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      slackConfigWritableRoot: (sessionId) => {
+        internalResolved.push(sessionId);
+        return slackLeaf;
+      },
+      workspace,
+    });
+    const internalRequest = {
+      ...reconcile(computerId, snapshot(1)),
+      sessionId: "session-internal",
+      sessionKind: "internal" as const,
+      creatorSessionId: randomUUID(),
+    };
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: internalManager,
+        localPolicy: internalManager,
+      }).reconcile(internalRequest),
+    ).resolves.toMatchObject({ status: "ready" });
+    await internalManager.ensureRuntime(internalRequest.sessionId);
+    expect(internalResolved).toEqual([]);
+    expect(internalFactory.created[0]?.workspace.writableRoots).toEqual([internalFactory.created[0]?.workspace.cwd]);
+    expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("OPENTAG_PROVIDER_ENV_FILE");
+
+    const feishuFactory = new FakeFactory();
+    const feishuManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(feishuFactory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      slackConfigWritableRoot: () => undefined,
+      workspace,
+    });
+    const feishuRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-feishu" };
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: feishuManager,
+        localPolicy: feishuManager,
+      }).reconcile(feishuRequest),
+    ).resolves.toMatchObject({ status: "ready" });
+    await feishuManager.ensureRuntime(feishuRequest.sessionId);
+    expect(feishuFactory.created[0]?.workspace.writableRoots).toEqual([feishuFactory.created[0]?.workspace.cwd]);
+
+    await manager.close();
+    await internalManager.close();
+    await feishuManager.close();
+  });
+
+  it("prepends the visible launch bin ahead of ambient PATH and never does so for internal Sessions", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-launch-path-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const launchDir = resolve(home, "plans", "session-1");
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
+      providers: await providerRegistry(factory),
+      providerCliLaunchPath: (sessionId) => resolve(home, "plans", sessionId),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    await expect(
+      new SessionReconciler({ installationId: computerId, preparation: manager, localPolicy: manager }).reconcile(
+        reconcile(computerId, snapshot(1)),
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime("session-1");
+    const created = factory.created[0];
+    if (!created) throw new Error("visible runtime was not created");
+    const path = created.workspace.environment?.PATH ?? "";
+    expect(path.startsWith(`${launchDir}${delimiter}`)).toBe(true);
+    expect(path).toContain("/tmp/ambient-slack");
+    expect(path.indexOf(launchDir)).toBeLessThan(path.indexOf("/tmp/ambient-slack"));
+
+    const internalFactory = new FakeFactory();
+    const internalManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
+      providers: await providerRegistry(internalFactory),
+      providerCliLaunchPath: () => launchDir,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: internalManager,
+        localPolicy: internalManager,
+      }).reconcile({
+        ...reconcile(computerId, snapshot(1)),
+        sessionId: "session-internal",
+        sessionKind: "internal",
+        creatorSessionId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await internalManager.ensureRuntime("session-internal");
+    expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("PATH");
+
+    const exactFactory = new FakeFactory();
+    const exactManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: launchDir,
+      providers: await providerRegistry(exactFactory),
+      providerCliLaunchPath: () => launchDir,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const exactRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-exact-path" };
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: exactManager,
+        localPolicy: exactManager,
+      }).reconcile(exactRequest),
+    ).resolves.toMatchObject({ status: "ready" });
+    await exactManager.ensureRuntime(exactRequest.sessionId);
+    expect(exactFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
+
+    const isolatedFactory = new FakeFactory();
+    const isolatedManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      inheritedPath: "",
+      providers: await providerRegistry(isolatedFactory),
+      providerCliLaunchPath: () => launchDir,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const isolatedRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-isolated-path" };
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: isolatedManager,
+        localPolicy: isolatedManager,
+      }).reconcile(isolatedRequest),
+    ).resolves.toMatchObject({ status: "ready" });
+    await isolatedManager.ensureRuntime(isolatedRequest.sessionId);
+    expect(isolatedFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
+
+    await manager.close();
+    await internalManager.close();
+    await exactManager.close();
+    await isolatedManager.close();
+  });
+
   it("fails closed when a reconcile carries a proof but no proof manager is configured", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-missing-proof-manager-"));
     homes.push(home);
@@ -109,7 +315,11 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const request = {
       ...reconcile(computerId, snapshot(1)),
       sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
@@ -132,10 +342,16 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const first = reconcile(computerId, snapshot(1));
 
+    expect(() => manager.sessionKind(first.sessionId)).toThrow("has not been prepared");
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.sessionKind(first.sessionId)).toBe("visible");
     await manager.ensureRuntime("session-1");
     await manager.ensureRuntime("session-1", new AbortController().signal);
     expect(manager.runtime("session-1")).toBe(factory.runtimes[0]);
@@ -179,7 +395,7 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const restarted = new SessionReconciler({
-      computerId,
+      installationId: computerId,
       preparation: restartedManager,
       localPolicy: restartedManager,
     });
@@ -251,7 +467,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).resolves.toMatchObject({ status: "ready" });
     await expect(manager.ensureRuntime("session-1")).rejects.toThrow("durable binding");
     expect(factory.runtimes[0]?.closed).toBe(true);
@@ -270,7 +490,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
 
     await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).resolves.toMatchObject({ status: "ready" });
     await expect(manager.ensureRuntime("session-1")).rejects.toThrow("creation and cleanup both failed");
@@ -294,7 +518,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     await manager.ensureRuntime("session-1");
 
@@ -335,7 +563,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     const request = reconcile(computerId, snapshot(1));
     await reconciler.reconcile(request);
     const starting = manager.ensureRuntime("session-1");
@@ -387,7 +619,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     const starting = manager.ensureRuntime("session-1");
     await createStart;
@@ -470,7 +706,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     const starting = manager.ensureRuntime("session-1");
     await createStart;
@@ -515,7 +755,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     const starting = manager.ensureRuntime("session-1");
     await persistStart;
@@ -557,7 +801,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     await manager.ensureRuntime("session-1");
 
@@ -583,7 +831,11 @@ describe("SessionRuntimeManager", () => {
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
     await manager.ensureRuntime("session-1");
 
@@ -856,7 +1108,7 @@ function reconcile(computerId: string, runtime: EffectiveRuntimeSnapshot): Sessi
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

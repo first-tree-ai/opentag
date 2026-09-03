@@ -10,6 +10,9 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
+import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
+import { ExternalCallPolicy } from "../../im/external-call-policy.js";
+import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
   ProviderResourceInput,
@@ -24,9 +27,11 @@ interface FeishuRawEnvelope {
   event?: { sender?: { sender_type?: string; tenant_key?: string } };
   opentagOperation?: "created" | "edited" | "deleted";
   opentagConversationKind?: "unknown";
+  opentagSenderOpenId?: string;
 }
 
 interface RawFeishuMessageEvent {
+  header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
   tenant_key?: string;
   sender: {
@@ -54,6 +59,7 @@ interface RawFeishuMessageEvent {
 }
 
 interface RawFeishuRecallEvent {
+  header?: { event_id?: string; tenant_key?: string };
   event_id?: string;
   tenant_key?: string;
   message_id?: string;
@@ -75,11 +81,30 @@ export interface FeishuChannel {
 
 export interface FeishuHttpCapability {
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource>;
+  resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
+      chatMembers: {
+        get(input: {
+          path: { chat_id: string };
+          params: {
+            member_id_type: "open_id";
+            page_size: number;
+            page_token?: string;
+          };
+        }): Promise<{
+          code?: number;
+          msg?: string;
+          data?: {
+            items?: Array<{ member_id?: string; name?: string }>;
+            page_token?: string;
+            has_more?: boolean;
+          };
+        }>;
+      };
       messageResource: {
         get(input: unknown): Promise<{ getReadableStream(): Readable }>;
       };
@@ -108,6 +133,98 @@ const REDACTING_SDK_LOGGER = {
   debug: () => undefined,
   trace: () => undefined,
 };
+
+const DEDUPLICATION_TTL_MS = 10 * 60 * 1000;
+const DEDUPLICATION_MAX_ENTRIES = 10_000;
+
+type FeishuRawInboundEvent = RawFeishuMessageEvent | RawFeishuRecallEvent;
+
+function providerEventIdentity(raw: FeishuRawInboundEvent): {
+  keys: string[];
+  providerEventId: string | null;
+  externalMessageId: string | null;
+} | null {
+  const providerEventId = raw.header?.event_id ?? raw.event_id ?? null;
+  const tenantKey = raw.header?.tenant_key ?? raw.tenant_key ?? ("sender" in raw ? raw.sender.tenant_key : null);
+  if ("message" in raw) {
+    const externalMessageId = raw.message.message_id;
+    const scope = `${tenantKey ?? "unknown"}:${raw.message.chat_id}`;
+    const messageKey = `message:${scope}:${externalMessageId}:${raw.message.create_time}`;
+    if (providerEventId) {
+      return { keys: [`event:${scope}:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+    }
+    return {
+      keys: [messageKey],
+      providerEventId: null,
+      externalMessageId,
+    };
+  }
+  const externalMessageId = raw.message_id ?? null;
+  if (!externalMessageId && !providerEventId) return null;
+  const scope = `${tenantKey ?? "unknown"}:${raw.chat_id ?? "unknown"}`;
+  const messageKey = `recall:${scope}:${externalMessageId}:${raw.recall_time ?? "unknown"}`;
+  if (providerEventId) {
+    return { keys: [`event:${scope}:${providerEventId}`, messageKey], providerEventId, externalMessageId };
+  }
+  return {
+    keys: [messageKey],
+    providerEventId: null,
+    externalMessageId,
+  };
+}
+
+function createFeishuInboundDeduplicator() {
+  const entries = new Map<string, { expiresAt: number; promise?: Promise<void> }>();
+
+  const prune = (now: number): void => {
+    for (const [key, entry] of entries) {
+      if (entry.expiresAt <= now) entries.delete(key);
+    }
+    while (entries.size > DEDUPLICATION_MAX_ENTRIES) {
+      const oldest = entries.keys().next().value;
+      if (oldest === undefined) break;
+      entries.delete(oldest);
+    }
+  };
+
+  return async (raw: FeishuRawInboundEvent, onMessage: () => Promise<void>): Promise<void> => {
+    const identity = providerEventIdentity(raw);
+    if (!identity) return onMessage();
+    const now = Date.now();
+    prune(now);
+    const existing = identity.keys.map((key) => entries.get(key)).find((entry) => entry !== undefined);
+    if (existing) {
+      emitRootSpan("feishu.inbound.deduplicated", {
+        ...imAttrs({
+          provider: "feishu",
+          providerEventId: identity.providerEventId,
+          externalMessageId: identity.externalMessageId,
+          duplicate: true,
+        }),
+        ...outcomeAttrs("duplicate"),
+      });
+      if (existing.promise) await existing.promise;
+      return;
+    }
+    const promise = onMessage();
+    const entry = { expiresAt: now + DEDUPLICATION_TTL_MS, promise };
+    for (const key of identity.keys) entries.set(key, entry);
+    try {
+      await promise;
+    } catch (error) {
+      for (const key of identity.keys) {
+        const current = entries.get(key);
+        if (current?.promise === promise) entries.delete(key);
+      }
+      throw error;
+    } finally {
+      for (const key of identity.keys) {
+        const current = entries.get(key);
+        if (current?.promise === promise) entries.set(key, { expiresAt: current.expiresAt });
+      }
+    }
+  };
+}
 
 export function feishuDomainForWorkspaceBrand(teamBrand?: "feishu" | "lark" | null): Domain {
   return teamBrand === "lark" ? Domain.Lark : Domain.Feishu;
@@ -153,29 +270,58 @@ function parseRawContent(message: RawFeishuMessageEvent["message"]): {
       ],
     };
   }
-  if (message.message_type === "post") {
-    const strings: string[] = [];
-    const visit = (value: unknown): void => {
-      if (typeof value === "object" && value !== null) {
-        if (Array.isArray(value)) {
-          for (const item of value) visit(item);
-        } else {
-          for (const [key, child] of Object.entries(value)) {
-            if ((key === "text" || key === "content") && typeof child === "string") strings.push(child);
-            else visit(child);
-          }
-        }
-      }
-    };
-    visit(content);
-    return { text: strings.join("\n").trim(), resources: [] };
-  }
+  if (message.message_type === "post") return { text: postText(content, message.mentions), resources: [] };
   return { text: `[unsupported:${message.message_type}]`, resources: [] };
+}
+
+type RawFeishuMention = NonNullable<RawFeishuMessageEvent["message"]["mentions"]>[number];
+
+/**
+ * The plain text of a rich-text message, read from its documented shape: paragraphs of tagged
+ * elements under `content`, at the top level or under a locale key. Feishu also sends the same
+ * paragraphs as markdown under `content_v2`; that copy is read only when the tagged form has no
+ * text, so a message is never repeated. Runs of one paragraph stay on one line, and an `@` element
+ * becomes its mention key, the same placeholder a plain-text message carries.
+ */
+function postText(content: Record<string, unknown>, mentions: readonly RawFeishuMention[] = []): string {
+  const tagged = paragraphsText(postParagraphs(content, "content"), mentions);
+  return tagged || paragraphsText(postParagraphs(content, "content_v2"), mentions);
+}
+
+function postParagraphs(content: Record<string, unknown>, key: "content" | "content_v2"): unknown[] {
+  if (Array.isArray(content[key])) return content[key];
+  for (const value of Object.values(content)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const nested = (value as Record<string, unknown>)[key];
+    if (Array.isArray(nested)) return nested;
+  }
+  return [];
+}
+
+function paragraphsText(paragraphs: readonly unknown[], mentions: readonly RawFeishuMention[]): string {
+  return paragraphs
+    .map((paragraph) => (Array.isArray(paragraph) ? paragraph : [paragraph]))
+    .map((paragraph) => paragraph.map((element) => elementText(element, mentions)).join(""))
+    .join("\n")
+    .trim();
+}
+
+function elementText(element: unknown, mentions: readonly RawFeishuMention[]): string {
+  if (typeof element !== "object" || element === null) return "";
+  const { tag, text, user_id, user_name } = element as Record<string, unknown>;
+  if (tag === "at") {
+    const mention = mentions.find((candidate) => candidate.id.open_id === user_id || candidate.id.user_id === user_id);
+    if (mention) return mention.key;
+    return typeof user_name === "string" && user_name ? `@${user_name}` : "";
+  }
+  return typeof text === "string" ? text : "";
 }
 
 function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
   const parsed = parseRawContent(raw.message);
   const senderId = raw.sender.sender_id?.open_id ?? raw.sender.sender_id?.user_id ?? "system";
+  const eventId = raw.header?.event_id ?? raw.event_id;
+  const tenantKey = raw.header?.tenant_key ?? raw.tenant_key ?? raw.sender.tenant_key;
   return {
     messageId: raw.message.message_id,
     chatId: raw.message.chat_id,
@@ -198,10 +344,11 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
     replyToMessageId: raw.message.parent_id,
     createTime: Number(raw.message.create_time),
     raw: {
-      event_id: raw.event_id,
-      tenant_key: raw.tenant_key,
+      event_id: eventId,
+      tenant_key: tenantKey,
       event: { sender: { sender_type: raw.sender.sender_type, tenant_key: raw.sender.tenant_key } },
       opentagOperation: "created",
+      opentagSenderOpenId: raw.sender.sender_id?.open_id,
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -221,8 +368,8 @@ function rawRecallToNormalized(raw: RawFeishuRecallEvent): NormalizedMessage | u
     mentionedBot: false,
     createTime: Number(raw.recall_time ?? Date.now()),
     raw: {
-      event_id: raw.event_id ?? `${raw.message_id}:${raw.recall_time ?? "unknown"}:recalled`,
-      tenant_key: raw.tenant_key,
+      event_id: raw.header?.event_id ?? raw.event_id ?? `${raw.message_id}:${raw.recall_time ?? "unknown"}:recalled`,
+      tenant_key: raw.header?.tenant_key ?? raw.tenant_key,
       opentagOperation: "deleted",
       opentagConversationKind: "unknown",
     } satisfies FeishuRawEnvelope,
@@ -244,6 +391,15 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
     return externalId ? [{ externalId, displayName: mention.name ?? null }] : [];
   });
   const content = boundedText(input.message.content);
+  const contentBlocks = contentBlocksWithMentions(
+    content.text,
+    input.message.mentions.slice(0, 256).flatMap((mention) => {
+      const externalId = mention.openId ?? mention.userId;
+      return externalId
+        ? [{ token: mention.key, externalId, label: mention.name ? `@${mention.name}` : mention.key }]
+        : [];
+    }),
+  );
   return [
     NormalizedInboundImEventSchema.parse({
       providerEventId:
@@ -278,9 +434,7 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
         content: {
           version: 1,
           fallbackText: content.text,
-          blocks: content.text
-            ? [{ type: "text", text: content.text }]
-            : [{ type: "unsupported", providerType: input.message.rawContentType }],
+          blocks: content.text ? contentBlocks : [{ type: "unsupported", providerType: input.message.rawContentType }],
           truncated: content.truncated,
         },
         resources,
@@ -290,19 +444,34 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
   ];
 }
 
+/**
+ * Return the provider envelope event ID when one was supplied. Normalization retains a deterministic
+ * fallback in `providerEventId` for the inbox semantic key, but that fallback is not a delivery receipt.
+ */
+export function feishuEnvelopeEventId(event: NormalizedInboundImEvent): string | null {
+  const messageId = event.message.externalId;
+  const occurredAt = event.message.occurredAt.getTime();
+  const syntheticCreatedId = `${messageId}:${occurredAt}`;
+  const syntheticRecallId = `${messageId}:${occurredAt}:recalled`;
+  return event.providerEventId === syntheticCreatedId || event.providerEventId === syntheticRecallId
+    ? null
+    : event.providerEventId;
+}
+
 export function createReliableFeishuDispatcher(
   onMessage: (message: NormalizedMessage) => Promise<void> | void,
 ): EventDispatcher {
   const dispatcher = new EventDispatcher({ logger: REDACTING_SDK_LOGGER, loggerLevel: LoggerLevel.error });
+  const deduplicate = createFeishuInboundDeduplicator();
   dispatcher.register({
     "im.message.receive_v1": async (raw: RawFeishuMessageEvent) => {
       // Deliberately bypass LarkChannel's SafetyPipeline. EventDispatcher
       // awaits this promise, and WSClient maps rejection to a 500 ACK.
-      await onMessage(rawReceiveToNormalized(raw));
+      await deduplicate(raw, async () => onMessage(rawReceiveToNormalized(raw)));
     },
     "im.message.recalled_v1": async (raw: RawFeishuRecallEvent) => {
       const normalized = rawRecallToNormalized(raw);
-      if (normalized) await onMessage(normalized);
+      if (normalized) await deduplicate(raw, async () => onMessage(normalized));
     },
   });
   return dispatcher;
@@ -384,6 +553,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #http: FeishuHttpCapability;
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
+  readonly #policy: ExternalCallPolicy;
 
   constructor(input: {
     appId: string;
@@ -393,9 +563,11 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     channel?: FeishuChannel | null;
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
+    /* type-only */ policy?: ExternalCallPolicy;
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
+    this.#policy = input.policy ?? new ExternalCallPolicy();
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     this.#client = new Client({
       appId: input.appId,
@@ -405,11 +577,11 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       loggerLevel: LoggerLevel.error,
     });
     this.#scopeList = input.scopeList ?? (() => this.#client.application.v6.scope.list({}));
+    this.#http = input.http ?? createFeishuHttpCapability(this.#client as unknown as FeishuHttpClient);
     this.#channel =
       input.channel === null
         ? undefined
         : (input.channel ?? new ReliableFeishuChannel({ appId: input.appId, appSecret: input.appSecret, domain }));
-    this.#http = input.http ?? createFeishuHttpCapability(this.#client as unknown as FeishuHttpClient);
   }
 
   get channel(): FeishuChannel {
@@ -445,11 +617,130 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   }
 
   async fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {
-    return this.#http.fetchResource(input);
+    return this.#policy.run("feishu.resource.fetch", () => this.#http.fetchResource(input), {
+      circuitKey: `feishu:resource:${this.#appId}`,
+      maxAttempts: 1,
+    });
+  }
+
+  async resolveSenderName(input: { chatId: string; senderOpenId: string }): Promise<string | undefined> {
+    const resolveSenderName = this.#http.resolveSenderName;
+    if (!resolveSenderName) return undefined;
+    return this.#policy.run("feishu.sender-name.resolve", () => resolveSenderName(input), {
+      circuitKey: `feishu:sender-name:${this.#appId}`,
+      maxAttempts: 1,
+      timeoutMs: FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS,
+    });
   }
 }
 
+const FEISHU_SENDER_NAME_TTL_MS = 60 * 60 * 1000;
+const FEISHU_MISSING_SENDER_NAME_TTL_MS = 5 * 60 * 1000;
+const FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES = 10_000;
+const FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS = 1_000;
+const FEISHU_SENDER_NAME_POLICY_TIMEOUT_MS = 1_500;
+
+export function feishuSenderOpenId(message: NormalizedMessage): string | null {
+  const raw = message.raw as FeishuRawEnvelope | undefined;
+  return raw?.opentagSenderOpenId ?? null;
+}
+
+async function fetchFeishuSenderName(
+  client: FeishuHttpClient,
+  input: { chatId: string; senderOpenId: string },
+  observeMember: (member: { member_id?: string; name?: string }) => void,
+): Promise<string | undefined> {
+  let pageToken: string | undefined;
+  do {
+    const response = await client.im.v1.chatMembers.get({
+      path: { chat_id: input.chatId },
+      params: {
+        member_id_type: "open_id",
+        page_size: 100,
+        ...(pageToken ? { page_token: pageToken } : {}),
+      },
+    });
+    if (response.code !== undefined && response.code !== 0) {
+      throw new Error("FEISHU_SENDER_NAME_LOOKUP_FAILED");
+    }
+    const members = response.data?.items ?? [];
+    for (const member of members) observeMember(member);
+    const sender = members.find((member) => member.member_id === input.senderOpenId);
+    const name = sender?.name?.trim();
+    if (name) return name;
+    pageToken = response.data?.has_more ? response.data.page_token : undefined;
+  } while (pageToken);
+  return undefined;
+}
+
+function withFeishuSenderNameTimeout<T>(operation: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("FEISHU_SENDER_NAME_LOOKUP_TIMEOUT")),
+      FEISHU_SENDER_NAME_LOOKUP_TIMEOUT_MS,
+    );
+    timer.unref();
+  });
+  return Promise.race([operation, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function createCachedFeishuSenderNameResolver(
+  client: FeishuHttpClient,
+): (input: { chatId: string; senderOpenId: string }) => Promise<string | undefined> {
+  const senderNames = new Map<string, { expiresAt: number; name: string | undefined }>();
+  const pendingSenderNames = new Map<string, Promise<string | undefined>>();
+
+  const cacheKey = (chatId: string, senderOpenId: string): string => `${chatId}:${senderOpenId}`;
+  const remember = (chatId: string, senderOpenId: string, name: string | undefined, now: number): void => {
+    const key = cacheKey(chatId, senderOpenId);
+    senderNames.delete(key);
+    senderNames.set(key, {
+      expiresAt: now + (name ? FEISHU_SENDER_NAME_TTL_MS : FEISHU_MISSING_SENDER_NAME_TTL_MS),
+      name,
+    });
+    while (senderNames.size > FEISHU_SENDER_NAME_CACHE_MAX_ENTRIES) {
+      const oldest = senderNames.keys().next().value;
+      if (oldest === undefined) break;
+      senderNames.delete(oldest);
+    }
+  };
+
+  return async (input) => {
+    const key = cacheKey(input.chatId, input.senderOpenId);
+    const now = Date.now();
+    const cached = senderNames.get(key);
+    if (cached && cached.expiresAt > now) {
+      senderNames.delete(key);
+      senderNames.set(key, cached);
+      return cached.name;
+    }
+    if (cached) senderNames.delete(key);
+    const pending = pendingSenderNames.get(key);
+    if (pending) return pending;
+
+    const lookup = withFeishuSenderNameTimeout(
+      fetchFeishuSenderName(client, input, (member) => {
+        const name = member.name?.trim();
+        if (member.member_id && name) remember(input.chatId, member.member_id, name, now);
+      }),
+    ).then((name) => {
+      if (!senderNames.has(key)) remember(input.chatId, input.senderOpenId, name, now);
+      return name;
+    });
+    pendingSenderNames.set(key, lookup);
+    try {
+      return await lookup;
+    } finally {
+      if (pendingSenderNames.get(key) === lookup) pendingSenderNames.delete(key);
+    }
+  };
+}
+
 export function createFeishuHttpCapability(client: FeishuHttpClient): FeishuHttpCapability {
+  const resolveSenderName = createCachedFeishuSenderNameResolver(client);
   return {
     async fetchResource(input) {
       const response = await client.im.v1.messageResource.get({
@@ -458,5 +749,6 @@ export function createFeishuHttpCapability(client: FeishuHttpClient): FeishuHttp
       });
       return { stream: response.getReadableStream() };
     },
+    resolveSenderName,
   };
 }

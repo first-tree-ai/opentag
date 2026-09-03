@@ -1,0 +1,160 @@
+name: Patch Coverage
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    name: Enforce Patch Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Verify toolchain
+        run: pnpm toolchain:check
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Measure unit coverage
+        run: |
+          pnpm exec turbo run build --summarize
+          pnpm --silent bundle:report
+          node scripts/unit-coverage.mjs
+
+      - name: Summarize coverage provenance
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readdirSync, readFileSync, statSync } from "node:fs";
+          import { join } from "node:path";
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          if (!summaryPath) process.exit(0);
+          const runsDirectory = ".turbo/runs";
+          const rows = new Map();
+          try {
+            const files = readdirSync(runsDirectory)
+              .filter((file) => file.endsWith(".json"))
+              .map((file) => ({ file, mtime: statSync(join(runsDirectory, file)).mtimeMs }))
+              .sort((left, right) => left.mtime - right.mtime);
+            for (const { file } of files) {
+              const run = JSON.parse(readFileSync(join(runsDirectory, file), "utf8"));
+              for (const task of run.tasks ?? []) {
+                rows.set(`${run.execution?.command ?? "turbo run"}:${task.taskId}`, {
+                  result: task.cache?.status === "HIT" ? "cache hit" : "executed",
+                  task: task.taskId,
+                });
+              }
+            }
+          } catch {
+            // The explicit fresh-execution line below remains useful when no build summary exists.
+          }
+          const table = [...rows.values()]
+            .sort((left, right) => left.task.localeCompare(right.task))
+            .map(({ task, result }) => `| ${task} | ${result} |`)
+            .join("\n");
+          appendFileSync(
+            summaryPath,
+            `\n### Coverage provenance\n\nCoverage measurement: **fresh execution** (\`node scripts/unit-coverage.mjs\`).\n\n` +
+              `Turbo build identity (from the run summary):\n\n| Task | Result |\n| --- | --- |\n${table || "| (summary unavailable) | executed |"}\n`,
+          );
+          NODE
+
+      - name: Summarize test duration and retry diagnostics
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, existsSync, readFileSync } from "node:fs";
+
+          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+          if (!summaryPath) process.exit(0);
+          const reportPath = "coverage/unit/coverage-run.json";
+          if (!existsSync(reportPath)) {
+            appendFileSync(summaryPath, "\n### Unit test duration and retry diagnostics\n\nCoverage run metadata was not produced.\n");
+            process.exit(0);
+          }
+          const report = JSON.parse(readFileSync(reportPath, "utf8"));
+          const packages = Array.isArray(report.packages) ? report.packages : [];
+          const rows = packages
+            .sort((left, right) => String(left.name).localeCompare(String(right.name)))
+            .map(
+              (entry) =>
+                `| ${entry.name} | ${Number(entry.durationMs ?? 0).toFixed(0)} ms | ${entry.testCount ?? 0} | ` +
+                `${entry.retryCount ?? 0} | ${entry.flakyCount ?? 0} | ${entry.failedAfterRetryCount ?? 0} |`,
+            )
+            .join("\n");
+          const retries = packages.reduce((total, entry) => total + (Number(entry.retryCount) || 0), 0);
+          const flaky = packages.reduce((total, entry) => total + (Number(entry.flakyCount) || 0), 0);
+          appendFileSync(
+            summaryPath,
+            `\n### Unit test duration and retry diagnostics\n\n` +
+              `Retries are diagnostic: a retried-then-passed test is reported as flaky and is never silently green. ` +
+              `Observed retries: **${retries}**; retried-then-passed tests: **${flaky}**.\n\n` +
+              `| Package | Duration | Tests | Retries | Flaky | Failed after retry |\n| --- | ---: | ---: | ---: | ---: | ---: |\n` +
+              (rows || "| (none) | 0 ms | 0 | 0 | 0 | 0 |") +
+              "\n",
+          );
+          NODE
+
+      - name: Enforce changed-line coverage
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PATCH_COVERAGE_THRESHOLD: "80"
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+          import { evaluatePatchCoverage } from "./scripts/unit-coverage-gate.mjs";
+
+          const repositoryRoot = process.cwd();
+          const baseSha = process.env.BASE_SHA;
+          const threshold = Number(process.env.PATCH_COVERAGE_THRESHOLD);
+          if (!baseSha || !Number.isFinite(threshold)) {
+            throw new Error("BASE_SHA and PATCH_COVERAGE_THRESHOLD are required");
+          }
+
+          const diff = spawnSync(
+            "git",
+            ["diff", "--unified=0", "--no-color", "--find-renames", `${baseSha}...HEAD`],
+            { encoding: "utf8" },
+          );
+          if (diff.error || diff.status !== 0) {
+            throw new Error(diff.stderr || "Unable to read the pull-request diff");
+          }
+
+          const coverage = JSON.parse(readFileSync(`${repositoryRoot}/coverage/unit/coverage-final.json`, "utf8"));
+          const result = evaluatePatchCoverage({ coverage, diff: diff.stdout, repositoryRoot, threshold });
+          if (result.total === 0) {
+            console.log("Patch coverage: no executable changed lines were found (explicit pass).");
+            process.exit(0);
+          }
+          console.log(
+            `Patch coverage: ${result.covered}/${result.total} lines (${result.percent.toFixed(2)}%), threshold ${threshold.toFixed(2)}%.`,
+          );
+          if (result.uncovered.length > 0) console.log(`Uncovered changed lines:\n${result.uncovered.join("\n")}`);
+          if (!result.passed) process.exit(1);
+          NODE

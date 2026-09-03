@@ -20,6 +20,8 @@ export interface TurnCustodyOwnerOptions {
   admission?: AdmissionController;
   bindingStore: SessionBindingStore;
   id?: () => string;
+  imDeliveryVersion?: () => number | undefined;
+  imSteerVersion?: () => number | undefined;
   maxRememberedRequests?: number;
   now?: () => number;
   preflight?(request: DirectImMessageDeliveryRequest): Promise<InputRejectReason | undefined>;
@@ -60,6 +62,8 @@ export class TurnCustodyOwner {
   readonly #bindingStore: SessionBindingStore;
   readonly #reconciler: SessionReconciler;
   readonly #id: () => string;
+  readonly #imDeliveryVersion: () => number | undefined;
+  readonly #imSteerVersion: () => number | undefined;
   readonly #maxRememberedRequests: number;
   readonly #now: () => number;
   readonly #preflight?: TurnCustodyOwnerOptions["preflight"];
@@ -76,6 +80,8 @@ export class TurnCustodyOwner {
     this.#bindingStore = options.bindingStore;
     this.#reconciler = options.reconciler;
     this.#id = options.id ?? randomUUID;
+    this.#imDeliveryVersion = options.imDeliveryVersion ?? (() => undefined);
+    this.#imSteerVersion = options.imSteerVersion ?? (() => undefined);
     this.#maxRememberedRequests = options.maxRememberedRequests ?? 512;
     this.#now = options.now ?? Date.now;
     this.#preflight = options.preflight;
@@ -87,6 +93,9 @@ export class TurnCustodyOwner {
   }
 
   acceptSteer(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> {
+    if (request.replyRole === "observer" && this.#imSteerVersion() !== 2) {
+      return Promise.resolve(deferredSteer(request, "steer_unsupported"));
+    }
     const inputHash = computeRuntimeImSteerInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
     const remembered = this.#steerRequests.get(request.requestId);
@@ -121,6 +130,9 @@ export class TurnCustodyOwner {
   }
 
   accept(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> {
+    if (request.replyRole === "observer" && this.#imDeliveryVersion() !== 2) {
+      return Promise.resolve({ result: rejected(request, "session_not_ready") });
+    }
     const inputHash = computeDirectInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
     const remembered = this.#requests.get(request.requestId);
@@ -202,6 +214,11 @@ export class TurnCustodyOwner {
 
   getTurn(turnId: string): LiveTurnOwner | undefined {
     return this.#turns.get(turnId);
+  }
+
+  /** Accepted Turns still under local custody (accepted, not yet recorded as reported). */
+  get liveTurnCount(): number {
+    return this.#turns.size;
   }
 
   async #prepare(owner: OwnedDelivery): Promise<DeliveryDecision> {

@@ -24,9 +24,13 @@
   "dependencies": {
     "@opentag/shared": "workspace:*",
     "pino": "^10.3.1",
-    "ws": "^8.21.3"
+    "semver": "^7.8.5",
+    "ws": "^8.21.3",
+    "zod": "^4.5.1"
   },
   "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "@types/semver": "^7.8.0",
+    "@types/ws": "^8.18.1",
+    "vitest": "^4.1.11"
   }
 }

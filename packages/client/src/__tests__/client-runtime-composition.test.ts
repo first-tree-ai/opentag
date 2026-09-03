@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type DirectImMessageDeliveryRequest,
@@ -24,12 +24,12 @@ import {
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
-  refreshImCliReadiness,
+  createLoginShellDiscovery,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
-  resolveExecutable,
 } from "../runtime/client-runtime-composition.js";
+import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 
@@ -43,77 +43,47 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
-  it("probes Feishu and Slack CLI readiness independently from Agent Runtime providers", async () => {
-    const home = await temporaryDirectory("opentag-im-cli-readiness-");
-    const lark = resolve(home, "lark-cli");
-    const slack = resolve(home, "slack");
-    const brokenSlack = resolve(home, "broken-slack");
-    await writeFile(
-      lark,
-      '#!/bin/sh\nif [ "$1" = "--version" ] || { [ "$1" = "im" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
-      "utf8",
-    );
-    await writeFile(
-      slack,
-      '#!/bin/sh\nif [ "$1" = "version" ] || { [ "$1" = "api" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
-      "utf8",
-    );
-    await writeFile(brokenSlack, "#!/bin/sh\nexit 1\n", "utf8");
-    await Promise.all([chmod(lark, 0o700), chmod(slack, 0o700), chmod(brokenSlack, 0o700)]);
-    const setImCliReadiness = vi.fn();
-
-    await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", slack, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlack, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", resolve(home, "missing"), {});
-
-    expect(setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
-      { provider: "feishu", status: "checking" },
-      { provider: "feishu", status: "ready" },
-      { provider: "slack", status: "checking" },
-      { provider: "slack", status: "ready" },
-      { provider: "slack", status: "checking" },
-      { provider: "slack", status: "unavailable" },
-      { provider: "slack", status: "checking" },
-      { provider: "slack", status: "install" },
-    ]);
-
-    const abortedBeforeStart = new AbortController();
-    abortedBeforeStart.abort(new Error("stop before IM probe"));
-    await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {}, abortedBeforeStart.signal);
-    expect(setImCliReadiness).toHaveBeenCalledTimes(8);
-
-    const abortAfterChecking = new AbortController();
-    const checkingUpdates = vi.fn((observation: { status: string }) => {
-      if (observation.status === "checking") abortAfterChecking.abort(new Error("stop after checking"));
+  it("selects the Server durability adapter only when explicitly configured", async () => {
+    const home = await temporaryDirectory("opentag-client-server-durability-");
+    const api = {
+      listRuntimeDurableWork: vi.fn().mockResolvedValue([]),
+      writeRuntimeDurableWork: vi.fn().mockResolvedValue(undefined),
+    };
+    const runtime = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex"),
+      home,
+      serverDurability: { api, machineToken: "machine-token", now: () => 1 },
     });
-    await refreshImCliReadiness(
-      { setImCliReadiness: checkingUpdates } as never,
-      "feishu",
-      lark,
-      {},
-      abortAfterChecking.signal,
-    );
-    expect(checkingUpdates.mock.calls.map(([observation]) => observation)).toEqual([
-      { provider: "feishu", status: "checking" },
-    ]);
+    await runtime.sessionMessageInbox.ready();
+    runtime.stop();
+    runtime.reportOwner.stop();
+  });
 
-    const slowLark = resolve(home, "slow-lark");
-    await writeFile(slowLark, "#!/bin/sh\nsleep 1\nexit 0\n", "utf8");
-    await chmod(slowLark, 0o700);
-    const abortDuringProbe = new AbortController();
-    const inFlightUpdates = vi.fn();
-    const inFlight = refreshImCliReadiness(
-      { setImCliReadiness: inFlightUpdates } as never,
-      "feishu",
-      slowLark,
-      {},
-      abortDuringProbe.signal,
-    );
-    await vi.waitFor(() => expect(inFlightUpdates).toHaveBeenCalledWith({ provider: "feishu", status: "checking" }));
-    abortDuringProbe.abort(new Error("stop during IM probe"));
-    await inFlight;
-    expect(inFlightUpdates).toHaveBeenCalledTimes(1);
+  it("allows the login-shell readiness callback to be invoked directly", () => {
+    const loginShellDiscovery = createLoginShellDiscovery();
+    const includeLoginShell = loginShellDiscovery.options.includeLoginShell;
+
+    if (typeof includeLoginShell !== "function") throw new Error("login-shell discovery callback is missing");
+    expect(includeLoginShell()).toBe(false);
+    loginShellDiscovery.enable();
+    expect(includeLoginShell()).toBe(true);
+  });
+
+  it("does not publish ambient PATH IM CLI readiness from production composition", async () => {
+    const home = await temporaryDirectory("opentag-im-cli-no-path-");
+    await writeReadyImClis(home);
+    const connection = runtimeConnection();
+    const imUpdates = vi.spyOn(connection, "setImCliReadiness");
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: `${home}:${process.env.PATH ?? ""}` },
+      factories: [readyFactory("codex", async () => ({ ready: true, issues: [] }))],
+      home,
+    });
+    runtime.stop();
+    expect(imUpdates).not.toHaveBeenCalled();
   });
 
   it("projects Codex probe outcomes without exposing provider diagnostics", () => {
@@ -200,7 +170,7 @@ describe("createClientRuntime production composition", () => {
       environment: { HOME: home, PATH: process.env.PATH },
       home,
     });
-    const result = await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()));
+    const result = await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()));
     expect(result).toMatchObject({ status: "ready" });
     await runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
     expect(await runtime.bindingStore.read("agent-1", "session-1")).toMatchObject({
@@ -214,7 +184,7 @@ describe("createClientRuntime production composition", () => {
     expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(4);
     await expect(
       runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         desired: "stopped",
         runtime: undefined,
@@ -237,7 +207,7 @@ describe("createClientRuntime production composition", () => {
       home,
     });
     await expect(
-      runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
+      runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
     ).resolves.toMatchObject({ status: "ready" });
     await expect(runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal)).rejects.toMatchObject(
       {
@@ -258,7 +228,7 @@ describe("createClientRuntime production composition", () => {
       }),
       home: resolve(home, "throwing-runtime"),
     });
-    await throwingRuntime.reconciler.reconcile(reconcileRequest(throwingConnection.computerId, snapshot()));
+    await throwingRuntime.reconciler.reconcile(reconcileRequest(throwingConnection.installationId, snapshot()));
     await expect(throwingRuntime.runtimeManager.ensureRuntime("session-1")).rejects.toMatchObject({
       result: { issues: [{ code: "temporarily_unavailable" }] },
     });
@@ -338,25 +308,10 @@ describe("createClientRuntime production composition", () => {
     defaultEnvironment.stop();
   });
 
-  it("tests executable resolution and the resolved factory readiness fence without a shell", async () => {
+  it("tests the resolved factory readiness fence without a shell", async () => {
     const home = await temporaryDirectory("opentag-client-executable-");
     const empty = resolve(home, "empty");
-    const bin = resolve(home, "bin");
     await mkdir(empty);
-    await mkdir(bin);
-    const command = resolve(bin, "codex-fixture");
-    await writeFile(command, "#!/bin/sh\nexit 0\n", "utf8");
-    await chmod(command, 0o755);
-    const canonicalCommand = await realpath(command);
-    await expect(resolveExecutable(command, {})).resolves.toBe(canonicalCommand);
-    await expect(resolveExecutable("codex-fixture", { PATH: `${delimiter}${empty}${delimiter}${bin}` })).resolves.toBe(
-      canonicalCommand,
-    );
-    await expect(resolveExecutable("missing", {})).rejects.toThrow("PATH is unavailable");
-    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow(
-      "compatible Agent Runtime provider executable",
-    );
-
     const factory = resolvedCodexFactory({
       clientVersion: "0.0.1",
       codexHome: home,
@@ -370,6 +325,61 @@ describe("createClientRuntime production composition", () => {
     const aborted = new AbortController();
     aborted.abort(new Error("stop resolution"));
     await expect(factory.probe({ signal: aborted.signal })).rejects.toThrow("stop resolution");
+  });
+
+  it("does not execute a login shell during pre-connect createClientRuntime readiness", async () => {
+    const home = await temporaryDirectory("opentag-client-preconnect-shell-");
+    const empty = resolve(home, "empty-bin");
+    await mkdir(empty);
+    const marker = resolve(home, "login-shell-invoked");
+    const fakeShell = resolve(home, "fake-shell");
+    await writeFile(fakeShell, `#!/bin/sh\nprintf invoked > ${JSON.stringify(marker)}\nexit 0\n`, "utf8");
+    await chmod(fakeShell, 0o755);
+    const runtime = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      claudeCodeCommand: "claude",
+      codexCommand: "codex",
+      environment: { HOME: home, PATH: empty, SHELL: fakeShell },
+      home,
+    });
+    runtime.stop();
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("enables login-shell discovery after pre-connect readiness", async () => {
+    const home = await temporaryDirectory("opentag-client-post-connect-shell-");
+    const empty = resolve(home, "empty-bin");
+    await mkdir(empty);
+    const marker = resolve(home, "login-shell-invoked");
+    const fakeShell = resolve(home, "fake-shell");
+    await writeFile(
+      fakeShell,
+      `#!/bin/sh
+printf invoked > ${JSON.stringify(marker)}
+printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
+`,
+      "utf8",
+    );
+    await chmod(fakeShell, 0o755);
+    resetLoginShellPathDirsCache();
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      claudeCodeCommand: "opentag-missing-claude-post-connect",
+      clientVersion: "0.0.1",
+      codexCommand: "opentag-missing-codex-post-connect",
+      environment: { HOME: home, PATH: empty, SHELL: fakeShell },
+      home,
+    });
+    await expect(readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot())),
+    ).resolves.toMatchObject({
+      status: "ready",
+    });
+    await expect(runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal)).rejects.toThrow();
+    expect(await readFile(marker, "utf8")).toBe("invoked");
+    runtime.stop();
+    resetLoginShellPathDirsCache();
   });
 
   it("resolves the production Claude Code factory and enforces its reviewed runtime policy", async () => {
@@ -432,6 +442,40 @@ describe("createClientRuntime production composition", () => {
     ).toBe("configuration_unsupported");
   });
 
+  it("omits CLAUDE_CONFIG_DIR when Claude Code uses the default home", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-default-home-");
+    const { capture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home, PATH: process.env.PATH },
+      home,
+    });
+    runtime.stop();
+    expect(capture).toBe("unset");
+    await expect(realpath(resolve(home, ".claude"))).resolves.toBe(resolve(home, ".claude"));
+  });
+
+  it("preserves an explicit CLAUDE_CONFIG_DIR in the Claude Code environment", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-explicit-env-");
+    const claudeCodeHome = resolve(home, "explicit-env-claude");
+    const { capture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home, PATH: process.env.PATH, CLAUDE_CONFIG_DIR: claudeCodeHome },
+      home,
+    });
+    runtime.stop();
+    expect(capture).toBe(`set:${await realpath(claudeCodeHome)}`);
+  });
+
+  it("preserves an explicit claudeCodeHome option in the Claude Code environment", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-explicit-option-");
+    const claudeCodeHome = resolve(home, "explicit-option-claude");
+    const { capture, runtime } = await composeClaudeCodeRuntime({
+      claudeCodeHome,
+      environment: { HOME: home, PATH: process.env.PATH },
+      home,
+    });
+    runtime.stop();
+    expect(capture).toBe(`set:${await realpath(claudeCodeHome)}`);
+  });
+
   it("unit-tests composition delegates and every preflight outcome", async () => {
     const accepted = { result: { status: "accepted" } };
     const steered = { status: "steered" };
@@ -486,7 +530,7 @@ describe("createClientRuntime production composition", () => {
       collaboration: { close: vi.fn() },
       sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       reconciler: {},
-      reportOwner: { stop: vi.fn() },
+      reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runtimeManager: { close: vi.fn(async () => undefined) },
       workspace: {},
@@ -566,6 +610,77 @@ describe("createClientRuntime production composition", () => {
     );
     await expect(failingClose.run()).rejects.toBe(runtimeCloseFailure);
     expect(credentialClose).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes published IM CLI readiness after a capability refresh and tolerates its failure", async () => {
+    const refreshPublishedImCliReadiness = vi.fn(async () => {
+      throw new Error("published IM CLI readiness refresh failed");
+    });
+    const reconcilerClose = vi.fn(async () => undefined);
+    let finishRuntime!: () => void;
+    const runtimeGate = new Promise<void>((resolveRuntime) => {
+      finishRuntime = resolveRuntime;
+    });
+    const composed = new ComposedClientRuntime(
+      { run: vi.fn(() => runtimeGate), stop: vi.fn() } as never,
+      {
+        bindingStore: {},
+        custody: {},
+        credentialEnvironment: { close: vi.fn(async () => undefined) },
+        collaboration: { close: vi.fn() },
+        sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        reconciler: {},
+        reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        runtimeManager: { close: vi.fn(async () => undefined) },
+        workspace: {},
+        refreshCapability: vi.fn(async () => undefined),
+        capabilityRefreshIntervalMs: 1,
+        capabilityAbort: new AbortController(),
+        providerCliReconciler: { close: reconcilerClose, refreshPublishedImCliReadiness },
+      } as never,
+    );
+    const running = composed.run();
+    await vi.waitFor(() => expect(refreshPublishedImCliReadiness).toHaveBeenCalled());
+    finishRuntime();
+    await expect(running).resolves.toBeUndefined();
+    expect(reconcilerClose).toHaveBeenCalledOnce();
+  });
+
+  it("aggregates protected work from every authoritative owner", () => {
+    const admission = { pause: vi.fn(), resume: vi.fn() };
+    const runtime = new ComposedClientRuntime(
+      {} as never,
+      {
+        admission,
+        bindingStore: {},
+        custody: { liveTurnCount: 1 },
+        credentialEnvironment: {},
+        reconciler: { protectedWorkSnapshot: () => ({ activities: [{}], recoveries: [{}, {}] }) },
+        sessionMessageInbox: { pendingCount: 2 },
+        reportOwner: { pendingCount: 3 },
+        runner: { activeCount: 4 },
+        runtimeManager: {},
+        workspace: {},
+        refreshCapability: async () => undefined,
+        capabilityRefreshIntervalMs: 10,
+        capabilityAbort: new AbortController(),
+      } as never,
+    );
+    expect(runtime.protectedWork()).toEqual({
+      sessionActivities: 1,
+      pendingRecoveries: 2,
+      custodyTurns: 1,
+      activeTurns: 4,
+      pendingReports: 3,
+      queuedSessionMessages: 2,
+      total: 13,
+    });
+    const resume = runtime.quiesceForUpdate();
+    expect(admission.pause).toHaveBeenCalledOnce();
+    resume();
+    resume();
+    expect(admission.resume).toHaveBeenCalledOnce();
   });
 
   it("keeps the credential-grant capability while refreshing Provider readiness", async () => {
@@ -705,7 +820,7 @@ describe("createClientRuntime production composition", () => {
       factory,
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const running = runtime.run();
@@ -886,9 +1001,19 @@ describe("createClientRuntime production composition", () => {
       factory,
       home,
     });
+    let releaseCredentialClose!: () => void;
+    const credentialCloseGate = new Promise<void>((resolveClose) => {
+      releaseCredentialClose = resolveClose;
+    });
+    cleanup.push(async () => releaseCredentialClose());
+    const closeCredentialEnvironment = runtime.credentialEnvironment.close.bind(runtime.credentialEnvironment);
+    const credentialClose = vi.spyOn(runtime.credentialEnvironment, "close").mockImplementation(async () => {
+      await credentialCloseGate;
+      await closeCredentialEnvironment();
+    });
     const running = runtime.run();
     await registration;
-    const request = reconcileRequest(connection.computerId, snapshot());
+    const request = reconcileRequest(connection.installationId, snapshot());
     await runtime.reconciler.reconcile(request);
     const starting = runtime.runtimeManager.ensureRuntime("session-1");
     await createStart;
@@ -904,6 +1029,10 @@ describe("createClientRuntime production composition", () => {
 
     releaseCreate();
     await expect(starting).rejects.toThrow("manager is closing");
+    await vi.waitFor(() => expect(credentialClose).toHaveBeenCalledOnce());
+    await new Promise((resolveTurn) => setTimeout(resolveTurn, 0));
+    expect(credentialClose).toHaveBeenCalledOnce();
+    releaseCredentialClose();
     await running;
     expect(closeCalls).toBe(1);
     expect(() => runtime.runtimeManager.runtime("session-1")).toThrow("manager is closing");
@@ -911,14 +1040,12 @@ describe("createClientRuntime production composition", () => {
 
   it("recovers other Provider and IM readiness when one periodic probe never settles", async () => {
     const home = await temporaryDirectory("opentag-client-hung-probe-");
-    const { lark, slack } = await writeReadyImClis(home);
     const server = await runtimeServer();
     cleanup.push(server.close);
     let currentTime = Date.now();
     const connection = runtimeConnection(server.url, () => currentTime);
     const capabilityUpdates = vi.spyOn(connection, "setVerifiedCapabilities");
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
-    const imUpdates = vi.spyOn(connection, "setImCliReadiness");
     const heartbeats: Array<Record<string, unknown>> = [];
     let releaseHung!: (result: { ready: true; issues: [] } | { ready: false; issues: [] }) => void;
     const hung = new Promise<{ ready: true; issues: [] } | { ready: false; issues: [] }>((resolve) => {
@@ -975,8 +1102,6 @@ describe("createClientRuntime production composition", () => {
       environment: { HOME: home, PATH: process.env.PATH },
       factories: [readyFactory("codex", codexProbe), readyFactory("claude-code", claudeProbe)],
       home,
-      larkCliCommand: lark,
-      slackCliCommand: slack,
     });
     expect(codexProbe).toHaveBeenCalledOnce();
     expect(claudeProbe).toHaveBeenCalledOnce();
@@ -986,19 +1111,12 @@ describe("createClientRuntime production composition", () => {
         { provider: "claude-code", status: "ready" },
       ]),
     );
-    expect(imUpdates.mock.calls.map(([observation]) => observation)).toEqual(
-      expect.arrayContaining([
-        { provider: "feishu", status: "ready" },
-        { provider: "slack", status: "ready" },
-      ]),
-    );
     const codexUnavailableAtStart = readinessUpdates.mock.calls.filter(
       ([observation]) => observation.provider === "codex" && observation.status === "unavailable",
     ).length;
     const running = runtime.run();
     await vi.waitFor(() => expect(codexProbe).toHaveBeenCalledTimes(2));
     const claudeAtHungRefresh = claudeProbe.mock.calls.length;
-    const imReadyAtHungRefresh = imUpdates.mock.calls.filter(([{ status }]) => status === "ready").length;
     const capabilitiesAtHungRefresh = capabilityUpdates.mock.calls.length;
     await vi.waitFor(() =>
       expect(
@@ -1023,11 +1141,6 @@ describe("createClientRuntime production composition", () => {
     ).toEqual({ provider: "codex", status: "unavailable" });
 
     await vi.waitFor(() => expect(claudeProbe.mock.calls.length).toBeGreaterThan(claudeAtHungRefresh));
-    await vi.waitFor(() =>
-      expect(imUpdates.mock.calls.filter(([{ status }]) => status === "ready").length).toBeGreaterThan(
-        imReadyAtHungRefresh,
-      ),
-    );
     await vi.waitFor(() => expect(capabilityUpdates.mock.calls.length).toBeGreaterThan(capabilitiesAtHungRefresh));
 
     currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
@@ -1041,10 +1154,7 @@ describe("createClientRuntime production composition", () => {
           { provider: "codex", status: "unavailable" },
           { provider: "claude-code", status: "ready" },
         ]),
-        imCliReadiness: expect.arrayContaining([
-          { provider: "feishu", status: "ready" },
-          { provider: "slack", status: "ready" },
-        ]),
+        imCliReadiness: [],
       });
     });
 
@@ -1054,7 +1164,6 @@ describe("createClientRuntime production composition", () => {
 
   it("settles shutdown without publishing late hung-probe results", async () => {
     const home = await temporaryDirectory("opentag-client-hung-stop-");
-    const { lark, slack } = await writeReadyImClis(home);
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
@@ -1110,8 +1219,6 @@ describe("createClientRuntime production composition", () => {
       environment: { HOME: home, PATH: process.env.PATH },
       factory: countingFactory,
       home,
-      larkCliCommand: lark,
-      slackCliCommand: slack,
     });
     const running = runtime.run();
     await started;
@@ -1183,12 +1290,12 @@ describe("createClientRuntime production composition", () => {
       home,
     });
     expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1265,12 +1372,12 @@ describe("createClientRuntime production composition", () => {
       home,
     });
     expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1344,12 +1451,12 @@ describe("createClientRuntime production composition", () => {
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1408,12 +1515,12 @@ describe("createClientRuntime production composition", () => {
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     expect(
       await runtime.reconciler.reconcile({
-        ...reconcileRequest(connection.computerId, snapshot()),
+        ...reconcileRequest(connection.installationId, snapshot()),
         requestId: randomUUID(),
         sessionId: "session-2",
       }),
@@ -1467,7 +1574,7 @@ describe("createClientRuntime production composition", () => {
       signal: caller.signal,
     });
     expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const published = readinessUpdates.mock.calls.length;
@@ -1504,7 +1611,7 @@ describe("createClientRuntime production composition", () => {
       home,
       providerProbeDeadlineMs: 5_000,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const ensureSignal = new AbortController();
@@ -1545,7 +1652,7 @@ describe("createClientRuntime production composition", () => {
       factory: readyFactory("codex"),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const firstSignal = new AbortController();
@@ -1618,7 +1725,7 @@ describe("createClientRuntime production composition", () => {
     for (const sessionId of ["session-1", "session-2", "session-3"]) {
       expect(
         await runtime.reconciler.reconcile({
-          ...reconcileRequest(connection.computerId, snapshot()),
+          ...reconcileRequest(connection.installationId, snapshot()),
           requestId: randomUUID(),
           sessionId,
         }),
@@ -1689,7 +1796,7 @@ describe("createClientRuntime production composition", () => {
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const firstSignal = new AbortController();
@@ -1735,7 +1842,7 @@ describe("createClientRuntime production composition", () => {
       factory: readyFactory("codex", probe),
       home,
     });
-    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
     });
     const ensuring = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
@@ -1801,9 +1908,8 @@ function completeLegacyAuth(
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      workspaceComputerId: randomUUID(),
-      workspaceId: randomUUID(),
       computerId: randomUUID(),
+      installationId: randomUUID(),
     }),
   );
   const providers = Array.isArray(providerReadiness) ? providerReadiness : providerReadiness ? ["codex"] : undefined;
@@ -1865,7 +1971,7 @@ function reconcileRequest(computerId: string, runtime: EffectiveRuntimeSnapshot)
   return {
     type: "session:reconcile",
     requestId: randomUUID(),
-    computerId,
+    installationId: computerId,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
@@ -1912,6 +2018,30 @@ function delivery(runtime: EffectiveRuntimeSnapshot): DirectImMessageDeliveryReq
     },
     runtime,
   };
+}
+
+async function composeClaudeCodeRuntime(options: {
+  readonly claudeCodeHome?: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly home: string;
+}): Promise<{ readonly capture: string; readonly runtime: ComposedClientRuntime }> {
+  const capturePath = resolve(options.home, "claude-config-dir.capture");
+  const command = resolve(options.home, "claude-env-fixture");
+  await writeFile(
+    command,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  const runtime = await createClientRuntime(runtimeConnection(), {
+    clientVersion: "0.0.1",
+    claudeCodeCommand: command,
+    ...(options.claudeCodeHome === undefined ? {} : { claudeCodeHome: options.claudeCodeHome }),
+    codexCommand: resolve(options.home, "missing-codex"),
+    environment: options.environment,
+    home: options.home,
+  });
+  return { capture: await readFile(capturePath, "utf8"), runtime };
 }
 
 function readyFactory(

@@ -7,6 +7,11 @@ import { getRuntimeConfigurationOptions, hashTuple } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
+  classifiedProviderProbeIssue,
+  isBinaryShapedProviderProbeFailure,
+  isTransientProviderProbeFailure,
+} from "../../agent-runtime/probe-failure.js";
+import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentApprovalResponse,
@@ -39,6 +44,7 @@ import {
   assertJsonValue,
   assertSystemPrompt,
 } from "../../agent-runtime/validation.js";
+import { createLogger } from "../../observability/logger.js";
 import {
   CodexAppServerError,
   type CodexAppServerMessage,
@@ -53,6 +59,7 @@ import {
 const execFileAsync = promisify(execFile);
 const CODEX_BINDING_SCHEMA_VERSION = 1;
 const CODEX_PROVIDER_ID = "codex";
+const logger = createLogger("provider-codex-runtime");
 const CODEX_CAPABILITY_PROBE_INSTRUCTIONS = "OpenTag Provider prompt-surface capability probe.";
 export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
@@ -256,6 +263,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return this.#runResult(terminal);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
+      logger.debug({ code: "provider_run_failed", error: failure.message }, "Codex provider run failed");
       this.#turnIdReady.reject(failure);
       throw failure;
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
@@ -271,7 +279,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async steerProvider(request: AgentSteerRequest): Promise<void> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {
@@ -286,7 +294,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async respondProvider(response: AgentInteractionResponse): Promise<void> {
+  protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {
     const request = this.#wireInteractions.get(response.requestId);
     /* v8 ignore next -- Base and the serial Codex envelope queue fence this map with the public interaction. */
     if (!request) throw new AgentRuntimeError("interaction_not_found", "Codex interaction is no longer pending");
@@ -295,7 +303,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#wireInteractions.delete(response.requestId);
   }
 
-  protected async abortProvider(request: AgentAbortRequest): Promise<void> {
+  protected override async abortProvider(request: AgentAbortRequest): Promise<void> {
     const turnId = await this.#activeTurnId();
     /* v8 ignore next 3 -- Base validates expectedRunId before entering the Provider hook. */
     if (request.expectedRunId !== this.#context?.runId) {
@@ -360,6 +368,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       };
       return codexHostedToolResult(await hostedTools.handler(request));
     } catch (error) {
+      logger.debug({ code: "hosted_tool_failed", error: String(error) }, "Codex hosted tool execution failed");
       return {
         success: false,
         text: error instanceof Error ? `OpenTag tool request failed: ${error.message}` : "OpenTag tool request failed.",
@@ -379,6 +388,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       else await this.#handleServerRequest(envelope.request);
     });
     this.#eventTail = next.catch((error: unknown) => {
+      logger.debug({ code: "event_processing_failed", error: String(error) }, "Codex event processing failed");
       this.#failProvider(error instanceof Error ? error : protocolError("Codex event processing failed"));
     });
   }
@@ -585,7 +595,15 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#wireInteractions.delete(requestId);
       await this.#client
         .rejectServerRequest(request.id, -32000, "OpenTag could not deliver the interaction")
-        .catch(() => undefined);
+        .catch((rejectionError: unknown) => {
+          logger.debug(
+            {
+              code: "interaction_rejection_failed",
+              error: String(rejectionError),
+            },
+            "Codex interaction rejection failed",
+          );
+        });
       throw error;
     }
   }
@@ -671,7 +689,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     try {
       this.#parseCompletedTurn(record(envelope.message.params));
       this.#context.claimTerminal();
-    } catch {
+    } catch (error) {
+      logger.debug({ code: "terminal_message_invalid", error: String(error) }, "Codex terminal message was rejected");
       // The serial event queue preserves the authoritative fail-closed error path.
     }
   }
@@ -693,6 +712,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 
   #interactionIdForWireId(wireId: unknown): string | undefined {
     for (const [interactionId, request] of this.#wireInteractions) {
+      /* v8 ignore else -- the map holds one in-flight interaction, so lookups match on the first entry. */
       if (request.id === wireId) return interactionId;
     }
     return undefined;
@@ -772,6 +792,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           );
           const startedThread = requireRecord(startResponse.thread, "Codex capability probe start returned no thread");
           const threadId = requireString(startedThread.id, "Codex capability probe start returned no thread id");
+          /* v8 ignore next -- probe client teardown is best-effort between probe phases. */
           await startClient.close().catch(() => undefined);
           bootstrapClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
           await bootstrapClient.initialize(this.#clientVersion, signal);
@@ -804,6 +825,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
             bootstrapThread.id,
             "Codex capability probe bootstrap returned no thread id",
           );
+          /* v8 ignore next -- probe client teardown is best-effort between probe phases. */
           await bootstrapClient.close().catch(() => undefined);
           resumeClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
           await resumeClient.initialize(this.#clientVersion, signal);
@@ -833,10 +855,32 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           }
           return { ...local, experimentalTools: true };
         } finally {
-          await startClient.close().catch(() => undefined);
-          await bootstrapClient?.close().catch(() => undefined);
-          await resumeClient?.close().catch(() => undefined);
-          await rm(probeHome, { recursive: true, force: true }).catch(() => undefined);
+          /* v8 ignore start -- probe teardown is best-effort; close and rm failures must not mask the probe result. */
+          await startClient.close().catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_start_close_failed", error: String(error) },
+              "Codex capability probe start client close failed",
+            );
+          });
+          await bootstrapClient?.close().catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_bootstrap_close_failed", error: String(error) },
+              "Codex capability probe bootstrap client close failed",
+            );
+          });
+          await resumeClient?.close().catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_resume_close_failed", error: String(error) },
+              "Codex capability probe resume client close failed",
+            );
+          });
+          await rm(probeHome, { recursive: true, force: true }).catch((error: unknown) => {
+            logger.debug(
+              { code: "probe_home_cleanup_failed", error: String(error) },
+              "Codex capability probe home cleanup failed",
+            );
+          });
+          /* v8 ignore stop */
         }
       });
   }
@@ -865,7 +909,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       }
     } catch (error) {
       if (request.signal?.aborted) throw error;
-      issues.push(probeIssue(error));
+      logger.debug({ code: "probe_execution_failed", error: String(error) }, "Codex probe execution failed");
+      const issue = probeIssue(error);
+      if (!issue) throw error;
+      issues.push(issue);
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
   }
@@ -952,7 +999,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         hostedTools: request.hostedTools,
       });
     } catch (error) {
-      await client.close().catch(() => undefined);
+      logger.debug({ code: "runtime_create_failed", error: String(error) }, "Codex runtime creation failed");
+      await client.close().catch((closeError: unknown) => {
+        logger.debug({ code: "provider_close_failed", error: String(closeError) }, "Codex provider close failed");
+      });
       if (error instanceof AgentRuntimeError) throw error;
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Codex ${mode} failed`, {
         cause: error,
@@ -996,7 +1046,7 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
   return environment;
 }
 
-function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
+function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] | undefined {
   if (error instanceof AgentProviderError && error.code === "provider_protocol_error") {
     return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };
   }
@@ -1004,9 +1054,20 @@ function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
     if (error.code === "protocol") {
       return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };
     }
-    return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+    if (error.code === "timeout" || error.code === "aborted" || error.code === "write") {
+      return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+    }
+    if (isTransientProviderProbeFailure(error)) {
+      return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+    }
+    if (isBinaryShapedProviderProbeFailure(error)) {
+      return typeof error.exitCode === "number" && error.exitCode !== 0 && !error.signal
+        ? { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` }
+        : { code: "artifact_missing", message: "Codex CLI could not be executed" };
+    }
+    return undefined;
   }
-  return { code: "artifact_missing", message: "Codex CLI could not be executed" };
+  return classifiedProviderProbeIssue(error, "Codex CLI could not be executed");
 }
 
 async function probeCodex(
@@ -1025,6 +1086,7 @@ async function probeCodex(
     credential = true;
   } catch (error) {
     if (signal?.aborted) throw error;
+    logger.debug({ code: "credential_status_failed", error: String(error) }, "Codex credential status command failed");
   }
   return { appServer: true, credential, version };
 }
@@ -1189,6 +1251,7 @@ function codexHostedToolResult(result: AgentHostedToolResult): CodexDynamicToolR
     if (typeof result.error.code !== "string" || typeof result.error.message !== "string") {
       return { success: false, text: "OpenTag tool returned an invalid result." };
     }
+    /* v8 ignore else -- a failed tool result without content always synthesizes the error line. */
     if (text.length === 0) text.push(`${result.error.code}: ${result.error.message}`);
   }
   return { success: result.success, text: text.join("\n") };

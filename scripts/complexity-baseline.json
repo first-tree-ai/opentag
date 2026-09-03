@@ -1,0 +1,924 @@
+{
+  "version": 1,
+  "rule": "lint/complexity/noExcessiveCognitiveComplexity",
+  "warnings": [
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~2",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~3",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~4",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 26
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~5",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 29
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~6",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 23
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~7",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 22
+    },
+    {
+      "id": "apps/cli/src/__tests__/daemon-service-renderers.test.ts#callback~8",
+      "path": "apps/cli/src/__tests__/daemon-service-renderers.test.ts",
+      "symbol": "callback",
+      "complexity": 22
+    },
+    {
+      "id": "apps/cli/src/core/agent/mutations.ts#updateMutation",
+      "path": "apps/cli/src/core/agent/mutations.ts",
+      "symbol": "updateMutation",
+      "complexity": 19
+    },
+    {
+      "id": "apps/cli/src/core/command/policy.ts#classifyGenericError",
+      "path": "apps/cli/src/core/command/policy.ts",
+      "symbol": "classifyGenericError",
+      "complexity": 19
+    },
+    {
+      "id": "apps/cli/src/core/daemon/environment.ts#loadDaemonEnvironment",
+      "path": "apps/cli/src/core/daemon/environment.ts",
+      "symbol": "loadDaemonEnvironment",
+      "complexity": 20
+    },
+    {
+      "id": "apps/cli/src/core/daemon/service/launchd.ts#callback",
+      "path": "apps/cli/src/core/daemon/service/launchd.ts",
+      "symbol": "callback",
+      "complexity": 38
+    },
+    {
+      "id": "apps/cli/src/core/daemon/service/shared.ts#preflightHomeDirectory",
+      "path": "apps/cli/src/core/daemon/service/shared.ts",
+      "symbol": "preflightHomeDirectory",
+      "complexity": 17
+    },
+    {
+      "id": "apps/cli/src/core/daemon/service/systemd.ts#callback",
+      "path": "apps/cli/src/core/daemon/service/systemd.ts",
+      "symbol": "callback",
+      "complexity": 32
+    },
+    {
+      "id": "apps/web/src/__tests__/support/app-fixtures.tsx#callback",
+      "path": "apps/web/src/__tests__/support/app-fixtures.tsx",
+      "symbol": "callback",
+      "complexity": 180
+    },
+    {
+      "id": "apps/web/src/api.csrf.test.ts#it",
+      "path": "apps/web/src/api.csrf.test.ts",
+      "symbol": "it",
+      "complexity": 21
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-computer-choice.tsx#AgentComputerChoice",
+      "path": "apps/web/src/features/agents/agent-computer-choice.tsx",
+      "symbol": "AgentComputerChoice",
+      "complexity": 16
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-model.ts#projectAgentAvailability",
+      "path": "apps/web/src/features/agents/agent-model.ts",
+      "symbol": "projectAgentAvailability",
+      "complexity": 47
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-presentation.ts#agentStatusPresentation",
+      "path": "apps/web/src/features/agents/agent-presentation.ts",
+      "symbol": "agentStatusPresentation",
+      "complexity": 22
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-queries.ts#useAgentDetailView",
+      "path": "apps/web/src/features/agents/agent-queries.ts",
+      "symbol": "useAgentDetailView",
+      "complexity": 17
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/agent-computer-settings.tsx#AgentComputerSettings",
+      "path": "apps/web/src/features/agents/agent-settings/agent-computer-settings.tsx",
+      "symbol": "AgentComputerSettings",
+      "complexity": 17
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/agent-manage-settings.tsx#AgentManageSettings",
+      "path": "apps/web/src/features/agents/agent-settings/agent-manage-settings.tsx",
+      "symbol": "AgentManageSettings",
+      "complexity": 27
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/im-tab.tsx#callback",
+      "path": "apps/web/src/features/agents/agent-settings/im-tab.tsx",
+      "symbol": "callback",
+      "complexity": 29
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/model-settings.tsx#AgentModelSettings",
+      "path": "apps/web/src/features/agents/agent-settings/model-settings.tsx",
+      "symbol": "AgentModelSettings",
+      "complexity": 18
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/runtime-configuration.tsx#RuntimeConfigurationEditor",
+      "path": "apps/web/src/features/agents/agent-settings/runtime-configuration.tsx",
+      "symbol": "RuntimeConfigurationEditor",
+      "complexity": 39
+    },
+    {
+      "id": "apps/web/src/features/agents/agent-settings/sections.ts#agentSettingsSummary",
+      "path": "apps/web/src/features/agents/agent-settings/sections.ts",
+      "symbol": "agentSettingsSummary",
+      "complexity": 25
+    },
+    {
+      "id": "apps/web/src/features/tasks-page.tsx#AgentTasksSection",
+      "path": "apps/web/src/features/tasks-page.tsx",
+      "symbol": "AgentTasksSection",
+      "complexity": 25
+    },
+    {
+      "id": "apps/web/src/features/tasks-page.tsx#TasksPage",
+      "path": "apps/web/src/features/tasks-page.tsx",
+      "symbol": "TasksPage",
+      "complexity": 29
+    },
+    {
+      "id": "apps/web/src/features/tasks-page.tsx#TaskTurnView",
+      "path": "apps/web/src/features/tasks-page.tsx",
+      "symbol": "TaskTurnView",
+      "complexity": 19
+    },
+    {
+      "id": "apps/web/src/im/feishu-setup.tsx#async",
+      "path": "apps/web/src/im/feishu-setup.tsx",
+      "symbol": "async",
+      "complexity": 36
+    },
+    {
+      "id": "apps/web/src/im/feishu-setup.tsx#poll",
+      "path": "apps/web/src/im/feishu-setup.tsx",
+      "symbol": "poll",
+      "complexity": 22
+    },
+    {
+      "id": "packages/client/src/__tests__/agent-runtime-exhaustive.test.ts#callback",
+      "path": "packages/client/src/__tests__/agent-runtime-exhaustive.test.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/__tests__/client-runtime-composition.test.ts#callback",
+      "path": "packages/client/src/__tests__/client-runtime-composition.test.ts",
+      "symbol": "callback",
+      "complexity": 24
+    },
+    {
+      "id": "packages/client/src/__tests__/client-runtime-domain.test.ts#callback",
+      "path": "packages/client/src/__tests__/client-runtime-domain.test.ts",
+      "symbol": "callback",
+      "complexity": 22
+    },
+    {
+      "id": "packages/client/src/__tests__/codex-agent-runtime-exhaustive.test.ts#callback",
+      "path": "packages/client/src/__tests__/codex-agent-runtime-exhaustive.test.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/__tests__/fixtures/codex-app-server.mjs#createInterface",
+      "path": "packages/client/src/__tests__/fixtures/codex-app-server.mjs",
+      "symbol": "createInterface",
+      "complexity": 36
+    },
+    {
+      "id": "packages/client/src/__tests__/fixtures/provider-cli.ts#buildTar",
+      "path": "packages/client/src/__tests__/fixtures/provider-cli.ts",
+      "symbol": "buildTar",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/__tests__/pi-agent-runtime-exhaustive.test.ts#it",
+      "path": "packages/client/src/__tests__/pi-agent-runtime-exhaustive.test.ts",
+      "symbol": "it",
+      "complexity": 22
+    },
+    {
+      "id": "packages/client/src/__tests__/provider-cli-catalog.test.ts#it",
+      "path": "packages/client/src/__tests__/provider-cli-catalog.test.ts",
+      "symbol": "it",
+      "complexity": 17
+    },
+    {
+      "id": "packages/client/src/__tests__/runtime.test.ts#callback",
+      "path": "packages/client/src/__tests__/runtime.test.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/__tests__/runtime.test.ts#callback~2",
+      "path": "packages/client/src/__tests__/runtime.test.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "packages/client/src/__tests__/runtime.test.ts#callback~3",
+      "path": "packages/client/src/__tests__/runtime.test.ts",
+      "symbol": "callback",
+      "complexity": 22
+    },
+    {
+      "id": "packages/client/src/agent-runtime/base-agent-runtime.ts##closeInternal",
+      "path": "packages/client/src/agent-runtime/base-agent-runtime.ts",
+      "symbol": "#closeInternal",
+      "complexity": 19
+    },
+    {
+      "id": "packages/client/src/agent-runtime/event-validator.ts##accept",
+      "path": "packages/client/src/agent-runtime/event-validator.ts",
+      "symbol": "#accept",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/agent-runtime/probe-failure.ts#readProbeFailureEvidence",
+      "path": "packages/client/src/agent-runtime/probe-failure.ts",
+      "symbol": "readProbeFailureEvidence",
+      "complexity": 17
+    },
+    {
+      "id": "packages/client/src/agent-runtime/validation.ts#assertHostedTools",
+      "path": "packages/client/src/agent-runtime/validation.ts",
+      "symbol": "assertHostedTools",
+      "complexity": 22
+    },
+    {
+      "id": "packages/client/src/agent-runtime/validation.ts#callback",
+      "path": "packages/client/src/agent-runtime/validation.ts",
+      "symbol": "callback",
+      "complexity": 43
+    },
+    {
+      "id": "packages/client/src/agent-runtime/validation.ts#validateSchema",
+      "path": "packages/client/src/agent-runtime/validation.ts",
+      "symbol": "validateSchema",
+      "complexity": 45
+    },
+    {
+      "id": "packages/client/src/providers/claude-code/agent-runtime.ts##handleAssistant",
+      "path": "packages/client/src/providers/claude-code/agent-runtime.ts",
+      "symbol": "#handleAssistant",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/providers/claude-code/agent-runtime.ts#executeRun",
+      "path": "packages/client/src/providers/claude-code/agent-runtime.ts",
+      "symbol": "executeRun",
+      "complexity": 23
+    },
+    {
+      "id": "packages/client/src/providers/claude-code/agent-runtime.ts#validateFactoryRequest",
+      "path": "packages/client/src/providers/claude-code/agent-runtime.ts",
+      "symbol": "validateFactoryRequest",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/providers/claude-code/hosted-tool-bridge.ts#handleRequest",
+      "path": "packages/client/src/providers/claude-code/hosted-tool-bridge.ts",
+      "symbol": "handleRequest",
+      "complexity": 21
+    },
+    {
+      "id": "packages/client/src/providers/claude-code/process-wire.ts##onStdout",
+      "path": "packages/client/src/providers/claude-code/process-wire.ts",
+      "symbol": "#onStdout",
+      "complexity": 20
+    },
+    {
+      "id": "packages/client/src/providers/codex/agent-runtime.ts##handleNotification",
+      "path": "packages/client/src/providers/codex/agent-runtime.ts",
+      "symbol": "#handleNotification",
+      "complexity": 30
+    },
+    {
+      "id": "packages/client/src/providers/codex/agent-runtime.ts##open",
+      "path": "packages/client/src/providers/codex/agent-runtime.ts",
+      "symbol": "#open",
+      "complexity": 26
+    },
+    {
+      "id": "packages/client/src/providers/codex/agent-runtime.ts#probeIssue",
+      "path": "packages/client/src/providers/codex/agent-runtime.ts",
+      "symbol": "probeIssue",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/providers/codex/app-server-wire.ts##onMessage",
+      "path": "packages/client/src/providers/codex/app-server-wire.ts",
+      "symbol": "#onMessage",
+      "complexity": 40
+    },
+    {
+      "id": "packages/client/src/providers/codex/app-server-wire.ts##onStdout",
+      "path": "packages/client/src/providers/codex/app-server-wire.ts",
+      "symbol": "#onStdout",
+      "complexity": 19
+    },
+    {
+      "id": "packages/client/src/providers/pi/agent-runtime.ts##handleMessage",
+      "path": "packages/client/src/providers/pi/agent-runtime.ts",
+      "symbol": "#handleMessage",
+      "complexity": 28
+    },
+    {
+      "id": "packages/client/src/providers/pi/agent-runtime.ts##updateMessage",
+      "path": "packages/client/src/providers/pi/agent-runtime.ts",
+      "symbol": "#updateMessage",
+      "complexity": 36
+    },
+    {
+      "id": "packages/client/src/providers/pi/agent-runtime.ts#executeRun",
+      "path": "packages/client/src/providers/pi/agent-runtime.ts",
+      "symbol": "executeRun",
+      "complexity": 21
+    },
+    {
+      "id": "packages/client/src/providers/pi/rpc-wire.ts##onMessage",
+      "path": "packages/client/src/providers/pi/rpc-wire.ts",
+      "symbol": "#onMessage",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/providers/pi/rpc-wire.ts##onStdout",
+      "path": "packages/client/src/providers/pi/rpc-wire.ts",
+      "symbol": "#onStdout",
+      "complexity": 17
+    },
+    {
+      "id": "packages/client/src/request-policy.ts#safeCause",
+      "path": "packages/client/src/request-policy.ts",
+      "symbol": "safeCause",
+      "complexity": 26
+    },
+    {
+      "id": "packages/client/src/runtime/agent-runtime-installation.ts#fromDirectories",
+      "path": "packages/client/src/runtime/agent-runtime-installation.ts",
+      "symbol": "fromDirectories",
+      "complexity": 21
+    },
+    {
+      "id": "packages/client/src/runtime/agent-runtime-installation.ts#iterateAgentRuntimeExecutables",
+      "path": "packages/client/src/runtime/agent-runtime-installation.ts",
+      "symbol": "iterateAgentRuntimeExecutables",
+      "complexity": 25
+    },
+    {
+      "id": "packages/client/src/runtime/agent-runtime-provider-registry.ts#promise",
+      "path": "packages/client/src/runtime/agent-runtime-provider-registry.ts",
+      "symbol": "promise",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/agent-turn-runner.ts#completionForResult",
+      "path": "packages/client/src/runtime/agent-turn-runner.ts",
+      "symbol": "completionForResult",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/runtime/agent-workspace.ts#parseAgentWorkspaceState",
+      "path": "packages/client/src/runtime/agent-workspace.ts",
+      "symbol": "parseAgentWorkspaceState",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/agent-workspace.ts#removeProvenManagedFile",
+      "path": "packages/client/src/runtime/agent-workspace.ts",
+      "symbol": "removeProvenManagedFile",
+      "complexity": 21
+    },
+    {
+      "id": "packages/client/src/runtime/client-runtime-composition.ts#createClientRuntime",
+      "path": "packages/client/src/runtime/client-runtime-composition.ts",
+      "symbol": "createClientRuntime",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/client-runtime.ts##handleBusinessFrame",
+      "path": "packages/client/src/runtime/client-runtime.ts",
+      "symbol": "#handleBusinessFrame",
+      "complexity": 23
+    },
+    {
+      "id": "packages/client/src/runtime/install-locations.ts#versionManagerBinDirs",
+      "path": "packages/client/src/runtime/install-locations.ts",
+      "symbol": "versionManagerBinDirs",
+      "complexity": 24
+    },
+    {
+      "id": "packages/client/src/runtime/mvp-turn-report-recovery.ts#callback",
+      "path": "packages/client/src/runtime/mvp-turn-report-recovery.ts",
+      "symbol": "callback",
+      "complexity": 26
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/detector.ts#assessCandidatePath",
+      "path": "packages/client/src/runtime/provider-cli/detector.ts",
+      "symbol": "assessCandidatePath",
+      "complexity": 17
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/detector.ts#detectProviderCliCandidates",
+      "path": "packages/client/src/runtime/provider-cli/detector.ts",
+      "symbol": "detectProviderCliCandidates",
+      "complexity": 61
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/detector.ts#rankProviderCliCandidates",
+      "path": "packages/client/src/runtime/provider-cli/detector.ts",
+      "symbol": "rankProviderCliCandidates",
+      "complexity": 20
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/executable-format.ts#inspectMachO",
+      "path": "packages/client/src/runtime/provider-cli/executable-format.ts",
+      "symbol": "inspectMachO",
+      "complexity": 29
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/launcher.ts#inspectGlobalCommand",
+      "path": "packages/client/src/runtime/provider-cli/launcher.ts",
+      "symbol": "inspectGlobalCommand",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/lock.ts#withProviderCliLock",
+      "path": "packages/client/src/runtime/provider-cli/lock.ts",
+      "symbol": "withProviderCliLock",
+      "complexity": 26
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/manager.ts##dryRunResult",
+      "path": "packages/client/src/runtime/provider-cli/manager.ts",
+      "symbol": "#dryRunResult",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/manager.ts##ensureLocked",
+      "path": "packages/client/src/runtime/provider-cli/manager.ts",
+      "symbol": "#ensureLocked",
+      "complexity": 61
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/manager.ts#ensure",
+      "path": "packages/client/src/runtime/provider-cli/manager.ts",
+      "symbol": "ensure",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/manager.ts#inspect",
+      "path": "packages/client/src/runtime/provider-cli/manager.ts",
+      "symbol": "inspect",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/provider-cli/tar.ts#extractProviderCliExecutable",
+      "path": "packages/client/src/runtime/provider-cli/tar.ts",
+      "symbol": "extractProviderCliExecutable",
+      "complexity": 48
+    },
+    {
+      "id": "packages/client/src/runtime/runtime-connection.ts#callback",
+      "path": "packages/client/src/runtime/runtime-connection.ts",
+      "symbol": "callback",
+      "complexity": 153
+    },
+    {
+      "id": "packages/client/src/runtime/runtime-connection.ts#run",
+      "path": "packages/client/src/runtime/runtime-connection.ts",
+      "symbol": "run",
+      "complexity": 38
+    },
+    {
+      "id": "packages/client/src/runtime/session-binding-store.ts#callback",
+      "path": "packages/client/src/runtime/session-binding-store.ts",
+      "symbol": "callback",
+      "complexity": 29
+    },
+    {
+      "id": "packages/client/src/runtime/session-binding-store.ts#callback~2",
+      "path": "packages/client/src/runtime/session-binding-store.ts",
+      "symbol": "callback",
+      "complexity": 24
+    },
+    {
+      "id": "packages/client/src/runtime/session-binding-store.ts#callback~3",
+      "path": "packages/client/src/runtime/session-binding-store.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/client/src/runtime/session-binding-store.ts#parseLocalSessionBinding",
+      "path": "packages/client/src/runtime/session-binding-store.ts",
+      "symbol": "parseLocalSessionBinding",
+      "complexity": 20
+    },
+    {
+      "id": "packages/client/src/runtime/session-binding-store.ts#parseRecordedInput",
+      "path": "packages/client/src/runtime/session-binding-store.ts",
+      "symbol": "parseRecordedInput",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/session-message-inbox.ts##runMessage",
+      "path": "packages/client/src/runtime/session-message-inbox.ts",
+      "symbol": "#runMessage",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/runtime/session-reconciler.ts##reconcileLocked",
+      "path": "packages/client/src/runtime/session-reconciler.ts",
+      "symbol": "#reconcileLocked",
+      "complexity": 60
+    },
+    {
+      "id": "packages/client/src/runtime/session-runtime-manager.ts##prepareSession",
+      "path": "packages/client/src/runtime/session-runtime-manager.ts",
+      "symbol": "#prepareSession",
+      "complexity": 19
+    },
+    {
+      "id": "packages/client/src/runtime/session-runtime-manager.ts##startRuntime",
+      "path": "packages/client/src/runtime/session-runtime-manager.ts",
+      "symbol": "#startRuntime",
+      "complexity": 26
+    },
+    {
+      "id": "packages/server/src/__tests__/integration/im-binding.test.ts#void",
+      "path": "packages/server/src/__tests__/integration/im-binding.test.ts",
+      "symbol": "void",
+      "complexity": 43
+    },
+    {
+      "id": "packages/server/src/__tests__/runtime.test.ts#callback",
+      "path": "packages/server/src/__tests__/runtime.test.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/server/src/api/slack-events.ts#callback",
+      "path": "packages/server/src/api/slack-events.ts",
+      "symbol": "callback",
+      "complexity": 20
+    },
+    {
+      "id": "packages/server/src/api/slack-events.ts#callback~2",
+      "path": "packages/server/src/api/slack-events.ts",
+      "symbol": "callback",
+      "complexity": 27
+    },
+    {
+      "id": "packages/server/src/api/slack-events.ts#callback~3",
+      "path": "packages/server/src/api/slack-events.ts",
+      "symbol": "callback",
+      "complexity": 21
+    },
+    {
+      "id": "packages/server/src/api/slack-oauth.ts#callback",
+      "path": "packages/server/src/api/slack-oauth.ts",
+      "symbol": "callback",
+      "complexity": 26
+    },
+    {
+      "id": "packages/server/src/app.ts#createApp",
+      "path": "packages/server/src/app.ts",
+      "symbol": "createApp",
+      "complexity": 58
+    },
+    {
+      "id": "packages/server/src/config.ts#callback",
+      "path": "packages/server/src/config.ts",
+      "symbol": "callback",
+      "complexity": 23
+    },
+    {
+      "id": "packages/server/src/index.ts#startServer",
+      "path": "packages/server/src/index.ts",
+      "symbol": "startServer",
+      "complexity": 23
+    },
+    {
+      "id": "packages/server/src/observability/otel-helpers.ts#normalizeTelemetryAttrs",
+      "path": "packages/server/src/observability/otel-helpers.ts",
+      "symbol": "normalizeTelemetryAttrs",
+      "complexity": 17
+    },
+    {
+      "id": "packages/server/src/runtime/im-delivery-worker.ts##deliverClaimed",
+      "path": "packages/server/src/runtime/im-delivery-worker.ts",
+      "symbol": "#deliverClaimed",
+      "complexity": 39
+    },
+    {
+      "id": "packages/server/src/runtime/im-delivery-worker.ts##deliverSteer",
+      "path": "packages/server/src/runtime/im-delivery-worker.ts",
+      "symbol": "#deliverSteer",
+      "complexity": 24
+    },
+    {
+      "id": "packages/server/src/runtime/im-delivery-worker.ts##history",
+      "path": "packages/server/src/runtime/im-delivery-worker.ts",
+      "symbol": "#history",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/runtime/im-delivery-worker.ts##recover",
+      "path": "packages/server/src/runtime/im-delivery-worker.ts",
+      "symbol": "#recover",
+      "complexity": 18
+    },
+    {
+      "id": "packages/server/src/runtime/im-delivery-worker.ts#callback",
+      "path": "packages/server/src/runtime/im-delivery-worker.ts",
+      "symbol": "callback",
+      "complexity": 36
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~2",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~3",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~4",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~5",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~6",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 20
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-custody-store.ts#callback~7",
+      "path": "packages/server/src/runtime/runtime-custody-store.ts",
+      "symbol": "callback",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-domain-owner.ts##completeDelivery",
+      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
+      "symbol": "#completeDelivery",
+      "complexity": 22
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-domain-owner.ts##completeSteer",
+      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
+      "symbol": "#completeSteer",
+      "complexity": 16
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-domain-owner.ts##request",
+      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
+      "symbol": "#request",
+      "complexity": 23
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-domain-owner.ts#requestReconcile",
+      "path": "packages/server/src/runtime/runtime-domain-owner.ts",
+      "symbol": "requestReconcile",
+      "complexity": 17
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-session.ts##onMessage",
+      "path": "packages/server/src/runtime/runtime-session.ts",
+      "symbol": "#onMessage",
+      "complexity": 40
+    },
+    {
+      "id": "packages/server/src/runtime/runtime-session.ts##register",
+      "path": "packages/server/src/runtime/runtime-session.ts",
+      "symbol": "#register",
+      "complexity": 20
+    },
+    {
+      "id": "packages/server/src/services/agents/__tests__/agent-service.test.ts#createDelivery",
+      "path": "packages/server/src/services/agents/__tests__/agent-service.test.ts",
+      "symbol": "createDelivery",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/services/agents/agent-service.ts#callback",
+      "path": "packages/server/src/services/agents/agent-service.ts",
+      "symbol": "callback",
+      "complexity": 16
+    },
+    {
+      "id": "packages/server/src/services/agents/agent-service.ts#callback~2",
+      "path": "packages/server/src/services/agents/agent-service.ts",
+      "symbol": "callback",
+      "complexity": 30
+    },
+    {
+      "id": "packages/server/src/services/auth/auth-service.ts#callback",
+      "path": "packages/server/src/services/auth/auth-service.ts",
+      "symbol": "callback",
+      "complexity": 17
+    },
+    {
+      "id": "packages/server/src/services/computers/computer-service.ts#listAccountComputers",
+      "path": "packages/server/src/services/computers/computer-service.ts",
+      "symbol": "listAccountComputers",
+      "complexity": 16
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/feishu/adapter.ts#callback",
+      "path": "packages/server/src/services/im-bindings/feishu/adapter.ts",
+      "symbol": "callback",
+      "complexity": 28
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/feishu/adapter.ts#callback~2",
+      "path": "packages/server/src/services/im-bindings/feishu/adapter.ts",
+      "symbol": "callback",
+      "complexity": 24
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/feishu/adapter.ts#parseRawContent",
+      "path": "packages/server/src/services/im-bindings/feishu/adapter.ts",
+      "symbol": "parseRawContent",
+      "complexity": 18
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/feishu/connection-manager.ts##maintainOnce",
+      "path": "packages/server/src/services/im-bindings/feishu/connection-manager.ts",
+      "symbol": "#maintainOnce",
+      "complexity": 21
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/feishu/setup-service.ts#createOrReuse",
+      "path": "packages/server/src/services/im-bindings/feishu/setup-service.ts",
+      "symbol": "createOrReuse",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/im-binding-service.ts#activate",
+      "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
+      "symbol": "activate",
+      "complexity": 63
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/im-binding-service.ts#callback",
+      "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
+      "symbol": "callback",
+      "complexity": 39
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/im-binding-service.ts#diagnostics",
+      "path": "packages/server/src/services/im-bindings/im-binding-service.ts",
+      "symbol": "diagnostics",
+      "complexity": 21
+    },
+    {
+      "id": "packages/server/src/services/im-bindings/slack/adapter.ts#normalizeSlackEnvelope",
+      "path": "packages/server/src/services/im-bindings/slack/adapter.ts",
+      "symbol": "normalizeSlackEnvelope",
+      "complexity": 27
+    },
+    {
+      "id": "packages/server/src/services/im/external-call-policy.ts#callback",
+      "path": "packages/server/src/services/im/external-call-policy.ts",
+      "symbol": "callback",
+      "complexity": 18
+    },
+    {
+      "id": "packages/server/src/services/im/im-message-inbox.ts#callback",
+      "path": "packages/server/src/services/im/im-message-inbox.ts",
+      "symbol": "callback",
+      "complexity": 169
+    },
+    {
+      "id": "packages/server/src/services/runtime-config/effective-runtime-snapshot-assembler.ts#assembleForSession",
+      "path": "packages/server/src/services/runtime-config/effective-runtime-snapshot-assembler.ts",
+      "symbol": "assembleForSession",
+      "complexity": 18
+    },
+    {
+      "id": "packages/server/src/services/sessions/session-collaboration-service.ts##deliver",
+      "path": "packages/server/src/services/sessions/session-collaboration-service.ts",
+      "symbol": "#deliver",
+      "complexity": 17
+    },
+    {
+      "id": "packages/server/src/services/sessions/session-service.ts#callback",
+      "path": "packages/server/src/services/sessions/session-service.ts",
+      "symbol": "callback",
+      "complexity": 21
+    },
+    {
+      "id": "packages/server/src/services/sessions/session-service.ts#callback~2",
+      "path": "packages/server/src/services/sessions/session-service.ts",
+      "symbol": "callback",
+      "complexity": 19
+    },
+    {
+      "id": "packages/server/src/services/tasks/__tests__/task-service.test.ts#createDelivery",
+      "path": "packages/server/src/services/tasks/__tests__/task-service.test.ts",
+      "symbol": "createDelivery",
+      "complexity": 18
+    },
+    {
+      "id": "scripts/check-complexity-ratchet.mjs#sourceFingerprint",
+      "path": "scripts/check-complexity-ratchet.mjs",
+      "symbol": "sourceFingerprint",
+      "complexity": 28
+    },
+    {
+      "id": "scripts/cli-pack-smoke.mjs#assertReleaseManifest",
+      "path": "scripts/cli-pack-smoke.mjs",
+      "symbol": "assertReleaseManifest",
+      "complexity": 16
+    },
+    {
+      "id": "scripts/cli-pack-smoke.mjs#runCliPackSmoke",
+      "path": "scripts/cli-pack-smoke.mjs",
+      "symbol": "runCliPackSmoke",
+      "complexity": 29
+    },
+    {
+      "id": "scripts/portable/build-portable.mjs#parseArgs",
+      "path": "scripts/portable/build-portable.mjs",
+      "symbol": "parseArgs",
+      "complexity": 26
+    },
+    {
+      "id": "scripts/portable/verify-portable-artifact.mjs#verify",
+      "path": "scripts/portable/verify-portable-artifact.mjs",
+      "symbol": "verify",
+      "complexity": 21
+    },
+    {
+      "id": "scripts/prepare-cli-release.mjs#prepareCliRelease",
+      "path": "scripts/prepare-cli-release.mjs",
+      "symbol": "prepareCliRelease",
+      "complexity": 29
+    },
+    {
+      "id": "scripts/release-versions.mjs#findLatestStagingVersion",
+      "path": "scripts/release-versions.mjs",
+      "symbol": "findLatestStagingVersion",
+      "complexity": 18
+    },
+    {
+      "id": "scripts/resolve-npm-dist-tag.mjs#classifyDistTagLookup",
+      "path": "scripts/resolve-npm-dist-tag.mjs",
+      "symbol": "classifyDistTagLookup",
+      "complexity": 16
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 import {
   AGENT_SLACK_OAUTH_START_TEMPLATE,
+  type AgentSetupReturnSurface,
+  AgentSetupReturnSurfaceSchema,
   SLACK_OAUTH_CALLBACK_PATH,
   StartSlackOAuthRequestSchema,
   StartSlackOAuthResponseSchema,
@@ -45,9 +47,24 @@ function authenticatedUserId(request: FastifyRequest): string {
   return userId;
 }
 
-function resultRedirect(publicOrigin: string, agentId: string | undefined, errorCode?: string): string {
-  const path = agentId ? `/agents/${encodeURIComponent(agentId)}/settings/messaging` : "/agents";
-  const url = new URL(path, publicOrigin);
+/**
+ * The callback returns only to a fixed surface the signed state named: the Agent's messaging settings or
+ * the canonical `/agents/setup?agentId=<exact-agent>` setup page. There is no caller-controlled return URL.
+ */
+function resultRedirect(
+  publicOrigin: string,
+  target: { agentId?: string; returnSurface?: AgentSetupReturnSurface },
+  errorCode?: string,
+): string {
+  const url = new URL("/", publicOrigin);
+  if (target.agentId && target.returnSurface === "agent-setup") {
+    url.pathname = "/agents/setup";
+    url.searchParams.set("agentId", target.agentId);
+  } else if (target.agentId) {
+    url.pathname = `/agents/${encodeURIComponent(target.agentId)}/settings/messaging`;
+  } else {
+    url.pathname = "/agents";
+  }
   if (errorCode) url.searchParams.set("slack_oauth_error", errorCode);
   else url.searchParams.set("slack_oauth", "success");
   return url.toString();
@@ -76,13 +93,27 @@ function errorAgentId(error: unknown): string | undefined {
   return undefined;
 }
 
+function errorReturnSurface(error: unknown): AgentSetupReturnSurface | undefined {
+  if (typeof error === "object" && error !== null && "slackOAuthReturnSurface" in error) {
+    const parsed = AgentSetupReturnSurfaceSchema.safeParse(error.slackOAuthReturnSurface);
+    if (parsed.success) return parsed.data;
+  }
+  return undefined;
+}
+
 export function registerSlackOAuthRoutes(app: FastifyInstance, options: SlackOAuthRouteOptions): void {
   const preHandler = createUserAuthPreHandler(options.authService, options.authOptions ?? {});
 
   app.post(AGENT_SLACK_OAUTH_START_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const input = parseRequest(StartSlackOAuthRequestSchema, request.body ?? {});
-    const started = await options.slackOAuth.start(authenticatedUserId(request), agentId, input.intent);
+    const started = await options.slackOAuth.start(
+      authenticatedUserId(request),
+      agentId,
+      input.intent,
+      input.returnSurface,
+      input.expectedMessaging,
+    );
     setSlackOAuthContextCookie(reply, started.sessionBinding, {
       path: SLACK_OAUTH_CALLBACK_PATH,
       secure: options.secureCookies,
@@ -109,8 +140,32 @@ export function registerSlackOAuthRoutes(app: FastifyInstance, options: SlackOAu
         sessionBinding: cookies[BROWSER_COOKIE_NAMES.slackOAuthContext],
         state: query.state,
       });
-      return reply.redirect(resultRedirect(options.publicOrigin, result.agentId), 302);
+      return reply.redirect(
+        resultRedirect(options.publicOrigin, { agentId: result.agentId, returnSurface: result.returnSurface }),
+        302,
+      );
     } catch (error) {
+      const callbackQuery = request.query as { code?: unknown; error?: unknown };
+      request.log.error(
+        {
+          callbackHadCode: typeof callbackQuery.code === "string" && callbackQuery.code.length > 0,
+          callbackSlackError: typeof callbackQuery.error === "string" ? callbackQuery.error.slice(0, 128) : undefined,
+          errorCode:
+            typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+              ? error.code
+              : undefined,
+          errorMessage: error instanceof Error ? error.message : "Unknown Slack OAuth callback failure",
+          errorName: error instanceof Error ? error.name : typeof error,
+          upstreamSlackError:
+            typeof error === "object" &&
+            error !== null &&
+            "upstreamSlackError" in error &&
+            typeof error.upstreamSlackError === "string"
+              ? error.upstreamSlackError
+              : undefined,
+        },
+        "Slack OAuth callback failed",
+      );
       return redirectOAuthFailure(reply, options.publicOrigin, errorAgentId(error), error);
     }
   });
@@ -122,5 +177,16 @@ function redirectOAuthFailure(
   agentId: string | undefined,
   error: unknown,
 ): FastifyReply {
-  return reply.redirect(resultRedirect(publicOrigin, agentId, publicErrorCode(error)), 302);
+  const returnSurface = errorReturnSurface(error);
+  return reply.redirect(
+    resultRedirect(
+      publicOrigin,
+      {
+        ...(agentId ? { agentId } : {}),
+        ...(returnSurface ? { returnSurface } : {}),
+      },
+      publicErrorCode(error),
+    ),
+    302,
+  );
 }

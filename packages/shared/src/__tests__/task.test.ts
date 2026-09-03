@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ListTasksResponseSchema, TaskDetailSchema, taskByIdPath } from "../index.js";
+import {
+  ListTasksResponseSchema,
+  TASK_TITLE_MAX_LENGTH,
+  TaskDetailSchema,
+  TaskTitleUpdateRequestSchema,
+  TaskTitleUpdateResponseSchema,
+  taskByIdPath,
+} from "../index.js";
 
 const summary = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -25,6 +32,27 @@ describe("Task browser contracts", () => {
       nextCursor: "cursor",
     });
     expect(taskByIdPath("session/with spaces")).toBe("/api/v1/sessions/session%2Fwith%20spaces");
+  });
+
+  it("bounds the resolved title while leaving room for a future manual title", () => {
+    expect(
+      ListTasksResponseSchema.parse({
+        tasks: [{ ...summary, title: "x".repeat(TASK_TITLE_MAX_LENGTH) }],
+        nextCursor: null,
+      }),
+    ).toBeTruthy();
+    expect(() =>
+      ListTasksResponseSchema.parse({
+        tasks: [{ ...summary, title: "x".repeat(TASK_TITLE_MAX_LENGTH + 1) }],
+        nextCursor: null,
+      }),
+    ).toThrow();
+    expect(
+      ListTasksResponseSchema.parse({
+        tasks: [{ ...summary, title: "👨‍👩‍👧‍👦".repeat(TASK_TITLE_MAX_LENGTH) }],
+        nextCursor: null,
+      }),
+    ).toBeTruthy();
   });
 
   it("keeps debug details strict and distinguishes runtime output from Provider output", () => {
@@ -72,5 +100,13 @@ describe("Task browser contracts", () => {
     });
     expect(detail.turns[0]?.report?.finalText).toBe("Stored runtime final output");
     expect(() => TaskDetailSchema.parse({ ...detail, providerOutboundMessages: [] })).toThrow();
+  });
+
+  it("accepts trimmed manual titles and an explicit clear operation", () => {
+    expect(TaskTitleUpdateRequestSchema.parse({ title: "  Name the work  " })).toEqual({ title: "Name the work" });
+    expect(TaskTitleUpdateRequestSchema.parse({ title: null })).toEqual({ title: null });
+    expect(() => TaskTitleUpdateRequestSchema.parse({ title: "   " })).toThrow();
+    expect(() => TaskTitleUpdateRequestSchema.parse({ title: "A", accountId: "foreign" })).toThrow();
+    expect(TaskTitleUpdateResponseSchema.parse({ task: summary })).toEqual({ task: summary });
   });
 });

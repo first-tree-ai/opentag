@@ -4,216 +4,401 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { type ComponentProps, lazy, Suspense, useCallback, useState } from "react";
 import { browserApi } from "../api.js";
-import "./agent-usage.css";
+import { PageHeader } from "../components/kumo/page-header/page-header.js";
+import { formatCompactNumber, formatDay, formatNumber, formatPercent } from "../i18n/format.js";
+import * as m from "../paraglide/messages.js";
+import { queryKeys } from "../query/keys.js";
+import {
+  Banner,
+  ChartPalette,
+  Empty,
+  Icon,
+  LayerCard,
+  Loader,
+  Select,
+  SkeletonLine,
+  Table,
+  Text,
+  TimeseriesChart,
+} from "../ui/design-system.js";
+import { isTerminalResourceError } from "./resource/resource-state.js";
+
+const LazyTimeseriesChart = lazy(async () => {
+  const { echarts } = await import("./agent-usage-echarts.js");
+  return {
+    default: (props: Omit<ComponentProps<typeof TimeseriesChart>, "echarts">) => (
+      <TimeseriesChart {...props} echarts={echarts} />
+    ),
+  };
+});
 
 type UsageState =
   | { readonly kind: "loading" }
-  | { readonly kind: "error" }
+  | { readonly kind: "error"; readonly error: Error }
   | { readonly kind: "ready"; readonly value: AgentUsageDetail };
 
+/** The Agent home answers "how much has this Agent used recently", so it offers the shortest windows. */
+const AGENT_HOME_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS] as const;
+
+export function usageWindowLabel(days: AgentUsageWindowDays): string {
+  return days === 1 ? m.usage_window_24_hours() : m.usage_window_days({ days });
+}
+
+export function usageXAxisTickCount(days: AgentUsageWindowDays): number {
+  if (days === 1) return 4;
+  return 3;
+}
+
+export function usageXAxisTickLabel(value: number, endedAt: string, windowDays: AgentUsageWindowDays): string {
+  const timestamp = new Date(value).toISOString();
+  const distanceFromEnd = Date.parse(endedAt) - value;
+  const endLabelBuffer = windowDays === 1 ? 4 * 60 * 60 * 1_000 : 2 * 24 * 60 * 60 * 1_000;
+  return distanceFromEnd >= 0 && distanceFromEnd < endLabelBuffer ? "" : formatDay(timestamp);
+}
+
 export function AgentUsageOverview({ agentId }: { agentId: string }) {
-  const state = useAgentUsage(agentId, AGENT_USAGE_WINDOW_DAYS);
+  const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
+  const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
-    <section className="overview-section agent-usage-overview" aria-labelledby="agent-usage-overview-heading">
-      <div className="overview-section-heading">
-        <div>
-          <h3 id="agent-usage-overview-heading">Recent usage</h3>
-          <p>Token use from Tasks handled by this Agent during the last 30 days.</p>
-        </div>
-        <Link to={`/agents/${agentId}/usage`}>View usage details</Link>
+    <LayerCard
+      render={<section />}
+      className="grid gap-4 p-4"
+      aria-labelledby="agent-usage-overview-heading"
+      data-ui="usage-overview"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <Text as="h2" id="agent-usage-overview-heading" variant="heading">
+          {m.usage_title()}
+        </Text>
+        <UsageWindowSelect options={AGENT_HOME_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </div>
-      <UsageSummaryState state={state} compact />
-    </section>
+      <UsageSummaryState state={state} compact onRetry={retry} />
+      <Link
+        className="inline-flex items-center justify-self-end gap-1 text-sm text-kumo-link"
+        params={{ agentId }}
+        to="/agents/$agentId/usage"
+      >
+        {m.usage_view_usage()}
+        <Icon className="size-3.5" name="chevron-right" />
+      </Link>
+    </LayerCard>
+  );
+}
+
+function UsageWindowSelect({
+  onChange,
+  options,
+  value,
+}: {
+  onChange: (windowDays: AgentUsageWindowDays) => void;
+  options: readonly AgentUsageWindowDays[];
+  value: AgentUsageWindowDays;
+}) {
+  return (
+    <div className="ml-auto w-40 shrink-0" data-ui="usage-window-select">
+      <Select
+        aria-label={m.usage_period_label()}
+        className="w-full"
+        renderValue={(days) => usageWindowLabel(days)}
+        size="sm"
+        value={value}
+        onValueChange={(nextValue) => {
+          if (nextValue !== null) onChange(nextValue);
+        }}
+      >
+        {options.map((days) => (
+          <Select.Option key={days} value={days}>
+            {usageWindowLabel(days)}
+          </Select.Option>
+        ))}
+      </Select>
+    </div>
   );
 }
 
 export function AgentUsageTab({ agentId }: { agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
-  const state = useAgentUsage(agentId, windowDays);
+  const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
-    <div className="agent-usage-tab">
-      <div className="agent-usage-toolbar">
-        <label>
-          <span>Usage period</span>
-          <select
-            aria-label="Usage period"
-            className="ds-control ds-control--compact"
-            value={windowDays}
-            onChange={(event) => setWindowDays(Number(event.currentTarget.value) as AgentUsageWindowDays)}
-          >
-            {AGENT_USAGE_WINDOW_OPTIONS.map((days) => (
-              <option key={days} value={days}>
-                Last {days} days
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <UsageSummaryState state={state} />
+    <div className="@container/usage-tab grid gap-6" data-ui="usage-tab">
+      <PageHeader description={m.usage_description()} title={m.usage_title()} titleId="agent-usage-page-heading">
+        <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
+      </PageHeader>
+      <UsageSummaryState state={state} onRetry={retry} />
     </div>
   );
 }
 
-function useAgentUsage(agentId: string, windowDays: AgentUsageWindowDays): UsageState {
-  const [state, setState] = useState<UsageState>({ kind: "loading" });
-  useEffect(() => {
-    let active = true;
-    setState({ kind: "loading" });
-    void browserApi.agentUsage(agentId, windowDays).then(
-      (value) => active && setState({ kind: "ready", value }),
-      () => active && setState({ kind: "error" }),
-    );
-    return () => {
-      active = false;
-    };
-  }, [agentId, windowDays]);
-  return state;
+function useAgentUsage(
+  agentId: string,
+  windowDays: AgentUsageWindowDays,
+): { readonly retry: () => void; readonly state: UsageState } {
+  // Keyed by Agent and window, so the overview on an Agent's page and the tab on its usage page ask
+  // for the same 30 days once between them rather than each on its own.
+  const query = useQuery({
+    queryKey: queryKeys.agents.usage(agentId, windowDays),
+    queryFn: () => browserApi.agentUsage(agentId, windowDays),
+  });
+  const retry = useCallback(() => void query.refetch(), [query]);
+  const error = query.isError ? usageError(query.error) : undefined;
+  const state: UsageState =
+    error && (!query.data || isTerminalResourceError(error))
+      ? { kind: "error", error }
+      : query.data
+        ? { kind: "ready", value: query.data }
+        : error
+          ? { kind: "error", error }
+          : { kind: "loading" };
+  return { retry, state };
 }
 
-function UsageSummaryState({ state, compact = false }: { state: UsageState; compact?: boolean }) {
+function usageError(cause: unknown): Error {
+  if (cause instanceof Error && cause.message.trim()) return cause;
+  if (typeof cause === "string" && cause.trim()) return new Error(cause);
+  return new Error(m.usage_error_fallback());
+}
+
+function UsageSummaryState({
+  state,
+  compact = false,
+  onRetry,
+}: {
+  state: UsageState;
+  compact?: boolean;
+  onRetry: () => void;
+}) {
   if (state.kind === "loading") {
-    return (
-      <div aria-label="Loading Agent usage" className="agent-usage-loading" role="status">
-        <span />
-        <span />
+    return compact ? (
+      <div aria-label={m.usage_loading()} className="flex items-center gap-2 text-sm text-kumo-subtle" role="status">
+        <span aria-hidden="true">
+          <Loader size="sm" />
+        </span>
+        <span>{m.usage_loading()}…</span>
       </div>
+    ) : (
+      <UsageLoading />
     );
   }
   if (state.kind === "error") {
     return (
-      <p className="agent-usage-unavailable" role="status">
-        Usage is temporarily unavailable.
-      </p>
+      <Banner
+        action={<Banner.Action onClick={onRetry}>{m.usage_retry()}</Banner.Action>}
+        data-ui="usage-unavailable"
+        description={state.error.message}
+        role="alert"
+        title={m.usage_error_title()}
+        variant="error"
+      />
     );
   }
-  return compact ? (
-    <>
-      <UsageMetrics usage={state.value} />
-      <UsageCoverage usage={state.value} />
-    </>
-  ) : (
-    <AgentUsageDetailContent usage={state.value} />
+  return compact ? <UsageMetrics usage={state.value} compact /> : <AgentUsageDetailContent usage={state.value} />;
+}
+
+function UsageLoading() {
+  return (
+    <div aria-label={m.usage_loading()} className="grid gap-4" data-ui="usage-loading" role="status">
+      <LayerCard className="grid grid-cols-2 divide-x divide-kumo-line p-0">
+        <UsageMetricSkeleton />
+        <UsageMetricSkeleton />
+      </LayerCard>
+      <div className="grid gap-4 @min-[42rem]/usage-tab:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]">
+        <LayerCard className="grid gap-4 p-4">
+          <SkeletonLine blockHeight="1.25rem" maxWidth={40} minWidth={28} />
+          <SkeletonLine blockHeight="18rem" maxWidth={100} minWidth={100} />
+        </LayerCard>
+        <LayerCard className="grid content-start gap-4 p-4">
+          <SkeletonLine blockHeight="1.25rem" maxWidth={55} minWidth={38} />
+          <SkeletonLine blockHeight="2.5rem" maxWidth={100} minWidth={82} />
+          <SkeletonLine blockHeight="2.5rem" maxWidth={100} minWidth={82} />
+          <SkeletonLine blockHeight="2.5rem" maxWidth={100} minWidth={82} />
+        </LayerCard>
+      </div>
+    </div>
   );
 }
 
-function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
+function UsageMetricSkeleton() {
   return (
-    <dl className="agent-usage-metrics" aria-label={`Agent usage for the last ${usage.windowDays} days`}>
-      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
-      <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
+    <div className="grid gap-3 p-5" aria-hidden="true">
+      <SkeletonLine blockHeight="0.875rem" maxWidth={38} minWidth={24} />
+      <SkeletonLine blockHeight="1.75rem" maxWidth={58} minWidth={36} />
+    </div>
+  );
+}
+
+function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: AgentUsageDetail }) {
+  return (
+    <dl
+      className="grid grid-cols-2 divide-x divide-kumo-line"
+      aria-label={m.usage_metrics_label({ window: usageWindowLabel(usage.windowDays) })}
+      data-ui="usage-metrics"
+    >
+      <Metric compact={compact} label={m.usage_metric_total_tokens()} value={formatCompactNumber(usage.tokens)} />
+      <Metric compact={compact} label={m.usage_metric_tasks()} value={formatCompactNumber(usage.tasks)} />
     </dl>
   );
 }
 
-function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDetail; includesCharts?: boolean }) {
+function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
   if (usage.tasks === usage.measuredTasks) return null;
-  const affectedContent = includesCharts ? "Token totals and charts" : "Token totals";
+  const noCoverage = usage.measuredTasks === 0;
   return (
-    <p className="agent-usage-coverage" role="status">
-      <strong>{usage.measuredTasks === 0 ? "Token data unavailable." : "Partial data."}</strong>{" "}
-      {usage.measuredTasks === 0
-        ? `None of the ${usage.tasks.toLocaleString()} tasks reported token usage. ${affectedContent} may be empty.`
-        : `Token data is available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} tasks. ${affectedContent} are partial.`}
-    </p>
+    <Banner
+      className="text-kumo-default"
+      data-ui="usage-coverage"
+      description={
+        noCoverage
+          ? m.usage_coverage_none_description({ tasks: formatNumber(usage.tasks) })
+          : m.usage_coverage_partial_description({
+              measuredTasks: formatNumber(usage.measuredTasks),
+              tasks: formatNumber(usage.tasks),
+            })
+      }
+      role="status"
+      size="sm"
+      title={noCoverage ? m.usage_coverage_none_title() : m.usage_coverage_partial_title()}
+      variant="alert"
+    />
   );
 }
 
-function Metric({ label, primary = false, value }: { label: string; primary?: boolean; value: string }) {
+function Metric({ compact = false, label, value }: { compact?: boolean; label: string; value: string }) {
   return (
-    <div className={primary ? "is-primary" : undefined}>
-      <dt>{label}</dt>
-      <dd>{value}</dd>
+    <div className={compact ? "grid min-w-0 gap-1 px-4 first:pl-0 last:pr-0" : "grid gap-1 p-5"}>
+      <Text as="dt" size="sm" variant="secondary">
+        {label}
+      </Text>
+      <Text as="dd" DANGEROUS_className="tabular-nums" size="lg" variant="heading">
+        {value}
+      </Text>
     </div>
   );
 }
 
 function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
+  const hasTokenActivity = usage.tokens > 0 || usage.cachedInputTokens > 0;
   return (
     <>
-      <UsageMetrics usage={usage} />
-      <UsageCoverage usage={usage} includesCharts />
-      <div className="agent-usage-analysis">
-        <section aria-labelledby="agent-usage-trend-heading">
-          <header className="agent-usage-subheading">
-            <h3 id="agent-usage-trend-heading">Token usage over time</h3>
-            <p>Total Tokens recorded each day.</p>
-          </header>
-          <TokenTrendChart usage={usage} />
-        </section>
-        <section aria-labelledby="agent-usage-breakdown-heading">
-          <header className="agent-usage-subheading">
-            <h3 id="agent-usage-breakdown-heading">Token breakdown</h3>
-            <p>Input and output within the selected period.</p>
-          </header>
-          <TokenBreakdown usage={usage} />
-        </section>
-      </div>
+      <LayerCard className="p-0" data-ui="usage-summary">
+        <UsageMetrics usage={usage} />
+      </LayerCard>
+      <UsageCoverage usage={usage} />
+      {hasTokenActivity ? (
+        <div
+          className="grid gap-4 @min-[42rem]/usage-tab:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]"
+          data-ui="usage-analysis"
+        >
+          <LayerCard
+            render={<section aria-labelledby="agent-usage-trend-heading" />}
+            className="grid min-w-0 content-start gap-4 p-4"
+          >
+            <header className="flex min-h-7 items-center">
+              <Text as="h2" id="agent-usage-trend-heading" variant="heading">
+                {m.usage_trend_title()}
+              </Text>
+            </header>
+            <TokenTrendChart usage={usage} />
+          </LayerCard>
+          <LayerCard
+            render={<section aria-labelledby="agent-usage-breakdown-heading" />}
+            className="grid min-w-0 content-start gap-4 p-4"
+          >
+            <header className="flex min-h-7 items-center">
+              <Text as="h2" id="agent-usage-breakdown-heading" variant="heading">
+                {m.usage_breakdown_title()}
+              </Text>
+            </header>
+            <TokenBreakdown usage={usage} />
+          </LayerCard>
+        </div>
+      ) : (
+        <LayerCard
+          render={<section aria-label={m.usage_no_tokens_title()} />}
+          className="p-4"
+          data-ui="usage-empty-card"
+        >
+          <UsageEmpty />
+        </LayerCard>
+      )}
     </>
+  );
+}
+
+function UsageEmpty() {
+  return (
+    <div data-ui="usage-empty">
+      <Empty
+        className="min-h-72 gap-2 rounded-none border-0 bg-transparent px-6 py-8 [&_h2]:text-base"
+        description={m.usage_no_tokens_description()}
+        size="sm"
+        title={m.usage_no_tokens_title()}
+      />
+    </div>
   );
 }
 
 function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
   const nonEmpty = usage.daily.some((point) => point.tokens > 0);
   if (!nonEmpty) {
-    return <p className="agent-usage-empty">No Token usage was recorded in this period.</p>;
+    return <UsageEmpty />;
   }
-  const width = 760;
-  const height = 232;
-  const plotTop = 12;
-  const plotBottom = 204;
-  const startedAt = new Date(usage.startedAt).getTime();
-  const endedAt = new Date(usage.endedAt).getTime();
-  const duration = Math.max(endedAt - startedAt, 1);
-  const maximum = Math.max(...usage.daily.map((point) => point.tokens), 1);
-  const points = usage.daily.map((point) => {
-    const timestamp = new Date(`${point.date}T12:00:00.000Z`).getTime();
-    const x = Math.max(0, Math.min(width, ((timestamp - startedAt) / duration) * width));
-    const y = plotBottom - (point.tokens / maximum) * (plotBottom - plotTop);
-    return { ...point, x, y };
-  });
-  const line = points
-    .map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-    .join(" ");
-  const first = points[0];
-  const last = points.at(-1);
-  const area =
-    first && last
-      ? `M${first.x.toFixed(1)} ${plotBottom} L${points
-          .map((point) => `${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
-          .join(" L")} L${last.x.toFixed(1)} ${plotBottom} Z`
-      : "";
-  const ticks = [1, 0.75, 0.5, 0.25, 0];
+  const chart = (
+    <LazyTimeseriesChart
+      ariaDescription={m.usage_chart_description({
+        tokens: formatCompactNumber(usage.tokens),
+        window: usageWindowLabel(usage.windowDays),
+      })}
+      data={[
+        {
+          color: ChartPalette.categorical(0),
+          data: usage.daily.map((point) => [Date.parse(`${point.date}T12:00:00.000Z`), point.tokens]),
+          name: m.usage_breakdown_tokens(),
+        },
+      ]}
+      height={288}
+      tooltipValueFormat={(value) => m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
+      xAxisTickCount={usageXAxisTickCount(usage.windowDays)}
+      xAxisTickFormat={(value) => usageXAxisTickLabel(value, usage.endedAt, usage.windowDays)}
+      yAxisTickFormat={(value) => formatCompactNumber(value)}
+    />
+  );
   return (
-    <div className="agent-usage-chart">
-      <svg
-        aria-label={`${formatUsageNumber(usage.tokens)} Tokens used during the last ${usage.windowDays} days`}
-        preserveAspectRatio="none"
-        role="img"
-        viewBox={`0 0 ${width} ${height}`}
-      >
-        {ticks.map((tick) => {
-          const y = plotBottom - tick * (plotBottom - plotTop);
-          return <line className="agent-usage-chart-grid" key={tick} x1="0" x2={width} y1={y} y2={y} />;
-        })}
-        <path className="agent-usage-chart-area" d={area} />
-        <path className="agent-usage-chart-line" d={line} />
-        {points.map((point) => (
-          <circle className="agent-usage-chart-point" cx={point.x} cy={point.y} key={point.date} r="3.5">
-            <title>{`${formatUsageDate(point.date)}: ${formatUsageNumber(point.tokens)} Tokens`}</title>
-          </circle>
-        ))}
-      </svg>
-      <div className="agent-usage-chart-axis" aria-hidden="true">
-        <span>{formatUsageDate(usage.startedAt)}</span>
-        <span>{formatUsageDate(new Date((startedAt + endedAt) / 2).toISOString())}</span>
-        <span>{formatUsageDate(usage.endedAt)}</span>
-      </div>
-      <ol className="visually-hidden">
+    <div className="grid gap-2" data-ui="usage-chart">
+      {import.meta.env.MODE === "test" ? (
+        <div
+          aria-label={m.usage_chart_description({
+            tokens: formatCompactNumber(usage.tokens),
+            window: usageWindowLabel(usage.windowDays),
+          })}
+          className="h-72 rounded bg-kumo-recessed"
+          role="img"
+        />
+      ) : (
+        <Suspense
+          fallback={
+            <div
+              aria-label={m.usage_loading()}
+              className="flex h-72 items-center justify-center rounded bg-kumo-tint text-kumo-subtle"
+              role="status"
+            >
+              <span aria-hidden="true">
+                <Loader size="lg" />
+              </span>
+            </div>
+          }
+        >
+          {chart}
+        </Suspense>
+      )}
+      <ol className="sr-only">
         {usage.daily.map((point) => (
-          <li key={point.date}>{`${formatUsageDate(point.date)}: ${point.tokens.toLocaleString()} Tokens`}</li>
+          <li key={point.date}>
+            {m.format_daily_tokens({ date: formatDay(point.date), tokens: formatNumber(point.tokens) })}
+          </li>
         ))}
       </ol>
     </div>
@@ -222,45 +407,60 @@ function TokenTrendChart({ usage }: { usage: AgentUsageDetail }) {
 
 function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
   const total = Math.max(usage.tokens, 1);
-  const inputShare = (usage.inputTokens / total) * 100;
-  const outputShare = (usage.outputTokens / total) * 100;
   return (
-    <div className="agent-token-breakdown">
-      <div aria-hidden="true" className="agent-token-breakdown-bar">
-        <span className="is-input" style={{ width: `${inputShare}%` }} />
-        <span className="is-output" style={{ width: `${outputShare}%` }} />
+    <div className="grid gap-3">
+      <div className="min-w-0 overflow-x-auto rounded-lg">
+        <Table aria-label={m.usage_breakdown_title()} data-ui="usage-breakdown-table">
+          <Table.Header variant="compact">
+            <Table.Row>
+              <Table.Head>{m.usage_breakdown_type()}</Table.Head>
+              <Table.Head className="text-right">{m.usage_breakdown_usage()}</Table.Head>
+            </Table.Row>
+          </Table.Header>
+          <Table.Body>
+            <BreakdownRow
+              label={m.usage_breakdown_input()}
+              share={formatPercent(usage.inputTokens / total)}
+              value={usage.inputTokens}
+            />
+            <BreakdownRow
+              label={m.usage_breakdown_output()}
+              share={formatPercent(usage.outputTokens / total)}
+              value={usage.outputTokens}
+            />
+            <BreakdownRow
+              label={m.usage_breakdown_cached_input()}
+              share={m.usage_breakdown_not_in_total()}
+              value={usage.cachedInputTokens}
+            />
+          </Table.Body>
+        </Table>
       </div>
-      <dl>
-        <BreakdownRow label="Input" tone="input" value={usage.inputTokens} />
-        <BreakdownRow label="Output" tone="output" value={usage.outputTokens} />
-        <BreakdownRow label="Cached input" tone="cached" value={usage.cachedInputTokens} />
-      </dl>
-      <p>Cached input is shown separately and is not added again to Total.</p>
+      <Text as="p" size="sm" variant="secondary">
+        {m.usage_breakdown_note()}
+      </Text>
     </div>
   );
 }
 
-function BreakdownRow({ label, tone, value }: { label: string; tone: "cached" | "input" | "output"; value: number }) {
+function BreakdownRow({ label, share, value }: { label: string; share: string; value: number }) {
   return (
-    <div>
-      <dt>
-        <span className={`agent-token-dot is-${tone}`} aria-hidden="true" />
-        {label}
-      </dt>
-      <dd>{formatUsageNumber(value)}</dd>
-    </div>
-  );
-}
-
-function formatUsageNumber(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: value >= 1_000 ? 1 : 0,
-    notation: value >= 1_000 ? "compact" : "standard",
-  }).format(value);
-}
-
-function formatUsageDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" }).format(
-    new Date(value.length === 10 ? `${value}T00:00:00.000Z` : value),
+    <Table.Row>
+      <Table.Cell>
+        <Text as="span" size="sm">
+          {label}
+        </Text>
+      </Table.Cell>
+      <Table.Cell className="align-middle">
+        <span className="grid justify-items-end gap-0.5 text-right">
+          <Text as="span" DANGEROUS_className="tabular-nums" size="sm">
+            {m.usage_chart_tooltip({ tokens: formatCompactNumber(value) })}
+          </Text>
+          <Text as="span" DANGEROUS_className="tabular-nums" size="xs" variant="secondary">
+            {share}
+          </Text>
+        </span>
+      </Table.Cell>
+    </Table.Row>
   );
 }

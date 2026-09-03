@@ -9,7 +9,6 @@ import {
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
   UserProfileSchema,
-  WorkspaceNameSchema,
 } from "../auth.js";
 
 describe("auth contracts", () => {
@@ -44,38 +43,25 @@ describe("auth contracts", () => {
   });
 
   it("rejects unexpected fields on every request", () => {
-    expect(() =>
-      ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", workspaceId: "authority" }),
-    ).toThrow();
+    expect(() => ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", role: "admin" })).toThrow();
     expect(() => RefreshTokenRequestSchema.parse({ refreshToken: "token", role: "admin" })).toThrow();
   });
 
-  it("enforces canonical workspace names", () => {
-    expect(WorkspaceNameSchema.parse("first-tree-1")).toBe("first-tree-1");
-    for (const invalid of ["", "Example", "example workspace", "example_workspace"]) {
-      expect(() => WorkspaceNameSchema.parse(invalid)).toThrow();
-    }
-  });
-
-  it("validates the current Account and ordered Workspace response", () => {
+  it("validates the current Account projection", () => {
     const response = {
       user: {
         id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
         email: "admin@example.com",
         displayName: "Admin",
       },
-      workspaces: [
-        {
-          id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-          name: "example",
-          displayName: "Example",
-          setupCompletedAt: null,
-          grantedAt: "2026-08-20T00:00:00.000Z",
-        },
-      ],
+      setupCompletedAt: null,
     };
 
     expect(MeResponseSchema.parse(response)).toEqual(response);
+    expect(MeResponseSchema.parse({ ...response, setupCompletedAt: "2026-08-20T00:00:00.000Z" })).toEqual({
+      ...response,
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+    });
     expect(() => MeResponseSchema.parse({ ...response, state: "active" })).toThrow();
   });
 
@@ -103,17 +89,19 @@ describe("auth contracts", () => {
     expect(() => UserProfileSchema.parse({ ...profile, displayName: "a".repeat(256) })).toThrow();
   });
 
-  it("publishes Google and local-development browser provider availability", () => {
+  it("publishes Google, local-development, and password browser provider availability", () => {
     expect(
       AuthProvidersResponseSchema.parse({
         providers: [
           { id: "google", enabled: false, startUrl: null },
           { id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" },
+          // A form rather than a link, so it is the one provider that is enabled and still has no URL to start it.
+          { id: "password", enabled: true, startUrl: null },
         ],
       }),
-    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev" }] });
+    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev" }, { id: "password", startUrl: null }] });
     expect(() =>
-      AuthProvidersResponseSchema.parse({ providers: [{ id: "password", enabled: true, startUrl: "/login" }] }),
+      AuthProvidersResponseSchema.parse({ providers: [{ id: "saml", enabled: true, startUrl: "/login" }] }),
     ).toThrow();
   });
 });

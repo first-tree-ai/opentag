@@ -31,11 +31,13 @@ import {
   assertSystemPrompt,
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
+import { createLogger } from "../../observability/logger.js";
 import { type PiRpcClient, PiRpcError, PiRpcProcess, type PiRpcProcessSpawnOptions } from "./rpc-wire.js";
 
 const execFileAsync = promisify(execFile);
 const PI_BINDING_SCHEMA_VERSION = 1;
 const PI_PROVIDER_ID = "pi";
+const logger = createLogger("provider-pi-runtime");
 const PI_MINIMUM_VERSION = [0, 80, 6] as const;
 const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
@@ -214,6 +216,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return this.#runResult(terminal);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
+      logger.debug({ code: "provider_run_failed", error: failure.message }, "Pi provider run failed");
       this.#promptAccepted?.reject(failure);
       const causalFailure = this.#providerFailure ?? failure;
       if (!context.signal.aborted && isIrrecoverablePiFailure(causalFailure)) this.closeForProviderFailure();
@@ -229,7 +232,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     } finally {
       this.#unsubscribe?.();
       this.#unsubscribe = undefined;
-      await client?.close().catch(() => undefined);
+      /* v8 ignore next -- client teardown in finally is best-effort. */
+      await client?.close().catch((error: unknown) => {
+        logger.debug({ code: "provider_close_failed", error: String(error) }, "Pi provider close failed");
+      });
       this.#client = undefined;
       this.#context = undefined;
       this.#terminal = undefined;
@@ -240,7 +246,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected async steerProvider(request: AgentSteerRequest): Promise<void> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
     /* v8 ignore next -- BaseAgentRuntime admits steer only while executeRun owns an active prompt. */
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;
@@ -250,7 +256,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     await client.request({ type: "steer", message: piItems(request.input.items) });
   }
 
-  protected async abortProvider(_request: AgentAbortRequest): Promise<void> {
+  protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
     if (this.#terminalClaimed) return;
     await this.#client?.request({ type: "abort" }, AbortSignal.timeout(2_000));
   }
@@ -444,6 +450,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "error") {
       const failedMessage = record(update.error) ?? record(update.partial);
+      /* v8 ignore else -- Pi error updates always carry an errorMessage string. */
       if (typeof failedMessage?.errorMessage === "string") this.#lastError = failedMessage.errorMessage;
       await this.#emitProviderEvent({ type: "assistant_update", updateType: type });
       return;
@@ -606,7 +613,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#providerFailure = error;
     this.#terminal?.reject(error);
     this.#promptAccepted?.reject(error);
-    void this.#client?.close().catch(() => undefined);
+    /* v8 ignore next -- client teardown during a provider failure must not raise a second fault. */
+    void this.#client?.close().catch((closeError: unknown) => {
+      logger.debug({ code: "provider_close_failed", error: String(closeError) }, "Pi provider close failed");
+    });
     this.closeForProviderFailure();
   }
 }
@@ -668,6 +678,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         issues.push({ code: "credential_missing", message: "Pi has no configured model credential" });
     } catch (error) {
       if (request.signal?.aborted) throw error;
+      logger.debug({ code: "probe_execution_failed", error: String(error) }, "Pi probe execution failed");
       issues.push({ code: "artifact_missing", message: "Pi CLI could not be executed" });
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
@@ -709,6 +720,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         systemPrompt: request.systemPrompt,
       });
     } catch (error) {
+      logger.debug({ code: "runtime_create_failed", error: String(error) }, "Pi runtime creation failed");
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Pi ${mode} failed`, {
         cause: error,
       });
@@ -809,6 +821,7 @@ async function probePi(
     help = (await execFileAsync(command, ["--help"], execution)).stdout;
   } catch (error) {
     if (signal?.aborted) throw error;
+    logger.debug({ code: "probe_help_failed", error: String(error) }, "Pi help probe failed");
     help = "";
   }
   const requiredOptions = [
@@ -830,6 +843,7 @@ async function probePi(
     credential = models.stdout.trim().split(/\r?\n/).length > 1;
   } catch (error) {
     if (signal?.aborted) throw error;
+    logger.debug({ code: "probe_models_failed", error: String(error) }, "Pi model probe failed");
     credential = false;
   }
   return { credential, rpc, version };
@@ -999,6 +1013,7 @@ function parsePiBinding(binding: AgentRuntimeBinding): {
     }
     return { sessionId, ...(sessionFileHash ? { sessionFileHash } : {}) };
   } catch (error) {
+    logger.debug({ code: "binding_invalid", error: String(error) }, "Pi binding was rejected");
     throw new AgentRuntimeError("binding_incompatible", (error as Error).message, { cause: error });
   }
 }

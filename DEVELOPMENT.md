@@ -4,7 +4,8 @@
 
 ## Prerequisites
 
-- Node.js 22.13 or newer on 22.x, Node.js 24.x, or Node.js 26.x (use the latest patch; Node.js 24 is primary)
+- Node.js 24.19.0 for the pinned development toolchain (the supported range is Node.js 22.22.2 or newer on 22.x,
+  Node.js 24.15 or newer on 24.x, or Node.js 26.x; Node.js 24 is primary)
 - Corepack and pnpm 10.12.1
 - Docker with Compose support, only when running the local PostgreSQL service
 
@@ -15,7 +16,53 @@ corepack enable
 pnpm install
 ```
 
-The repository pins pnpm in `package.json`. Do not use npm or Yarn to update dependencies.
+The repository pins pnpm in `package.json` and pins the development Node.js patch in `.node-version`. It also sets
+`engine-strict=true` in `.npmrc`, so an unsupported Node.js version fails dependency installation instead of producing
+only an engine warning. Do not use npm or Yarn to update dependencies.
+
+## Local development workflow
+
+The README keeps the product overview and the Docker Compose dependency sample concise. Keep the repository-specific
+workflow in this guide:
+
+1. Start the local PostgreSQL service and run the Server health-check path.
+2. Bootstrap an Account, install the development CLI, and exchange the Account login code.
+3. Connect a Computer, start its daemon, and create an Agent configuration.
+4. Configure Google sign-in or the loopback development bypass when the Web App is needed.
+
+The sections below contain the commands and environment details for each step.
+
+## Git hooks and worktrees
+
+`pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:
+
+- `pre-commit` runs Biome over the staged files, applies the fixes it can make safely, and stages the result.
+- `pre-push` runs `pnpm exec biome lint .`, `pnpm exec biome format .`, `pnpm check`, and `pnpm typecheck` over the whole
+  repository. These read-only jobs run in parallel.
+- `post-checkout` prepares a worktree that `git worktree add` has just created: it runs `pnpm install` inside the new
+  worktree and reinstalls the hooks, so the worktree is ready to commit and push.
+
+Git shares one hooks directory between a clone and all of its linked worktrees, so a single installation covers every
+worktree. The `post-checkout` payload in `scripts/git-hooks/` is installed by `scripts/install-git-hooks.mjs` rather than
+by lefthook, because it has to run before the new worktree has a `node_modules` directory. Prepare a worktree by hand
+when it was created by a tool that bypasses Git hooks:
+
+```bash
+pnpm worktree:setup
+```
+
+`lefthook.yml` holds the shared configuration; personal overrides belong in an untracked `lefthook-local.yml`. The hooks
+stay out of the way when they are not wanted:
+
+| Variable | Effect |
+| --- | --- |
+| `LEFTHOOK=0` | skip the lefthook gates for one command |
+| `OPENTAG_SKIP_WORKTREE_BOOTSTRAP=1` | skip the worktree bootstrap |
+| `OPENTAG_SKIP_GIT_HOOKS=1` | skip hook installation during `pnpm install` |
+| `OPENTAG_HOOKS_LOG_LEVEL=debug` | print every decision the hook scripts make |
+
+A set `CI` variable disables the bootstrap and the installation as well, so automated checkouts never install local
+hooks.
 
 ## Validation
 
@@ -38,13 +85,29 @@ root `scripts/`, Server PostgreSQL integration tests, and Provider end-to-end te
 prioritizing gaps, not a required pull request check, and does not yet enforce repository-wide or per-workspace coverage
 thresholds. Add regression thresholds only after the measurement is stable across repeated runs.
 
+## Web i18n
+
+Web messages live in `apps/web/messages/<area>/{en,zh}.json` and use `<area>_<surface>_<slot>` keys. Add the English
+message and its hand-authored Simplified Chinese counterpart in the area that emits the final visible string. Keep the
+key sets, placeholders, and sort order identical. Use Paraglide for sentences and `src/i18n/format.ts` for locale-aware
+dates and numbers. Run `pnpm --filter @opentag/web paraglide` after adding or changing messages; `typecheck`, `test`, and
+the Vite build also run this code generation through their Turbo dependency. If generated output looks stale, remove
+`apps/web/src/paraglide/` and rerun the command. Never run `inlang machine translate` or Sherlock extract: the array
+path pattern would duplicate the merged catalogue into every area file.
+
+`pnpm test:coverage` measures one Vitest project at a time and concatenates the per-workspace summaries into
+`coverage/unit/coverage-summary.json` and the detailed Istanbul maps into `coverage/unit/coverage-final.json`. A single
+merged Vitest pass under-reports, so those aggregates must not be produced by the coverage provider's merge. Pull
+requests run a separate `Patch Coverage` check that reads the detailed map and fails when fewer than 80% of the
+executable TypeScript lines the pull request added or changed were hit.
+
 Required pull request CI still runs all offline unit tests. Agent Runtime keeps its separate 100% gate in
 `packages/client/vitest.agent-runtime.config.ts`, enforced by
 `pnpm --filter @opentag/client test:agent-runtime:coverage`.
 
 The required pull request check is the stable `CI` fan-in job. It covers the required commands above, source and staging CLI
 tarball installation, a production-container health smoke, and the supported Node.js lines. Full validation and releases
-run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.13.0 floor and the latest
+run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.22.2 floor and the latest
 Node.js 26 release; that command builds, tests, and installs the packed CLI. Node.js 23 and 25 are end-of-life and are not
 supported. To exercise the current source tarball locally after a build:
 
@@ -99,15 +162,11 @@ The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DA
 PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
 
 To bootstrap an empty installation, set the required bootstrap fields and run the one-time bootstrap command. It migrates
-an empty database before creating the initial Account and Account login code. Its current command name and
-`OPENTAG_BOOTSTRAP_WORKSPACE_*` inputs also create the internal default Workspace and grant used as a compatibility seam
-until Phase 2; they do not create product-level Workspace or Admin membership.
+an empty database before creating the initial Account and Account login code.
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
-export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -123,7 +182,7 @@ so service reconciliation cannot select an older `opentag-dev` shim. The dev cha
 `~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
 
 Account login stores only management credentials. Generate a Computer connection command from the Web's Agents area,
-then run it on the execution host; `computer connect` stores an enrollment-scoped machine credential and installs or
+then run it on the execution host; `computer connect` stores a Computer-scoped machine credential and installs or
 restarts the user service on Linux and macOS. Inspect it from another terminal:
 
 ```bash
@@ -132,9 +191,9 @@ opentag-dev daemon status
 opentag-dev computer list
 ```
 
-The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads independent
-enrollment credentials from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
-service start, and opens one Runtime connection per enrollment. OpenTag Home is organized by lifecycle:
+The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads the canonical
+Computer credential from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
+service start, and opens one Runtime connection for that Computer. OpenTag Home is organized by lifecycle:
 
 ```text
 ${OPENTAG_HOME}/
@@ -180,7 +239,7 @@ otherwise remain unused on disk.
 
 ### Local data loss and recovery
 
-Running `computer connect` again rotates the selected enrollment credential and restores connectivity, not the prior
+Running `computer connect` again rotates the Computer credential and restores connectivity, not the prior
 local execution continuity. The Server can reissue credentials and
 rebuild effective snapshots; managed instructions are injected again when the Provider Runtime starts or resumes.
 Reissued credentials are new values. If `config/computer.json` is lost, the current Client creates a new Computer
@@ -220,11 +279,9 @@ their target leases do not contend.
 
 ## Manage Agent configurations
 
-The accepted product direction and product presentation are **Account → Computer enrollment → Agent → IM binding**.
-In the Phase 1 schema, an Agent is available to and manageable by the current Account through an active internal scope,
-and is bound immutably at creation time to one active Computer enrollment in that scope. When the selected internal
-scope has one eligible Computer, it is selected automatically. Legacy active grants can expose the same Agents and
-enrollments to multiple Accounts until the one-off data split and Phase 2 establish strict per-Account ownership:
+The product model is **Account → Computer → Agent → IM binding**. An Agent is visible to the Account that created it and
+is bound at creation time to a Computer owned by that Account. When the Account has one eligible Computer, it is selected
+automatically:
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -246,40 +303,93 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Computer rebinding is not
-an update operation. Deletion is a server-side soft delete and is idempotent for an Account authorized through the
-selected internal scope. `claude-code` is an accepted configuration value,
+an update operation. Deletion is a server-side soft delete and is idempotent for the Account that created the Agent.
+`claude-code` is an accepted configuration value,
 but its runtime adapter and all Session/Turn delivery remain future work.
 
-The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
+The two `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is Account profile data, not an email/password credential. The Account login-code flow resolves a
-stable user ID and then uses the provider-neutral token issuer. Internal grants are still loaded from PostgreSQL as a
-Phase 2 compatibility seam; they are not exposed as Admin membership.
+stable user ID and then uses the provider-neutral token issuer.
 
 That issuer now hands out a Better Auth session rather than a signed access/refresh pair, so a CLI credential is a row
 the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
 `accessToken` and `refreshToken` carry the same session token, which is why a CLI built before the cutover keeps working
 unchanged. `OPENTAG_SESSION_TTL_SECONDS` is that credential's whole lifetime, defaulted to what the refresh token's was
-because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates — the
-replacement is issued, then the presented token is withdrawn — so a copy taken before the last refresh stops working
-rather than running to its own expiry.
+because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates: the
+presented token is withdrawn first, and only the caller whose withdrawal succeeded gets a replacement. That ordering is
+what makes it safe to race — two refreshes of one credential cannot both mint, and a revocation landing first is not
+undone — and it means a failure in between signs the client out rather than leaving alive a credential something
+already decided to end. A copy taken before the last refresh stops working rather than running to its own expiry.
 
 One consequence is worth stating plainly: a disclosed credential is now usable for the session lifetime rather than the
 old fifteen-minute access window. What made that window necessary was that its thirty-day refresh partner could not be
 revoked at all; a session can be, immediately, which is the trade this makes.
 
-Credentials issued before the cutover still verify, and `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` and
-`OPENTAG_REFRESH_TOKEN_TTL_SECONDS` govern only those. A browser holding one moves onto a session the next time it
-refreshes; nothing is issued against them again.
+Credentials the previous revision issued are no longer accepted; the compatibility bridge and its two TTL settings are
+gone. `OPENTAG_JWT_SECRET` remains because it also signs Slack OAuth state, which is not Account authentication.
 
-An Account email is stored lowercased, and one address identifies at most one Account. The identity resolver enforces
-that by serializing on the address before deciding whether to create or attach, so it holds without a database
-constraint; a `users_email_unique` index backs it up for any writer that skips the resolver, and is added only once no
-revision predating the resolver is still serving.
+## Email and password sign-in
 
-A provider identity therefore attaches to the Account that already holds its address rather than creating a second one.
-Attachment requires the provider to have verified the address, because it hands over an existing Account; an unverified
-address that is already taken, and a provider email change onto another Account's address, are both refused with
-`AUTH_EMAIL_CONFLICT`. This is how a bootstrap Account and that person's first Google sign-in become one Account.
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` lets an address and password both register an Account and sign one in, at
+`POST /api/v1/auth/email/sign-up` and `POST /api/v1/auth/email/sign-in`. It defaults to off, because it is the only
+sign-in method whose default could hand out Accounts: every other one needs something a deployment already granted — a
+Google client, a loopback bypass, a connect code. One setting covers both routes, since a server that accepted
+passwords but issued none would have no way to give anyone a first one.
+
+Passwords are between 12 and 128 characters. The bounds live in `@opentag/shared` and configure both the request schema
+and Better Auth, so the library cannot apply a different floor underneath and turn an accepted password into a rejected
+one. The stored value is a hash on the Account's `credential` identity row; the password itself is never persisted.
+
+These two routes are fenced on the request origin alone, not the double-submit CSRF token every other browser mutation
+carries. A signed-out browser has no such token — these are the requests that mint it — so requiring one would make
+signing in impossible rather than safer. Both responses carry the session cookie and a fresh double-submit token, which
+is what lets a newly signed-in browser write at all.
+
+Both routes send the browser to the same destination allowlist every other sign-in method uses. It lives in
+`@opentag/shared` as `resolveSignInDestination` rather than on the server, because this is the one method that
+navigates the browser itself instead of handing its destination to a route; two implementations would eventually
+disagree, and the more permissive half would be the one that mattered.
+
+A rejected sign-in gives one answer whether the address is unknown or the password is wrong, so the endpoint cannot be
+used to ask which addresses hold Accounts. That uniformity covers refusals only — a server that could not answer
+reports `SERVICE_UNAVAILABLE`, and a suspended Account is named as suspended, because reaching that answer took a
+password the caller already had. Registration cannot keep the address secret and still be actionable, so a taken
+address is reported as `AUTH_EMAIL_CONFLICT` while any other refusal stays a validation failure.
+
+Sign-in attempts are counted per source address and per email address, and the counters are **per process**: each
+replica keeps its own, and a restart clears them. That is enough to make one server unattractive to hammer, and it is
+not a deployment-wide bound — enforcing that needs a shared store or a gateway in front. The table is capped and evicts
+expired entries first, because an email address is caller-chosen and an unbounded key space would let a caller spend
+the server's memory rather than only its patience.
+
+`users.email_verified` stays false for these Accounts. Nothing in the product sends mail, so there is no verification
+step to assert the address, and recording one that never happened would be worse than recording none. For the same
+reason there is no password reset: adding one means adding a mail sender first.
+
+That has a consequence an operator has to weigh before enabling self-service registration at all. Because registration
+proves nothing about the address, anyone can register an address they do not own, receive a session, and have the
+Account provisioned — all while `email_verified` stays false.
+
+What happens next is worth stating precisely, because the obvious guess is wrong. Better Auth defaults
+`accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it: that setting governs
+whether the *provider* verified the address, not whether the local Account did. A later Google sign-in for the squatted
+address is therefore refused rather than linked, so the squatter and the real owner do not end up sharing an Account.
+
+The harm is a lockout instead. `users_email_unique` reserves the address, so the real owner can neither register it nor
+reach it through Google, and the squatter holds a provisioned Account for an address they never proved. An integration
+test pins that behavior. Until ownership is proven before a password credential can claim an address, enable
+`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` only where everyone who can reach the server is already trusted.
+
+An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
+enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The
+resolver that used to serialize on the address is gone; nothing in Better Auth's linking orders two concurrent first
+sign-ins for the same address, so the index is what takes that job. It could only be created once no revision that
+wrote unnormalized addresses was still serving, which is why it arrived after the Better Auth migration rather than
+with it.
+
+A provider identity attaches to the Account that already holds its address rather than creating a second one: Google is
+a trusted provider, so an address it has verified links to the existing Account. This is how a bootstrap Account and
+that person's first Google sign-in become one Account.
 
 `users.email_verified` records whether a provider asserted the address currently stored on the Account. It is only ever
 raised for that address, never for some other address the provider returned, and the login-code flow never sets it.
@@ -287,10 +397,12 @@ raised for that address, never for some other address the provider returned, and
 ## Google sign-in and Web App
 
 Create a Google Web OAuth client whose callback is
-`http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
-`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; `staging` and `prod`
-require an HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
-same-origin request and the readable double-submit CSRF cookie.
+`http://127.0.0.1:8000/api/v1/auth/callback/google`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
+`OPENTAG_GOOGLE_CLIENT_SECRET`. That path is Better Auth's own callback and is the only one the server serves; the
+pre-migration `/api/v1/auth/google/callback` is gone and can be removed from the OAuth client. The Google configuration
+is validated before the server listens; `staging` and `prod` require an HTTPS `OPENTAG_PUBLIC_URL`. The browser session
+lives in an HttpOnly cookie Better Auth owns, while browser mutations additionally require a same-origin request and
+the readable double-submit CSRF cookie.
 
 For loopback-only development without Google credentials, explicitly enable the development bypass and select one
 existing bootstrap user:
@@ -315,25 +427,22 @@ packages or product security behavior. The server logs the resolved environment,
 startup; it never infers the environment from the hostname.
 
 Open `/` for the management shell. Its top-level navigation is **Agents / Tasks / Skills / Integrations**, with no
-Settings tab. Computer enrollment and recovery live in the Agents area. **Generate connection command** mints a
+Settings tab. Computer connection and recovery live in the Agents area. **Generate connection command** mints a
 15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Account's
-Computer enrollments until the new daemon handshake arrives. The account menu contains Account actions. OpenTag exposes
-no Workspace, Admin, or invitation management surface. Normal sign-up and bootstrap still provision an internal default
-Workspace and grant solely as a compatibility seam until Phase 2. Operators handle exceptional inspection or correction
-of those internal records through controlled PostgreSQL operations under their normal database change procedure.
+Computers until the new daemon handshake arrives. The account menu contains Account actions.
 
 Session collaboration remains an Agent Runtime concern and does not introduce a product Workspace, Project, or shared
 management container. Context Tree can preserve long-term context independently; it does not establish per-Account
-ownership or change Computer enrollment, Agent placement, or IM binding.
+ownership or change Computer connection, Agent placement, or IM binding.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
-## Onboarding end-to-end check
+## Agent Setup end-to-end check
 
-`scripts/e2e/onboarding-e2e.mjs` drives the whole `/onboarding` flow against a real Server, a real PostgreSQL database,
+`scripts/e2e/onboarding-e2e.mjs` drives the whole `/agents/setup` flow against a real Server, a real PostgreSQL database,
 the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
 page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
-creates the Agent from the form, and then checks the handoff, the authorized setup gate, persisted completion, and that a
-later runtime outage stays in the normal Agents product flow.
+creates the Agent before Computer preparation, and then checks the handoff, Account admission, pending Provider validation,
+and that a later runtime outage stays in the normal Agents product flow.
 
 ```bash
 pnpm build
@@ -363,8 +472,8 @@ than the invoking shell's, so readiness is the same on any developer machine.
 Two parts of the flow cannot run offline. Agent Runtime and Feishu CLI readiness use stub executables that answer the
 same probe contracts as Claude Code and `lark-cli`, because signed-in local CLIs are not available in CI. Feishu
 authorization needs `open.feishu.cn`, so the check starts a real setup attempt, records its outcome, and then writes an
-authorized binding into the database to confirm that the Server projects handoff readiness and the page derives the
-ready state from it.
+authorized binding into the database to confirm that the Server and page project the pending handoff. It does not fake
+the final provider credential-execution observation that the canonical Snapshot requires for `ready`.
 
 ## Environment variables
 
@@ -379,7 +488,7 @@ processes.
 | `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and generated connect commands |
 | `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
-| `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `OPENTAG_JWT_SECRET` | none | Required Slack OAuth state signing secret; at least 32 characters, and distinct from `BETTER_AUTH_SECRET` |
 | `BETTER_AUTH_SECRET` | none | Required Better Auth session/cookie signing secret; at least 32 characters |
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
 | `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
@@ -390,15 +499,13 @@ processes.
 | `OPENTAG_SLACK_REDIRECT_URL` | none | Optional public origin or exact Slack OAuth callback URL on `OPENTAG_PUBLIC_URL` |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
 | `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
+| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | Allow registering and signing in with an email address and password |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_OTEL_ENDPOINT` | empty | Optional OTLP/HTTP traces endpoint; see [server observability](./docs/observability.md) |
 | `OPENTAG_OTEL_HEADERS` | empty | Secret OTLP headers in comma-separated `key=value` form |
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global trace head sample rate from `0` to `1` |
 | `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
-| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-JWT lifetime; only credentials issued before the Better Auth cutover |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime; only credentials issued before the Better Auth cutover |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Staging-only Account UUID allowed to reset the [Onboarding Lab](./docs/staging-onboarding-lab.md) Account; Scenario Preview needs no configuration |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm

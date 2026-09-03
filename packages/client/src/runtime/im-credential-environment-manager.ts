@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { DirectImMessageDeliveryRequest, RuntimeImCredentialGrantResult } from "@opentag/shared";
+import type { RuntimeImCredentialGrantResult, RuntimeImOutboxContext } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
-import { ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
+import { assertWithin, ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "./runtime-connection.js";
 
 const GRANT_TIMEOUT_MS = 10_000;
 const MANAGED_CREDENTIAL_ARTIFACT =
-  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.sh|\.ps1|-lark-config)|\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.sh|\.ps1|-lark-config|-slack-config)|\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
 
 export class ImCredentialEnvironmentError extends Error {
   constructor(readonly code: string) {
@@ -32,10 +32,24 @@ export interface ImCredentialEnvironmentManagerOptions {
   ) => Promise<string>;
   readonly home: string;
   readonly listArtifacts?: (root: string) => Promise<readonly string[]>;
-  readonly logger?: Pick<ClientLogger, "warn">;
+  readonly logger?: Pick<ClientLogger, "debug" | "warn">;
   readonly platform?: NodeJS.Platform;
   readonly removePath?: (path: string, options: { force: true; recursive?: true }) => Promise<void>;
   readonly writeEnvironmentFile?: (path: string, content: string, mode: number) => Promise<void>;
+}
+
+export interface ImCredentialGrantSubject {
+  readonly agentId: string;
+  readonly placementGeneration: number;
+  readonly sessionId: string;
+}
+
+export interface PreparedImCredentialEnvironment {
+  readonly outboxContext?: RuntimeImOutboxContext;
+  readonly path: string;
+  readonly provider: "feishu" | "slack";
+  /** Private Slack CLI config leaf for this Session; omitted for Feishu. */
+  readonly slackConfigDir?: string;
 }
 
 export class ImCredentialEnvironmentManager {
@@ -44,13 +58,14 @@ export class ImCredentialEnvironmentManager {
   readonly #platform: NodeJS.Platform;
   readonly #home: string;
   readonly #listArtifacts: NonNullable<ImCredentialEnvironmentManagerOptions["listArtifacts"]>;
-  readonly #logger: Pick<ClientLogger, "warn">;
+  readonly #logger: Pick<ClientLogger, "debug" | "warn">;
   readonly #removePath: NonNullable<ImCredentialEnvironmentManagerOptions["removePath"]>;
   readonly #root: string;
   readonly #startupCleanup: Promise<ImCredentialEnvironmentError | undefined>;
   readonly #writeEnvironmentFile: NonNullable<ImCredentialEnvironmentManagerOptions["writeEnvironmentFile"]>;
   readonly #pending = new Map<string, PendingGrant>();
   readonly #activeSessions = new Set<string>();
+  readonly #activeSlackConfigDirs = new Map<string, string>();
   readonly #unsubscribe: () => void;
   #closed = false;
 
@@ -73,10 +88,14 @@ export class ImCredentialEnvironmentManager {
   }
 
   pathForSession(sessionId: string): string {
-    return join(this.#root, `${sessionId}${this.#platform === "win32" ? ".ps1" : ".sh"}`);
+    return this.#artifactPath(`${sessionId}${this.#platform === "win32" ? ".ps1" : ".sh"}`);
   }
 
-  async prepare(request: DirectImMessageDeliveryRequest, signal?: AbortSignal): Promise<string> {
+  activeSlackConfigDirForSession(sessionId: string): string | undefined {
+    return this.#activeSlackConfigDirs.get(sessionId);
+  }
+
+  async prepare(request: ImCredentialGrantSubject, signal?: AbortSignal): Promise<PreparedImCredentialEnvironment> {
     if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
     try {
       const startupFailure = await this.#startupCleanup;
@@ -86,26 +105,49 @@ export class ImCredentialEnvironmentManager {
       this.#activeSessions.add(request.sessionId);
       await ensurePrivateDirectory(this.#home, this.#root);
       const path = this.pathForSession(request.sessionId);
-      const environment =
-        result.grant.provider === "feishu"
-          ? await this.#feishuEnvironment(request.sessionId, result.grant, signal)
-          : {
-              SLACK_BOT_TOKEN: result.grant.botAccessToken,
-              SLACK_USER_TOKEN: undefined,
-              SLACK_APP_TOKEN: undefined,
-            };
-      await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
-      return path;
+      if (result.grant.provider === "feishu") {
+        const environment = await this.#feishuEnvironment(request.sessionId, result.grant, signal);
+        await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
+        return {
+          path,
+          provider: result.grant.provider,
+          ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
+        };
+      }
+      const slack = await this.#slackEnvironment(request.sessionId, result.grant);
+      await this.#writeEnvironmentFile(path, serializeEnvironment(slack.environment, this.#platform), 0o600);
+      this.#activeSlackConfigDirs.set(request.sessionId, slack.configDir);
+      return {
+        path,
+        provider: result.grant.provider,
+        slackConfigDir: slack.configDir,
+        ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
+      };
     } catch (error) {
-      await this.cleanup(request.sessionId).catch(() => undefined);
+      this.#logger.debug(
+        { code: "credential_materialization_failed", error: String(error) },
+        "Provider credential environment materialization failed",
+      );
+      await this.cleanup(request.sessionId).catch((cleanupError: unknown) => {
+        this.#logger.debug(
+          {
+            code: "credential_cleanup_after_failure_failed",
+            error: String(cleanupError),
+          },
+          "Provider credential cleanup after materialization failure failed",
+        );
+      });
       throw credentialEnvironmentError(error, signal, "credential_materialization_failed");
     }
   }
 
   async cleanup(sessionId: string): Promise<void> {
+    const slackConfigDir = this.#slackConfigDirPath(sessionId);
+    this.#activeSlackConfigDirs.delete(sessionId);
     const results = await Promise.allSettled([
       this.#removePath(this.pathForSession(sessionId), { force: true }),
-      this.#removePath(join(this.#root, `${sessionId}-lark-config`), { recursive: true, force: true }),
+      this.#removePath(this.#larkConfigDirPath(sessionId), { recursive: true, force: true }),
+      this.#removePath(slackConfigDir, { recursive: true, force: true }),
     ]);
     if (results.some((result) => result.status === "rejected")) {
       this.#activeSessions.add(sessionId);
@@ -143,7 +185,7 @@ export class ImCredentialEnvironmentManager {
         .map((name) =>
           this.#removePath(join(this.#root, name), {
             force: true,
-            ...(name.endsWith("-lark-config") ? { recursive: true as const } : {}),
+            ...(name.endsWith("-lark-config") || name.endsWith("-slack-config") ? { recursive: true as const } : {}),
           }),
         ),
     );
@@ -157,12 +199,46 @@ export class ImCredentialEnvironmentManager {
     this.#logger.warn({ code }, "Provider credential environment cleanup failed");
   }
 
+  async #slackEnvironment(
+    sessionId: string,
+    grant: Extract<RuntimeImCredentialGrantResult, { status: "succeeded" }>["grant"] & { provider: "slack" },
+  ): Promise<{ configDir: string; environment: Record<string, string | undefined> }> {
+    const configDir = await ensurePrivateDirectory(this.#root, this.#slackConfigDirPath(sessionId));
+    return {
+      configDir,
+      environment: {
+        SLACK_BOT_TOKEN: grant.botAccessToken,
+        SLACK_USER_TOKEN: undefined,
+        SLACK_APP_TOKEN: undefined,
+        OPENTAG_SLACK_CONFIG_DIR: configDir,
+        // Slack 4.6/4.7 empirically honor this undocumented variable. It is only a
+        // redundant fallback; the exact-target Turn launcher always supplies the
+        // documented --config-dir flag as the load-bearing mechanism.
+        SLACK_CONFIG_DIR: configDir,
+      },
+    };
+  }
+
+  #slackConfigDirPath(sessionId: string): string {
+    return this.#artifactPath(`${sessionId}-slack-config`);
+  }
+
+  #larkConfigDirPath(sessionId: string): string {
+    return this.#artifactPath(`${sessionId}-lark-config`);
+  }
+
+  #artifactPath(name: string): string {
+    const path = join(this.#root, name);
+    assertWithin(this.#root, path);
+    return path;
+  }
+
   async #feishuEnvironment(
     sessionId: string,
     grant: Extract<RuntimeImCredentialGrantResult, { status: "succeeded" }>["grant"] & { provider: "feishu" },
     signal?: AbortSignal,
   ): Promise<Record<string, string | undefined>> {
-    const configDir = join(this.#root, `${sessionId}-lark-config`);
+    const configDir = this.#larkConfigDirPath(sessionId);
     await ensurePrivateDirectory(this.#root, configDir);
     const tenantAccessToken = await this.#exchangeFeishuToken(grant, signal);
     return {
@@ -175,10 +251,7 @@ export class ImCredentialEnvironmentManager {
     };
   }
 
-  #requestGrant(
-    request: DirectImMessageDeliveryRequest,
-    signal?: AbortSignal,
-  ): Promise<RuntimeImCredentialGrantResult> {
+  #requestGrant(request: ImCredentialGrantSubject, signal?: AbortSignal): Promise<RuntimeImCredentialGrantResult> {
     if (signal?.aborted) return Promise.reject(new ImCredentialEnvironmentError("aborted"));
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
@@ -221,6 +294,10 @@ export class ImCredentialEnvironmentManager {
           { priority: "result", signal },
         )
         .catch((error: unknown) => {
+          this.#logger.debug(
+            { code: "credential_result_send_failed", error: String(error) },
+            "Provider credential result send failed",
+          );
           cleanup();
           reject(error instanceof Error ? error : new ImCredentialEnvironmentError("send_failed"));
         });

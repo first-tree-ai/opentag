@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { formatStartupError, hashSecret, redactSecrets } from "../services/auth/security.js";
-import { AuthTokenService } from "../services/auth/tokens.js";
 
 describe("auth secret handling", () => {
   it("uses deterministic SHA-256 hashes without retaining plaintext", () => {
@@ -31,31 +30,5 @@ describe("auth secret handling", () => {
     expect(output).not.toContain(secret);
     expect(output).not.toContain(googleSecret);
     expect(output).not.toContain(encryptionKey);
-  });
-});
-
-describe("stateless auth tokens", () => {
-  it("separates access and refresh audiences and enforces each expiry", async () => {
-    let now = new Date("2026-08-18T00:00:00.000Z");
-    const tokens = new AuthTokenService("test-secret-that-is-at-least-32-characters", 60, 3600, {
-      now: () => now,
-    });
-    const pair = await tokens.issuePairForUser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e");
-
-    await expect(tokens.verifyAccess(pair.accessToken)).resolves.toEqual({
-      expiresAt: new Date("2026-08-18T00:01:00.000Z"),
-      userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
-    });
-    await expect(tokens.verifyAccess(pair.refreshToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
-
-    now = new Date("2026-08-18T00:01:01.000Z");
-    await expect(tokens.verifyAccess(pair.accessToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
-    await expect(tokens.verifyRefresh(pair.refreshToken)).resolves.toEqual({
-      expiresAt: new Date("2026-08-18T01:00:00.000Z"),
-      userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
-    });
-
-    now = new Date("2026-08-18T01:00:01.000Z");
-    await expect(tokens.verifyRefresh(pair.refreshToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
   });
 });

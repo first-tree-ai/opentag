@@ -1,25 +1,161 @@
 import {
-  type ButtonHTMLAttributes,
+  Banner,
+  Breadcrumbs,
+  buttonVariants,
+  ChartPalette,
+  ClipboardText,
+  Collapsible,
+  cn,
+  DropdownMenu,
+  Empty,
+  Flow,
+  Badge as KumoBadge,
+  Button as KumoButton,
+  type ButtonProps as KumoButtonProps,
+  Checkbox as KumoCheckbox,
+  Dialog as KumoDialog,
+  Field as KumoField,
+  Input as KumoInput,
+  InputArea as KumoInputArea,
+  type InputAreaProps as KumoInputAreaProps,
+  type InputProps as KumoInputProps,
+  Select as KumoSelect,
+  Switch as KumoSwitch,
+  Tabs as KumoTabs,
+  LayerCard,
+  Link,
+  LinkButton,
+  Loader,
+  Meter,
+  Sidebar,
+  SidebarProvider,
+  SidebarTrigger,
+  SkeletonLine,
+  Surface,
+  Table,
+  Text,
+  TimeseriesChart,
+  Tooltip,
+  TooltipProvider,
+  useSidebar,
+} from "@cloudflare/kumo";
+import {
+  ArrowLeft,
+  ArrowRight,
+  CaretDown,
+  CaretRight,
+  CaretUp,
+  ChartLine,
+  ChatCircle,
+  Check,
+  Copy,
+  Cpu,
+  DotsThreeVertical,
+  Gear,
+  House,
+  type IconWeight,
+  Info,
+  Laptop,
+  List,
+  MagnifyingGlass,
+  type Icon as PhosphorIcon,
+  PlugsConnected,
+  Plus,
+  Shield,
+  User,
+  Wrench,
+  X,
+} from "@phosphor-icons/react";
+import {
+  Children,
+  type ComponentPropsWithoutRef,
+  type CSSProperties,
+  cloneElement,
   forwardRef,
   type HTMLAttributes,
+  type InputHTMLAttributes,
+  isValidElement,
+  type ReactElement,
   type ReactNode,
+  type Ref,
   type RefObject,
+  type SelectHTMLAttributes,
   type SVGAttributes,
+  type TextareaHTMLAttributes,
   useEffect,
   useId,
   useRef,
 } from "react";
+import * as m from "../paraglide/messages.js";
+
+export {
+  Banner,
+  Breadcrumbs,
+  ChartPalette,
+  ClipboardText,
+  Collapsible,
+  DropdownMenu,
+  Empty,
+  Flow,
+  KumoBadge as Badge,
+  KumoSwitch,
+  LayerCard,
+  Link,
+  LinkButton,
+  Loader,
+  Meter,
+  Sidebar,
+  SidebarProvider,
+  SidebarTrigger,
+  SkeletonLine,
+  Surface,
+  Table,
+  Text,
+  TimeseriesChart,
+  Tooltip,
+  TooltipProvider,
+  useSidebar,
+};
+
+export const Input: typeof KumoInput = KumoInput;
+export const InputArea: typeof KumoInputArea = KumoInputArea;
+export const Select: typeof KumoSelect = KumoSelect;
+export const Checkbox: typeof KumoCheckbox = KumoCheckbox;
+export const Switch: typeof KumoSwitch = KumoSwitch;
+
+type KumoSelectProps = ComponentPropsWithoutRef<typeof KumoSelect>;
 
 function classes(...values: Array<string | false | null | undefined>): string {
-  return values.filter(Boolean).join(" ");
+  return cn(values.filter(Boolean).join(" "));
 }
 
-export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger" | "inline";
+export type ButtonVariant =
+  | "primary"
+  | "secondary"
+  | "secondary-destructive"
+  | "outline"
+  | "ghost"
+  | "danger"
+  | "inline";
 
-export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+type KumoButtonAdapterProps = KumoButtonProps extends infer Props
+  ? Props extends unknown
+    ? Omit<Props, "size" | "variant">
+    : never
+  : never;
+
+export type ButtonProps = KumoButtonAdapterProps & {
   size?: "default" | "compact";
   variant?: ButtonVariant;
 };
+
+function kumoButtonVariant(
+  variant: ButtonVariant,
+): "primary" | "secondary" | "secondary-destructive" | "outline" | "ghost" | "destructive" {
+  if (variant === "danger") return "destructive";
+  if (variant === "inline") return "ghost";
+  return variant;
+}
 
 export function buttonClassName({
   className,
@@ -30,15 +166,57 @@ export function buttonClassName({
   size?: ButtonProps["size"];
   variant?: ButtonVariant;
 } = {}): string {
-  return classes("ds-button", `ds-button--${variant}`, size === "compact" && "ds-button--compact", className);
+  return classes(
+    buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
+    variant === "primary" &&
+      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
+    variant === "danger" &&
+      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring)]",
+    className,
+  );
+}
+
+type EmphasisButtonStyle = CSSProperties & {
+  "--kumo-button-emphasis-bg": string;
+  "--kumo-button-emphasis-gradient-end": string;
+  "--kumo-button-emphasis-gradient-start": string;
+  "--kumo-button-emphasis-ring": string;
+};
+
+function emphasisButtonStyle(variant: ButtonVariant): EmphasisButtonStyle | undefined {
+  const intent = variant === "primary" ? "primary" : variant === "danger" ? "danger" : undefined;
+  if (!intent) return undefined;
+  return {
+    "--kumo-button-emphasis-bg": `var(--opentag-button-${intent}-bg)`,
+    "--kumo-button-emphasis-gradient-end": `var(--opentag-button-${intent}-gradient-end)`,
+    "--kumo-button-emphasis-gradient-start": `var(--opentag-button-${intent}-gradient-start)`,
+    "--kumo-button-emphasis-ring": `var(--opentag-button-${intent}-ring)`,
+  };
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
-  { className, size = "default", variant = "primary", type = "button", ...props },
+  { className, size = "default", style, variant = "primary", type = "button", ...props },
   ref,
 ) {
-  return <button className={buttonClassName({ className, size, variant })} ref={ref} type={type} {...props} />;
+  const emphasisStyle = emphasisButtonStyle(variant);
+  const kumoProps: KumoButtonProps = {
+    ...props,
+    className: buttonClassName({ className, size, variant }),
+    size: size === "compact" ? "sm" : "base",
+    style: emphasisStyle ? { ...style, ...emphasisStyle } : style,
+    type,
+    variant: kumoButtonVariant(variant),
+  };
+  return <KumoButton {...kumoProps} ref={ref} />;
 });
+
+/** A controlled Kumo tab strip that keeps React Router links as its triggers. */
+type TabTriggerProps = HTMLAttributes<HTMLElement> & {
+  children?: ReactNode;
+  href?: string;
+  ref?: Ref<HTMLElement>;
+  "aria-current"?: HTMLAttributes<HTMLElement>["aria-current"];
+};
 
 export function Tabs({
   children,
@@ -51,33 +229,68 @@ export function Tabs({
   collapseOnMobile?: boolean;
   label: string;
 }) {
+  const items = Children.toArray(children).filter((child): child is ReactElement<TabTriggerProps> =>
+    isValidElement<TabTriggerProps>(child),
+  );
+  if (items.length === 0) return <nav aria-label={label} className={className} />;
+  const selected = items.findIndex(
+    (item) => item.props["aria-current"] === "page" || item.props.className?.includes("active"),
+  );
   return (
-    <nav aria-label={label} className={classes("ds-tabs", collapseOnMobile && "ds-tabs--collapsible", className)}>
-      {children}
+    <nav aria-label={label} className={classes(collapseOnMobile && "max-w-full overflow-x-auto", className)}>
+      <KumoTabs
+        activateOnFocus
+        className="max-w-full"
+        selectedValue={String(selected < 0 ? 0 : selected)}
+        size="sm"
+        tabs={items.map((item, index) => ({
+          label: item.props.children,
+          nativeButton: false,
+          value: String(index),
+          render: (tabProps) => cloneElement(item, tabProps),
+        }))}
+        variant="underline"
+      />
     </nav>
   );
 }
 
 export function SettingsList({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={classes("ds-settings-list", className)}>{children}</div>;
+  return (
+    <div
+      className={classes(
+        "grid divide-y divide-kumo-line overflow-hidden rounded-lg bg-kumo-base ring ring-kumo-line",
+        className,
+      )}
+      data-ui="settings-list"
+    >
+      {children}
+    </div>
+  );
 }
 
 export function SettingsRow({
   children,
   description,
   label,
+  supportingContent,
 }: {
   children: ReactNode;
   description?: ReactNode;
   label: ReactNode;
+  supportingContent?: ReactNode;
 }) {
   return (
-    <div className="ds-settings-row">
-      <div className="ds-settings-row__copy">
-        <strong>{label}</strong>
-        {description ? <p>{description}</p> : null}
+    <div
+      className="grid gap-3 p-4 @min-[44rem]/content:grid-cols-[2fr_1fr] @min-[44rem]/content:items-center"
+      data-ui="settings-row"
+    >
+      <div className="grid gap-1">
+        <strong className="text-sm font-medium text-kumo-strong">{label}</strong>
+        {description ? <p className="text-sm text-kumo-subtle">{description}</p> : null}
+        {supportingContent}
       </div>
-      <div className="ds-settings-row__control">{children}</div>
+      <div className="min-w-0">{children}</div>
     </div>
   );
 }
@@ -87,33 +300,56 @@ export function Field({
   className,
   error,
   errorId,
+  hideLabel = false,
   hint,
   hintId,
-  htmlFor,
+  htmlFor: _htmlFor,
   label,
 }: {
   children: ReactNode;
   className?: string;
   error?: ReactNode;
   errorId?: string;
+  hideLabel?: boolean;
   hint?: ReactNode;
   hintId?: string;
   htmlFor: string;
   label: ReactNode;
 }) {
+  const labelId = `${_htmlFor}-label`;
+  type LabelableControlProps = {
+    "aria-label"?: string;
+    "aria-labelledby"?: string;
+  };
+  const child = isValidElement<LabelableControlProps>(children) ? children : undefined;
+  const isKumoControl =
+    child?.type === KumoInputControl ||
+    child?.type === KumoInputAreaControl ||
+    child?.type === KumoSelect ||
+    child?.type === KumoSelectControl;
+  const labelledChildren =
+    isKumoControl && !child.props["aria-label"] && !child.props["aria-labelledby"]
+      ? cloneElement(child, { "aria-labelledby": labelId })
+      : children;
   return (
-    <div className={classes("ds-field", className)}>
-      <label className="ds-field__label" htmlFor={htmlFor}>
+    <div className={classes("min-w-0", className)} data-ui="field">
+      <label
+        className={classes(hideLabel ? "sr-only" : "mb-1 block text-sm font-medium text-kumo-default")}
+        htmlFor={_htmlFor}
+        id={labelId}
+      >
         {label}
       </label>
-      {children}
-      {hint ? (
-        <span className="ds-field__hint" id={hintId}>
-          {hint}
-        </span>
-      ) : null}
+      <KumoField
+        description={hint ? <span id={hintId}>{hint}</span> : undefined}
+        error={error ? { match: true, message: error } : undefined}
+        hideLabel
+        label={label}
+      >
+        {labelledChildren}
+      </KumoField>
       {error ? (
-        <span className="ds-field__error" id={errorId} role="alert">
+        <span className="sr-only" id={errorId} role="alert">
           {error}
         </span>
       ) : null}
@@ -134,13 +370,14 @@ export function StatusIndicator({
   label: ReactNode;
   tone?: StatusTone;
 }) {
+  const variant =
+    tone === "success" ? "success" : tone === "warning" ? "warning" : tone === "danger" ? "error" : "neutral";
   return (
-    <span className={classes("ds-status", `ds-status--${tone}`, className)} {...props}>
-      <span className="ds-status__dot" aria-hidden="true" />
-      <span className="ds-status__copy">
-        <strong>{label}</strong>
-        {detail ? <small>{detail}</small> : null}
-      </span>
+    <span className={classes("inline-flex items-center gap-2", className)} data-state={tone} {...props}>
+      <KumoBadge appearance="dot" variant={variant}>
+        {label}
+      </KumoBadge>
+      {detail ? <small className="text-sm text-kumo-subtle">{detail}</small> : null}
     </span>
   );
 }
@@ -149,9 +386,14 @@ export type IconName =
   | "arrow-left"
   | "arrow-right"
   | "check"
+  | "chevron-down"
   | "chevron-right"
+  | "chevron-up"
   | "close"
+  | "copy"
   | "instructions"
+  | "home"
+  | "integrations"
   | "laptop"
   | "message"
   | "model"
@@ -159,54 +401,136 @@ export type IconName =
   | "plus"
   | "settings"
   | "shield"
-  | "user";
+  | "sign-out"
+  | "user"
+  | "usage";
 
-export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement> & { name: IconName }) {
+const icons: Record<IconName, PhosphorIcon> = {
+  "arrow-left": ArrowLeft,
+  "arrow-right": ArrowRight,
+  check: Check,
+  "chevron-down": CaretDown,
+  "chevron-right": CaretRight,
+  "chevron-up": CaretUp,
+  close: X,
+  copy: Copy,
+  instructions: List,
+  home: House,
+  integrations: PlugsConnected,
+  laptop: Laptop,
+  message: ChatCircle,
+  model: Cpu,
+  "more-vertical": DotsThreeVertical,
+  plus: Plus,
+  settings: Gear,
+  shield: Shield,
+  "sign-out": ArrowRight,
+  user: User,
+  usage: ChartLine,
+};
+
+export function Icon({
+  className,
+  name,
+  ...props
+}: SVGAttributes<SVGSVGElement> & { name: IconName; weight?: IconWeight }) {
+  const Glyph = icons[name];
   return (
-    <svg
-      aria-hidden="true"
-      className={classes("ds-icon", className)}
-      fill="none"
+    <Glyph
+      aria-hidden={props["aria-label"] ? undefined : true}
+      className={classes("size-4 shrink-0", className)}
       focusable="false"
-      viewBox="0 0 20 20"
       {...props}
-    >
-      {name === "close" ? <path d="m5 5 10 10M15 5 5 15" /> : null}
-      {name === "check" ? <path d="m4.5 10.5 3.5 3.5 7.5-8" /> : null}
-      {name === "more-vertical" ? <path d="M10 5.5h.01M10 10h.01M10 14.5h.01" /> : null}
-      {name === "chevron-right" ? <path d="m7.5 4.5 5.5 5.5-5.5 5.5" /> : null}
-      {name === "plus" ? <path d="M10 4v12M4 10h12" /> : null}
-      {name === "arrow-right" ? <path d="M3.5 10h13m-5-5 5 5-5 5" /> : null}
-      {name === "arrow-left" ? <path d="M16.5 10h-13m5-5-5 5 5 5" /> : null}
-      {name === "settings" ? (
-        <>
-          <circle cx="10" cy="10" r="2.5" />
-          <path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4" />
-        </>
-      ) : null}
-      {name === "instructions" ? <path d="M4 5h12M4 10h9M4 15h12" /> : null}
-      {name === "model" ? (
-        <>
-          <rect x="4" y="4" width="12" height="12" rx="3" />
-          <path d="M8 2v3M12 2v3M8 15v3M12 15v3M2 8h3M15 8h3M2 12h3M15 12h3M8 8h4v4H8z" />
-        </>
-      ) : null}
-      {name === "message" ? <path d="M4 4.5h12v9H8l-4 3v-12Z" /> : null}
-      {name === "user" ? (
-        <>
-          <circle cx="10" cy="7" r="3" />
-          <path d="M4.5 17c.5-3.2 2.3-5 5.5-5s5 1.8 5.5 5" />
-        </>
-      ) : null}
-      {name === "laptop" ? <path d="M4.5 4.5h11v8h-11zM3 15.5h14M5.5 12.5l-1 3M14.5 12.5l1 3" /> : null}
-      {name === "shield" ? <path d="M10 2.8 16 5v4.8c0 3.5-2.1 6-6 7.4-3.9-1.4-6-3.9-6-7.4V5l6-2.2Z" /> : null}
-    </svg>
+    />
   );
 }
 
-const FOCUSABLE =
-  'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+export type KumoInputControlProps = Omit<InputHTMLAttributes<HTMLInputElement>, "size"> &
+  Pick<KumoInputProps, "size" | "variant">;
 
+export const KumoInputControl = forwardRef<HTMLInputElement, KumoInputControlProps>(
+  function KumoInputControl(props, ref) {
+    return <KumoInput {...props} ref={ref} />;
+  },
+);
+
+export type KumoInputAreaControlProps = TextareaHTMLAttributes<HTMLTextAreaElement> &
+  Pick<KumoInputAreaProps, "size" | "variant">;
+
+export const KumoInputAreaControl = forwardRef<HTMLTextAreaElement, KumoInputAreaControlProps>(
+  function KumoInputAreaControl(props, ref) {
+    return <KumoInputArea {...props} ref={ref} />;
+  },
+);
+
+/** Compatibility select bridge. New fields should use KumoSelect directly. */
+export type SelectControlChangeEvent = {
+  currentTarget: { value: string };
+  target: { value: string };
+};
+
+type SelectControlChangeProps = {
+  onChange?(event: SelectControlChangeEvent): void;
+};
+
+export type KumoSelectControlProps = Omit<SelectHTMLAttributes<HTMLSelectElement>, "onChange" | "size" | "value"> &
+  SelectControlChangeProps & {
+    container?: KumoSelectProps["container"];
+    size?: KumoSelectProps["size"];
+    value?: string;
+    onValueChange?: (value: string) => void;
+  };
+
+type SelectOptionProps = {
+  value?: string | number | readonly string[];
+  disabled?: boolean;
+  children?: ReactNode;
+};
+
+function normalizeSelectOptionValue(value: SelectOptionProps["value"]): string {
+  return Array.isArray(value) ? value.join(",") : String(value ?? "");
+}
+
+export function KumoSelectControl({
+  children,
+  defaultValue,
+  onChange,
+  onValueChange,
+  value,
+  ...props
+}: KumoSelectControlProps) {
+  const options = Children.toArray(children).filter((child): child is ReactElement<SelectOptionProps> =>
+    isValidElement<SelectOptionProps>(child),
+  );
+  const normalizedOptions = options.map((option) => ({
+    label: String(option.props.children ?? option.props.value ?? ""),
+    option,
+    value: normalizeSelectOptionValue(option.props.value),
+  }));
+  const labels = new Map(normalizedOptions.map(({ label, value: optionValue }) => [optionValue, label]));
+  const kumoProps: KumoSelectProps = {
+    ...props,
+    defaultValue: defaultValue === undefined ? undefined : normalizeSelectOptionValue(defaultValue),
+    itemToStringLabel: (item) => labels.get(String(item)) ?? String(item ?? ""),
+    value: value === undefined ? undefined : normalizeSelectOptionValue(value),
+    onValueChange: (nextValue) => {
+      const stringValue = String(nextValue ?? "");
+      onValueChange?.(stringValue);
+      onChange?.({ currentTarget: { value: stringValue }, target: { value: stringValue } });
+    },
+  };
+  return (
+    <KumoSelect {...kumoProps}>
+      {normalizedOptions.map(({ option, value: optionValue }) => (
+        <KumoSelect.Option disabled={option.props.disabled} key={optionValue} value={optionValue}>
+          {option.props.children}
+        </KumoSelect.Option>
+      ))}
+    </KumoSelect>
+  );
+}
+
+/** Kumo compound dialog with a controlled open state and busy dismissal guard. */
 export function Dialog({
   busy = false,
   children,
@@ -214,8 +538,11 @@ export function Dialog({
   closeLabel,
   description,
   eyebrow,
+  initialFocusRef,
   onClose,
+  open = true,
   returnFocusRef,
+  role = "dialog",
   title,
 }: {
   busy?: boolean;
@@ -224,99 +551,50 @@ export function Dialog({
   closeLabel?: string;
   description?: ReactNode;
   eyebrow?: ReactNode;
+  initialFocusRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
+  open?: boolean;
   returnFocusRef?: RefObject<HTMLElement | null>;
+  role?: "dialog" | "alertdialog";
   title: ReactNode;
 }) {
-  const generatedId = useId().replaceAll(":", "");
-  const titleId = `dialog-${generatedId}-title`;
-  const descriptionId = description ? `dialog-${generatedId}-description` : undefined;
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const busyRef = useRef(busy);
-  const onCloseRef = useRef(onClose);
-  busyRef.current = busy;
-  onCloseRef.current = onClose;
-
+  const id = useId();
+  const headingRef = useRef<HTMLDivElement>(null);
+  const wasOpenRef = useRef(open);
   useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const target = dialog.querySelector<HTMLElement>(FOCUSABLE);
-    if (busy) {
-      if (!activeElement || !dialog.contains(activeElement) || activeElement.matches(":disabled")) {
-        (target ?? dialog).focus();
-      }
-    } else if (activeElement === dialog) {
-      target?.focus();
-    }
-  }, [busy]);
-
+    if (!open) return;
+    const timer = window.setTimeout(() => (initialFocusRef?.current ?? headingRef.current)?.focus());
+    return () => window.clearTimeout(timer);
+  }, [initialFocusRef, open]);
   useEffect(() => {
-    closeButtonRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (!busyRef.current) onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const dialog = dialogRef.current;
-      const focusable = Array.from(dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? []);
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialog?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!dialog?.contains(document.activeElement) || document.activeElement === dialog) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      returnFocusRef?.current?.focus();
-    };
-  }, [returnFocusRef]);
-
+    if (wasOpenRef.current && !open) returnFocusRef?.current?.focus();
+    wasOpenRef.current = open;
+  }, [open, returnFocusRef]);
   return (
-    <div className="dialog-layer">
-      <button
-        aria-label="Dismiss dialog"
-        className="dialog-backdrop"
-        disabled={busy}
-        tabIndex={-1}
-        type="button"
-        onClick={onClose}
-      />
-      <div
-        aria-describedby={descriptionId}
-        aria-labelledby={titleId}
-        aria-modal="true"
-        className={classes("dialog-card", className)}
-        ref={dialogRef}
-        role="dialog"
-        tabIndex={-1}
-      >
-        <header className="dialog-header">
-          <div>
-            {eyebrow ? <span className="eyebrow dialog-eyebrow">{eyebrow}</span> : null}
-            <h2 id={titleId}>{title}</h2>
+    <KumoDialog.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (!next && busy) return;
+        if (!next) onClose();
+      }}
+      role={role === "alertdialog" ? "alertdialog" : "dialog"}
+    >
+      <KumoDialog className={classes("max-h-[min(90vh,42rem)] overflow-y-auto p-6", className)}>
+        <header className="mb-4 flex items-start justify-between gap-4">
+          <div className="grid gap-1 outline-none" data-ui="dialog-heading" ref={headingRef} tabIndex={-1}>
+            {eyebrow ? <span className="text-xs font-medium text-kumo-subtle">{eyebrow}</span> : null}
+            <KumoDialog.Title id={`${id}-title`} className="text-lg font-semibold text-kumo-strong">
+              {title}
+            </KumoDialog.Title>
           </div>
           <Button
-            aria-label={closeLabel ?? `Close ${typeof title === "string" ? title : "dialog"}`}
-            className="dialog-close"
+            aria-label={
+              closeLabel ?? (typeof title === "string" ? m.common_close_title({ title }) : m.common_close_dialog())
+            }
+            className="shrink-0"
             disabled={busy}
-            ref={closeButtonRef}
+            shape="square"
+            size="compact"
             variant="ghost"
             onClick={onClose}
           >
@@ -324,12 +602,12 @@ export function Dialog({
           </Button>
         </header>
         {description ? (
-          <p className="dialog-description" id={descriptionId}>
-            {description}
-          </p>
+          <KumoDialog.Description className="mb-4 text-sm text-kumo-subtle">{description}</KumoDialog.Description>
         ) : null}
         {children}
-      </div>
-    </div>
+      </KumoDialog>
+    </KumoDialog.Root>
   );
 }
+
+export { Info, MagnifyingGlass, Wrench };

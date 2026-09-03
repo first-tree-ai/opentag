@@ -1,4 +1,7 @@
 import {
+  type AgentSetupExpectedMessagingState,
+  type AgentSetupReturnSurface,
+  type AgentSetupSlackOAuthContext,
   SLACK_REQUIRED_BOT_SCOPES,
   type SlackConfigurationIntent,
   type SlackConfigurationResult,
@@ -39,11 +42,37 @@ export interface SlackOAuthCallbackInput {
 
 export interface SlackOAuthCallbackSuccess {
   agentId: string;
+  returnSurface: AgentSetupReturnSurface;
   result: SlackConfigurationResult;
 }
 
 function oauthFailed(message = "The Slack authorization flow is invalid or expired"): never {
   throw new SlackConfigurationServiceError("SLACK_OAUTH_FAILED", 401, message, "credential");
+}
+
+function expectedMessagingFromBinding(
+  binding: { id: string; credentialGeneration: number } | null,
+): AgentSetupExpectedMessagingState {
+  return binding
+    ? {
+        kind: "bound",
+        provider: "slack",
+        bindingId: binding.id,
+        credentialGeneration: binding.credentialGeneration,
+      }
+    : { kind: "unbound" };
+}
+
+function sameExpectedMessaging(
+  left: AgentSetupExpectedMessagingState,
+  right: AgentSetupExpectedMessagingState,
+): boolean {
+  if (left.kind === "unbound" || right.kind === "unbound") return left.kind === right.kind;
+  return (
+    left.provider === right.provider &&
+    left.bindingId === right.bindingId &&
+    left.credentialGeneration === right.credentialGeneration
+  );
 }
 
 export class SlackOAuthService {
@@ -70,14 +99,22 @@ export class SlackOAuthService {
     this.#state = input.state;
   }
 
-  async start(callerUserId: string, agentId: string, intent: SlackConfigurationIntent): Promise<SlackOAuthStartResult> {
-    const configuration = await this.#slack.get(callerUserId, agentId);
-    const expectedBinding = configuration.currentBinding
-      ? {
-          id: configuration.currentBinding.id,
-          credentialGeneration: configuration.currentBinding.credentialGeneration,
-        }
-      : null;
+  async start(
+    callerUserId: string,
+    agentId: string,
+    intent: SlackConfigurationIntent,
+    returnSurface: AgentSetupReturnSurface = "agent-messaging-settings",
+    expectedMessaging?: AgentSetupExpectedMessagingState,
+  ): Promise<SlackOAuthStartResult> {
+    const expectedBinding = await this.#slack.currentBinding(callerUserId, agentId);
+    const currentMessaging = expectedMessagingFromBinding(expectedBinding);
+    if (expectedMessaging && !sameExpectedMessaging(expectedMessaging, currentMessaging)) {
+      throw new SlackConfigurationServiceError(
+        "SLACK_CONFIGURATION_CONFLICT",
+        409,
+        "The Slack binding changed since it was observed",
+      );
+    }
     if (intent === "create" && expectedBinding) {
       throw new SlackConfigurationServiceError(
         "SLACK_CONFIGURATION_CONFLICT",
@@ -85,20 +122,21 @@ export class SlackOAuthService {
         "Create cannot replace an existing Slack binding",
       );
     }
-    if (intent !== "create" && !expectedBinding) {
+    if (intent === "reauthorize" && !expectedBinding) {
       throw new SlackConfigurationServiceError(
         "SLACK_CONFIGURATION_CONFLICT",
         409,
-        `Slack ${intent} requires a current configured binding`,
+        "Slack reauthorize requires a current configured binding",
       );
     }
 
-    const issued = await this.#state.issue({
-      userId: callerUserId,
+    const context: AgentSetupSlackOAuthContext = {
       agentId,
       intent,
-      expectedBinding,
-    });
+      returnSurface,
+      expectedMessaging: expectedMessaging ?? currentMessaging,
+    };
+    const issued = await this.#state.issue({ userId: callerUserId, context });
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       await transaction.delete(slackOAuthNonces).where(lte(slackOAuthNonces.expiresAt, now));
@@ -147,7 +185,10 @@ export class SlackOAuthService {
         error instanceof AuthServiceError ||
         error instanceof ImBindingServiceError
       ) {
-        Object.assign(error, { slackOAuthAgentId: payload.agentId });
+        Object.assign(error, {
+          slackOAuthAgentId: payload.context.agentId,
+          slackOAuthReturnSurface: payload.context.returnSurface,
+        });
       }
       throw error;
     }
@@ -173,25 +214,35 @@ export class SlackOAuthService {
           and(
             eq(slackOAuthNonces.nonceHash, hashSecret(payload.nonce)),
             eq(slackOAuthNonces.userId, payload.userId),
-            eq(slackOAuthNonces.agentId, payload.agentId),
+            eq(slackOAuthNonces.agentId, payload.context.agentId),
             isNull(slackOAuthNonces.consumedAt),
           ),
         )
         .returning();
       return row;
     });
-    if (!consumed || consumed.expiresAt.getTime() <= now.getTime() || consumed.intent !== payload.intent) {
+    if (!consumed || consumed.expiresAt.getTime() <= now.getTime() || consumed.intent !== payload.context.intent) {
       oauthFailed();
     }
     if (consumed.sessionBindingHash !== payload.sessionBindingHash) oauthFailed();
     const storedExpected =
       consumed.expectedBindingId && consumed.expectedCredentialGeneration
-        ? { id: consumed.expectedBindingId, credentialGeneration: consumed.expectedCredentialGeneration }
-        : null;
-    if (
-      storedExpected?.id !== payload.expectedBinding?.id ||
-      storedExpected?.credentialGeneration !== payload.expectedBinding?.credentialGeneration
-    ) {
+        ? ({
+            kind: "bound",
+            provider: "slack",
+            bindingId: consumed.expectedBindingId,
+            credentialGeneration: consumed.expectedCredentialGeneration,
+          } as const)
+        : ({ kind: "unbound" } as const);
+    const signedExpected = payload.context.expectedMessaging;
+    const expectedMatches =
+      storedExpected.kind === "unbound"
+        ? signedExpected.kind === "unbound"
+        : signedExpected.kind === "bound" &&
+          signedExpected.provider === "slack" &&
+          signedExpected.bindingId === storedExpected.bindingId &&
+          signedExpected.credentialGeneration === storedExpected.credentialGeneration;
+    if (!expectedMatches) {
       oauthFailed();
     }
 
@@ -200,14 +251,17 @@ export class SlackOAuthService {
     }
 
     const installation = await this.#exchange(input.code);
-    const result = await this.#slack.configure(payload.userId, payload.agentId, {
-      intent: payload.intent,
-      expectedBinding: payload.expectedBinding,
+    const result = await this.#slack.configure(payload.userId, payload.context.agentId, {
+      intent: payload.context.intent,
+      expectedBinding:
+        signedExpected.kind === "bound"
+          ? { id: signedExpected.bindingId, credentialGeneration: signedExpected.credentialGeneration }
+          : null,
       appId: installation.appId,
       botAccessToken: installation.botAccessToken,
       signingSecret: this.#app.signingSecret,
     });
-    return { agentId: payload.agentId, result };
+    return { agentId: payload.context.agentId, returnSurface: payload.context.returnSurface, result };
   }
 
   async #exchange(code: string): Promise<{ appId: string; botAccessToken: string }> {
@@ -221,7 +275,16 @@ export class SlackOAuthService {
     } catch (error) {
       const codeName = error instanceof Error ? error.message : "";
       if (codeName === "SLACK_AUTH_INVALID" || codeName === "SLACK_AUTH_REJECTED") {
-        oauthFailed();
+        const failure = new SlackConfigurationServiceError(
+          "SLACK_OAUTH_FAILED",
+          401,
+          "The Slack authorization flow is invalid or expired",
+          "credential",
+        );
+        if (error instanceof Error && typeof error.cause === "string") {
+          Object.assign(failure, { upstreamSlackError: error.cause.slice(0, 128) });
+        }
+        throw failure;
       }
       if (codeName === "SLACK_AUTH_IDENTITY_INCOMPLETE") {
         throw new SlackConfigurationServiceError(

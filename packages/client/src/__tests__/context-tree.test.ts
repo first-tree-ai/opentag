@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type ContextTreeExecFile,
   ContextTreeManager,
@@ -34,6 +34,9 @@ async function computer(
     execFile?: ContextTreeExecFile;
     platform?: NodeJS.Platform;
     nodePath?: string;
+    codexHome?: string;
+    sessionStartBudgetMs?: number;
+    failureCooldownMs?: number;
     packaged?: false;
   } = {},
 ): Promise<{ home: string; cwd: string; manager: ContextTreeManager }> {
@@ -50,6 +53,9 @@ async function computer(
     platform: options.platform ?? "linux",
     ...(options.execFile ? { execFile: options.execFile } : {}),
     ...(options.nodePath ? { nodePath: options.nodePath } : {}),
+    ...(options.codexHome ? { codexHome: options.codexHome } : {}),
+    ...(options.sessionStartBudgetMs === undefined ? {} : { sessionStartBudgetMs: options.sessionStartBudgetMs }),
+    ...(options.failureCooldownMs === undefined ? {} : { failureCooldownMs: options.failureCooldownMs }),
   });
   return { home, cwd: resolve(home, "workspace"), manager };
 }
@@ -182,21 +188,56 @@ describe("ContextTreeManager", () => {
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unavailable", reason });
   });
 
-  it("degrades rather than throwing, and retries a failure on the next Session", async () => {
+  it("does not retry a failed preparation during cooldown, and a target change clears it", async () => {
     let attempt = 0;
-    const { cwd, manager } = await computer({
+    const { home, cwd, manager } = await computer({
       target: managed,
+      failureCooldownMs: 60_000,
       execFile: async (_file, args) => {
         attempt += 1;
-        // The first attempt fails in a way the manager does not anticipate at all.
         if (attempt === 1) throw new Error("boom");
         return { stdout: `${JSON.stringify(args[1] === "connect" ? treeReply("/srv/t") : installReply)}\n` };
       },
     });
 
     await expect(manager.ensureAgent(cwd)).resolves.toMatchObject({ status: "unavailable" });
-    // A failure is never cached, so a transient fault recovers without restarting the daemon.
+    await expect(manager.ensureAgent(cwd)).resolves.toMatchObject({ status: "unavailable" });
+    expect(attempt).toBe(1);
+
+    await writeTarget(home, { kind: "path", path: "/srv/another-tree" });
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/t" });
+  });
+
+  it("returns PREPARING within the Session budget and caches the background result", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    let connectCalls = 0;
+    const { cwd, manager } = await computer({
+      target: managed,
+      sessionStartBudgetMs: 10,
+      execFile: async (_file, args) => {
+        if (args[1] === "connect") {
+          connectCalls += 1;
+          await gate;
+        }
+        return { stdout: `${JSON.stringify(args[1] === "connect" ? treeReply("/srv/t") : installReply)}\n` };
+      },
+    });
+
+    await expect(Promise.all([manager.ensureAgent(cwd), manager.ensureAgent(cwd)])).resolves.toEqual([
+      { status: "unavailable", reason: "PREPARING" },
+      { status: "unavailable", reason: "PREPARING" },
+    ]);
+    expect(connectCalls).toBe(1);
+    release();
+    await vi.waitFor(
+      async () => {
+        await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/t" });
+      },
+      { interval: 5, timeout: 1_000 },
+    );
   });
 
   it("degrades on a platform with no shim, and on unreadable configuration", async () => {
@@ -234,6 +275,70 @@ describe("ContextTreeManager", () => {
     expect(overlapped).toBe(false);
     // Sharing one tree across Agents is the point of the feature.
     expect(statuses).toEqual(statuses.map(() => ({ status: "ready", treePath: "/srv/t" })));
+  });
+
+  it("lets five workspaces leave Session start within one budget while preparation stays serialized", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const calls: string[][] = [];
+    const { home, manager } = await computer({
+      target: managed,
+      sessionStartBudgetMs: 10,
+      execFile: async (_file, args) => {
+        calls.push(args.slice(1));
+        if (args[1] === "connect") await gate;
+        return { stdout: `${JSON.stringify(args[1] === "connect" ? treeReply("/srv/t") : installReply)}\n` };
+      },
+    });
+    const workspaces = ["a", "b", "c", "d", "e"].map((name) => resolve(home, "workspaces", name));
+
+    await expect(Promise.all(workspaces.map((cwd) => manager.ensureAgent(cwd)))).resolves.toEqual(
+      workspaces.map(() => ({ status: "unavailable", reason: "PREPARING" })),
+    );
+    expect(calls.filter(([command]) => command === "connect").length).toBeLessThanOrEqual(1);
+
+    release();
+    await vi.waitFor(() => expect(calls.filter(([command]) => command === "connect")).toHaveLength(5), {
+      interval: 5,
+      timeout: 1_000,
+    });
+    await vi.waitFor(
+      async () => {
+        await expect(Promise.all(workspaces.map((cwd) => manager.ensureAgent(cwd)))).resolves.toEqual(
+          workspaces.map(() => ({ status: "ready", treePath: "/srv/t" })),
+        );
+      },
+      { interval: 5, timeout: 1_000 },
+    );
+  });
+
+  it("records both ready and unavailable preparation outcomes durably", async () => {
+    const ready = await computer({
+      target: managed,
+      execFile: recording({ connect: treeReply("/srv/t"), install: installReply }).execFile,
+    });
+    await expect(ready.manager.ensureAgent(ready.cwd)).resolves.toMatchObject({ status: "ready" });
+    await expect(readFile(resolveOpenTagHomeLayout(ready.home).contextTreePreparationFile, "utf8")).resolves.toContain(
+      '"status": "ready"',
+    );
+
+    const unavailable = await computer({ target: managed, execFile: exitOne({ error: { code: "NO_TREE" } }) });
+    await expect(unavailable.manager.ensureAgent(unavailable.cwd)).resolves.toEqual({
+      status: "unavailable",
+      reason: "NO_TREE",
+    });
+    const record = JSON.parse(
+      await readFile(resolveOpenTagHomeLayout(unavailable.home).contextTreePreparationFile, "utf8"),
+    );
+    expect(record).toMatchObject({
+      schemaVersion: 1,
+      target: "team-context-tree",
+      status: "unavailable",
+      reason: "NO_TREE",
+    });
+    expect(record.at).toEqual(expect.any(String));
   });
 });
 

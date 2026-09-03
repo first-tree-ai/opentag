@@ -169,8 +169,11 @@ export {
 } from "./computer.js";
 export {
   CONTEXT_TREE_CONFIG_SCHEMA_VERSION,
+  CONTEXT_TREE_PREPARATION_SCHEMA_VERSION,
   type ContextTreeConfig,
   ContextTreeConfigSchema,
+  type ContextTreePreparation,
+  ContextTreePreparationSchema,
   type ContextTreeTarget,
   ContextTreeTargetSchema,
   formatContextTreeTarget,

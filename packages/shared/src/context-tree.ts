@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const CONTEXT_TREE_CONFIG_SCHEMA_VERSION = 1;
+export const CONTEXT_TREE_PREPARATION_SCHEMA_VERSION = 1;
 
 /**
  * The Context Tree every Agent Session on one Computer uses.
@@ -44,6 +45,17 @@ export const ContextTreeConfigSchema = z
   })
   .strict();
 
+/** Last completed background preparation, exposed through non-blocking diagnostics. */
+export const ContextTreePreparationSchema = z
+  .object({
+    schemaVersion: z.literal(CONTEXT_TREE_PREPARATION_SCHEMA_VERSION),
+    target: z.string().min(1),
+    status: z.enum(["ready", "unavailable"]),
+    reason: z.string().min(1).optional(),
+    at: z.iso.datetime(),
+  })
+  .strict();
+
 /** Render a target back into the exact argument a user would type, for diagnostics and logs. */
 export function formatContextTreeTarget(target: ContextTreeTarget): string {
   if (target.kind === "managed") return target.name;
@@ -71,3 +83,4 @@ export function parseContextTreeTarget(value: string): ContextTreeTarget | undef
 
 export type ContextTreeTarget = z.infer<typeof ContextTreeTargetSchema>;
 export type ContextTreeConfig = z.infer<typeof ContextTreeConfigSchema>;
+export type ContextTreePreparation = z.infer<typeof ContextTreePreparationSchema>;

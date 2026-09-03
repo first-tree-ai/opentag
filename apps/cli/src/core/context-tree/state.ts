@@ -1,4 +1,4 @@
-import { runContextTreeCli } from "@opentag/client";
+import { readContextTreePreparation, runContextTreeCli } from "@opentag/client";
 import { formatContextTreeTarget } from "@opentag/shared";
 import {
   type ContextTreeCommandDeps,
@@ -50,5 +50,14 @@ export async function readContextTreeState(deps: ContextTreeCommandDeps = {}): P
   const cloned = trees.some(
     (entry) => typeof entry.tree?.repository === "string" && entry.tree.repository.toLowerCase() === repository,
   );
-  return { configPath, target, tree: cloned ? "valid" : "not-cloned" };
+  if (cloned) return { configPath, target, tree: "valid" };
+  try {
+    const preparation = await readContextTreePreparation(home);
+    if (preparation?.target === target && preparation.status === "unavailable") {
+      return { configPath, target, tree: "invalid", detail: preparation.reason };
+    }
+  } catch {
+    // The live CLI state remains authoritative when the optional diagnostic record is unreadable.
+  }
+  return { configPath, target, tree: "not-cloned" };
 }

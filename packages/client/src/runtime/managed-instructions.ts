@@ -32,6 +32,13 @@ function renderContextTree(status: ContextTreeStatus, cliCommand: string): reado
       "",
     ];
   }
+  if (status.reason === "PREPARING") {
+    return [
+      "Context Tree preparation is continuing in the background.",
+      "Durable memory is not active for this Session. A later Session can use it after preparation completes.",
+      "",
+    ];
+  }
   return [
     `Context Tree unavailable (${status.reason}).`,
     "Durable memory is not active for this Session. Do not assume earlier decisions were recorded, and do not attempt to repair the tree yourself.",

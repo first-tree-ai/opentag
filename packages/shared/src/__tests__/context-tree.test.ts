@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ContextTreeConfigSchema, formatContextTreeTarget, parseContextTreeTarget } from "../context-tree.js";
+import {
+  ContextTreeConfigSchema,
+  ContextTreePreparationSchema,
+  formatContextTreeTarget,
+  parseContextTreeTarget,
+} from "../context-tree.js";
 import { OPENTAG_PLATFORM_INSTRUCTIONS, renderPlatformInstructions } from "../runtime-config.js";
 
 describe("Context Tree configuration", () => {
@@ -25,6 +30,26 @@ describe("Context Tree configuration", () => {
     const config = { schemaVersion: 1, target: { kind: "managed", name: "shared" } };
     expect(() => ContextTreeConfigSchema.parse({ ...config, extra: true })).toThrow();
     expect(() => ContextTreeConfigSchema.parse({ ...config, schemaVersion: 2 })).toThrow();
+  });
+
+  it("validates durable preparation outcomes", () => {
+    expect(
+      ContextTreePreparationSchema.parse({
+        schemaVersion: 1,
+        target: "acme/shared-context",
+        status: "unavailable",
+        reason: "GITHUB_AUTH",
+        at: "2026-09-03T12:00:00.000Z",
+      }),
+    ).toMatchObject({ status: "unavailable", reason: "GITHUB_AUTH" });
+    expect(() =>
+      ContextTreePreparationSchema.parse({
+        schemaVersion: 1,
+        target: "acme/shared-context",
+        status: "pending",
+        at: "not-a-timestamp",
+      }),
+    ).toThrow();
   });
 
   it("states the Agent slug so an Agent can find its own member directory", () => {

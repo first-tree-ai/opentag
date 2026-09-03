@@ -45,6 +45,7 @@ async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv): 
  */
 async function isolatedAccount(prefix: string): Promise<{
   accountHome: string;
+  openTagHome: string;
   treePath: string;
   environment: NodeJS.ProcessEnv;
   manager: ContextTreeManager;
@@ -75,7 +76,7 @@ async function isolatedAccount(prefix: string): Promise<{
     home: openTagHome,
     ...(contextTreePackage ? { contextTreePackage } : {}),
   });
-  return { accountHome, treePath, environment, manager };
+  return { accountHome, openTagHome, treePath, environment, manager };
 }
 
 /** Write one member memory node through the real isolated-worktree protocol. */
@@ -120,6 +121,31 @@ describe("Context Tree end-to-end", () => {
       env: { HOME: accountHome, PATH: `${manager.binDirectory()}${delimiter}${process.env.PATH ?? ""}` },
     });
     expect(JSON.parse(stdout.trim())).toMatchObject({ tree: { path: treePath } });
+  });
+
+  it("installs Codex skills into the same custom CODEX_HOME used by the Runtime", async () => {
+    const { accountHome, openTagHome, treePath } = await isolatedAccount("opentag-ct-codex-home");
+    const customRoot = await temporaryDirectory("opentag-custom-codex-root-");
+    const codexHome = join(customRoot, ".codex");
+    await mkdir(codexHome, { mode: 0o700, recursive: true });
+    const manager = new ContextTreeManager({
+      codexHome,
+      home: openTagHome,
+      ...(contextTreePackage ? { contextTreePackage } : {}),
+    });
+
+    await expect(manager.ensureAgent(await temporaryDirectory("opentag-ct-custom-codex-agent-"))).resolves.toEqual({
+      status: "ready",
+      treePath,
+    });
+    await expect(readFile(join(codexHome, "skills", "context-tree-read", "SKILL.md"), "utf8")).resolves.toContain(
+      "context-tree",
+    );
+    await expect(
+      readFile(join(accountHome, ".codex", "skills", "context-tree-read", "SKILL.md"), "utf8"),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 
   it("lets one Agent record member memory that another Agent then reads", async () => {

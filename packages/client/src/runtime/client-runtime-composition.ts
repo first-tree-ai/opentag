@@ -575,7 +575,11 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
-  const contextTree = new ContextTreeManager({ home: options.home, logger: moduleLogger("context-tree") });
+  const contextTree = new ContextTreeManager({
+    codexHome,
+    home: options.home,
+    logger: moduleLogger("context-tree"),
+  });
   const durabilityStore =
     options.durabilityStore ??
     (options.serverDurability

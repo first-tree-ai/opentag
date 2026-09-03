@@ -3,7 +3,11 @@ import { realpathSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Real child-process lifecycle cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import {
   type ProviderCliCatalogEntry,
   ProviderCliManager,

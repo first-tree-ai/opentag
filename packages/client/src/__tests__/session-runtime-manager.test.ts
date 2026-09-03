@@ -377,6 +377,39 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
   });
 
+  it("starts a Session while Context Tree preparation continues in the background", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-preparing-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      contextTree: {
+        ensureAgent: vi.fn(async () => ({ status: "unavailable" as const, reason: "PREPARING" })),
+      },
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+
+    expect(factory.created[0]?.systemPrompt).toContain("preparation is continuing in the background");
+    expect(factory.created[0]?.systemPrompt).toContain("not active for this Session");
+    expect(factory.created[0]?.systemPrompt).not.toContain("repair the tree");
+    await manager.close();
+  });
+
   it("fails closed when a reconcile carries a proof but no proof manager is configured", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-missing-proof-manager-"));
     homes.push(home);

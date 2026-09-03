@@ -22,6 +22,7 @@ describe("OpenTag Home layout", () => {
       config: join(root, "config"),
       contextTreeBin: join(root, "context-tree", "bin"),
       contextTreeConfigFile: join(root, "config", "context-tree.json"),
+      contextTreePreparationFile: join(root, "state", "context-tree-preparation.json"),
       daemonState: join(root, "state", "daemon"),
       data: join(root, "data"),
       home: root,

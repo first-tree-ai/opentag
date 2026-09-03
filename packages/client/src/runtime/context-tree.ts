@@ -1,8 +1,15 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { type ContextTreeConfig, ContextTreeConfigSchema, formatContextTreeTarget } from "@opentag/shared";
+import {
+  type ContextTreeConfig,
+  ContextTreeConfigSchema,
+  type ContextTreePreparation,
+  ContextTreePreparationSchema,
+  formatContextTreeTarget,
+} from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory, readDurableJson, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
@@ -14,6 +21,8 @@ const CLI_TIMEOUT_MS = 20_000;
 /** A GitHub target clones on first use, so its first connect is allowed to take longer. */
 const CLI_NETWORK_TIMEOUT_MS = 120_000;
 const CLI_MAX_BUFFER = 1024 * 1024;
+const SESSION_START_BUDGET_MS = 5_000;
+const FAILURE_COOLDOWN_MS = 60_000;
 
 export interface ContextTreePackage {
   root: string;
@@ -34,7 +43,7 @@ export type ContextTreeStatus =
 export type ContextTreeExecFile = (
   file: string,
   args: readonly string[],
-  options: { cwd: string; timeout: number; maxBuffer: number; windowsHide: boolean },
+  options: { cwd: string; timeout: number; maxBuffer: number; windowsHide: boolean; env?: NodeJS.ProcessEnv },
 ) => Promise<{ stdout: string }>;
 
 const defaultExecFile: ContextTreeExecFile = async (file, args, options) =>
@@ -47,6 +56,11 @@ export function resolveContextTreePackage(from: string = import.meta.url): Conte
   } catch {
     return undefined;
   }
+}
+
+/** Read the last completed preparation without starting or waiting for Context Tree work. */
+export function readContextTreePreparation(home: string): Promise<ContextTreePreparation | undefined> {
+  return readDurableJson(resolveOpenTagHomeLayout(home).contextTreePreparationFile, ContextTreePreparationSchema.parse);
 }
 
 class ContextTreeCliFailure extends Error {
@@ -88,7 +102,13 @@ function connectArguments(target: ContextTreeConfig["target"], projectPath: stri
 export async function runContextTreeCli(
   contextTreePackage: ContextTreePackage,
   args: readonly string[],
-  options: { cwd?: string; network?: boolean; execFile?: ContextTreeExecFile; nodePath?: string } = {},
+  options: {
+    cwd?: string;
+    network?: boolean;
+    execFile?: ContextTreeExecFile;
+    nodePath?: string;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ): Promise<{ payload: unknown; failureCode?: string }> {
   const run = options.execFile ?? defaultExecFile;
   let stdout: string;
@@ -98,6 +118,7 @@ export async function runContextTreeCli(
       maxBuffer: CLI_MAX_BUFFER,
       timeout: options.network === true ? CLI_NETWORK_TIMEOUT_MS : CLI_TIMEOUT_MS,
       windowsHide: true,
+      ...(options.env ? { env: options.env } : {}),
     }));
   } catch (error) {
     const failure = error as { stdout?: string; killed?: boolean; signal?: string };
@@ -123,6 +144,10 @@ export interface ContextTreeManagerOptions {
   platform?: NodeJS.Platform;
   /** Absolute path to the Node.js runtime the generated shim should exec. */
   nodePath?: string;
+  /** Resolved home passed to Codex itself; host skill installation must use the same root. */
+  codexHome?: string;
+  sessionStartBudgetMs?: number;
+  failureCooldownMs?: number;
 }
 
 /**
@@ -142,7 +167,13 @@ export class ContextTreeManager {
   readonly #execFile: ContextTreeExecFile | undefined;
   readonly #platform: NodeJS.Platform;
   readonly #nodePath: string;
+  readonly #codexHome: string;
+  readonly #sessionStartBudgetMs: number;
+  readonly #failureCooldownMs: number;
   readonly #ready = new Map<string, { target: string; status: ContextTreeStatus }>();
+  readonly #cooldown = new Map<string, { target: string; status: ContextTreeStatus; until: number }>();
+  readonly #inFlight = new Map<string, { target: string; promise: Promise<ContextTreeStatus> }>();
+  readonly #observedTarget = new Map<string, string>();
   #pending: Promise<unknown> = Promise.resolve();
 
   constructor(options: ContextTreeManagerOptions) {
@@ -155,6 +186,9 @@ export class ContextTreeManager {
     this.#execFile = options.execFile;
     this.#platform = options.platform ?? process.platform;
     this.#nodePath = options.nodePath ?? process.execPath;
+    this.#codexHome = resolve(options.codexHome ?? join(homedir(), ".codex"));
+    this.#sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
+    this.#failureCooldownMs = options.failureCooldownMs ?? FAILURE_COOLDOWN_MS;
   }
 
   /** Directory to prepend to a Session PATH so the packaged skills can invoke `context-tree`. */
@@ -176,18 +210,17 @@ export class ContextTreeManager {
     const config = await this.readConfig();
     if (!config) return { status: "unconfigured" };
     const target = formatContextTreeTarget(config.target);
+    if (this.#observedTarget.get(cwd) !== target) {
+      this.#observedTarget.set(cwd, target);
+      this.#ready.delete(cwd);
+      this.#cooldown.delete(cwd);
+    }
     const cached = this.#ready.get(cwd);
     if (cached?.target === target) return cached.status;
-    // Serialize against other Agents: the CLI's connection store is replaced atomically but
-    // without a cross-process lock, so concurrent read-modify-write can lose unrelated records.
-    // The catch upholds the class contract — optional memory degrades, Session start does not.
-    const status = await this.#serialize(() => this.#ensureAgentOnce(cwd, config)).catch((error: unknown) => {
-      this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
-      return { status: "unavailable", reason: "CLI_FAILED" } as const;
-    });
-    // Only a success is cached. A transient failure must retry on the next Session start.
-    if (status.status === "ready") this.#ready.set(cwd, { target, status });
-    return status;
+    const cooling = this.#cooldown.get(cwd);
+    if (cooling?.target === target && cooling.until > Date.now()) return cooling.status;
+    if (cooling) this.#cooldown.delete(cwd);
+    return this.#withinSessionStartBudget(this.#joinPreparation(cwd, config, target));
   }
 
   async readConfig(): Promise<ContextTreeConfig | undefined> {
@@ -218,7 +251,10 @@ export class ContextTreeManager {
       // Claude Code loads skills from the workspace because OpenTag passes `--setting-sources
       // project`; Codex loads them from its own home, and only for a host that is present.
       await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false);
-      await this.#run(["install", "--host", "codex"], cwd, false);
+      await this.#run(["install", "--host", "codex"], cwd, false, {
+        ...process.env,
+        HOME: dirname(this.#codexHome),
+      });
       this.#logger.info(
         { target: formatContextTreeTarget(config.target), treePath },
         "Context Tree connected for an Agent workspace",
@@ -232,12 +268,13 @@ export class ContextTreeManager {
   }
 
   /** OpenTag always invokes the packaged CLI directly, so a broken shim cannot redirect it. */
-  async #run(args: readonly string[], cwd: string, network: boolean): Promise<unknown> {
+  async #run(args: readonly string[], cwd: string, network: boolean, env?: NodeJS.ProcessEnv): Promise<unknown> {
     if (!this.#package) throw new ContextTreeCliFailure("PACKAGE_MISSING");
     const { payload, failureCode } = await runContextTreeCli(this.#package, args, {
       cwd,
       network,
       nodePath: this.#nodePath,
+      ...(env ? { env } : {}),
       ...(this.#execFile ? { execFile: this.#execFile } : {}),
     });
     if (failureCode !== undefined) throw new ContextTreeCliFailure(failureCode);
@@ -274,6 +311,67 @@ export class ContextTreeManager {
       "Context Tree is unavailable for this Session",
     );
     return { status: "unavailable", reason };
+  }
+
+  #joinPreparation(cwd: string, config: ContextTreeConfig, target: string): Promise<ContextTreeStatus> {
+    const current = this.#inFlight.get(cwd);
+    if (current?.target === target) return current.promise;
+    // The CLI's connection store has no cross-process lock, so background work remains serialized
+    // even though Session callers stop waiting after their short budget.
+    const prepared = this.#serialize(() => this.#ensureAgentOnce(cwd, config)).catch((error: unknown) => {
+      this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
+      return { status: "unavailable", reason: "CLI_FAILED" } as const;
+    });
+    let terminal: Promise<ContextTreeStatus>;
+    terminal = prepared
+      .then(async (status) => {
+        await this.#recordPreparation(target, status);
+        if (status.status === "ready" && this.#observedTarget.get(cwd) === target) {
+          this.#ready.set(cwd, { target, status });
+          this.#cooldown.delete(cwd);
+        } else if (status.status === "unavailable" && this.#observedTarget.get(cwd) === target) {
+          this.#cooldown.set(cwd, { target, status, until: Date.now() + this.#failureCooldownMs });
+        }
+        return status;
+      })
+      .then((status) => {
+        if (this.#inFlight.get(cwd)?.promise === terminal) this.#inFlight.delete(cwd);
+        return status;
+      });
+    this.#inFlight.set(cwd, { target, promise: terminal });
+    return terminal;
+  }
+
+  async #withinSessionStartBudget(preparation: Promise<ContextTreeStatus>): Promise<ContextTreeStatus> {
+    let timer: NodeJS.Timeout | undefined;
+    const budget = new Promise<ContextTreeStatus>((resolveBudget) => {
+      timer = setTimeout(
+        () => resolveBudget({ status: "unavailable", reason: "PREPARING" }),
+        this.#sessionStartBudgetMs,
+      );
+      timer.unref();
+    });
+    const status = await Promise.race([preparation, budget]);
+    if (timer) clearTimeout(timer);
+    return status;
+  }
+
+  async #recordPreparation(target: string, status: ContextTreeStatus): Promise<void> {
+    if (status.status === "unconfigured") return;
+    const record: ContextTreePreparation = {
+      schemaVersion: 1,
+      target,
+      status: status.status,
+      ...(status.status === "unavailable" ? { reason: status.reason } : {}),
+      at: new Date().toISOString(),
+    };
+    const file = resolveOpenTagHomeLayout(this.#home).contextTreePreparationFile;
+    try {
+      await ensurePrivateDirectory(this.#home, dirname(file));
+      await writeDurableFile(file, `${JSON.stringify(ContextTreePreparationSchema.parse(record), undefined, 2)}\n`);
+    } catch (error) {
+      this.#logger.warn({ err: describe(error) }, "Context Tree preparation outcome could not be recorded");
+    }
   }
 
   #serialize<T>(operation: () => Promise<T>): Promise<T> {

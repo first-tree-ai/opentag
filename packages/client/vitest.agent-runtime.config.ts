@@ -43,10 +43,6 @@ export default defineConfig({
       "src/__tests__/session-runtime-manager.test.ts",
     ],
     maxWorkers: 1,
-    // Several cases here spawn real Provider child processes and take seconds on an idle machine,
-    // so Vitest's 5s default leaves under 2x headroom and times out under parallel load. The
-    // deadline reflects their real cost; no assertion or coverage threshold is relaxed.
-    testTimeout: 30_000,
     coverage: {
       enabled: true,
       provider: "v8",

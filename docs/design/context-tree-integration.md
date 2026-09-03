@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Last updated: 2026-09-01
+Last updated: 2026-09-03
 
 ## Purpose
 
@@ -97,7 +97,7 @@ workspace once per recorded target, cached in memory:
 cwd = await workspace.cwd(agentId)
 connect <target> --project-path <cwd>     # clones on first use when the kind is github
 install --host claude --project <cwd>     # -> <cwd>/.claude/skills/context-tree-*
-install --host codex                      # -> ~/.codex/skills/context-tree-*
+install --host codex                      # -> $CODEX_HOME/skills/context-tree-*
 ```
 
 `connect` is idempotent for an identical connection, so this is the ensure operation. It also
@@ -117,12 +117,19 @@ Preparation runs in `SessionRuntimeManager` at Provider Runtime start, not in wo
 preparation. `verifyAgent` delegates to `prepareAgent` and the preflight calls it on every Turn
 admission, so work placed there would run per Turn.
 
-### Concurrency
+### Concurrency and Session-start budget
 
 The CLI replaces its connection store atomically but without a cross-process lock, so concurrent
 read-modify-write can lose unrelated records. OpenTag serializes its own invocations behind one
-in-process mutex. A record lost to a user hand-running the CLI concurrently self-heals, because
-OpenTag re-`connect`s at every Provider Runtime start.
+in-process mutex. Concurrent starts for the same workspace join one in-flight preparation.
+Session start races that work against a 5-second budget: if preparation is still running, the
+Session receives `PREPARING` and starts without durable memory while the serialized work continues
+in the background. A completed success is cached per workspace and target. A failure is held in a
+one-minute cooldown, limiting an unreachable target to one attempt per minute per workspace while
+preserving retry after a transient fault.
+
+The Turn's `AbortSignal` is deliberately not threaded into preparation. Once work is backgrounded,
+cancelling one Turn must not cancel a clone or installation that another Session can use.
 
 The residual risk is a user running the CLI by hand at the same moment. That self-heals: OpenTag
 re-connects on every Agent Runtime start, so a dropped record is restored at the next Session. A
@@ -182,10 +189,13 @@ Project MCP servers remain excluded by `--strict-mcp-config`.
 
 Two consequences to hold in view:
 
-- An Agent can write its own `<workspace>/.claude/settings.json`. Under
-  `--permission-mode bypassPermissions` with an unrestricted filesystem this is not a privilege
-  escalation, but it does mean `effectiveSnapshotHash` no longer fully determines a Session's
-  instructions.
+- An Agent can write its own `<workspace>/.claude/settings.json` or project hooks. An Agent could
+  already run commands within its current Turn under `--permission-mode bypassPermissions`; the
+  new durability delta is that it can plant a `SessionStart` or `PreToolUse` hook that persists
+  across Sessions, survives managed-instruction revisions, and has no OpenTag-side review point.
+  `effectiveSnapshotHash` therefore does not fully determine future Session behaviour. V1 accepts
+  this because the workspace is OpenTag's own private per-Agent directory and Claude Code already
+  runs there with bypassed permissions.
 - `context-tree connect` writes a marker-delimited pointer into `<workspace>/AGENTS.md` and
   symlinks `CLAUDE.md` to it. With project settings loaded, that block becomes the Session's
   ambient notice of the tree path — OpenTag-controlled text, but a second instruction channel
@@ -194,9 +204,10 @@ Two consequences to hold in view:
 ### Codex
 
 Codex reads skills from `$CODEX_HOME/skills`, independently of the `plugins` and `hooks` features
-OpenTag disables, so no marketplace or feature change is required. OpenTag writes only
-`context-tree-*` directories into the user's real `~/.codex/skills` — the same operation the
-package's own global install performs, idempotent and reversible.
+OpenTag disables, so no marketplace or feature change is required. For `install --host codex`,
+OpenTag sets `HOME` to the parent of the resolved Codex home, making the package install into the
+same `.codex/skills` directory from which the spawned Runtime reads. OpenTag writes only
+`context-tree-*` directories there; the operation is idempotent and reversible.
 
 This mutates user configuration, which an earlier revision of this document rejected in favour of
 a managed `CODEX_HOME`. That option was dropped because it changes provider artifact identity,
@@ -231,6 +242,14 @@ Agent revision. Configuration-time instruction validation budgets the longest pl
 Agent can render, so a write accepted there cannot later fail snapshot assembly. A stored name
 that is not a usable slug fails closed rather than reaching a Session as a malformed identity.
 
+Tightening `AgentInstructionsSchema` to reserve the worst-case slug-bearing platform line narrows
+the formerly accepted 24 KiB boundary by that identity line. `AgentRuntimeConfigSchema` is also the
+read path for persisted rows in `EffectiveRuntimeSnapshotAssembler`, so a row accepted at the old
+boundary would fail as `INVALID_STORED_CONFIG` after deployment. This lands deliberately without a
+migration because OpenTag is not generally deployed and there are no persisted rows to carry
+forward. The same schema tightening after general availability would require a compatibility read
+or data migration before rollout.
+
 There is no `OPENTAG_AGENT_SLUG` environment variable. The Context Tree CLI reads no environment
 at all, so the prompt is the only channel that reaches the Agent's reasoning.
 
@@ -252,8 +271,8 @@ product decision rather than a detail of this design.
 Every failure carries a reason, is logged once, and is reported to the Session through the
 managed prompt. The reason is the Context Tree CLI's own error code wherever there is one —
 `DIRTY_TREE`, `GITHUB_AUTH`, `INVALID_TREE`, `STALE_CONNECTION`, `CORRUPT_CONNECTION`, and so on —
-plus four of OpenTag's own: `PACKAGE_MISSING`, `SHIM_UNAVAILABLE`, `CONNECT_FAILED`, `TIMEOUT`,
-and `CLI_FAILED` as the fallback.
+plus OpenTag's own `PACKAGE_MISSING`, `SHIM_UNAVAILABLE`, `CONNECT_FAILED`, `TIMEOUT`, `CLI_FAILED`
+as the fallback, and `PREPARING` when the Session-start budget expires before background work.
 
 Passing the CLI's codes through rather than mapping them onto an OpenTag enum is deliberate.
 Nothing switches on the reason — it is rendered into a prompt line and a doctor detail — so a
@@ -271,8 +290,10 @@ which is why the failure reader honours both shapes.
   it was recorded under the Computer's current target. `opentag context-tree connect` writes the
   file and nothing else, so this is what makes a newly configured or retargeted Computer take
   effect without restarting the daemon.
-- A success is cached per workspace; a failure is not, so a transient fault retries at the next
-  Session start.
+- A success is cached per workspace. A failure is cached for a one-minute cooldown, after which a
+  later Session retries; changing the configured target invalidates both caches immediately.
+- Session start waits at most five seconds. On budget expiry it reports `PREPARING`, starts without
+  durable memory, and leaves the joined, serialized preparation running in the background.
 - The managed prompt tells the Agent durable memory is inactive and not to repair the tree or
   create one itself.
 - `opentag doctor` reports the configured target and the tree's state under a `context-tree`
@@ -295,16 +316,17 @@ Both delivery mechanisms were confirmed against the real CLIs before the surroun
 Automated coverage: target routing and config round-trip; rendered platform string, revision
 identity, snapshot hash, and instruction budget; per-provider argv and `PATH` composition; the
 failure reader against every CLI shape, including a zero-exit `ok: false` payload; shim contents
-and mode; serialized concurrent preparation; prompt rendering for ready, unconfigured, and
-unavailable; `writableRoots` composition alongside the Slack config root; and doctor's
-non-blocking behaviour in every state.
+and mode; joined background preparation, Session-start budgeting, failure cooldown, and durable
+outcome records; prompt rendering for ready, unconfigured, preparing, and unavailable;
+`writableRoots` composition alongside the Slack config root; and doctor's non-blocking behaviour
+in every state.
 
-Three end-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
-and `OPENTAG_HOME` redirected: two Agent workspaces on one Computer resolving to the same
-checkout and invoking `context-tree` by name through the shim; one Agent writing
-`members/<slug>/memory.md` through the real isolated-worktree protocol while a second Agent in a
-different workspace reads it back; and a Session still starting after the configured tree is
-deleted from underneath it.
+Four end-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
+and `OPENTAG_HOME` redirected: two Agent workspaces on one Computer resolving to the same checkout
+and invoking `context-tree` by name through the shim; Codex skills landing in a custom `.codex`
+home while the account home stays untouched; one Agent writing `members/<slug>/memory.md` through
+the real isolated-worktree protocol while a second Agent in a different workspace reads it back;
+and a Session still starting after the configured tree is deleted from underneath it.
 
 Beyond the repository gates, the packaged CLI was installed from its own tarball into a throwaway
 consumer and driven through `connect`, `doctor` on a configured Computer, an unconfigured
@@ -321,6 +343,14 @@ the dependency from the published bundle.
   the CLI's connection store by hand is noticed within a daemon's lifetime. Honouring OpenTag's own
   configuration changes is separate and is not deferred.
 - A cross-process advisory lock around the CLI's connection store.
+- Validating a GitHub target during `opentag context-tree connect`, for example with a cheap
+  `git ls-remote` probe. That adds network work to a command deliberately kept read-only;
+  background preparation plus durable doctor visibility removes the Session-start harm meanwhile.
+- Supporting an arbitrary `CODEX_HOME` whose basename is not `.codex`; the Context Tree CLI needs
+  an explicit skills-root flag because its host install can target only `<HOME>/.codex/skills`.
+- Sanitizing Claude project inputs (`settings.json`, `settings.local.json`, `hooks/`, `agents/`,
+  `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
+  OpenTag-written content.
 - Server-propagated target, so a Computer inherits it when it connects.
 - Suppressing the workspace `AGENTS.md` pointer with an upstream `--no-pointer` flag.
 - Project-scoped trees, so several Agents share a tree without sharing all Computer memory.

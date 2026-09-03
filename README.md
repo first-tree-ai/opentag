@@ -4,11 +4,15 @@
 
 # OpenTag
 
-**Open source AI teammate.**
+__Your model, your machine, your AI coworker__
 
-In your Slack and Lark. Tag it in a thread and it does the work, running the coding agent and model
-plan you already pay for, with its work area in plain files on your own machine. Free and Apache
-2.0: own your tag, own your files, bring your own plan. It runs on your machine.
+OpenTag is an open-source, multi-model AI coworker. From Slack and Lark talk to AI agents
+that run on your own machine and use your model provider of choice.
+
+- **Message an agent in Slack or Lark** - it runs locally and replies in the channel
+- **Agents can communicate with each other**, one agent can delegate to others and check progress
+- **Bring your own** Claude, Codex or Pi agents
+- **Open-source** and **self-hostable**
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
@@ -24,44 +28,6 @@ plan you already pay for, with its work area in plain files on your own machine.
 <p align="center">
   <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
 </p>
-
----
-
-## What is OpenTag?
-
-You already pay for Claude Code or Codex, but the agent lives in a terminal on one person's laptop.
-OpenTag puts it in the room: one bot the whole channel shares, running on a machine you own.
-
-- **[Lark and Slack](#chat-platforms) →** Bind an Agent, invite it to a channel, tag it.
-- **[Channel and Thread Sessions](./docs/thread-sessions.md) →** One long-lived Session per channel; threads get their own on demand.
-- **[It answers as itself](./docs/direct-provider-cli.md) →** The agent holds scoped IM credentials and decides whether to reply, open a thread, or react.
-- **Nothing gets dropped →** Messages are persisted and handed over with explicit custody; Agent bindings are fenced by revision.
-
----
-
-## Context you can open.
-
-*It lives in files on your machine, not in a store you have to ask for.*
-
-- **From every channel it is in →** [Thread Sessions](./docs/thread-sessions.md) carry bounded root and thread history, so the agent starts from what was actually said.
-- **In plain files →** Work areas and runtime state live under `${OPENTAG_HOME}`, private by default. OpenTag does not upload those files anywhere.
-- **[Agents that talk to each other](./docs/internal-session-collaboration.md) →** Durable internal Sessions with explicit retry.
-
-## It works with the tools already on that machine.
-
-*No OpenTag connector to configure, because there is no OpenTag connector in the way.*
-
-- **Whatever its runtime can invoke →** A tool that is installed, signed in, and visible to the provider runtime on that Computer can be used from the thread, subject to that tool's own permissions. OpenTag does not discover or expose tools for it.
-- **No credential custody →** OpenTag never asks for a provider API key. Those CLIs authenticate to their own providers exactly as they do when you run them yourself.
-
-## Own the whole thing.
-
-*Own your tag, own your context, bring your own plan.*
-
-- **No model lock-in →** [Codex and Claude Code](#runtimes) run as the CLIs already signed in on your machine. OpenTag ships no model and never asks for a provider key.
-- **Work-area files stay local →** Work areas and runtime state sit on hardware you control, not in a vendor account you can be locked out of. What the agent sends to its provider, and what that provider retains, stays between you and them.
-- **Own the tag →** Apache 2.0, no hosted-service carve-out and no commercial-use rider. [LICENSE](./LICENSE)
-- **Run it anywhere →** `ghcr.io/first-tree-ai/opentag`, published per commit, pointed at your own PostgreSQL. [Deployment guide](./docs/deploying.md)
 
 ---
 

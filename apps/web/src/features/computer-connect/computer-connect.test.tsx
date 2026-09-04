@@ -15,7 +15,7 @@ const REPLACEMENT_COMMAND = "opentag computer connect --server https://opentag.e
 const REDEEMED_AT = "2026-08-20T00:00:01.000Z";
 // What the block both shows and copies for `Ada's Mac`: the POSIX null command, with the
 // apostrophe closed and reopened so the sentence cannot escape its quotes.
-const REPAIR_COMMENT = ": 'Run this command in the terminal on Ada'\\''s Mac'";
+const REPAIR_COMMENT = ": 'Run this command to reconnect OpenTag on Ada'\\''s Mac.'";
 
 const computer: Computer = {
   computerId: COMPUTER_ID,
@@ -92,7 +92,9 @@ describe("ComputerConnect", () => {
     await flushAsync();
     expect(commandIsShown(COMMAND)).toBe(true);
     expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(
+      screen.getByText("Paste this command into the coding agent on the computer you're connecting."),
+    ).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for your computer");
     const remaining = screen.getByText("Expires in 15:00");
     expect(remaining.closest('[role="status"]')).toBeNull();
@@ -125,7 +127,7 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
-    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(screen.getByText("Paste this command into the coding agent on Ada's Mac.")).toBeTruthy();
     expect(screen.getByText(REPAIR_COMMENT)).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });

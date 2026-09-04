@@ -397,7 +397,9 @@ function ComputerConnectPresentation({
   const intro =
     state.kind === "idle" && targetName
       ? m.computer_connect_repair_intro({ computerName: targetName })
-      : m.computer_connect_command_intro();
+      : targetName
+        ? m.computer_connect_repair_command_intro({ computerName: targetName })
+        : m.computer_connect_create_command_intro();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
       <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">

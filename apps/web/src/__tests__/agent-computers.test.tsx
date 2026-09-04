@@ -77,7 +77,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
     // The comment is the POSIX null command, not a `#` line: zsh runs a pasted `#` and answers
     // "command not found", so #500 made it inert. This is the rendered form.
-    expect(screen.getByText(": 'Run this command in the terminal on Ada'\\''s Mac'")).toBeTruthy();
+    expect(screen.getByText(": 'Run this command to reconnect OpenTag on Ada'\\''s Mac.'")).toBeTruthy();
     const repairRequests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/computer-connect-codes" && init?.method === "POST");

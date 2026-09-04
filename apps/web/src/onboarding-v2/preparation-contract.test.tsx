@@ -370,9 +370,7 @@ describe("F6 cross-layer gating, page level", () => {
     expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("needs-attention");
     expect(rowTitle("im-cli:feishu")).toContain("Lark CLI");
     expect(rowTitle("im-cli:feishu")).toContain("Needs attention");
-    expect(rowDetail("im-cli:feishu")).toContain(
-      "repair and verification instructions printed by the connection command",
-    );
+    expect(rowDetail("im-cli:feishu")).toContain("Continue the repair in the coding agent on Review Mac");
     expect(readinessRow("im-cli:slack").getAttribute("data-status")).toBe("ready");
     // The row never fabricates a checking state for an unavailable report.
     expect(rowTitle("im-cli:feishu")).not.toContain("Checking");

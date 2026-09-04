@@ -211,7 +211,6 @@
   "onboarding_v2_setup_title": "设置 {name}",
   "onboarding_v2_setup_unavailable_detail": "它可能已被删除，或属于其他账户。",
   "onboarding_v2_setup_unavailable_title": "无法在此设置此 Agent",
-  "onboarding_v2_start_over": "重新开始",
   "onboarding_v2_step_agent_label": "创建 Agent",
   "onboarding_v2_step_computer_label": "准备电脑",
   "onboarding_v2_step_messaging_label": "连接消息应用"

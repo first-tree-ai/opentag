@@ -211,7 +211,6 @@
   "onboarding_v2_setup_title": "Set up {name}",
   "onboarding_v2_setup_unavailable_detail": "It may have been deleted, or it belongs to a different account.",
   "onboarding_v2_setup_unavailable_title": "This agent can't be set up here",
-  "onboarding_v2_start_over": "Start over",
   "onboarding_v2_step_agent_label": "Create agent",
   "onboarding_v2_step_computer_label": "Prepare computer",
   "onboarding_v2_step_messaging_label": "Connect messaging"

@@ -13,24 +13,15 @@ import {
   agentId,
   agentListItem,
   agentSummary,
-  creationIntentKey,
   installApi,
   json,
   resetWebAppState,
   secondAgentId,
   secondAgentListItem,
-  storeCreationIntent,
 } from "./support/app-fixtures.js";
 
 const missingAgentId = "00000000-0000-4000-8000-000000000099";
-const savedCreationIntentId = "10000000-0000-4000-8000-000000000001";
 const observedAt = "2026-08-20T00:00:00.000Z";
-
-const savedCreationRequest = {
-  displayName: "recovered-agent",
-  name: "recovered-agent",
-  runtimeProvider: "codex",
-};
 
 function setupSnapshot(targetAgentId: string) {
   const summary =
@@ -97,21 +88,6 @@ function agentListReads() {
   return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === undefined);
 }
 
-function installCreationIntentResult(response: Response) {
-  const fallback = vi.mocked(fetch).getMockImplementation();
-  if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
-  vi.mocked(fetch).mockImplementation(async (input, init) => {
-    if (input === `/api/v1/agents/creation-intents/${savedCreationIntentId}` && init?.method === undefined) {
-      return response;
-    }
-    return fallback(input, init);
-  });
-}
-
-function storeSavedCreationIntent() {
-  storeCreationIntent({ creationIntentId: savedCreationIntentId, request: savedCreationRequest });
-}
-
 describe("Agent Setup route boundary", () => {
   beforeEach(resetWebAppState);
 
@@ -154,7 +130,7 @@ describe("Agent Setup route boundary", () => {
     expect(posts).toHaveLength(1);
     const body = JSON.parse(String(posts[0]?.[1]?.body)) as Record<string, unknown>;
     expect(body.runtimeProvider).toBe("codex");
-    expect(body.creationIntentId).toEqual(expect.any(String));
+    expect(body).not.toHaveProperty("creationIntentId");
     expect(body).not.toHaveProperty("computerId");
   });
 
@@ -168,7 +144,7 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
-  it("keeps an uncertain creation explicit and retries only after the reader asks", async () => {
+  it("reports a creation whose answer never arrived and leaves the reader on the form", async () => {
     installAgentSetupApi();
     const fallback = vi.mocked(fetch).getMockImplementation();
     if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
@@ -188,120 +164,282 @@ describe("Agent Setup route boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    expect(await screen.findByRole("heading", { name: "Creation attempt interrupted" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check result" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Discard and start over" })).toBeTruthy();
+    /*
+     * The failure is stated and nothing is saved. Whether that request reached the Server is
+     * answered by the Agent list, which this Account passes through on every visit — so pressing
+     * Create again is a decision the reader makes there, with the Agents in front of them, rather
+     * than one this page reconstructs from a record of its own.
+     */
+    expect(await screen.findByText("Connection closed before the result arrived")).toBeTruthy();
     expect(window.location.search).toBe("?action=create");
-    fireEvent.click(screen.getByRole("button", { name: "Retry creation" }));
+    expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
+    // Nothing was refused by name, so there is no Agent to offer and nothing was saved either.
+    expect(screen.queryByRole("link", { name: /^Open @/ })).toBeNull();
+    expect(window.localStorage.length).toBe(0);
 
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
     expect(agentCreationPosts()).toHaveLength(2);
   });
 
-  it("recovers a saved creation result at mount and canonicalizes to the exact Agent", async () => {
-    installAgentSetupApi({ setupCompletedAt: null });
-    installCreationIntentResult(json({ kind: "found", agentId }));
-    storeSavedCreationIntent();
-    window.history.replaceState({}, "", "/agents/setup?action=create");
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { name: "Creation attempt interrupted" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry creation" }).hasAttribute("disabled")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    const create = screen.getByRole("button", { name: "Create Agent" });
-    expect(create.hasAttribute("disabled")).toBe(true);
-    const form = create.closest("form");
-    if (!form) throw new Error("Agent creation form was not rendered");
-    fireEvent.submit(form);
-    expect(agentCreationPosts()).toHaveLength(0);
-    expect(window.localStorage.getItem(creationIntentKey)).not.toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Check result" }));
-
-    await waitFor(() => expect(window.location.search).toBe(`?agentId=${agentId}`));
-    expect(window.localStorage.getItem(creationIntentKey)).toBeNull();
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
-  });
-
-  it("keeps a saved creation intent when the exact result is absent or cannot be checked", async () => {
+  it("names the Agent a refused name already belongs to, and offers it", async () => {
+    /*
+     * The refusal covers two situations the Server cannot tell apart: a name the reader has already
+     * used, and a request that reached the Server without its answer reaching the browser. Naming
+     * the Agent answers both — it is either the one they meant, or the one their own press made —
+     * and on this route, where an Account with no proved Agent has no other exit, it is the way out.
+     */
     installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
-    installCreationIntentResult(json({ kind: "not-found" }));
-    storeSavedCreationIntent();
-    window.history.replaceState({}, "", "/agents/setup?action=create");
-    const view = render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
-    expect(await screen.findByText(/No active Agent named @recovered-agent exists yet/)).toBeTruthy();
-    expect(window.localStorage.getItem(creationIntentKey)).not.toBeNull();
-    expect(window.location.search).toBe("?action=create");
-
-    view.unmount();
-    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
-    installCreationIntentResult(
-      json(
-        {
-          error: {
-            code: "SERVICE_UNAVAILABLE",
-            category: "transient",
-            message: "Creation status unavailable",
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let agentExists = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        agentExists = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
           },
-        },
-        503,
-      ),
-    );
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && agentExists) {
+        return json({ agents: [agentListItem] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Check result" }));
 
-    expect(await screen.findByText("Creation status unavailable")).toBeTruthy();
-    expect(window.localStorage.getItem(creationIntentKey)).not.toBeNull();
-    expect(window.location.search).toBe("?action=create");
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    const open = await screen.findByRole("link", { name: "Open @reviewer" });
+    expect(open.getAttribute("href")).toBe(`/agents/${agentId}`);
+    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    // Nobody is moved: the reader chooses between the Agent that exists and a different name.
+    expect(window.location.search).toBe("");
+    expect(agentCreationPosts()).toHaveLength(1);
+
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "helper" } });
+    expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
+    expect(screen.queryByText("An active Agent with this name already exists for this Account")).toBeNull();
   });
 
-  it("discards a saved creation intent and resets the thin creation flow", async () => {
+  it("retires a refusal's offer with the refusal itself", async () => {
+    /*
+     * The offer belongs to the failure that produced it. A later failure of a different kind, on the
+     * same name, is not answered by it — and an offer sitting under a banner that says the request
+     * never reached the Server is the second, disagreeing account of one fact this flow exists to
+     * be rid of.
+     */
     installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
-    storeSavedCreationIntent();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let refused = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        if (refused) throw new TypeError("Connection closed before the result arrived");
+        refused = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && refused) {
+        return json({ agents: [agentListItem] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect(await screen.findByRole("link", { name: "Open @reviewer" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect(await screen.findByText("Connection closed before the result arrived")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
+  });
+
+  it("names a paused Agent, because a paused Agent is what refused the name", async () => {
+    /*
+     * The Server refuses a name that any Agent which is not deleted carries, so a paused one refuses
+     * it too. Looking only for a working Agent would throw that answer away out of the very response
+     * that carries it, and leave a refusal naming nothing.
+     */
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let refused = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        refused = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && refused) {
+        return json({ agents: [{ ...agentListItem, status: "suspended" }] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect((await screen.findByRole("link", { name: "Open @reviewer" })).getAttribute("href")).toBe(
+      `/agents/${agentId}`,
+    );
+  });
+
+  it("still offers a way off the page when the refused name cannot be traced", async () => {
+    /*
+     * The offer is this route's only exit, and it asks for a second read straight after one request
+     * has just failed — which is when that read is least likely to succeed. So a refusal that cannot
+     * name the Agent still says where to look, rather than leaving a screen with no way out.
+     */
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let refused = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        refused = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && refused) {
+        throw new TypeError("Connection closed before the result arrived");
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    const exit = await screen.findByRole("link", { name: "Go to your Agents" });
+    expect(exit.getAttribute("href")).toBe("/agents");
+    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+  });
+
+  it("does not repeat a way back the header already offers", async () => {
+    /*
+     * The bare fallback exists because this page can be the only one an Account can reach. An
+     * admitted Account already has Back to agents in the header, so a second control to the same
+     * destination, worded differently, would read as a different thing while doing the same one.
+     */
+    installAgentSetupApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined) {
+        throw new TypeError("Connection closed before the result arrived");
+      }
+      return fallback(input, init);
+    });
     window.history.replaceState({}, "", "/agents/setup?action=create");
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("recovered-agent");
-    fireEvent.click(screen.getByRole("button", { name: "Discard and start over" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "Creation attempt interrupted" })).toBeNull());
-    expect(window.localStorage.getItem(creationIntentKey)).toBeNull();
-    expect(screen.getByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("opentag");
+    expect(await screen.findByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to agents" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Go to your Agents" })).toBeNull();
   });
 
-  it("prunes a superseded v3 creation intent instead of resuming an incompatible request", async () => {
-    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
-    window.localStorage.setItem(
-      creationIntentKey,
-      JSON.stringify({
-        version: 3,
-        accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
-        records: [
+  it("offers the same Agent to an Account that asked for an extra one and reused a name", async () => {
+    installAgentSetupApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        return json(
           {
-            version: 3,
-            accountId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
-            creationIntentId: savedCreationIntentId,
-            request: {
-              ...savedCreationRequest,
-              computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
             },
           },
-        ],
-      }),
-    );
+          409,
+        );
+      }
+      return fallback(input, init);
+    });
     window.history.replaceState({}, "", "/agents/setup?action=create");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Where should your agent run?" })).toBeTruthy();
-    await waitFor(() => expect(window.localStorage.getItem(creationIntentKey)).toBeNull());
-    expect(screen.queryByRole("heading", { name: "Creation attempt interrupted" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    // The Account that deliberately asked for another Agent gets the same two ways forward, and
+    // keeps the exit it already had.
+    expect((await screen.findByRole("link", { name: "Open @reviewer" })).getAttribute("href")).toBe(
+      `/agents/${agentId}`,
+    );
+    expect(window.location.search).toBe("?action=create");
+    expect(screen.getByRole("button", { name: "Back to agents" })).toBeTruthy();
   });
 
   it("redirects an un-targeted visit to the canonical exact URL when the Account has one active Agent", async () => {

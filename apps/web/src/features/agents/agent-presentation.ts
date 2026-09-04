@@ -13,8 +13,9 @@ import {
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
 /**
- * The card states what is true and how urgent it is; it carries no exit of its own. Opening the
- * Agent is the single follow-up, and the Agent page is where each failed dependency is explained.
+ * The card states what is true and how urgent it is. It carries no recovery of its own, because
+ * what to do about a broken dependency depends on which one broke, and that explanation lives on
+ * the Agent. The one exception is setup that never finished — see `agentSetupContinuation`.
  */
 type AgentCardStatus = {
   detail?: string;
@@ -344,6 +345,38 @@ export type AgentDependencyStatus = {
 
 function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
   return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+}
+
+/**
+ * The reasons Agent Setup still owns, and so the ones it can still answer for. They are the same
+ * set the Agent page routes to setup rather than to Settings: a Computer, the chosen runtime on
+ * that Computer, and a messaging app that is connected but not yet finished — a connect left
+ * mid-scan, or a provider CLI the Computer has not made ready.
+ *
+ * `computer_offline` is deliberately absent. Its subject is the machine rather than the flow, and
+ * repeating setup does not reach it; the Agent page sends it to Settings, and so does the list.
+ */
+const SETUP_REASONS: ReadonlySet<AgentAvailability["reason"]> = new Set([
+  "computer_not_bound",
+  "runtime_unavailable",
+  "im_not_connected",
+  "im_provisioning",
+  "handoff_unavailable",
+]);
+
+/**
+ * Finishing setup, offered from the list rather than only from the Agent.
+ *
+ * An Agent that was left part-way through setup is the one case where the list can act: whichever
+ * of the three is missing, the answer is the same page, so naming the destination costs the reader
+ * nothing and saves them from having to discover it. Every other failure keeps the list's rule —
+ * open the Agent, where the specific dependency is explained.
+ */
+export function agentSetupContinuation(agent: {
+  availability: AgentAvailability;
+  id: string;
+}): AgentDependencyStatus["action"] {
+  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
 }
 
 function settingsAction(

@@ -1,13 +1,11 @@
-import type { AgentRuntimeProvider, ImProvider } from "@opentag/shared/browser";
+import type { AgentRuntimeProvider, CreateAgentRequest, ImProvider } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import type { CreationIntentRequest } from "../agent-creation/creation-intent-store.js";
 import * as m from "../paraglide/messages.js";
 import { Button, KumoSelectControl, Loader, Text } from "../ui/design-system.js";
 import { AgentSetupLabControls } from "./agent-setup-lab-controls.js";
 import {
   automaticEventDelay,
   failPendingLabEvent,
-  LAB_ACCOUNT_ID,
   LAB_AGENT_ID,
   type LabAutomation,
   type LabInventory,
@@ -193,7 +191,7 @@ export function AgentSetupLabPage() {
   );
 
   const createPreviewAgent = useCallback(
-    async (request: CreationIntentRequest) => {
+    async (request: CreateAgentRequest) => {
       setConfiguration((current) => ({
         ...current,
         runtime: request.runtimeProvider,
@@ -328,7 +326,7 @@ function LabPreview({
   version,
 }: {
   readonly configuration: LabConfiguration;
-  readonly createPreviewAgent: (request: CreationIntentRequest) => Promise<{ id: string }>;
+  readonly createPreviewAgent: (request: CreateAgentRequest) => Promise<{ id: string }>;
   readonly memory: LabMemory;
   readonly navigationTarget: LabNavigationTarget | undefined;
   readonly onNavigationTargetChange: (target: LabNavigationTarget | undefined) => void;
@@ -354,7 +352,6 @@ function LabPreview({
   if (phase === "creation") {
     return (
       <AgentSetupSurface
-        accountId={LAB_ACCOUNT_ID}
         creationPreview={createPreviewAgent}
         key={`creation:${configuration.revision}:${configuration.journey}`}
         onAgentAvailable={() => undefined}

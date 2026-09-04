@@ -96,7 +96,6 @@ export function AgentSetupBoundary({
   );
   return (
     <TargetedAgentSetup
-      accountId={me.user.id}
       accountCompleted={me.setupCompletedAt !== null}
       action={action}
       agentId={agentId}
@@ -114,7 +113,6 @@ export function AgentSetupBoundary({
 }
 
 function TargetedAgentSetup({
-  accountId,
   accountCompleted,
   action,
   agentId,
@@ -128,7 +126,6 @@ function TargetedAgentSetup({
   reviewMode,
   slackOAuthError,
 }: {
-  accountId: string;
   accountCompleted: boolean;
   action?: "create";
   agentId?: string;
@@ -283,11 +280,7 @@ function TargetedAgentSetup({
   }
 
   return (
-    <AgentSetupSurface
-      accountId={accountId}
-      onBackToAgents={accountCompleted ? onBackToAgents : undefined}
-      onAgentAvailable={onTarget}
-    />
+    <AgentSetupSurface onBackToAgents={accountCompleted ? onBackToAgents : undefined} onAgentAvailable={onTarget} />
   );
 }
 

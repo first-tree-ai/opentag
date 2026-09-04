@@ -36,6 +36,11 @@ function connectionTarget(url) {
   };
 }
 
+// The postgres image runs a temporary server during first-time initialization so it can apply the
+// init scripts, then shuts it down and starts the real one. That temporary server listens on the Unix
+// socket only, so every statement here goes over TCP inside the container, which only the real server
+// answers. A socket connection cannot tell the two apart and lands in the handover as
+// `FATAL: the database system is shutting down`.
 async function psql(url, sql) {
   const { database, password, username } = connectionTarget(url);
   const { stdout } = await execFileAsync(
@@ -50,6 +55,8 @@ async function psql(url, sql) {
       `PGPASSWORD=${password}`,
       "postgres",
       "psql",
+      "-h",
+      "127.0.0.1",
       "-U",
       username,
       "-d",
@@ -68,6 +75,7 @@ async function run(command, args, options = {}) {
   return execFileAsync(command, args, { cwd: repositoryRoot, ...options });
 }
 
+// Gates on the real server: `select 1` cannot succeed over TCP while initialization is still running.
 async function waitForDatabase() {
   const deadline = Date.now() + 60_000;
   let lastError;

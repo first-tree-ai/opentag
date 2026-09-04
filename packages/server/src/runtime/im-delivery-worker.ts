@@ -62,6 +62,7 @@ import type { ConnectionRegistry } from "./connection-registry.js";
 import type { ImDeliveryWorkerInput, RuntimeDeliveryWorkerMetric, WorkerClaim } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
+import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
 
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
@@ -1236,6 +1237,8 @@ export class ImDeliveryWorker {
       content: imMessages.content,
       channelId: imMessages.channelId,
       externalMessageId: imMessages.externalMessageId,
+      authorKind: imMessages.authorKind,
+      authorExternalId: imMessages.authorExternalId,
       providerContext: imMessages.providerContext,
       imBinding: imBindings,
     };
@@ -1381,37 +1384,6 @@ export class ImDeliveryWorker {
       .limit(1);
     return threadDelivery ? "observer" : undefined;
   }
-}
-
-function runtimeProviderMessageRef(
-  message: Pick<typeof imMessages.$inferSelect, "channelId" | "externalMessageId" | "providerContext">,
-  binding: typeof imBindings.$inferSelect,
-): RuntimeProviderMessageRef {
-  if (!binding.externalAppId || !binding.externalBotId) throw new Error("IM_BINDING_IDENTITY_INCOMPLETE");
-  if (message.providerContext.provider === "feishu") {
-    const { provider: _provider, ...context } = message.providerContext;
-    return {
-      provider: "feishu",
-      teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
-      appId: binding.externalAppId,
-      botOpenId: binding.externalBotId,
-      chatId: message.channelId,
-      messageId: message.externalMessageId,
-      ...context,
-    };
-  }
-  if (!binding.externalTeamId) throw new Error("IM_BINDING_IDENTITY_INCOMPLETE");
-  const { provider: _provider, ...context } = message.providerContext;
-  return {
-    provider: "slack",
-    appId: binding.externalAppId,
-    teamId: binding.externalTeamId,
-    ...(binding.externalEnterpriseId ? { enterpriseId: binding.externalEnterpriseId } : {}),
-    botUserId: binding.externalBotId,
-    channelId: message.channelId,
-    messageTs: message.externalMessageId,
-    ...context,
-  };
 }
 
 type CustodyQuery = Pick<DatabaseClient | DatabaseTransaction, "select">;

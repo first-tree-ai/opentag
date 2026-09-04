@@ -69,15 +69,7 @@ const slackDetail = {
     appIdEvidence: "configured" as const,
   },
   credentialGeneration: 1,
-  grantedCapabilities: [
-    "app_mentions:read",
-    "channels:history",
-    "chat:write",
-    "files:read",
-    "groups:history",
-    "im:history",
-    "mpim:history",
-  ],
+  grantedCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
   reauthorizationRequired: false,
   lastErrorCode: null,
 };

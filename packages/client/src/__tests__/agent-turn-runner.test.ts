@@ -106,6 +106,18 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("at most 1 message per second per channel");
     expect(input.items[0]?.text).toContain("<@U...>");
     expect(input.items[0]?.text).toContain("conversations.history and similar reads are rate-limited");
+    expect(input.items[0]?.text).toContain("team.info, users.info, users.list");
+    expect(input.items[0]?.text).toContain("conversations.replies");
+    expect(input.items[0]?.text).toContain("chat.update");
+    expect(input.items[0]?.text).toContain("conversations.open");
+    expect(input.items[0]?.text).toContain("conversations.join");
+    expect(input.items[0]?.text).toContain("channels:join cannot add the bot to a private channel");
+    expect(input.items[0]?.text).toContain("unless the task requires a cross-conversation action");
+    expect(input.items[0]?.text).toContain("reactions.add");
+    expect(input.items[0]?.text).toContain("files.getUploadURLExternal");
+    expect(input.items[0]?.text).toContain("files.completeUploadExternal");
+    expect(input.items[0]?.text).toContain("response_metadata.next_cursor");
+    expect(input.items[0]?.text).toContain("Retry-After");
     expect(input.items[0]?.text).toContain("Never print credentials, tokens, or the environment file");
     expect(input.items[0]?.text).not.toMatch(/xox[bpa]-/);
     expect(Buffer.byteLength(input.items[0]?.text ?? "", "utf8")).toBeLessThan(16 * 1024);

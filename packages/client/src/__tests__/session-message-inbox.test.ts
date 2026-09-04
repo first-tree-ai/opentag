@@ -726,6 +726,18 @@ describe("SessionMessageInbox", () => {
     expect(slackText).toContain("at most 1 message per second per channel");
     expect(slackText).toContain("<@U...>");
     expect(slackText).toContain("conversations.history and similar reads are rate-limited");
+    expect(slackText).toContain("team.info, users.info, users.list");
+    expect(slackText).toContain("conversations.replies");
+    expect(slackText).toContain("chat.update");
+    expect(slackText).toContain("conversations.open");
+    expect(slackText).toContain("conversations.join");
+    expect(slackText).toContain("channels:join cannot add the bot to a private channel");
+    expect(slackText).toContain("unless the task requires a cross-conversation action");
+    expect(slackText).toContain("reactions.add");
+    expect(slackText).toContain("files.getUploadURLExternal");
+    expect(slackText).toContain("files.completeUploadExternal");
+    expect(slackText).toContain("response_metadata.next_cursor");
+    expect(slackText).toContain("Retry-After");
     expect(slackText).toContain("Never print credentials, tokens, or the environment file");
     expect(slackText).not.toContain("OPENTAG_LARK_BODY");
     expect(slackText).not.toMatch(/xox[bpa]-/);

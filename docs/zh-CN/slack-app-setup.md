@@ -24,11 +24,20 @@ Slack 安装。
 
 - `app_mentions:read`
 - `channels:history`
+- `channels:join`
+- `channels:read`
 - `chat:write`
 - `files:read`
+- `files:write`
 - `groups:history`
+- `groups:read`
 - `im:history`
+- `im:write`
 - `mpim:history`
+- `reactions:read`
+- `reactions:write`
+- `team:read`
+- `users:read`
 
 订阅 bot events：
 
@@ -44,12 +53,15 @@ manifest 同时启用可写的 App Home Messages 标签页。修改 Agent 的 `r
 manifest、轮换 installation 凭证代际、要求重新安装或授权、重试 Request URL，也不会发送测试消息。`assistant:write`
 不属于 V1 能力契约；以后最多作为可选附加能力考虑，不得加入当前安装。
 
+面向另行注册的测试 Team/App 的无凭证本地 live 验收清单见
+[slack-live-acceptance.md](./slack-live-acceptance.md)。
+
 ## Agent 配置流程
 
 1. 打开 **Add OpenTag to Slack** 或 **Reauthorize Slack**。OpenTag 发起一等 OAuth。阅读页面不写入数据。
 2. 在目标 Slack 工作区批准 OpenTag Slack App。
 3. 公开 callback 用 Slack code 换 token，检查 Bot 身份、Team、存在时的 Enterprise，以及实际 `x-oauth-scopes`，并要求完整
-   七项 scopes。若 Slack 返回 App ID，也必须与一等 OpenTag App 相同。
+   十六项固定 bot scopes。若 Slack 返回 App ID，也必须与一等 OpenTag App 相同。
 4. OpenTag 锁定 Agent 当前 route，重新核验 Team 权限与预期 route 代际，再按 Slack installation 原子执行提交意图。
    **Create** 会安装 Slack installation 并把该 Agent 设为 default route。**Reauthorize** 必须保持当前 App、Team、Bot
    User，即使 `auth.test` 不返回 `app_id`。Slack 没有 Change App 或 replace 意图；若 Agent 要离开 Slack，断开当前 route。
@@ -79,7 +91,7 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 | Team 与 Bot 展示元数据 | 作为可选展示数据保留 | Team 名称、Bot 展示名称和头像可显示在管理视图中，但绝不参与配置、入口或 runtime 授权。 |
 | Bot Token 与 Signing Secret | 加密保留在 installation | 一起存入 installation credential envelope；绝不复制到多个 Agent route，管理、诊断、runtime-config API 都不返回。Signing Secret 永不投影给 runtime。 |
 | `credentialGeneration` 与 credential schema version | 保留在 installation | installation 为权威的单调凭证修订；route 只同步脱敏快照，供 Session fencing 与诊断使用。同身份重新授权递增 installation 代际。Slack 没有 replace-App 切换。 |
-| `grantedCapabilities` | 保留在 installation | Slack 实际返回的 token scopes。route 同步脱敏快照。active/ready 投影要求完整七项。 |
+| `grantedCapabilities` | 保留在 installation | Slack 实际返回的 token scopes。route 同步脱敏快照。active/ready 投影要求完整十六项固定 scopes。 |
 | `activatedAt`、`disabledAt`、`createdAt`、`updatedAt` | 保留 | 持久 installation 生命周期时间，Slack route 上保留脱敏副本。配置提交设置激活，入站事件不设置。公共 API 将 `activatedAt` 投影为 `lastValidatedAt`。 |
 | `observedAt` | 仅作运行观测保留 | installation 为权威。正确签名的 Agent 专属 URL challenge，或正确签名且 App、Team、bot authorization 都匹配的真实事件会更新。route 同步脱敏时间戳。公共 API 将其投影为 `lastRuntimeObservationAt`。不是配置证据，也不改变代际。 |
 | `observedConnectedAt` | 作为代际身份闭合保留 | installation 为权威。对 Slack，记录签名真实事件的 `authorizations` 首次把配置 App/Team 与当前 installation 代际 token 推导 Bot User 闭合的时间；后续匹配事件保留该首次时间，仅刷新 `observedAt`。每次配置会重置，URL verification 永不设置。Feishu 继续使用其原有连接观测含义。 |
@@ -194,7 +206,7 @@ signing secret、OAuth code 与 token 都不会出现在管理 API 响应或日�
 
 已认证的 start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` 仍是选择 default Agent route 的管理入口。它会签发
 带签名的 state，其中包含一次性 nonce，并绑定浏览器 session cookie、Account、Agent、意图（`create` / `reauthorize`）以及
-预期 binding generation。公开 callback 用 Slack code 换 token，检查 Bot 身份与实际 `x-oauth-scopes`，只有在七项固定 bot
+预期 binding generation。公开 callback 用 Slack code 换 token，检查 Bot 身份与实际 `x-oauth-scopes`，只有在十六项固定 bot
 scopes 与身份检查都通过后，才写入该 Agent 所有的 installation 以及该 Agent 的显式 default route。同一安装重新授权会递增凭证代际。
 Slack replace 不是合法 OAuth 意图。重放、过期、session 不匹配，以及不同 Agent 声称同一当前 App/Team 安装时，
 都不会改写当前 installation。
@@ -209,7 +221,7 @@ Slack replace 不是合法 OAuth 意图。重放、过期、session 不匹配，
 - Bot 展示名 **OpenTag**
 - Redirect URL 等于 `OPENTAG_SLACK_REDIRECT_URL`
 - Events Request URL 为 `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/events`（带签名 HTTP，而不是 Socket Mode）
-- 与已入库 Public Distribution manifest 相同的七项 bot scopes 与订阅 bot events，包括 `app_uninstalled` 与
+- 与已入库 Public Distribution manifest 相同的十六项 bot scopes 与订阅 bot events，包括 `app_uninstalled` 与
   `tokens_revoked`
 
 该共享 Request URL 的无身份 URL verification 使用一等 signing secret，且不记录 installation 观测。安装之后，真实事件按

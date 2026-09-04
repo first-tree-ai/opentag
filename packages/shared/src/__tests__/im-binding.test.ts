@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_SETUP_RETURN_SURFACES,
@@ -50,11 +53,20 @@ describe("IM binding contracts", () => {
     expect(SLACK_REQUIRED_BOT_SCOPES).toEqual([
       "app_mentions:read",
       "channels:history",
+      "channels:join",
+      "channels:read",
       "chat:write",
       "files:read",
+      "files:write",
       "groups:history",
+      "groups:read",
       "im:history",
+      "im:write",
       "mpim:history",
+      "reactions:read",
+      "reactions:write",
+      "team:read",
+      "users:read",
     ]);
     expect(SLACK_SUBSCRIBED_BOT_EVENTS).toEqual([
       "app_mention",
@@ -67,6 +79,30 @@ describe("IM binding contracts", () => {
     ]);
     expect(hasRequiredSlackBotScopes(SLACK_REQUIRED_BOT_SCOPES)).toBe(true);
     expect(hasRequiredSlackBotScopes(SLACK_REQUIRED_BOT_SCOPES.slice(1))).toBe(false);
+    expect(hasRequiredSlackBotScopes(SLACK_REQUIRED_BOT_SCOPES.slice(0, 7))).toBe(false);
+
+    const docsRoot = join(dirname(fileURLToPath(import.meta.url)), "../../../../docs");
+    expect(manifestBotScopes(readFileSync(join(docsRoot, "slack-public-distribution-manifest.yaml"), "utf8"))).toEqual([
+      ...SLACK_REQUIRED_BOT_SCOPES,
+    ]);
+    expect(
+      markdownScopeList(readFileSync(join(docsRoot, "slack-app-setup.md"), "utf8"), "Required bot scopes:"),
+    ).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);
+    expect(
+      markdownScopeList(readFileSync(join(docsRoot, "zh-CN/slack-app-setup.md"), "utf8"), "必需 bot scopes："),
+    ).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);
+    expect(
+      markdownScopeList(
+        readFileSync(join(docsRoot, "slack-live-acceptance.md"), "utf8"),
+        "Exact required bot scopes, in contract order:",
+      ),
+    ).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);
+    expect(
+      markdownScopeList(
+        readFileSync(join(docsRoot, "zh-CN/slack-live-acceptance.md"), "utf8"),
+        "固定必需 bot scopes（契约顺序）：",
+      ),
+    ).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);
   });
 
   it("accepts only bounded canonical content", () => {
@@ -395,3 +431,26 @@ describe("IM binding contracts", () => {
     expect(() => ImBindingDiagnosticsSchema.parse({ ...diagnostics, credentialGeneration: -1 })).toThrow();
   });
 });
+
+function manifestBotScopes(source: string): string[] {
+  const block = source.match(/scopes:\n {4}bot:\n((?: {6}- .+\n)+)/);
+  if (!block?.[1]) throw new Error("missing manifest bot scopes");
+  return [...block[1].matchAll(/^ {6}- (.+)$/gm)].flatMap((match) => (match[1] ? [match[1]] : []));
+}
+
+function markdownScopeList(source: string, heading: string): string[] {
+  const start = source.indexOf(heading);
+  if (start < 0) throw new Error(`missing ${heading}`);
+  const scopes: string[] = [];
+  for (const line of source.slice(start + heading.length).split("\n")) {
+    if (line.trim() === "") {
+      if (scopes.length > 0) break;
+      continue;
+    }
+    const item = /^- `([^`]+)`$/.exec(line);
+    if (!item?.[1]) break;
+    scopes.push(item[1]);
+  }
+  if (scopes.length === 0) throw new Error(`missing ${heading} list`);
+  return scopes;
+}

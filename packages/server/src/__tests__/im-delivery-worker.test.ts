@@ -753,6 +753,96 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(delivered?.content.resources?.length ?? 900).toBeLessThan(900);
   });
 
+  it("copies Slack human authorUserId onto current delivery and history without exposing bot or system IDs", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, fixture.agentId));
+    const humanHistoryId = randomUUID();
+    const botHistoryId = randomUUID();
+    const systemHistoryId = randomUUID();
+    const botAsHumanHistoryId = randomUUID();
+    const botUserId = `bot-${fixture.bindingId}`;
+    await unit.database.insert(imMessages).values([
+      {
+        id: humanHistoryId,
+        imBindingId: fixture.bindingId,
+        channelId: "channel",
+        externalMessageId: "1710000000.000010",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "U_HUMAN",
+        content: { fallbackText: "human history" },
+        providerContext: { provider: "slack", channelType: "channel" },
+        occurredAt: new Date(Date.now() - 4_000),
+      },
+      {
+        id: botHistoryId,
+        imBindingId: fixture.bindingId,
+        channelId: "channel",
+        externalMessageId: "1710000000.000011",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "bot",
+        authorExternalId: botUserId,
+        content: { fallbackText: "bot history" },
+        providerContext: { provider: "slack", channelType: "channel" },
+        occurredAt: new Date(Date.now() - 3_000),
+      },
+      {
+        id: systemHistoryId,
+        imBindingId: fixture.bindingId,
+        channelId: "channel",
+        externalMessageId: "1710000000.000012",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "system",
+        authorExternalId: "system",
+        content: { fallbackText: "system history" },
+        providerContext: { provider: "slack", channelType: "channel" },
+        occurredAt: new Date(Date.now() - 2_000),
+      },
+      {
+        id: botAsHumanHistoryId,
+        imBindingId: fixture.bindingId,
+        channelId: "channel",
+        externalMessageId: "1710000000.000013",
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: botUserId,
+        content: { fallbackText: "bot marked human" },
+        providerContext: { provider: "slack", channelType: "channel" },
+        occurredAt: new Date(Date.now() - 1_000),
+      },
+    ] as never);
+    let delivered: DirectImMessageDeliveryRequest | undefined;
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+        onDelivery: (request) => {
+          delivered = request;
+        },
+      }) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+    });
+    await worker.runOnce();
+    expect(delivered?.content.providerRef).toMatchObject({
+      provider: "slack",
+      authorUserId: "human",
+    });
+    expect(delivered?.content.providerRef).not.toMatchObject({ authorUserId: botUserId });
+    const historyById = new Map((delivered?.content.history ?? []).map((item) => [item.imMessageId, item]));
+    expect(historyById.get(humanHistoryId)?.providerRef).toMatchObject({ authorUserId: "U_HUMAN" });
+    expect(historyById.get(botHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
+    expect(historyById.get(systemHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
+    expect(historyById.get(botAsHumanHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
+  });
+
   it("rejects or retries steering when its authority changes", async () => {
     const ownerMismatch = await steerFixture(unit);
     const otherUserId = randomUUID();

@@ -1221,6 +1221,11 @@ function MessagingHandoff({
       {messaging.progress ? (
         <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>
       ) : null}
+      {!messaging.progress && messaging.provider === "slack" ? (
+        <p className={HINT}>
+          {m.onboarding_v2_messaging_slack_observe({ provider: providerTitle(messaging.provider) })}
+        </p>
+      ) : null}
       {unbind ? (
         <div>
           <Button

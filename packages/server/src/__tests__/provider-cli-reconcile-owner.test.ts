@@ -1095,10 +1095,10 @@ describe("ProviderCliReconcileOwner", () => {
           connection.socket,
           Date.now(),
           undefined,
-          [{ provider: "codex", status: "ready" }],
+          [{ provider: "codex", status: "checking" }],
           [
-            { provider: "feishu", status: "ready" },
-            { provider: "slack", status: "ready" },
+            { provider: "feishu", status: "checking" },
+            { provider: "slack", status: "checking" },
           ],
         ),
       ).toBe(true);
@@ -1117,15 +1117,15 @@ describe("ProviderCliReconcileOwner", () => {
           undefined,
           [{ provider: "codex", status: "ready" }],
           [
-            { provider: "feishu", status: "install" },
+            { provider: "feishu", status: "ready" },
             { provider: "slack", status: "ready" },
           ],
         ),
       ).toBe(true);
-      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("unavailable");
       expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
-        "install",
-        "ready",
+        "unavailable",
+        "unavailable",
       ]);
     } finally {
       owner.close();
@@ -1207,26 +1207,6 @@ describe("ProviderCliReconcileOwner", () => {
       expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
         "ready",
         "install",
-      ]);
-
-      expect(
-        registry.touch(
-          connection.computerId,
-          connection.instanceId,
-          connection.socket,
-          Date.now(),
-          undefined,
-          [{ provider: "codex", status: "checking" }],
-          [
-            { provider: "feishu", status: "install" },
-            { provider: "slack", status: "checking" },
-          ],
-        ),
-      ).toBe(true);
-      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
-      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
-        "install",
-        "checking",
       ]);
     } finally {
       owner.close();

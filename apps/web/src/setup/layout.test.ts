@@ -70,5 +70,13 @@ describe("setup piece layout", () => {
     expect(declarationValue(".ots-slot--status", "min-height")).toBe("28px");
     // The QR frame, which holds its box whether or not a code has arrived.
     expect(declarationValue(".ots-qr", "height")).toBe("208px");
+    /*
+     * Idle repair is the one state that reserves nothing: it has no announcement to make yet, and
+     * the held-open row put dead space between the command block and the heading above it. Nothing
+     * can move here either -- the first click swaps the whole surface for the pending skeleton.
+     */
+    expect(declarationValue('[data-ui="computer-connect"][data-state="idle"] .ots-slot--status', "min-height")).toBe(
+      "0",
+    );
   });
 });

@@ -30,13 +30,11 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.getByText(/Last seen/)).toBeTruthy();
-    /*
-     * The badge, its last-seen detail and the reconnect step below say the machine is off, how
-     * long it has been off, and what to do. Prose repeating any of that is what the page used to
-     * carry twice over, so its absence is the assertion.
-     */
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
+    ).toBeTruthy();
     expect(screen.getByRole("heading", { level: 3, name: "Reconnect computer" })).toBeTruthy();
-    expect(screen.queryByText(/OpenTag is not running on/)).toBeNull();
+    // The connect step's own idle intro said the same thing as the sentence above it, word for word.
     expect(screen.queryByText(/Start OpenTag on/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
     expect(
@@ -79,8 +77,6 @@ describe("OpenTag Web App Shell", () => {
     // block already carry.
     expect(screen.getByRole("region", { name: "Reconnect computer" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reconnect Ada's Mac" })).toBeNull();
-    // What reconnecting buys leads into the command rather than trailing the status line below it.
-    expect(screen.getByText("Reconnecting restores this Computer for every Agent that runs on it.")).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
     // The comment is the POSIX null command, not a `#` line: zsh runs a pasted `#` and answers
     // "command not found", so #500 made it inert. This is the rendered form.
@@ -103,7 +99,9 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 3, name: "Reconnect computer" })).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring it back online."),
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     expect(await screen.findByRole("button", { name: "Copy command" })).toBeTruthy();
 
@@ -111,7 +109,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent(window, new Event("focus"));
 
     expect(await screen.findByText("Online")).toBeTruthy();
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "Reconnect computer" })).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/Start it there/)).toBeNull());
     expect(screen.queryByText(/Last seen/)).toBeNull();
 
     computerStatus = "offline";

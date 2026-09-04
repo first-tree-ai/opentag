@@ -283,20 +283,32 @@ describe("Agent availability model and presentation", () => {
         }),
       ).toContain("Codex");
     }
-    // Offline and unconfirmed are fully carried by the status badge, its last-seen detail and the
-    // reconnect step, so the helper adds no sentence to repeat them.
-    for (const state of ["action_required", "unconfirmed"] as const) {
-      expect(
-        computerRecoveryMessage({
-          ...base,
-          availability: {
-            ...base.availability,
-            reason: "computer_offline",
-            dependencies: { ...base.availability.dependencies, computer: { state, lastConfirmedAt: null } },
+    expect(
+      computerRecoveryMessage({
+        ...base,
+        availability: {
+          ...base.availability,
+          reason: "computer_offline",
+          dependencies: {
+            ...base.availability.dependencies,
+            computer: { state: "action_required", lastConfirmedAt: null },
           },
-        }),
-      ).toBeUndefined();
-    }
+        },
+      }),
+    ).toContain("not running");
+    expect(
+      computerRecoveryMessage({
+        ...base,
+        availability: {
+          ...base.availability,
+          reason: "computer_offline",
+          dependencies: {
+            ...base.availability.dependencies,
+            computer: { state: "unconfirmed", lastConfirmedAt: null },
+          },
+        },
+      }),
+    ).toContain("could not confirm");
     expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
     expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
     expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");

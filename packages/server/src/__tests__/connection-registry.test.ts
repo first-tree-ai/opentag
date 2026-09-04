@@ -687,6 +687,359 @@ describe("ConnectionRegistry", () => {
     ).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
   });
 
+  it("keeps a long in-flight preparation visible and ignores heartbeat readiness", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const requestId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        providerReadinessObservedAt: 1,
+        providerReadinessProviders: ["codex"],
+        imCliReadiness: [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+        imCliReadinessObservedAt: 1,
+      },
+      async () => undefined,
+    );
+
+    expect(registry.beginPreparation(computerId, instanceId, requestId, "codex", ["feishu", "slack"], 10)).toBe(true);
+    expect(registry.providerReadiness(computerId, 10)[0]?.observation.status).toBe("checking");
+    expect(registry.imCliReadiness(computerId, 10).map(({ observation }) => observation.status)).toEqual([
+      "checking",
+      "checking",
+    ]);
+    expect(registry.providerReadiness(computerId, 10 + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1)).toMatchObject([
+      { observation: { provider: "codex", status: "checking" } },
+    ]);
+
+    const lockRetryNow = 10 + 150_000;
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        runtimeSocket,
+        lockRetryNow,
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, lockRetryNow)).toEqual([
+      { observation: { provider: "codex", status: "checking" }, observedAt: lockRetryNow },
+    ]);
+    expect(registry.imCliReadiness(computerId, lockRetryNow)).toEqual([
+      { observation: { provider: "feishu", status: "checking" }, observedAt: lockRetryNow },
+      { observation: { provider: "slack", status: "checking" }, observedAt: lockRetryNow },
+    ]);
+  });
+
+  it("quarantines fallback unavailable against a stale ready heartbeat", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const requestId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => undefined,
+    );
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        runtimeSocket,
+        10,
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.beginPreparation(computerId, instanceId, requestId, "codex", ["feishu", "slack"], 20)).toBe(true);
+
+    const fallbackAt = 20 + 5 * 60_000;
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        {
+          requestId,
+          runtime: { provider: "codex", status: "unavailable" },
+          providers: [
+            { provider: "feishu", status: "unavailable" },
+            { provider: "slack", status: "unavailable" },
+          ],
+        },
+        fallbackAt,
+        { quarantine: true },
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, fallbackAt)[0]?.observation.status).toBe("unavailable");
+
+    const staleReadyAt = fallbackAt + 1;
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        runtimeSocket,
+        staleReadyAt,
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, staleReadyAt)).toEqual([
+      { observation: { provider: "codex", status: "unavailable" }, observedAt: staleReadyAt },
+    ]);
+    expect(registry.imCliReadiness(computerId, staleReadyAt).map(({ observation }) => observation.status)).toEqual([
+      "unavailable",
+      "unavailable",
+    ]);
+    expect(
+      registry.providerReadiness(computerId, staleReadyAt + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1)[0]?.observation
+        .status,
+    ).toBe("unavailable");
+
+    const freshAt = staleReadyAt + 2;
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        runtimeSocket,
+        freshAt,
+        undefined,
+        [{ provider: "codex", status: "sign-in" }],
+        [
+          { provider: "feishu", status: "install" },
+          { provider: "slack", status: "checking" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, freshAt)[0]?.observation.status).toBe("sign-in");
+    expect(registry.imCliReadiness(computerId, freshAt).map(({ observation }) => observation.status)).toEqual([
+      "install",
+      "checking",
+    ]);
+    expect(registry.providerReadiness(computerId, freshAt + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1)).toEqual([]);
+  });
+
+  it("applies a mixed post-fallback heartbeat when a sealed provider is freshly non-ready", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const requestId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => undefined,
+    );
+    expect(registry.beginPreparation(computerId, instanceId, requestId, "codex", ["feishu", "slack"], 10)).toBe(true);
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        {
+          requestId,
+          runtime: { provider: "codex", status: "unavailable" },
+          providers: [
+            { provider: "feishu", status: "unavailable" },
+            { provider: "slack", status: "unavailable" },
+          ],
+        },
+        20,
+        { quarantine: true },
+      ),
+    ).toBe(true);
+
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        runtimeSocket,
+        30,
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "install" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 30)).toEqual([
+      { observation: { provider: "codex", status: "ready" }, observedAt: 30 },
+    ]);
+    expect(registry.imCliReadiness(computerId, 30)).toEqual([
+      { observation: { provider: "feishu", status: "install" }, observedAt: 30 },
+      { observation: { provider: "slack", status: "ready" }, observedAt: 30 },
+    ]);
+    expect(registry.providerReadiness(computerId, 30 + RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1)).toEqual([]);
+  });
+
+  it("does not treat empty or missing quarantined readiness as a fresh observation", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const requestId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => undefined,
+    );
+    expect(registry.beginPreparation(computerId, instanceId, requestId, "codex", ["feishu", "slack"], 10)).toBe(true);
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        {
+          requestId,
+          runtime: { provider: "codex", status: "unavailable" },
+          providers: [
+            { provider: "feishu", status: "unavailable" },
+            { provider: "slack", status: "unavailable" },
+          ],
+        },
+        20,
+        { quarantine: true },
+      ),
+    ).toBe(true);
+
+    expect(registry.touch(computerId, instanceId, runtimeSocket, 30)).toBe(true);
+    expect(registry.touch(computerId, instanceId, runtimeSocket, 31, undefined, [], [])).toBe(true);
+    expect(
+      registry.touch(computerId, instanceId, runtimeSocket, 32, undefined, [{ provider: "codex", status: "ready" }]),
+    ).toBe(true);
+    expect(
+      registry.touch(computerId, instanceId, runtimeSocket, 33, undefined, undefined, [
+        { provider: "feishu", status: "ready" },
+        { provider: "slack", status: "ready" },
+      ]),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 33)[0]?.observation.status).toBe("unavailable");
+    expect(registry.imCliReadiness(computerId, 33).map(({ observation }) => observation.status)).toEqual([
+      "unavailable",
+      "unavailable",
+    ]);
+
+    expect(
+      registry.touch(computerId, instanceId, runtimeSocket, 40, undefined, undefined, [
+        { provider: "feishu", status: "install" },
+        { provider: "slack", status: "ready" },
+      ]),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 40)[0]?.observation.status).toBe("unavailable");
+    expect(registry.imCliReadiness(computerId, 40)).toEqual([
+      { observation: { provider: "feishu", status: "install" }, observedAt: 40 },
+      { observation: { provider: "slack", status: "ready" }, observedAt: 40 },
+    ]);
+  });
+
+  it("still applies a matching preparation result after a quarantined fallback", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const requestId = randomUUID();
+    const runtimeSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => undefined,
+    );
+    expect(registry.beginPreparation(computerId, instanceId, requestId, "codex", ["feishu", "slack"], 10)).toBe(true);
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        {
+          requestId,
+          runtime: { provider: "codex", status: "unavailable" },
+          providers: [
+            { provider: "feishu", status: "unavailable" },
+            { provider: "slack", status: "unavailable" },
+          ],
+        },
+        20,
+        { quarantine: true },
+      ),
+    ).toBe(true);
+
+    expect(
+      registry.completePreparation(
+        computerId,
+        instanceId,
+        {
+          requestId,
+          runtime: { provider: "codex", status: "sign-in" },
+          providers: [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "install" },
+          ],
+        },
+        30,
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 30)[0]?.observation.status).toBe("sign-in");
+    expect(registry.imCliReadiness(computerId, 30).map(({ observation }) => observation.status)).toEqual([
+      "ready",
+      "install",
+    ]);
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        runtimeSocket,
+        40,
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, 40)[0]?.observation.status).toBe("ready");
+  });
+
   it("does not publish or retain a registration when persistence fails", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();

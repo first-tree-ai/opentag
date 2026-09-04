@@ -1095,17 +1095,138 @@ describe("ProviderCliReconcileOwner", () => {
           connection.socket,
           Date.now(),
           undefined,
-          [{ provider: "codex", status: "sign-in" }],
+          [{ provider: "codex", status: "ready" }],
+          [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "ready" },
+          ],
+        ),
+      ).toBe(true);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("unavailable");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "unavailable",
+        "unavailable",
+      ]);
+
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "ready" }],
           [
             { provider: "feishu", status: "install" },
             { provider: "slack", status: "ready" },
           ],
         ),
       ).toBe(true);
-      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
       expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
         "install",
         "ready",
+      ]);
+    } finally {
+      owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a stale ready heartbeat restore fallback unavailable", async () => {
+    vi.useFakeTimers();
+    const registry = new ConnectionRegistry();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => []),
+        issueIntegrationCliValidationGrant: vi.fn(),
+        shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+      },
+      { preparationTimeoutMs: 1_000 },
+    );
+    try {
+      const connection = await registered(registry);
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "ready" }],
+          [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "ready" },
+          ],
+        ),
+      ).toBe(true);
+
+      await owner.prepareComputer({
+        agentId: randomUUID(),
+        computerId: connection.computerId,
+        runtimeProvider: "codex",
+      });
+      const request = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("unavailable");
+
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "ready" }],
+          [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "ready" },
+          ],
+        ),
+      ).toBe(true);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("unavailable");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "unavailable",
+        "unavailable",
+      ]);
+
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:prewarm:result",
+          requestId: request.requestId,
+          runtime: { provider: "codex", status: "sign-in" },
+          providers: [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "install" },
+          ],
+        },
+        contextOf(connection),
+      );
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "ready",
+        "install",
+      ]);
+
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "checking" }],
+          [
+            { provider: "feishu", status: "install" },
+            { provider: "slack", status: "checking" },
+          ],
+        ),
+      ).toBe(true);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "install",
+        "checking",
       ]);
     } finally {
       owner.close();

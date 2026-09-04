@@ -947,6 +947,7 @@ export class ProviderCliReconcileOwner {
         providers: input.providers.map((provider) => ({ provider, status: "unavailable" })),
       },
       this.#now(),
+      { quarantine: true },
     );
   }
 

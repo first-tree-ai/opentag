@@ -24,8 +24,14 @@ describe("provider outbox instructions", () => {
     expect(guidance).toContain("chat.scheduledMessages.list");
     expect(guidance).toContain("conversations.open");
     expect(guidance).toContain("conversations.join");
-    expect(guidance).toContain("channels:join cannot add the bot to a private channel");
-    expect(guidance).toContain("unless the task requires a cross-conversation action");
+    expect(guidance).toContain("exactly one user ID");
+    expect(guidance).toContain("Do not use it to create an MPIM");
+    expect(guidance).toContain("even if the user did not name it");
+    expect(guidance).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
+    expect(guidance).toContain("public channel and relevant to the current task");
+    expect(guidance).toContain("conversations.join `{channel}` once and retry the original action once");
+    expect(guidance).toContain("persisted, then mention_only or all_message controls delivery");
+    expect(guidance).toContain("private channels, MPIMs, channel_not_found, or an unknown type");
     expect(guidance).toContain("reactions.add");
     expect(guidance).toContain("reactions.get");
     expect(guidance).toContain("reactions.remove");

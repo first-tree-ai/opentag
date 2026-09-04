@@ -35,8 +35,10 @@ Required bot scopes:
 - `groups:history`
 - `groups:read`
 - `im:history`
+- `im:read`
 - `im:write`
 - `mpim:history`
+- `mpim:read`
 - `reactions:read`
 - `reactions:write`
 - `team:read`
@@ -57,6 +59,13 @@ local admission policy. It does not change the manifest, rotate an installation 
 or reauthorization, retry the Request URL, or send a test message. `assistant:write` is not part of the V1 capability
 contract; it may be considered later as an optional extra and must not be added to the current installation.
 
+The Agent may discover, read, and write another conversation when it is relevant to its current task even if the user did
+not name that conversation. It may join a public channel once when the task requires access, but must not roam through,
+bulk-join, or inspect task-unrelated conversations. Joining intentionally enrolls future messages from that channel in
+normal OpenTag ingress: every admitted inbound message is persisted first, then `mention_only` or `all_message` controls
+delivery. Private channels and MPIMs still require an invitation. The Agent may discover existing DMs and MPIMs, but
+`conversations.open` is limited to exactly one user ID for a one-to-one DM; V1 does not promise creation of a new MPIM.
+
 A credential-free local live acceptance checklist for a separately registered test Team/App is in
 [slack-live-acceptance.md](./slack-live-acceptance.md).
 
@@ -66,7 +75,7 @@ A credential-free local live acceptance checklist for a separately registered te
    nothing.
 2. Approve the OpenTag Slack App in the intended Slack workspace.
 3. The public callback exchanges the Slack code, inspects Bot identity, Team, Enterprise when present, and the actual
-   `x-oauth-scopes`, and requires all sixteen fixed bot scopes. If Slack returns an App ID, it must match the first-party OpenTag
+   `x-oauth-scopes`, and requires all eighteen fixed bot scopes. If Slack returns an App ID, it must match the first-party OpenTag
    App.
 4. OpenTag locks the Agent's current route, rechecks Team authority and the expected route generation, and atomically
    enforces the submitted intent against the Slack installation. **Create** installs the Slack installation and
@@ -104,7 +113,7 @@ can verify only the bound Signing Secret for that challenge; it records no ident
 | Team and Bot display metadata | Keep as optional presentation data | Team name, Bot display name, and avatar may be shown in management views, but never authorize configuration, ingress, or runtime access. |
 | Bot Token and Signing Secret | Keep encrypted on the installation | Stored together in the installation credential envelope; never copied onto Agent routes and never returned by management, diagnostics, or runtime-config APIs. The Signing Secret is never projected to runtime. |
 | `credentialGeneration` and credential schema version | Keep on the installation | Installation-authoritative monotonic credential revision. Routes sync a sanitized snapshot for Session fencing and diagnostics. Same-identity reauthorization increments the installation generation. Slack has no replace-App cutover. |
-| `grantedCapabilities` | Keep on the installation | Actual token scopes reported by Slack. Routes sync a sanitized snapshot. Active/readiness projections require all sixteen fixed scopes. |
+| `grantedCapabilities` | Keep on the installation | Actual token scopes reported by Slack. Routes sync a sanitized snapshot. Active/readiness projections require all eighteen fixed scopes. |
 | `activatedAt`, `disabledAt`, `createdAt`, `updatedAt` | Keep | Durable installation lifecycle timestamps, with sanitized copies on Slack routes. Configuration submission sets activation; inbound events do not. Public APIs project `activatedAt` as `lastValidatedAt`. |
 | `observedAt` | Keep as runtime observation | Installation-authoritative. Updated after a correctly signed Agent-specific URL challenge, or after a correctly signed real event whose App, Team, and bot authorization match. Routes sync the sanitized timestamp. Public APIs project it as `lastRuntimeObservationAt`. It is not configuration evidence and does not change generation. |
 | `observedConnectedAt` | Keep as generation identity closure | Installation-authoritative. For Slack, records when a signed real event's `authorizations` first closed the configured App/Team to the token-derived Bot User for the current installation generation. Later matching events preserve this first timestamp and refresh only `observedAt`. Configuration resets it; URL verification never sets it. Feishu retains its existing connection-observation meaning. |
@@ -232,7 +241,7 @@ Authenticated start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` 
 the default Agent route. It issues a signed state that includes a one-time nonce bound to the browser session cookie,
 Account, Agent, intended action (`create` / `reauthorize`), and the expected binding generation. The public callback
 exchanges the Slack code, inspects Bot identity and the actual `x-oauth-scopes`, and writes the Agent-owned installation
-plus that Agent's explicit default route only after all sixteen fixed bot scopes and identity checks pass.
+plus that Agent's explicit default route only after all eighteen fixed bot scopes and identity checks pass.
 Same-installation reauthorization increments credential generation. Slack replace is not a valid OAuth intent. Replay,
 expiry, session mismatch, and a different Agent claiming the same current App/Team installation fail without mutating
 the current installation.
@@ -247,7 +256,7 @@ Operators must configure the OpenTag Slack App with:
 - Bot display name **OpenTag**
 - Redirect URL equal to `OPENTAG_SLACK_REDIRECT_URL`
 - Events Request URL `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/events` (signed HTTP, not Socket Mode)
-- The same sixteen bot scopes and subscribed bot events as the checked-in Public Distribution manifest, including
+- The same eighteen bot scopes and subscribed bot events as the checked-in Public Distribution manifest, including
   `app_uninstalled` and `tokens_revoked`
 
 Identity-less Slack URL verification for that shared Request URL uses the first-party signing secret and records no

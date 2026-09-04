@@ -833,9 +833,8 @@ describe("ImDeliveryWorker database workflow", () => {
     await worker.runOnce();
     expect(delivered?.content.providerRef).toMatchObject({
       provider: "slack",
-      authorUserId: "human",
+      authorUserId: "U_FIXTURE",
     });
-    expect(delivered?.content.providerRef).not.toMatchObject({ authorUserId: botUserId });
     const historyById = new Map((delivered?.content.history ?? []).map((item) => [item.imMessageId, item]));
     expect(historyById.get(humanHistoryId)?.providerRef).toMatchObject({ authorUserId: "U_HUMAN" });
     expect(historyById.get(botHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
@@ -1193,7 +1192,7 @@ async function workerFixture(unit: UnitDatabase) {
     operation: "created",
     direction: "inbound",
     authorKind: "human",
-    authorExternalId: "human",
+    authorExternalId: "U_FIXTURE",
     content,
     providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "1" },
     occurredAt: now,

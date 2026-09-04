@@ -731,8 +731,11 @@ describe("SessionMessageInbox", () => {
     expect(slackText).toContain("chat.update");
     expect(slackText).toContain("conversations.open");
     expect(slackText).toContain("conversations.join");
-    expect(slackText).toContain("channels:join cannot add the bot to a private channel");
-    expect(slackText).toContain("unless the task requires a cross-conversation action");
+    expect(slackText).toContain("exactly one user ID");
+    expect(slackText).toContain("Do not use it to create an MPIM");
+    expect(slackText).toContain("even if the user did not name it");
+    expect(slackText).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
+    expect(slackText).toContain("conversations.join `{channel}` once and retry the original action once");
     expect(slackText).toContain("reactions.add");
     expect(slackText).toContain("files.getUploadURLExternal");
     expect(slackText).toContain("files.completeUploadExternal");

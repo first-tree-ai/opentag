@@ -32,8 +32,10 @@ Exact required bot scopes, in contract order:
 - `groups:history`
 - `groups:read`
 - `im:history`
+- `im:read`
 - `im:write`
 - `mpim:history`
+- `mpim:read`
 - `reactions:read`
 - `reactions:write`
 - `team:read`
@@ -42,7 +44,7 @@ Exact required bot scopes, in contract order:
 ## Exact scope verification
 
 1. Complete first-party OAuth for the Agent.
-2. Confirm OpenTag diagnostics `requiredCapabilities` and `grantedCapabilities` equal the sixteen scopes above, with
+2. Confirm OpenTag diagnostics `requiredCapabilities` and `grantedCapabilities` equal the eighteen scopes above, with
    `missingCapabilities` empty.
 3. Confirm Slack's installed App shows the same bot scopes. Do not paste token headers or `x-oauth-scopes` into notes
    that will be committed.
@@ -61,8 +63,10 @@ delivery:
 | Private channel | Invite the bot; do not rely on `channels:join` | Yes | Same admission as public; membership is required |
 | MPIM | Include the bot in a group DM | Yes | Treat as `group_dm` |
 
-A public-channel `conversations.join` from the Agent CLI may add the bot to a public channel. A private channel or MPIM
-without membership must not be joinable through `channels:join`.
+A public-channel `conversations.join` from the Agent CLI may add the bot when that channel is relevant to the current
+task, even if the user did not name the channel. The Agent must not roam through or bulk-join task-unrelated channels.
+Joining intentionally enrolls future messages in normal persistence and `receiveMode` delivery. A private channel or
+MPIM without membership must not be joinable through `channels:join`.
 
 ## `mention_only` and `all_message`
 
@@ -91,12 +95,17 @@ reauthorization.
 
 ## Cross-channel reads
 
-From a Turn in conversation A, ask the Agent to read conversation B with `conversations.history` / `conversations.replies`
-when the user task names B.
+From a Turn in conversation A, give the Agent a task for which conversation B is relevant, without necessarily naming B,
+then let it discover B with `conversations.list` / `conversations.info` and read it with `conversations.history` /
+`conversations.replies`.
 
 - Public channel the bot has joined: read succeeds.
-- Private channel or MPIM the bot is not in: Slack returns `not_in_channel`, `channel_not_found`, or a membership error.
-  The Agent should not retry join; a human must invite the bot.
+- Public channel the bot has not joined: after Slack returns `not_in_channel`, the Agent confirms that B is public and
+  task-relevant, calls `conversations.join` once, and retries the original read once. It must not join merely to explore.
+- After that join, under `mention_only`, an unmentioned human message is persisted but not delivered and a mention is
+  delivered `direct`; under `all_message`, an unmentioned human message is persisted and delivered `ambient`.
+- Private channel, MPIM, `channel_not_found`, or unknown conversation type: the Agent does not guess or retry join. A
+  human must invite the bot before access.
 
 ## Proactive message and DM
 
@@ -104,7 +113,10 @@ when the user task names B.
 - `chat.update` / `chat.delete` / `chat.scheduleMessage` on a message the bot owns. For cancellation, leave enough lead
   time, call `chat.deleteScheduledMessage` immediately with the returned `scheduled_message_id`, and verify absence with
   `chat.scheduledMessages.list`.
-- `conversations.open` plus `chat.postMessage` to start or continue a DM when the user task asks for a proactive DM.
+- Discover existing DMs and MPIMs with `conversations.list`; verify that both conversation types are visible when the bot
+  is a member.
+- `conversations.open` with exactly one user ID plus `chat.postMessage` to start or continue a one-to-one DM. Do not use
+  it to create a new MPIM; an existing MPIM may be read or written only when the bot already has access.
 
 Keep using `slack api <method> --json '<json>'` with one JSON object. Do not pass token, app, team, workspace, config, or
 update override flags.
@@ -125,7 +137,8 @@ update override flags.
 
 Provoke and confirm the Agent surfaces the provider error instead of inventing success:
 
-- `not_in_channel` / `channel_not_found` for a channel the bot is not in
+- `not_in_channel` on a confirmed public, task-relevant channel follows the single join-and-retry recovery above;
+  `channel_not_found`, private, MPIM, or unknown targets require a human invitation
 - `msg_too_long` or a split across multiple `chat.postMessage` calls when the body exceeds Slack's `text` /
   `markdown_text` limits
 - HTTP `429` / `ratelimited` with `Retry-After` honored once, not a tight poll
@@ -136,7 +149,7 @@ Provoke and confirm the Agent surfaces the provider error instead of inventing s
 
 1. After a required-scope expansion, an existing 7-scope (or otherwise incomplete) install must project
    `reauthorization_required` / `SLACK_SCOPE_REAUTH_REQUIRED` without reporting healthy credentials.
-2. Same-identity reauthorization with the complete sixteen scopes must keep App, Team, and Bot User, increment
+2. Same-identity reauthorization with the complete eighteen scopes must keep App, Team, and Bot User, increment
    `credentialGeneration`, and restore `active` once identity closure succeeds.
 3. A different Agent claiming the same App/Team must return `SLACK_APP_TEAM_ALREADY_BOUND` with no side effects.
 

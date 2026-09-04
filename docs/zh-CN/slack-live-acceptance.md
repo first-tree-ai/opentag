@@ -29,8 +29,10 @@ OAuth code、Team ID、channel ID、user ID 或 traces。结果记录在仓库�
 - `groups:history`
 - `groups:read`
 - `im:history`
+- `im:read`
 - `im:write`
 - `mpim:history`
+- `mpim:read`
 - `reactions:read`
 - `reactions:write`
 - `team:read`
@@ -39,7 +41,7 @@ OAuth code、Team ID、channel ID、user ID 或 traces。结果记录在仓库�
 ## 精确 scope 核验
 
 1. 为该 Agent 完成一等 OAuth。
-2. 确认 OpenTag 诊断里 `requiredCapabilities` 与 `grantedCapabilities` 等于上述十六项，且 `missingCapabilities` 为空。
+2. 确认 OpenTag 诊断里 `requiredCapabilities` 与 `grantedCapabilities` 等于上述十八项，且 `missingCapabilities` 为空。
 3. 确认 Slack 已安装 App 展示同一组 bot scopes。不要把 token header 或 `x-oauth-scopes` 写进会入库的笔记。
 4. 从测试 App 去掉一项必需 scope 后再授权。OpenTag 必须以 `SLACK_SCOPE_REAUTH_REQUIRED` 失败关闭，且不得把 installation
    报告为健康。
@@ -55,7 +57,9 @@ OAuth code、Team ID、channel ID、user ID 或 traces。结果记录在仓库�
 | 私有频道 | 邀请 bot；不要依赖 `channels:join` | 是 | 准入与公开频道相同；必须已是成员 |
 | MPIM | 把 bot 加入多人 DM | 是 | 作为 `group_dm` |
 
-Agent CLI 的公开频道 `conversations.join` 可以把 bot 加入公开频道。对未加入的私有频道或 MPIM，`channels:join` 不得成功。
+当公开频道与当前任务相关时，即使用户没有点名，Agent CLI 的 `conversations.join` 也可以把 bot 加入该频道。Agent 不得漫游或
+批量加入与任务无关的频道。加入后，未来消息会按设计进入正常持久化与 `receiveMode` 投递。对未加入的私有频道或 MPIM，
+`channels:join` 不得成功。
 
 ## `mention_only` 与 `all_message`
 
@@ -78,18 +82,24 @@ Agent CLI 的公开频道 `conversations.join` 可以把 bot 加入公开频道�
 
 ## 跨会话读取
 
-在会话 A 的 Turn 中，当用户任务点名会话 B 时，让 Agent 用 `conversations.history` / `conversations.replies` 读取 B。
+在会话 A 的 Turn 中，给 Agent 一个与会话 B 相关、但不一定点名 B 的任务，让它先用 `conversations.list` /
+`conversations.info` 发现 B，再用 `conversations.history` / `conversations.replies` 读取。
 
 - bot 已加入的公开频道：读取成功。
-- bot 不在的私有频道或 MPIM：Slack 返回 `not_in_channel`、`channel_not_found` 或成员资格错误。Agent 不应重试 join；需要人类
-  邀请 bot。
+- bot 未加入的公开频道：Slack 返回 `not_in_channel` 后，Agent 确认 B 是公开且与任务相关，只调用一次
+  `conversations.join`，再把原读取动作重试一次；不得为了探索而加入。
+- 加入后，在 `mention_only` 下，人类未 @ 消息会持久化但不投递，@ 消息以 `direct` 投递；在 `all_message` 下，人类未 @
+  消息会持久化并以 `ambient` 投递。
+- 私有频道、MPIM、`channel_not_found` 或类型未知：Agent 不猜测、不重试 join；必须先由人邀请 bot。
 
 ## 主动发消息与 DM
 
 - 对当前频道 `chat.postMessage`；存在 `threadTs` 时发 thread 回复。
 - 对 bot 自己的消息执行 `chat.update` / `chat.delete` / `chat.scheduleMessage`。取消时需预留足够时间，获取
   `scheduled_message_id` 后立即调用 `chat.deleteScheduledMessage`，并用 `chat.scheduledMessages.list` 确认已无残留。
-- 当用户任务要求主动 DM 时，用 `conversations.open` 再 `chat.postMessage`。
+- 用 `conversations.list` 发现已有 DM 与 MPIM；bot 是成员时，两类会话都应可见。
+- 用只包含一个 user ID 的 `conversations.open` 再 `chat.postMessage`，开始或继续一对一 DM。不得用它新建 MPIM；只有 bot 已
+  有访问权时，才可读写已有 MPIM。
 
 始终使用 `slack api <method> --json '<json>'`，且只传一个 JSON 对象。不要传 token、app、team、workspace、config 或
 update 覆盖 flag。
@@ -110,7 +120,8 @@ update 覆盖 flag。
 
 主动触发并确认 Agent 展示 provider 错误，而不是伪造成功：
 
-- bot 不在的频道：`not_in_channel` / `channel_not_found`
+- 已确认公开且与任务相关的频道出现 `not_in_channel` 时，按上方规则只 join 并重试一次；`channel_not_found`、私有频道、
+  MPIM 或类型未知都需要人类邀请
 - 正文超过 Slack `text` / `markdown_text` 限制时出现 `msg_too_long`，或拆成多次 `chat.postMessage`
 - HTTP `429` / `ratelimited` 时遵守一次 `Retry-After`，而不是紧循环轮询
 - 在 Slack 撤销测试 App 的 bot token 后出现 `invalid_auth` / `token_revoked`
@@ -120,7 +131,7 @@ update 覆盖 flag。
 
 1. 必需 scope 扩展之后，仍只有 7 项（或其他不完整集合）的旧安装必须投影为 `reauthorization_required` /
    `SLACK_SCOPE_REAUTH_REQUIRED`，不得报告凭证健康。
-2. 用完整十六项 scopes 做同身份重新授权时，必须保持 App、Team、Bot User，递增 `credentialGeneration`，并在身份闭合成功后
+2. 用完整十八项 scopes 做同身份重新授权时，必须保持 App、Team、Bot User，递增 `credentialGeneration`，并在身份闭合成功后
    恢复 `active`。
 3. 不同 Agent 声称同一 App/Team 时必须返回 `SLACK_APP_TEAM_ALREADY_BOUND`，且无副作用。
 

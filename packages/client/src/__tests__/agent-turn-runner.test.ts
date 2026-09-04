@@ -111,8 +111,11 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("chat.update");
     expect(input.items[0]?.text).toContain("conversations.open");
     expect(input.items[0]?.text).toContain("conversations.join");
-    expect(input.items[0]?.text).toContain("channels:join cannot add the bot to a private channel");
-    expect(input.items[0]?.text).toContain("unless the task requires a cross-conversation action");
+    expect(input.items[0]?.text).toContain("exactly one user ID");
+    expect(input.items[0]?.text).toContain("Do not use it to create an MPIM");
+    expect(input.items[0]?.text).toContain("even if the user did not name it");
+    expect(input.items[0]?.text).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
+    expect(input.items[0]?.text).toContain("conversations.join `{channel}` once and retry the original action once");
     expect(input.items[0]?.text).toContain("reactions.add");
     expect(input.items[0]?.text).toContain("files.getUploadURLExternal");
     expect(input.items[0]?.text).toContain("files.completeUploadExternal");

@@ -263,6 +263,7 @@ export class AgentTurnRunner {
           ...fields,
           durationMs: Math.max(0, this.#now() - startedAt),
           errorReason: completion.errorReason,
+          ...errorFieldsForLog(error),
           outcome: completion.outcome,
         },
         "Turn failed",
@@ -428,6 +429,14 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
     errorReason: result.error?.code === "provider_protocol_error" ? "provider_protocol_error" : "provider_failed",
     ...(result.usage ? { usage: result.usage } : {}),
   };
+}
+
+/** The specific pre-execution rejection code behind a typed Turn failure, for the Computer's log only. */
+function errorFieldsForLog(error: unknown): { errorCode?: string } {
+  if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
+    return { errorCode: error.code };
+  }
+  return {};
 }
 
 export function completionForError(error: unknown, abortReason: unknown): TurnCompletion {

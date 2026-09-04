@@ -598,6 +598,7 @@ export async function createClientRuntime(
   });
   const providerCliReconciler = new ProviderCliReconciler({
     connection,
+    logger: moduleLogger("provider-cli-reconciler"),
     manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
     signal: readinessSignal,
     validation: new ProviderCliValidationRunner({ home: options.home }),

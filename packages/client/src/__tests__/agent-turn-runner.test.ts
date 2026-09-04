@@ -492,6 +492,42 @@ describe("AgentTurnRunner", () => {
     );
   });
 
+  it("logs the specific credential rejection code when a Turn fails before Provider execution", async () => {
+    const logs: RecordedLog[] = [];
+    const environment = credentialEnvironment();
+    environment.prepare.mockRejectedValue(new ImCredentialEnvironmentError("provider_cli_unready"));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      logger: recordingLogger(logs),
+      reportOwner: {
+        create: vi.fn((input) => ({
+          ...input,
+          type: "turn:report",
+          requestId: randomUUID(),
+          resultHash: "e".repeat(64),
+        })),
+        submit: vi.fn(async () => undefined),
+      } as unknown as TurnReportOwner,
+      runtimeManager: { ensureRuntime: vi.fn() } as unknown as SessionRuntimeManager,
+      credentialEnvironment: environment,
+    });
+
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Turn failed",
+        fields: expect.objectContaining({ errorReason: "credential_unavailable", errorCode: "provider_cli_unready" }),
+      }),
+    );
+  });
+
   it("prepares a visible Turn plan before Agent Runtime and refuses drifted selections without starting it", async () => {
     const order: string[] = [];
     const prompt = vi.fn(async () => {

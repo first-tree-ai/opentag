@@ -19,7 +19,7 @@ import {
   labScenarioStartsWithCreation,
 } from "./agent-setup-lab-model.js";
 import { RUNTIMES } from "./flow.js";
-import { preparationReadinessRows, preparationSummaryRows } from "./preparation-readiness.js";
+import { preparationReadinessRows } from "./preparation-readiness.js";
 import {
   isReadinessScenario,
   READINESS_SCENARIOS,
@@ -251,15 +251,15 @@ function messagingConnectionState(snapshot: AgentSetupSnapshot): LabStateItem {
 
 function LabStateSummary({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
   const full = preparationReadinessRows(snapshot);
-  const summary = preparationSummaryRows(snapshot);
   const rows: readonly LabStateItem[] = [
     readinessStateItem("computer", m.onboarding_v2_prep_computer_label(), full.computer),
     readinessStateItem(
       "runtime",
-      m.onboarding_v2_lab_state_runtime({ runtime: summary.runtime.label }),
-      summary.runtime,
+      m.onboarding_v2_lab_state_runtime({ runtime: runtimeLabel(snapshot.runtime.provider) }),
+      full.runtime,
     ),
-    readinessStateItem("messaging-support", summary.messaging.label, summary.messaging),
+    readinessStateItem("im-cli:feishu", `${messagingProviderLabel("feishu")} CLI`, full.feishu),
+    readinessStateItem("im-cli:slack", `${messagingProviderLabel("slack")} CLI`, full.slack),
     messagingConnectionState(snapshot),
   ] as const;
   return (

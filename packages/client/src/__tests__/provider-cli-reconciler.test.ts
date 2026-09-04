@@ -890,6 +890,43 @@ describe("provider CLI reconciler", () => {
     await reconciler.close();
   });
 
+  it("runs the idempotent auto ensure for a Server-owned existing-Computer preparation", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce(notReadyInspect("slack", "install", { code: "not_installed" }))
+      .mockResolvedValueOnce(fixture.inspection);
+    const ensure = vi.fn().mockResolvedValue({ ok: true, action: "installed-managed" } as never);
+    const refreshRuntimeProvider = vi.fn(async () => ({ provider: "codex" as const, status: "ready" as const }));
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      refreshRuntimeProvider,
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    await runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "codex", providers: ["slack"] });
+
+    expect(refreshRuntimeProvider).toHaveBeenCalledWith("codex");
+    expect(ensure).toHaveBeenCalledWith("slack", { mode: "auto" });
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "ready" },
+    ]);
+    expect(runtime.send).toHaveBeenCalledWith(
+      {
+        type: "provider-cli:prewarm:result",
+        requestId,
+        runtime: { provider: "codex", status: "ready" },
+        providers: [{ provider: "slack", status: "ready" }],
+      },
+      { priority: "result", signal: undefined },
+    );
+    await reconciler.close();
+  });
+
   it("single-flights overlapping periodic inspections per provider", async () => {
     const runtime = connection();
     let hold = false;

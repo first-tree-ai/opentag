@@ -9,7 +9,12 @@ import {
   AgentSetupSnapshotSchema,
   projectAgentSetupComponents,
 } from "../agent-setup.js";
-import { AGENT_SETUP_TEMPLATE, agentSetupPath } from "../http-paths.js";
+import {
+  AGENT_SETUP_REFRESH_TEMPLATE,
+  AGENT_SETUP_TEMPLATE,
+  agentSetupPath,
+  agentSetupRefreshPath,
+} from "../http-paths.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const userId = "22222222-2222-4222-8222-222222222222";
@@ -84,6 +89,8 @@ describe("Agent setup contracts", () => {
   it("defines one exact-Agent setup route", () => {
     expect(AGENT_SETUP_TEMPLATE).toBe("/api/v1/agents/:agentId/setup");
     expect(agentSetupPath("agent/one")).toBe("/api/v1/agents/agent%2Fone/setup");
+    expect(AGENT_SETUP_REFRESH_TEMPLATE).toBe("/api/v1/agents/:agentId/setup/refresh");
+    expect(agentSetupRefreshPath("agent/one")).toBe("/api/v1/agents/agent%2Fone/setup/refresh");
   });
 
   it("freezes explicit actions without a direct Provider switch", () => {

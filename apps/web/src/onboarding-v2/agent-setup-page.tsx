@@ -41,8 +41,8 @@ import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
-import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
-import { CheckLine } from "./readiness-list.js";
+import { preparationIsTransitional, preparationReadinessRows } from "./preparation-readiness.js";
+import { ReadinessList } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
@@ -220,6 +220,9 @@ async function performSetupAction(
   action: AgentSetupAction,
 ): Promise<string | undefined> {
   switch (action.kind) {
+    case "refresh":
+      await adapter.refreshPreparation(agentId);
+      return undefined;
     case "start-messaging":
       if (action.provider === "feishu") {
         await adapter.startFeishuAttempt(agentId, "create", { kind: "unbound" });
@@ -1001,7 +1004,7 @@ function BoundComputerSection({
 }
 
 function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const rows = useMemo(() => preparationSummaryRows(snapshot), [snapshot]);
+  const rows = useMemo(() => preparationReadinessRows(snapshot), [snapshot]);
   const { computer } = snapshot;
   if (computer.kind === "not-bound") return null;
   return (
@@ -1013,20 +1016,7 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
         <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
       <div className="otv2-preparation__checks">
-        <ComputerSummary
-          metadata={platformLabel(computer.platform)}
-          status={m.onboarding_v2_connect_online()}
-          title={computer.displayName}
-          tone="success"
-        />
-        <ol
-          aria-label={m.onboarding_v2_prep_title()}
-          className="otv2-readiness otv2-readiness--compact"
-          data-ui="readiness-list"
-        >
-          <CheckLine check={rows.runtime} component="runtime" position={1} scrollable={false} />
-          <CheckLine check={rows.messaging} component="messaging-support" position={2} scrollable={false} />
-        </ol>
+        <ReadinessList label={m.onboarding_v2_prep_title()} rows={rows} />
       </div>
     </section>
   );

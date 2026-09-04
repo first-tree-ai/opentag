@@ -600,6 +600,7 @@ export async function createClientRuntime(
     connection,
     logger: moduleLogger("provider-cli-reconciler"),
     manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
+    refreshRuntimeProvider: createRuntimeProviderReadinessRefresher(refreshProviderReadiness, providers),
     signal: readinessSignal,
     validation: new ProviderCliValidationRunner({ home: options.home }),
   });
@@ -737,6 +738,21 @@ export function providerReadiness(
     return { provider, status: "sign-in" };
   }
   return { provider, status: "unavailable" };
+}
+
+/**
+ * Couples a fresh selected-Runtime probe with its detailed local result for one Server-owned
+ * Computer preparation. Kept as a small factory so composition-level tests can exercise the exact
+ * callback that the Provider CLI reconciler receives without touching the real account CLI home.
+ */
+export function createRuntimeProviderReadinessRefresher(
+  refreshProviderReadiness: (providerId: string, signal?: AbortSignal) => Promise<boolean>,
+  providers: Pick<AgentRuntimeProviderRegistry, "probeResult">,
+): (provider: AgentRuntimeProvider) => Promise<RuntimeProviderReadinessObservation> {
+  return async (provider) => {
+    const available = await refreshProviderReadiness(provider);
+    return providerReadiness(provider, available, providers.probeResult(provider));
+  };
 }
 
 export interface ResolvedCodexFactoryOptions {

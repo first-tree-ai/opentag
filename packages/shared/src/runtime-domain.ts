@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { type AgentRuntimeProvider, AgentRuntimeProviderSchema, AgentRuntimeTestFailureCodeSchema } from "./agent.js";
-import { IM_CLI_PROVIDERS, ImCliProviderSchema, ProviderCliValidationResultReasonSchema } from "./computer.js";
+import {
+  IM_CLI_PROVIDERS,
+  ImCliProviderSchema,
+  ImCliReadinessStatusSchema,
+  ProviderCliValidationResultReasonSchema,
+  ProviderReadinessStatusSchema,
+} from "./computer.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -793,6 +799,15 @@ export const ProviderCliPrewarmFrameSchema = z
   .object({
     type: z.literal("provider-cli:prewarm"),
     requestId: RuntimeRequestIdSchema,
+    /**
+     * Registration only needs a fresh observation after the foreground `connect` command has
+     * already repaired the machine. Reusing an already-connected Computer has no foreground
+     * owner, so the daemon must run the same idempotent ensure before it reports readiness.
+     * Missing means `inspect` for rolling compatibility with older Servers.
+     */
+    mode: z.enum(["inspect", "ensure"]).optional(),
+    /** Selected Agent Runtime to probe immediately for a Server-owned ensure operation. */
+    runtimeProvider: AgentRuntimeProviderSchema.optional(),
     providers: z
       .array(ImCliProviderSchema)
       .min(1)
@@ -814,6 +829,51 @@ export const ProviderCliPrewarmFrameSchema = z
               code: "custom",
               path: [index],
               message: "IM CLI prewarm providers must use canonical Provider order",
+            });
+          }
+        }
+      }),
+  })
+  .strict();
+
+/**
+ * Terminal result for one Server-owned preparation operation. The request fence lets the Server
+ * reject a result from an older click/rebind while heartbeats continue to report general daemon
+ * health independently.
+ */
+export const ProviderCliPrewarmResultFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:prewarm:result"),
+    requestId: RuntimeRequestIdSchema,
+    runtime: z
+      .object({
+        provider: AgentRuntimeProviderSchema,
+        status: ProviderReadinessStatusSchema.exclude(["checking"]),
+      })
+      .strict(),
+    providers: z
+      .array(
+        z
+          .object({
+            provider: ImCliProviderSchema,
+            status: ImCliReadinessStatusSchema.exclude(["checking"]),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(IM_CLI_PROVIDERS.length)
+      .superRefine((observations, context) => {
+        const providers = observations.map((observation) => observation.provider);
+        if (new Set(providers).size !== providers.length) {
+          context.addIssue({ code: "custom", message: "Preparation result providers must be unique" });
+        }
+        for (const [index, provider] of providers.entries()) {
+          const previous = providers[index - 1];
+          if (previous !== undefined && IM_CLI_PROVIDERS.indexOf(provider) < IM_CLI_PROVIDERS.indexOf(previous)) {
+            context.addIssue({
+              code: "custom",
+              path: [index, "provider"],
+              message: "Preparation result providers must use canonical Provider order",
             });
           }
         }
@@ -979,6 +1039,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   TurnReportRequestSchema,
   RuntimeImCredentialGrantRequestSchema,
   ProviderCliArtifactStatusFrameSchema,
+  ProviderCliPrewarmResultFrameSchema,
   ProviderCliValidationResultFrameSchema,
 ]);
 
@@ -1018,6 +1079,7 @@ export type AgentRuntimeTestCancelFrame = z.infer<typeof AgentRuntimeTestCancelF
 export type AgentRuntimeTestResultFrame = z.infer<typeof AgentRuntimeTestResultFrameSchema>;
 export type ProviderCliExpectedIdentity = z.infer<typeof ProviderCliExpectedIdentitySchema>;
 export type ProviderCliPrewarmFrame = z.infer<typeof ProviderCliPrewarmFrameSchema>;
+export type ProviderCliPrewarmResultFrame = z.infer<typeof ProviderCliPrewarmResultFrameSchema>;
 export type ProviderCliRequirementFrame = z.infer<typeof ProviderCliRequirementFrameSchema>;
 export type ProviderCliArtifactStatusFrame = z.infer<typeof ProviderCliArtifactStatusFrameSchema>;
 export type ProviderCliCancelFrame = z.infer<typeof ProviderCliCancelFrameSchema>;

@@ -580,6 +580,9 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       return deriveSnapshot(state);
     },
+    refreshPreparation: async (agentId) => {
+      if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
+    },
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("feishu")}`);

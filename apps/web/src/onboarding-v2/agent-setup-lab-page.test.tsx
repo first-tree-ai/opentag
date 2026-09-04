@@ -113,7 +113,8 @@ describe("agent setup lab page", () => {
     expect(screen.getByText("Run the complete Agent journey and connect a new Computer.")).toBeTruthy();
     expect(stateSummaryRow("Computer").textContent).toContain("Waiting");
     expect(stateSummaryRow("Runtime · Codex").textContent).toContain("Waiting");
-    expect(stateSummaryRow("Messaging support").textContent).toContain("Waiting");
+    expect(stateSummaryRow("Lark CLI").textContent).toContain("Waiting");
+    expect(stateSummaryRow("Slack CLI").textContent).toContain("Waiting");
     expect(stateSummaryRow("Messaging connection").textContent).toContain("Not started");
 
     const trigger = screen.getByRole("combobox", { name: "Start from" });
@@ -153,16 +154,19 @@ describe("agent setup lab page", () => {
     expect(screen.queryByRole("group", { name: "Journey" })).toBeNull();
     expect(stateSummaryRow("Computer").textContent).toContain("Ready");
     expect(stateSummaryRow("Runtime · Codex").textContent).toContain("Ready");
-    expect(stateSummaryRow("Messaging support").textContent).toContain("Needs attention");
+    expect(stateSummaryRow("Lark CLI").textContent).toContain("Needs attention");
+    expect(stateSummaryRow("Slack CLI").textContent).toContain("Ready");
     expect(stateSummaryRow("Messaging connection").textContent).toContain("Not started");
-    expect(screen.getByText("Messaging support", { selector: '[data-ui="readiness-title"] *' })).toBeTruthy();
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("needs-attention");
+    expect(slot(readinessRow("im-cli:feishu"), "readiness-title").textContent).toContain("Lark CLI");
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
 
     await chooseOption("Start from", "Preparation ready · Connect messaging");
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     expect(stateSummaryRow("Computer").textContent).toContain("Ready");
     expect(stateSummaryRow("Runtime · Codex").textContent).toContain("Ready");
-    expect(stateSummaryRow("Messaging support").textContent).toContain("Ready");
+    expect(stateSummaryRow("Lark CLI").textContent).toContain("Ready");
+    expect(stateSummaryRow("Slack CLI").textContent).toContain("Ready");
     expect(stateSummaryRow("Messaging connection").textContent).toContain("Not started");
     expect(
       screen.getByText("Computer, Runtime, and messaging support are ready. Choose a messaging app."),
@@ -173,11 +177,13 @@ describe("agent setup lab page", () => {
     renderLabPage();
 
     await chooseOption("Start from", "Messaging · Waiting for handoff");
-    expect(stateSummaryRow("Messaging support").textContent).toContain("Ready");
+    expect(stateSummaryRow("Lark CLI").textContent).toContain("Ready");
+    expect(stateSummaryRow("Slack CLI").textContent).toContain("Ready");
     expect(stateSummaryRow("Messaging connection · Lark").textContent).toContain("Waiting for handoff");
 
     await chooseOption("Start from", "Messaging · Needs recovery");
-    expect(stateSummaryRow("Messaging support").textContent).toContain("Ready");
+    expect(stateSummaryRow("Lark CLI").textContent).toContain("Ready");
+    expect(stateSummaryRow("Slack CLI").textContent).toContain("Ready");
     expect(stateSummaryRow("Messaging connection · Lark").textContent).toContain("Needs attention");
 
     await chooseOption("Start from", "Complete · Everything ready");

@@ -4,6 +4,7 @@ import {
   AGENT_CONFIG_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
+  AGENT_SETUP_REFRESH_TEMPLATE,
   AGENT_SETUP_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
@@ -138,6 +139,12 @@ export function registerAgentRoutes(
       );
       reply.header("Cache-Control", "no-store");
       return reply.code(200).send(snapshot);
+    });
+
+    app.post(AGENT_SETUP_REFRESH_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      await agentSetup.refreshPreparationById(authenticatedUserId(request), agentId);
+      return reply.header("Cache-Control", "no-store").code(204).send();
     });
   }
 

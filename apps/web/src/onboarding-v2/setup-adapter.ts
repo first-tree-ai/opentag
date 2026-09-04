@@ -26,6 +26,8 @@ import { browserApi } from "../api.js";
 export interface AgentSetupAdapter {
   /** The canonical setup state of one exact Agent — the only read this surface makes. */
   readonly readSnapshot: (agentId: string) => Promise<AgentSetupSnapshot>;
+  /** Starts a real preparation on an already-connected Computer; never aliases a snapshot read. */
+  readonly refreshPreparation: (agentId: string) => Promise<void>;
   /**
    * Opens one Feishu authorization attempt on the exact Agent: `create` for a first connection,
    * `reauthorize` to renew the current binding's permissions, `replace` to swap its bot. There is
@@ -50,6 +52,7 @@ export interface AgentSetupAdapter {
 
 interface AgentSetupBrowserApi {
   readonly agentSetup: (agentId: string) => Promise<AgentSetupSnapshot>;
+  readonly refreshAgentSetup: (agentId: string) => Promise<void>;
   readonly createFeishuSetupAttempt: (
     agentId: string,
     intent: FeishuSetupIntent,
@@ -64,6 +67,7 @@ interface AgentSetupBrowserApi {
 export function createHttpSetupAdapter(api: AgentSetupBrowserApi = browserApi): AgentSetupAdapter {
   return {
     readSnapshot: (agentId) => api.agentSetup(agentId),
+    refreshPreparation: (agentId) => api.refreshAgentSetup(agentId),
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       await api.createFeishuSetupAttempt(agentId, intent, expectedMessaging);
     },

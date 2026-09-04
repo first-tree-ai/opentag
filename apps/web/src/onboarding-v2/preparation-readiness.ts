@@ -252,7 +252,7 @@ function runtimeRow(snapshot: AgentSetupSnapshot): CheckRow {
         state: "failed",
         status: "needs-attention",
         statusLabel: m.onboarding_v2_prep_needs_attention(),
-        detail: m.onboarding_v2_prep_runtime_not_responding({ runtime, computerName: computer }),
+        detail: m.onboarding_v2_prep_runtime_not_responding({ computerName: computer }),
         detailLabel,
       };
   }
@@ -314,7 +314,7 @@ function imCliRow(snapshot: AgentSetupSnapshot, provider: ImCliProvider): CheckR
         state: "failed",
         status: "install-required",
         statusLabel: m.onboarding_v2_prep_install_required(),
-        detail: m.onboarding_v2_prep_cli_install({ cli: providerName, computerName: computer }),
+        detail: m.onboarding_v2_prep_cli_install({ computerName: computer }),
         detailLabel,
       };
     case "unavailable":
@@ -323,7 +323,7 @@ function imCliRow(snapshot: AgentSetupSnapshot, provider: ImCliProvider): CheckR
         state: "failed",
         status: "needs-attention",
         statusLabel: m.onboarding_v2_prep_needs_attention(),
-        detail: m.onboarding_v2_prep_cli_unavailable({ cli: providerName, computerName: computer }),
+        detail: m.onboarding_v2_prep_cli_unavailable({ computerName: computer }),
         detailLabel,
       };
   }

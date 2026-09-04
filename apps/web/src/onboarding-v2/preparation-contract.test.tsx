@@ -394,7 +394,7 @@ describe("F6 cross-layer gating, page level", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("needs-attention");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Needs attention");
-    expect(rowDetail("messaging-support")).toContain("connection command's repair steps");
+    expect(rowDetail("messaging-support")).toContain("Continue the repair in the coding agent on Review Mac");
     expect(rowTitle("messaging-support")).not.toMatch(/Installing|Lark|Slack/);
     // The row never fabricates a checking state for an unavailable report.
     expect(rowTitle("messaging-support")).not.toContain("Checking");

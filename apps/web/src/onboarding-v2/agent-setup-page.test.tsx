@@ -146,7 +146,7 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(screen.getByText("Reviewer runs on your own computer.")).toBeTruthy();
     expect(
-      screen.getByText("Agent work runs on this computer. Task messages and agent results pass through OpenTag."),
+      screen.getByText("Agent work stays on this computer. Messages and results pass through OpenTag."),
     ).toBeTruthy();
     const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
     expect(summary?.textContent).toContain("No computer connected");
@@ -215,7 +215,7 @@ describe("AgentSetupPage stages", () => {
 
     const repairSurface = document.querySelector('[data-ui="computer-connect"]');
     expect(repairSurface?.querySelector(".ots-command__body")).not.toBeNull();
-    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(screen.getByText("Paste this command into the coding agent on Review Mac.")).toBeTruthy();
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for Review Mac to reconnect");
     expect(issue).toHaveBeenCalledWith({
@@ -305,7 +305,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("connection command's setup steps");
+    expect(rowDetail("messaging-support")).toContain("Continue setup in the coding agent on Review Mac");
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
@@ -426,7 +426,7 @@ describe("preparation review regressions", () => {
     renderSetup(memory.adapter);
     await settle();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("needs-attention");
-    expect(rowDetail("runtime")).toContain("Codex isn't ready on Review Mac");
+    expect(rowDetail("runtime")).toContain("Continue the repair in the coding agent on Review Mac");
     expect(rowDetail("runtime")).not.toMatch(/not responding|isn't responding|timed out|opentag doctor/i);
   });
 

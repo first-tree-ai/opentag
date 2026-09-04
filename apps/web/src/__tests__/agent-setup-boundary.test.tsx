@@ -280,6 +280,49 @@ describe("Agent Setup route boundary", () => {
     expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
   });
 
+  it("names a paused Agent, because a paused Agent is what refused the name", async () => {
+    /*
+     * The Server refuses a name that any Agent which is not deleted carries, so a paused one refuses
+     * it too. Looking only for a working Agent would throw that answer away out of the very response
+     * that carries it, and leave a refusal naming nothing.
+     */
+    installAgentSetupApi({ emptyAgents: true, setupCompletedAt: null });
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let refused = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === "POST") {
+        refused = true;
+        return json(
+          {
+            error: {
+              code: "AGENT_NAME_CONFLICT",
+              category: "deterministic",
+              message: "An active Agent with this name already exists for this Account",
+            },
+          },
+          409,
+        );
+      }
+      if (input === "/api/v1/agents" && init?.method === undefined && refused) {
+        return json({ agents: [{ ...agentListItem, status: "suspended" }] });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    expect((await screen.findByRole("link", { name: "Open @reviewer" })).getAttribute("href")).toBe(
+      `/agents/${agentId}`,
+    );
+  });
+
   it("still offers a way off the page when the refused name cannot be traced", async () => {
     /*
      * The offer is this route's only exit, and it asks for a second read straight after one request

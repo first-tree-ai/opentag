@@ -18,17 +18,21 @@ const CREATE_STEPS: FlowState["steps"] = [
 ];
 
 /**
- * The Agent an already-refused name belongs to, when this Account still holds it. A read that fails
- * names nobody rather than guessing: the refusal is still true, and an offer to open the wrong Agent
- * would be worse than no offer at all.
+ * The Agent an already-refused name belongs to, when this Account still holds it.
+ *
+ * Every Agent in this list holds its name, and none is asked about its state: a deleted Agent is
+ * absent from the Server's answers altogether, and a paused one refuses a name exactly as a working
+ * one does. Asking for a working Agent would throw the answer away out of the very response that
+ * carries it, leaving a refusal that names nothing.
+ *
+ * A read that fails names nobody rather than guessing: the refusal is still true, and an offer to
+ * open the wrong Agent would be worse than no offer at all.
  */
 async function agentHoldingName(name: string): Promise<{ id: string; name: string } | undefined> {
   const wanted = name.trim().toLowerCase();
   return browserApi.agents().then(
     ({ agents }) => {
-      const holder = agents.find(
-        (candidate) => candidate.status === "active" && candidate.name.toLowerCase() === wanted,
-      );
+      const holder = agents.find((candidate) => candidate.name.toLowerCase() === wanted);
       return holder ? { id: holder.id, name: holder.name } : undefined;
     },
     () => undefined,

@@ -96,33 +96,36 @@ function runtimeAgentCardStatus(agent: AgentListItem): AgentCardStatus {
 }
 
 /**
- * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
- * rather than a person: the Account model keeps the Agent creator audit-only, and owning a Computer
- * implies no control of the physical host.
+ * Names the machine-level action that resolves the failure, for the states whose status badge
+ * cannot name it alone. Recovery is stated against the Computer rather than a person: the Account
+ * model keeps the Agent creator audit-only, and owning a Computer implies no control of the
+ * physical host.
+ *
+ * Offline and unconfirmed return nothing. The badge and its last-seen detail already carry both,
+ * and the reconnect step below states the action, so a sentence there only repeats the panel. A
+ * Provider that is missing, signed out, or still being checked is named nowhere else: "Not ready"
+ * is the whole badge, so the sentence is the only place the reader learns which Provider and why.
  */
-export function computerRecoveryMessage(agent: AgentDetailView): string {
+export function computerRecoveryMessage(agent: AgentDetailView): string | undefined {
   if (!agent.computer) {
     return m.agents_computer_not_bound_recovery();
   }
+  if (agent.availability.reason !== "runtime_unavailable") {
+    return undefined;
+  }
   const computerName = agent.computer.displayName;
-  if (agent.availability.reason === "runtime_unavailable") {
-    const { provider, status } = agent.availability.dependencies.runtime;
-    const providerName = provider === "codex" ? "Codex" : "Claude Code";
-    if (status === "install") {
-      return m.agent_settings_computer_recovery_provider_not_installed({ computerName, providerName });
-    }
-    if (status === "sign-in") {
-      return m.agent_settings_computer_recovery_provider_not_signed_in({ computerName, providerName });
-    }
-    if (status === "checking") {
-      return m.agent_settings_computer_recovery_provider_checking({ computerName, providerName });
-    }
-    return m.agent_settings_computer_recovery_provider_unavailable({ computerName, providerName });
+  const { provider, status } = agent.availability.dependencies.runtime;
+  const providerName = provider === "codex" ? "Codex" : "Claude Code";
+  if (status === "install") {
+    return m.agent_settings_computer_recovery_provider_not_installed({ computerName, providerName });
   }
-  if (agent.availability.dependencies.computer.state !== "action_required") {
-    return m.agent_settings_computer_recovery_unconfirmed();
+  if (status === "sign-in") {
+    return m.agent_settings_computer_recovery_provider_not_signed_in({ computerName, providerName });
   }
-  return m.agent_settings_computer_recovery_offline({ computerName });
+  if (status === "checking") {
+    return m.agent_settings_computer_recovery_provider_checking({ computerName, providerName });
+  }
+  return m.agent_settings_computer_recovery_provider_unavailable({ computerName, providerName });
 }
 
 export function imBindingStateLabel(binding: ImBindingSummary): string {

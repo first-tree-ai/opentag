@@ -394,16 +394,18 @@ function ComputerConnectPresentation({
   const comment = targetName
     ? m.computer_connect_repair_command_comment({ computerName: targetName })
     : m.computer_connect_create_command_comment();
+  // Idle repair has no command to introduce yet, and the surface already asks whether one is
+  // wanted. The row stays so the block does not jump once the command and its countdown arrive.
   const intro =
-    state.kind === "idle" && targetName
-      ? m.computer_connect_repair_intro({ computerName: targetName })
+    state.kind === "idle"
+      ? undefined
       : targetName
         ? m.computer_connect_repair_command_intro({ computerName: targetName })
         : m.computer_connect_create_command_intro();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
       <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">
-        <p className="text-sm text-kumo-subtle m-0">{intro}</p>
+        {intro ? <p className="text-sm text-kumo-subtle m-0">{intro}</p> : null}
         <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
           {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
         </div>

@@ -18,6 +18,7 @@ import {
   RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
+  RuntimeProviderMessageRefSchema,
   runtimeUsageTotalTokens,
   ServerRuntimeBusinessFrameSchema,
   SessionMessageDeliveryRequestSchema,
@@ -393,6 +394,34 @@ describe("runtime domain contract", () => {
       SessionMessageDeliveryRequestSchema.parse({
         ...delivery,
         content: { kind: "text", text: `${"你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3))}你` },
+      }),
+    ).toThrow();
+  });
+
+  it("accepts optional Slack authorUserId without treating it as required identity", () => {
+    const slackRef = {
+      provider: "slack" as const,
+      appId: "app-1",
+      teamId: "workspace-1",
+      botUserId: "bot-1",
+      channelId: "channel-1",
+      messageTs: "1710000000.000001",
+    };
+    expect(RuntimeProviderMessageRefSchema.parse(slackRef)).toEqual(slackRef);
+    expect(RuntimeProviderMessageRefSchema.parse({ ...slackRef, authorUserId: "U_HUMAN" })).toEqual({
+      ...slackRef,
+      authorUserId: "U_HUMAN",
+    });
+    expect(() => RuntimeProviderMessageRefSchema.parse({ ...slackRef, authorUserId: "" })).toThrow();
+    expect(() =>
+      RuntimeProviderMessageRefSchema.parse({
+        provider: "feishu",
+        teamBrand: "feishu",
+        appId: "app-1",
+        botOpenId: "bot-1",
+        chatId: "chat-1",
+        messageId: "message-1",
+        authorUserId: "U_HUMAN",
       }),
     ).toThrow();
   });

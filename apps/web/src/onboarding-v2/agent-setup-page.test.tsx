@@ -523,6 +523,21 @@ describe("preparation review regressions", () => {
     expect(messaging.textContent).not.toMatch(/CLI|PATH|install|sign[ -]?in/i);
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
   });
+
+  it("explains the first Slack event needed to finish the connection check", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack" },
+    });
+    renderSetup(memory.adapter);
+    await settle();
+
+    expect(
+      screen.getByText(
+        "In Slack, add OpenTag to a channel and send it a message, or message it directly, to finish the connection check.",
+      ),
+    ).toBeTruthy();
+  });
 });
 
 describe("AgentSetupPage blockers", () => {

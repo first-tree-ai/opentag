@@ -280,6 +280,7 @@ export const RuntimeProviderMessageRefSchema = z.discriminatedUnion("provider", 
       channelType: byteString(160, "Slack channel type exceeds the 160-byte limit", 1).optional(),
       messageTs: RuntimeProviderExternalIdSchema,
       threadTs: RuntimeProviderExternalIdSchema.optional(),
+      authorUserId: RuntimeProviderExternalIdSchema.optional(),
     })
     .strict(),
 ]);

@@ -16,3 +16,18 @@ export function withLocale(locale: "en" | "zh", callback: () => void): void {
     overwriteGetLocale(() => "en");
   }
 }
+
+/**
+ * The async twin of `withLocale`, for a locale that has to hold across a render and its awaits.
+ *
+ * A rendered assertion is the only kind that observes the component's own composition rather than a
+ * copy of it, and rendering is asynchronous, so the synchronous form above cannot express it.
+ */
+export async function withLocaleAsync(locale: "en" | "zh", callback: () => Promise<void>): Promise<void> {
+  overwriteGetLocale(() => locale);
+  try {
+    await callback();
+  } finally {
+    overwriteGetLocale(() => "en");
+  }
+}

@@ -69,15 +69,7 @@ const slackDetail = {
     appIdEvidence: "configured" as const,
   },
   credentialGeneration: 1,
-  grantedCapabilities: [
-    "app_mentions:read",
-    "channels:history",
-    "chat:write",
-    "files:read",
-    "groups:history",
-    "im:history",
-    "mpim:history",
-  ],
+  grantedCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
   reauthorizationRequired: false,
   lastErrorCode: null,
 };
@@ -871,14 +863,30 @@ describe("ImBindingService persistence", () => {
       status: "succeeded",
       outboxContext: { provider: "slack", sessionKind: "channel", channelId: "C-credential" },
     });
+    const warn = vi.fn();
     const providerCliUnready = new RealImBindingService(unitDatabase.database, value.cipher, {
       now: () => fixedNow,
       imCliReadiness: () => "checking",
-      credentialExecutionReadiness: () => ({ status: "ready" }),
+      credentialExecutionReadiness: () => ({ status: "needs_attention" }),
+      logger: { warn },
     });
     await expect(
       providerCliUnready.issueRuntimeCredentialGrant({ ...request, requestId: crypto.randomUUID() }, auth),
-    ).resolves.toMatchObject({ status: "rejected", code: "provider_cli_unready" });
+    ).resolves.toMatchObject({ status: "succeeded", grant: { provider: "slack", botAccessToken: "xoxb-secret" } });
+    expect(warn).not.toHaveBeenCalled();
+    await expect(
+      providerCliUnready.issueRuntimeCredentialGrant({ ...request, placementGeneration: 2 }, auth),
+    ).resolves.toMatchObject({ status: "rejected", code: "placement_stale" });
+    expect(warn).toHaveBeenCalledWith(
+      {
+        code: "placement_stale",
+        sessionId: session.id,
+        agentId: value.agent.id,
+        computerId: value.computer.id,
+        requestId: request.requestId,
+      },
+      "Runtime credential grant rejected",
+    );
     await expect(
       value.service.issueRuntimeCredentialGrant({ ...request, placementGeneration: 2 }, auth),
     ).resolves.toMatchObject({ status: "rejected", code: "placement_stale" });
@@ -940,6 +948,18 @@ describe("ImBindingService persistence", () => {
     await expect(value.service.issueRuntimeCredentialGrant(request, auth)).resolves.toMatchObject({
       status: "succeeded",
       grant: { provider: "feishu", appId: "cli_1", appSecret: "app-secret", teamBrand: "lark" },
+      outboxContext: { provider: "feishu", sessionKind: "thread", chatId: "C-feishu", threadId: "thread-1" },
+    });
+    const observationsNotReady = new RealImBindingService(unitDatabase.database, value.cipher, {
+      now: () => fixedNow,
+      imCliReadiness: () => "checking",
+      credentialExecutionReadiness: () => ({ status: "needs_attention", reason: "credential_rejected" }),
+    });
+    await expect(
+      observationsNotReady.issueRuntimeCredentialGrant({ ...request, requestId: crypto.randomUUID() }, auth),
+    ).resolves.toMatchObject({
+      status: "succeeded",
+      grant: { provider: "feishu", appId: "cli_1", teamBrand: "lark" },
       outboxContext: { provider: "feishu", sessionKind: "thread", chatId: "C-feishu", threadId: "thread-1" },
     });
     await unitDatabase.database.update(imBindings).set({ externalAppId: "wrong" }).where(eq(imBindings.id, bindingId));

@@ -106,6 +106,21 @@ describe("AgentTurnRunner", () => {
     expect(input.items[0]?.text).toContain("at most 1 message per second per channel");
     expect(input.items[0]?.text).toContain("<@U...>");
     expect(input.items[0]?.text).toContain("conversations.history and similar reads are rate-limited");
+    expect(input.items[0]?.text).toContain("team.info, users.info, users.list");
+    expect(input.items[0]?.text).toContain("conversations.replies");
+    expect(input.items[0]?.text).toContain("chat.update");
+    expect(input.items[0]?.text).toContain("conversations.open");
+    expect(input.items[0]?.text).toContain("conversations.join");
+    expect(input.items[0]?.text).toContain("exactly one user ID");
+    expect(input.items[0]?.text).toContain("Do not use it to create an MPIM");
+    expect(input.items[0]?.text).toContain("even if the user did not name it");
+    expect(input.items[0]?.text).toContain("Do not roam through, bulk-join, or inspect task-unrelated conversations");
+    expect(input.items[0]?.text).toContain("conversations.join `{channel}` once and retry the original action once");
+    expect(input.items[0]?.text).toContain("reactions.add");
+    expect(input.items[0]?.text).toContain("files.getUploadURLExternal");
+    expect(input.items[0]?.text).toContain("files.completeUploadExternal");
+    expect(input.items[0]?.text).toContain("response_metadata.next_cursor");
+    expect(input.items[0]?.text).toContain("Retry-After");
     expect(input.items[0]?.text).toContain("Never print credentials, tokens, or the environment file");
     expect(input.items[0]?.text).not.toMatch(/xox[bpa]-/);
     expect(Buffer.byteLength(input.items[0]?.text ?? "", "utf8")).toBeLessThan(16 * 1024);
@@ -488,6 +503,42 @@ describe("AgentTurnRunner", () => {
         outcome: "failed",
         executionEffects: "not_started",
         errorReason: "credential_unavailable",
+      }),
+    );
+  });
+
+  it("logs the specific credential rejection code when a Turn fails before Provider execution", async () => {
+    const logs: RecordedLog[] = [];
+    const environment = credentialEnvironment();
+    environment.prepare.mockRejectedValue(new ImCredentialEnvironmentError("provider_cli_unready"));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      logger: recordingLogger(logs),
+      reportOwner: {
+        create: vi.fn((input) => ({
+          ...input,
+          type: "turn:report",
+          requestId: randomUUID(),
+          resultHash: "e".repeat(64),
+        })),
+        submit: vi.fn(async () => undefined),
+      } as unknown as TurnReportOwner,
+      runtimeManager: { ensureRuntime: vi.fn() } as unknown as SessionRuntimeManager,
+      credentialEnvironment: environment,
+    });
+
+    runner.start(liveOwner(delivery()));
+    await runner.settled();
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "Turn failed",
+        fields: expect.objectContaining({ errorReason: "credential_unavailable", errorCode: "provider_cli_unready" }),
       }),
     );
   });

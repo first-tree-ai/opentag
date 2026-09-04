@@ -590,7 +590,8 @@ export class RuntimeSession {
           this.#sendBusinessResult(result);
           outcome = "handled";
           errorCode = undefined;
-        } catch {
+        } catch (error) {
+          this.#warnBusinessHandlerFailure(frame, context, error);
           if (this.#canSendBusiness(context)) this.#sendBusinessResult(business.failureResult(frame));
         } finally {
           endRuntimeFrameSpan(frameTrace, outcome, errorCode);
@@ -689,6 +690,29 @@ export class RuntimeSession {
       return;
     }
     this.#fail("INTERNAL_ERROR", "The runtime request could not be completed", 1011, requestId);
+  }
+
+  /** A thrown business handler is answered with the generic failure result; the cause survives only here. */
+  #warnBusinessHandlerFailure(
+    frame: RuntimeServerBusinessFrame,
+    context: RuntimeBusinessContext,
+    error: unknown,
+  ): void {
+    try {
+      this.#logger?.warn(
+        {
+          code: "RUNTIME_BUSINESS_HANDLER_FAILED",
+          frameType: frame.type,
+          ...(typeof frame.requestId === "string" ? { requestId: frame.requestId } : {}),
+          computerId: context.computerId,
+          instanceId: context.instanceId,
+          reason: redactForLog(error instanceof Error ? error.message : "Unknown business handler failure"),
+        },
+        "Runtime business frame handler failed",
+      );
+    } catch {
+      // Logging must never replace the failure result.
+    }
   }
 
   #fail(code: RuntimeErrorFrame["code"], message: string, closeCode: number, requestId?: string): void {

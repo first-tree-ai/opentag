@@ -51,6 +51,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   task: [ID],
   agent: [ID],
   agentSetup: [ID],
+  refreshAgentSetup: [ID],
   agentUsage: [ID, 7],
   agentConfig: [ID],
   createAgent: [{ name: "a", displayName: "A", runtimeProvider: "codex" }],

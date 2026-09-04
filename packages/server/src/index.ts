@@ -292,7 +292,8 @@ export async function startServer(): Promise<void> {
     providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
       listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
       issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
-      shouldPrewarmOfficialProviderClis: (computerId) => computerService.accountInFirstSetup(computerId),
+      shouldPrewarmOfficialProviderClis: (computerId) =>
+        computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const sessionCollaborationService = new SessionCollaborationService({
@@ -336,6 +337,11 @@ export async function startServer(): Promise<void> {
       supervisor: backgroundFailureSupervisor,
     });
     const agentSetupService = new AgentSetupService(database, agentService, imBindingService, feishuSetupService, {
+      prepareComputer: async (input) => {
+        const owner = providerCliReconcileOwner;
+        if (!owner) throw new Error("Provider CLI preparation owner is unavailable");
+        await owner.prepareComputer(input);
+      },
       providerReadiness: registry,
       slackOAuthAvailable: config.slackOAuth !== undefined,
     });

@@ -83,11 +83,22 @@ export function hasRequiredFeishuTenantScopes(scopes: readonly string[]): boolea
 export const SLACK_REQUIRED_BOT_SCOPES = [
   "app_mentions:read",
   "channels:history",
+  "channels:join",
+  "channels:read",
   "chat:write",
   "files:read",
+  "files:write",
   "groups:history",
+  "groups:read",
   "im:history",
+  "im:read",
+  "im:write",
   "mpim:history",
+  "mpim:read",
+  "reactions:read",
+  "reactions:write",
+  "team:read",
+  "users:read",
 ] as const;
 
 export const SLACK_SUBSCRIBED_BOT_EVENTS = [

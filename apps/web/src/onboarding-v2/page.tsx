@@ -5,7 +5,7 @@ import { ApiError, browserApi } from "../api.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
-import { AgentSetupPage } from "./agent-setup-page.js";
+import { AgentSetupPage, type AgentSetupPageProps } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
@@ -41,19 +41,27 @@ async function agentHoldingName(name: string): Promise<{ id: string; name: strin
  */
 export function AgentSetupSurface({
   agentId,
+  computerAdapter,
+  creationPreview,
   onBackToAgents,
   onAgentAvailable,
+  onExternalNavigation,
   onOpenAgent,
   onReady,
+  refreshSignal,
   reviewMode = false,
   setupAdapter,
   slackOAuthError,
 }: {
   agentId?: string;
+  computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
+  onExternalNavigation?: (url: string) => void;
   onOpenAgent?: () => void;
   onReady?: (agentId: string) => Promise<void> | void;
+  refreshSignal?: number;
   reviewMode?: boolean;
   setupAdapter?: AgentSetupAdapter;
   slackOAuthError?: string;
@@ -63,20 +71,31 @@ export function AgentSetupSurface({
       <AgentSetupPage
         adapter={setupAdapter}
         agentId={agentId}
+        computerAdapter={computerAdapter}
+        onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
         onReady={onReady}
+        refreshSignal={refreshSignal}
         reviewMode={reviewMode}
         slackOAuthError={slackOAuthError}
       />
     );
   }
-  return <AgentCreatePage onAgentAvailable={onAgentAvailable} onBackToAgents={onBackToAgents} />;
+  return (
+    <AgentCreatePage
+      creationPreview={creationPreview}
+      onAgentAvailable={onAgentAvailable}
+      onBackToAgents={onBackToAgents}
+    />
+  );
 }
 
 function AgentCreatePage({
+  creationPreview,
   onAgentAvailable,
   onBackToAgents,
 }: {
+  creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
@@ -130,7 +149,7 @@ function AgentCreatePage({
       // under a failure it does not describe.
       setTaken(undefined);
       try {
-        const created = await browserApi.createAgent(request);
+        const created = creationPreview ? await creationPreview(request) : await browserApi.createAgent(request);
         await Promise.resolve(onAgentAvailable?.(created.id));
       } catch (cause) {
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
@@ -152,7 +171,7 @@ function AgentCreatePage({
         setSubmitting(false);
       }
     },
-    [onAgentAvailable],
+    [creationPreview, onAgentAvailable],
   );
 
   return (

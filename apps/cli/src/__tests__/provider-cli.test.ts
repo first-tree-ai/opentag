@@ -8,7 +8,11 @@ import {
 } from "@opentag/client";
 import { StructuredErrorSchema } from "@opentag/shared";
 import { Command, CommanderError } from "commander";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Real child-process CLI cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { registerProviderCliCommand } from "../commands/provider-cli.js";
 import { runProviderCliEnsure } from "../core/provider-cli/ensure.js";
 import { runProviderCliInspect } from "../core/provider-cli/inspect.js";

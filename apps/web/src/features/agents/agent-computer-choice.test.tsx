@@ -111,7 +111,9 @@ describe("AgentComputerChoice over a cached inventory", () => {
     await flush();
     await act(async () => release([]));
 
-    expect(await screen.findByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(
+      await screen.findByText("Paste this command into the coding agent on the computer you're connecting."),
+    ).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
   });
 

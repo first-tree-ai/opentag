@@ -24,15 +24,16 @@ function stripUrlDetails(value: string): string {
   }
 }
 
+/** Bound the title, and mark a cut with an ellipsis so it never reads as a sentence that just stops. */
 function truncateGraphemes(value: string): string {
   const segments = graphemeSegmenter.segment(value)[Symbol.iterator]();
   let title = "";
   for (let index = 0; index < TASK_AUTO_TITLE_MAX_GRAPHEMES; index += 1) {
     const next = segments.next();
-    if (next.done) break;
+    if (next.done) return title;
     title += next.value.segment;
   }
-  return title;
+  return segments.next().done ? title : `${title.trimEnd()}…`;
 }
 
 /**
@@ -54,6 +55,23 @@ function titleTextFromStructuredBlocks(input: TaskTitleInput): string | undefine
       return " ";
     })
     .join("");
+}
+
+/**
+ * The text a Turn shows for a message that carries mentions. The stored fallback keeps the
+ * provider's routing syntax (Feishu writes a mention as `@_user_1`), while the blocks carry each
+ * mention's display label. Only a message tokenised into text and mention blocks is rendered from
+ * them, so no other block kind can lose content; every other message keeps its lossless fallback.
+ */
+export function messageTextFromBlocks(blocks: ImContentV1["blocks"] | undefined): string | undefined {
+  if (!blocks?.some((block) => block.type === "mention")) return undefined;
+  const parts: string[] = [];
+  for (const block of blocks) {
+    if (block.type === "text") parts.push(block.text);
+    else if (block.type === "mention") parts.push(block.label);
+    else return undefined;
+  }
+  return parts.join("");
 }
 
 function providerAwareFallback(input: TaskTitleInput): string {

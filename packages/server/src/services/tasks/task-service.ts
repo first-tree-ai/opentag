@@ -13,7 +13,7 @@ import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
 import { sessionMessages, sessions } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
-import { deriveTaskTitle } from "./task-title.js";
+import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
 
 const CursorSchema = z.object({ at: z.string().datetime(), id: z.string().uuid() }).strict();
 
@@ -85,7 +85,7 @@ interface TaskTurnRow extends Record<string, unknown> {
   operation: "created" | "edited" | "deleted";
   authorKind: "human" | "bot" | "system";
   authorDisplayName: string | null;
-  content: { fallbackText?: unknown; truncated?: unknown };
+  content: { fallbackText?: unknown; truncated?: unknown; blocks?: ImContentV1["blocks"] };
   occurredAt: Date | string;
 }
 
@@ -202,6 +202,15 @@ function toSummary(row: TaskSummaryRow): TaskSummary {
   };
 }
 
+/**
+ * The text a Turn shows for its message: the blocks' rendering when the message carries mentions,
+ * so a reader sees `@Atlas` rather than Feishu's `@_user_1`, and the lossless fallback otherwise.
+ */
+function turnText(content: TaskTurnRow["content"]): string {
+  const fallback = typeof content.fallbackText === "string" ? content.fallbackText : "";
+  return messageTextFromBlocks(Array.isArray(content.blocks) ? content.blocks : undefined) ?? fallback;
+}
+
 function toTurn(row: TaskTurnRow): TaskTurn {
   const report = row.turnReport;
   return {
@@ -222,7 +231,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
       operation: row.operation,
       authorKind: row.authorKind,
       authorDisplayName: row.authorDisplayName,
-      fallbackText: typeof row.content.fallbackText === "string" ? row.content.fallbackText : "",
+      fallbackText: turnText(row.content),
       truncated: row.content.truncated === true,
       occurredAt: toIso(row.occurredAt),
     },

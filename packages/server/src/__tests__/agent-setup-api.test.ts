@@ -4,7 +4,7 @@
  * error envelopes a caller can rely on.
  */
 
-import { agentSetupPath } from "@opentag/shared";
+import { agentSetupPath, agentSetupRefreshPath } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { AgentService, AgentSetupService } from "../services/agents/index.js";
@@ -39,16 +39,31 @@ const snapshot = {
     lastSeenAt: observedAt,
     imCliReadiness: [
       { provider: "feishu", status: "ready", observedAt },
-      { provider: "slack", status: "checking", observedAt: null },
+      { provider: "slack", status: "ready", observedAt },
     ],
     observedAt,
   },
   runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
   messaging: { kind: "not-configured" },
+  requiredImCliProviders: ["feishu", "slack"],
+  components: [
+    {
+      kind: "computer",
+      status: "online",
+      blocking: false,
+      computerId,
+      displayName: "Laptop",
+      platform: "linux",
+      observedAt,
+    },
+    { kind: "runtime", status: "ready", blocking: false, provider: "codex", observedAt },
+    { kind: "im-cli", status: "ready", blocking: false, provider: "feishu", observedAt },
+    { kind: "im-cli", status: "ready", blocking: false, provider: "slack", observedAt },
+  ],
   blockers: [{ code: "messaging-not-configured" }],
   actions: [
-    { kind: "start-messaging", provider: "feishu" },
     { kind: "start-messaging", provider: "slack" },
+    { kind: "start-messaging", provider: "feishu" },
   ],
   observedAt,
 };
@@ -75,8 +90,11 @@ function authService(): UserAuthService {
   };
 }
 
-function appWith(getSetupById: AgentSetupService["getSetupById"]) {
-  const agentSetupService = { getSetupById } as unknown as AgentSetupService;
+function appWith(
+  getSetupById: AgentSetupService["getSetupById"],
+  refreshPreparationById: AgentSetupService["refreshPreparationById"] = vi.fn(async () => undefined),
+) {
+  const agentSetupService = { getSetupById, refreshPreparationById } as unknown as AgentSetupService;
   const agentService = {} as unknown as AgentService;
   const app = createApp({ authService: authService(), agentService, agentSetupService });
   apps.push(app);
@@ -104,6 +122,31 @@ describe("Agent setup HTTP API", () => {
     const response = await app.inject({ method: "GET", url: agentSetupPath(agentId) });
     expect(response.statusCode).toBe(401);
     expect(getSetupById).not.toHaveBeenCalled();
+  });
+
+  it("starts preparation for the authenticated Account and exact Agent", async () => {
+    const refreshPreparationById = vi.fn(async () => undefined);
+    const app = appWith(vi.fn(), refreshPreparationById);
+
+    const response = await app.inject({
+      method: "POST",
+      url: agentSetupRefreshPath(agentId),
+      headers: authorization,
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(refreshPreparationById).toHaveBeenCalledWith(userId, agentId);
+  });
+
+  it("does not start preparation without authentication", async () => {
+    const refreshPreparationById = vi.fn(async () => undefined);
+    const app = appWith(vi.fn(), refreshPreparationById);
+
+    const response = await app.inject({ method: "POST", url: agentSetupRefreshPath(agentId) });
+
+    expect(response.statusCode).toBe(401);
+    expect(refreshPreparationById).not.toHaveBeenCalled();
   });
 
   it("validates the Agent id in the path", async () => {

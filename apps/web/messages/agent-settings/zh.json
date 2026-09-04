@@ -25,8 +25,6 @@
   "agent_settings_computer_recovery_provider_not_signed_in": "{computerName} 上的 {providerName} 尚未登录。",
   "agent_settings_computer_recovery_provider_unavailable": "{computerName} 上的 {providerName} 不可用。",
   "agent_settings_computer_recovery_unconfirmed": "OpenTag 无法确认此电脑当前的连接状态。",
-  "agent_settings_computer_repair_hide": "隐藏修复命令",
-  "agent_settings_computer_repair_show": "需要重新安装？生成修复命令。",
   "agent_settings_computer_unconfirmed": "无法确认",
   "agent_settings_custom_character": "自定义 · {count} 个字符",
   "agent_settings_custom_characters": "自定义 · {count} 个字符",

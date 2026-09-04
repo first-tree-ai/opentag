@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } fro
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type DirectImMessageDeliveryRequest,
@@ -25,6 +25,7 @@ import {
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
   createLoginShellDiscovery,
+  createRuntimeProviderReadinessRefresher,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
@@ -32,6 +33,7 @@ import {
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -106,6 +108,19 @@ describe("createClientRuntime production composition", () => {
         issues: [{ code: "temporarily_unavailable", message: "secret" }],
       }),
     ).toEqual({ provider: "codex", status: "unavailable" });
+  });
+
+  it("returns the fresh selected-Runtime result for Server-owned Computer preparation", async () => {
+    const refreshProviderReadiness = vi.fn(async () => false);
+    const probeResult = vi.fn(() => ({
+      ready: false as const,
+      issues: [{ code: "credential_missing" as const, message: "local-only detail" }],
+    }));
+    const refresh = createRuntimeProviderReadinessRefresher(refreshProviderReadiness, { probeResult });
+
+    await expect(refresh("codex")).resolves.toEqual({ provider: "codex", status: "sign-in" });
+    expect(refreshProviderReadiness).toHaveBeenCalledWith("codex");
+    expect(probeResult).toHaveBeenCalledWith("codex");
   });
 
   it("rejects invalid Provider probe deadlines before probing", async () => {
@@ -474,6 +489,41 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     runtime.stop();
     expect(capture).toBe(`set:${await realpath(claudeCodeHome)}`);
+  });
+
+  it("puts the Context Tree shim directory first on the Provider PATH", async () => {
+    const home = await temporaryDirectory("opentag-client-context-tree-path-");
+    const binDirectory = resolveOpenTagHomeLayout(home).contextTreeBin;
+    const { pathCapture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home, PATH: "/usr/bin" },
+      home,
+    });
+    runtime.stop();
+    // The packaged skills invoke `context-tree` by name, so the shim has to win the lookup.
+    expect(pathCapture).toBe(`set:${binDirectory}${delimiter}/usr/bin`);
+  });
+
+  it("does not duplicate the Context Tree shim directory that already leads PATH", async () => {
+    const home = await temporaryDirectory("opentag-client-context-tree-path-idempotent-");
+    const binDirectory = resolveOpenTagHomeLayout(home).contextTreeBin;
+    const existing = `${binDirectory}${delimiter}/usr/bin`;
+    const { pathCapture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home, PATH: existing },
+      home,
+    });
+    runtime.stop();
+    expect(pathCapture).toBe(`set:${existing}`);
+  });
+
+  it("supplies the Context Tree shim directory as the only PATH entry when the source has none", async () => {
+    const home = await temporaryDirectory("opentag-client-context-tree-path-absent-");
+    const binDirectory = resolveOpenTagHomeLayout(home).contextTreeBin;
+    const { pathCapture, runtime } = await composeClaudeCodeRuntime({
+      environment: { HOME: home },
+      home,
+    });
+    runtime.stop();
+    expect(pathCapture).toBe(`set:${binDirectory}`);
   });
 
   it("unit-tests composition delegates and every preflight outcome", async () => {
@@ -2024,12 +2074,13 @@ async function composeClaudeCodeRuntime(options: {
   readonly claudeCodeHome?: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly home: string;
-}): Promise<{ readonly capture: string; readonly runtime: ComposedClientRuntime }> {
+}): Promise<{ readonly capture: string; readonly pathCapture: string; readonly runtime: ComposedClientRuntime }> {
   const capturePath = resolve(options.home, "claude-config-dir.capture");
+  const pathCapturePath = resolve(options.home, "claude-path.capture");
   const command = resolve(options.home, "claude-env-fixture");
   await writeFile(
     command,
-    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
+    `#!/bin/sh\nif [ -n "\${CLAUDE_CONFIG_DIR+x}" ]; then printf 'set:%s' "$CLAUDE_CONFIG_DIR" > ${JSON.stringify(capturePath)}; else printf 'unset' > ${JSON.stringify(capturePath)}; fi\nif [ -n "\${PATH+x}" ]; then printf 'set:%s' "$PATH" > ${JSON.stringify(pathCapturePath)}; else printf 'unset' > ${JSON.stringify(pathCapturePath)}; fi\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nexit 0\n`,
     "utf8",
   );
   await chmod(command, 0o755);
@@ -2041,7 +2092,11 @@ async function composeClaudeCodeRuntime(options: {
     environment: options.environment,
     home: options.home,
   });
-  return { capture: await readFile(capturePath, "utf8"), runtime };
+  return {
+    capture: await readFile(capturePath, "utf8"),
+    pathCapture: await readFile(pathCapturePath, "utf8"),
+    runtime,
+  };
 }
 
 function readyFactory(

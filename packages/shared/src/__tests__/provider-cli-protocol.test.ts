@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   ClientRuntimeBusinessFrameSchema,
   IM_CLI_PROVIDERS,
+  ImCliProviderSchema,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliCancelFrameSchema,
   ProviderCliPrewarmFrameSchema,
+  ProviderCliPrewarmResultFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
   ProviderCliValidationResultFrameSchema,
@@ -14,8 +17,18 @@ import {
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
+  RuntimeRequestIdSchema,
   ServerRuntimeBusinessFrameSchema,
 } from "../index.js";
+
+/** Exact v1 prewarm wire shape shipped to already-deployed Clients. Extra keys fail `.strict()`. */
+const LegacyProviderCliPrewarmFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:prewarm"),
+    requestId: RuntimeRequestIdSchema,
+    providers: z.array(ImCliProviderSchema).min(1).max(IM_CLI_PROVIDERS.length),
+  })
+  .strict();
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 const requirementRequestId = "44444444-4444-4444-8444-444444444444";
@@ -94,6 +107,18 @@ describe("provider CLI reconcile protocol", () => {
     expect(prewarm.providers).toEqual(["feishu", "slack"]);
     expect(ServerRuntimeBusinessFrameSchema.parse(prewarm)).toEqual(prewarm);
     expect(ProviderCliPrewarmFrameSchema.parse(prewarm)).toEqual(prewarm);
+    expect(LegacyProviderCliPrewarmFrameSchema.parse(prewarm)).toEqual(prewarm);
+    expect(ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "inspect" })).toMatchObject({ mode: "inspect" });
+    expect(ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "ensure" })).toMatchObject({ mode: "ensure" });
+    expect(ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "ensure", runtimeProvider: "codex" })).toMatchObject(
+      { mode: "ensure", runtimeProvider: "codex" },
+    );
+    expect(() => LegacyProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "inspect" })).toThrow();
+    expect(() => LegacyProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "ensure" })).toThrow();
+    expect(() =>
+      LegacyProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "ensure", runtimeProvider: "codex" }),
+    ).toThrow();
+    expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "repair" })).toThrow();
     expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, providers: ["slack", "feishu"] })).toThrow();
     expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, providers: ["feishu", "feishu"] })).toThrow();
     for (const extra of [
@@ -106,6 +131,26 @@ describe("provider CLI reconcile protocol", () => {
     ]) {
       expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, ...extra })).toThrow();
     }
+  });
+
+  it("accepts only terminal, canonically ordered preparation results", () => {
+    const result = {
+      type: "provider-cli:prewarm:result" as const,
+      requestId,
+      runtime: { provider: "codex" as const, status: "ready" as const },
+      providers: [
+        { provider: "feishu" as const, status: "ready" as const },
+        { provider: "slack" as const, status: "install" as const },
+      ],
+    };
+    expect(ProviderCliPrewarmResultFrameSchema.parse(result)).toEqual(result);
+    expect(ClientRuntimeBusinessFrameSchema.parse(result)).toEqual(result);
+    expect(() =>
+      ProviderCliPrewarmResultFrameSchema.parse({ ...result, runtime: { provider: "codex", status: "checking" } }),
+    ).toThrow();
+    expect(() =>
+      ProviderCliPrewarmResultFrameSchema.parse({ ...result, providers: [...result.providers].reverse() }),
+    ).toThrow();
   });
 
   it("accepts a secret-free requirement and rejects path, version, url, argv, and env", () => {

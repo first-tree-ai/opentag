@@ -1,7 +1,7 @@
 # 任务
 
 > Canonical source: [tasks.md](../tasks.md)
-> Last synced with: 2026-09-02
+> Last synced with: 2026-09-03
 
 任务（Task）是账户拥有者对"有人在飞书或 Slack 里让 Agent 做的一件事"的只读视图。它是对已存储的入站
 `ImMessage` 记录及其 `im_message_deliveries` 的投影；消息投递、Session 物化和 Agent Runtime 都不因它而
@@ -41,8 +41,8 @@ channel Session 里的 `ambient` 旁听副本，以及因消息出现更新修�
 
 ## 标题
 
-Task 的标题来自根消息，沿用列表一直使用的推导方式：去掉路由语法、去掉被 @ 的 Bot、限制长度。存储在
-话题的 thread Session 上（私聊则是 channel Session 上）的手动标题或生成标题会覆盖它。
+Task 的标题来自根消息，沿用列表一直使用的推导方式：去掉路由语法、去掉被 @ 的 Bot、限制长度，截断处以省略号标记。
+存储在话题的 thread Session 上（私聊则是 channel Session 上）的手动标题或生成标题会覆盖它。
 
 `PATCH /api/v1/sessions/:id` 设置或清除手动标题。id 可以是 Task id，也可以是它的某条 Session；标题
 写入 Task 读取标题的那条 Session。没有人回复的顶层群聊请求没有这样的 Session，返回 `404`。

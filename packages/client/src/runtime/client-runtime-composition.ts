@@ -32,6 +32,7 @@ import {
 } from "../providers/codex/agent-runtime.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
 import { AgentRuntimeAvailabilityTester } from "./agent-runtime-availability-tester.js";
 import {
@@ -50,6 +51,7 @@ import {
 import { AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
+import { ContextTreeManager } from "./context-tree.js";
 import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
@@ -459,12 +461,19 @@ export async function createClientRuntime(
   const codexCommand = options.codexCommand ?? "codex";
   const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
   options.signal?.throwIfAborted();
-  const codexEnvironment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
+  // The packaged Context Tree skills invoke `context-tree` by name, so the shim directory has to
+  // win the PATH lookup. This belongs to composition rather than the per-Session workspace
+  // environment: a Session-level PATH would replace the value the factory composes, including the
+  // discovered executable directory that lets `codex` and `claude` resolve at all.
+  const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
+  const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
+    prependPath(environment, contextTreeBin);
+  const codexEnvironment = withContextTreeOnPath(
+    codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
+  );
   const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
-  const claudeCodeEnvironment = claudeCodeProcessEnvironment(
-    sourceEnvironment,
-    claudeCodeHome,
-    canonicalDefaultClaudeCodeHome,
+  const claudeCodeEnvironment = withContextTreeOnPath(
+    claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
   );
   const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
     codex: codexHome,
@@ -566,6 +575,11 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
+  const contextTree = new ContextTreeManager({
+    codexHome,
+    home: options.home,
+    logger: moduleLogger("context-tree"),
+  });
   const durabilityStore =
     options.durabilityStore ??
     (options.serverDurability
@@ -584,7 +598,9 @@ export async function createClientRuntime(
   });
   const providerCliReconciler = new ProviderCliReconciler({
     connection,
+    logger: moduleLogger("provider-cli-reconciler"),
     manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
+    refreshRuntimeProvider: createRuntimeProviderReadinessRefresher(refreshProviderReadiness, providers),
     signal: readinessSignal,
     validation: new ProviderCliValidationRunner({ home: options.home }),
   });
@@ -601,6 +617,7 @@ export async function createClientRuntime(
     bindingStore,
     cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
+    contextTree,
     ensureProviderReady,
     home: options.home,
     providers,
@@ -723,6 +740,21 @@ export function providerReadiness(
   return { provider, status: "unavailable" };
 }
 
+/**
+ * Couples a fresh selected-Runtime probe with its detailed local result for one Server-owned
+ * Computer preparation. Kept as a small factory so composition-level tests can exercise the exact
+ * callback that the Provider CLI reconciler receives without touching the real account CLI home.
+ */
+export function createRuntimeProviderReadinessRefresher(
+  refreshProviderReadiness: (providerId: string, signal?: AbortSignal) => Promise<boolean>,
+  providers: Pick<AgentRuntimeProviderRegistry, "probeResult">,
+): (provider: AgentRuntimeProvider) => Promise<RuntimeProviderReadinessObservation> {
+  return async (provider) => {
+    const available = await refreshProviderReadiness(provider);
+    return providerReadiness(provider, available, providers.probeResult(provider));
+  };
+}
+
 export interface ResolvedCodexFactoryOptions {
   readonly clientVersion: string;
   readonly codexHome: string;
@@ -733,13 +765,16 @@ export interface ResolvedCodexFactoryOptions {
   readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => CodexAgentRuntimeFactory;
 }
 
-function claudeCodeProcessEnvironment(
+/**
+ * Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
+ * value equals its own default. Omit the variable only when the resolved home is that default.
+ * Exported so the CLI probes the same environment the daemon runs in.
+ */
+export function claudeCodeProcessEnvironment(
   sourceEnvironment: NodeJS.ProcessEnv,
   claudeCodeHome: string,
   defaultClaudeCodeHome: string,
 ): NodeJS.ProcessEnv {
-  // Claude Code treats a set CLAUDE_CONFIG_DIR as a distinct credential record, even when the
-  // value equals its own default. Omit the variable only when the resolved home is that default.
   if (claudeCodeHome === defaultClaudeCodeHome) {
     const environment = { ...sourceEnvironment };
     delete environment.CLAUDE_CONFIG_DIR;
@@ -779,6 +814,17 @@ function productionProviderRegistration(
         validate: validateCodexRuntimePolicy,
       }
     : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
+}
+
+function prependPath(
+  environment: NodeJS.ProcessEnv,
+  directory: string,
+  pathDelimiter: string = delimiter,
+): NodeJS.ProcessEnv {
+  const current = environment.PATH;
+  if (!current) return { ...environment, PATH: directory };
+  if (current === directory || current.startsWith(`${directory}${pathDelimiter}`)) return environment;
+  return { ...environment, PATH: `${directory}${pathDelimiter}${current}` };
 }
 
 function withSearchBinOnPath(

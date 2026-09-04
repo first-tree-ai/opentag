@@ -1,4 +1,13 @@
-import type { AgentUsageDetail } from "@opentag/shared/browser";
+import {
+  AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
+  type AgentListItem,
+  type AgentSetupComputerState,
+  type AgentSetupMessagingState,
+  type AgentSetupRuntimeState,
+  type AgentSummary,
+  type AgentUsageDetail,
+  projectAgentSetupComponents,
+} from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { vi } from "vitest";
 
@@ -36,7 +45,7 @@ export function agentCreationPosts() {
   return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
 }
 
-export const agentSummary = {
+export const agentSummary: AgentSummary = {
   id: agentId,
   name: "reviewer",
   displayName: "Reviewer",
@@ -52,7 +61,7 @@ export const agentSummary = {
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
-export const agentListItem = {
+export const agentListItem: AgentListItem = {
   ...agentSummary,
   activity: { state: "idle" as const },
   usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
@@ -118,21 +127,45 @@ function setupProjectionOrThrow(
     ...(isUnbound ? { computer: null } : {}),
   };
   const observedAt = "2026-08-20T00:00:00.000Z";
+  const boundComputerIdentity = (computer: AgentSummary["computer"]): NonNullable<AgentSummary["computer"]> => {
+    if (!computer) throw new Error("A bound setup projection requires the Agent's Computer identity");
+    return computer;
+  };
+  const projectionParts = (
+    computer: AgentSetupComputerState,
+    runtime: AgentSetupRuntimeState,
+    messaging: AgentSetupMessagingState,
+  ) => {
+    const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
+    return {
+      requiredImCliProviders,
+      components: projectAgentSetupComponents({ computer, runtime, messaging, requiredImCliProviders }),
+    };
+  };
   if (isUnbound) {
+    const computer: AgentSetupComputerState = { kind: "not-bound" };
+    const runtime: AgentSetupRuntimeState = {
+      kind: "unavailable",
+      provider: target.runtimeProvider,
+      reason: "computer-not-bound",
+    };
+    const messaging: AgentSetupMessagingState = { kind: "not-configured" };
     return json({
       agent: target,
       stage: "needs-computer",
-      computer: { kind: "not-bound" },
-      runtime: { kind: "unavailable", provider: target.runtimeProvider, reason: "computer-not-bound" },
-      messaging: { kind: "not-configured" },
+      computer,
+      runtime,
+      messaging,
       blockers: [{ code: "computer-not-bound" }],
       actions: [{ kind: "bind-computer" }],
+      ...projectionParts(computer, runtime, messaging),
       observedAt,
     });
   }
-  const computer = {
+  const boundIdentity = boundComputerIdentity(targetBase.computer);
+  const computer: AgentSetupComputerState = {
     kind: "bound",
-    ...targetBase.computer,
+    ...boundIdentity,
     connectionStatus: "online",
     imCliReadiness: [
       { provider: "feishu", status: "ready", observedAt },
@@ -141,7 +174,12 @@ function setupProjectionOrThrow(
     lastSeenAt: observedAt,
     observedAt,
   };
-  const runtime = { kind: "observed", provider: target.runtimeProvider, status: "ready", observedAt };
+  const runtime: AgentSetupRuntimeState = {
+    kind: "observed",
+    provider: target.runtimeProvider,
+    status: "ready",
+    observedAt,
+  };
   if (state.bound && state.bindingReauth) {
     const replace =
       state.provider === "feishu"
@@ -154,19 +192,20 @@ function setupProjectionOrThrow(
             },
           ]
         : [];
+    const messaging: AgentSetupMessagingState = {
+      kind: "blocked",
+      provider: state.provider,
+      bindingId: setupBindingId,
+      credentialGeneration: setupCredentialGeneration,
+      code: "reauthorization-required",
+      errorCode: null,
+    };
     return json({
       agent: target,
       stage: "needs-messaging",
       computer,
       runtime,
-      messaging: {
-        kind: "blocked",
-        provider: state.provider,
-        bindingId: setupBindingId,
-        credentialGeneration: setupCredentialGeneration,
-        code: "reauthorization-required",
-        errorCode: null,
-      },
+      messaging,
       blockers: [
         {
           code: "messaging-not-ready",
@@ -185,21 +224,23 @@ function setupProjectionOrThrow(
         ...replace,
         { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
       ],
+      ...projectionParts(computer, runtime, messaging),
       observedAt,
     });
   }
   if (state.bound && state.bindingState === "active" && state.handoffReady) {
+    const messaging: AgentSetupMessagingState = {
+      kind: "ready",
+      provider: state.provider,
+      bindingId: setupBindingId,
+      credentialGeneration: setupCredentialGeneration,
+    };
     return json({
       agent: target,
       stage: "ready",
       computer,
       runtime,
-      messaging: {
-        kind: "ready",
-        provider: state.provider,
-        bindingId: setupBindingId,
-        credentialGeneration: setupCredentialGeneration,
-      },
+      messaging,
       blockers: [],
       actions: [
         {
@@ -210,21 +251,23 @@ function setupProjectionOrThrow(
         },
         { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
       ],
+      ...projectionParts(computer, runtime, messaging),
       observedAt,
     });
   }
   if (state.bound) {
+    const messaging: AgentSetupMessagingState = {
+      kind: "waiting-handoff",
+      provider: state.provider,
+      bindingId: setupBindingId,
+      credentialGeneration: setupCredentialGeneration,
+    };
     return json({
       agent: target,
       stage: "needs-messaging",
       computer,
       runtime,
-      messaging: {
-        kind: "waiting-handoff",
-        provider: state.provider,
-        bindingId: setupBindingId,
-        credentialGeneration: setupCredentialGeneration,
-      },
+      messaging,
       blockers: [
         {
           code: "messaging-not-ready",
@@ -242,20 +285,23 @@ function setupProjectionOrThrow(
         },
         { kind: "unbind-messaging", provider: state.provider, bindingId: setupBindingId },
       ],
+      ...projectionParts(computer, runtime, messaging),
       observedAt,
     });
   }
+  const messaging: AgentSetupMessagingState = { kind: "not-configured" };
   return json({
     agent: target,
     stage: "needs-messaging",
     computer,
     runtime,
-    messaging: { kind: "not-configured" },
+    messaging,
     blockers: [{ code: "messaging-not-configured" }],
     actions: [
-      { kind: "start-messaging", provider: "feishu" },
       { kind: "start-messaging", provider: "slack" },
+      { kind: "start-messaging", provider: "feishu" },
     ],
+    ...projectionParts(computer, runtime, messaging),
     observedAt,
   });
 }

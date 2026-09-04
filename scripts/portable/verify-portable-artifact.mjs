@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APP_ENTRY, hostPlatform, MANIFEST_SCHEMA_VERSION, parsePlatform } from "./build-portable.mjs";
+import { runContextTreeRuntimeProbe, verifyPortableDependencyGraph } from "./runtime-dependencies.mjs";
 
 function fail(message) {
   throw new Error(message);
@@ -103,27 +104,41 @@ function verify(options) {
     const appPackage = readJson(join(artifactDir, "app", "package.json"));
     if (appPackage.name !== manifest.packageName) fail("app/package.json name does not match the manifest");
     if (appPackage.version !== manifest.version) fail("app/package.json version does not match the manifest");
-    for (const field of ["dependencies", "optionalDependencies", "peerDependencies"]) {
-      if (Object.keys(appPackage[field] ?? {}).length > 0) {
-        fail(`app/package.json declares ${field}, but the portable artifact ships without node_modules`);
-      }
-    }
+
+    // The embedded dependency graph must be closed and complete for every platform: the payload
+    // layout is platform-independent, so a broken graph fails the artifact everywhere.
+    verifyPortableDependencyGraph(join(artifactDir, "app"));
 
     if (options.platform !== hostPlatform()) {
       console.log(`[portable verify] ${options.platform} structure verified; skipping the runtime check on this host`);
       return;
     }
 
-    const versionOutput = run(join(artifactDir, "bin", manifest.binName), ["--version"], {
-      env: { ...process.env, OPENTAG_HOME: join(root, "home") },
-    }).stdout;
-    if (!versionOutput.includes(manifest.version)) {
-      fail(`expected --version output to include ${manifest.version}, got ${versionOutput.trim()}`);
-    }
-    console.log(`[portable verify] ${options.platform} verified and runnable (${manifest.version})`);
+    verifyHostRuntime({ artifactDir, manifest, platform: options.platform, root });
   } finally {
     rmSync(root, { force: true, recursive: true });
   }
+}
+
+/**
+ * Host-stage runtime checks execute the artifact's own binaries with isolated homes, so a payload
+ * that only passes structural checks still fails verification on the platform it runs on. The
+ * embedded Context Tree CLI is exercised through the artifact's own Node.js runtime.
+ */
+function verifyHostRuntime({ artifactDir, manifest, platform, root }) {
+  const versionOutput = run(join(artifactDir, "bin", manifest.binName), ["--version"], {
+    env: { ...process.env, OPENTAG_HOME: join(root, "home") },
+  }).stdout;
+  if (!versionOutput.includes(manifest.version)) {
+    fail(`expected --version output to include ${manifest.version}, got ${versionOutput.trim()}`);
+  }
+  runContextTreeRuntimeProbe({
+    probeOpenTag: true,
+    appDir: join(artifactDir, "app"),
+    homeDir: join(root, "context-tree-home"),
+    nodePath: join(artifactDir, "node", "bin", "node"),
+  });
+  console.log(`[portable verify] ${platform} verified and runnable (${manifest.version})`);
 }
 
 try {

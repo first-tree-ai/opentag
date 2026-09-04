@@ -16,6 +16,7 @@ import {
   resolveProviderCliAccountLayout,
   writeProviderCliSelection,
 } from "../index.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
 const grantId = "55555555-5555-4555-8555-555555555555";
@@ -674,6 +675,81 @@ describe("provider CLI reconciler", () => {
     );
   });
 
+  it("logs a validation result that is not ready so the reason survives on the Computer", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const logs: RecordedLog[] = [];
+    const run = vi.fn(async (_request, fence) => ({
+      ...fence,
+      status: "needs_attention" as const,
+      reason: "credential_rejected" as const,
+    }));
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      logger: recordingLogger(logs),
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(grantFrame());
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:validation:result", status: "needs_attention" }),
+      expect.anything(),
+    );
+    expect(logs).toContainEqual({
+      level: "warn",
+      message: "Provider CLI validation did not confirm readiness",
+      fields: {
+        code: "PROVIDER_CLI_VALIDATION_NOT_READY",
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 2,
+        status: "needs_attention",
+        reason: "credential_rejected",
+      },
+    });
+    await reconciler.close();
+  });
+
+  it("logs a retrying validation result at info because it is an expected transient", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const logs: RecordedLog[] = [];
+    const run = vi.fn(async (_request, fence) => ({
+      ...fence,
+      status: "retrying" as const,
+      reason: "provider_unreachable" as const,
+    }));
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      logger: recordingLogger(logs),
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(grantFrame());
+    expect(logs).toContainEqual({
+      level: "info",
+      message: "Provider CLI validation did not confirm readiness",
+      fields: {
+        code: "PROVIDER_CLI_VALIDATION_NOT_READY",
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 2,
+        status: "retrying",
+        reason: "provider_unreachable",
+      },
+    });
+    expect(logs.filter((entry) => entry.level === "warn")).toEqual([]);
+    await reconciler.close();
+  });
+
   it("drops the previous generation so a delayed old grant cannot spawn", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();
@@ -811,6 +887,43 @@ describe("provider CLI reconciler", () => {
     expect(runtime.setImCliReadiness).toHaveBeenLastCalledWith({ provider: "slack", status: "ready" });
     expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "feishu", status: "unavailable" });
     expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "slack", status: "ready" });
+    await reconciler.close();
+  });
+
+  it("runs the idempotent auto ensure for a Server-owned existing-Computer preparation", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce(notReadyInspect("slack", "install", { code: "not_installed" }))
+      .mockResolvedValueOnce(fixture.inspection);
+    const ensure = vi.fn().mockResolvedValue({ ok: true, action: "installed-managed" } as never);
+    const refreshRuntimeProvider = vi.fn(async () => ({ provider: "codex" as const, status: "ready" as const }));
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      refreshRuntimeProvider,
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    await runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "codex", providers: ["slack"] });
+
+    expect(refreshRuntimeProvider).toHaveBeenCalledWith("codex");
+    expect(ensure).toHaveBeenCalledWith("slack", { mode: "auto" });
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "ready" },
+    ]);
+    expect(runtime.send).toHaveBeenCalledWith(
+      {
+        type: "provider-cli:prewarm:result",
+        requestId,
+        runtime: { provider: "codex", status: "ready" },
+        providers: [{ provider: "slack", status: "ready" }],
+      },
+      { priority: "result", signal: undefined },
+    );
     await reconciler.close();
   });
 

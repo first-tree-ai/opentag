@@ -283,11 +283,42 @@ describe("RuntimeDomainOwner", () => {
       code: "placement_stale",
     });
 
+    const warn = vi.fn();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const loggingOwner = new RuntimeDomainOwner(fixture.registry, new MemoryRuntimeCustodyStore(), { logger });
+    await expect(loggingOwner.handle(credential, staleContext)).resolves.toMatchObject({
+      status: "rejected",
+      code: "placement_stale",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      {
+        code: "placement_stale",
+        computerId: fixture.computerId,
+        instanceId: staleContext.instanceId,
+        requestId: credential.requestId,
+        sessionId: credential.sessionId,
+        agentId: credential.agentId,
+      },
+      "Runtime credential grant rejected",
+    );
+
     const noCallback = await ownerFixture();
     await expect(noCallback.owner.handle(credential, noCallback.context)).resolves.toMatchObject({
       status: "rejected",
       code: "credential_stale",
     });
+    await expect(loggingOwner.handle(credential, fixture.context)).resolves.toMatchObject({
+      status: "rejected",
+      code: "credential_stale",
+    });
+    expect(warn).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        code: "credential_stale",
+        reason: "grant_callback_missing",
+        requestId: credential.requestId,
+      }),
+      "Runtime credential grant rejected",
+    );
     const unsupportedRegistry = new ConnectionRegistry();
     const unsupportedSocket = socketFixture([]);
     await unsupportedRegistry.register(
@@ -301,6 +332,7 @@ describe("RuntimeDomainOwner", () => {
       async () => undefined,
     );
     const unsupportedOwner = new RuntimeDomainOwner(unsupportedRegistry, new MemoryRuntimeCustodyStore(), {
+      logger,
       onImCredentialGrant: async () => ({
         type: "im:credential:result",
         requestId: credential.requestId,
@@ -312,6 +344,14 @@ describe("RuntimeDomainOwner", () => {
       status: "rejected",
       code: "credential_stale",
     });
+    expect(warn).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        code: "credential_stale",
+        reason: "capability_version_unsupported",
+        requestId: credential.requestId,
+      }),
+      "Runtime credential grant rejected",
+    );
   });
 
   it("forwards only matching trace batches to the trace callback", async () => {

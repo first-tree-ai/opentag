@@ -1,4 +1,5 @@
 import {
+  AGENT_RUNTIME_PROVIDERS,
   type AgentRuntimeProvider,
   type ImCliProvider,
   type ImCliReadinessStatus,
@@ -67,6 +68,10 @@ export interface RuntimeConnectionEntry {
   providerReadinessProviders?: readonly AgentRuntimeProvider[];
   imCliReadiness?: RuntimeImCliReadinessCollection;
   imCliReadinessObservedAt?: number;
+  /** Set while a preparation is in flight or quarantined after fallback. */
+  preparationRequestId?: string;
+  preparationRuntimeProvider?: AgentRuntimeProvider;
+  preparationProviders?: readonly ImCliProvider[];
   providerCliArtifact?: ProviderCliArtifactObservation[];
   providerCliCredential?: ProviderCliCredentialObservation[];
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
@@ -175,7 +180,7 @@ export class ConnectionRegistry {
       if (
         !current.providerReadiness ||
         observedAt === undefined ||
-        now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS
+        (!preparationIsSealed(current) && now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS)
       ) {
         return [];
       }
@@ -205,7 +210,7 @@ export class ConnectionRegistry {
       current.active === false ||
       !current.imCliReadiness ||
       observedAt === undefined ||
-      now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS
+      (!preparationIsSealed(current) && now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS)
     ) {
       return [];
     }
@@ -216,6 +221,73 @@ export class ConnectionRegistry {
     return this.imCliReadiness(computerId, now).some(
       ({ observation }) => observation.provider === provider && observation.status === "ready",
     );
+  }
+
+  /**
+   * Fences one Server-owned preparation operation and immediately replaces old pass states with
+   * checking. Generic heartbeats remain useful for liveness and refresh this operation's TTL, but
+   * cannot complete it or overwrite its readiness.
+   */
+  beginPreparation(
+    computerId: string,
+    instanceId: string,
+    requestId: string,
+    runtimeProvider: AgentRuntimeProvider,
+    providers: readonly ImCliProvider[],
+    now = Date.now(),
+  ): boolean {
+    const current = this.#currentWritable(computerId, instanceId);
+    if (!current || providers.length === 0) return false;
+    current.preparationRequestId = requestId;
+    current.preparationRuntimeProvider = runtimeProvider;
+    current.preparationProviders = [...providers];
+    current.providerReadinessProviders = canonicalRuntimeProviders([
+      ...(current.providerReadinessProviders ?? []),
+      runtimeProvider,
+    ]);
+    current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, {
+      provider: runtimeProvider,
+      status: "checking",
+    });
+    current.providerReadinessObservedAt = now;
+    current.imCliReadiness = providers.map((provider) => ({ provider, status: "checking" }));
+    current.imCliReadinessObservedAt = now;
+    return true;
+  }
+
+  /**
+   * Accepts only the latest result for the exact live Computer instance. A quarantined fallback
+   * keeps the fence identity so a matching result can still apply; heartbeats cannot release it.
+   */
+  completePreparation(
+    computerId: string,
+    instanceId: string,
+    result: {
+      requestId: string;
+      runtime: RuntimeProviderReadinessCollection[number];
+      providers: RuntimeImCliReadinessCollection;
+    },
+    now = Date.now(),
+    options: { quarantine?: boolean } = {},
+  ): boolean {
+    const current = this.#currentWritable(computerId, instanceId);
+    if (
+      !current ||
+      current.preparationRequestId !== result.requestId ||
+      current.preparationRuntimeProvider !== result.runtime.provider ||
+      !sameProviders(
+        current.preparationProviders,
+        result.providers.map((observation) => observation.provider),
+      )
+    ) {
+      return false;
+    }
+    current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
+    current.providerReadinessObservedAt = now;
+    current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
+    current.imCliReadinessObservedAt = now;
+    if (!options.quarantine) clearPreparationFence(current);
+    return true;
   }
 
   providerCliArtifactReadiness(
@@ -350,6 +422,10 @@ export class ConnectionRegistry {
       current.capabilities = { ...capabilities };
       current.capabilitiesUpdatedAt = now;
     }
+    if (preparationIsSealed(current)) {
+      refreshPreparationTtl(current, now);
+      return true;
+    }
     if (providerReadiness !== undefined) {
       if (providerReadiness.length > 0) {
         current.providerReadiness = providerReadiness.map((observation) => ({ ...observation }));
@@ -421,6 +497,44 @@ export class ConnectionRegistry {
       entry.socket.close(1001, "Server shutting down");
     }
   }
+}
+
+function canonicalRuntimeProviders(providers: readonly AgentRuntimeProvider[]): readonly AgentRuntimeProvider[] {
+  const included = new Set(providers);
+  return AGENT_RUNTIME_PROVIDERS.filter((provider) => included.has(provider));
+}
+
+function upsertRuntimeReadiness(
+  observations: RuntimeProviderReadinessCollection | undefined,
+  next: RuntimeProviderReadinessCollection[number],
+): RuntimeProviderReadinessCollection {
+  const byProvider = new Map((observations ?? []).map((observation) => [observation.provider, observation]));
+  byProvider.set(next.provider, { ...next });
+  return AGENT_RUNTIME_PROVIDERS.flatMap((provider) => {
+    const observation = byProvider.get(provider);
+    return observation ? [{ ...observation }] : [];
+  });
+}
+
+function sameProviders(left: readonly ImCliProvider[] | undefined, right: readonly ImCliProvider[]): boolean {
+  return (
+    left !== undefined && left.length === right.length && left.every((provider, index) => provider === right[index])
+  );
+}
+
+function preparationIsSealed(current: RuntimeConnectionEntry): boolean {
+  return current.preparationRequestId !== undefined;
+}
+
+function clearPreparationFence(current: RuntimeConnectionEntry): void {
+  delete current.preparationRequestId;
+  delete current.preparationRuntimeProvider;
+  delete current.preparationProviders;
+}
+
+function refreshPreparationTtl(current: RuntimeConnectionEntry, now: number): void {
+  if (current.providerReadiness) current.providerReadinessObservedAt = now;
+  if (current.imCliReadiness) current.imCliReadinessObservedAt = now;
 }
 
 function artifactObservationKey(observation: ProviderCliArtifactObservation): string {

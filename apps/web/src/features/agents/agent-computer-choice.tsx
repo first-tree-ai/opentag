@@ -1,3 +1,4 @@
+import type { AccountComputerSummary } from "@opentag/shared/browser";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
@@ -8,6 +9,47 @@ import { useComputersQuery } from "./agent-queries.js";
 
 /** What a bind is aimed at, named so a failure can be reported and retried against it. */
 type BindTarget = { computerId: string; displayName: string };
+
+/** The Server reads and writes that the Review Lab replaces with its in-memory Account. */
+export interface AgentComputerInventoryAdapter {
+  readonly bindComputer: (agentId: string, computerId: string) => Promise<void>;
+  readonly computers: () => Promise<{ readonly computers: readonly AccountComputerSummary[] }>;
+}
+
+interface MemoryInventoryState {
+  readonly computers: readonly AccountComputerSummary[] | undefined;
+  readonly error: boolean;
+}
+
+function useComputerInventory(inventoryAdapter: AgentComputerInventoryAdapter | undefined) {
+  const computersQuery = useComputersQuery(false, inventoryAdapter === undefined);
+  const [memoryInventory, setMemoryInventory] = useState<MemoryInventoryState>({
+    computers: undefined,
+    error: false,
+  });
+  const readMemoryInventory = useCallback(async () => {
+    if (!inventoryAdapter) return;
+    setMemoryInventory({ computers: undefined, error: false });
+    try {
+      const result = await inventoryAdapter.computers();
+      setMemoryInventory({ computers: result.computers, error: false });
+    } catch {
+      setMemoryInventory({ computers: undefined, error: true });
+    }
+  }, [inventoryAdapter]);
+
+  useEffect(() => {
+    void readMemoryInventory();
+  }, [readMemoryInventory]);
+
+  return inventoryAdapter
+    ? { computers: memoryInventory.computers, error: memoryInventory.error, refetch: readMemoryInventory }
+    : {
+        computers: computersReadAfterMount(computersQuery),
+        error: computersQuery.isError,
+        refetch: computersQuery.refetch,
+      };
+}
 
 /**
  * The Account's Computers, from a read this mount made and no other.
@@ -42,18 +84,21 @@ function computersReadAfterMount(query: ReturnType<typeof useComputersQuery>) {
 export function AgentComputerChoice({
   adapter,
   agentId,
+  inventoryAdapter,
   onBound,
 }: {
   /** Lets Agent setup issue a command targeted at the Agent being recovered. */
   adapter?: ComputerConnectAdapter;
   agentId: string;
+  /** Keeps Internal Tools on its in-memory Account instead of reading or mutating the Server. */
+  inventoryAdapter?: AgentComputerInventoryAdapter;
   /**
    * Called when the Agent's Computer may have changed -- after a bind here, or after the reader
    * resolved it somewhere this surface cannot see -- so the surface around this reads again.
    */
   onBound: () => void;
 }) {
-  const computersQuery = useComputersQuery();
+  const inventory = useComputerInventory(inventoryAdapter);
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string>();
   /*
@@ -68,7 +113,7 @@ export function AgentComputerChoice({
   // A bind is attempted once per Agent-and-Computer pair, so a failure is not restarted by every
   // render it causes. The Agent belongs in the key because this surface outlives any one of them.
   const attempted = useRef<string | undefined>(undefined);
-  const connected = computersReadAfterMount(computersQuery);
+  const connected = inventory.computers;
   const sole = connected?.length === 1 ? connected[0] : undefined;
   const soleTarget = sole ? `${agentId}:${sole.computerId}` : undefined;
 
@@ -81,7 +126,8 @@ export function AgentComputerChoice({
       setBinding(true);
       setError(undefined);
       try {
-        await browserApi.rebindAgentComputer(agentId, goal.computerId);
+        if (inventoryAdapter) await inventoryAdapter.bindComputer(agentId, goal.computerId);
+        else await browserApi.rebindAgentComputer(agentId, goal.computerId);
         /*
          * Two binds can be in flight when this surface is reused for a second Agent, and they can
          * settle in either order. Every write below belongs to the attempt that is still current;
@@ -103,7 +149,7 @@ export function AgentComputerChoice({
         if (generation.current === mine) setBinding(false);
       }
     },
-    [agentId, onBound],
+    [agentId, inventoryAdapter, onBound],
   );
 
   // A different Agent answers for itself: the previous one's target and failure are not its result,
@@ -126,11 +172,11 @@ export function AgentComputerChoice({
   if (connected === undefined) {
     return (
       <div className="grid gap-2">
-        {computersQuery.isError ? (
+        {inventory.error ? (
           <>
             <p>{m.agents_computer_choice_read_failed()}</p>
             <div>
-              <Button size="compact" variant="secondary" onClick={() => void computersQuery.refetch()}>
+              <Button size="compact" variant="secondary" onClick={() => void inventory.refetch()}>
                 {m.common_try_again()}
               </Button>
             </div>

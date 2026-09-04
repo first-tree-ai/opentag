@@ -1,7 +1,6 @@
-import { useState } from "react";
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import * as m from "../../../paraglide/messages.js";
-import { Button, Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
+import { Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
@@ -118,43 +117,19 @@ function AgentComputerRepair({
   computer: NonNullable<AgentDetailView["computer"]>;
   onAgentChanged: () => void;
 }) {
-  const [reconnecting, setReconnecting] = useState(false);
   return (
-    <>
-      {/* The negative inset cancels the control's own padding: a borderless button reads as part of
-          the prose above it only when its text starts on the same left edge. */}
-      <Button
-        aria-controls="agent-computer-reconnect"
-        aria-expanded={reconnecting}
-        className="-mx-2 text-kumo-link"
-        size="compact"
-        variant="inline"
-        onClick={() => setReconnecting((value) => !value)}
-      >
-        {reconnecting ? m.agent_settings_computer_repair_hide() : m.agent_settings_computer_repair_show()}
-      </Button>
-      {reconnecting ? (
-        /*
-         * Everything the disclosure adds -- the command, how long it lasts, what happens once it
-         * runs -- sits on one surface, so it reads as the single thing the button opened rather
-         * than as loose paragraphs after it. The name it used to repeat as a heading is the
-         * region's label instead: the command block below already names the machine.
-         */
-        <section
-          aria-label={m.computer_connect_repair_title({ computerName: computer.displayName })}
-          className="grid gap-3 rounded-lg bg-kumo-base p-4 ring ring-kumo-line"
-          id="agent-computer-reconnect"
-        >
-          <ComputerConnect
-            intent={{
-              mode: "repair",
-              target: { computerId: computer.computerId, displayName: computer.displayName },
-            }}
-            onConnected={onAgentChanged}
-          />
-          <p className="text-sm text-kumo-subtle">{m.agent_settings_reconnecting_description()}</p>
-        </section>
-      ) : null}
-    </>
+    <section
+      aria-label={m.computer_connect_repair_title({ computerName: computer.displayName })}
+      className="grid gap-3"
+    >
+      <ComputerConnect
+        intent={{
+          mode: "repair",
+          target: { computerId: computer.computerId, displayName: computer.displayName },
+        }}
+        onConnected={onAgentChanged}
+      />
+      <p className="text-sm text-kumo-subtle">{m.agent_settings_reconnecting_description()}</p>
+    </section>
   );
 }

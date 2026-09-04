@@ -1,18 +1,19 @@
 import { z } from "zod";
 import {
-  OPENTAG_PLATFORM_INSTRUCTIONS,
+  AGENT_SLUG_MAX_LENGTH,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
   RuntimeMaxDurationMsSchema,
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
+  renderPlatformInstructions,
 } from "./runtime-config.js";
 
 export const AgentNameSchema = z
   .string()
   .trim()
   .min(1, "Agent name is required")
-  .max(64, "Agent name must be at most 64 characters")
+  .max(AGENT_SLUG_MAX_LENGTH, `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} characters`)
   .regex(
     /^[a-z0-9][a-z0-9-]*$/,
     "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
@@ -26,7 +27,10 @@ export const AgentStatusSchema = z.enum(["active", "suspended"]);
 
 const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
   const combined = RuntimeInstructionsSchema.safeParse({
-    platform: OPENTAG_PLATFORM_INSTRUCTIONS,
+    // The Agent name is not known here, so budget the longest platform layer any Agent can
+    // render. Accepting instructions that only fit without the identity line would move the
+    // failure to snapshot assembly, where the operator can no longer act on it.
+    platform: renderPlatformInstructions({ agentSlug: "a".repeat(AGENT_SLUG_MAX_LENGTH) }),
     agent: instructions,
   });
   if (!combined.success) {

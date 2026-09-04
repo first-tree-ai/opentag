@@ -50,9 +50,9 @@ The status is the topic's latest execution situation, read by precedence:
 ## Titles
 
 A Task is titled from its root message through the same derivation the list always used: routing
-syntax is removed, the addressed Bot mention is dropped, and the text is bounded. A manual or
-generated title stored on the topic's thread Session, or on a private chat's channel Session,
-overrides it.
+syntax is removed, the addressed Bot mention is dropped, and the text is bounded, with an ellipsis
+marking a cut. A manual or generated title stored on the topic's thread Session, or on a private
+chat's channel Session, overrides it.
 
 `PATCH /api/v1/sessions/:id` sets or clears the manual title. The id may be the Task id or one of
 its Sessions; the title is written to the Session the Task reads it from. A top-level group request

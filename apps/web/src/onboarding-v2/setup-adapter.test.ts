@@ -74,6 +74,21 @@ describe("createHttpSetupAdapter", () => {
     expect((failure as ApiError).code).toBe("RESOURCE_NOT_FOUND");
   });
 
+  it("starts a real preparation operation before Check again reads a snapshot", async () => {
+    setDocumentCookie("opentag_csrf=refresh-csrf; Path=/");
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/setup/refresh`);
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBeUndefined();
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("refresh-csrf");
+      return new Response(null, { status: 204 });
+    });
+
+    const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
+    await expect(adapter.refreshPreparation(SETUP_AGENT_ID)).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it("opens a Feishu attempt on the exact Agent with the requested intent", async () => {
     setDocumentCookie("opentag_csrf=setup-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

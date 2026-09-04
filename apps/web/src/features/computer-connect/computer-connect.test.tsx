@@ -15,7 +15,7 @@ const REPLACEMENT_COMMAND = "opentag computer connect --server https://opentag.e
 const REDEEMED_AT = "2026-08-20T00:00:01.000Z";
 // What the block both shows and copies for `Ada's Mac`: the POSIX null command, with the
 // apostrophe closed and reopened so the sentence cannot escape its quotes.
-const REPAIR_COMMENT = ": 'Run this command in the terminal on Ada'\\''s Mac'";
+const REPAIR_COMMENT = ": 'Run this command to reconnect OpenTag on Ada'\\''s Mac.'";
 
 const computer: Computer = {
   computerId: COMPUTER_ID,
@@ -92,7 +92,9 @@ describe("ComputerConnect", () => {
     await flushAsync();
     expect(commandIsShown(COMMAND)).toBe(true);
     expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
-    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(
+      screen.getByText("Paste this command into the coding agent on the computer you're connecting."),
+    ).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for your computer");
     const remaining = screen.getByText("Expires in 15:00");
     expect(remaining.closest('[role="status"]')).toBeNull();
@@ -103,7 +105,7 @@ describe("ComputerConnect", () => {
     expect(screen.getByText("Expires in 14:59")).toBeTruthy();
   });
 
-  it("issues repair against the exact target and names it while waiting", async () => {
+  it("keeps repair idle inside the command surface, then issues against the exact target", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: COMMAND,
@@ -116,10 +118,16 @@ describe("ComputerConnect", () => {
         intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
       />,
     );
+    expect(issue).not.toHaveBeenCalled();
+    const repairAction = screen.getByRole("button", { name: "Generate a repair command" });
+    expect(repairAction.closest(".ots-command__body")).toBeTruthy();
+    expect(screen.getByText("Need to reinstall?")).toBeTruthy();
+    expect(screen.getByText(/Start OpenTag on Ada's Mac/)).toBeTruthy();
+    fireEvent.click(repairAction);
     await flushAsync();
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
-    expect(screen.getByText("Run this in your terminal, or paste it into your coding agent.")).toBeTruthy();
+    expect(screen.getByText("Paste this command into the coding agent on Ada's Mac.")).toBeTruthy();
     expect(screen.getByText(REPAIR_COMMENT)).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });
@@ -139,6 +147,7 @@ describe("ComputerConnect", () => {
         intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
     await flushAsync();
     fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
     await flushAsync();
@@ -189,6 +198,7 @@ describe("ComputerConnect", () => {
         onConnected={onConnected}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
     await flushAsync();
 
     expect(computers).not.toHaveBeenCalled();
@@ -258,6 +268,7 @@ describe("ComputerConnect", () => {
     await vi.waitFor(() => {
       expect((screen.getByRole("button", { name: "Copy command" }) as HTMLButtonElement).disabled).toBe(true);
     });
+    expect(document.querySelector('[data-ui="computer-connect-expiry"]')?.textContent).toBe("");
     computers.mockResolvedValue({ computers: [computer] });
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
 
@@ -384,8 +395,10 @@ describe("ComputerConnect", () => {
 
     expect(commandIsShown(COMMAND)).toBe(true);
     expect((screen.getByRole("button", { name: "Copy command" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByRole("alert").textContent).toContain("Issuance unavailable");
-    expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Issuance unavailable");
+    expect(alert.closest(".ots-command__body")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 
   it("retries an initial issuance failure", async () => {
@@ -401,6 +414,7 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
     expect(screen.getByRole("alert").textContent).toContain("Issuance unavailable");
+    expect(screen.getByRole("alert").closest(".ots-command__body")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Copy command" })).toBeNull();
     expect(screen.queryByText("opentag.example.com")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));

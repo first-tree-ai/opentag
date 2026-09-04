@@ -1,7 +1,11 @@
 import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// Real child-process Turn cases need headroom under parallel CI load.
+vi.setConfig({ testTimeout: 30_000 });
+
 import {
   executeProviderCliTurnPlan,
   PROVIDER_CLI_CATALOG,

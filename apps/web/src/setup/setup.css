@@ -12,36 +12,6 @@
  * styling that stays its own.
  */
 
-/* Check rows ------------------------------------------------------------- */
-
-/*
- * These two need to read as green and amber at 22px. The operational status palette is tuned for
- * large surfaces and goes indistinct at this size, so the pair is stated locally.
- */
-.ots-check__marker {
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--color-kumo-hairline);
-  line-height: 1;
-}
-
-.ots-check[data-state="passed"] .ots-check__marker {
-  border-color: #17a04a;
-  background: #e6f7ec;
-  color: #17a04a;
-}
-
-.ots-check[data-state="failed"] .ots-check__marker {
-  border-color: #d98207;
-  background: #fdf1de;
-  color: #d98207;
-}
-
-.ots-check[data-state="pending"] .ots-check__marker {
-  border-style: dashed;
-  animation: ots-fade 1.4s ease-in-out infinite;
-}
-
 @keyframes ots-fade {
   0%,
   100% {
@@ -55,12 +25,23 @@
 
 /* Command block ---------------------------------------------------------- */
 
+/* Grid parents must be allowed to size the command surface to the viewport instead of inheriting
+   the terminal text's min-content width. Without these boundaries a long bootstrap command makes
+   the whole setup page horizontally scroll on a phone. */
+.ots-command,
+.ots-command-lead {
+  min-width: 0;
+}
+
 /*
  * The block carries its own near-black surface in both modes: it is a terminal quotation, and it
  * reads as one only if it does not follow the page.
  */
 .ots-command__body {
   position: relative;
+  box-sizing: border-box;
+  height: 132px;
+  overflow: hidden;
   background: var(--dark);
   border-color: var(--border);
   transition: opacity 160ms ease;
@@ -68,6 +49,8 @@
 
 .ots-command__code {
   margin: 0;
+  max-height: 100%;
+  overflow-y: auto;
   color: var(--on-dark);
   font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "PingFang SC", monospace;
   font-size: 13px;
@@ -135,6 +118,23 @@
   pointer-events: none;
 }
 
+/* Idle and failed issuance stay inside the same measured terminal surface as a real command. */
+.ots-command__action {
+  position: absolute;
+  inset: 0;
+  background: var(--dark);
+  color: var(--on-dark);
+}
+
+.ots-command__action button {
+  color: #b8d77d;
+}
+
+.ots-command__action button:hover {
+  background: color-mix(in srgb, var(--on-dark) 14%, transparent);
+  color: #c8e594;
+}
+
 /*
  * An expired command says so on the block itself, over a heavy scrim: the block is the thing that
  * expired, and a line underneath is easy to miss when the command above it still looks runnable.
@@ -153,12 +153,12 @@
 }
 
 .ots-command__expired button {
-  color: var(--on-dark);
+  color: #b8d77d;
 }
 
 .ots-command__expired button:hover {
   background: color-mix(in srgb, var(--on-dark) 14%, transparent);
-  color: var(--on-dark);
+  color: #c8e594;
 }
 
 /* Measurements ----------------------------------------------------------- */
@@ -171,23 +171,6 @@
  * so what sits under it keeps one position. These are measured, not chosen.
  */
 
-/* The connect status: waiting on one line, connected on another. */
-.ots-slot--status {
-  min-height: 28px;
-}
-
-/* A check row's second line is a status, and a failure reads longer than what it replaces. */
-.ots-check {
-  min-height: 73px;
-}
-
-/* Below this width a failing check's status takes a second line. */
-@media (width <= 399px) {
-  .ots-check {
-    min-height: 90px;
-  }
-}
-
 /* The waiting dot carries its own animation. */
 .ots-pulse {
   width: 8px;
@@ -195,6 +178,15 @@
   border-radius: 50%;
   background: var(--color-kumo-brand);
   animation: ots-fade 1.4s ease-in-out infinite;
+}
+
+/*
+ * The connect status: waiting on one line, connected on another. The class is written by
+ * ComputerConnect rather than by anything in this directory, so the rule outlives the setup
+ * component that used to share it.
+ */
+.ots-slot--status {
+  min-height: 28px;
 }
 
 /* The QR keeps its box whether or not a code has arrived, so the panel never changes height. */
@@ -221,6 +213,10 @@
 }
 
 @media (width <= 640px) {
+  .ots-command__body {
+    height: 240px;
+  }
+
   .ots-command-lead {
     flex-direction: column;
     align-items: flex-start;

@@ -10,7 +10,7 @@ import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
-import { agents, computers, imBindings } from "../db/schema/index.js";
+import { agents, computers, imBindings, imMessages } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import {
@@ -172,11 +172,93 @@ describe("Feishu adapter", () => {
       "[unsupported:text]",
       "[image]",
       "[file]",
-      "first\nsecond",
+      "Title\nfirst\nsecond",
       "[unsupported:sticker]",
     ]);
     expect(received[1]?.resources[0]).toMatchObject({ fileKey: "img_1", fileName: "image.png" });
     expect(received[2]?.resources[0]).toMatchObject({ fileKey: "file_1" });
+  });
+
+  it("reads a rich-text message's paragraphs once when Feishu also sends them as markdown", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    // Feishu delivers a `post` twice over: `content` as tagged elements and `content_v2` as
+    // markdown. Every paragraph is in both, so reading both repeats the whole message.
+    const post = rawMessage("ev-post-v2", "om-post-v2", "6");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [[{ tag: "text", text: "检查当前 Agent 的运行状态", style: [] }]],
+      content_v2: [[{ tag: "md", text: "检查当前 Agent 的运行状态" }]],
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["检查当前 Agent 的运行状态"]);
+  });
+
+  it("keeps the runs of one rich-text paragraph on one line and writes an @ element as its mention key", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-runs", "om-post-runs", "7");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [
+        [
+          { tag: "at", user_id: "ou_bot", user_name: "Atlas" },
+          { tag: "text", text: " please ", style: [] },
+          { tag: "text", text: "fix", style: ["bold"] },
+          { tag: "a", text: " the docs", href: "https://example.com/docs" },
+        ],
+        [{ tag: "img", image_key: "img_1" }],
+        [{ tag: "text", text: "before 5pm", style: [] }],
+      ],
+    });
+    (post.event.message as { mentions?: unknown }).mentions = [
+      { key: "@_user_1", id: { open_id: "ou_bot" }, name: "Atlas", mentioned_type: "app" },
+    ];
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["@_user_1 please fix the docs\nbefore 5pm"]);
+  });
+
+  it("writes an @ element without a usable id by name rather than matching a mention without one", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-at", "om-post-at", "9");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [
+        [
+          { tag: "at", user_name: "Someone" },
+          { tag: "text", text: " hi", style: [] },
+        ],
+      ],
+    });
+    (post.event.message as { mentions?: unknown }).mentions = [{ key: "@_user_1", id: {}, name: "Other" }];
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["@Someone hi"]);
+  });
+
+  it("falls back to a rich-text message's markdown copy when the tagged paragraphs carry no text", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-md", "om-post-md", "8");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      title: "",
+      content: [[{ tag: "img", image_key: "img_1" }]],
+      content_v2: [[{ tag: "md", text: "**检查** 状态" }]],
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["**检查** 状态"]);
   });
 
   it("deduplicates a repeated group/thread representation by provider event identity", async () => {
@@ -199,7 +281,11 @@ describe("Feishu adapter", () => {
     expect(received[0]).toMatchObject({
       chatId: "oc_example_group",
       threadId: "omt_example_thread",
-      raw: { event_id: "event-group-thread", tenant_key: "workspace_1" },
+      raw: {
+        event_id: "event-group-thread",
+        tenant_key: "workspace_1",
+        opentagSenderOpenId: "ou_human",
+      },
     });
   });
 
@@ -387,9 +473,24 @@ describe("Feishu adapter", () => {
 
   it("creates a read-only HTTP capability for provider resources", async () => {
     const get = vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.from("resource")) });
+    const getChatMembers = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        data: {
+          items: [{ member_id: "ou_other", name: "Other" }],
+          has_more: true,
+          page_token: "next",
+        },
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        data: { items: [{ member_id: "ou_sender", name: " Mia Zhang " }], has_more: false },
+      });
     const http = createFeishuHttpCapability({
       im: {
         v1: {
+          chatMembers: { get: getChatMembers },
           messageResource: { get },
         },
       },
@@ -398,6 +499,47 @@ describe("Feishu adapter", () => {
       http.fetchResource({ messageExternalId: "om_1", providerResourceKey: "file_1", kind: "file" }),
     ).resolves.toMatchObject({ stream: expect.any(Readable) });
     expect(get).toHaveBeenCalledTimes(1);
+
+    await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
+    await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_other" })).resolves.toBe("Other");
+    expect(getChatMembers).toHaveBeenCalledTimes(2);
+    expect(getChatMembers).toHaveBeenLastCalledWith({
+      path: { chat_id: "oc_1" },
+      params: { member_id_type: "open_id", page_size: 100, page_token: "next" },
+    });
+  });
+
+  it("retires a timed-out sender-name lookup so a later request can retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const getChatMembers = vi
+        .fn()
+        .mockReturnValueOnce(new Promise(() => undefined))
+        .mockResolvedValueOnce({
+          code: 0,
+          data: { items: [{ member_id: "ou_sender", name: "Mia Zhang" }], has_more: false },
+        });
+      const http = createFeishuHttpCapability({
+        im: {
+          v1: {
+            chatMembers: { get: getChatMembers },
+            messageResource: {
+              get: vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.alloc(0)) }),
+            },
+          },
+        },
+      });
+      const timedOut = expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).rejects.toThrow(
+        "FEISHU_SENDER_NAME_LOOKUP_TIMEOUT",
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await timedOut;
+      await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
+      expect(getChatMembers).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("awaits each raw provider event and propagates admission failure without safety batching or stale-drop", async () => {
@@ -551,6 +693,7 @@ function fakeConnectionAdapter(input: {
   botOpenId?: string;
   scopes?: string[];
   disconnect?: ReturnType<typeof vi.fn>;
+  resolveSenderName?: () => Promise<string | undefined>;
 }) {
   let handlers: Record<string, (value?: unknown) => unknown> = {};
   const channel = {
@@ -569,8 +712,14 @@ function fakeConnectionAdapter(input: {
     }),
     listGrantedWorkspaceScopes: vi.fn().mockResolvedValue(input.scopes ?? FEISHU_REQUIRED_TENANT_SCOPES),
     normalizeInbound: vi.fn().mockReturnValue([]),
+    resolveSenderName: vi.fn(input.resolveSenderName ?? (async () => undefined)),
   };
-  return { adapter: adapter as unknown as FeishuAdapter, channel, getHandlers: () => handlers };
+  return {
+    adapter: adapter as unknown as FeishuAdapter,
+    channel,
+    getHandlers: () => handlers,
+    resolveSenderName: adapter.resolveSenderName,
+  };
 }
 
 async function validatingConnectionAttempt(value: Awaited<ReturnType<typeof connectionFixture>>, owner: string) {
@@ -597,9 +746,16 @@ describe("FeishuConnectionManager", () => {
     const value = await connectionFixture();
     const owner = crypto.randomUUID();
     const attemptId = await validatingConnectionAttempt(value, owner);
-    const fake = fakeConnectionAdapter({ appId: "cli_conn" });
+    let resolveSenderName: ((name: string | undefined) => void) | undefined;
+    const senderName = new Promise<string | undefined>((resolve) => {
+      resolveSenderName = resolve;
+    });
+    const fake = fakeConnectionAdapter({ appId: "cli_conn", resolveSenderName: () => senderName });
+    const persistedMessageId = crypto.randomUUID();
     const inbox = {
-      ingest: vi.fn().mockResolvedValue({ messageId: "msg-1", deliveryIds: ["delivery-1"], duplicate: false }),
+      ingest: vi
+        .fn()
+        .mockResolvedValue({ messageId: persistedMessageId, deliveryIds: ["delivery-1"], duplicate: false }),
     };
     const receipts = {
       claim: vi.fn().mockResolvedValue({
@@ -646,6 +802,24 @@ describe("FeishuConnectionManager", () => {
         ),
       );
     expect(row?.setupState).toBe("succeeded");
+    if (!row) throw new Error("Feishu binding was not activated");
+    await connectionDatabase.database.insert(imMessages).values({
+      id: persistedMessageId,
+      imBindingId: row.id,
+      providerEventId: "ev_conn",
+      channelId: "oc_conn",
+      externalMessageId: "om_conn",
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "ou_human",
+      authorDisplayName: null,
+      content: { version: 1, fallbackText: "hello", blocks: [{ type: "text", text: "hello" }], truncated: false },
+      providerContext: { provider: "feishu" },
+      occurredAt: connectionNow,
+      receivedAt: connectionNow,
+    });
     fake.adapter.normalizeInbound = vi.fn().mockReturnValue(
       normalizeFeishuMessage({
         appId: "cli_conn",
@@ -662,7 +836,10 @@ describe("FeishuConnectionManager", () => {
           mentionAll: false,
           mentionedBot: false,
           createTime: 1,
-          raw: { header: { event_id: "ev_conn", tenant_key: "tenant_1" } },
+          raw: {
+            header: { event_id: "ev_conn", tenant_key: "tenant_1" },
+            opentagSenderOpenId: "ou_human",
+          },
         },
       }),
     );
@@ -678,7 +855,7 @@ describe("FeishuConnectionManager", () => {
       mentionAll: false,
       mentionedBot: false,
       createTime: 1,
-      raw: { header: { event_id: "ev_conn", tenant_key: "tenant_1" } },
+      raw: { header: { event_id: "ev_conn", tenant_key: "tenant_1" }, opentagSenderOpenId: "ou_human" },
     } as never);
     expect(inbox.ingest).toHaveBeenCalledWith(
       expect.any(String),
@@ -692,6 +869,15 @@ describe("FeishuConnectionManager", () => {
       eventId: "ev_conn",
     });
     expect(receipts.markProcessed).toHaveBeenCalledWith("receipt-1");
+    expect(fake.resolveSenderName).toHaveBeenCalledWith({ chatId: "oc_conn", senderOpenId: "ou_human" });
+    resolveSenderName?.("Mia Zhang");
+    await vi.waitFor(async () => {
+      const [enriched] = await connectionDatabase.database
+        .select({ authorDisplayName: imMessages.authorDisplayName })
+        .from(imMessages)
+        .where(eq(imMessages.id, persistedMessageId));
+      expect(enriched?.authorDisplayName).toBe("Mia Zhang");
+    });
     inbox.ingest.mockRejectedValueOnce(new Error("database unavailable"));
     await expect(
       fake.getHandlers().message?.({

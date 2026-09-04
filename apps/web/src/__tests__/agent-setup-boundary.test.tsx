@@ -1,3 +1,10 @@
+import {
+  AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
+  type AgentSetupComputerState,
+  type AgentSetupMessagingState,
+  type AgentSetupRuntimeState,
+  projectAgentSetupComponents,
+} from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
@@ -22,26 +29,39 @@ function setupSnapshot(targetAgentId: string) {
       ? { ...agentSummary, id: secondAgentId, name: "helper", displayName: "Helper" }
       : agentSummary;
   if (targetAgentId !== agentId && targetAgentId !== secondAgentId) return undefined;
+  const identity = summary.computer;
+  if (!identity) throw new Error("A setup snapshot requires the exact Agent's Computer identity");
+  const computer: AgentSetupComputerState = {
+    kind: "bound",
+    ...identity,
+    connectionStatus: "online",
+    imCliReadiness: [
+      { provider: "feishu", status: "ready", observedAt },
+      { provider: "slack", status: "ready", observedAt },
+    ],
+    lastSeenAt: observedAt,
+    observedAt,
+  };
+  const runtime: AgentSetupRuntimeState = {
+    kind: "observed",
+    provider: summary.runtimeProvider,
+    status: "ready",
+    observedAt,
+  };
+  const messaging: AgentSetupMessagingState = { kind: "not-configured" };
+  const requiredImCliProviders = [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS];
   return {
     agent: summary,
     stage: "needs-messaging",
-    computer: {
-      kind: "bound",
-      ...summary.computer,
-      connectionStatus: "online",
-      imCliReadiness: [
-        { provider: "feishu", status: "ready", observedAt },
-        { provider: "slack", status: "ready", observedAt },
-      ],
-      lastSeenAt: observedAt,
-      observedAt,
-    },
-    runtime: { kind: "observed", provider: summary.runtimeProvider, status: "ready", observedAt },
-    messaging: { kind: "not-configured" },
+    computer,
+    runtime,
+    messaging,
+    requiredImCliProviders,
+    components: projectAgentSetupComponents({ computer, runtime, messaging, requiredImCliProviders }),
     blockers: [{ code: "messaging-not-configured" }],
     actions: [
-      { kind: "start-messaging", provider: "feishu" },
       { kind: "start-messaging", provider: "slack" },
+      { kind: "start-messaging", provider: "feishu" },
     ],
     observedAt,
   };

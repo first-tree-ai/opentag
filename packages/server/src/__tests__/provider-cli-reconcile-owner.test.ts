@@ -8,6 +8,7 @@ import {
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { z } from "zod";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ProviderCliReconcileOwner } from "../runtime/provider-cli-reconcile-owner.js";
 
@@ -50,6 +51,15 @@ async function registered(
 }
 
 const identity = { provider: "slack" as const, teamId: "T1", botUserId: "U1", botId: "B1" };
+
+/** Exact v1 prewarm wire shape shipped to already-deployed Clients. Extra keys fail `.strict()`. */
+const LegacyProviderCliPrewarmFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:prewarm"),
+    requestId: z.string().uuid(),
+    providers: z.array(z.enum(["feishu", "slack"])).min(1),
+  })
+  .strict();
 
 function contextOf(connection: Awaited<ReturnType<typeof registered>>, overrides: Record<string, string> = {}) {
   return {
@@ -863,9 +873,10 @@ describe("ProviderCliReconcileOwner", () => {
     await owner.onComputerRegistered(connection);
     expect(shouldPrewarmOfficialProviderClis).toHaveBeenCalledWith(connection.computerId);
     expect(connection.socket.send).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
+    const prewarm = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+    expect(Object.keys(prewarm).sort()).toEqual(["providers", "requestId", "type"]);
+    expect(prewarm).toMatchObject({
       type: "provider-cli:prewarm",
-      mode: "inspect",
       providers: ["feishu", "slack"],
     });
     expect(JSON.stringify(connection.socket.send.mock.calls[0]?.[0])).not.toContain("xoxb");
@@ -898,6 +909,7 @@ describe("ProviderCliReconcileOwner", () => {
       runtimeProvider: "codex",
       providers: ["feishu", "slack"],
     });
+    owner.close();
   });
 
   it("fences Server-owned preparation so old heartbeats and results cannot restore stale ready", async () => {
@@ -984,6 +996,264 @@ describe("ProviderCliReconcileOwner", () => {
       "ready",
       "install",
     ]);
+    owner.close();
+  });
+
+  it("releases a checking fence when a strict legacy Client drops the extended prewarm", async () => {
+    vi.useFakeTimers();
+    const registry = new ConnectionRegistry();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => []),
+        issueIntegrationCliValidationGrant: vi.fn(),
+        shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+      },
+      { preparationTimeoutMs: 1_000 },
+    );
+    try {
+      const connection = await registered(registry);
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "ready" }],
+          [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "ready" },
+          ],
+        ),
+      ).toBe(true);
+
+      await owner.prepareComputer({
+        agentId: randomUUID(),
+        computerId: connection.computerId,
+        runtimeProvider: "codex",
+      });
+      const frame = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+      expect(frame).toMatchObject({
+        type: "provider-cli:prewarm",
+        mode: "ensure",
+        runtimeProvider: "codex",
+        providers: ["feishu", "slack"],
+      });
+      expect(() => LegacyProviderCliPrewarmFrameSchema.parse(frame)).toThrow();
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "checking",
+        "checking",
+      ]);
+
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "ready" }],
+          [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "ready" },
+          ],
+        ),
+      ).toBe(true);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+
+      // A schema-valid but mismatched result must not disarm the fallback for the real request.
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:prewarm:result",
+          requestId: frame.requestId as string,
+          runtime: { provider: "claude-code", status: "ready" },
+          providers: [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "ready" },
+          ],
+        },
+        contextOf(connection),
+      );
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("unavailable");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "unavailable",
+        "unavailable",
+      ]);
+
+      expect(
+        registry.touch(
+          connection.computerId,
+          connection.instanceId,
+          connection.socket,
+          Date.now(),
+          undefined,
+          [{ provider: "codex", status: "sign-in" }],
+          [
+            { provider: "feishu", status: "install" },
+            { provider: "slack", status: "ready" },
+          ],
+        ),
+      ).toBe(true);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "install",
+        "ready",
+      ]);
+    } finally {
+      owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a matching preparation result when the fallback timer later fires", async () => {
+    vi.useFakeTimers();
+    const registry = new ConnectionRegistry();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => []),
+        issueIntegrationCliValidationGrant: vi.fn(),
+        shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+      },
+      { preparationTimeoutMs: 1_000 },
+    );
+    try {
+      const connection = await registered(registry);
+      await owner.prepareComputer({
+        agentId: randomUUID(),
+        computerId: connection.computerId,
+        runtimeProvider: "codex",
+      });
+      const request = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:prewarm:result",
+          requestId: request.requestId,
+          runtime: { provider: "codex", status: "sign-in" },
+          providers: [
+            { provider: "feishu", status: "ready" },
+            { provider: "slack", status: "install" },
+          ],
+        },
+        contextOf(connection),
+      );
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+      expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+        "ready",
+        "install",
+      ]);
+    } finally {
+      owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not apply a replaced Computer's preparation fallback to the new instance", async () => {
+    vi.useFakeTimers();
+    const registry = new ConnectionRegistry();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => []),
+        issueIntegrationCliValidationGrant: vi.fn(),
+        shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+      },
+      { preparationTimeoutMs: 1_000 },
+    );
+    try {
+      const first = await registered(registry);
+      await owner.prepareComputer({
+        agentId: randomUUID(),
+        computerId: first.computerId,
+        runtimeProvider: "codex",
+      });
+      expect(registry.providerReadiness(first.computerId)[0]?.observation.status).toBe("checking");
+
+      const second = await registered(registry, { computerId: first.computerId });
+      await owner.onComputerRegistered(second);
+      const inspect = JSON.parse(second.socket.send.mock.calls[0]?.[0] as string) as Record<string, unknown>;
+      expect(Object.keys(inspect).sort()).toEqual(["providers", "requestId", "type"]);
+      expect(registry.providerReadiness(second.computerId)).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(registry.providerReadiness(second.computerId)).toEqual([]);
+      expect(registry.imCliReadiness(second.computerId)).toEqual([]);
+    } finally {
+      owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("still reconciles active bindings when Computer preparation is ineligible", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 2, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    });
+    const connection = await registered(registry);
+
+    await expect(
+      owner.onAgentPlacementChanged({
+        agentId,
+        computerId: connection.computerId,
+        runtimeProvider: "codex",
+      }),
+    ).rejects.toThrow("The Computer preparation operation could not be started");
+
+    expect(connection.socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
+      type: "provider-cli:requirement",
+      provider: "slack",
+      agentId,
+      integrationId,
+    });
+  });
+
+  it("still reconciles active bindings when Computer preparation send fails", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 2, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+    });
+    const connection = await registered(registry);
+    connection.socket.send.mockImplementationOnce((_data: string, cb?: (error?: Error) => void) =>
+      cb?.(new Error("socket closed")),
+    );
+
+    await expect(
+      owner.onAgentPlacementChanged({
+        agentId,
+        computerId: connection.computerId,
+        runtimeProvider: "codex",
+      }),
+    ).rejects.toThrow("The Computer preparation operation could not be started");
+
+    const frames = connection.socket.send.mock.calls.map(
+      (call) => JSON.parse(call[0] as string) as Record<string, unknown>,
+    );
+    expect(frames.map((frame) => frame.type)).toEqual(["provider-cli:prewarm", "provider-cli:requirement"]);
+    expect(frames[1]).toMatchObject({ type: "provider-cli:requirement", provider: "slack", agentId, integrationId });
   });
 
   it("does not keep requesting unselected CLI inspection after setup is complete", async () => {

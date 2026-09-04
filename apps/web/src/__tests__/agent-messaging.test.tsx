@@ -61,10 +61,11 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    expect(screen.getByText("Connect Slack or Lark so teammates can send messages to this Agent.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect Slack" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
+    // Nothing is connected yet, so the page states its one purpose once and adds no second heading.
+    expect(screen.getByText("Connect a messaging app so teammates can send messages to this Agent.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Messaging app" })).toBeNull();
   });
 
   it("presents both messaging channels as equal choices rather than a recommendation", async () => {
@@ -90,18 +91,24 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it("spaces both brand names correctly when the page itself renders in Chinese", async () => {
+  it("spaces a brand name correctly when the page itself renders in Chinese", async () => {
     /*
      * Composing the sentence in a test proves only that the catalogue and the spacing rule fit
      * together; it cannot see whether this page still puts them together that way. Reading the
      * rendered page is what observes the call site, and only Chinese shows the difference — the
-     * boundary rule is a no-op in English, so the English assertion above would survive its loss.
+     * boundary rule is a no-op in English, so the English assertions above would survive its loss.
+     * Both brands are read, because a hard-coded space would be right for exactly one of them.
      */
-    installApi({ bound: false });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     await withLocaleAsync("zh", async () => {
+      installApi({ bound: true });
+      const feishu = render(<App />);
+      expect(await screen.findByRole("button", { name: "断开飞书" })).toBeTruthy();
+      feishu.unmount();
+
+      installApi({ bound: true, provider: "slack" });
       render(<App />);
-      expect(await screen.findByText("连接 Slack 或飞书，让团队成员可以向此 Agent 发送消息。")).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "断开 Slack" })).toBeTruthy();
     });
   });
 

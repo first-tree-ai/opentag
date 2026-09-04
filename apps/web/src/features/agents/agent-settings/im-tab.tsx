@@ -137,12 +137,18 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                 <AsyncState state={state}>
                   {(binding) => (
                     <div className="grid gap-6">
-                      <section className="grid gap-4" aria-labelledby="messaging-app-heading">
-                        <Text as="h2" id="messaging-app-heading" variant="heading">
-                          {m.im_messaging_app()}
-                        </Text>
+                      {/*
+                       * With nothing connected this page holds one thing to do and its own title
+                       * already names it, so a section heading here would only say it twice. Once a
+                       * channel is connected the page carries two sections, and this one needs a
+                       * label of its own to stay distinct from the trigger rules below it.
+                       */}
+                      <section aria-label={m.im_messaging_app()} className="grid gap-4">
                         {binding ? (
                           <>
+                            <Text as="h2" variant="heading">
+                              {m.im_messaging_app()}
+                            </Text>
                             <div
                               className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3"
                               data-ui="messaging-app-identity"
@@ -208,14 +214,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           </>
                         ) : (
                           <>
-                            <p className="text-sm text-kumo-subtle">
-                              {spaceScriptBoundary(
-                                m.im_messaging_connect_description({
-                                  alternateProvider: messagingProviderLabel("feishu"),
-                                  provider: messagingProviderLabel("slack"),
-                                }),
-                              )}
-                            </p>
                             {/*
                              * Neither channel is the recommended one — which app a team already lives in decides this,
                              * not us — so both connect actions share one neutral variant and carry their own mark.

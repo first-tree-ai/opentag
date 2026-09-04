@@ -3,13 +3,16 @@ import type {
   ProviderCliArtifactStatusFrame,
   ProviderCliCancelFrame,
   ProviderCliPrewarmFrame,
+  ProviderCliPrewarmResultFrame,
   ProviderCliRequirementFrame,
   ProviderCliValidationGrantFrame,
   ProviderCliValidationResultFrame,
+  RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import {
   ProviderCliCancelFrameSchema,
   ProviderCliPrewarmFrameSchema,
+  ProviderCliPrewarmResultFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
   RUNTIME_CAPABILITY,
@@ -53,6 +56,10 @@ export interface ProviderCliReconcilerOptions {
   >;
   readonly manager: Pick<ProviderCliManager, "ensure" | "inspect" | "layout">;
   readonly now?: () => number;
+  /** Runs the same real Runtime probe used by the capability monitor for Server-owned preparation. */
+  readonly refreshRuntimeProvider?: (
+    provider: NonNullable<ProviderCliPrewarmFrame["runtimeProvider"]>,
+  ) => Promise<RuntimeProviderReadinessObservation>;
   readonly signal?: AbortSignal;
   /** Test hook: replaces the busy-lock retry wait. */
   readonly sleep?: (ms: number) => Promise<void>;
@@ -82,6 +89,7 @@ export class ProviderCliReconciler {
   readonly #grants = new Map<string, GrantState>();
   readonly #manager: ProviderCliReconcilerOptions["manager"];
   readonly #now: () => number;
+  readonly #refreshRuntimeProvider?: ProviderCliReconcilerOptions["refreshRuntimeProvider"];
   readonly #frameJobs = new Set<Promise<void>>();
   readonly #imCliPublished = new Map<ProviderCliProvider, ImCliReadinessStatus>();
   readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ImCliReadinessStatus>>();
@@ -98,6 +106,7 @@ export class ProviderCliReconciler {
     this.#connection = options.connection;
     this.#manager = options.manager;
     this.#now = options.now ?? Date.now;
+    this.#refreshRuntimeProvider = options.refreshRuntimeProvider;
     this.#signal = options.signal;
     this.#sleep = options.sleep ?? defaultSleep;
     this.#validation = options.validation;
@@ -184,17 +193,50 @@ export class ProviderCliReconciler {
   async #handlePrewarm(frame: ProviderCliPrewarmFrame): Promise<void> {
     if (this.#closed || this.#signal?.aborted) return;
     if (this.#connection.capabilityVersion(RUNTIME_CAPABILITY.providerCliPrewarm) === undefined) return;
-    await Promise.all(frame.providers.map((provider) => this.#prewarmProvider(provider)));
+    const providerPreparation = Promise.all(
+      frame.providers.map(async (provider) => ({
+        provider,
+        status: await this.#prewarmProvider(provider, frame.mode ?? "inspect"),
+      })),
+    );
+    if ((frame.mode ?? "inspect") !== "ensure" || frame.runtimeProvider === undefined) {
+      await providerPreparation;
+      return;
+    }
+    // Runtime and Provider CLI checks are independent. Always return one complete, fenced result
+    // so the Server can stop suppressing stale generic heartbeat observations.
+    const runtimeProvider = frame.runtimeProvider;
+    const [providers, runtime] = await Promise.all([
+      providerPreparation,
+      this.#refreshRuntimeProvider?.(runtimeProvider).catch(() => ({
+        provider: runtimeProvider,
+        status: "unavailable" as const,
+      })) ?? Promise.resolve({ provider: runtimeProvider, status: "unavailable" as const }),
+    ]);
+    const result: ProviderCliPrewarmResultFrame = ProviderCliPrewarmResultFrameSchema.parse({
+      type: "provider-cli:prewarm:result",
+      requestId: frame.requestId,
+      runtime,
+      providers,
+    });
+    await this.#connection.send(result, { priority: "result", signal: this.#signal });
   }
 
-  async #prewarmProvider(provider: ProviderCliProvider): Promise<void> {
-    await this.#refreshImCli(provider);
+  async #prewarmProvider(provider: ProviderCliProvider, mode: "ensure" | "inspect"): Promise<ImCliReadinessStatus> {
+    if (mode === "inspect") {
+      return this.#refreshImCli(provider);
+    }
+    this.#publishImCli(provider, "checking");
+    const status = await this.#reconcileProvider(provider, "auto");
+    this.#publishImCli(provider, status);
+    return status;
   }
 
-  async #refreshImCli(provider: ProviderCliProvider): Promise<void> {
+  async #refreshImCli(provider: ProviderCliProvider): Promise<ImCliReadinessStatus> {
     this.#publishImCli(provider, "checking");
     const status = await this.#inspectImCli(provider);
     this.#publishImCli(provider, status);
+    return status;
   }
 
   #inspectImCli(provider: ProviderCliProvider): Promise<ImCliReadinessStatus> {

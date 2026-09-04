@@ -39,6 +39,11 @@ export interface AgentSetupAttemptSource {
 export interface AgentSetupServiceOptions {
   now?: () => Date;
   presenceTimeoutMs?: number;
+  prepareComputer?: (input: {
+    agentId: string;
+    computerId: string;
+    runtimeProvider: AgentSummary["runtimeProvider"];
+  }) => Promise<void>;
   providerReadiness?: ProviderReadinessSource;
   slackOAuthAvailable?: boolean;
 }
@@ -57,6 +62,7 @@ export class AgentSetupService {
   readonly #messaging: AgentSetupMessagingSource;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
+  readonly #prepareComputer?: AgentSetupServiceOptions["prepareComputer"];
   readonly #providerReadiness?: ProviderReadinessSource;
   readonly #slackOAuthAvailable: boolean;
 
@@ -73,6 +79,7 @@ export class AgentSetupService {
     this.#attempts = attempts;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
+    this.#prepareComputer = options.prepareComputer;
     this.#providerReadiness = options.providerReadiness;
     this.#slackOAuthAvailable = options.slackOAuthAvailable ?? true;
   }
@@ -137,6 +144,53 @@ export class AgentSetupService {
       actions: deriveSetupActions(stage, computer, messaging, this.#slackOAuthAvailable),
       observedAt: observedAt.toISOString(),
     };
+  }
+
+  /**
+   * Starts a real preparation only for an exact active Agent already bound to a Computer. The
+   * initial targeted connect owns its own preparation and reaches this surface through fresh
+   * daemon observations, so it never calls this method while the Agent remains unbound.
+   */
+  async refreshPreparationById(callerUserId: string, agentId: string): Promise<void> {
+    const detail = await this.#agents.getById(callerUserId, agentId);
+    if (detail.status !== "active") {
+      throw new AgentServiceError(
+        "AGENT_LIFECYCLE_CONFLICT",
+        "deterministic",
+        "Only an active Agent can refresh Computer preparation",
+        409,
+      );
+    }
+    if (!detail.computer || detail.requiresComputerRebind === true) {
+      throw new AgentServiceError(
+        "AGENT_LIFECYCLE_CONFLICT",
+        "deterministic",
+        "The Agent must be bound to its current Computer before preparation can refresh",
+        409,
+      );
+    }
+    if (!this.#prepareComputer) {
+      throw new AgentServiceError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "Computer preparation is temporarily unavailable",
+        503,
+      );
+    }
+    try {
+      await this.#prepareComputer({
+        agentId,
+        computerId: detail.computer.computerId,
+        runtimeProvider: detail.runtimeProvider,
+      });
+    } catch {
+      throw new AgentServiceError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "The Computer preparation operation could not be started",
+        503,
+      );
+    }
   }
 
   async #observeComputer(agent: AgentSummary, observedAt: Date): Promise<AgentSetupComputerState> {

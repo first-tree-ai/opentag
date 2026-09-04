@@ -47,6 +47,7 @@ function scriptedAdapter(
 ): AgentSetupAdapter {
   return {
     readSnapshot: vi.fn(read),
+    refreshPreparation: vi.fn(async () => undefined),
     startFeishuAttempt: vi.fn(async () => undefined),
     cancelFeishuAttempt: vi.fn(async () => undefined),
     startSlackInstall: vi.fn(async () => "https://slack.com/oauth/v2/authorize?state=scripted"),
@@ -86,8 +87,8 @@ function mockComputerInventory() {
   return vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(() => deferred<never>().promise);
 }
 
-/** The two stable rows Step 2 exposes while canonical checks stay Provider-specific underneath. */
-const PREP_ROW_COMPONENTS = ["runtime", "messaging-support"] as const;
+/** The four stable checks Step 2 exposes in the order the operator needs them. */
+const PREP_ROW_COMPONENTS = ["computer", "runtime", "im-cli:feishu", "im-cli:slack"] as const;
 
 function readinessRow(component: string): HTMLElement {
   const element = document.querySelector(`[data-ui="readiness-list"] [data-component="${component}"]`);
@@ -109,11 +110,10 @@ function rowDetail(component: string): string {
   return readinessRow(component).querySelector('[data-ui="readiness-detail"]')?.textContent ?? "";
 }
 
-/** Runtime and aggregate Messaging support stay mounted in a fixed order throughout Step 2. */
-function expectCompactReadinessRows(): void {
-  expect(document.querySelector('[data-ui="readiness-list"]')?.classList).toContain("otv2-readiness--compact");
+/** Computer, selected Runtime, Lark CLI, and Slack CLI stay individually visible in Step 2. */
+function expectPreparationReadinessRows(): void {
   const rows = readinessRows();
-  expect(rows).toHaveLength(2);
+  expect(rows).toHaveLength(4);
   expect(rows.map((row) => row.getAttribute("data-component"))).toEqual([...PREP_ROW_COMPONENTS]);
 }
 
@@ -231,7 +231,7 @@ describe("AgentSetupPage stages", () => {
     await settle();
 
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
-    expectCompactReadinessRows();
+    expectPreparationReadinessRows();
     expect(readinessRow("runtime").getAttribute("data-state")).toBe("failed");
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("runtime")).toContain("Codex");
@@ -240,7 +240,8 @@ describe("AgentSetupPage stages", () => {
     // the row never claims a preparing/installing state exists.
     expect(rowDetail("runtime")).toContain("Install Codex on Review Mac, then check again.");
     expect(rowDetail("runtime")).toContain("OpenTag won't install it for you");
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("im-cli:slack").getAttribute("data-status")).toBe("ready");
   });
 
   it("shows a real checking observation as checking and nothing else animates", async () => {
@@ -299,14 +300,13 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Set up Reviewer" })).toBeNull();
-    expectCompactReadinessRows();
+    expectPreparationReadinessRows();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("ready");
-    expect(readinessRow("messaging-support").getAttribute("data-state")).toBe("failed");
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
-    expect(rowTitle("messaging-support")).toContain("Messaging support");
-    expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("connection command's setup steps");
-    expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
+    expect(readinessRow("im-cli:feishu").getAttribute("data-state")).toBe("failed");
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("install-required");
+    expect(rowTitle("im-cli:feishu")).toContain("Lark CLI");
+    expect(rowTitle("im-cli:feishu")).toContain("Installation required");
+    expect(readinessRow("im-cli:slack").getAttribute("data-status")).toBe("ready");
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
@@ -315,11 +315,13 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expectCompactReadinessRows();
-    expect(readinessRow("messaging-support").getAttribute("data-state")).toBe("pending");
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("waiting");
-    expect(rowTitle("messaging-support")).toContain("Waiting");
-    expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
+    expectPreparationReadinessRows();
+    expect(readinessRow("im-cli:feishu").getAttribute("data-state")).toBe("pending");
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("waiting");
+    expect(readinessRow("im-cli:slack").getAttribute("data-state")).toBe("pending");
+    expect(readinessRow("im-cli:slack").getAttribute("data-status")).toBe("waiting");
+    expect(rowTitle("im-cli:feishu")).toContain("Lark CLI");
+    expect(rowTitle("im-cli:slack")).toContain("Slack CLI");
     expect(screen.queryByText("Checking")).toBeNull();
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
   });
@@ -329,12 +331,13 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expectCompactReadinessRows();
+    expectPreparationReadinessRows();
     expect(readinessRow("runtime").getAttribute("data-state")).toBe("pending");
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("waiting");
     expect(rowTitle("runtime")).toContain("Waiting");
     expect(rowDetail("runtime")).toContain("No recent report from Review Mac");
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("im-cli:slack").getAttribute("data-status")).toBe("ready");
   });
 
   it("names the creation step's non-Codex runtime in the single Runtime row", async () => {
@@ -345,7 +348,7 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    expectCompactReadinessRows();
+    expectPreparationReadinessRows();
     expect(rowTitle("runtime")).toContain("Claude Code");
     expect(rowTitle("runtime")).toContain("Checking");
     expect(rowTitle("runtime")).not.toContain("Codex");
@@ -485,10 +488,11 @@ describe("preparation review regressions", () => {
     renderSetup(memory.adapter);
     await settle();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("install-required");
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("checking");
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("checking");
+    expect(readinessRow("im-cli:slack").getAttribute("data-status")).toBe("ready");
     memory.controls.setImCliReadiness("feishu", "ready");
     await advance(POLL_MS);
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("im-cli:feishu").getAttribute("data-status")).toBe("ready");
     const settledReads = reads.mock.calls.length;
     await advance(POLL_MS * 40);
     expect(reads).toHaveBeenCalledTimes(settledReads);
@@ -900,9 +904,12 @@ describe("AgentSetupPage transitions", () => {
 
     memory.controls.setComputerOnline(true);
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await settle();
 
+    expect(refreshes).toHaveBeenCalledWith(SETUP_AGENT_ID);
+    expect(refreshes.mock.invocationCallOrder[0]).toBeLessThan(reads.mock.invocationCallOrder.at(-1) ?? 0);
     expect(reads).toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
   });
@@ -1055,7 +1062,7 @@ describe("AgentSetupPage preparation rows across stages", () => {
     },
   ];
 
-  it.each(stageMatrix)("renders the compact Step 2 projection at $name", async ({ seed, expected }) => {
+  it.each(stageMatrix)("renders all four Step 2 checks at $name", async ({ seed, expected }) => {
     const memory = createMemorySetupAdapter(seed);
     renderSetup(memory.adapter);
     await settle();
@@ -1067,24 +1074,11 @@ describe("AgentSetupPage preparation rows across stages", () => {
       return;
     }
 
-    expectCompactReadinessRows();
-    const runtime = expected.find(([component]) => component === "runtime");
-    expect(runtime).toBeDefined();
-    expect(readinessRow("runtime").getAttribute("data-state")).toBe(runtime?.[1]);
-    expect(readinessRow("runtime").getAttribute("data-status")).toBe(runtime?.[2]);
-
-    const providerStatuses = expected.slice(2).map(([, , status]) => status);
-    const aggregateStatus = (["needs-attention", "install-required", "checking", "waiting", "ready"] as const).find(
-      (status) => providerStatuses.includes(status),
-    );
-    const aggregateState =
-      aggregateStatus === "ready"
-        ? "passed"
-        : aggregateStatus === "waiting" || aggregateStatus === "checking"
-          ? "pending"
-          : "failed";
-    expect(readinessRow("messaging-support").getAttribute("data-state")).toBe(aggregateState);
-    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe(aggregateStatus);
+    expectPreparationReadinessRows();
+    for (const [component, state, status] of expected) {
+      expect(readinessRow(component).getAttribute("data-state")).toBe(state);
+      expect(readinessRow(component).getAttribute("data-status")).toBe(status);
+    }
   });
 
   it("focuses a not-yet-connected Computer on the connection command", async () => {

@@ -865,12 +865,125 @@ describe("ProviderCliReconcileOwner", () => {
     expect(connection.socket.send).toHaveBeenCalledTimes(1);
     expect(JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
       type: "provider-cli:prewarm",
+      mode: "inspect",
       providers: ["feishu", "slack"],
     });
     expect(JSON.stringify(connection.socket.send.mock.calls[0]?.[0])).not.toContain("xoxb");
     expect(JSON.stringify(connection.socket.send.mock.calls[0]?.[0])).not.toContain("appSecret");
     // An Agent without messaging setup gets inspection only: no requirement or validation grant.
     expect(issueIntegrationCliValidationGrant).not.toHaveBeenCalled();
+  });
+
+  it("requests ensure-and-repair when an Agent is placed on an already connected Computer", async () => {
+    const registry = new ConnectionRegistry();
+    const shouldPrewarmOfficialProviderClis = vi.fn(async () => true);
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => []),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis,
+    });
+    const connection = await registered(registry);
+
+    await owner.onAgentPlacementChanged({
+      agentId: randomUUID(),
+      computerId: connection.computerId,
+      runtimeProvider: "codex",
+    });
+
+    expect(shouldPrewarmOfficialProviderClis).toHaveBeenCalledWith(connection.computerId);
+    expect(connection.socket.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string)).toMatchObject({
+      type: "provider-cli:prewarm",
+      mode: "ensure",
+      runtimeProvider: "codex",
+      providers: ["feishu", "slack"],
+    });
+  });
+
+  it("fences Server-owned preparation so old heartbeats and results cannot restore stale ready", async () => {
+    const registry = new ConnectionRegistry();
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => []),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => true),
+    });
+    const connection = await registered(registry);
+    expect(
+      registry.touch(
+        connection.computerId,
+        connection.instanceId,
+        connection.socket,
+        10,
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+
+    await owner.prepareComputer({
+      agentId: randomUUID(),
+      computerId: connection.computerId,
+      runtimeProvider: "codex",
+    });
+    const request = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+    expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+      "checking",
+      "checking",
+    ]);
+
+    // A generic heartbeat may have been emitted before the daemon received this request. It must
+    // update liveness without completing the operation or restoring the last ready snapshot.
+    expect(
+      registry.touch(
+        connection.computerId,
+        connection.instanceId,
+        connection.socket,
+        Date.now(),
+        undefined,
+        [{ provider: "codex", status: "ready" }],
+        [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:prewarm:result",
+        requestId: randomUUID(),
+        runtime: { provider: "codex", status: "ready" },
+        providers: [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      },
+      contextOf(connection),
+    );
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:prewarm:result",
+        requestId: request.requestId,
+        runtime: { provider: "codex", status: "sign-in" },
+        providers: [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "install" },
+        ],
+      },
+      contextOf(connection),
+    );
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("sign-in");
+    expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+      "ready",
+      "install",
+    ]);
   });
 
   it("does not keep requesting unselected CLI inspection after setup is complete", async () => {

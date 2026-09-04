@@ -7,6 +7,7 @@ import {
   ProviderCliArtifactStatusFrameSchema,
   ProviderCliCancelFrameSchema,
   ProviderCliPrewarmFrameSchema,
+  ProviderCliPrewarmResultFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
   ProviderCliValidationResultFrameSchema,
@@ -94,6 +95,12 @@ describe("provider CLI reconcile protocol", () => {
     expect(prewarm.providers).toEqual(["feishu", "slack"]);
     expect(ServerRuntimeBusinessFrameSchema.parse(prewarm)).toEqual(prewarm);
     expect(ProviderCliPrewarmFrameSchema.parse(prewarm)).toEqual(prewarm);
+    expect(ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "inspect" })).toMatchObject({ mode: "inspect" });
+    expect(ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "ensure" })).toMatchObject({ mode: "ensure" });
+    expect(ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "ensure", runtimeProvider: "codex" })).toMatchObject(
+      { mode: "ensure", runtimeProvider: "codex" },
+    );
+    expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, mode: "repair" })).toThrow();
     expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, providers: ["slack", "feishu"] })).toThrow();
     expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, providers: ["feishu", "feishu"] })).toThrow();
     for (const extra of [
@@ -106,6 +113,26 @@ describe("provider CLI reconcile protocol", () => {
     ]) {
       expect(() => ProviderCliPrewarmFrameSchema.parse({ ...prewarm, ...extra })).toThrow();
     }
+  });
+
+  it("accepts only terminal, canonically ordered preparation results", () => {
+    const result = {
+      type: "provider-cli:prewarm:result" as const,
+      requestId,
+      runtime: { provider: "codex" as const, status: "ready" as const },
+      providers: [
+        { provider: "feishu" as const, status: "ready" as const },
+        { provider: "slack" as const, status: "install" as const },
+      ],
+    };
+    expect(ProviderCliPrewarmResultFrameSchema.parse(result)).toEqual(result);
+    expect(ClientRuntimeBusinessFrameSchema.parse(result)).toEqual(result);
+    expect(() =>
+      ProviderCliPrewarmResultFrameSchema.parse({ ...result, runtime: { provider: "codex", status: "checking" } }),
+    ).toThrow();
+    expect(() =>
+      ProviderCliPrewarmResultFrameSchema.parse({ ...result, providers: [...result.providers].reverse() }),
+    ).toThrow();
   });
 
   it("accepts a secret-free requirement and rejects path, version, url, argv, and env", () => {

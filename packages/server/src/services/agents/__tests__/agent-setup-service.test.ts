@@ -32,7 +32,7 @@ import { ApplicationCipher } from "../../crypto.js";
 import type { FeishuRegistration, FeishuRegistrationGateway } from "../../im-bindings/feishu/index.js";
 import { FeishuSetupService } from "../../im-bindings/feishu/index.js";
 import { ImBindingService } from "../../im-bindings/index.js";
-import { AgentSetupService } from "../agent-setup-service.js";
+import { AgentSetupService, type AgentSetupServiceOptions } from "../agent-setup-service.js";
 import { AgentService, AgentServiceError } from "../index.js";
 
 const NOW = new Date("2026-09-01T10:00:00.000Z");
@@ -116,6 +116,7 @@ interface HarnessOptions {
   credentialExecutionReadiness?: { status: IntegrationCredentialExecutionStatus };
   registrations?: FeishuRegistrationGateway;
   slackOAuthAvailable?: boolean;
+  prepareComputer?: NonNullable<AgentSetupServiceOptions["prepareComputer"]>;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -150,6 +151,7 @@ function harness(options: HarnessOptions = {}) {
       : undefined;
   const service = new AgentSetupService(unitDatabase.database, agentService, imBindingService, feishuSetup, {
     now: () => NOW,
+    prepareComputer: options.prepareComputer,
     providerReadiness: options.providerReadiness ?? setupReadiness,
     slackOAuthAvailable: options.slackOAuthAvailable,
   });
@@ -302,6 +304,31 @@ describe("Agent setup projection ownership", () => {
     await expect(service.getSetupById(bootstrap.userId, agentId)).rejects.toMatchObject({
       code: "AGENT_LIFECYCLE_CONFLICT",
       statusCode: 409,
+    });
+  });
+});
+
+describe("Agent setup preparation refresh", () => {
+  it("commands the exact bound Computer to prepare the Agent's selected Runtime and CLIs", async () => {
+    const bootstrap = await account();
+    const prepareComputer = vi.fn(async () => undefined);
+    const { service } = harness({ prepareComputer });
+    const { agentId, computerId } = await boundAgent(bootstrap.userId, { online: true });
+
+    await service.refreshPreparationById(bootstrap.userId, agentId);
+
+    expect(prepareComputer).toHaveBeenCalledWith({ agentId, computerId, runtimeProvider: "codex" });
+  });
+
+  it("fails closed instead of treating a missing preparation owner as a successful refresh", async () => {
+    const bootstrap = await account();
+    const { service } = harness();
+    const { agentId } = await boundAgent(bootstrap.userId, { online: true });
+
+    await expect(service.refreshPreparationById(bootstrap.userId, agentId)).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      category: "transient",
+      statusCode: 503,
     });
   });
 });

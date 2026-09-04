@@ -301,7 +301,12 @@ export class AgentService {
   readonly #now: () => Date;
   readonly #onDiagnostic: (code: string) => void;
   readonly #onProviderCliPlacementChanged?:
-    | ((input: { agentId: string; previousComputerId?: string; computerId?: string }) => Promise<void> | void)
+    | ((input: {
+        agentId: string;
+        previousComputerId?: string;
+        computerId?: string;
+        runtimeProvider?: AgentRuntimeProvider;
+      }) => Promise<void> | void)
     | undefined;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
 
@@ -316,6 +321,7 @@ export class AgentService {
         agentId: string;
         previousComputerId?: string;
         computerId?: string;
+        runtimeProvider?: AgentRuntimeProvider;
       }) => Promise<void> | void;
       stopSessions?: (targets: AgentSessionStopTarget[]) => Promise<void>;
     } = {},
@@ -353,8 +359,9 @@ export class AgentService {
   async #create(callerUserId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
     const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;
+    let result: { config: AgentAdminConfig; created: boolean };
     try {
-      return await this.#database.transaction(async (transaction) => {
+      result = await this.#database.transaction(async (transaction) => {
         await this.#afterMembershipLocked?.();
         const computer = input.computerId
           ? await this.#lockOwnedComputer(transaction, callerUserId, input.computerId)
@@ -369,7 +376,7 @@ export class AgentService {
             input.creationIntentId,
             intentFingerprint,
           );
-          if (replay) return replay;
+          if (replay) return { config: replay, created: false };
         }
         const [nameConflict] = await transaction
           .select({ id: agents.id })
@@ -408,7 +415,7 @@ export class AgentService {
           .values({ agentId: created.id, ...runtimeConfig, createdAt: now, updatedAt: now })
           .returning();
         if (!createdRuntimeConfig) throw new Error("Agent runtime config insert did not return a row");
-        return toAgentAdminConfig(created, createdRuntimeConfig, computer?.id ?? null);
+        return { config: toAgentAdminConfig(created, createdRuntimeConfig, computer?.id ?? null), created: true };
       });
     } catch (error) {
       const constraintName = uniqueConstraintName(error);
@@ -430,6 +437,14 @@ export class AgentService {
       }
       throw error;
     }
+    if (result.created && input.computerId) {
+      await this.#notifyProviderCliPlacement({
+        agentId: result.config.id,
+        computerId: input.computerId,
+        runtimeProvider: result.config.runtimeProvider,
+      });
+    }
+    return result.config;
   }
 
   async #replayCreationIntent(
@@ -844,7 +859,11 @@ export class AgentService {
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before reactivation");
       return { computerId: scope.computerId, config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
     });
-    await this.#notifyProviderCliPlacement({ agentId, computerId: result.computerId ?? undefined });
+    await this.#notifyProviderCliPlacement({
+      agentId,
+      computerId: result.computerId ?? undefined,
+      runtimeProvider: result.config.runtimeProvider,
+    });
     return result.config;
   }
 
@@ -909,6 +928,7 @@ export class AgentService {
         agentId,
         previousComputerId: result.previousComputerId ?? undefined,
         computerId: result.computerId,
+        runtimeProvider: result.config.runtimeProvider,
       });
     }
     return result.config;
@@ -1106,6 +1126,7 @@ export class AgentService {
     agentId: string;
     previousComputerId?: string;
     computerId?: string;
+    runtimeProvider?: AgentRuntimeProvider;
   }): Promise<void> {
     if (!this.#onProviderCliPlacementChanged) return;
     try {

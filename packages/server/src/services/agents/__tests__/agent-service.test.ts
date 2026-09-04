@@ -599,6 +599,7 @@ describe("AgentService", () => {
     expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
       agentId: created.id,
       computerId: computer.id,
+      runtimeProvider: "codex",
     });
     onProviderCliPlacementChanged.mockClear();
     await hooked.rebindById(bootstrap.userId, created.id, computer.id);
@@ -608,6 +609,7 @@ describe("AgentService", () => {
       agentId: created.id,
       previousComputerId: computer.id,
       computerId: target.id,
+      runtimeProvider: "codex",
     });
     const diagnostics: string[] = [];
     const failing = new AgentService(unitDatabase.database, {
@@ -622,5 +624,28 @@ describe("AgentService", () => {
     diagnostics.length = 0;
     await failing.deleteById(bootstrap.userId, created.id);
     expect(diagnostics).toEqual(["PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED"]);
+  });
+
+  it("prepares a Computer selected at creation once, without replaying the effect for an idempotent intent", async () => {
+    const { bootstrap, computer } = await fixture();
+    const onProviderCliPlacementChanged = vi.fn(async () => undefined);
+    const service = new AgentService(unitDatabase.database, { now: () => NOW, onProviderCliPlacementChanged });
+    const input = {
+      computerId: computer.id,
+      creationIntentId: crypto.randomUUID(),
+      displayName: "Created on Computer",
+      name: "created-on-computer",
+      runtimeProvider: "codex" as const,
+    };
+
+    const created = await service.createForAccount(bootstrap.userId, input);
+    await expect(service.createForAccount(bootstrap.userId, input)).resolves.toEqual(created);
+
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledTimes(1);
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
+      agentId: created.id,
+      computerId: computer.id,
+      runtimeProvider: "codex",
+    });
   });
 });

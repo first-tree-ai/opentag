@@ -25,6 +25,7 @@ import {
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
   createLoginShellDiscovery,
+  createRuntimeProviderReadinessRefresher,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
@@ -107,6 +108,19 @@ describe("createClientRuntime production composition", () => {
         issues: [{ code: "temporarily_unavailable", message: "secret" }],
       }),
     ).toEqual({ provider: "codex", status: "unavailable" });
+  });
+
+  it("returns the fresh selected-Runtime result for Server-owned Computer preparation", async () => {
+    const refreshProviderReadiness = vi.fn(async () => false);
+    const probeResult = vi.fn(() => ({
+      ready: false as const,
+      issues: [{ code: "credential_missing" as const, message: "local-only detail" }],
+    }));
+    const refresh = createRuntimeProviderReadinessRefresher(refreshProviderReadiness, { probeResult });
+
+    await expect(refresh("codex")).resolves.toEqual({ provider: "codex", status: "sign-in" });
+    expect(refreshProviderReadiness).toHaveBeenCalledWith("codex");
+    expect(probeResult).toHaveBeenCalledWith("codex");
   });
 
   it("rejects invalid Provider probe deadlines before probing", async () => {

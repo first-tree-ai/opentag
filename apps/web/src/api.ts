@@ -32,6 +32,7 @@ import {
   agentReactivatePath,
   agentRuntimeTestPath,
   agentSetupPath,
+  agentSetupRefreshPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -217,6 +218,14 @@ export class BrowserApi {
    */
   agentSetup(agentId: string): Promise<AgentSetupSnapshot> {
     return this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema);
+  }
+
+  /** Starts a fresh Computer-owned preparation for this exact bound Agent. */
+  refreshAgentSetup(agentId: string): Promise<void> {
+    return this.requestNoContent(agentSetupRefreshPath(agentId), {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   createAgent(input: CreateAgentRequest): Promise<AgentAdminConfig> {

@@ -1,4 +1,5 @@
 import {
+  AGENT_RUNTIME_PROVIDERS,
   type AgentRuntimeProvider,
   type ImCliProvider,
   type ImCliReadinessStatus,
@@ -67,6 +68,9 @@ export interface RuntimeConnectionEntry {
   providerReadinessProviders?: readonly AgentRuntimeProvider[];
   imCliReadiness?: RuntimeImCliReadinessCollection;
   imCliReadinessObservedAt?: number;
+  preparationRequestId?: string;
+  preparationRuntimeProvider?: AgentRuntimeProvider;
+  preparationProviders?: readonly ImCliProvider[];
   providerCliArtifact?: ProviderCliArtifactObservation[];
   providerCliCredential?: ProviderCliCredentialObservation[];
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
@@ -218,6 +222,70 @@ export class ConnectionRegistry {
     );
   }
 
+  /**
+   * Fences one Server-owned preparation operation and immediately replaces old pass states with
+   * checking. Generic heartbeats remain useful for liveness but cannot complete this operation.
+   */
+  beginPreparation(
+    computerId: string,
+    instanceId: string,
+    requestId: string,
+    runtimeProvider: AgentRuntimeProvider,
+    providers: readonly ImCliProvider[],
+    now = Date.now(),
+  ): boolean {
+    const current = this.#currentWritable(computerId, instanceId);
+    if (!current || providers.length === 0) return false;
+    current.preparationRequestId = requestId;
+    current.preparationRuntimeProvider = runtimeProvider;
+    current.preparationProviders = [...providers];
+    current.providerReadinessProviders = canonicalRuntimeProviders([
+      ...(current.providerReadinessProviders ?? []),
+      runtimeProvider,
+    ]);
+    current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, {
+      provider: runtimeProvider,
+      status: "checking",
+    });
+    current.providerReadinessObservedAt = now;
+    current.imCliReadiness = providers.map((provider) => ({ provider, status: "checking" }));
+    current.imCliReadinessObservedAt = now;
+    return true;
+  }
+
+  /** Accepts only the latest result for the exact live Computer instance. */
+  completePreparation(
+    computerId: string,
+    instanceId: string,
+    result: {
+      requestId: string;
+      runtime: RuntimeProviderReadinessCollection[number];
+      providers: RuntimeImCliReadinessCollection;
+    },
+    now = Date.now(),
+  ): boolean {
+    const current = this.#currentWritable(computerId, instanceId);
+    if (
+      !current ||
+      current.preparationRequestId !== result.requestId ||
+      current.preparationRuntimeProvider !== result.runtime.provider ||
+      !sameProviders(
+        current.preparationProviders,
+        result.providers.map((observation) => observation.provider),
+      )
+    ) {
+      return false;
+    }
+    current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
+    current.providerReadinessObservedAt = now;
+    current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
+    current.imCliReadinessObservedAt = now;
+    delete current.preparationRequestId;
+    delete current.preparationRuntimeProvider;
+    delete current.preparationProviders;
+    return true;
+  }
+
   providerCliArtifactReadiness(
     computerId: string,
     now = Date.now(),
@@ -350,7 +418,7 @@ export class ConnectionRegistry {
       current.capabilities = { ...capabilities };
       current.capabilitiesUpdatedAt = now;
     }
-    if (providerReadiness !== undefined) {
+    if (providerReadiness !== undefined && current.preparationRequestId === undefined) {
       if (providerReadiness.length > 0) {
         current.providerReadiness = providerReadiness.map((observation) => ({ ...observation }));
         current.providerReadinessObservedAt = now;
@@ -359,7 +427,7 @@ export class ConnectionRegistry {
         delete current.providerReadinessObservedAt;
       }
     }
-    if (imCliReadiness !== undefined) {
+    if (imCliReadiness !== undefined && current.preparationRequestId === undefined) {
       if (imCliReadiness.length > 0) {
         current.imCliReadiness = imCliReadiness.map((observation) => ({ ...observation }));
         current.imCliReadinessObservedAt = now;
@@ -421,6 +489,29 @@ export class ConnectionRegistry {
       entry.socket.close(1001, "Server shutting down");
     }
   }
+}
+
+function canonicalRuntimeProviders(providers: readonly AgentRuntimeProvider[]): readonly AgentRuntimeProvider[] {
+  const included = new Set(providers);
+  return AGENT_RUNTIME_PROVIDERS.filter((provider) => included.has(provider));
+}
+
+function upsertRuntimeReadiness(
+  observations: RuntimeProviderReadinessCollection | undefined,
+  next: RuntimeProviderReadinessCollection[number],
+): RuntimeProviderReadinessCollection {
+  const byProvider = new Map((observations ?? []).map((observation) => [observation.provider, observation]));
+  byProvider.set(next.provider, { ...next });
+  return AGENT_RUNTIME_PROVIDERS.flatMap((provider) => {
+    const observation = byProvider.get(provider);
+    return observation ? [{ ...observation }] : [];
+  });
+}
+
+function sameProviders(left: readonly ImCliProvider[] | undefined, right: readonly ImCliProvider[]): boolean {
+  return (
+    left !== undefined && left.length === right.length && left.every((provider, index) => provider === right[index])
+  );
 }
 
 function artifactObservationKey(observation: ProviderCliArtifactObservation): string {

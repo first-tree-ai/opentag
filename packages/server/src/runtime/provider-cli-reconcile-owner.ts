@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  type AgentRuntimeProvider,
   IM_CLI_PROVIDERS,
   type ImCliProvider,
   PROVIDER_CLI_VALIDATION_RETRY_REASONS,
@@ -8,6 +9,8 @@ import {
   type ProviderCliCancelFrame,
   type ProviderCliExpectedIdentity,
   type ProviderCliPrewarmFrame,
+  type ProviderCliPrewarmResultFrame,
+  ProviderCliPrewarmResultFrameSchema,
   type ProviderCliRequirementFrame,
   type ProviderCliValidationGrantFrame,
   type ProviderCliValidationResultFrame,
@@ -140,15 +143,24 @@ export class ProviderCliReconcileOwner {
       parse: (input) => {
         const artifact = ProviderCliArtifactStatusFrameSchema.safeParse(input);
         if (artifact.success) return artifact.data;
+        const preparation = ProviderCliPrewarmResultFrameSchema.safeParse(input);
+        if (preparation.success) return preparation.data;
         const result = ProviderCliValidationResultFrameSchema.safeParse(input);
         return result.success ? result.data : undefined;
       },
       laneKey: (frame) => {
-        const typed = frame as ProviderCliArtifactStatusFrame | ProviderCliValidationResultFrame;
+        const typed = frame as
+          | ProviderCliArtifactStatusFrame
+          | ProviderCliPrewarmResultFrame
+          | ProviderCliValidationResultFrame;
+        if (typed.type === "provider-cli:prewarm:result") return `provider-cli:prewarm:${typed.requestId}`;
         return `provider-cli:${typed.integrationId}:${typed.credentialGeneration}`;
       },
       handle: (frame, context) =>
-        this.#handle(frame as ProviderCliArtifactStatusFrame | ProviderCliValidationResultFrame, context),
+        this.#handle(
+          frame as ProviderCliArtifactStatusFrame | ProviderCliPrewarmResultFrame | ProviderCliValidationResultFrame,
+          context,
+        ),
       failureResult: () => undefined,
       overloadResult: () => undefined,
     };
@@ -157,7 +169,7 @@ export class ProviderCliReconcileOwner {
   async onComputerRegistered(input: { computerId: string; installationId: string; instanceId: string }): Promise<void> {
     if (this.#closed) return;
     await this.#resetComputer(input.computerId);
-    await this.#dispatchSetupPrewarm(input);
+    await this.#dispatchSetupPrewarm(input, "inspect");
     const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
     if (
       !this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
@@ -186,36 +198,69 @@ export class ProviderCliReconcileOwner {
   }
 
   /**
-   * Sends one inspect-both prewarm for an eligible (re)registration. The frame only asks the
-   * daemon to inspect and report both official Provider CLIs; the foreground targeted connect
-   * remains the first-setup installer. Active-binding requirements stay separate: a sibling Agent
-   * still awaiting messaging setup may qualify this Computer for inspection, but never creates
-   * continuing requirements for an unselected Provider.
+   * Sends one preparation request for both official Provider CLIs. Registration is inspect-only
+   * because the foreground targeted connect remains the installer; placement onto an already
+   * connected Computer uses ensure so that no stale ready observation can replace a real repair.
+   * Active-binding requirements stay separate and never create continuing requirements for an
+   * unselected Provider.
    */
-  async #dispatchSetupPrewarm(input: {
-    computerId: string;
-    installationId: string;
-    instanceId: string;
-  }): Promise<void> {
+  async #dispatchSetupPrewarm(
+    input: {
+      computerId: string;
+      installationId: string;
+      instanceId: string;
+      runtimeProvider?: AgentRuntimeProvider;
+    },
+    mode: "ensure" | "inspect",
+  ): Promise<boolean> {
     if (!this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliPrewarm)) {
-      return;
+      return false;
     }
     let shouldPrewarm = false;
     try {
       shouldPrewarm = (await this.#bindings.shouldPrewarmOfficialProviderClis?.(input.computerId)) === true;
     } catch {
-      return;
+      return false;
     }
-    if (!shouldPrewarm) return;
+    if (!shouldPrewarm) return false;
     const frame: ProviderCliPrewarmFrame = {
       type: "provider-cli:prewarm",
       requestId: randomUUID(),
+      mode,
+      ...(input.runtimeProvider ? { runtimeProvider: input.runtimeProvider } : {}),
       providers: [...IM_CLI_PROVIDERS],
     };
+    if (
+      mode === "ensure" &&
+      input.runtimeProvider &&
+      !this.#registry.beginPreparation(
+        input.computerId,
+        input.instanceId,
+        frame.requestId,
+        input.runtimeProvider,
+        frame.providers,
+        this.#now(),
+      )
+    ) {
+      return false;
+    }
     try {
       await this.#registry.send(input.computerId, input.instanceId, frame);
+      return true;
     } catch {
-      return;
+      if (mode === "ensure" && input.runtimeProvider) {
+        this.#registry.completePreparation(
+          input.computerId,
+          input.instanceId,
+          {
+            requestId: frame.requestId,
+            runtime: { provider: input.runtimeProvider, status: "unavailable" },
+            providers: frame.providers.map((provider) => ({ provider, status: "unavailable" })),
+          },
+          this.#now(),
+        );
+      }
+      return false;
     }
   }
 
@@ -256,16 +301,46 @@ export class ProviderCliReconcileOwner {
     }
   }
 
+  /** Starts the real idempotent preparation owned by an already-connected Computer. */
+  async prepareComputer(input: {
+    agentId: string;
+    computerId: string;
+    runtimeProvider: AgentRuntimeProvider;
+  }): Promise<void> {
+    if (this.#closed) return;
+    const instanceId = this.#registry.currentInstanceId(input.computerId);
+    const installationId = this.#registry.installationId(input.computerId);
+    if (!instanceId || !installationId) throw new Error("The Computer runtime is not connected");
+    const started = await this.#dispatchSetupPrewarm(
+      {
+        computerId: input.computerId,
+        installationId,
+        instanceId,
+        runtimeProvider: input.runtimeProvider,
+      },
+      "ensure",
+    );
+    if (!started) throw new Error("The Computer preparation operation could not be started");
+  }
+
   async onAgentPlacementChanged(input: {
     agentId: string;
     previousComputerId?: string;
     computerId?: string;
+    runtimeProvider?: AgentRuntimeProvider;
   }): Promise<void> {
     if (this.#closed) return;
     if (input.previousComputerId && input.previousComputerId !== input.computerId) {
       await this.#retireAgentOnComputer(input.agentId, input.previousComputerId);
     }
     if (input.computerId) {
+      if (input.runtimeProvider) {
+        await this.prepareComputer({
+          agentId: input.agentId,
+          computerId: input.computerId,
+          runtimeProvider: input.runtimeProvider,
+        });
+      }
       await this.onActiveBindingChanged({
         agentId: input.agentId,
         computerId: input.computerId,
@@ -371,9 +446,13 @@ export class ProviderCliReconcileOwner {
   }
 
   async #handle(
-    frame: ProviderCliArtifactStatusFrame | ProviderCliValidationResultFrame,
+    frame: ProviderCliArtifactStatusFrame | ProviderCliPrewarmResultFrame | ProviderCliValidationResultFrame,
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
+    if (frame.type === "provider-cli:prewarm:result") {
+      this.#registry.completePreparation(context.computerId, context.instanceId, frame, this.#now());
+      return undefined;
+    }
     const current = this.#requests.get(requestKey(context.computerId, frame.integrationId));
     if (frame.type === "provider-cli:artifact:status") return this.#handleArtifact(current, frame, context);
     return this.#handleValidation(current, frame, context);

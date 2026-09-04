@@ -31,7 +31,7 @@ export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custo
 
 type ProviderCliResultFrame = Extract<
   ClientRuntimeBusinessFrame,
-  { type: "provider-cli:artifact:status" | "provider-cli:validation:result" }
+  { type: "provider-cli:artifact:status" | "provider-cli:prewarm:result" | "provider-cli:validation:result" }
 >;
 
 type ResidualRuntimeFrame = ProviderCliResultFrame | RuntimeImCredentialGrantRequest | TurnReportRequest;
@@ -608,7 +608,11 @@ export class RuntimeDomainOwner {
     frame: ResidualRuntimeFrame,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
-    if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
+    if (
+      frame.type === "provider-cli:artifact:status" ||
+      frame.type === "provider-cli:prewarm:result" ||
+      frame.type === "provider-cli:validation:result"
+    ) {
       return undefined;
     }
     if (frame.type === "im:credential") {
@@ -1053,5 +1057,6 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
     return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   }
+  if (frame.type === "provider-cli:prewarm:result") return `provider-cli:prewarm:${frame.requestId}`;
   return `turn:${frame.turnId}`;
 }

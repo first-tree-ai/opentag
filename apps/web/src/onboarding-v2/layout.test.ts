@@ -114,6 +114,16 @@ describe("onboarding flow layout", () => {
     expect(atWidth("359px", ".otv2-slot--outcome", "min-height")).toBe("114px");
   });
 
+  it("groups the compact Computer context with the Step 2 checklist", () => {
+    expect(declarationValue(".otv2-preparation", "gap")).toBe("1.25rem");
+    expect(declarationValue(".otv2-preparation__checks", "display")).toBe("flex");
+    expect(declarationValue(".otv2-preparation__checks", "flex-direction")).toBe("column");
+    expect(declarationValue(".otv2-preparation__checks", "gap")).toBe("0.75rem");
+    expect(declarationValue(".otv2-preparation__checks > .otv2-computer-summary", "height")).toBe("40px");
+    expect(declarationValue(".otv2-preparation__checks > .otv2-computer-summary", "padding-block")).toBe("0.25rem");
+    expect(mediaDeclarationValue("640px", ".otv2-preparation", "gap")).toBe("1rem");
+  });
+
   /*
    * The readiness rows follow the same rule as the slots above: the reserved heights and the
    * fixed marker are declarations the layout depends on, so they are guarded here rather than

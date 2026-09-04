@@ -1005,27 +1005,29 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
   const { computer } = snapshot;
   if (computer.kind === "not-bound") return null;
   return (
-    <section className={SECTION} data-ui="agent-setup-preparation">
+    <section className="otv2-preparation flex flex-col" data-ui="agent-setup-preparation">
       <header className={SECTION_HEADER}>
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_prep_title()}
         </Text>
         <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
-      <ComputerSummary
-        metadata={platformLabel(computer.platform)}
-        status={m.onboarding_v2_connect_online()}
-        title={computer.displayName}
-        tone="success"
-      />
-      <ol
-        aria-label={m.onboarding_v2_prep_title()}
-        className="otv2-readiness otv2-readiness--compact"
-        data-ui="readiness-list"
-      >
-        <CheckLine check={rows.runtime} component="runtime" position={1} scrollable={false} />
-        <CheckLine check={rows.messaging} component="messaging-support" position={2} scrollable={false} />
-      </ol>
+      <div className="otv2-preparation__checks">
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_online()}
+          title={computer.displayName}
+          tone="success"
+        />
+        <ol
+          aria-label={m.onboarding_v2_prep_title()}
+          className="otv2-readiness otv2-readiness--compact"
+          data-ui="readiness-list"
+        >
+          <CheckLine check={rows.runtime} component="runtime" position={1} scrollable={false} />
+          <CheckLine check={rows.messaging} component="messaging-support" position={2} scrollable={false} />
+        </ol>
+      </div>
     </section>
   );
 }

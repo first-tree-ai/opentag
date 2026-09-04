@@ -135,6 +135,27 @@
   height: 56px;
 }
 
+/*
+ * Step 2 reads as one progression: heading, the Computer being checked, then its checks. Keep the
+ * heading's section-level breathing room, but bind the Computer more closely to the checklist it
+ * qualifies. The smaller row reservation removes empty space without changing the shared summary
+ * in connect and repair states.
+ */
+.otv2-preparation {
+  gap: 1.25rem;
+}
+
+.otv2-preparation__checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.otv2-preparation__checks > .otv2-computer-summary {
+  height: 40px;
+  padding-block: 0.25rem;
+}
+
 /* Cards sit side by side wherever two tracks fit, and stack when they do not. */
 .otv2-choices--grid {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -164,6 +185,10 @@
 @media (width <= 640px) {
   .otv2-computer-summary {
     height: 72px;
+  }
+
+  .otv2-preparation {
+    gap: 1rem;
   }
 
   .otv2-slot--outcome {

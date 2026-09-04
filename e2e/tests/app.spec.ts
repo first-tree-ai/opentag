@@ -66,8 +66,23 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  const preparation = page.locator('[data-ui="agent-setup-preparation"]');
+  const preparationHeader = preparation.locator(":scope > header");
+  const computerSummary = preparation.locator('[data-ui="agent-setup-computer-summary"]');
   const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness--compact');
   const readinessRows = readiness.locator(":scope > li");
+  await expect(computerSummary).toHaveCSS("height", "40px");
+  const [headerBox, computerBox, readinessBox] = await Promise.all([
+    preparationHeader.boundingBox(),
+    computerSummary.boundingBox(),
+    readiness.boundingBox(),
+  ]);
+  expect(headerBox).not.toBeNull();
+  expect(computerBox).not.toBeNull();
+  expect(readinessBox).not.toBeNull();
+  if (!headerBox || !computerBox || !readinessBox) throw new Error("Preparation layout did not produce boxes");
+  expect(Math.round(computerBox.y - (headerBox.y + headerBox.height))).toBe(16);
+  expect(Math.round(readinessBox.y - (computerBox.y + computerBox.height))).toBe(12);
   await expect(readinessRows).toHaveCount(2);
   await expect(readinessRows.nth(0)).toContainText("Codex");
   await expect(readinessRows.nth(0)).toContainText(

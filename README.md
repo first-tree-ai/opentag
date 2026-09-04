@@ -22,7 +22,7 @@ plan you already pay for, with its work area in plain files on your own machine.
 </div>
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
+  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and reaching the tools already set up on that machine." width="100%">
 </p>
 
 ---

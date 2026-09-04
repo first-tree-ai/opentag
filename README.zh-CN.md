@@ -24,7 +24,7 @@
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-09-02
 
 <p align="center">
-  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
+  <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及使用那台机器上已有的工具。" width="100%">
 </p>
 
 ---

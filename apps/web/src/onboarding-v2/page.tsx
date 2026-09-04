@@ -36,6 +36,23 @@ async function agentHoldingName(name: string): Promise<{ id: string; name: strin
 }
 
 /**
+ * What a refusal leaves the reader, when the refusal is a name that is already taken.
+ *
+ * The Server says only that the name is taken, so the Agent holding it is found here — either it is
+ * the one they meant, or the name is theirs to change. It also answers a request that reached the
+ * Server without its answer reaching the browser: the Agent that press produced is what the offer
+ * leads to, rather than a button that can never work again. When it cannot be named, the bare fact
+ * is still an exit, and this page can be the only one an Account is able to reach.
+ */
+async function refusedNameHolder(
+  cause: unknown,
+  name: string,
+): Promise<{ id: string; name: string } | "unnamed" | undefined> {
+  if (!(cause instanceof ApiError) || cause.code !== "AGENT_NAME_CONFLICT") return undefined;
+  return (await agentHoldingName(name)) ?? "unnamed";
+}
+
+/**
  * The one Agent creation/setup surface. Creation is deliberately only the short pre-Agent form;
  * as soon as the Server returns an id, the exact-Agent Issue 437 surface owns every remaining step.
  */
@@ -153,19 +170,7 @@ function AgentCreatePage({
         await Promise.resolve(onAgentAvailable?.(created.id));
       } catch (cause) {
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
-        /*
-         * A refused name is the one failure that names something the reader can go and look at.
-         * The Server says only that the name is taken, so the Agent holding it is found here and
-         * offered — either it is the one they meant, or the name is theirs to change. It is not
-         * opened for them: an Agent this Account already has is not what Create asked for.
-         *
-         * The same refusal answers a request that reached the Server without its answer reaching
-         * here. The reader sees the Agent their own press produced rather than a button that can
-         * never work again.
-         */
-        if (cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT") {
-          setTaken((await agentHoldingName(request.name)) ?? "unnamed");
-        }
+        setTaken(await refusedNameHolder(cause, request.name));
       } finally {
         createInFlight.current = false;
         setSubmitting(false);

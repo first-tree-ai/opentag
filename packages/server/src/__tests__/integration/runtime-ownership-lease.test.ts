@@ -41,6 +41,53 @@ function freePort(): Promise<number> {
   });
 }
 
+async function startLeaseProxy(
+  databaseUrl: string,
+  mode: "handshake" | "query",
+): Promise<{ databaseUrl: string; close(): Promise<void> }> {
+  const target = new URL(databaseUrl);
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    if (mode === "handshake") return;
+    const upstream = net.connect(Number(target.port), target.hostname);
+    let ready = false;
+    let dropResponses = false;
+    socket.on("data", (chunk) => {
+      if (!upstream.destroyed) upstream.write(chunk);
+    });
+    upstream.on("data", (chunk) => {
+      if (dropResponses) return;
+      if (!ready && Buffer.isBuffer(chunk) && chunk.includes(0x5a)) {
+        const readyIndex = chunk.lastIndexOf(0x5a);
+        socket.write(chunk.subarray(0, Math.min(chunk.length, readyIndex + 6)));
+        ready = true;
+        dropResponses = true;
+        return;
+      }
+      socket.write(chunk);
+    });
+    upstream.on("error", () => undefined);
+    socket.on("error", () => undefined);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Lease proxy did not bind a TCP port");
+  target.hostname = "127.0.0.1";
+  target.port = String(address.port);
+  return {
+    databaseUrl: target.toString(),
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 function serverEnvironment(databaseUrl: string, port: number, timeoutMs: number): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -220,6 +267,38 @@ describe("runtime ownership advisory lease", () => {
         new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 2_000)),
       ]),
     ).resolves.toBe("settled");
+  }, 120_000);
+
+  it("bounds an established but unresponsive advisory-lock query and closes the client", async () => {
+    const proxy = await startLeaseProxy(container.getConnectionUri(), "query");
+    const startedAt = Date.now();
+    try {
+      await expect(
+        acquireRuntimeOwnershipLease(proxy.databaseUrl, "88888888-8888-4888-8888-888888888888", {
+          timeoutMs: 300,
+          endTimeoutMs: 100,
+        }),
+      ).rejects.toMatchObject({ code: "RUNTIME_OWNER_LEASE_HELD" });
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    } finally {
+      await proxy.close();
+    }
+  }, 120_000);
+
+  it("bounds reservation when a peer accepts TCP but never completes PostgreSQL handshake", async () => {
+    const proxy = await startLeaseProxy(container.getConnectionUri(), "handshake");
+    const startedAt = Date.now();
+    try {
+      await expect(
+        acquireRuntimeOwnershipLease(proxy.databaseUrl, "99999999-9999-4999-8999-999999999999", {
+          timeoutMs: 300,
+          endTimeoutMs: 100,
+        }),
+      ).rejects.toMatchObject({ code: "RUNTIME_OWNER_LEASE_HELD" });
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    } finally {
+      await proxy.close();
+    }
   }, 120_000);
 
   it("fences traffic while a dropped lease waits, then resumes after transient recovery", async () => {

@@ -98,12 +98,27 @@ describe("runtime ownership advisory lease", () => {
     await lease.release();
   });
 
+  it("bounds a lock query that never responds with the whole acquisition deadline", async () => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    const fixture = clientFixture([true]);
+    fixture.connection.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const acquisition = acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "instance", {
+      timeoutMs: 100,
+      endTimeoutMs: 10,
+    });
+    const assertion = expect(acquisition).rejects.toMatchObject({ code: "RUNTIME_OWNER_LEASE_HELD" });
+
+    await vi.advanceTimersByTimeAsync(100);
+    await assertion;
+    expect(fixture.client.end).toHaveBeenCalled();
+  });
+
   it("fails closed after the bounded acquisition window and closes the lease client", async () => {
     const fixture = clientFixture([false]);
 
     await expect(
       acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "22222222-2222-4222-8222-222222222222", {
-        timeoutMs: 0,
+        timeoutMs: 1,
       }),
     ).rejects.toMatchObject({
       code: "RUNTIME_OWNER_LEASE_HELD",

@@ -68,6 +68,7 @@ export async function acquireRuntimeOwnershipLease(
   options: RuntimeOwnershipLeaseOptions = {},
 ): Promise<RuntimeOwnershipLease> {
   const acquireOptions = resolveLeaseOptions(options);
+  const deadline = acquireOptions.now() + acquireOptions.timeoutMs;
   const context: RuntimeOwnershipContext = {
     state: { mode: "single", status: "not_owned" },
     connectionLost: false,
@@ -79,8 +80,17 @@ export async function acquireRuntimeOwnershipLease(
   let connection: RuntimeOwnershipConnection | undefined;
 
   try {
-    connection = await client.reserve();
-    await acquireLeaseOnConnection(connection, instanceId, acquireOptions, context);
+    const reservePromise = client.reserve().then((reserved) => {
+      if (context.released) reserved.release();
+      return reserved;
+    });
+    connection = await withAcquireDeadline(
+      reservePromise,
+      acquireOptions,
+      deadline,
+      () => new RuntimeOwnershipLeaseError(instanceId, acquireOptions.timeoutMs),
+    );
+    await acquireLeaseOnConnection(connection, instanceId, acquireOptions, context, deadline);
     let released = false;
     return {
       instanceId,
@@ -161,15 +171,20 @@ async function acquireLeaseOnConnection(
   instanceId: string,
   options: ReturnType<typeof resolveLeaseOptions>,
   context: RuntimeOwnershipContext,
+  deadline: number,
 ): Promise<void> {
-  const deadline = options.now() + options.timeoutMs;
   let delayMs = options.retryDelayMs;
 
   while (true) {
     assertLeaseConnection(context);
-    const [result] = await connection<{ acquired: boolean }[]>`
-      select pg_try_advisory_lock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID}) as acquired
-    `;
+    const [result] = await withAcquireDeadline(
+      connection<{ acquired: boolean }[]>`
+        select pg_try_advisory_lock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID}) as acquired
+      `,
+      options,
+      deadline,
+      () => new RuntimeOwnershipLeaseError(instanceId, options.timeoutMs),
+    );
     if (result?.acquired === true) {
       assertLeaseConnection(context);
       context.acquired = true;
@@ -185,8 +200,31 @@ async function acquireLeaseOnConnection(
 }
 
 function assertLeaseConnection(context: RuntimeOwnershipContext): void {
-  if (context.connectionLost) {
+  if (context.connectionLost || context.released) {
     throw new Error("The runtime ownership PostgreSQL connection was lost during startup");
+  }
+}
+
+async function withAcquireDeadline<T>(
+  operation: Promise<T>,
+  options: ReturnType<typeof resolveLeaseOptions>,
+  deadline: number,
+  timeoutError: () => Error,
+): Promise<T> {
+  const remainingMs = deadline - options.now();
+  if (remainingMs <= 0) {
+    operation.catch(() => undefined);
+    throw timeoutError();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError()), remainingMs);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

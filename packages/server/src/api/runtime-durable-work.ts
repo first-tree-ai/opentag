@@ -14,6 +14,7 @@ import {
   RuntimeDurableWorkPayloadTooLargeError,
   RuntimeDurableWorkQuotaExceededError,
   RuntimeDurableWorkStaleWriteError,
+  RuntimeDurableWorkTimestampError,
   RuntimeDurableWorkTransitionError,
 } from "../runtime/runtime-durable-work-store.js";
 import type { ComputerAuthVerifier } from "../services/computers/index.js";
@@ -76,19 +77,8 @@ export function registerRuntimeDurableWorkRoutes(app: FastifyInstance, options: 
     try {
       await options.store.write(computerId(request), record);
     } catch (error) {
-      if (
-        error instanceof RuntimeDurableWorkConflictError ||
-        error instanceof RuntimeDurableWorkStaleWriteError ||
-        error instanceof RuntimeDurableWorkTransitionError
-      ) {
-        return reply.code(409).send(errorEnvelope("VALIDATION_ERROR", "deterministic", error.message, request.id));
-      }
-      if (error instanceof RuntimeDurableWorkQuotaExceededError) {
-        return reply.code(429).send(errorEnvelope("RATE_LIMITED", "rate_limit", error.message, request.id));
-      }
-      if (error instanceof RuntimeDurableWorkPayloadTooLargeError) {
-        return reply.code(413).send(errorEnvelope("VALIDATION_ERROR", "validation", error.message, request.id));
-      }
+      const response = writeErrorResponse(error, request.id);
+      if (response) return reply.code(response.statusCode).send(response.body);
       throw error;
     }
     return reply.header("Cache-Control", "no-store").code(204).send();
@@ -102,4 +92,27 @@ function errorEnvelope(
   requestId: string,
 ) {
   return { error: { code, category, message, requestId } };
+}
+
+function writeErrorResponse(
+  error: unknown,
+  requestId: string,
+): { statusCode: number; body: ReturnType<typeof errorEnvelope> } | undefined {
+  if (
+    error instanceof RuntimeDurableWorkConflictError ||
+    error instanceof RuntimeDurableWorkStaleWriteError ||
+    error instanceof RuntimeDurableWorkTransitionError
+  ) {
+    return { statusCode: 409, body: errorEnvelope("VALIDATION_ERROR", "deterministic", error.message, requestId) };
+  }
+  if (error instanceof RuntimeDurableWorkQuotaExceededError) {
+    return { statusCode: 429, body: errorEnvelope("RATE_LIMITED", "rate_limit", error.message, requestId) };
+  }
+  if (error instanceof RuntimeDurableWorkPayloadTooLargeError || error instanceof RuntimeDurableWorkTimestampError) {
+    return {
+      statusCode: error instanceof RuntimeDurableWorkPayloadTooLargeError ? 413 : 400,
+      body: errorEnvelope("VALIDATION_ERROR", "validation", error.message, requestId),
+    };
+  }
+  return undefined;
 }

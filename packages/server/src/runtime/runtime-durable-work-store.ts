@@ -19,6 +19,8 @@ export const DEFAULT_RUNTIME_DURABLE_WORK_RECORD_LIMIT = 4_096;
 export const DEFAULT_RUNTIME_DURABLE_WORK_PAYLOAD_BYTES_LIMIT = 16 * 1024 * 1024;
 /** Maximum UTF-8 bytes accepted for one serialized payload. */
 export const DEFAULT_RUNTIME_DURABLE_WORK_SINGLE_PAYLOAD_BYTES_LIMIT = 1 * 1024 * 1024;
+/** Maximum accepted clock skew into the future for a client-supplied updatedAt value. */
+export const DEFAULT_RUNTIME_DURABLE_WORK_MAX_FUTURE_SKEW_MS = 5 * 60 * 1_000;
 /** Default page size for durable-work list requests. The response schema permits at most 1024 records. */
 export const DEFAULT_RUNTIME_DURABLE_WORK_PAGE_SIZE = 256;
 export const RUNTIME_DURABLE_WORK_MAX_PAGE_SIZE = 1024;
@@ -29,8 +31,8 @@ export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
   running: ["running", "succeeded", "failed", "retryable", "dead-letter"],
   succeeded: ["succeeded"],
   retryable: ["retryable", "accepted", "running", "succeeded", "failed", "dead-letter"],
-  failed: ["failed", "running", "dead-letter"],
-  "dead-letter": ["accepted"],
+  failed: ["failed", "running", "retryable", "dead-letter"],
+  "dead-letter": ["dead-letter", "accepted", "retryable"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
 
 export interface RuntimeDurableWorkStoreOptions {
@@ -40,6 +42,7 @@ export interface RuntimeDurableWorkStoreOptions {
   maxRecordsPerComputer?: number;
   maxPayloadBytesPerComputer?: number;
   maxPayloadBytesPerRecord?: number;
+  maxFutureSkewMs?: number;
 }
 
 export interface RuntimeDurableWorkListOptions {
@@ -112,6 +115,17 @@ export class RuntimeDurableWorkCursorError extends Error {
   }
 }
 
+export class RuntimeDurableWorkTimestampError extends Error {
+  constructor(
+    readonly updatedAt: number,
+    readonly now: number,
+    readonly maxFutureSkewMs: number,
+  ) {
+    super("The durable Runtime updatedAt value is too far ahead of server time");
+    this.name = "RuntimeDurableWorkTimestampError";
+  }
+}
+
 export class PostgresRuntimeDurableWorkStore {
   readonly #database: DatabaseClient;
   readonly #now: () => number;
@@ -120,6 +134,7 @@ export class PostgresRuntimeDurableWorkStore {
   readonly #maxRecordsPerComputer: number;
   readonly #maxPayloadBytesPerComputer: number;
   readonly #maxPayloadBytesPerRecord: number;
+  readonly #maxFutureSkewMs: number;
 
   constructor(database: DatabaseClient, options: RuntimeDurableWorkStoreOptions = {}) {
     this.#database = database;
@@ -140,6 +155,10 @@ export class PostgresRuntimeDurableWorkStore {
     this.#maxPayloadBytesPerRecord = positive(
       options.maxPayloadBytesPerRecord ?? DEFAULT_RUNTIME_DURABLE_WORK_SINGLE_PAYLOAD_BYTES_LIMIT,
       "maxPayloadBytesPerRecord",
+    );
+    this.#maxFutureSkewMs = positive(
+      options.maxFutureSkewMs ?? DEFAULT_RUNTIME_DURABLE_WORK_MAX_FUTURE_SKEW_MS,
+      "maxFutureSkewMs",
     );
   }
 
@@ -185,6 +204,9 @@ export class PostgresRuntimeDurableWorkStore {
       throw new RuntimeDurableWorkPayloadTooLargeError(this.#maxPayloadBytesPerRecord, payloadBytes);
     }
     const now = this.#now();
+    if (record.updatedAt > now + this.#maxFutureSkewMs) {
+      throw new RuntimeDurableWorkTimestampError(record.updatedAt, now, this.#maxFutureSkewMs);
+    }
     await this.#database.transaction((transaction) =>
       this.#writeInTransaction(transaction, computerId, record, payloadBytes, now),
     );

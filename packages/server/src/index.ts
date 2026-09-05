@@ -94,6 +94,7 @@ export {
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
 export {
+  DEFAULT_RUNTIME_DURABLE_WORK_MAX_FUTURE_SKEW_MS,
   DEFAULT_RUNTIME_DURABLE_WORK_PAGE_SIZE,
   DEFAULT_RUNTIME_DURABLE_WORK_PAYLOAD_BYTES_LIMIT,
   DEFAULT_RUNTIME_DURABLE_WORK_RECORD_LIMIT,
@@ -111,6 +112,7 @@ export {
   RuntimeDurableWorkQuotaExceededError,
   RuntimeDurableWorkStaleWriteError,
   type RuntimeDurableWorkStoreOptions,
+  RuntimeDurableWorkTimestampError,
   RuntimeDurableWorkTransitionError,
 } from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";

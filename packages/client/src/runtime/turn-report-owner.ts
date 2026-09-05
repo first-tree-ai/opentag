@@ -462,6 +462,8 @@ export class TurnReportOwner {
         nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
       });
     } catch {
+      pending.reject(new RuntimeDurabilityFailure(failure));
+      this.#pending.delete(pending.report.turnId);
       return;
     }
     this.#scheduleRetry(pending, retryable);

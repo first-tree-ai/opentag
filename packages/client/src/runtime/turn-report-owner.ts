@@ -189,6 +189,7 @@ export class TurnReportOwner {
       resolvePromise = resolve;
       rejectPromise = reject;
     });
+    const record = stored?.status === "dead-letter" ? resetDeadLetterRecord(stored, this.#now()) : stored;
     const pending: PendingReport = {
       report,
       confirm,
@@ -199,7 +200,7 @@ export class TurnReportOwner {
       resolve: () => resolvePromise?.(),
       reject: (error) => rejectPromise?.(error),
       terminalListeners: new Set(options.onTerminal ? [options.onTerminal] : []),
-      record: stored ?? {
+      record: record ?? {
         acceptedAt: this.#now(),
         attempts: 0,
         key: report.turnId,
@@ -425,10 +426,9 @@ export class TurnReportOwner {
   ): Promise<DurableWorkRecord<TurnReportRequest>> {
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const next = { ...record, ...fields, status, updatedAt: this.#now(), payload: pending.report };
-    pending.record = next;
-    this.#records.set(next.key, next);
     this.#metrics?.transition("turn-report", record.status, status);
     await this.#persist(next);
+    pending.record = next;
     return next;
   }
 
@@ -468,8 +468,8 @@ export class TurnReportOwner {
   }
 
   async #persist(record: DurableWorkRecord<TurnReportRequest>): Promise<void> {
-    this.#records.set(record.key, record);
     await this.#persistence?.write(record);
+    this.#records.set(record.key, record);
   }
 
   #track<T>(operation: Promise<T>): Promise<T> {
@@ -499,6 +499,14 @@ export class TurnReportOwner {
       // A terminal observer cannot alter the durable Report fence.
     }
   }
+}
+
+function resetDeadLetterRecord(
+  record: DurableWorkRecord<TurnReportRequest>,
+  acceptedAt: number,
+): DurableWorkRecord<TurnReportRequest> {
+  const { lastError: _lastError, nextAttemptAt: _nextAttemptAt, ...retained } = record;
+  return { ...retained, acceptedAt, attempts: 0, status: "accepted", updatedAt: acceptedAt };
 }
 
 function reportMatchesRearmClaim(report: TurnReportRequest, claim: TurnReportRearmClaim): boolean {

@@ -25,12 +25,12 @@ export const RUNTIME_DURABLE_WORK_MAX_PAGE_SIZE = 1024;
 
 // runtime-durable-work-transitions.test.ts enforces the client edge contract, including every single-edge deletion.
 export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
-  accepted: ["accepted", "running", "retryable", "failed", "dead-letter"],
+  accepted: ["accepted", "running", "retryable", "failed", "succeeded", "dead-letter"],
   running: ["running", "succeeded", "failed", "retryable", "dead-letter"],
   succeeded: ["succeeded"],
   retryable: ["retryable", "accepted", "running", "succeeded", "failed", "dead-letter"],
   failed: ["failed", "running", "dead-letter"],
-  "dead-letter": ["dead-letter", "running"],
+  "dead-letter": ["dead-letter", "accepted"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
 
 export interface RuntimeDurableWorkStoreOptions {
@@ -235,7 +235,8 @@ export class PostgresRuntimeDurableWorkStore {
     if (!isAllowedTransition(existing.status, record.status)) {
       throw new RuntimeDurableWorkTransitionError(existing.status, record.status);
     }
-    await this.#assertQuota(transaction, computerId, record.status, payloadBytes, existing);
+    // Existing receipt updates do not consume a record slot. Only payload growth is quota-bound.
+    await this.#assertPayloadQuota(transaction, computerId, payloadBytes, existing);
     const updated = await transaction
       .update(runtimeDurableWork)
       .set(recordValues(computerId, record))
@@ -251,21 +252,14 @@ export class PostgresRuntimeDurableWorkStore {
     computerId: string,
     incomingStatus: RuntimeDurableWorkRecord["status"],
     incomingPayloadBytes: number,
-    replacing?: RuntimeDurableWorkRow,
   ): Promise<void> {
-    const recordDelta =
-      Number(isNonTerminalStatus(incomingStatus)) -
-      Number(replacing !== undefined && isNonTerminalStatus(replacing.status));
-    const payloadDelta = incomingPayloadBytes - (replacing ? serializedPayloadBytes(replacing.payload) : 0);
-    // Existing work can finish even when a configured budget has been reduced.
-    if (recordDelta <= 0 && payloadDelta <= 0) return;
     const rows = await transaction
       .select({ payload: runtimeDurableWork.payload, status: runtimeDurableWork.status })
       .from(runtimeDurableWork)
       .where(eq(runtimeDurableWork.computerId, computerId));
     const currentRecords = rows.filter((row) => isNonTerminalStatus(row.status)).length;
-    const requestedRecords = currentRecords + recordDelta;
-    if (recordDelta > 0 && requestedRecords > this.#maxRecordsPerComputer) {
+    const requestedRecords = currentRecords + Number(isNonTerminalStatus(incomingStatus));
+    if (requestedRecords > this.#maxRecordsPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "records",
         this.#maxRecordsPerComputer,
@@ -274,12 +268,36 @@ export class PostgresRuntimeDurableWorkStore {
       );
     }
     const currentPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
-    const requestedPayloadBytes = currentPayloadBytes + payloadDelta;
-    if (payloadDelta > 0 && requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
+    const requestedPayloadBytes = currentPayloadBytes + incomingPayloadBytes;
+    if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "payload-bytes",
         this.#maxPayloadBytesPerComputer,
         currentPayloadBytes,
+        requestedPayloadBytes,
+      );
+    }
+  }
+
+  async #assertPayloadQuota(
+    transaction: DatabaseTransaction,
+    computerId: string,
+    incomingPayloadBytes: number,
+    replacing: RuntimeDurableWorkRow,
+  ): Promise<void> {
+    const currentPayloadBytes = serializedPayloadBytes(replacing.payload);
+    if (incomingPayloadBytes <= currentPayloadBytes) return;
+    const rows = await transaction
+      .select({ payload: runtimeDurableWork.payload })
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.computerId, computerId));
+    const retainedPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
+    const requestedPayloadBytes = retainedPayloadBytes - currentPayloadBytes + incomingPayloadBytes;
+    if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
+      throw new RuntimeDurableWorkQuotaExceededError(
+        "payload-bytes",
+        this.#maxPayloadBytesPerComputer,
+        retainedPayloadBytes - currentPayloadBytes,
         requestedPayloadBytes,
       );
     }

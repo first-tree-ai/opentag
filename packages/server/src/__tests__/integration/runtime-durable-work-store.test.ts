@@ -89,7 +89,7 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
     });
   });
 
-  it("serializes concurrent terminal rearms at the active row quota", async () => {
+  it("allows concurrent terminal rearms without charging the active row quota", async () => {
     const first = sessionRecord("failed-rearm");
     const second = sessionRecord("dead-letter-rearm");
     const firstStore = new PostgresRuntimeDurableWorkStore(database.database, {
@@ -106,15 +106,16 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
       await secondStore.write(computerId, { ...second, status: "dead-letter" });
       const results = await Promise.allSettled([
         firstStore.write(computerId, { ...first, status: "running", updatedAt: 2 }),
-        secondStore.write(computerId, { ...second, status: "running", updatedAt: 2 }),
+        secondStore.write(computerId, { ...second, status: "accepted", updatedAt: 2 }),
       ]);
-      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-      expect(results.filter((result) => result.status === "rejected").map((result) => result.reason)).toEqual([
-        expect.any(RuntimeDurableWorkQuotaExceededError),
-      ]);
-      expect(
-        (await firstStore.list(computerId, "session-message")).items.filter((record) => record.status === "running"),
-      ).toHaveLength(1);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(2);
+      expect(results.filter((result) => result.status === "rejected")).toHaveLength(0);
+      expect((await firstStore.list(computerId, "session-message")).items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ key: expect.stringContaining("failed-rearm"), status: "running" }),
+          expect.objectContaining({ key: expect.stringContaining("dead-letter-rearm"), status: "accepted" }),
+        ]),
+      );
     } finally {
       await secondClient.sql.end();
     }

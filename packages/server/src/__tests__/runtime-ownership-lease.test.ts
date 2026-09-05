@@ -123,11 +123,24 @@ describe("runtime ownership advisory lease", () => {
     const lease = await acquireRuntimeOwnershipLease(
       "postgresql://opentag@localhost/opentag",
       "55555555-5555-4555-8555-555555555555",
-      { endTimeoutMs: 10 },
+      { endTimeoutMs: 1_000 },
     );
 
     await expect(lease.release()).resolves.toBeUndefined();
-    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 10 });
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 1 });
+  });
+
+  it("settles release when the advisory unlock query never resolves", async () => {
+    const fixture = clientFixture([true]);
+    const lease = await acquireRuntimeOwnershipLease(
+      "postgresql://opentag@localhost/opentag",
+      "77777777-7777-4777-8777-777777777777",
+      { endTimeoutMs: 10 },
+    );
+    fixture.connection.mockImplementationOnce(() => new Promise<never>(() => undefined));
+
+    await expect(lease.release()).resolves.toBeUndefined();
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 1 });
   });
 
   it("passes an explicit short lifetime to the dedicated client for lifetime-bound tests", async () => {

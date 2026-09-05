@@ -199,11 +199,8 @@ async function closeLeaseResources(
   let failure: unknown;
   if (connection) {
     if (unlock && context.acquired && !context.connectionLost) {
-      try {
-        await connection`select pg_advisory_unlock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID})`;
-      } catch (error) {
-        failure = error;
-      }
+      const unlockFailure = await unlockLeaseConnection(connection, RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID, endTimeoutMs);
+      failure = unlockFailure;
     }
     try {
       connection.release();
@@ -217,13 +214,36 @@ async function closeLeaseResources(
 }
 
 async function endLeaseClient(client: RuntimeOwnershipClient, timeoutMs: number): Promise<unknown> {
+  // postgres.js accepts its end timeout in seconds; keep our public option in milliseconds.
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1_000));
+  const waitMs = timeoutSeconds * 1_000 + 100;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), waitMs);
+    timer.unref();
+  });
+  try {
+    await Promise.race([client.end({ timeout: timeoutSeconds }), timeout]);
+    return undefined;
+  } catch (error) {
+    return error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function unlockLeaseConnection(
+  connection: RuntimeOwnershipConnection,
+  lockId: number,
+  timeoutMs: number,
+): Promise<unknown> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<undefined>((resolve) => {
     timer = setTimeout(() => resolve(undefined), timeoutMs);
     timer.unref();
   });
   try {
-    await Promise.race([client.end({ timeout: timeoutMs }), timeout]);
+    await Promise.race([connection`select pg_advisory_unlock(${lockId})`, timeout]);
     return undefined;
   } catch (error) {
     return error;

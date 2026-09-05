@@ -1,7 +1,8 @@
 import { type NormalizedInboundImEvent, SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { and, count, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../admin/bootstrap.js";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { computers, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
@@ -84,6 +85,53 @@ describe("ImMessageInbox overflow scheduling", () => {
     await expect.poll(() => beforeOverflowExpiry.mock.calls.length).toBe(2);
     await expect.poll(() => deliveryState(firstDeliveryId)).toBe("expired");
   });
+
+  it.each([
+    { attention: "direct" as const, capacity: 100 },
+    { attention: "ambient" as const, capacity: 500 },
+  ])("rechecks $attention overflow after a delayed cleanup commit acknowledgement", async ({ attention, capacity }) => {
+    const value = await inboxFixture();
+    const delayed = delayTransactionCompletion(unitDatabase.database);
+    const beforeOverflowExpiry = vi.fn(async () => {
+      if (beforeOverflowExpiry.mock.calls.length === 1) delayed.arm();
+    });
+    const inbox = new ImMessageInbox(delayed.database, { beforeOverflowExpiry });
+
+    try {
+      await inbox.ingest(value.imBindingId, 1, event("late-overflow-first", 1, attention));
+      const [session] = await unitDatabase.database.select().from(sessions);
+      if (!session) throw new Error("Delayed completion fixture did not create a session");
+      await seedPendingDeliveries(value.imBindingId, session.id, capacity - 1, "late-overflow-filler", attention);
+
+      await inbox.ingest(value.imBindingId, 1, event("late-overflow-trigger", capacity + 1, attention));
+      await delayed.committed;
+      expect(await pendingDeliveryCount(session.id, attention)).toBe(capacity);
+
+      const late = await inbox.ingest(value.imBindingId, 1, event("late-overflow-next", capacity + 2, attention));
+      expect(late.deliveryIds).toHaveLength(1);
+      expect(await pendingDeliveryCount(session.id, attention)).toBe(capacity + 1);
+      expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
+
+      await inbox.ingest(value.imBindingId, 1, event("late-overflow-last", capacity + 3, attention));
+      expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
+      delayed.release();
+
+      await expect.poll(() => pendingDeliveryCount(session.id, attention)).toBe(capacity);
+      expect(beforeOverflowExpiry).toHaveBeenCalledTimes(2);
+      const rows = await unitDatabase.database
+        .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.sessionId, session.id));
+      expect(rows.filter((row) => row.state === "expired")).toEqual(
+        Array.from({ length: 3 }, () => ({ state: "expired", reason: "capacity" })),
+      );
+      expect(rows.filter((row) => row.state === "pending")).toEqual(
+        Array.from({ length: capacity }, () => ({ state: "pending", reason: null })),
+      );
+    } finally {
+      delayed.release();
+    }
+  });
 });
 
 async function inboxFixture() {
@@ -137,6 +185,7 @@ async function seedPendingDeliveries(
   sessionId: string,
   count: number,
   prefix: string,
+  attention: "direct" | "ambient" = "direct",
 ): Promise<void> {
   const messages = await unitDatabase.database
     .insert(imMessages)
@@ -169,7 +218,7 @@ async function seedPendingDeliveries(
     messages.map((message) => ({
       messageId: message.id,
       sessionId,
-      attention: "direct" as const,
+      attention,
       placementGeneration: 1,
       expiresAt: new Date("2026-08-26T00:00:00.000Z"),
     })),
@@ -184,7 +233,26 @@ async function deliveryState(deliveryId: string) {
   return row?.state;
 }
 
-function event(providerEventId: string, millisecondsAfterEpoch: number): NormalizedInboundImEvent {
+async function pendingDeliveryCount(sessionId: string, attention: "direct" | "ambient") {
+  const [row] = await unitDatabase.database
+    .select({ count: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, sessionId),
+        eq(imMessageDeliveries.attention, attention),
+        eq(imMessageDeliveries.state, "pending"),
+        isNull(imMessageDeliveries.reason),
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+function event(
+  providerEventId: string,
+  millisecondsAfterEpoch: number,
+  attention: "direct" | "ambient" = "direct",
+): NormalizedInboundImEvent {
   return {
     providerEventId,
     externalAppId: "A_UNIT_INBOX",
@@ -207,7 +275,37 @@ function event(providerEventId: string, millisecondsAfterEpoch: number): Normali
       },
       resources: [],
     },
-    mentions: [{ externalId: "U_UNIT_INBOX", displayName: "Inbox Test Agent" }],
+    mentions: attention === "direct" ? [{ externalId: "U_UNIT_INBOX", displayName: "Inbox Test Agent" }] : [],
+  };
+}
+
+function delayTransactionCompletion(database: DatabaseClient) {
+  const committed = deferred<void>();
+  const release = deferred<void>();
+  let armed = false;
+  const delayedDatabase = new Proxy(database, {
+    get(target, property, receiver) {
+      if (property !== "transaction") return Reflect.get(target, property, receiver);
+      return async <T>(callback: (transaction: DatabaseTransaction) => Promise<T>) => {
+        const delayCompletion = armed;
+        armed = false;
+        const result = await target.transaction(callback);
+        if (delayCompletion) {
+          // The real transaction has committed; only its acknowledgement remains blocked.
+          committed.resolve(undefined);
+          await release.promise;
+        }
+        return result;
+      };
+    },
+  });
+  return {
+    database: delayedDatabase,
+    arm: () => {
+      armed = true;
+    },
+    committed: committed.promise,
+    release: () => release.resolve(undefined),
   };
 }
 

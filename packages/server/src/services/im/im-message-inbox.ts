@@ -97,6 +97,7 @@ export class ImMessageInbox {
   readonly #now: () => Date;
   readonly #onTaskCreated: ((request: TaskTitleGenerationRequest) => Promise<void> | void) | undefined;
   readonly #overflowPasses = new Map<string, Promise<void>>();
+  readonly #overflowRechecks = new Map<string, OverflowCandidate>();
   readonly #sessions: SessionService;
 
   constructor(
@@ -681,9 +682,16 @@ export class ImMessageInbox {
 
   #queueOverflowExpiry(candidate: OverflowCandidate): void {
     const key = this.#overflowKey(candidate.sessionId, candidate.attention);
-    if (this.#overflowPasses.has(key)) return;
+    if (this.#overflowPasses.has(key)) {
+      this.#overflowRechecks.set(key, candidate);
+      return;
+    }
     const pass = Promise.resolve()
       .then(async () => {
+        const hasOverflow = await this.#database.transaction((transaction) =>
+          this.#hasOverflow(transaction, candidate.sessionId, candidate.attention),
+        );
+        if (!hasOverflow) return;
         await this.#beforeOverflowExpiry?.();
         await this.#database.transaction((transaction) =>
           this.#expireOverflow(transaction, candidate.sessionId, candidate.attention),
@@ -697,6 +705,10 @@ export class ImMessageInbox {
       })
       .finally(() => {
         this.#overflowPasses.delete(key);
+        const recheck = this.#overflowRechecks.get(key);
+        if (!recheck) return;
+        this.#overflowRechecks.delete(key);
+        this.#queueOverflowExpiry(recheck);
       });
     this.#overflowPasses.set(key, pass);
   }

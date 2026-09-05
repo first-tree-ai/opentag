@@ -223,6 +223,45 @@ describe("ConnectionRegistry", () => {
     expect(registry.currentInstanceId(computerId)).toBeUndefined();
   });
 
+  it("rejects a registration that is still persisting when the fence lands", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const runtimeSocket = socket();
+    let releasePersist: (() => void) | undefined;
+    let persistStarted: (() => void) | undefined;
+    const persistDone = new Promise<void>((resolve) => {
+      releasePersist = resolve;
+    });
+    const persistReady = new Promise<void>((resolve) => {
+      persistStarted = resolve;
+    });
+    const registration = registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => {
+        persistStarted?.();
+        await persistDone;
+      },
+    );
+    await persistReady;
+
+    registry.fenceAll();
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
+    registry.unfence();
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
+    releasePersist?.();
+
+    await expect(registration).rejects.toMatchObject({ code: "unavailable" });
+    expect(runtimeSocket.close).toHaveBeenCalledWith(1013, "Runtime ownership lease lost");
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
+  });
+
   it("terminates stale sockets when the injected sweep logger throws", async () => {
     const warn = vi.fn((_bindings: Record<string, unknown>, _message: string) => {
       throw new Error("logger failed");

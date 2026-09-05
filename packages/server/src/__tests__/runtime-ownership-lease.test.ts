@@ -7,6 +7,7 @@ vi.mock("postgres", () => ({ default: state.postgres }));
 import {
   acquireRuntimeOwnershipLease,
   DEFAULT_RUNTIME_OWNERSHIP_ACQUIRE_TIMEOUT_MS,
+  DEFAULT_RUNTIME_OWNERSHIP_CLIENT_END_TIMEOUT_MS,
   RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID,
   RuntimeOwnershipLeaseError,
 } from "../runtime/runtime-ownership-lease.js";
@@ -41,6 +42,7 @@ describe("runtime ownership advisory lease", () => {
       "postgresql://opentag@localhost/opentag",
       expect.objectContaining({
         max: 1,
+        max_lifetime: null,
         onclose: expect.any(Function),
         onnotice: expect.any(Function),
         connection: { application_name: "opentag-runtime-ownership" },
@@ -111,6 +113,35 @@ describe("runtime ownership advisory lease", () => {
 
   it("uses the documented default acquisition timeout", () => {
     expect(DEFAULT_RUNTIME_OWNERSHIP_ACQUIRE_TIMEOUT_MS).toBe(30_000);
+    expect(DEFAULT_RUNTIME_OWNERSHIP_CLIENT_END_TIMEOUT_MS).toBe(5_000);
     expect(new RuntimeOwnershipLeaseError("instance")).toBeInstanceOf(Error);
+  });
+
+  it("settles release when the postgres client end promise never resolves", async () => {
+    const fixture = clientFixture([true]);
+    fixture.client.end.mockImplementation(() => new Promise<never>(() => undefined));
+    const lease = await acquireRuntimeOwnershipLease(
+      "postgresql://opentag@localhost/opentag",
+      "55555555-5555-4555-8555-555555555555",
+      { endTimeoutMs: 10 },
+    );
+
+    await expect(lease.release()).resolves.toBeUndefined();
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 10 });
+  });
+
+  it("passes an explicit short lifetime to the dedicated client for lifetime-bound tests", async () => {
+    const fixture = clientFixture([true]);
+    await acquireRuntimeOwnershipLease(
+      "postgresql://opentag@localhost/opentag",
+      "66666666-6666-4666-8666-666666666666",
+      { maxLifetimeSeconds: 1 },
+    );
+
+    expect(state.postgres).toHaveBeenLastCalledWith(
+      "postgresql://opentag@localhost/opentag",
+      expect.objectContaining({ max_lifetime: 1 }),
+    );
+    await fixture.client.end();
   });
 });

@@ -3,6 +3,7 @@ import postgres, { type Sql } from "postgres";
 /** A stable namespace for the process-local runtime ownership contract. */
 export const RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID = 8_621_303_412;
 export const DEFAULT_RUNTIME_OWNERSHIP_ACQUIRE_TIMEOUT_MS = 30_000;
+export const DEFAULT_RUNTIME_OWNERSHIP_CLIENT_END_TIMEOUT_MS = 5_000;
 
 const DEFAULT_RETRY_DELAY_MS = 100;
 const MAX_RETRY_DELAY_MS = 1_000;
@@ -26,6 +27,8 @@ export type RuntimeOwnershipState = {
 };
 
 export interface RuntimeOwnershipLeaseOptions {
+  endTimeoutMs?: number;
+  maxLifetimeSeconds?: number | null;
   timeoutMs?: number;
   retryDelayMs?: number;
   now?: () => number;
@@ -71,7 +74,7 @@ export async function acquireRuntimeOwnershipLease(
     released: false,
     lossReported: false,
   };
-  const client = createLeaseClient(databaseUrl, context, options.onLost);
+  const client = createLeaseClient(databaseUrl, context, options.onLost, acquireOptions.maxLifetimeSeconds);
   let connection: RuntimeOwnershipConnection | undefined;
 
   try {
@@ -88,14 +91,14 @@ export async function acquireRuntimeOwnershipLease(
         released = true;
         context.released = true;
         context.state = { mode: "single", status: "not_owned" };
-        const failure = await closeLeaseResources(client, connection, context, true);
+        const failure = await closeLeaseResources(client, connection, context, true, acquireOptions.endTimeoutMs);
         if (failure) throw failure;
       },
     };
   } catch (error) {
     context.released = true;
     context.state = { mode: "single", status: "not_owned" };
-    await closeLeaseResources(client, connection, context, true);
+    await closeLeaseResources(client, connection, context, true, acquireOptions.endTimeoutMs);
     throw error;
   }
 }
@@ -103,13 +106,23 @@ export async function acquireRuntimeOwnershipLease(
 function resolveLeaseOptions(options: RuntimeOwnershipLeaseOptions) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_RUNTIME_OWNERSHIP_ACQUIRE_TIMEOUT_MS;
   const retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  const endTimeoutMs = options.endTimeoutMs ?? DEFAULT_RUNTIME_OWNERSHIP_CLIENT_END_TIMEOUT_MS;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
     throw new RangeError("The runtime ownership acquisition timeout must be a non-negative integer");
   }
   if (!Number.isInteger(retryDelayMs) || retryDelayMs < 0) {
     throw new RangeError("The runtime ownership retry delay must be a non-negative integer");
   }
+  if (!Number.isInteger(endTimeoutMs) || endTimeoutMs < 1) {
+    throw new RangeError("The runtime ownership client end timeout must be a positive integer");
+  }
+  const maxLifetimeSeconds = options.maxLifetimeSeconds ?? null;
+  if (maxLifetimeSeconds !== null && (!Number.isInteger(maxLifetimeSeconds) || maxLifetimeSeconds < 1)) {
+    throw new RangeError("The runtime ownership client max lifetime must be a positive integer or null");
+  }
   return {
+    endTimeoutMs,
+    maxLifetimeSeconds,
     timeoutMs,
     retryDelayMs,
     now: options.now ?? Date.now,
@@ -121,9 +134,11 @@ function createLeaseClient(
   databaseUrl: string,
   context: RuntimeOwnershipContext,
   onLost?: () => void,
+  maxLifetimeSeconds: number | null = null,
 ): RuntimeOwnershipClient {
   return postgres(databaseUrl, {
     max: 1,
+    max_lifetime: maxLifetimeSeconds,
     onnotice: () => undefined,
     onclose: () => {
       if (context.released || context.lossReported) return;
@@ -179,6 +194,7 @@ async function closeLeaseResources(
   connection: RuntimeOwnershipConnection | undefined,
   context: RuntimeOwnershipContext,
   unlock: boolean,
+  endTimeoutMs: number,
 ): Promise<unknown> {
   let failure: unknown;
   if (connection) {
@@ -195,12 +211,25 @@ async function closeLeaseResources(
       failure ??= error;
     }
   }
-  try {
-    await client.end();
-  } catch (error) {
-    failure ??= error;
-  }
+  const endFailure = await endLeaseClient(client, endTimeoutMs);
+  failure ??= endFailure;
   return failure;
+}
+
+async function endLeaseClient(client: RuntimeOwnershipClient, timeoutMs: number): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs);
+    timer.unref();
+  });
+  try {
+    await Promise.race([client.end({ timeout: timeoutMs }), timeout]);
+    return undefined;
+  } catch (error) {
+    return error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function defaultSleep(delayMs: number): Promise<void> {

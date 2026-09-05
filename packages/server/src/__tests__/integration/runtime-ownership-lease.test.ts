@@ -18,6 +18,13 @@ const webDistRoot = fileURLToPath(new URL("../../../../../apps/web/dist", import
 const webIndexPath = join(webDistRoot, "index.html");
 let createdWebIndex = false;
 
+function ensureWebIndex(): void {
+  if (existsSync(webIndexPath)) return;
+  mkdirSync(webDistRoot, { recursive: true });
+  writeFileSync(webIndexPath, "<!doctype html><html><body>test</body></html>\n");
+  createdWebIndex = true;
+}
+
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -118,16 +125,29 @@ async function leaseBackendPid(observer: ReturnType<typeof postgres>): Promise<n
   throw new Error("The runtime ownership backend was not visible in pg_stat_activity");
 }
 
+async function acquireBlockerAfterLeaseLoss(
+  observer: ReturnType<typeof postgres>,
+  blocker: ReturnType<typeof postgres>,
+): Promise<void> {
+  const lock = blocker`select pg_advisory_lock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID})`;
+  const acquired = lock.then(
+    () => true,
+    () => false,
+  );
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (await Promise.race([acquired, new Promise<false>((resolve) => setTimeout(() => resolve(false), 50))])) return;
+    const pid = await leaseBackendPid(observer).catch(() => undefined);
+    if (pid !== undefined) await observer`select pg_terminate_backend(${pid})`;
+  }
+  throw new Error("The recovery blocker did not acquire the advisory lock");
+}
+
 describe("runtime ownership advisory lease", () => {
   let container: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:17-alpine").start();
-    if (!existsSync(webIndexPath)) {
-      mkdirSync(webDistRoot, { recursive: true });
-      writeFileSync(webIndexPath, "<!doctype html><html><body>test</body></html>\n");
-      createdWebIndex = true;
-    }
+    ensureWebIndex();
   }, 120_000);
 
   afterAll(async () => {
@@ -186,9 +206,26 @@ describe("runtime ownership advisory lease", () => {
     }
   }, 120_000);
 
+  it("settles release after the dedicated connection outlives its lifetime window", async () => {
+    const lease = await acquireRuntimeOwnershipLease(
+      container.getConnectionUri(),
+      "77777777-7777-4777-8777-777777777777",
+      { endTimeoutMs: 500, maxLifetimeSeconds: 1 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+    await expect(
+      Promise.race([
+        lease.release().then(() => "settled" as const),
+        new Promise<"timed_out">((resolve) => setTimeout(() => resolve("timed_out"), 2_000)),
+      ]),
+    ).resolves.toBe("settled");
+  }, 120_000);
+
   it("fences traffic while a dropped lease waits, then resumes after transient recovery", async () => {
     const databaseUrl = container.getConnectionUri();
     await migrateDatabase(databaseUrl, migrationsFolder);
+    ensureWebIndex();
     const port = await freePort();
     const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "packages/server/src/index.ts"], {
       cwd: repositoryRoot,
@@ -207,10 +244,7 @@ describe("runtime ownership advisory lease", () => {
 
     try {
       await waitForReady(port, child, () => output);
-      const pid = await leaseBackendPid(observer);
-      const blockerLock = blocker`select pg_advisory_lock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID})`;
-      await observer`select pg_terminate_backend(${pid})`;
-      await blockerLock;
+      await acquireBlockerAfterLeaseLoss(observer, blocker);
       await waitForStatus(port, child, 503);
 
       await blocker`select pg_advisory_unlock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID})`;
@@ -227,6 +261,7 @@ describe("runtime ownership advisory lease", () => {
   it("fences and exits non-zero when lease recovery expires, with no leaked lease client", async () => {
     const databaseUrl = container.getConnectionUri();
     await migrateDatabase(databaseUrl, migrationsFolder);
+    ensureWebIndex();
     const port = await freePort();
     const child = spawn(process.execPath, ["node_modules/tsx/dist/cli.mjs", "packages/server/src/index.ts"], {
       cwd: repositoryRoot,
@@ -245,10 +280,7 @@ describe("runtime ownership advisory lease", () => {
 
     try {
       await waitForReady(port, child, () => output);
-      const pid = await leaseBackendPid(observer);
-      const blockerLock = blocker`select pg_advisory_lock(${RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID})`;
-      await observer`select pg_terminate_backend(${pid})`;
-      await blockerLock;
+      await acquireBlockerAfterLeaseLoss(observer, blocker);
 
       const result = await waitForExit(child, 20_000);
       expect(result.signal).toBeNull();

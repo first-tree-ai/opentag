@@ -40,6 +40,7 @@ function ownerFixture(
     },
     persistence,
     now: () => ++now,
+    retryDelayMs: 20,
     retryPolicy: { baseDelayMs: 100, maxDelayMs: 100, maxAgeMs: 1_000, maxAttempts: 10, ...retryPolicy },
   });
   cleanups.push(async () => {

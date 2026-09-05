@@ -340,7 +340,8 @@ export class TurnReportOwner {
 
   #scheduleRetry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): void {
     if (this.#retryTimers.has(record.key) || this.#stopped || pending.serverStatus) return;
-    const delay = Math.max(0, (record.nextAttemptAt ?? this.#now()) - this.#now());
+    const delay =
+      record.nextAttemptAt === undefined ? this.#retryDelayMs : Math.max(0, record.nextAttemptAt - this.#now());
     const timer = this.#scheduler.schedule(delay, () => {
       this.#retryTimers.delete(record.key);
       if (this.#connection.state !== "registered") return;

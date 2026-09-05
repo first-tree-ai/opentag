@@ -190,6 +190,11 @@
       "idx": 37,
       "tag": "0037_drop_workspace_ownership_persistence",
       "sha256": "e0ad8e2f6c4b8163a5a1a12c42120746d93f13f015b5cf7f8d016fc330a862ae"
+    },
+    {
+      "idx": 38,
+      "tag": "0038_wakeful_genesis",
+      "sha256": "04fc869fa8b4bf02ec9678ffcea63542dbbde896d1042cbb616714da2187b8f0"
     }
   ]
 }

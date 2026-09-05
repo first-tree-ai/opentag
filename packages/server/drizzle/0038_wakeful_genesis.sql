@@ -1,0 +1,1 @@
+CREATE INDEX "im_message_deliveries_expiry_idx" ON "im_message_deliveries" USING btree ("expires_at") WHERE "im_message_deliveries"."state" = 'pending' and "im_message_deliveries"."reason" is null;

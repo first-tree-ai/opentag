@@ -111,6 +111,27 @@ Receipt 行是运行证据，应保留 30 天。定时数据库维护任务可�
 ID、external message ID 和 `duplicate=true`，绝不记录 token 或消息内容。重复事件会被确认，不会再次写入
 inbox、启动 Session、创建 Task 或追加上下文。
 
+## IM 历史与 delivery 保留
+
+IM delivery worker 默认每 5 秒运行一次有界维护任务。每次最多把 100 条过期 pending delivery 标记为
+`expired`，然后以有界批次清理旧的终态历史。保留期限分别按 message 的 `occurred_at`、delivery 的
+`expires_at` 以及 provider receipt 的 `received_at` 计算。
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | expiry 与 retention 维护任务的间隔 |
+| `OPENTAG_IM_DELIVERY_EXPIRY_BATCH_SIZE` | `100` | 每次最多标记为 `expired` 的 pending delivery 数量 |
+| `OPENTAG_IM_DELIVERY_RETENTION_BATCH_SIZE` | `100` | 每张历史表每次最多删除的行数 |
+| `OPENTAG_IM_MESSAGES_RETENTION_MS` | 90 天 | `im_messages` 保留期限 |
+| `OPENTAG_IM_MESSAGE_DELIVERIES_RETENTION_MS` | 90 天 | `im_message_deliveries` 保留期限 |
+| `OPENTAG_SLACK_WEBHOOK_RECEIPTS_RETENTION_MS` | 30 天 | Slack receipt 保留期限 |
+| `OPENTAG_FEISHU_INBOUND_RECEIPTS_RETENTION_MS` | 30 天 | 飞书 receipt 保留期限 |
+
+维护任务不会删除属于活跃 Session 的 delivery、仍被其他 delivery 作为 steer target 引用的 delivery，或仍在
+进行中的（`processing`）receipt。只会删除终态 delivery（`expired`、`terminal_rejected`、已报告的
+`accepted` 或已完成的 `steered`），并且只有在没有 delivery 引用时才删除 message。若部署需要不同的审计
+期限，请通过环境变量显式设置 retention window 与 batch size；毫秒数和行数都必须是正整数。
+
 ## 排查飞书 Bot 无响应
 
 先查看当前状态：

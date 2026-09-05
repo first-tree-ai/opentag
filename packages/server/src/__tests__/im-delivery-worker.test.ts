@@ -11,12 +11,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   agents,
   computers,
+  feishuInboundReceipts,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
   slackInstallations,
+  slackWebhookReceipts,
   users,
 } from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
@@ -226,11 +228,8 @@ describe("ImDeliveryWorker database workflow", () => {
         .where(eq(imMessageDeliveries.id, fixture.deliveryId));
       let clockNow = base;
       const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
-      let releaseAdmission: (() => void) | undefined;
-      const admissionRelease = new Promise<void>((resolve) => {
-        releaseAdmission = resolve;
-      });
       let admissionCalled = false;
+      let admissionAborted = false;
       const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture);
       const worker = new ImDeliveryWorker({
         database: unit.database,
@@ -241,9 +240,18 @@ describe("ImDeliveryWorker database workflow", () => {
         claimRenewMs: 50,
         claimLeaseMs: 30_000,
         operationTimeoutMs: 1_000,
-        beforeDeliveryAdmission: async () => {
+        beforeDeliveryAdmission: async (signal) => {
           admissionCalled = true;
-          await admissionRelease;
+          await new Promise<void>((resolve) =>
+            signal.addEventListener(
+              "abort",
+              () => {
+                admissionAborted = true;
+                resolve();
+              },
+              { once: true },
+            ),
+          );
         },
         onMetric: (metric) => metrics.push(metric),
       });
@@ -260,13 +268,105 @@ describe("ImDeliveryWorker database workflow", () => {
 
       await vi.advanceTimersByTimeAsync(950);
       await expect(running).resolves.toBeUndefined();
-      releaseAdmission?.();
       expect(metrics).toContainEqual({ name: "timeout", value: 1, agentId: fixture.agentId });
+      expect(metrics).toContainEqual({ name: "late_settle", value: 1, agentId: fixture.agentId });
+      expect(admissionAborted).toBe(true);
       const [row] = await unit.database
         .select({ code: imMessageDeliveries.lastErrorCode })
         .from(imMessageDeliveries)
         .where(eq(imMessageDeliveries.id, fixture.deliveryId));
       expect(row?.code).toBe("IM_DELIVERY_OPERATION_TIMEOUT");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds the scheduler permit until a timed-out delivery settles", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-31T00:00:00.000Z") });
+    try {
+      const fixture = await workerFixture(unit);
+      const secondFixture = await workerFixture(unit);
+      const now = new Date();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() - 1_000) })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() - 500) })
+        .where(eq(imMessageDeliveries.id, secondFixture.deliveryId));
+      await fixture.registry.register(
+        {
+          computerId: secondFixture.computerId,
+          installationId: randomUUID(),
+          instanceId: secondFixture.instanceId,
+          lastHeartbeatAt: Date.now(),
+          socket: { close: vi.fn(), terminate: vi.fn() } as never,
+        },
+        async () => undefined,
+      );
+
+      let admissionCalls = 0;
+      let releaseFirst: (() => void) | undefined;
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: {
+          requestReconcile: vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+            onDispatched?.();
+            return {
+              type: "session:reconcile:result" as const,
+              requestId: request.requestId,
+              sessionId: request.sessionId,
+              placementGeneration: request.placementGeneration,
+              status: "ready" as const,
+            };
+          }),
+          requestDelivery: vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+            onDispatched?.();
+            return {
+              type: "im:deliver:result" as const,
+              requestId: request.requestId,
+              deliveryId: request.deliveryId,
+              sessionId: request.sessionId,
+              placementGeneration: request.placementGeneration,
+              status: "accepted" as const,
+              turnId: `turn-${request.deliveryId}`,
+            };
+          }),
+        } as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        maxConcurrent: 1,
+        operationTimeoutMs: 100,
+        beforeDeliveryAdmission: async () => {
+          admissionCalls += 1;
+          if (admissionCalls === 1) await firstGate;
+        },
+        onMetric: (metric) => metrics.push(metric),
+      });
+
+      const first = worker.runOnce();
+      await vi.waitFor(() => expect(admissionCalls).toBe(1), { timeout: 50, interval: 1 });
+      let secondSettled = false;
+      const secondRun = worker.runOnce().then(() => {
+        secondSettled = true;
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.resolve();
+      expect(metrics).toContainEqual({ name: "timeout", value: 1, agentId: fixture.agentId });
+      expect(admissionCalls).toBe(1);
+      expect(secondSettled).toBe(false);
+
+      releaseFirst?.();
+      await expect(first).resolves.toBeUndefined();
+      await expect(secondRun).resolves.toBeUndefined();
+      expect(admissionCalls).toBe(2);
+      expect(metrics).toContainEqual({ name: "late_settle", value: 1, agentId: fixture.agentId });
+      worker.stop();
     } finally {
       vi.useRealTimers();
     }
@@ -614,6 +714,165 @@ describe("ImDeliveryWorker database workflow", () => {
         expect(diagnostic).toHaveBeenCalledWith(expected);
       }
     }
+  });
+
+  it("retains recent history, batches old rows, and protects live-session deliveries", async () => {
+    const ended = await workerFixture(unit);
+    const live = await workerFixture(unit);
+    const old = new Date(Date.now() - 10_000);
+    const recent = new Date(Date.now() - 100);
+    await unit.database.update(sessions).set({ endedAt: old }).where(eq(sessions.id, ended.sessionId));
+    await unit.database.update(imMessages).set({ occurredAt: old }).where(eq(imMessages.id, ended.messageId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ state: "expired", reason: "ttl", expiresAt: old })
+      .where(eq(imMessageDeliveries.id, ended.deliveryId));
+
+    const secondMessageId = randomUUID();
+    const secondDeliveryId = randomUUID();
+    await unit.database.insert(imMessages).values({
+      id: secondMessageId,
+      imBindingId: ended.bindingId,
+      channelId: "channel",
+      externalMessageId: `old-${secondMessageId}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "old",
+      content: { fallbackText: "old" },
+      providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "old" },
+      occurredAt: old,
+    } as never);
+    await unit.database.insert(imMessageDeliveries).values({
+      id: secondDeliveryId,
+      messageId: secondMessageId,
+      sessionId: ended.sessionId,
+      attention: "direct",
+      state: "expired",
+      placementGeneration: 1,
+      reason: "ttl",
+      expiresAt: old,
+    });
+    await unit.database.update(imMessages).set({ occurredAt: old }).where(eq(imMessages.id, live.messageId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ state: "expired", reason: "ttl", expiresAt: old })
+      .where(eq(imMessageDeliveries.id, live.deliveryId));
+
+    const recentMessageId = randomUUID();
+    await unit.database.insert(imMessages).values({
+      id: recentMessageId,
+      imBindingId: ended.bindingId,
+      channelId: "channel",
+      externalMessageId: `recent-${recentMessageId}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "recent",
+      content: { fallbackText: "recent" },
+      providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "recent" },
+      occurredAt: recent,
+    } as never);
+
+    await unit.database.insert(slackWebhookReceipts).values([
+      {
+        installationId: ended.slackInstallationId,
+        credentialGeneration: 1,
+        eventId: `old-${ended.slackInstallationId}`,
+        status: "processed",
+        receivedAt: old,
+        processedAt: old,
+      },
+      {
+        installationId: ended.slackInstallationId,
+        credentialGeneration: 1,
+        eventId: `recent-${ended.slackInstallationId}`,
+        status: "processed",
+        receivedAt: recent,
+        processedAt: recent,
+      },
+      {
+        installationId: ended.slackInstallationId,
+        credentialGeneration: 1,
+        eventId: `processing-${ended.slackInstallationId}`,
+        status: "processing",
+        receivedAt: old,
+      },
+    ]);
+    await unit.database.insert(feishuInboundReceipts).values([
+      {
+        imBindingId: ended.bindingId,
+        credentialGeneration: 1,
+        eventId: `old-${ended.bindingId}`,
+        status: "failed",
+        receivedAt: old,
+        lastErrorCode: "test",
+        lastErrorAt: old,
+      },
+      {
+        imBindingId: ended.bindingId,
+        credentialGeneration: 1,
+        eventId: `recent-${ended.bindingId}`,
+        status: "processed",
+        receivedAt: recent,
+        processedAt: recent,
+      },
+    ]);
+
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {} as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: {} as never,
+      now: () => new Date(),
+      expiryBatchSize: 1,
+      retentionBatchSize: 1,
+      imMessagesRetentionMs: 1_000,
+      imMessageDeliveriesRetentionMs: 1_000,
+      slackWebhookReceiptsRetentionMs: 1_000,
+      feishuInboundReceiptsRetentionMs: 1_000,
+    });
+
+    await worker.runJanitorOnce();
+    const firstRemaining = await unit.database
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.sessionId, ended.sessionId));
+    expect(firstRemaining).toHaveLength(1);
+
+    await worker.runJanitorOnce();
+    const secondRemaining = await unit.database
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.sessionId, ended.sessionId));
+    expect(secondRemaining).toHaveLength(0);
+    expect(
+      await unit.database.select({ id: imMessages.id }).from(imMessages).where(eq(imMessages.id, ended.messageId)),
+    ).toHaveLength(0);
+    expect(
+      await unit.database.select({ id: imMessages.id }).from(imMessages).where(eq(imMessages.id, secondMessageId)),
+    ).toHaveLength(0);
+    expect(
+      await unit.database.select({ id: imMessages.id }).from(imMessages).where(eq(imMessages.id, recentMessageId)),
+    ).toHaveLength(1);
+    expect(
+      await unit.database
+        .select({ id: imMessageDeliveries.id })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, live.deliveryId)),
+    ).toHaveLength(1);
+
+    const slackRows = await unit.database.select({ eventId: slackWebhookReceipts.eventId }).from(slackWebhookReceipts);
+    expect(slackRows.map((row) => row.eventId)).toEqual([
+      `recent-${ended.slackInstallationId}`,
+      `processing-${ended.slackInstallationId}`,
+    ]);
+    const feishuRows = await unit.database
+      .select({ eventId: feishuInboundReceipts.eventId })
+      .from(feishuInboundReceipts);
+    expect(feishuRows.map((row) => row.eventId)).toEqual([`recent-${ended.bindingId}`]);
   });
 
   it("starts and stops its interval without scheduling duplicate runs", async () => {
@@ -1253,10 +1512,12 @@ async function workerFixture(unit: UnitDatabase) {
     computerId,
     deliveryId,
     instanceId,
+    messageId,
     registry,
     request,
     runtime,
     sessionId,
+    slackInstallationId,
     userId,
   };
 }

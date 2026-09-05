@@ -114,6 +114,9 @@ export const imMessageDeliveries = pgTable(
     index("im_message_deliveries_session_id_idx").on(table.sessionId),
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
+    index("im_message_deliveries_expiry_idx")
+      .on(table.expiresAt)
+      .where(sql`${table.state} = 'pending' and ${table.reason} is null`),
     uniqueIndex("im_message_deliveries_dispatch_request_unique")
       .on(table.dispatchRequestId)
       .where(sql`${table.dispatchRequestId} is not null`),

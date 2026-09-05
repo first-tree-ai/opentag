@@ -6,7 +6,7 @@ import type { ConnectionRegistry } from "./connection-registry.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 
 export interface RuntimeDeliveryWorkerMetric {
-  name: "queue_age_ms" | "active_lanes" | "queued_tasks" | "retry" | "saturation" | "timeout";
+  name: "queue_age_ms" | "active_lanes" | "queued_tasks" | "retry" | "saturation" | "timeout" | "late_settle";
   value: number;
   agentId?: string;
 }
@@ -31,10 +31,17 @@ export interface ImDeliveryWorkerInput {
   registry: ConnectionRegistry;
   logger?: ServiceLogger;
   intervalMs?: number;
+  janitorIntervalMs?: number;
+  expiryBatchSize?: number;
+  retentionBatchSize?: number;
+  imMessagesRetentionMs?: number;
+  imMessageDeliveriesRetentionMs?: number;
+  slackWebhookReceiptsRetentionMs?: number;
+  feishuInboundReceiptsRetentionMs?: number;
   claimLeaseMs?: number;
   claimRenewMs?: number;
   afterClaimRowLocked?: () => Promise<void>;
-  beforeDeliveryAdmission?: () => Promise<void>;
+  beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
   onDiagnostic?: (code: string) => void;
   supervisor?: BackgroundFailureSupervisor;
   now?: () => Date;

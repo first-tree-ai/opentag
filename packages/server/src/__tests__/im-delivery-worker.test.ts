@@ -372,6 +372,149 @@ describe("ImDeliveryWorker database workflow", () => {
     }
   });
 
+  it("releases a scheduler slot after the timeout grace when delivery never settles", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-31T00:00:00.000Z") });
+    try {
+      const firstFixture = await workerFixture(unit);
+      const secondFixture = await workerFixture(unit);
+      const now = new Date();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() - 1_000) })
+        .where(eq(imMessageDeliveries.id, firstFixture.deliveryId));
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(now.getTime() - 500) })
+        .where(eq(imMessageDeliveries.id, secondFixture.deliveryId));
+      await firstFixture.registry.register(
+        {
+          computerId: secondFixture.computerId,
+          installationId: randomUUID(),
+          instanceId: secondFixture.instanceId,
+          lastHeartbeatAt: Date.now(),
+          socket: { close: vi.fn(), terminate: vi.fn() } as never,
+        },
+        async () => undefined,
+      );
+
+      const metrics: Array<{ name: string; value: number; agentId?: string }> = [];
+      const diagnostic = vi.fn();
+      const requestDelivery = vi.fn(
+        async (
+          _computerId: string,
+          _instanceId: string,
+          request: DirectImMessageDeliveryRequest,
+          onDispatched?: () => void,
+        ) => {
+          onDispatched?.();
+          if (request.agentId === firstFixture.agentId) return new Promise<never>(() => undefined);
+          return {
+            type: "im:deliver:result" as const,
+            requestId: request.requestId,
+            deliveryId: request.deliveryId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "accepted" as const,
+            turnId: `turn-${request.deliveryId}`,
+          };
+        },
+      );
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: {
+          requestReconcile: vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+            onDispatched?.();
+            return {
+              type: "session:reconcile:result" as const,
+              requestId: request.requestId,
+              sessionId: request.sessionId,
+              placementGeneration: request.placementGeneration,
+              status: "ready" as const,
+            };
+          }),
+          requestDelivery,
+        } as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(firstFixture.runtime) },
+        registry: firstFixture.registry,
+        maxConcurrent: 1,
+        operationTimeoutMs: 100,
+        onDiagnostic: diagnostic,
+        onMetric: (metric) => metrics.push(metric),
+      });
+
+      const first = worker.runOnce();
+      await vi.waitFor(() => expect(requestDelivery).toHaveBeenCalledTimes(1), { timeout: 50, interval: 1 });
+      let secondSettled = false;
+      void worker.runOnce().then(() => {
+        secondSettled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(secondSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(first).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(secondSettled).toBe(true), { timeout: 50, interval: 1 });
+      expect(requestDelivery).toHaveBeenCalledTimes(2);
+      expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_OPERATION_ABANDONED");
+      worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the equal-expiry selector ordered by the composite index", async () => {
+    const fixture = await workerFixture(unit);
+    await unit.engine.query(
+      `insert into im_messages (
+         id, im_binding_id, channel_id, external_message_id, provider_revision_key,
+         operation, direction, author_kind, author_external_id, content, provider_context, occurred_at
+       )
+       select gen_random_uuid(), $1, 'equal-expiry', 'equal-expiry-' || series.n, '1',
+         'created', 'inbound', 'human', 'equal-expiry-user', '{"fallbackText":"equal-expiry"}'::jsonb,
+         '{"provider":"slack","appId":"app","teamId":"team","botUserId":"bot","channelId":"equal-expiry","channelType":"channel","messageTs":"equal"}'::jsonb,
+         '2000-01-01T00:00:00Z'::timestamptz
+       from generate_series(1, 1000) as series(n)`,
+      [fixture.bindingId],
+    );
+    await unit.engine.query(
+      `insert into im_message_deliveries (
+         id, message_id, session_id, attention, state, placement_generation, next_attempt_at, expires_at
+       )
+       select gen_random_uuid(), message.id, $1, 'direct', 'pending', 1,
+         '2000-01-01T00:00:00Z'::timestamptz, '2000-01-01T00:00:00Z'::timestamptz
+       from im_messages as message
+       where message.channel_id = 'equal-expiry'`,
+      [fixture.sessionId],
+    );
+    await unit.engine.exec("analyze im_message_deliveries");
+    await unit.engine.exec("begin");
+    try {
+      const plan = await unit.engine.query<{ "QUERY PLAN": string }>(`
+        explain (analyze, buffers, costs off)
+        with expired as (
+          select id
+          from im_message_deliveries
+          where state = 'pending'
+            and reason is null
+            and expires_at <= now()
+          order by expires_at asc, id asc
+          limit 100
+          for update skip locked
+        )
+        update im_message_deliveries as delivery
+        set state = 'expired', reason = 'ttl'
+        from expired
+        where delivery.id = expired.id
+      `);
+      const planText = plan.rows.map((row) => row["QUERY PLAN"]).join("\n");
+      expect(planText).toContain("Index Scan using im_message_deliveries_expiry_idx");
+      expect(planText).not.toContain("Sort");
+      expect(planText).toMatch(/actual [^\n]*rows=100/);
+    } finally {
+      await unit.engine.exec("rollback");
+    }
+  });
+
   it("persists a saturation disposition when an agent lane is full", async () => {
     const fixtures = [await workerFixture(unit), await workerFixture(unit), await workerFixture(unit)];
     const registry = new ConnectionRegistry();

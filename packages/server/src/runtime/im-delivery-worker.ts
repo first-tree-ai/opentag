@@ -79,8 +79,7 @@ const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
 // Replica model: persisted recoverable ownership. The durable marker bridges the
 // transaction-to-runtime gap. Advisory locks serialize competing claims; the
-// marker keeps later transactions fenced after commit and allows a new replica to
-// reconcile work after a process restart. In-memory maps are only optimisations.
+// marker keeps later transactions fenced after commit.
 const DISPATCH_CLAIM_PREFIX = "IM_DELIVERY_CLAIM_";
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
@@ -224,6 +223,7 @@ export class ImDeliveryWorker {
             this.#onDiagnostic("IM_DELIVERY_OPERATION_LATE_SETTLE");
             this.#onMetric({ name: "late_settle", value: 1, agentId: claimed.agentId });
           },
+          () => this.#onDiagnostic("IM_DELIVERY_OPERATION_ABANDONED"),
         );
       } catch (error) {
         failed = true;

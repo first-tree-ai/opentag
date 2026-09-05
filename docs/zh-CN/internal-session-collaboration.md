@@ -52,7 +52,11 @@ CLI surface 仅协商 `runtime.sessionCollaboration` capability v2。可见 call
 时会在 ACK 前拒绝投递，让同一逻辑消息仍可重试。两种升级方向都会在 callback Run 启动前 fail closed，不会静默移除
 IM outbox。
 
-OpenTag 当前仅在单 Server replica 下支持这条路径。proof-authenticated Session CLI HTTP 与 source/target
-SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。当前不支持普通多 replica 负载均衡、sticky
-routing，也不支持跨 replica owner discovery、forwarding 或 delivery relay；启用横向 replica 前必须先完成明确的跨实例
-owner-routing 设计。
+OpenTag 当前仅在单 Server replica 下支持这条路径。`OPENTAG_RUNTIME_REPLICA_MODE` 默认是 `single`，Server
+启动前会在 PostgreSQL 会话上获取 advisory-lock lease。若另一个存活实例已经持有 lease，第二个实例会带着可执行
+的 lease-held 错误 fail closed；正常关闭会释放 lease，使同一部署可以重新启动。`/healthz` 与 `/readyz` 会返回
+`runtimeOwnership.mode`、`runtimeOwnership.status` 以及持有者的 `runtimeOwnership.instanceId`。proof-authenticated
+Session CLI HTTP 与 source/target SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。当请求到达
+不持有该连接的实例时，会返回结构化错误码 `RUNTIME_OWNER_ELSEWHERE`。当前不支持普通多 replica 负载均衡、sticky
+routing，也不支持跨 replica owner discovery、forwarding 或 delivery relay；启用横向 replica 前必须先完成明确的
+跨实例 owner-routing 设计。

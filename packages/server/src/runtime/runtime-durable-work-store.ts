@@ -24,11 +24,11 @@ export const DEFAULT_RUNTIME_DURABLE_WORK_PAGE_SIZE = 256;
 export const RUNTIME_DURABLE_WORK_MAX_PAGE_SIZE = 1024;
 
 export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
-  accepted: ["accepted", "running", "dead-letter"],
+  accepted: ["accepted", "running", "retryable", "failed", "dead-letter"],
   running: ["running", "succeeded", "failed", "retryable", "dead-letter"],
   succeeded: ["succeeded"],
-  retryable: ["retryable", "accepted", "running", "dead-letter"],
-  failed: ["failed"],
+  retryable: ["retryable", "accepted", "running", "failed", "dead-letter"],
+  failed: ["failed", "running", "dead-letter"],
   "dead-letter": ["dead-letter"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
 

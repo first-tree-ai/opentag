@@ -111,6 +111,12 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     await expect(store.write(computerId, { ...record, status: "running", updatedAt: 4 })).rejects.toBeInstanceOf(
       RuntimeDurableWorkTransitionError,
     );
+
+    const rearmRecord = { ...sessionRecord(), key: "failed-rearm" };
+    await store.write(computerId, { ...rearmRecord, status: "running", updatedAt: 2 });
+    await store.write(computerId, { ...rearmRecord, status: "failed", updatedAt: 3 });
+    await expect(store.write(computerId, { ...rearmRecord, status: "running", updatedAt: 4 })).resolves.toBeUndefined();
+    await expect(store.write(computerId, { ...rearmRecord, status: "failed", updatedAt: 5 })).resolves.toBeUndefined();
   });
 
   it("enforces record and serialized payload quotas", async () => {

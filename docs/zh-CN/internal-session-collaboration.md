@@ -58,7 +58,9 @@ OpenTag 当前仅在单 Server replica 下支持这条路径。`OPENTAG_RUNTIME_
 两个存活 replica；滚动重启要等旧进程退出后替换实例才能获取 lease。Lease 属于 PostgreSQL 会话：正常关闭或
 进程被非正常 kill 后，该会话关闭，PostgreSQL 会自动释放 lease。`/healthz` 与 `/readyz` 会返回
 `runtimeOwnership.mode`、`runtimeOwnership.status` 以及持有者的 `runtimeOwnership.instanceId`；如果 lease 会话断开，
-状态会变为 `not_owned`，`/readyz` 会失败。proof-authenticated Session CLI HTTP 与 source/target SessionMessage Runtime
-投递都依赖该 replica 本地的 WebSocket owner。当请求到达不持有该连接的实例时，会返回结构化错误码
-`RUNTIME_OWNER_ELSEWHERE`。当前不支持普通多 replica 负载均衡、sticky routing，也不支持跨 replica owner discovery、
-forwarding 或 delivery relay；启用横向 replica 前必须先完成明确的跨实例 owner-routing 设计。
+实例会立即 fence runtime socket、停止后台投递、拒绝 runtime mutation，状态变为 `not_owned`，`/readyz` 会失败。
+随后实例会在同一个有界窗口内尝试重新获取 lease；如果恢复窗口到期，进程会以非零状态退出，由 supervisor 重启。
+proof-authenticated Session CLI HTTP 与 source/target SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。
+当请求到达不持有该连接的实例时，会返回结构化错误码 `RUNTIME_OWNER_ELSEWHERE`。当前不支持普通多 replica 负载均衡、
+sticky routing，也不支持跨 replica owner discovery、forwarding 或 delivery relay；启用横向 replica 前必须先完成明确的
+跨实例 owner-routing 设计。

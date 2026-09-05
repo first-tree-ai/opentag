@@ -65,9 +65,11 @@ with a recreate strategy, such as `maxSurge=0`, so there are never two live repl
 process to exit before the replacement acquires the lease. The lease belongs to the PostgreSQL session: a clean
 shutdown or an unclean process kill closes that session and PostgreSQL releases the lease automatically. The
 `/healthz` and `/readyz` responses expose `runtimeOwnership.mode`, `runtimeOwnership.status`, and the owning
-`runtimeOwnership.instanceId`; if the lease connection drops, the status becomes `not_owned` and `/readyz` fails. Proof-
-authenticated Session CLI HTTP and source/target SessionMessage Runtime delivery both use that replica's local WebSocket
-owner. When a request reaches an instance that does not own the connection, it returns the structured
-`RUNTIME_OWNER_ELSEWHERE` code. Ordinary multi-replica load balancing, sticky routing, and cross-replica owner
-discovery, forwarding, or delivery relay are not supported; horizontal replicas require an explicit cross-instance
+`runtimeOwnership.instanceId`; if the lease connection drops, the instance immediately fences its runtime sockets,
+stops background dispatch, rejects runtime mutations, reports `not_owned`, and fails `/readyz`. It then attempts to
+re-acquire the lease within the same bounded window; if recovery expires, the process exits non-zero so the supervisor
+can restart it. Proof-authenticated Session CLI HTTP and source/target SessionMessage Runtime delivery both use that
+replica's local WebSocket owner. When a request reaches an instance that does not own the connection, it returns the
+structured `RUNTIME_OWNER_ELSEWHERE` code. Ordinary multi-replica load balancing, sticky routing, and cross-replica
+owner discovery, forwarding, or delivery relay are not supported; horizontal replicas require an explicit cross-instance
 owner-routing design before they can be enabled.

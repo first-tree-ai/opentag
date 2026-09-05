@@ -27,6 +27,9 @@ export const slackWebhookReceipts = pgTable(
       table.eventId,
     ),
     index("slack_webhook_receipts_status_idx").on(table.status, table.receivedAt),
+    index("slack_webhook_receipts_retention_idx")
+      .on(table.receivedAt, table.id)
+      .where(sql`${table.status} in ('processed', 'failed')`),
     check("slack_webhook_receipts_generation_nonnegative", sql`${table.credentialGeneration} >= 1`),
     check("slack_webhook_receipts_event_id_bounded", sql`length(${table.eventId}) between 1 and 255`),
     check(

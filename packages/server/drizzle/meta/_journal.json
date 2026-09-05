@@ -267,6 +267,27 @@
       "when": 1788231695621,
       "tag": "0037_drop_workspace_ownership_persistence",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788610241975,
+      "tag": "0038_wakeful_genesis",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1788627669542,
+      "tag": "0039_dizzy_albert_cleary",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1788633065374,
+      "tag": "0040_tranquil_vargas",
+      "breakpoints": true
     }
   ]
 }

@@ -1,11 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SessionReconcileRequest, TurnReportRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
+import { FileRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
 import type { LocalSessionBinding } from "../runtime/session-binding-store.js";
 import { SessionMessageInbox } from "../runtime/session-message-inbox.js";
-import { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { TurnReportOwner, type TurnReportOwnerOptions } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 import {
   messageFixture,
@@ -15,6 +19,7 @@ import {
 } from "./support/durable-work-contract.js";
 
 const cleanups: (() => Promise<void>)[] = [];
+const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
@@ -25,19 +30,22 @@ function ownerFixture(
   retryPolicy: Partial<Record<"baseDelayMs" | "maxDelayMs" | "maxAgeMs" | "maxAttempts", number>> = {},
 ) {
   let now = 10_000;
-  const state = initialState;
+  let state = initialState;
+  const listeners = new Set<(nextState: "registered" | "stopped") => void>();
   const send = vi.fn(async (_frame: unknown): Promise<void> => undefined);
-  const owner = new TurnReportOwner({
-    connection: {
-      get state() {
-        return state;
-      },
-      send,
-      subscribeState(listener) {
-        listener(state);
-        return () => undefined;
-      },
+  const connection = {
+    get state() {
+      return state;
     },
+    send,
+    subscribeState(listener: (nextState: "registered" | "stopped") => void) {
+      listeners.add(listener);
+      listener(state);
+      return () => listeners.delete(listener);
+    },
+  } satisfies TurnReportOwnerOptions["connection"];
+  const owner = new TurnReportOwner({
+    connection,
     persistence,
     now: () => ++now,
     retryDelayMs: 20,
@@ -48,7 +56,15 @@ function ownerFixture(
     await owner.settled();
     expect(persistence.rejected).toEqual([]);
   });
-  return { owner, send, persistence };
+  return {
+    owner,
+    persistence,
+    send,
+    setState(nextState: "registered" | "stopped") {
+      state = nextState;
+      for (const listener of listeners) listener(nextState);
+    },
+  };
 }
 
 function submit(owner: TurnReportOwner, report: TurnReportRequest): Promise<void> {
@@ -148,6 +164,35 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(persistence.rejected).toEqual([]);
   });
 
+  it("does not start a live pending whose persisted state is still dead-letter", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "dead-letter"));
+    persistence.write = async () => {
+      throw new Error("server unavailable");
+    };
+    const { owner, send, setState } = ownerFixture(persistence, "stopped");
+    await owner.ready();
+    const pending = submit(owner, report);
+    await sleep(20);
+    setState("registered");
+    await sleep(30);
+    expect(send).not.toHaveBeenCalled();
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+  });
+
+  it("consumes rejection for a hydrated pending that has no submitter", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "failed"));
+    const { owner } = ownerFixture(persistence, "stopped");
+    await owner.ready();
+    expect(owner.pendingCount).toBe(1);
+    owner.stop();
+    await owner.settled();
+  });
+
   it("settles a normal acknowledgement after the zero-delay timeout persisted retryable", async () => {
     expect(vi.isFakeTimers()).toBe(false);
     const { owner, send, persistence } = ownerFixture();
@@ -163,6 +208,64 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
     expect(persistence.edges).toContain("retryable -> succeeded");
     expect(owner.pendingCount).toBe(0);
+  });
+
+  it("waits for the full acknowledgement delay on the second send attempt", async () => {
+    const { owner, send, persistence } = ownerFixture();
+    send.mockRejectedValueOnce(new Error("transport unavailable"));
+    await owner.ready();
+    const report = reportFixture();
+    const pending = submit(owner, report);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2), { interval: 1 });
+    const retryWrites = () => persistence.edges.filter((edge) => edge === "running -> retryable").length;
+    expect(retryWrites()).toBe(1);
+    await sleep(5);
+    expect(retryWrites()).toBe(1);
+    await vi.waitFor(() => expect(retryWrites()).toBe(2), { interval: 1 });
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+  });
+
+  it("passes the real FileRuntimeDurabilityStore path without retrying after confirmation", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-round7-owner-"));
+    const persistence = new FileRuntimeDurabilityStore(home);
+    const send = vi.fn(async (): Promise<void> => undefined);
+    const owner = new TurnReportOwner({
+      connection: {
+        state: "registered",
+        send,
+        subscribeState(listener) {
+          listener("registered");
+          return () => undefined;
+        },
+      },
+      persistence,
+      retryDelayMs: 150,
+    });
+    const report = reportFixture();
+    const pending = owner.submit(report, async () => {
+      await sleep(10);
+    });
+    try {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 });
+      await sleep(30);
+      await owner.handleResult({
+        type: "turn:report:result",
+        requestId: report.requestId,
+        turnId: report.turnId,
+        resultHash: report.resultHash,
+        status: "recorded",
+      });
+      await pending;
+      await sleep(180);
+      const stored = (await persistence.list("turn-report")).find((record) => record.key === report.turnId);
+      expect(stored).toMatchObject({ status: "succeeded", attempts: 0 });
+      expect(stored?.nextAttemptAt).toBeUndefined();
+    } finally {
+      owner.stop();
+      await owner.settled();
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it("keeps succeeded absorbing when an in-flight send fails after acknowledgement", async () => {

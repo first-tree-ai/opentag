@@ -232,35 +232,52 @@ export class TurnReportOwner {
     if (!pending) return false;
     if (result.requestId !== pending.report.requestId || result.resultHash !== pending.report.resultHash) return false;
     if (result.status === "conflict" || result.status === "stale_generation") {
-      pending.serverStatus = result.status;
-      this.#clearRetry(pending);
-      const failure: DurableFailure = {
-        category: "conflict",
-        code: result.status,
-        message: `Server rejected the Turn Report: ${result.status}`,
-        phase: "request",
-        requestId: pending.report.requestId,
-        retryability: "never",
-      };
-      this.#emitFailure(failure);
-      try {
-        const transitioned = await this.#transition(pending, "failed", { lastError: failure });
-        if (!transitioned) return false;
-      } catch (error) {
-        this.#settle(pending, { kind: "reject", error: asError(error) });
-        return true;
-      }
-      const listeners = [...pending.terminalListeners];
-      pending.terminalListeners.clear();
-      for (const listener of listeners) this.#notifyTerminal(listener, result.status);
-      return true;
+      return this.#handleTerminalResult(pending, result.status);
     }
     if (pending.confirming || !pending.confirm) return true;
-    pending.confirming = true;
+    return this.#confirmResult(pending);
+  }
+
+  async #handleTerminalResult(pending: PendingReport, status: TurnReportTerminalStatus): Promise<boolean> {
+    pending.serverStatus = status;
+    this.#clearRetry(pending);
+    const failure: DurableFailure = {
+      category: "conflict",
+      code: status,
+      message: `Server rejected the Turn Report: ${status}`,
+      phase: "request",
+      requestId: pending.report.requestId,
+      retryability: "never",
+    };
+    this.#emitFailure(failure);
     try {
-      await pending.confirm();
-      const transitioned = await this.#transition(pending, "succeeded", { nextAttemptAt: undefined });
-      if (transitioned) this.#settle(pending, { kind: "resolve" });
+      const transitioned = await this.#transition(pending, "failed", { lastError: failure });
+      if (!transitioned) return false;
+    } catch (error) {
+      this.#settle(pending, { kind: "reject", error: asError(error) });
+      return true;
+    }
+    const listeners = [...pending.terminalListeners];
+    pending.terminalListeners.clear();
+    for (const listener of listeners) this.#notifyTerminal(listener, status);
+    return true;
+  }
+
+  async #confirmResult(pending: PendingReport): Promise<boolean> {
+    const confirm = pending.confirm;
+    if (!confirm) return true;
+    pending.confirming = true;
+    this.#clearRetry(pending);
+    try {
+      await confirm();
+      pending.confirming = false;
+      if (!this.#detach(pending)) return true;
+      try {
+        await this.#transition(pending, "succeeded", { nextAttemptAt: undefined }, { detached: true });
+        this.#settle(pending, { kind: "resolve" }, { detached: true });
+      } catch (error) {
+        this.#settle(pending, { kind: "reject", error: asError(error) }, { detached: true });
+      }
     } catch (error) {
       pending.confirming = false;
       await this.#handleFailure(pending, "confirmation", error);
@@ -318,12 +335,12 @@ export class TurnReportOwner {
   }
 
   #send(pending: PendingReport): void {
-    if (!this.#canWrite(pending) || pending.sending || pending.serverStatus) return;
+    if (!this.#canWrite(pending) || !this.#canStartRunning(pending) || pending.sending || pending.serverStatus) return;
     this.#clearRetry(pending);
     pending.sending = true;
     void this.#track(
-      this.#transition(pending, "running")
-        .then(() => this.#connection.send(pending.report, { priority: "report" }))
+      this.#transition(pending, "running", { nextAttemptAt: undefined })
+        .then((transitioned) => transitioned && this.#connection.send(pending.report, { priority: "report" }))
         .catch((error) => this.#handleFailure(pending, "transport", error))
         .finally(() => {
           pending.sending = false;
@@ -349,7 +366,7 @@ export class TurnReportOwner {
       if (!current || current.status === "succeeded" || pending.serverStatus || !this.#canWrite(pending)) return;
       if (current.status === "retryable") {
         void this.#track(
-          this.#transition(pending, "accepted")
+          this.#transition(pending, "accepted", { nextAttemptAt: undefined })
             .then(() => this.#send(pending))
             .catch(() => undefined),
         );
@@ -403,7 +420,7 @@ export class TurnReportOwner {
       resolvePromise = resolve;
       rejectPromise = reject;
     });
-    this.#pending.set(record.key, {
+    const pending: PendingReport = {
       report: record.payload,
       confirm: undefined,
       confirming: false,
@@ -416,21 +433,24 @@ export class TurnReportOwner {
       persistencePending: false,
       ...(serverStatus ? { serverStatus } : {}),
       terminalListeners: new Set(),
-    });
+    };
+    void pending.promise.catch(() => undefined);
+    this.#pending.set(record.key, pending);
   }
 
   async #transition(
     pending: PendingReport,
     status: DurableWorkRecord<TurnReportRequest>["status"],
     fields: Partial<DurableWorkRecord<TurnReportRequest>> = {},
+    options: { detached?: boolean } = {},
   ): Promise<DurableWorkRecord<TurnReportRequest> | undefined> {
-    if (!this.#canWrite(pending)) return undefined;
+    if ((!options.detached && !this.#canWrite(pending)) || (options.detached && this.#stopped)) return undefined;
     // #records is published only after persistence succeeds, so it is the last server-backed from-state.
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const next = { ...record, ...fields, status, updatedAt: this.#now(), payload: pending.report };
     this.#metrics?.transition("turn-report", record.status, status);
     await this.#persist(next);
-    if (!this.#isCurrent(pending)) return undefined;
+    if (!options.detached && !this.#isCurrent(pending)) return undefined;
     pending.record = next;
     return next;
   }
@@ -489,10 +509,24 @@ export class TurnReportOwner {
     return !this.#stopped && this.#isCurrent(pending) && !pending.persistencePending;
   }
 
-  #settle(pending: PendingReport, settlement: { kind: "resolve" } | { kind: "reject"; error: Error }): boolean {
+  #canStartRunning(pending: PendingReport): boolean {
+    const record = this.#records.get(pending.report.turnId) ?? pending.record;
+    return record.status !== "succeeded" && record.status !== "dead-letter";
+  }
+
+  #detach(pending: PendingReport): boolean {
     if (!this.#isCurrent(pending)) return false;
     this.#clearRetry(pending);
     this.#pending.delete(pending.report.turnId);
+    return true;
+  }
+
+  #settle(
+    pending: PendingReport,
+    settlement: { kind: "resolve" } | { kind: "reject"; error: Error },
+    options: { detached?: boolean } = {},
+  ): boolean {
+    if (!options.detached && !this.#detach(pending)) return false;
     if (settlement.kind === "resolve") pending.resolve();
     else pending.reject(settlement.error);
     return true;

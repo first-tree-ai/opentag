@@ -63,8 +63,10 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("button", { name: "Connect Slack" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
-    // Nothing is connected yet, so the page states its one purpose once and adds no second heading.
-    expect(screen.getByText("Connect a messaging app so teammates can send messages to this Agent.")).toBeTruthy();
+    // Nothing is connected yet, so the page's own sentence stands alone with no heading restating it.
+    expect(
+      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
+    ).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Messaging app" })).toBeNull();
   });
 
@@ -118,25 +120,28 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    expect(screen.getByText("Lark · @reviewer")).toBeTruthy();
-    // Two labelled sections already describe a connected page, so the empty state's sentence stays there.
-    expect(screen.queryByText("Connect a messaging app so teammates can send messages to this Agent.")).toBeNull();
+    // One sentence describes the page in either state, so a connected reader still reads it.
+    expect(
+      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
+    ).toBeTruthy();
     const identity = document.querySelector('[data-ui="messaging-app-identity"]') as HTMLElement;
     expect(identity).toBeTruthy();
-    expect(identity.className).toContain("grid-cols-[auto_minmax(0,1fr)_auto]");
+    // The mark and the bot name already say which channel this is, and the state reads under the name.
+    expect(identity.className).toContain("grid-cols-[auto_minmax(0,1fr)]");
+    expect(within(identity).queryByText("Lark · @reviewer")).toBeNull();
     const connected = within(identity).getByText("Connected").closest("[data-state]") as HTMLElement;
-    expect(connected.className).toContain("justify-self-end");
+    expect(connected.className).not.toContain("justify-self-end");
+    expect(connected.parentElement).toBe(within(identity).getByText("Reviewer").parentElement);
     expect(screen.queryByText(/Validated/)).toBeNull();
     // The channel identity is reported, not edited, so it carries no fields of its own.
     expect(screen.queryByText("Contact")).toBeNull();
     expect(screen.queryByText("How to use")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Group chat messages" })).toBeTruthy();
+    // The section is the receive mode, not the messages it acts on.
+    expect(screen.getByRole("heading", { name: "Receive mode" })).toBeTruthy();
     expect(
-      screen.getByText(
-        "Direct messages are always checked. Choose when this Agent should check messages in group chats.",
-      ),
+      screen.getByText("This Agent always receives direct messages. Choose when it receives messages in group chats."),
     ).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Group chat messages" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Receive mode" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Change bot" }).className).toContain("h-9");
     const disconnect = screen.getByRole("button", { name: "Disconnect Lark" });
     expect(disconnect.className).toContain("h-9");
@@ -149,7 +154,6 @@ describe("OpenTag Web App Shell", () => {
     const messaging = render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    expect(screen.getByText("Slack")).toBeTruthy();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
     expect(screen.queryByText(/Slack · @/)).toBeNull();
     expect(screen.queryByText("@reviewer")).toBeNull();
@@ -261,14 +265,12 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("changes Slack receive mode locally after a clear confirmation", async () => {
+  it("changes Slack receive mode on the click, with nothing to confirm", async () => {
     installApi({ bound: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    const dialog = await screen.findByRole("dialog", { name: "Check every message?" });
-    expect(within(dialog).getByText(/may use more tokens/)).toBeTruthy();
-    fireEvent.click(within(dialog).getByRole("button", { name: "Use every message" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() =>
       expect(
         vi
@@ -321,14 +323,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Use every message" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Couldn’t update the message setting");
 
-    fireEvent.click(await screen.findByRole("button", { name: "Use every message" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
     await waitFor(() => expect(screen.queryByText("Couldn’t update the message setting. Try again.")).toBeNull());
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Group chat messages" })),
-    );
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Receive mode" })));
   });
 
   it("keeps disconnect failures inside the active dialog and allows retry", async () => {
@@ -418,7 +417,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByText("Lark · @reviewer")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
     expect(screen.queryByText(/messages cannot be delivered/i)).toBeNull();
     expect(screen.queryByText(/Needs attention/)).toBeNull();
     expect(screen.queryByText(/Online/)).toBeNull();
@@ -435,7 +434,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByText("Slack")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
     expect(screen.queryByText(/Messages wait until/)).toBeNull();
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });

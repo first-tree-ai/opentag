@@ -88,6 +88,13 @@ function agentListReads() {
   return vi.mocked(fetch).mock.calls.filter(([path, init]) => path === "/api/v1/agents" && init?.method === undefined);
 }
 
+async function expectPreparationGate(): Promise<HTMLButtonElement> {
+  expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+  const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+  expect(continueButton.disabled).toBe(false);
+  return continueButton;
+}
+
 describe("Agent Setup route boundary", () => {
   beforeEach(resetWebAppState);
 
@@ -449,7 +456,9 @@ describe("Agent Setup route boundary", () => {
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
     expect(window.location.pathname).toBe("/agents/setup");
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    const continueButton = await expectPreparationGate();
+    fireEvent.click(continueButton);
+    expect(screen.getByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     const completions = vi
       .mocked(fetch)
@@ -487,7 +496,7 @@ describe("Agent Setup route boundary", () => {
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${secondAgentId}`));
     expect(window.location.pathname).toBe("/agents/setup");
-    expect(await screen.findByRole("heading", { name: "Set up Helper" })).toBeTruthy();
+    await expectPreparationGate();
   });
 
   it("fails closed on a malformed exact id without reading or listing anything", async () => {
@@ -584,7 +593,7 @@ describe("Agent Setup route boundary", () => {
     admissionUnavailable = false;
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(
       vi
         .mocked(fetch)
@@ -631,7 +640,7 @@ describe("Agent Setup route boundary", () => {
     render(<App />);
 
     // The flow renders in place — no bounce to /agents — and a mere visit reports no completion.
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toContain(`agentId=${agentId}`);
     expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
@@ -668,6 +677,6 @@ describe("Agent Setup route boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     await waitFor(() => expect(window.location.search).toContain(`agentId=${agentId}`));
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
   });
 });

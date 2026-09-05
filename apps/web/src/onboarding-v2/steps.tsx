@@ -59,14 +59,16 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
 
 function StepNav({
   back,
-  disabled = false,
+  backDisabled = false,
   label = m.onboarding_v2_nav_next(),
+  nextDisabled = false,
   onNext,
   submit = false,
 }: {
   back?: () => void;
-  disabled?: boolean;
+  backDisabled?: boolean;
   label?: string;
+  nextDisabled?: boolean;
   onNext?: () => void;
   submit?: boolean;
 }) {
@@ -74,14 +76,14 @@ function StepNav({
     <div className="flex items-center justify-between gap-3" data-ui="onboarding-v2-nav">
       <div data-ui="onboarding-v2-nav-back">
         {back ? (
-          <Button onClick={back} variant="ghost">
+          <Button disabled={backDisabled} onClick={back} variant="ghost">
             <Icon name="arrow-left" />
             <span>{m.onboarding_v2_nav_back()}</span>
           </Button>
         ) : null}
       </div>
       <div data-ui="onboarding-v2-nav-next">
-        <Button disabled={disabled} onClick={onNext} type={submit ? "submit" : "button"}>
+        <Button disabled={nextDisabled} onClick={onNext} type={submit ? "submit" : "button"}>
           {label}
         </Button>
       </div>
@@ -174,7 +176,7 @@ export function DestinationStep({
           );
         })}
       </ul>
-      <StepNav disabled={!draft.destination} onNext={onSubmit} />
+      <StepNav nextDisabled={!draft.destination} onNext={onSubmit} />
     </section>
   );
 }
@@ -310,7 +312,13 @@ export function AgentStep({
       <form className="flex flex-col gap-6" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
         <RuntimePicker draft={draft} onChange={onChange} />
-        <StepNav back={onBack} disabled={submitting || draft.runtime === undefined} label={submitLabel} submit />
+        <StepNav
+          back={onBack}
+          backDisabled={submitting}
+          label={submitLabel}
+          nextDisabled={submitting || draft.runtime === undefined}
+          submit
+        />
       </form>
     </section>
   );

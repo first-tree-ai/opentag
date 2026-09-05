@@ -132,7 +132,22 @@
 /* One stable Computer summary row locates the setup work without adding another panel boundary. */
 .otv2-computer-summary {
   box-sizing: border-box;
-  height: 56px;
+  height: 48px;
+}
+
+/*
+ * The current Computer state explains why the action below it is needed. Keep that pair closer
+ * than the step introduction while preserving enough separation for the command surface to read
+ * as the next action rather than another field in the status row.
+ */
+.otv2-computer-step {
+  gap: 1.25rem;
+}
+
+.otv2-computer-step__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 /*
@@ -154,6 +169,24 @@
 .otv2-preparation__checks > .otv2-computer-summary {
   height: 40px;
   padding-block: 0.25rem;
+}
+
+/*
+ * Step 2 is a gated wizard step, not another repair surface. Its navigation stays after all
+ * status and recovery content: supporting copy anchors the disabled state on the left while the
+ * single forward action holds the familiar trailing edge. No divider is needed; section spacing
+ * already separates navigation from the Computer summary and readiness card.
+ */
+.otv2-step-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 40px;
+}
+
+.otv2-step-footer__action {
+  min-width: 7rem;
 }
 
 /* Cards sit side by side wherever two tracks fit, and stack when they do not. */
@@ -183,8 +216,8 @@
 }
 
 @media (width <= 640px) {
-  .otv2-computer-summary {
-    height: 72px;
+  .otv2-computer-step {
+    gap: 1rem;
   }
 
   .otv2-preparation {
@@ -197,6 +230,15 @@
 
   .otv2-field-error {
     min-height: 34px;
+  }
+
+  .otv2-step-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .otv2-step-footer__action {
+    width: 100%;
   }
 }
 
@@ -212,32 +254,32 @@
   height: 40px;
 }
 
-/* Readiness rows --------------------------------------------------------- */
+/* Compact readiness rows ------------------------------------------------- */
 
-/*
- * The four readiness rows use fixed reservations: each slot keeps one
- * height for every state it can hold, so no row grows, collapses, or shifts while the copy under
- * it resolves. Text that does not fit scrolls inside its own slot; both slots are focusable in
- * the markup and keep a visible focus ring, so a keyboard can read every line.
- */
 .otv2-readiness {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0;
   margin: 0;
   padding: 0;
   list-style: none;
   background: var(--color-kumo-base);
   border: 1px solid var(--color-kumo-line);
   border-radius: 0.75rem;
+  overflow: hidden;
 }
 
 .otv2-readiness__line {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.75rem;
-  padding: 0.75rem;
+  padding: 1rem;
   box-sizing: border-box;
+  border-top: 1px solid var(--color-kumo-line);
+}
+
+.otv2-readiness__line:first-child {
+  border-top: 0;
 }
 
 /* Decorative running number. The state never lives in the marker alone: the row always states it. */
@@ -261,21 +303,16 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.25rem;
 }
 
-/* A row's header: the caller's label with its status label underneath, in one fixed slot. */
+/* A row's header keeps the component identity and current status on one scannable line. */
 .otv2-readiness__title {
   display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  height: 2.75rem;
-  box-sizing: border-box;
-  overflow-x: hidden;
-  overflow-y: auto;
-  line-height: 1.25rem;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
 }
 
 .otv2-readiness__name {
@@ -284,28 +321,17 @@
 }
 
 .otv2-readiness__status {
+  flex-shrink: 0;
   color: var(--text-color-kumo-subtle);
   font-size: 0.75rem;
 }
 
-/* The diagnostic region, mounted even when its copy is empty. */
 .otv2-readiness__detail {
-  height: 3.375rem;
-  box-sizing: border-box;
-  overflow-x: hidden;
-  overflow-y: auto;
+  min-height: 1.125rem;
   line-height: 1.125rem;
   font-size: 0.875rem;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-color-kumo-subtle);
-}
-
-/* Both slots are scroll regions, so both answer a keyboard visit with the focus ring. */
-.otv2-readiness__title:focus-visible,
-.otv2-readiness__detail:focus-visible {
-  outline: 2px solid var(--color-kumo-focus);
-  outline-offset: 2px;
 }
 
 /*
@@ -322,128 +348,4 @@
 .otv2-readiness__line[data-state="blocked"] .otv2-readiness__marker {
   background: var(--color-kumo-recessed);
   color: var(--text-color-kumo-strong);
-}
-
-/*
- * Step 2 projects the full four-part diagnostic checklist into two summary rows. Restore the
- * compact, divided-row rhythm of the earlier checklist for that projection instead of carrying
- * the four-row fixture's fixed title/detail reservations into a list with only two short items.
- */
-.otv2-readiness--compact {
-  gap: 0;
-  overflow: hidden;
-}
-
-.otv2-readiness--compact .otv2-readiness__line {
-  align-items: center;
-  padding: 1rem;
-  border-top: 1px solid var(--color-kumo-line);
-}
-
-.otv2-readiness--compact .otv2-readiness__line:first-child {
-  border-top: 0;
-}
-
-.otv2-readiness--compact .otv2-readiness__copy {
-  gap: 0.25rem;
-}
-
-.otv2-readiness--compact .otv2-readiness__title {
-  flex-direction: row;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
-  height: auto;
-  overflow: visible;
-}
-
-.otv2-readiness--compact .otv2-readiness__status {
-  flex-shrink: 0;
-}
-
-.otv2-readiness--compact .otv2-readiness__detail {
-  height: auto;
-  min-height: 1.125rem;
-  overflow: visible;
-}
-
-/* Below 640px each slot reserves the extra lines its copy needs there. */
-@media (width <= 640px) {
-  .otv2-readiness__title {
-    height: 3.75rem;
-  }
-
-  .otv2-readiness__detail {
-    height: 4.5rem;
-  }
-
-  .otv2-readiness--compact .otv2-readiness__title,
-  .otv2-readiness--compact .otv2-readiness__detail {
-    height: auto;
-  }
-}
-
-/* Readiness lab (internal preview) --------------------------------------- */
-
-/*
- * The readiness lab replaces the production surface while a readiness scenario is selected. The
- * preview is capped at 720px and centered. Its scenario toolbar stays in normal flow above the
- * checklist so it cannot cover a diagnostic region. Everything here is lab-only and must not
- * leak into the production surface.
- */
-.otv2-readiness-lab {
-  box-sizing: border-box;
-  display: flex;
-  justify-content: center;
-  padding: 1.25rem 1rem;
-  min-width: 0;
-}
-
-.otv2-readiness-lab__inner {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  width: min(100%, 720px);
-  min-width: 0;
-}
-
-.otv2-readiness-lab__controls {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  min-width: 0;
-}
-
-/* Kumo owns the select's outer grid; the flex child, not just its trigger, must shrink. */
-.otv2-readiness-lab__controls > div,
-.otv2-readiness-lab__scenario > div {
-  flex: 1;
-  min-width: 0;
-}
-
-.otv2-readiness-lab__scenario {
-  box-sizing: border-box;
-  width: calc(100% - 2rem);
-  max-width: 720px;
-  margin-top: 1rem;
-}
-
-.otv2-readiness-lab__scenario label {
-  flex-shrink: 0;
-}
-
-.otv2-readiness-lab__label {
-  flex-shrink: 0;
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-color-kumo-strong);
-}
-
-.otv2-readiness-lab__select,
-.otv2-readiness-lab__scenario [role="combobox"] {
-  flex: 1 1 auto;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
 }

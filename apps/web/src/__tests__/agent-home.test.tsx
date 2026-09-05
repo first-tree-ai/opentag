@@ -56,7 +56,7 @@ describe("OpenTag Web App Shell", () => {
     expect(setupLinks[0]?.getAttribute("href")).toBe(`/agents/setup?agentId=${agentId}`);
 
     fireEvent.click(setupLinks[0] as HTMLElement);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to agent" }));
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
   });

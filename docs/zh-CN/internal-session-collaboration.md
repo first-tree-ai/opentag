@@ -56,9 +56,9 @@ OpenTag 当前仅在单 Server replica 下支持这条路径。`OPENTAG_RUNTIME_
 启动前会在 PostgreSQL 会话上获取 advisory-lock lease。第二个存活实例会在有界等待窗口内重试；若持有者仍在，
 它会带着可执行的 lease-held 错误 fail closed。部署必须使用 recreate 策略，例如 `maxSurge=0`，确保不会同时有
 两个存活 replica；滚动重启要等旧进程退出后替换实例才能获取 lease。Lease 属于 PostgreSQL 会话：正常关闭或
-进程被非正常 kill 后，该会话关闭，PostgreSQL 会自动释放 lease。`/healthz` 与 `/readyz` 会返回
-Lease client 会关闭自动 lifetime recycling，因此不会在 advisory lock 仍由该会话持有时被替换。
-`runtimeOwnership.mode`、`runtimeOwnership.status` 以及持有者的 `runtimeOwnership.instanceId`；如果 lease 会话断开，
+进程被非正常 kill 后，该会话关闭，PostgreSQL 会自动释放 lease。Lease client 会关闭自动 lifetime recycling，
+因此不会在 advisory lock 仍由该会话持有时被替换。`/healthz` 与 `/readyz` 会返回 `runtimeOwnership.mode`、
+`runtimeOwnership.status` 以及持有者的 `runtimeOwnership.instanceId`；如果 lease 会话断开，
 实例会立即 fence runtime socket、停止后台投递、拒绝 runtime mutation，状态变为 `not_owned`，`/readyz` 会失败。
 随后实例会在同一个有界窗口内尝试重新获取 lease；如果恢复窗口到期，进程会以非零状态退出，由 supervisor 重启。
 proof-authenticated Session CLI HTTP 与 source/target SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。

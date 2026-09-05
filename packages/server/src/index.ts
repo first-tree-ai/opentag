@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { InternalNavigationVisibility, ProviderReadinessStatus } from "@opentag/shared";
 import { eq } from "drizzle-orm";
+import type { Sql } from "postgres";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
@@ -25,6 +26,7 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { acquireRuntimeOwnershipLease, type RuntimeOwnershipLease } from "./runtime/runtime-ownership-lease.js";
 import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
   AuthService,
@@ -127,6 +129,8 @@ class StagingInternalNavigationVisibilityService {
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  let sql: Sql | undefined;
+  let runtimeOwnershipLease: RuntimeOwnershipLease | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -158,7 +162,10 @@ export async function startServer(): Promise<void> {
     }
     readiness.complete("migration");
 
-    const { database, sql } = createDatabaseClient(config.databaseUrl);
+    const databaseClient = createDatabaseClient(config.databaseUrl);
+    const { database } = databaseClient;
+    sql = databaseClient.sql;
+    runtimeOwnershipLease = await acquireRuntimeOwnershipLease(sql, instanceId);
     const postAuthentication = new PostAuthenticationService(database);
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
@@ -428,6 +435,7 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
+      runtimeOwnership: runtimeOwnershipLease.state,
       runtime: {
         registry,
         domainOwner,
@@ -475,7 +483,12 @@ export async function startServer(): Promise<void> {
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();
-      await sql.end();
+      const lease = runtimeOwnershipLease;
+      runtimeOwnershipLease = undefined;
+      await lease?.release();
+      const databaseSql = sql;
+      sql = undefined;
+      await databaseSql?.end();
       await shutdownTelemetry();
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
@@ -489,6 +502,12 @@ export async function startServer(): Promise<void> {
     } else {
       process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
+    const lease = runtimeOwnershipLease;
+    runtimeOwnershipLease = undefined;
+    await lease?.release().catch(() => undefined);
+    const databaseSql = sql;
+    sql = undefined;
+    await databaseSql?.end().catch(() => undefined);
     await shutdownTelemetry();
     process.exitCode = 1;
   }

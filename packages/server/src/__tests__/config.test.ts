@@ -67,6 +67,7 @@ describe("parseServerConfig", () => {
       observability: {
         tracing: { endpoint: "", environment: "dev", headers: "", sampleRate: 1 },
       },
+      runtimeReplicaMode: "single",
       sessionTtlSeconds: 2_592_000,
       logLevel: "info",
     });
@@ -76,6 +77,14 @@ describe("parseServerConfig", () => {
   it("accepts the configured server log level and rejects unknown levels", () => {
     expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
+  });
+
+  it("keeps runtime ownership in the explicitly supported single-replica mode", () => {
+    expect(parseServerConfig(required).runtimeReplicaMode).toBe("single");
+    expect(parseServerConfig({ ...required, OPENTAG_RUNTIME_REPLICA_MODE: "single" }).runtimeReplicaMode).toBe(
+      "single",
+    );
+    expect(() => parseServerConfig({ ...required, OPENTAG_RUNTIME_REPLICA_MODE: "multi" })).toThrow();
   });
 
   it("defaults the channel target coordinates to the public release endpoint", () => {

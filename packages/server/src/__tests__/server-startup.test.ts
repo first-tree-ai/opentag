@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   migrateDatabase: vi.fn(),
   verifyDatabaseMigrations: vi.fn(),
   createDatabaseClient: vi.fn(),
+  acquireRuntimeOwnershipLease: vi.fn(),
+  runtimeOwnershipRelease: vi.fn(),
   createApp: vi.fn(),
   registryCurrentInstanceId: vi.fn(),
   registrySupportsProvider: vi.fn(),
@@ -55,6 +57,9 @@ vi.mock("../config.js", () => ({
   serverEnvironmentSummary: vi.fn(() => ({ environment: "prod" })),
 }));
 vi.mock("../db/client.js", () => ({ createDatabaseClient: state.createDatabaseClient }));
+vi.mock("../runtime/runtime-ownership-lease.js", () => ({
+  acquireRuntimeOwnershipLease: state.acquireRuntimeOwnershipLease,
+}));
 vi.mock("../db/migrate.js", () => ({
   MigrationVerificationError: class extends Error {},
   migrateDatabase: state.migrateDatabase,
@@ -314,6 +319,7 @@ function defaultConfig() {
     },
     port: 8000,
     publicUrl: "https://opentag.example.com",
+    runtimeReplicaMode: "single",
     sessionTtlSeconds: 2_592_000,
   };
 }
@@ -347,6 +353,11 @@ beforeEach(() => {
   state.migrateDatabase.mockImplementation(async () => state.events.push("migration:run"));
   state.verifyDatabaseMigrations.mockImplementation(async () => state.events.push("migration:verify"));
   state.createDatabaseClient.mockImplementation(() => ({ database: state.database, sql: state.sql }));
+  state.acquireRuntimeOwnershipLease.mockImplementation(async () => ({
+    instanceId: "instance-1",
+    state: { mode: "single", status: "owned", instanceId: "instance-1" },
+    release: state.runtimeOwnershipRelease,
+  }));
   state.registryCurrentInstanceId.mockReturnValue("instance-1");
   state.registrySupportsProvider.mockReturnValue(true);
   state.registryProviderReadiness.mockReturnValue([
@@ -404,6 +415,7 @@ describe("Server startup", () => {
     await startServer();
 
     expect(state.migrateDatabase).toHaveBeenCalledWith(state.config.databaseUrl, state.config.migrationsDirectory);
+    expect(state.acquireRuntimeOwnershipLease).toHaveBeenCalledWith(state.sql, expect.any(String));
     expect(state.verifyDatabaseMigrations).not.toHaveBeenCalled();
     expect(state.events).toEqual([
       "ready:configuration",
@@ -517,6 +529,7 @@ describe("Server startup", () => {
     const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };
     expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
     await app.close();
+    expect(state.runtimeOwnershipRelease).toHaveBeenCalledOnce();
     expect(state.events.slice(-5)).toEqual([
       "app:close",
       "worker:stop",

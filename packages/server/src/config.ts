@@ -89,6 +89,9 @@ const EncryptionKeySchema = z
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
 
+const RuntimeReplicaModeSchema = z.literal("single").default("single");
+export type RuntimeReplicaMode = z.infer<typeof RuntimeReplicaModeSchema>;
+
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
 }
@@ -134,6 +137,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_HEADERS: z.string().default(""),
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
+    OPENTAG_RUNTIME_REPLICA_MODE: RuntimeReplicaModeSchema,
     /*
      * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
      * may be idle and still be signed in.
@@ -274,6 +278,8 @@ export interface ServerConfig {
   logLevel: ServerLogLevel;
   port: number;
   publicUrl: string;
+  /** Runtime ownership is process-local and therefore currently requires one Server replica. */
+  runtimeReplicaMode: RuntimeReplicaMode;
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
@@ -333,6 +339,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
+    OPENTAG_RUNTIME_REPLICA_MODE: environment.OPENTAG_RUNTIME_REPLICA_MODE,
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
@@ -381,6 +388,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     },
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
+    runtimeReplicaMode: parsed.OPENTAG_RUNTIME_REPLICA_MODE,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     stagingSetupReset: parsed.OPENTAG_ENV === "staging",
   };

@@ -549,18 +549,25 @@ export class OpenTagApi {
     return response;
   }
 
-  listRuntimeDurableWork(
+  async listRuntimeDurableWork(
     machineToken: string,
     kind: RuntimeDurableWorkKind,
     options?: RequestOptions,
   ): Promise<RuntimeDurableWorkRecord[]> {
-    const query = new URLSearchParams({ kind });
-    return this.#request(
-      `${HTTP_PATHS.runtimeDurableWork}?${query.toString()}`,
-      RuntimeDurableWorkListResponseSchema,
-      { headers: { authorization: `Bearer ${machineToken}` } },
-      options,
-    ).then((response) => response.items);
+    const records: RuntimeDurableWorkRecord[] = [];
+    let cursor: string | undefined;
+    do {
+      const query = new URLSearchParams({ kind, ...(cursor ? { cursor } : {}) });
+      const response = await this.#request(
+        `${HTTP_PATHS.runtimeDurableWork}?${query.toString()}`,
+        RuntimeDurableWorkListResponseSchema,
+        { headers: { authorization: `Bearer ${machineToken}` } },
+        options,
+      );
+      records.push(...response.items);
+      cursor = response.nextCursor;
+    } while (cursor);
+    return records;
   }
 
   writeRuntimeDurableWork(

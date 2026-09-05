@@ -116,7 +116,7 @@ export const imMessageDeliveries = pgTable(
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
     index("im_message_deliveries_expiry_idx")
-      .on(table.expiresAt)
+      .on(table.expiresAt, table.id)
       .where(sql`${table.state} = 'pending' and ${table.reason} is null`),
     index("im_message_deliveries_retention_idx")
       .on(table.expiresAt, table.id)

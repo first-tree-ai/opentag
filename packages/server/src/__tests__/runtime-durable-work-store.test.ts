@@ -136,6 +136,32 @@ describe("PostgresRuntimeDurableWorkStore", () => {
       RuntimeDurableWorkPayloadTooLargeError,
     );
   });
+
+  it.each(["failed", "dead-letter"] as const)("charges %s rearm against the active row quota", async (status) => {
+    const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 10, maxRecordsPerComputer: 1 });
+    const first = { ...sessionRecord(), key: "first", updatedAt: 10 };
+    const second = { ...sessionRecord(), key: "second", updatedAt: 13 };
+    await store.write(computerId, first);
+    await store.write(computerId, { ...first, status: "running", updatedAt: 11 });
+    await store.write(computerId, { ...first, status, updatedAt: 12 });
+    await store.write(computerId, second);
+
+    await expect(store.write(computerId, { ...first, status: "running", updatedAt: 14 })).rejects.toMatchObject({
+      name: "RuntimeDurableWorkQuotaExceededError",
+      quota: "records",
+      limit: 1,
+      current: 1,
+      requested: 2,
+    });
+    expect(
+      (await store.list(computerId, "session-message")).items.filter(
+        (row) => row.status === "accepted" || row.status === "running",
+      ),
+    ).toHaveLength(1);
+    await store.write(computerId, { ...second, status: "running", updatedAt: 15 });
+    await store.write(computerId, { ...second, status: "succeeded", updatedAt: 16 });
+    await expect(store.write(computerId, { ...first, status: "running", updatedAt: 17 })).resolves.toBeUndefined();
+  });
 });
 
 function snapshot(agentId: string, workspaceId: string): EffectiveRuntimeSnapshot {

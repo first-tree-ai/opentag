@@ -1,0 +1,32 @@
+[
+  { "from": "accepted", "to": "accepted", "writer": "Initial receipt replay" },
+  { "from": "accepted", "to": "running", "writer": "SessionMessageInbox.runMessage and TurnReportOwner.send" },
+  { "from": "accepted", "to": "retryable", "writer": "Initial persistence or run-start failure" },
+  { "from": "accepted", "to": "failed", "writer": "Permanent run-start failure or terminal report acknowledgement" },
+  { "from": "accepted", "to": "dead-letter", "writer": "Hydration or failure exhausts the retry budget" },
+  { "from": "running", "to": "running", "writer": "TurnReportOwner retransmits an unacknowledged report" },
+  { "from": "running", "to": "succeeded", "writer": "Successful prompt or confirmed report acknowledgement" },
+  { "from": "running", "to": "retryable", "writer": "Hydration, transport failure, or acknowledgement timeout" },
+  { "from": "running", "to": "failed", "writer": "Permanent prompt failure or terminal report acknowledgement" },
+  { "from": "running", "to": "dead-letter", "writer": "Hydration or failure exhausts the retry budget" },
+  { "from": "retryable", "to": "retryable", "writer": "Repeated failure or receipt replay" },
+  { "from": "retryable", "to": "accepted", "writer": "Both clients schedule the next retry" },
+  { "from": "retryable", "to": "running", "writer": "Hydrated work or reconnect starts a retry" },
+  { "from": "retryable", "to": "succeeded", "writer": "Report acknowledgement arrives after its timeout" },
+  { "from": "retryable", "to": "failed", "writer": "Terminal report acknowledgement or permanent run-start failure" },
+  { "from": "retryable", "to": "dead-letter", "writer": "Hydration or failure exhausts the retry budget" },
+  { "from": "failed", "to": "failed", "writer": "Repeated terminal report acknowledgement or receipt replay" },
+  { "from": "failed", "to": "running", "writer": "Exact terminal rearm claim followed by report submit" },
+  {
+    "from": "failed",
+    "to": "dead-letter",
+    "writer": "Hydration expires a failed record without a retained terminal fence"
+  },
+  {
+    "from": "dead-letter",
+    "to": "dead-letter",
+    "writer": "TurnReportOwner.createPending persists a retained record unchanged"
+  },
+  { "from": "dead-letter", "to": "running", "writer": "MvpTurnReportRecovery submits a retained expired report" },
+  { "from": "succeeded", "to": "succeeded", "writer": "Confirmed receipt replay" }
+]

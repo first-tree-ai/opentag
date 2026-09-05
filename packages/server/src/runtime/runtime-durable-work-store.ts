@@ -23,13 +23,14 @@ export const DEFAULT_RUNTIME_DURABLE_WORK_SINGLE_PAYLOAD_BYTES_LIMIT = 1 * 1024 
 export const DEFAULT_RUNTIME_DURABLE_WORK_PAGE_SIZE = 256;
 export const RUNTIME_DURABLE_WORK_MAX_PAGE_SIZE = 1024;
 
+// runtime-durable-work-transitions.test.ts enforces the client edge contract, including every single-edge deletion.
 export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
   accepted: ["accepted", "running", "retryable", "failed", "dead-letter"],
   running: ["running", "succeeded", "failed", "retryable", "dead-letter"],
   succeeded: ["succeeded"],
-  retryable: ["retryable", "accepted", "running", "failed", "dead-letter"],
+  retryable: ["retryable", "accepted", "running", "succeeded", "failed", "dead-letter"],
   failed: ["failed", "running", "dead-letter"],
-  "dead-letter": ["dead-letter"],
+  "dead-letter": ["dead-letter", "running"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
 
 export interface RuntimeDurableWorkStoreOptions {
@@ -220,7 +221,7 @@ export class PostgresRuntimeDurableWorkStore {
       .for("update");
 
     if (!existing) {
-      await this.#assertQuota(transaction, computerId, payloadBytes);
+      await this.#assertQuota(transaction, computerId, record.status, payloadBytes);
       await transaction.insert(runtimeDurableWork).values(recordValues(computerId, record));
       return;
     }
@@ -234,8 +235,9 @@ export class PostgresRuntimeDurableWorkStore {
     if (!isAllowedTransition(existing.status, record.status)) {
       throw new RuntimeDurableWorkTransitionError(existing.status, record.status);
     }
-    if (payloadBytes > serializedPayloadBytes(existing.payload)) {
-      await this.#assertQuota(transaction, computerId, payloadBytes, existing);
+    // Payload identity is immutable, but rearming a terminal receipt consumes an active slot.
+    if (!isNonTerminalStatus(existing.status) && isNonTerminalStatus(record.status)) {
+      await this.#assertQuota(transaction, computerId, record.status, payloadBytes, existing);
     }
     const updated = await transaction
       .update(runtimeDurableWork)
@@ -250,17 +252,19 @@ export class PostgresRuntimeDurableWorkStore {
   async #assertQuota(
     transaction: DatabaseTransaction,
     computerId: string,
+    incomingStatus: RuntimeDurableWorkRecord["status"],
     incomingPayloadBytes: number,
     replacing?: RuntimeDurableWorkRow,
   ): Promise<void> {
     const rows = await transaction
-      .select({ id: runtimeDurableWork.id, payload: runtimeDurableWork.payload, status: runtimeDurableWork.status })
+      .select({ payload: runtimeDurableWork.payload, status: runtimeDurableWork.status })
       .from(runtimeDurableWork)
       .where(eq(runtimeDurableWork.computerId, computerId));
     const currentRecords = rows.filter((row) => isNonTerminalStatus(row.status)).length;
     const replacingNonTerminal = replacing ? isNonTerminalStatus(replacing.status) : false;
-    const requestedRecords = currentRecords - (replacingNonTerminal ? 1 : 0) + 1;
-    if (!replacing && requestedRecords > this.#maxRecordsPerComputer) {
+    const requestedRecords =
+      currentRecords - Number(replacingNonTerminal) + Number(isNonTerminalStatus(incomingStatus));
+    if (requestedRecords > currentRecords && requestedRecords > this.#maxRecordsPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "records",
         this.#maxRecordsPerComputer,
@@ -271,7 +275,7 @@ export class PostgresRuntimeDurableWorkStore {
     const currentPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
     const requestedPayloadBytes =
       currentPayloadBytes - (replacing ? serializedPayloadBytes(replacing.payload) : 0) + incomingPayloadBytes;
-    if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
+    if (requestedPayloadBytes > currentPayloadBytes && requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "payload-bytes",
         this.#maxPayloadBytesPerComputer,

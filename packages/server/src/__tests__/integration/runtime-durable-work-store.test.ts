@@ -89,6 +89,37 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
     });
   });
 
+  it("serializes concurrent terminal rearms at the active row quota", async () => {
+    const first = sessionRecord("failed-rearm");
+    const second = sessionRecord("dead-letter-rearm");
+    const firstStore = new PostgresRuntimeDurableWorkStore(database.database, {
+      now: () => 1,
+      maxRecordsPerComputer: 1,
+    });
+    const secondClient = createDatabaseClient(testDatabase.databaseUrl);
+    try {
+      const secondStore = new PostgresRuntimeDurableWorkStore(secondClient.database, {
+        now: () => 1,
+        maxRecordsPerComputer: 1,
+      });
+      await firstStore.write(computerId, { ...first, status: "failed" });
+      await secondStore.write(computerId, { ...second, status: "dead-letter" });
+      const results = await Promise.allSettled([
+        firstStore.write(computerId, { ...first, status: "running", updatedAt: 2 }),
+        secondStore.write(computerId, { ...second, status: "running", updatedAt: 2 }),
+      ]);
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "rejected").map((result) => result.reason)).toEqual([
+        expect.any(RuntimeDurableWorkQuotaExceededError),
+      ]);
+      expect(
+        (await firstStore.list(computerId, "session-message")).items.filter((record) => record.status === "running"),
+      ).toHaveLength(1);
+    } finally {
+      await secondClient.sql.end();
+    }
+  });
+
   it("allows a terminal transition at the active row quota and admits a freed slot", async () => {
     const store = new PostgresRuntimeDurableWorkStore(database.database, {
       now: () => 1,

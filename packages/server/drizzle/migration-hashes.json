@@ -190,6 +190,11 @@
       "idx": 37,
       "tag": "0037_drop_workspace_ownership_persistence",
       "sha256": "e0ad8e2f6c4b8163a5a1a12c42120746d93f13f015b5cf7f8d016fc330a862ae"
+    },
+    {
+      "idx": 38,
+      "tag": "0038_vengeful_justin_hammer",
+      "sha256": "9f0e919374569a7f309184c5e950a9cee9c2fd85052b60d7ca6f01fede69cb39"
     }
   ]
 }

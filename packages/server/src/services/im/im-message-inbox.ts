@@ -11,12 +11,20 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import { imAttrs, outcomeAttrs, setActiveSpanAttributes, withSpan } from "../../observability/index.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { SessionService } from "../sessions/index.js";
 import { threadRootExternalId } from "./provider-thread-context.js";
 
 const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AMBIENT_TTL_MS = 24 * 60 * 60 * 1000;
 const TASK_TITLE_GENERATION_TIMEOUT_MS = 3_000;
+
+type DeliveryAttention = "direct" | "ambient";
+
+interface OverflowCandidate {
+  sessionId: string;
+  attention: DeliveryAttention;
+}
 
 export interface IngestResult {
   duplicate: boolean;
@@ -83,9 +91,13 @@ export class ImMessageInbox {
   readonly #afterMessageAuthority: (() => Promise<void>) | undefined;
   readonly #beforeReliableThreadRootLookup: (() => void) | undefined;
   readonly #beforeSupersedeDeliveries: (() => Promise<void>) | undefined;
+  readonly #beforeOverflowExpiry: (() => Promise<void>) | undefined;
   readonly #database: DatabaseClient;
+  readonly #logger: Pick<ServiceLogger, "error"> | undefined;
   readonly #now: () => Date;
   readonly #onTaskCreated: ((request: TaskTitleGenerationRequest) => Promise<void> | void) | undefined;
+  readonly #overflowPasses = new Map<string, Promise<void>>();
+  readonly #overflowRechecks = new Map<string, OverflowCandidate>();
   readonly #sessions: SessionService;
 
   constructor(
@@ -96,6 +108,8 @@ export class ImMessageInbox {
       afterMessageAuthority?: () => Promise<void>;
       beforeReliableThreadRootLookup?: () => void;
       beforeSupersedeDeliveries?: () => Promise<void>;
+      beforeOverflowExpiry?: () => Promise<void>;
+      logger?: Pick<ServiceLogger, "error">;
       onTaskCreated?: (request: TaskTitleGenerationRequest) => Promise<void> | void;
     } = {},
   ) {
@@ -106,6 +120,8 @@ export class ImMessageInbox {
     this.#afterMessageAuthority = options.afterMessageAuthority;
     this.#beforeReliableThreadRootLookup = options.beforeReliableThreadRootLookup;
     this.#beforeSupersedeDeliveries = options.beforeSupersedeDeliveries;
+    this.#beforeOverflowExpiry = options.beforeOverflowExpiry;
+    this.#logger = options.logger;
     this.#sessions = new SessionService(database, { now: this.#now });
   }
 
@@ -128,6 +144,7 @@ export class ImMessageInbox {
       }),
       async () => {
         const createdTasks = new Map<string, TaskTitleGenerationRequest>();
+        const overflowCandidates = new Map<string, OverflowCandidate>();
         try {
           const result = await this.#database.transaction(async (transaction) => {
             const finish = (result: IngestResult, outcome: string): IngestResult => {
@@ -508,7 +525,7 @@ export class ImMessageInbox {
                 .onConflictDoNothing()
                 .returning({ id: imMessageDeliveries.id });
               if (deliveryRow) deliveryIds.push(deliveryRow.id);
-              await this.#expireOverflow(transaction, delivery.sessionId, delivery.attention);
+              overflowCandidates.set(this.#overflowKey(delivery.sessionId, delivery.attention), delivery);
             }
             if (direct && threadKey === null) {
               const pendingThreadMessages = await transaction
@@ -596,14 +613,19 @@ export class ImMessageInbox {
                       expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
                     })
                     .onConflictDoNothing();
-                await this.#expireOverflow(transaction, thread.id, "direct");
+                const candidate = { sessionId: thread.id, attention: "direct" as const };
+                overflowCandidates.set(this.#overflowKey(candidate.sessionId, candidate.attention), candidate);
               }
             }
+            await this.#retainOverflowCandidates(transaction, overflowCandidates);
             return finish(
               { duplicate: false, messageId: created.id, deliveryIds },
               deliveryIds.length > 0 ? "persisted" : "no_delivery",
             );
           });
+          for (const candidate of overflowCandidates.values()) {
+            this.#queueOverflowExpiry(candidate);
+          }
           for (const request of createdTasks.values()) {
             const controller = new AbortController();
             const timer = setTimeout(
@@ -624,10 +646,77 @@ export class ImMessageInbox {
     );
   }
 
+  #overflowKey(sessionId: string, attention: DeliveryAttention): string {
+    return `${sessionId}:${attention}`;
+  }
+
+  async #hasOverflow(
+    transaction: DatabaseTransaction,
+    sessionId: string,
+    attention: DeliveryAttention,
+  ): Promise<boolean> {
+    const capacity = attention === "direct" ? 100 : 500;
+    const [row] = await transaction
+      .select({ count: sql<number>`count(*)` })
+      .from(imMessageDeliveries)
+      .where(
+        and(
+          eq(imMessageDeliveries.sessionId, sessionId),
+          eq(imMessageDeliveries.attention, attention),
+          eq(imMessageDeliveries.state, "pending"),
+          isNull(imMessageDeliveries.reason),
+        ),
+      );
+    return Number(row?.count ?? 0) > capacity;
+  }
+
+  async #retainOverflowCandidates(
+    transaction: DatabaseTransaction,
+    candidates: Map<string, OverflowCandidate>,
+  ): Promise<void> {
+    for (const candidate of candidates.values()) {
+      if (await this.#hasOverflow(transaction, candidate.sessionId, candidate.attention)) continue;
+      candidates.delete(this.#overflowKey(candidate.sessionId, candidate.attention));
+    }
+  }
+
+  #queueOverflowExpiry(candidate: OverflowCandidate): void {
+    const key = this.#overflowKey(candidate.sessionId, candidate.attention);
+    if (this.#overflowPasses.has(key)) {
+      this.#overflowRechecks.set(key, candidate);
+      return;
+    }
+    const pass = Promise.resolve()
+      .then(async () => {
+        const hasOverflow = await this.#database.transaction((transaction) =>
+          this.#hasOverflow(transaction, candidate.sessionId, candidate.attention),
+        );
+        if (!hasOverflow) return;
+        await this.#beforeOverflowExpiry?.();
+        await this.#database.transaction((transaction) =>
+          this.#expireOverflow(transaction, candidate.sessionId, candidate.attention),
+        );
+      })
+      .catch((error: unknown) => {
+        this.#logger?.error(
+          { err: error, sessionId: candidate.sessionId, attention: candidate.attention },
+          "IM message inbox overflow expiry failed",
+        );
+      })
+      .finally(() => {
+        this.#overflowPasses.delete(key);
+        const recheck = this.#overflowRechecks.get(key);
+        if (!recheck) return;
+        this.#overflowRechecks.delete(key);
+        this.#queueOverflowExpiry(recheck);
+      });
+    this.#overflowPasses.set(key, pass);
+  }
+
   async #expireOverflow(
     transaction: DatabaseTransaction,
     sessionId: string,
-    attention: "direct" | "ambient",
+    attention: DeliveryAttention,
   ): Promise<void> {
     const capacity = attention === "direct" ? 100 : 500;
     await transaction.execute(sql`
@@ -646,6 +735,8 @@ export class ImMessageInbox {
       set state = 'expired'::im_delivery_state,
           reason = 'capacity'
       where id in (select id from overflow)
+        and state = 'pending'
+        and reason is null
     `);
   }
 

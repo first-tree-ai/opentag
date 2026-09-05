@@ -1,4 +1,4 @@
-import { FEISHU_REQUIRED_TENANT_SCOPES, type TurnReportRequest } from "@opentag/shared";
+import { FEISHU_REQUIRED_TENANT_SCOPES, RUNTIME_MAX_DURATION_MS, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
@@ -398,27 +398,46 @@ describe("AgentService", () => {
     const staleAcceptedAt = new Date(NOW.getTime() - (AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS + 1) * 60 * 60 * 1_000);
     await createDelivery(binding.id, session.id, { acceptedAt: staleAcceptedAt });
 
-    await expect(service.listForAccount(bootstrap.userId)).resolves.toMatchObject({
-      agents: [{ id: created.id, activity: { state: "unknown" }, usage: { tasks: 1 } }],
-    });
+    const listed = await service.listForAccount(bootstrap.userId);
+    const detail = await service.getById(bootstrap.userId, created.id);
+    expect(listed.agents[0]).toMatchObject({ id: created.id, activity: { state: "unknown" }, usage: { tasks: 1 } });
+    expect(detail.activity).toEqual({ state: "unknown" });
+    expect(listed.agents[0]?.activity).toEqual(detail.activity);
   });
 
-  it("keeps activity row materialisation bounded and selects the newest working delivery", async () => {
+  it("keeps every agent visible when another agent exceeds the activity limit", async () => {
     const { bootstrap, computer, service } = await fixture();
-    const created = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent");
-    const binding = await createBinding(created.id);
-    const session = await createSession(binding.id);
+    const agentA = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent-a");
+    const agentB = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent-b");
+    const bindingA = await createBinding(agentA.id);
+    const sessionA = await createSession(bindingA.id);
     for (let index = 0; index <= AGENT_ACTIVITY_READ_LIMIT; index += 1) {
-      await createDelivery(binding.id, session.id, {
+      await createDelivery(bindingA.id, sessionA.id, {
         acceptedAt: new Date(NOW.getTime() - index * 1_000),
         usage: {},
       });
     }
+    const bindingB = await createBinding(agentB.id);
+    const sessionB = await createSession(bindingB.id);
+    await createDelivery(bindingB.id, sessionB.id, { acceptedAt: NOW, usage: {} });
 
     const listed = await service.listForAccount(bootstrap.userId);
-    expect(listed.agents[0]).toMatchObject({
+    expect(listed.agents).toHaveLength(2);
+    expect(listed.agents.find((agent) => agent.id === agentB.id)).toMatchObject({
       activity: { state: "working", startedAt: NOW.toISOString() },
-      usage: { tasks: AGENT_ACTIVITY_READ_LIMIT + 1 },
+    });
+  });
+
+  it("keeps a maximum-duration unresolved delivery working", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "maximum-duration-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const acceptedAt = new Date(NOW.getTime() - RUNTIME_MAX_DURATION_MS);
+    await createDelivery(binding.id, session.id, { acceptedAt, usage: {} });
+
+    await expect(service.listForAccount(bootstrap.userId)).resolves.toMatchObject({
+      agents: [{ id: created.id, activity: { state: "working", startedAt: acceptedAt.toISOString() } }],
     });
   });
 

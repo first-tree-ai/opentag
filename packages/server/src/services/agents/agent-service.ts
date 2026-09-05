@@ -16,11 +16,12 @@ import {
   type CreateAgentRuntimeConfig,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
+  RUNTIME_MAX_DURATION_MS,
   runtimeUsageTotalTokens,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -41,9 +42,12 @@ type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
-export const AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS = 24;
+const AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS = 1;
+const MILLISECONDS_PER_HOUR = 60 * 60 * 1_000;
+export const AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS =
+  RUNTIME_MAX_DURATION_MS / MILLISECONDS_PER_HOUR + AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS;
 export const AGENT_ACTIVITY_READ_LIMIT = 256;
-const AGENT_ACTIVITY_RECOVERY_WINDOW_MS = AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS * 60 * 60 * 1_000;
+const AGENT_ACTIVITY_RECOVERY_WINDOW_MS = AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS * MILLISECONDS_PER_HOUR;
 
 interface AgentScope {
   agent: AgentRow;
@@ -106,9 +110,7 @@ function toAgentComputer(row: {
 interface AgentActivityEvidence {
   acceptedAt: Date | null;
   agentId: string;
-  bindingStatus: string;
   reportedAt: Date | null;
-  sessionEndedAt: Date | null;
   state: string;
 }
 
@@ -125,13 +127,7 @@ interface AgentUsageAggregate {
 function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
   const workingStartedAt = new Map<string, Date>();
   for (const row of rows) {
-    if (
-      row.state !== "accepted" ||
-      row.reportedAt !== null ||
-      !row.acceptedAt ||
-      row.bindingStatus !== "active" ||
-      row.sessionEndedAt !== null
-    ) {
+    if (row.state !== "accepted" || row.reportedAt !== null || !row.acceptedAt) {
       continue;
     }
     const current = workingStartedAt.get(row.agentId);
@@ -515,6 +511,55 @@ export class AgentService {
     return toAgentAdminConfig(row.agent, row.runtimeConfig, row.computerId);
   }
 
+  async #readActivityByAgent(
+    agentIds: readonly string[],
+    recoveryStartedAt: Date,
+  ): Promise<Map<string, AgentListActivity>> {
+    const activityRows = await this.#database
+      .selectDistinctOn([imBindings.agentId], {
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        agentId: imBindings.agentId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(imBindings.agentId, agentIds),
+          eq(imBindings.status, "active"),
+          isNull(sessions.endedAt),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
+        ),
+      )
+      .orderBy(imBindings.agentId, desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id));
+
+    const staleActivityRows = await this.#database
+      .selectDistinct({ agentId: imBindings.agentId })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(imBindings.agentId, agentIds),
+          eq(imBindings.status, "active"),
+          isNull(sessions.endedAt),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          lt(imMessageDeliveries.acceptedAt, recoveryStartedAt),
+        ),
+      );
+
+    const activityByAgent = projectActivityByAgent(activityRows);
+    for (const row of staleActivityRows) {
+      if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
+    }
+    return activityByAgent;
+  }
+
   async listForAccount(callerUserId: string): Promise<ListAgentsResponse> {
     const creator = alias(users, "agent_creator");
     const rows = await this.#database
@@ -550,50 +595,10 @@ export class AgentService {
     const now = this.#now();
     const usageStartedAt = new Date(now.getTime() - AGENT_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
     const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-    const activityRows = await this.#database
-      .select({
-        acceptedAt: imMessageDeliveries.acceptedAt,
-        agentId: imBindings.agentId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        bindingStatus: imBindings.status,
-        sessionEndedAt: sessions.endedAt,
-        state: imMessageDeliveries.state,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          inArray(
-            imBindings.agentId,
-            summaries.map((agent) => agent.id),
-          ),
-          and(
-            eq(imMessageDeliveries.state, "accepted"),
-            isNull(imMessageDeliveries.reportedAt),
-            gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
-          ),
-        ),
-      )
-      .orderBy(desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id))
-      .limit(AGENT_ACTIVITY_READ_LIMIT);
-
-    const staleActivityRows = await this.#database
-      .selectDistinct({ agentId: imBindings.agentId })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          inArray(
-            imBindings.agentId,
-            summaries.map((agent) => agent.id),
-          ),
-          eq(imMessageDeliveries.state, "accepted"),
-          isNull(imMessageDeliveries.reportedAt),
-          lte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
-        ),
-      );
+    const activityByAgent = await this.#readActivityByAgent(
+      summaries.map((agent) => agent.id),
+      recoveryStartedAt,
+    );
 
     const inputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`;
     const cachedInputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`;
@@ -634,10 +639,6 @@ export class AgentService {
       .groupBy(imBindings.agentId)) as AgentUsageAggregate[];
 
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
-    const activityByAgent = projectActivityByAgent(activityRows);
-    for (const row of staleActivityRows) {
-      if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
-    }
     const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
     for (const row of usageRows) {
       if (row.invalidTokenCount) throw new Error("Agent usage contains an invalid token count");
@@ -705,28 +706,11 @@ export class AgentService {
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
-    const activityRows = await this.#database
-      .select({
-        acceptedAt: imMessageDeliveries.acceptedAt,
-        agentId: imBindings.agentId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        bindingStatus: imBindings.status,
-        sessionEndedAt: sessions.endedAt,
-        state: imMessageDeliveries.state,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          eq(imBindings.agentId, agentId),
-          eq(imMessageDeliveries.state, "accepted"),
-          isNull(imMessageDeliveries.reportedAt),
-        ),
-      );
+    const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+    const activityByAgent = await this.#readActivityByAgent([agentId], recoveryStartedAt);
     return {
       ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
-      activity: projectActivityByAgent(activityRows).get(agentId) ?? { state: "idle" },
+      activity: activityByAgent.get(agentId) ?? { state: "idle" },
     };
   }
 

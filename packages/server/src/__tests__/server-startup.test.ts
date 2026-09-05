@@ -275,6 +275,7 @@ vi.mock("../services/setup/index.js", () => ({
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";
+import * as observability from "../observability/index.js";
 
 const originalSecrets = {
   database: process.env.OPENTAG_DATABASE_URL,
@@ -359,6 +360,7 @@ beforeEach(() => {
     state: { mode: "single", status: "owned", instanceId: "instance-1" },
     release: state.runtimeOwnershipRelease,
   }));
+  state.runtimeOwnershipRelease.mockResolvedValue(undefined);
   state.registryCurrentInstanceId.mockReturnValue("instance-1");
   state.registrySupportsProvider.mockReturnValue(true);
   state.registryProviderReadiness.mockReturnValue([
@@ -372,7 +374,7 @@ beforeEach(() => {
     status: "rejected",
     code: "binding_inactive",
   });
-  const log = { info: vi.fn(), error: vi.fn() };
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   state.app = {
     addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
       state.onClose = hook;
@@ -546,6 +548,39 @@ describe("Server startup", () => {
       "feishu-connections:stop",
       "sql:end",
     ]);
+  });
+
+  it.each(["SIGTERM", "SIGINT"] as const)("continues %s shutdown after a lease release rejection", async (signal) => {
+    const telemetry = vi.spyOn(observability, "shutdownTelemetry").mockImplementation(async () => {
+      state.events.push("telemetry:shutdown");
+    });
+    try {
+      await startServer();
+      state.events.length = 0;
+      state.runtimeOwnershipRelease.mockRejectedValueOnce(new Error("private-lease-connection-detail"));
+      const app = state.app as {
+        close: ReturnType<typeof vi.fn>;
+        log: { warn: ReturnType<typeof vi.fn> };
+      };
+      const handler = process.listeners(signal).at(-1);
+      expect(handler).toBeTypeOf("function");
+      handler?.(signal);
+
+      expect(app.close).toHaveBeenCalledOnce();
+      await expect(app.close.mock.results[0]?.value).resolves.toBeUndefined();
+      expect(state.runtimeOwnershipRelease).toHaveBeenCalledOnce();
+      expect(state.sql.end).toHaveBeenCalledOnce();
+      expect(telemetry).toHaveBeenCalledOnce();
+      expect(state.events.slice(-2)).toEqual(["sql:end", "telemetry:shutdown"]);
+      expect(process.exitCode).toBeUndefined();
+      expect(app.log.warn).toHaveBeenCalledWith(
+        { code: "RUNTIME_OWNERSHIP_LEASE_RELEASE_FAILED" },
+        "Runtime ownership lease release failed during shutdown",
+      );
+      expect(JSON.stringify(app.log.warn.mock.calls)).not.toContain("private-lease-connection-detail");
+    } finally {
+      telemetry.mockRestore();
+    }
   });
 
   it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {

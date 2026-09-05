@@ -541,7 +541,12 @@ export async function startServer(): Promise<void> {
       await feishuConnections.stop();
       const lease = runtimeOwnershipLease;
       runtimeOwnershipLease = undefined;
-      await lease?.release();
+      await lease?.release().catch(() => {
+        app?.log.warn(
+          { code: "RUNTIME_OWNERSHIP_LEASE_RELEASE_FAILED" },
+          "Runtime ownership lease release failed during shutdown",
+        );
+      });
       const databaseSql = sql;
       sql = undefined;
       await databaseSql?.end();

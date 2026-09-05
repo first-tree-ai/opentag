@@ -27,6 +27,7 @@ export type RuntimeOwnershipState = {
 };
 
 export interface RuntimeOwnershipLeaseOptions {
+  /** Total unlock and client close budget, followed by a 100 ms timer grace period. */
   endTimeoutMs?: number;
   maxLifetimeSeconds?: number | null;
   timeoutMs?: number;
@@ -196,10 +197,15 @@ async function closeLeaseResources(
   unlock: boolean,
   endTimeoutMs: number,
 ): Promise<unknown> {
+  const deadline = performance.now() + endTimeoutMs;
   let failure: unknown;
   if (connection) {
     if (unlock && context.acquired && !context.connectionLost) {
-      const unlockFailure = await unlockLeaseConnection(connection, RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID, endTimeoutMs);
+      const unlockFailure = await unlockLeaseConnection(
+        connection,
+        RUNTIME_OWNERSHIP_ADVISORY_LOCK_ID,
+        Math.max(0, deadline - performance.now()),
+      );
       failure = unlockFailure;
     }
     try {
@@ -208,15 +214,16 @@ async function closeLeaseResources(
       failure ??= error;
     }
   }
-  const endFailure = await endLeaseClient(client, endTimeoutMs);
+  const endFailure = await endLeaseClient(client, Math.max(0, deadline - performance.now()));
   failure ??= endFailure;
   return failure;
 }
 
 async function endLeaseClient(client: RuntimeOwnershipClient, timeoutMs: number): Promise<unknown> {
-  // postgres.js accepts its end timeout in seconds; keep our public option in milliseconds.
-  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1_000));
-  const waitMs = timeoutSeconds * 1_000 + 100;
+  // postgres.js accepts fractional seconds. Zero starts its close timeout immediately.
+  // Do not round up the remaining budget; let its timer run before the 100 ms grace period ends.
+  const timeoutSeconds = timeoutMs / 1_000;
+  const waitMs = timeoutMs + 100;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<undefined>((resolve) => {
     timer = setTimeout(() => resolve(undefined), waitMs);

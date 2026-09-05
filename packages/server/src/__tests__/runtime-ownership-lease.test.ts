@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({ postgres: vi.fn() }));
 
@@ -24,11 +24,13 @@ function clientFixture(results: boolean[]) {
   );
   const client = {
     reserve: vi.fn(async () => connection),
-    end: vi.fn(async () => undefined),
+    end: vi.fn(async (_options?: { timeout?: number }) => undefined),
   };
   state.postgres.mockReturnValue(client);
   return { client, connection, queries };
 }
+
+afterEach(() => vi.useRealTimers());
 
 describe("runtime ownership advisory lease", () => {
   it("uses a dedicated single-connection client and releases it idempotently", async () => {
@@ -117,7 +119,21 @@ describe("runtime ownership advisory lease", () => {
     expect(new RuntimeOwnershipLeaseError("instance")).toBeInstanceOf(Error);
   });
 
+  it.each([undefined, 5_000])("converts the production close budget to five seconds (%s)", async (endTimeoutMs) => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    const fixture = clientFixture([true]);
+    const lease = await acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "instance", {
+      endTimeoutMs,
+    });
+
+    await lease.release();
+
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 5 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("settles release when the postgres client end promise never resolves", async () => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
     const fixture = clientFixture([true]);
     fixture.client.end.mockImplementation(() => new Promise<never>(() => undefined));
     const lease = await acquireRuntimeOwnershipLease(
@@ -126,11 +142,14 @@ describe("runtime ownership advisory lease", () => {
       { endTimeoutMs: 1_000 },
     );
 
-    await expect(lease.release()).resolves.toBeUndefined();
+    const releasing = lease.release();
+    await vi.advanceTimersByTimeAsync(1_100);
+    await expect(releasing).resolves.toBeUndefined();
     expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 1 });
   });
 
   it("settles release when the advisory unlock query never resolves", async () => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
     const fixture = clientFixture([true]);
     const lease = await acquireRuntimeOwnershipLease(
       "postgresql://opentag@localhost/opentag",
@@ -139,8 +158,68 @@ describe("runtime ownership advisory lease", () => {
     );
     fixture.connection.mockImplementationOnce(() => new Promise<never>(() => undefined));
 
-    await expect(lease.release()).resolves.toBeUndefined();
-    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 1 });
+    const releasing = lease.release();
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(releasing).resolves.toBeUndefined();
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 0 });
+  });
+
+  it.each([10, 5_000])("shares one %i ms close budget when both unlock and end never respond", async (endTimeoutMs) => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    const fixture = clientFixture([true]);
+    const lease = await acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "instance", {
+      endTimeoutMs,
+    });
+    fixture.connection.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    fixture.client.end.mockImplementation(() => new Promise<never>(() => undefined));
+    const settled = vi.fn();
+    const releasing = lease.release().then(settled);
+
+    await vi.advanceTimersByTimeAsync(endTimeoutMs - 1);
+    expect(fixture.client.end).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fixture.connection.release).toHaveBeenCalledOnce();
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 0 });
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+
+    await releasing;
+    expect(settled).toHaveBeenCalledOnce();
+    expect(performance.now()).toBe(endTimeoutMs + 100);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("passes only the remaining seconds to end and lets its timer finish first", async () => {
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    const fixture = clientFixture([true]);
+    const lease = await acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "instance");
+    fixture.connection.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve([]), 1_250)));
+    const clientClosed = vi.fn();
+    fixture.client.end.mockImplementation(
+      (options) =>
+        new Promise((resolve) => {
+          setTimeout(
+            () => {
+              clientClosed();
+              resolve(undefined);
+            },
+            (options?.timeout ?? 0) * 1_000,
+          );
+        }),
+    );
+    const settled = vi.fn();
+    const releasing = lease.release().then(settled);
+
+    await vi.advanceTimersByTimeAsync(1_250);
+    expect(fixture.client.end).toHaveBeenCalledWith({ timeout: 3.75 });
+    await vi.advanceTimersByTimeAsync(3_749);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    await releasing;
+    expect(clientClosed).toHaveBeenCalledOnce();
+    expect(performance.now()).toBe(5_000);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("passes an explicit short lifetime to the dedicated client for lifetime-bound tests", async () => {

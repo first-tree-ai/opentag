@@ -1,0 +1,292 @@
+import { randomUUID } from "node:crypto";
+import type { SessionReconcileRequest, TurnReportRequest } from "@opentag/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AdmissionController } from "../runtime/admission-controller.js";
+import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
+import type { LocalSessionBinding } from "../runtime/session-binding-store.js";
+import { SessionMessageInbox } from "../runtime/session-message-inbox.js";
+import { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
+import {
+  messageFixture,
+  ObservedDurabilityStore,
+  reportFixture,
+  reportReceipt,
+} from "./support/durable-work-contract.js";
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+});
+
+function ownerFixture(persistence = new ObservedDurabilityStore()) {
+  let now = 10_000;
+  const send = vi.fn(async (_frame: unknown): Promise<void> => undefined);
+  const owner = new TurnReportOwner({
+    connection: {
+      state: "registered",
+      send,
+      subscribeState(listener) {
+        listener("registered");
+        return () => undefined;
+      },
+    },
+    persistence,
+    now: () => ++now,
+    retryPolicy: { baseDelayMs: 100, maxDelayMs: 100, maxAgeMs: 1_000, maxAttempts: 10 },
+  });
+  cleanups.push(async () => {
+    owner.stop();
+    await owner.settled();
+    expect(persistence.rejected).toEqual([]);
+  });
+  return { owner, send, persistence };
+}
+
+function submit(owner: TurnReportOwner, report: TurnReportRequest): Promise<void> {
+  const pending = owner.submit(report, () => undefined);
+  void pending.catch(() => undefined);
+  return pending;
+}
+
+async function acknowledge(owner: TurnReportOwner, report: TurnReportRequest): Promise<void> {
+  await owner.handleResult({
+    type: "turn:report:result",
+    requestId: report.requestId,
+    turnId: report.turnId,
+    resultHash: report.resultHash,
+    status: "recorded",
+  });
+}
+
+async function waitForStatus(
+  persistence: ObservedDurabilityStore,
+  report: TurnReportRequest,
+  status: string,
+): Promise<void> {
+  await vi.waitFor(async () => expect(await persistence.status("turn-report", report.turnId)).toBe(status), {
+    interval: 1,
+  });
+}
+
+describe("Real-scheduler Client durable-work contract", () => {
+  it("settles a normal acknowledgement after the zero-delay timeout persisted retryable", async () => {
+    expect(vi.isFakeTimers()).toBe(false);
+    const { owner, send, persistence } = ownerFixture();
+    await owner.ready();
+    const report = reportFixture();
+    const pending = submit(owner, report);
+
+    await waitForStatus(persistence, report, "retryable");
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(persistence.edges).toContain("running -> retryable");
+    await acknowledge(owner, report);
+    await pending;
+    expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+    expect(persistence.edges).toContain("retryable -> succeeded");
+    expect(owner.pendingCount).toBe(0);
+  });
+
+  it("runs the real retry timer through retryable, accepted, and running", async () => {
+    const { owner, send, persistence } = ownerFixture();
+    send.mockRejectedValueOnce(new Error("transport unavailable"));
+    await owner.ready();
+    const report = reportFixture();
+    const pending = submit(owner, report);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2), { interval: 1 });
+    expect(persistence.edges).toEqual(
+      expect.arrayContaining(["running -> retryable", "retryable -> accepted", "accepted -> running"]),
+    );
+    await acknowledge(owner, report);
+    await pending;
+    expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+  });
+
+  it("hydrates interrupted running work, persists retryable, and sends again", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "running"));
+    const { owner, send } = ownerFixture(persistence);
+    await owner.ready();
+    const pending = submit(owner, report);
+    await vi.waitFor(() => expect(send).toHaveBeenCalled(), { interval: 1 });
+    expect(persistence.edges).toEqual(expect.arrayContaining(["running -> retryable", "retryable -> running"]));
+    await acknowledge(owner, report);
+    await pending;
+  });
+
+  it.each(["conflict", "stale_generation"] as const)(
+    "hydrates and explicitly rearms a retained %s report",
+    async (code) => {
+      const persistence = new ObservedDurabilityStore();
+      const report = reportFixture();
+      await persistence.storage.write({
+        ...reportReceipt(report, "failed"),
+        lastError: {
+          code,
+          category: "conflict",
+          phase: "request",
+          requestId: report.requestId,
+          retryability: "never",
+          message: code,
+        },
+      });
+      const { owner, send } = ownerFixture(persistence);
+      await owner.ready();
+      const pending = submit(owner, report);
+      expect(owner.rearmTerminal({ ...report, placementGeneration: 2 })).toBe(false);
+      expect(send).not.toHaveBeenCalled();
+      expect(owner.rearmTerminal(report)).toBe(true);
+      submit(owner, report);
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 });
+      expect(persistence.edges).toContain("failed -> running");
+      await acknowledge(owner, report);
+      await pending;
+    },
+  );
+
+  it("replays an age-expired Report through MvpTurnReportRecovery and delivers one frame", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write({ ...reportReceipt(report, "accepted"), acceptedAt: 1 });
+    const { owner, send } = ownerFixture(persistence);
+    await owner.ready();
+    await waitForStatus(persistence, report, "dead-letter");
+    expect(owner.pendingCount).toBe(0);
+    expect(owner.rearmTerminal(report)).toBe(false);
+    send.mockImplementation(async () => acknowledge(owner, report));
+
+    const { recovery, request, logs, recordResult } = replayFixture(owner, report);
+    const result = await recovery.prepare(request, {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: report.sessionId,
+      placementGeneration: 1,
+      status: "recovery_required",
+      reason: "unresolved_turn",
+      turn: { deliveryId: report.deliveryId, turnId: report.turnId },
+    });
+    expect(result.retainedReports).toHaveLength(1);
+    recovery.afterReconciled(request, result);
+    await vi.waitFor(() => expect(logs.some((entry) => entry.message === "Turn Report replay completed")).toBe(true), {
+      interval: 1,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(report, { priority: "report" });
+    expect(recordResult).toHaveBeenCalledTimes(1);
+    expect(persistence.edges).toEqual(
+      expect.arrayContaining(["accepted -> dead-letter", "dead-letter -> dead-letter", "dead-letter -> running"]),
+    );
+    expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+  });
+
+  it.each(["succeeded", "retry", "failed", "dead-letter"] as const)(
+    "runs the Inbox %s path with real timers",
+    async (outcome) => {
+      const persistence = new ObservedDurabilityStore();
+      const request = messageFixture();
+      let now = 10_000;
+      let attempts = 0;
+      const prompt = vi.fn(async () => {
+        attempts += 1;
+        if (outcome === "failed") throw { message: "blocked", retryability: "never" };
+        if (outcome === "dead-letter" || (outcome === "retry" && attempts === 1))
+          throw new Error("provider unavailable");
+        return { status: "completed", output: [] };
+      });
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        persistence,
+        now: () => ++now,
+        credentialEnvironment: { cleanup: vi.fn(), prepare: vi.fn() },
+        imCredentialGrantVersion: () => 2,
+        logger: { warn: vi.fn() },
+        retryPolicy: {
+          baseDelayMs: 10,
+          maxDelayMs: 10,
+          maxAgeMs: 1_000,
+          maxAttempts: outcome === "dead-letter" ? 1 : 5,
+        },
+        reconciler: {
+          checkSessionMessageDelivery: () => undefined,
+          clearActivity: () => true,
+          setActivity: () => undefined,
+          withAgentLock: async (_agentId, action) => action(),
+        },
+        runtimeManager: {
+          sessionKind: () => "internal",
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(), prompt }) as never),
+        },
+      });
+      cleanups.push(async () => {
+        inbox.stop();
+        await inbox.settled();
+        expect(persistence.rejected).toEqual([]);
+      });
+      await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+      const status = outcome === "retry" ? "succeeded" : outcome;
+      await vi.waitFor(
+        async () =>
+          expect(await persistence.status("session-message", `${request.targetSessionId}:${request.messageId}`)).toBe(
+            status,
+          ),
+        { interval: 1 },
+      );
+      await inbox.settled();
+      expect(persistence.edges).toContain("accepted -> running");
+      if (outcome === "retry")
+        expect(persistence.edges).toEqual(
+          expect.arrayContaining(["running -> retryable", "retryable -> accepted", "running -> succeeded"]),
+        );
+    },
+  );
+});
+
+function replayFixture(owner: TurnReportOwner, report: TurnReportRequest) {
+  const logs: RecordedLog[] = [];
+  const binding: LocalSessionBinding = {
+    schemaVersion: 3,
+    agentId: report.agentId,
+    sessionId: report.sessionId,
+    placementGeneration: 1,
+    workspaceId: "workspace",
+    provider: "codex",
+    providerHomeIdentity: "a".repeat(64),
+    appliedSessionRevisionSequence: 1,
+    appliedSessionRevisionId: "revision",
+    sessionConfigHash: "a".repeat(64),
+    lastEffectiveSnapshotHash: "a".repeat(64),
+    recentRecordedInputs: [],
+    unresolvedTurn: {
+      requestId: report.requestId,
+      deliveryId: report.deliveryId,
+      turnId: report.turnId,
+      inputHash: "a".repeat(64),
+      phase: "reporting",
+      report,
+      resultHash: report.resultHash,
+    },
+  };
+  const recordResult = vi.fn(async () => binding);
+  const recovery = new MvpTurnReportRecovery({
+    reportOwner: owner,
+    logger: recordingLogger(logs),
+    bindingStore: { read: async () => binding, recordResult, updateUnresolved: vi.fn() },
+    reconciler: {
+      claimRecovery: () => true,
+      clearRecovery: vi.fn(),
+      withAgentLock: async (_agentId, action) => action(),
+    },
+  });
+  const request: SessionReconcileRequest = {
+    type: "session:reconcile",
+    requestId: randomUUID(),
+    installationId: "computer",
+    agentId: report.agentId,
+    sessionId: report.sessionId,
+    placementGeneration: 1,
+    desired: "ready",
+    runtime: messageFixture().runtime,
+  };
+  return { recovery, request, logs, recordResult };
+}

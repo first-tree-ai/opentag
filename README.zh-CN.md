@@ -4,11 +4,12 @@
 
 # OpenTag
 
-**开源的 AI 同事。**
+__你的模型、你的机器、你的 AI 同事__
 
-就在你的 Slack 和飞书里。在话题里 @ 它一下，活就干了：用你已经在付费的编码 agent 和模型套餐，
-工作区以纯文本文件的形式留在你自己的机器上。免费，Apache 2.0：tag 归你、文件归你、套餐用你自己的。
-它跑在你的机器上。
+- **在 Slack 或飞书里给 agent 发消息** - 它在本地运行、在频道里回复
+- **agent 之间可以互相沟通**，一个 agent 可以委派任务给其他 agent 并检查进度
+- **自带** Claude、Codex 或 Pi agent
+- **开源**、**可自托管**
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
@@ -21,49 +22,14 @@
 
 </div>
 
-> 权威来源：[README.md](./README.md)　·　同步日期：2026-09-02
+OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和运行在你自己的机器上、使用你自己
+选的模型提供方的 AI agent 对话。
+
+> 权威来源：[README.md](./README.md)　·　同步日期：2026-09-03
 
 <p align="center">
   <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
 </p>
-
----
-
-## OpenTag 是什么
-
-你已经在为 Claude Code 或 Codex 付费，但 Agent 住在某一个人笔记本的终端里。OpenTag 把它放进房间：
-整个频道共用的一个机器人，跑在你自己的机器上。
-
-- **[飞书与 Slack](#聊天平台) →** 绑定 Agent，邀请它进频道，然后 @ 它。
-- **[Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md) →** 每个频道一个长生命周期 Session；话题按需获得自己的 Session。
-- **[以它自己的身份回复](./docs/zh-CN/direct-provider-cli.md) →** Agent 持有受限的 IM 凭证，自行决定回复、开话题还是加 Reaction。
-- **不丢活 →** 消息先持久化再显式移交托管；Agent 绑定带 revision fencing。
-
----
-
-## 打得开的上下文。
-
-*它就存在你机器上的文件里，而不是一个需要你申请才能看的存储。*
-
-- **来自它所在的每个频道 →** [Thread Session](./docs/zh-CN/thread-sessions.md) 带上有界的根消息与话题历史，Agent 从大家真正说过的话开始。
-- **就是纯文本文件 →** 工作区和运行时状态都在 `${OPENTAG_HOME}` 下，默认私有。OpenTag 不会把这些文件上传到任何地方。
-- **[Agent 之间互相沟通](./docs/zh-CN/internal-session-collaboration.md) →** 持久化的 internal Session，带显式重试。
-
-## 它用那台机器上已有的工具干活。
-
-*没有 OpenTag connector 要配置，因为中间就没有一层 OpenTag connector。*
-
-- **它的 runtime 能调用什么，它就能用什么 →** 只要一个工具在那台 Computer 上装好、登录过、并且对所选 provider runtime 可见，Agent 就能在话题里用它，权限仍由那个工具自己说了算。OpenTag 不替它去发现或暴露工具。
-- **不托管任何凭证 →** OpenTag 从不索要 provider API key。这些 CLI 按你自己运行它们时一模一样的方式，向它们各自的 provider 认证。
-
-## 整套都归你。
-
-*tag 归你、上下文归你、套餐用你自己的。*
-
-- **模型不锁定 →** [Codex 和 Claude Code](#runtime) 以你机器上已登录的 CLI 形式运行。OpenTag 不附带模型，也从不索要 provider 密钥。
-- **工作区文件留在本地 →** 工作区和运行时状态都在你控制的硬件上，而不是一个可能把你锁在门外的厂商账号里。至于 Agent 往它的 provider 发了什么、provider 又留存多久，那是你和 provider 之间的事。
-- **tag 归你 →** Apache 2.0，没有托管服务例外条款，也没有商用附加条件。[LICENSE](./LICENSE)
-- **哪里都能跑 →** `ghcr.io/first-tree-ai/opentag`，按 commit 发布，指向你自己的 PostgreSQL。[部署指南](./docs/zh-CN/deploying.md)
 
 ---
 

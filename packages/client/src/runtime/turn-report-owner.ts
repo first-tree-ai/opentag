@@ -50,6 +50,7 @@ export type TurnReportRearmClaim = Pick<
 interface PendingReport {
   confirm?: () => Promise<void> | void;
   confirming: boolean;
+  settling: boolean;
   promise: Promise<void>;
   report: TurnReportRequest;
   resolve(): void;
@@ -166,6 +167,7 @@ export class TurnReportOwner {
     if (existing.report.requestId !== report.requestId || existing.report.resultHash !== report.resultHash) {
       return Promise.reject(new Error("A different Turn Report already owns this Turn"));
     }
+    if (existing.settling) return existing.promise;
     if (options.onTerminal) {
       if (existing.serverStatus) this.#notifyTerminal(options.onTerminal, existing.serverStatus);
       else existing.terminalListeners.add(options.onTerminal);
@@ -195,6 +197,7 @@ export class TurnReportOwner {
       report,
       confirm,
       confirming: false,
+      settling: false,
       sending: false,
       resendRequested: false,
       promise,
@@ -271,12 +274,15 @@ export class TurnReportOwner {
     try {
       await confirm();
       pending.confirming = false;
-      if (!this.#detach(pending)) return true;
+      // Keep the pending identity fenced until #persist publishes succeeded to #records.
+      pending.settling = true;
       try {
-        await this.#transition(pending, "succeeded", { nextAttemptAt: undefined }, { detached: true });
-        this.#settle(pending, { kind: "resolve" }, { detached: true });
+        await this.#transition(pending, "succeeded", { nextAttemptAt: undefined }, { settling: true });
+        // #transition publishes the durable row before this fence is released.
+        if (!this.#releaseSettling(pending)) return true;
+        this.#settle(pending, { kind: "resolve" });
       } catch (error) {
-        this.#settle(pending, { kind: "reject", error: asError(error) }, { detached: true });
+        this.#settle(pending, { kind: "reject", error: asError(error) });
       }
     } catch (error) {
       pending.confirming = false;
@@ -299,7 +305,7 @@ export class TurnReportOwner {
   rearmTerminal(claim: TurnReportRearmClaim): boolean {
     if (this.#stopped) return false;
     const pending = this.#pending.get(claim.turnId);
-    if (!pending?.serverStatus || !reportMatchesRearmClaim(pending.report, claim)) return false;
+    if (!pending?.serverStatus || pending.settling || !reportMatchesRearmClaim(pending.report, claim)) return false;
     pending.serverStatus = undefined;
     return true;
   }
@@ -356,7 +362,7 @@ export class TurnReportOwner {
   }
 
   #scheduleRetry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): void {
-    if (this.#retryTimers.has(record.key) || this.#stopped || pending.serverStatus) return;
+    if (this.#retryTimers.has(record.key) || this.#stopped || pending.serverStatus || pending.settling) return;
     const delay =
       record.nextAttemptAt === undefined ? this.#retryDelayMs : Math.max(0, record.nextAttemptAt - this.#now());
     const timer = this.#scheduler.schedule(delay, () => {
@@ -424,6 +430,7 @@ export class TurnReportOwner {
       report: record.payload,
       confirm: undefined,
       confirming: false,
+      settling: false,
       sending: false,
       resendRequested: false,
       promise,
@@ -442,9 +449,10 @@ export class TurnReportOwner {
     pending: PendingReport,
     status: DurableWorkRecord<TurnReportRequest>["status"],
     fields: Partial<DurableWorkRecord<TurnReportRequest>> = {},
-    options: { detached?: boolean } = {},
+    options: { detached?: boolean; settling?: boolean } = {},
   ): Promise<DurableWorkRecord<TurnReportRequest> | undefined> {
-    if ((!options.detached && !this.#canWrite(pending)) || (options.detached && this.#stopped)) return undefined;
+    if ((!options.detached && !this.#canWrite(pending, options.settling)) || (options.detached && this.#stopped))
+      return undefined;
     // #records is published only after persistence succeeds, so it is the last server-backed from-state.
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const next = { ...record, ...fields, status, updatedAt: this.#now(), payload: pending.report };
@@ -505,8 +513,13 @@ export class TurnReportOwner {
     return this.#pending.get(pending.report.turnId) === pending;
   }
 
-  #canWrite(pending: PendingReport): boolean {
-    return !this.#stopped && this.#isCurrent(pending) && !pending.persistencePending;
+  #canWrite(pending: PendingReport, allowSettling = false): boolean {
+    return (
+      !this.#stopped &&
+      this.#isCurrent(pending) &&
+      (allowSettling || !pending.persistencePending) &&
+      (allowSettling || !pending.settling)
+    );
   }
 
   #canStartRunning(pending: PendingReport): boolean {
@@ -518,6 +531,12 @@ export class TurnReportOwner {
     if (!this.#isCurrent(pending)) return false;
     this.#clearRetry(pending);
     this.#pending.delete(pending.report.turnId);
+    return true;
+  }
+
+  #releaseSettling(pending: PendingReport): boolean {
+    if (!this.#isCurrent(pending)) return false;
+    pending.settling = false;
     return true;
   }
 

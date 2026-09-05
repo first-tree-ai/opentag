@@ -137,6 +137,30 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     );
   });
 
+  it("lets existing work finish after budgets are reduced but still charges rearm", async () => {
+    const original = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
+    const first = { ...sessionRecord(), key: "first" };
+    const second = { ...sessionRecord(), key: "second" };
+    await original.write(computerId, first);
+    await original.write(computerId, second);
+    const limited = new PostgresRuntimeDurableWorkStore(unit.database, {
+      now: () => 1,
+      maxRecordsPerComputer: 1,
+      maxPayloadBytesPerComputer: 1,
+    });
+    await limited.write(computerId, { ...first, status: "running", updatedAt: 2 });
+    await limited.write(computerId, { ...first, status: "failed", updatedAt: 3 });
+    await limited.write(computerId, { ...second, status: "running", updatedAt: 4 });
+    await expect(limited.write(computerId, { ...first, status: "running", updatedAt: 5 })).rejects.toMatchObject({
+      name: "RuntimeDurableWorkQuotaExceededError",
+      quota: "records",
+      current: 1,
+      requested: 2,
+    });
+    await limited.write(computerId, { ...second, status: "succeeded", updatedAt: 6 });
+    await expect(limited.write(computerId, { ...first, status: "running", updatedAt: 7 })).resolves.toBeUndefined();
+  });
+
   it.each(["failed", "dead-letter"] as const)("charges %s rearm against the active row quota", async (status) => {
     const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 10, maxRecordsPerComputer: 1 });
     const first = { ...sessionRecord(), key: "first", updatedAt: 10 };

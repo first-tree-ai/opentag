@@ -235,10 +235,7 @@ export class PostgresRuntimeDurableWorkStore {
     if (!isAllowedTransition(existing.status, record.status)) {
       throw new RuntimeDurableWorkTransitionError(existing.status, record.status);
     }
-    // Payload identity is immutable, but rearming a terminal receipt consumes an active slot.
-    if (!isNonTerminalStatus(existing.status) && isNonTerminalStatus(record.status)) {
-      await this.#assertQuota(transaction, computerId, record.status, payloadBytes, existing);
-    }
+    await this.#assertQuota(transaction, computerId, record.status, payloadBytes, existing);
     const updated = await transaction
       .update(runtimeDurableWork)
       .set(recordValues(computerId, record))
@@ -256,15 +253,19 @@ export class PostgresRuntimeDurableWorkStore {
     incomingPayloadBytes: number,
     replacing?: RuntimeDurableWorkRow,
   ): Promise<void> {
+    const recordDelta =
+      Number(isNonTerminalStatus(incomingStatus)) -
+      Number(replacing !== undefined && isNonTerminalStatus(replacing.status));
+    const payloadDelta = incomingPayloadBytes - (replacing ? serializedPayloadBytes(replacing.payload) : 0);
+    // Existing work can finish even when a configured budget has been reduced.
+    if (recordDelta <= 0 && payloadDelta <= 0) return;
     const rows = await transaction
       .select({ payload: runtimeDurableWork.payload, status: runtimeDurableWork.status })
       .from(runtimeDurableWork)
       .where(eq(runtimeDurableWork.computerId, computerId));
     const currentRecords = rows.filter((row) => isNonTerminalStatus(row.status)).length;
-    const replacingNonTerminal = replacing ? isNonTerminalStatus(replacing.status) : false;
-    const requestedRecords =
-      currentRecords - Number(replacingNonTerminal) + Number(isNonTerminalStatus(incomingStatus));
-    if (requestedRecords > currentRecords && requestedRecords > this.#maxRecordsPerComputer) {
+    const requestedRecords = currentRecords + recordDelta;
+    if (recordDelta > 0 && requestedRecords > this.#maxRecordsPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "records",
         this.#maxRecordsPerComputer,
@@ -273,13 +274,12 @@ export class PostgresRuntimeDurableWorkStore {
       );
     }
     const currentPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
-    const requestedPayloadBytes =
-      currentPayloadBytes - (replacing ? serializedPayloadBytes(replacing.payload) : 0) + incomingPayloadBytes;
-    if (requestedPayloadBytes > currentPayloadBytes && requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
+    const requestedPayloadBytes = currentPayloadBytes + payloadDelta;
+    if (payloadDelta > 0 && requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "payload-bytes",
         this.#maxPayloadBytesPerComputer,
-        currentPayloadBytes - (replacing ? serializedPayloadBytes(replacing.payload) : 0),
+        currentPayloadBytes,
         requestedPayloadBytes,
       );
     }

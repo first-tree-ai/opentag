@@ -394,20 +394,30 @@ function ComputerConnectPresentation({
   const comment = targetName
     ? m.computer_connect_repair_command_comment({ computerName: targetName })
     : m.computer_connect_create_command_comment();
+  // Idle repair has no command to introduce yet, and the surface already asks whether one is
+  // wanted. The row stays so the block does not jump once the command and its countdown arrive.
   const intro =
-    state.kind === "idle" && targetName
-      ? m.computer_connect_repair_intro({ computerName: targetName })
+    state.kind === "idle"
+      ? undefined
       : targetName
         ? m.computer_connect_repair_command_intro({ computerName: targetName })
         : m.computer_connect_create_command_intro();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
-      <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">
-        <p className="text-sm text-kumo-subtle m-0">{intro}</p>
-        <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
-          {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+      {/* Reserved from the first issued command onward, so the block does not jump when the
+          countdown arrives. Idle has neither half of the row, and holding 20px of nothing there
+          detached the command block from whatever heading a caller puts above it. */}
+      {intro ? (
+        <div
+          className="ots-command-lead flex items-center justify-between gap-3"
+          data-ui="computer-connect-command-lead"
+        >
+          <p className="text-sm text-kumo-subtle m-0">{intro}</p>
+          <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
+            {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+          </div>
         </div>
-      </div>
+      ) : null}
       <ConnectCommandSurface comment={comment} error={error} issue={issue} state={state} />
       <AttemptStatus
         error={state.kind === "issue-failed" || state.kind === "expired" ? undefined : error}

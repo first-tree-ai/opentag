@@ -92,7 +92,6 @@
   "agent_settings_reasoning_minimal": "最低",
   "agent_settings_reasoning_saved_value": "{value}（已保存值）",
   "agent_settings_reasoning_xhigh": "极高",
-  "agent_settings_reconnecting_description": "重新连接后，在此 Computer 上运行的所有 Agent 都会恢复。",
   "agent_settings_resources_title": "资源",
   "agent_settings_resume_button": "恢复 Agent",
   "agent_settings_resume_failed": "无法恢复此 Agent，请重试。",

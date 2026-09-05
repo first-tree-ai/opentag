@@ -274,6 +274,13 @@
       "when": 1788610241975,
       "tag": "0038_wakeful_genesis",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1788627669542,
+      "tag": "0039_dizzy_albert_cleary",
+      "breakpoints": true
     }
   ]
 }

@@ -195,6 +195,11 @@
       "idx": 38,
       "tag": "0038_wakeful_genesis",
       "sha256": "04fc869fa8b4bf02ec9678ffcea63542dbbde896d1042cbb616714da2187b8f0"
+    },
+    {
+      "idx": 39,
+      "tag": "0039_dizzy_albert_cleary",
+      "sha256": "39faf99d3b94258f32a3b7ca9a65594fd9e8fa4403b6b1c122bc19f8a4036d8c"
     }
   ]
 }

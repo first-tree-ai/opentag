@@ -19,17 +19,11 @@ import {
   labScenarioStartsWithCreation,
 } from "./agent-setup-lab-model.js";
 import { RUNTIMES } from "./flow.js";
-import { preparationReadinessRows } from "./preparation-readiness.js";
-import {
-  isReadinessScenario,
-  READINESS_SCENARIOS,
-  type ReadinessScenario,
-  readinessScenarioLabel,
-} from "./readiness-lab-fixtures.js";
+import { preparationReadinessRows, preparationSummaryRows } from "./preparation-readiness.js";
 import type { CheckRow } from "./readiness-list.js";
 import type { MemorySetupAdapter } from "./setup-memory-adapter.js";
 
-type LabScenarioOption = LabScenario | ReadinessScenario;
+type LabScenarioOption = LabScenario;
 
 type LabScenarioCopy = Readonly<{ label: () => string; description: () => string }>;
 
@@ -105,7 +99,7 @@ function scenarioDescription(scenario: LabScenario): string {
 }
 
 function scenarioAllowsRuntimeOverride(scenario: LabScenarioOption): boolean {
-  return !isReadinessScenario(scenario) && !labScenarioStartsWithCreation(scenario);
+  return !labScenarioStartsWithCreation(scenario);
 }
 
 function journeyLabel(journey: LabJourney): string {
@@ -148,13 +142,11 @@ function pendingLabel(event: LabPendingEvent | undefined): string {
 }
 
 function controlButtonLabel(scenario: LabScenarioOption, status: string, customizationCount: number): string {
-  if (isReadinessScenario(scenario)) return status;
   if (customizationCount > 0) return `${m.onboarding_v2_lab_custom_state()} · ${status}`;
   return `${scenarioLabel(scenario)} · ${status}`;
 }
 
-function controlSubtitle(scenario: LabScenarioOption, status: string, customizationCount: number): string {
-  if (isReadinessScenario(scenario)) return status;
+function controlSubtitle(scenario: LabScenarioOption, customizationCount: number): string {
   if (customizationCount > 0) {
     return `${scenarioLabel(scenario)} · ${m.onboarding_v2_lab_overrides_changed({ count: customizationCount })}`;
   }
@@ -251,15 +243,15 @@ function messagingConnectionState(snapshot: AgentSetupSnapshot): LabStateItem {
 
 function LabStateSummary({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
   const full = preparationReadinessRows(snapshot);
+  const summary = preparationSummaryRows(snapshot);
   const rows: readonly LabStateItem[] = [
     readinessStateItem("computer", m.onboarding_v2_prep_computer_label(), full.computer),
     readinessStateItem(
       "runtime",
       m.onboarding_v2_lab_state_runtime({ runtime: runtimeLabel(snapshot.runtime.provider) }),
-      full.runtime,
+      summary.runtime,
     ),
-    readinessStateItem("im-cli:feishu", `${messagingProviderLabel("feishu")} CLI`, full.feishu),
-    readinessStateItem("im-cli:slack", `${messagingProviderLabel("slack")} CLI`, full.slack),
+    readinessStateItem("messaging-support", m.onboarding_v2_prep_messaging_label(), summary.messaging),
     messagingConnectionState(snapshot),
   ] as const;
   return (
@@ -284,56 +276,7 @@ function LabStateSummary({ snapshot }: { readonly snapshot: AgentSetupSnapshot }
 }
 
 function LabScenarioDescription({ scenario }: { readonly scenario: LabScenarioOption }) {
-  if (isReadinessScenario(scenario)) return null;
   return <p className="text-xs text-kumo-subtle m-0">{scenarioDescription(scenario)}</p>;
-}
-
-function ComponentFixtureControl({
-  container,
-  onScenarioChange,
-  scenario,
-}: {
-  readonly container: RefObject<HTMLDivElement | null>;
-  readonly onScenarioChange: (scenario: LabScenarioOption) => void;
-  readonly scenario: LabScenarioOption;
-}) {
-  const fixtureId = useId();
-  const readinessFixture = isReadinessScenario(scenario);
-
-  return (
-    <Collapsible.Root
-      className="border-t border-kumo-line pt-3"
-      defaultOpen={readinessFixture}
-      key={readinessFixture ? "fixture" : "scenario"}
-    >
-      <Collapsible.Trigger
-        render={<Button className="w-full justify-between" size="compact" type="button" variant="ghost" />}
-      >
-        {m.onboarding_v2_lab_component_fixtures()}
-        <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
-      </Collapsible.Trigger>
-      <Collapsible.Panel className="mt-3 grid gap-1">
-        <label className="text-xs text-kumo-subtle" htmlFor={fixtureId}>
-          {m.onboarding_v2_lab_component_fixtures()}
-        </label>
-        <KumoSelectControl
-          container={container}
-          id={fixtureId}
-          onChange={(event) => onScenarioChange(event.target.value as ReadinessScenario)}
-          value={readinessFixture ? scenario : ""}
-        >
-          <option disabled value="">
-            {m.onboarding_v2_lab_component_fixture_none()}
-          </option>
-          {READINESS_SCENARIOS.map((candidate) => (
-            <option key={candidate} value={candidate}>
-              {readinessScenarioLabel(candidate)}
-            </option>
-          ))}
-        </KumoSelectControl>
-      </Collapsible.Panel>
-    </Collapsible.Root>
-  );
 }
 
 function FlowProgressControl({
@@ -490,8 +433,7 @@ export function AgentSetupLabControls({
   const runtimeId = useId();
   const messagingId = useId();
   const panelId = useId();
-  const readinessFixture = isReadinessScenario(scenario);
-  const showJourney = !isReadinessScenario(scenario) && labScenarioStartsWithCreation(scenario);
+  const showJourney = labScenarioStartsWithCreation(scenario);
   const showRuntimeOverride = scenarioAllowsRuntimeOverride(scenario);
   const { computerConnectState, snapshot } = memory.inspect();
   const canFailPending =
@@ -529,7 +471,7 @@ export function AgentSetupLabControls({
           <header className="flex items-center justify-between gap-3">
             <div className="grid gap-0.5">
               <strong className="text-sm text-kumo-strong">{m.onboarding_v2_lab_title()}</strong>
-              <span className="text-xs text-kumo-subtle">{controlSubtitle(scenario, status, customizationCount)}</span>
+              <span className="text-xs text-kumo-subtle">{controlSubtitle(scenario, customizationCount)}</span>
             </div>
             <Button onClick={onReset} size="compact" variant="ghost">
               {m.onboarding_v2_lab_reset()}
@@ -565,13 +507,8 @@ export function AgentSetupLabControls({
               container={panelRef}
               id={scenarioId}
               onChange={(event) => onScenarioChange(event.target.value as LabScenarioOption)}
-              value={readinessFixture ? "" : scenario}
+              value={scenario}
             >
-              {readinessFixture ? (
-                <option disabled value="">
-                  {m.onboarding_v2_lab_scenario_core_placeholder()}
-                </option>
-              ) : null}
               {LAB_SCENARIOS.map((candidate) => (
                 <option key={candidate} value={candidate}>
                   {scenarioLabel(candidate)}
@@ -580,22 +517,19 @@ export function AgentSetupLabControls({
             </KumoSelectControl>
             <LabScenarioDescription scenario={scenario} />
           </div>
+          <LabStateSummary snapshot={snapshot} />
 
-          {!readinessFixture ? <LabStateSummary snapshot={snapshot} /> : null}
+          <FlowProgressControl
+            automation={automation}
+            canFailPending={canFailPending}
+            computerConnectPending={computerConnectState === "pending"}
+            onAutomationChange={onAutomationChange}
+            onFailPending={onFailPending}
+            onRunPending={onRunPending}
+            pending={pending}
+          />
 
-          {!readinessFixture ? (
-            <FlowProgressControl
-              automation={automation}
-              canFailPending={canFailPending}
-              computerConnectPending={computerConnectState === "pending"}
-              onAutomationChange={onAutomationChange}
-              onFailPending={onFailPending}
-              onRunPending={onRunPending}
-              pending={pending}
-            />
-          ) : null}
-
-          <div hidden={readinessFixture}>
+          <div>
             <Collapsible.Root className="border-t border-kumo-line pt-3">
               <Collapsible.Trigger
                 render={<Button className="w-full justify-between" size="compact" type="button" variant="ghost" />}
@@ -686,8 +620,6 @@ export function AgentSetupLabControls({
               </Collapsible.Panel>
             </Collapsible.Root>
           </div>
-
-          <ComponentFixtureControl container={panelRef} onScenarioChange={onScenarioChange} scenario={scenario} />
         </div>
       </div>
     </aside>

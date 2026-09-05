@@ -2,7 +2,7 @@ import type { AgentRuntimeProvider, ImProvider } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { CreationIntentRequest } from "../agent-creation/creation-intent-store.js";
 import * as m from "../paraglide/messages.js";
-import { Button, KumoSelectControl, Loader, Text } from "../ui/design-system.js";
+import { Button, Loader, Text } from "../ui/design-system.js";
 import { AgentSetupLabControls } from "./agent-setup-lab-controls.js";
 import {
   automaticEventDelay,
@@ -22,21 +22,11 @@ import {
   runPendingLabEvent,
 } from "./agent-setup-lab-model.js";
 import { AgentSetupSurface } from "./page.js";
-import {
-  isReadinessScenario,
-  PREVIEW_RUNTIMES,
-  type PreviewRuntime,
-  type ReadinessScenario,
-  readinessRowsForScenario,
-  readinessScenarioLabel,
-  runtimeLabelFor,
-} from "./readiness-lab-fixtures.js";
-import { ReadinessList } from "./readiness-list.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
 
 type LabPhase = "creation" | "admission" | "setup";
 type LabNavigationTarget = "agent" | "agents";
-type LabScenarioOption = LabScenario | ReadinessScenario;
+type LabScenarioOption = LabScenario;
 type LabMemory = ReturnType<typeof createMemorySetupAdapter>;
 type LabCustomization = "computer" | "failure" | "inventory" | "messaging-provider" | "runtime";
 
@@ -67,7 +57,7 @@ function initialConfiguration(): LabConfiguration {
 }
 
 function initialPhase(scenario: LabScenarioOption): LabPhase {
-  return !isReadinessScenario(scenario) && labScenarioStartsWithCreation(scenario) ? "creation" : "setup";
+  return labScenarioStartsWithCreation(scenario) ? "creation" : "setup";
 }
 
 function phaseLabel(phase: LabPhase, memory: LabMemory): string {
@@ -81,24 +71,12 @@ function phaseLabel(phase: LabPhase, memory: LabMemory): string {
   return m.onboarding_v2_lab_status_ready();
 }
 
-function productionScenarioFor(scenario: LabScenarioOption): LabScenario {
-  return isReadinessScenario(scenario) ? "full-new-computer" : scenario;
-}
-
-function pendingEventFor(
-  readinessScenario: ReadinessScenario | undefined,
-  phase: LabPhase,
-  memory: LabMemory,
-): LabPendingEvent | undefined {
-  if (readinessScenario) return undefined;
+function pendingEventFor(phase: LabPhase, memory: LabMemory): LabPendingEvent | undefined {
   if (phase === "admission") return "complete-admission";
   return phase === "setup" ? pendingLabEvent(memory) : undefined;
 }
 
 function resetConfiguration(current: LabConfiguration): LabConfiguration {
-  if (isReadinessScenario(current.scenario)) {
-    return { ...current, failure: "none", revision: current.revision + 1 };
-  }
   const defaults = labScenarioDefaults(current.scenario);
   return {
     ...current,
@@ -110,9 +88,6 @@ function resetConfiguration(current: LabConfiguration): LabConfiguration {
 }
 
 function configurationForScenario(current: LabConfiguration, scenario: LabScenarioOption): LabConfiguration {
-  if (isReadinessScenario(scenario)) {
-    return { ...current, failure: "none", revision: current.revision + 1, scenario };
-  }
   const defaults = labScenarioDefaults(scenario);
   return {
     ...current,
@@ -141,36 +116,32 @@ function updateAfterMemoryRebuild(
   return updateCustomizations(updateCustomizations(current, "computer", false), customization, active);
 }
 
-/** The production New Agent surface and focused readiness fixtures over a controllable in-memory world. */
+/** The production New Agent surface over a controllable in-memory world. */
 export function AgentSetupLabPage() {
   const [configuration, setConfiguration] = useState<LabConfiguration>(initialConfiguration);
   const [customizations, setCustomizations] = useState<readonly LabCustomization[]>([]);
   const [navigationTarget, setNavigationTarget] = useState<LabNavigationTarget>();
   const [phase, setPhase] = useState<LabPhase>(() => initialPhase(configuration.scenario));
-  const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime>("codex");
-  const productionScenario = productionScenarioFor(configuration.scenario);
   const memory = useMemo(() => {
     // Reset increments the revision precisely to discard the current in-memory world.
     void configuration.revision;
     return createMemorySetupAdapter(
-      labSeed(productionScenario, configuration.inventory, configuration.runtime, configuration.messagingProvider),
+      labSeed(configuration.scenario, configuration.inventory, configuration.runtime, configuration.messagingProvider),
     );
   }, [
     configuration.inventory,
     configuration.messagingProvider,
     configuration.revision,
     configuration.runtime,
-    productionScenario,
+    configuration.scenario,
   ]);
   const version = useSyncExternalStore(memory.subscribe, memory.getVersion, memory.getVersion);
-  const readinessScenario = isReadinessScenario(configuration.scenario) ? configuration.scenario : undefined;
-  const pending = pendingEventFor(readinessScenario, phase, memory);
-  const status = readinessScenario ? readinessScenarioLabel(readinessScenario) : phaseLabel(phase, memory);
+  const pending = pendingEventFor(phase, memory);
+  const status = phaseLabel(phase, memory);
 
   const reset = useCallback(() => {
     setConfiguration(resetConfiguration);
     setCustomizations([]);
-    setPreviewRuntime("codex");
     setNavigationTarget(undefined);
     setPhase(initialPhase(configuration.scenario));
   }, [configuration.scenario]);
@@ -236,10 +207,14 @@ export function AgentSetupLabPage() {
     (inventory: LabInventory) => {
       setConfiguration((current) => ({ ...current, inventory, revision: current.revision + 1 }));
       setCustomizations((current) =>
-        updateAfterMemoryRebuild(current, "inventory", inventory !== labScenarioDefaults(productionScenario).inventory),
+        updateAfterMemoryRebuild(
+          current,
+          "inventory",
+          inventory !== labScenarioDefaults(configuration.scenario).inventory,
+        ),
       );
     },
-    [productionScenario],
+    [configuration.scenario],
   );
 
   const changeMessagingProvider = useCallback(
@@ -249,11 +224,11 @@ export function AgentSetupLabPage() {
         updateAfterMemoryRebuild(
           current,
           "messaging-provider",
-          messagingProvider !== labScenarioDefaults(productionScenario).messagingProvider,
+          messagingProvider !== labScenarioDefaults(configuration.scenario).messagingProvider,
         ),
       );
     },
-    [productionScenario],
+    [configuration.scenario],
   );
 
   const changeFailure = useCallback((failure: LabObservationFailure) => {
@@ -279,11 +254,7 @@ export function AgentSetupLabPage() {
         memory={memory}
         navigationTarget={navigationTarget}
         onNavigationTargetChange={setNavigationTarget}
-        onPreviewRuntimeChange={setPreviewRuntime}
         phase={phase}
-        previewRuntime={previewRuntime}
-        productionScenario={productionScenario}
-        readinessScenario={readinessScenario}
         version={version}
       />
       <AgentSetupLabControls
@@ -320,11 +291,7 @@ function LabPreview({
   memory,
   navigationTarget,
   onNavigationTargetChange,
-  onPreviewRuntimeChange,
   phase,
-  previewRuntime,
-  productionScenario,
-  readinessScenario,
   version,
 }: {
   readonly configuration: LabConfiguration;
@@ -332,22 +299,9 @@ function LabPreview({
   readonly memory: LabMemory;
   readonly navigationTarget: LabNavigationTarget | undefined;
   readonly onNavigationTargetChange: (target: LabNavigationTarget | undefined) => void;
-  readonly onPreviewRuntimeChange: (runtime: PreviewRuntime) => void;
   readonly phase: LabPhase;
-  readonly previewRuntime: PreviewRuntime;
-  readonly productionScenario: LabScenario;
-  readonly readinessScenario: ReadinessScenario | undefined;
   readonly version: number;
 }) {
-  if (readinessScenario) {
-    return (
-      <ReadinessLabView
-        onRuntimeChange={onPreviewRuntimeChange}
-        runtime={previewRuntime}
-        scenario={readinessScenario}
-      />
-    );
-  }
   if (navigationTarget) {
     return <LabNavigationPreview target={navigationTarget} onReturn={() => onNavigationTargetChange(undefined)} />;
   }
@@ -379,52 +333,12 @@ function LabPreview({
     <AgentSetupSurface
       agentId={LAB_AGENT_ID}
       computerAdapter={memory.computerAdapter}
-      key={`setup:${configuration.revision}:${productionScenario}:${configuration.inventory}:${configuration.runtime}:${configuration.messagingProvider}`}
+      key={`setup:${configuration.revision}:${configuration.scenario}:${configuration.inventory}:${configuration.runtime}:${configuration.messagingProvider}`}
       onExternalNavigation={() => undefined}
       onOpenAgent={() => onNavigationTargetChange("agent")}
       refreshSignal={version}
       setupAdapter={memory.adapter}
     />
-  );
-}
-
-function ReadinessLabView({
-  onRuntimeChange,
-  runtime,
-  scenario,
-}: {
-  readonly onRuntimeChange: (runtime: PreviewRuntime) => void;
-  readonly runtime: PreviewRuntime;
-  readonly scenario: ReadinessScenario;
-}) {
-  const rows = readinessRowsForScenario(scenario, runtime);
-  return (
-    <div className="otv2-readiness-lab min-h-screen bg-kumo-canvas" data-ui="readiness-lab">
-      <div className="otv2-readiness-lab__inner">
-        <Text as="h1" size="lg" variant="heading">
-          Readiness checklist
-        </Text>
-        <p className="m-0 text-sm text-kumo-subtle">Static review fixtures only — no live checks.</p>
-        <div className="otv2-readiness-lab__controls">
-          <label className="otv2-readiness-lab__label" htmlFor="readiness-lab-runtime">
-            Preview Runtime
-          </label>
-          <KumoSelectControl
-            className="otv2-readiness-lab__select"
-            id="readiness-lab-runtime"
-            onChange={(event) => onRuntimeChange(event.target.value as PreviewRuntime)}
-            value={runtime}
-          >
-            {PREVIEW_RUNTIMES.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {runtimeLabelFor(candidate, scenario)}
-              </option>
-            ))}
-          </KumoSelectControl>
-        </div>
-        <ReadinessList label="Readiness results" rows={rows} />
-      </div>
-    </div>
   );
 }
 

@@ -128,6 +128,7 @@ export const AgentUsageWindowDaysSchema = z.union([
 
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("idle") }).strict(),
+  z.object({ state: z.literal("unknown") }).strict(),
   z
     .object({
       state: z.literal("working"),

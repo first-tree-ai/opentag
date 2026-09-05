@@ -1,4 +1,4 @@
-import { FEISHU_REQUIRED_TENANT_SCOPES, type TurnReportRequest } from "@opentag/shared";
+import { FEISHU_REQUIRED_TENANT_SCOPES, RUNTIME_MAX_DURATION_MS, type TurnReportRequest } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
@@ -13,7 +13,7 @@ import {
   sessions,
 } from "../../../db/schema/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
-import { AgentService } from "../index.js";
+import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
 const REPORT_OWNER = "11111111-1111-4111-8111-111111111111";
@@ -371,8 +371,8 @@ describe("AgentService", () => {
     const listed = await service.listForAccount(bootstrap.userId);
     expect(listed.agents[0]).toMatchObject({
       activity: { state: "working", startedAt: workingAt.toISOString() },
-      usage: { tasks: 2, failed: 1, tokens },
     });
+    expect(listed.agents[0]?.usage).toEqual({ windowDays: 30, tasks: 2, failed: 1, tokens });
     const usage = await service.getUsageById(bootstrap.userId, created.id, 30);
     expect(usage).toMatchObject({
       tasks: 2,
@@ -390,6 +390,57 @@ describe("AgentService", () => {
     });
   });
 
+  it("projects an orphaned accepted delivery older than the recovery window as unknown", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "stale-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const staleAcceptedAt = new Date(NOW.getTime() - (AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS + 1) * 60 * 60 * 1_000);
+    await createDelivery(binding.id, session.id, { acceptedAt: staleAcceptedAt });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    const detail = await service.getById(bootstrap.userId, created.id);
+    expect(listed.agents[0]).toMatchObject({ id: created.id, activity: { state: "unknown" }, usage: { tasks: 1 } });
+    expect(detail.activity).toEqual({ state: "unknown" });
+    expect(listed.agents[0]?.activity).toEqual(detail.activity);
+  });
+
+  it("keeps every agent visible when another agent exceeds the activity limit", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const agentA = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent-a");
+    const agentB = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent-b");
+    const bindingA = await createBinding(agentA.id);
+    const sessionA = await createSession(bindingA.id);
+    for (let index = 0; index <= AGENT_ACTIVITY_READ_LIMIT; index += 1) {
+      await createDelivery(bindingA.id, sessionA.id, {
+        acceptedAt: new Date(NOW.getTime() - index * 1_000),
+        usage: {},
+      });
+    }
+    const bindingB = await createBinding(agentB.id);
+    const sessionB = await createSession(bindingB.id);
+    await createDelivery(bindingB.id, sessionB.id, { acceptedAt: NOW, usage: {} });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents).toHaveLength(2);
+    expect(listed.agents.find((agent) => agent.id === agentB.id)).toMatchObject({
+      activity: { state: "working", startedAt: NOW.toISOString() },
+    });
+  });
+
+  it("keeps a maximum-duration unresolved delivery working", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "maximum-duration-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const acceptedAt = new Date(NOW.getTime() - RUNTIME_MAX_DURATION_MS);
+    await createDelivery(binding.id, session.id, { acceptedAt, usage: {} });
+
+    await expect(service.listForAccount(bootstrap.userId)).resolves.toMatchObject({
+      agents: [{ id: created.id, activity: { state: "working", startedAt: acceptedAt.toISOString() } }],
+    });
+  });
+
   it("covers usage validation, date boundaries, and missing resources", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id);
@@ -403,6 +454,7 @@ describe("AgentService", () => {
       reportedAt: NOW,
       usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1 },
     });
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow("invalid token count");
     await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
   });
 
@@ -421,6 +473,9 @@ describe("AgentService", () => {
       reportedAt: NOW,
       usage: { inputTokens: Number.MAX_SAFE_INTEGER },
     });
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow(
+      "Agent usage token total exceeds the safe integer range",
+    );
     await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow(
       "token total exceeds the safe integer range",
     );

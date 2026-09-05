@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { SessionCliCreateRequest, SessionCliSendRequest } from "@opentag/shared";
+import {
+  RUNTIME_CAPABILITY,
+  type SessionCliCreateRequest,
+  type SessionCliSendRequest,
+  type SessionMessageDeliveryRequest,
+  type SessionReconcileRequest,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeRegistrySendError } from "../runtime/connection-registry.js";
-import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
+import WebSocket from "ws";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { RuntimeDomainOwner, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
 
@@ -95,16 +102,70 @@ describe("SessionCollaborationService", () => {
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
   });
 
-  it("returns the owner-elsewhere code when runtime delivery reaches a different owner", async () => {
-    const fixture = serviceFixture();
-    fixture.domain.requestReconcile.mockRejectedValue(
-      new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current"),
-    );
+  it("delivers through the real registry and domain owner when the binding stays current", async () => {
+    const fixture = await registryBackedFixture(true);
+    try {
+      await expect(fixture.service.send(fixture.request, fixture.source)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      expect(fixture.runtimeSocket.send).toHaveBeenCalledTimes(2);
+    } finally {
+      fixture.domain.close();
+    }
+  });
 
-    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-      status: "unreachable",
-      code: "RUNTIME_OWNER_ELSEWHERE",
+  it.each(["never-registered", "disconnected"])(
+    "reports %s runtime without a Server ownership claim",
+    async (state) => {
+      const fixture = await registryBackedFixture(state === "disconnected");
+      if (state === "disconnected") {
+        fixture.registry.remove(fixture.targetComputerId, fixture.instanceId, fixture.runtimeSocket);
+      }
+      try {
+        expect(fixture.registry.currentInstanceId(fixture.targetComputerId)).toBeUndefined();
+        await expect(fixture.service.send(fixture.request, fixture.source)).resolves.toMatchObject({
+          status: "unreachable",
+          code: "runtime_unavailable",
+        });
+        expect(fixture.runtimeSocket.send).not.toHaveBeenCalled();
+      } finally {
+        fixture.domain.close();
+      }
+    },
+  );
+
+  it.each([
+    ["disconnected", 1],
+    ["disconnected", 2],
+    ["replaced", 1],
+    ["replaced", 2],
+  ] as const)("uses the existing replacement code when %s before dispatch %i", async (state, failureDispatch) => {
+    const fixture = await registryBackedFixture(true);
+    let dispatch = 0;
+    fixture.sessions.withCollaborationDispatchAdmission.mockImplementation(async (_route, operation) => {
+      dispatch += 1;
+      if (dispatch === failureDispatch) {
+        if (state === "disconnected") {
+          fixture.registry.remove(fixture.targetComputerId, fixture.instanceId, fixture.runtimeSocket);
+        } else {
+          const replacement = { close: vi.fn(), send: vi.fn(), readyState: WebSocket.OPEN } as unknown as WebSocket;
+          await fixture.register(randomUUID(), replacement);
+        }
+      }
+      return { admitted: true, result: operation(() => undefined) };
     });
+    try {
+      await expect(fixture.service.send(fixture.request, fixture.source)).resolves.toMatchObject({
+        status: "unreachable",
+        code: "RUNTIME_INSTANCE_REPLACED",
+      });
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ errorCode: "RUNTIME_INSTANCE_REPLACED" }),
+      );
+      expect(fixture.runtimeSocket.send).toHaveBeenCalledTimes(failureDispatch - 1);
+    } finally {
+      fixture.domain.close();
+    }
   });
 
   it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {
@@ -261,6 +322,9 @@ function serviceFixture(
     registry,
     sessions,
     source,
+    instanceId,
+    targetComputerId,
+    targetInstallationId,
     targetSessionId,
     service: new SessionCollaborationService({
       assembler,
@@ -269,6 +333,77 @@ function serviceFixture(
       registry,
       sessions: sessions as never,
       logger,
+    }),
+  };
+}
+
+async function registryBackedFixture(connected: boolean) {
+  const fixture = serviceFixture();
+  const registry = new ConnectionRegistry();
+  const domain = new RuntimeDomainOwner(registry, { claimRetainedReports: async () => undefined } as never);
+  const runtimeSocket = {
+    readyState: WebSocket.OPEN,
+    close: vi.fn(),
+    terminate: vi.fn(),
+    send: vi.fn((serialized: string, callback: (error?: Error) => void) => {
+      const request = JSON.parse(serialized) as SessionReconcileRequest | SessionMessageDeliveryRequest;
+      callback();
+      const context = {
+        computerId: fixture.targetComputerId,
+        installationId: fixture.targetInstallationId,
+        instanceId: fixture.instanceId,
+        signal: new AbortController().signal,
+      };
+      void domain.handle(
+        request.type === "session:reconcile"
+          ? {
+              type: "session:reconcile:result",
+              requestId: request.requestId,
+              sessionId: request.sessionId,
+              placementGeneration: request.placementGeneration,
+              status: "ready",
+            }
+          : {
+              type: "session:message:deliver:result",
+              requestId: request.requestId,
+              messageId: request.messageId,
+              targetSessionId: request.targetSessionId,
+              placementGeneration: request.placementGeneration,
+              status: "accepted",
+            },
+        context,
+      );
+    }),
+  } as unknown as WebSocket;
+  const register = (instanceId: string, socket = runtimeSocket) =>
+    registry.register(
+      {
+        computerId: fixture.targetComputerId,
+        installationId: fixture.targetInstallationId,
+        instanceId,
+        lastHeartbeatAt: Date.now(),
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 2 },
+        socket,
+      },
+      async () => undefined,
+    );
+  if (connected) await register(fixture.instanceId);
+  fixture.sessions.withCollaborationDispatchAdmission.mockImplementation(async (_route, operation) => ({
+    admitted: true,
+    result: operation(() => undefined),
+  }));
+  return {
+    ...fixture,
+    registry,
+    domain,
+    register,
+    runtimeSocket,
+    request: sendRequest(fixture),
+    service: new SessionCollaborationService({
+      assembler: fixture.assembler,
+      sessions: fixture.sessions as never,
+      registry,
+      domain,
     }),
   };
 }

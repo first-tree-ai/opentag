@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type {
-  SessionMessageDeliveryRequest,
-  SessionMessageDeliveryResult,
-  SessionReconcileRequest,
-  SessionReconcileResult,
+import {
+  RUNTIME_CAPABILITY,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryResult,
+  type SessionReconcileRequest,
+  type SessionReconcileResult,
 } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
@@ -22,6 +24,7 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
@@ -439,6 +442,68 @@ describe("Session collaboration authority", () => {
         threadKey: "root-1",
       });
     } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("uses real registry bindings and stored daemon IDs without inferring a Server owner", async () => {
+    const fixture = await createFixture();
+    const registry = new ConnectionRegistry();
+    try {
+      const source = await fixture.sessions.ensureChatSession(
+        { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const register = async (instanceId: string) => {
+        const socket = { close: () => undefined } as unknown as WebSocket;
+        await registry.register(
+          {
+            computerId: fixture.computerId,
+            installationId: fixture.installationId,
+            instanceId,
+            lastHeartbeatAt: Date.now(),
+            negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 2 },
+            socket,
+          },
+          async () => {
+            await fixture.database
+              .update(computers)
+              .set({ currentInstanceId: instanceId })
+              .where(eq(computers.id, fixture.computerId));
+          },
+        );
+        return socket;
+      };
+      const socket = await register(fixture.connectionInstanceId);
+      const proofs = new SessionCliProofService(fixture.database, registry, new Uint8Array(32).fill(9));
+      const input = {
+        sessionId: source.session.id,
+        computerId: fixture.computerId,
+        placementGeneration: 1,
+        connectionInstanceId: fixture.connectionInstanceId,
+      };
+      const original = await proofs.mint(input);
+      await expect(proofs.authenticate(original.token)).resolves.toMatchObject({ sessionId: source.session.id });
+      const receiver = new SessionCliProofService(
+        fixture.database,
+        new ConnectionRegistry(),
+        new Uint8Array(32).fill(9),
+      );
+      await expect(receiver.authenticate(original.token)).rejects.toMatchObject({ code: "invalid_proof" });
+
+      registry.remove(fixture.computerId, fixture.connectionInstanceId, socket);
+      await expect(proofs.authenticate(original.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      const replacementId = randomUUID();
+      await register(replacementId);
+      await expect(proofs.authenticate(original.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      await expect(proofs.mint(input)).rejects.toMatchObject({ code: "runtime_unavailable" });
+      const replacement = await proofs.mint({ ...input, connectionInstanceId: replacementId });
+      expect(replacement.token).not.toBe(original.token);
+      await expect(proofs.authenticate(replacement.token)).resolves.toMatchObject({
+        connectionInstanceId: replacementId,
+      });
+    } finally {
+      registry.closeAll();
       await fixture.sql.end();
     }
   });

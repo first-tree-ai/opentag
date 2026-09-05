@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import type { NormalizedInboundImEvent, SessionReconcileRequest } from "@opentag/shared";
+import {
+  HTTP_PATHS,
+  type NormalizedInboundImEvent,
+  RUNTIME_CAPABILITY,
+  SESSION_CLI_PROOF_HEADER,
+  type SessionReconcileRequest,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type WebSocket from "ws";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
+import { createApp } from "../app.js";
 import {
   agents,
   computers,
@@ -15,6 +23,7 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { AgentService } from "../services/agents/index.js";
 import {
@@ -574,7 +583,7 @@ describe("SessionCliProofService with the unit database", () => {
     await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_unavailable" });
     registry.supportsCapability.mockReturnValue(true);
     registry.currentInstanceId.mockReturnValue(randomUUID());
-    await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_owner_elsewhere" });
+    await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_unavailable" });
     registry.currentInstanceId.mockReturnValue(fixture.instanceId);
     await expect(service.revoke(input)).resolves.toBeUndefined();
   });
@@ -606,10 +615,118 @@ describe("SessionCliProofService with the unit database", () => {
       .set({ generation: 1 })
       .where(eq(sessionPlacements.sessionId, session.session.id));
     registry.currentInstanceId.mockReturnValue(randomUUID());
-    await expect(service.authenticate(token)).rejects.toMatchObject({ code: "runtime_owner_elsewhere" });
+    await expect(service.authenticate(token)).rejects.toMatchObject({ code: "invalid_proof" });
     registry.currentInstanceId.mockReturnValue(fixture.instanceId);
     await db.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
     await expect(service.authenticate(token)).rejects.toMatchObject({ code: "invalid_proof" });
+  });
+
+  async function registerRuntime(registry: ConnectionRegistry, instanceId = fixture.instanceId) {
+    const socket = { close: vi.fn(), terminate: vi.fn() } as unknown as WebSocket;
+    await registry.register(
+      {
+        computerId: fixture.computerId,
+        installationId: fixture.installationId,
+        instanceId,
+        lastHeartbeatAt: fixture.now.getTime(),
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 2 },
+        socket,
+      },
+      async () => undefined,
+    );
+    return socket;
+  }
+
+  async function mintRegisteredProof(registry: ConnectionRegistry) {
+    const service = new SessionCliProofService(db.database, registry, new Uint8Array(32).fill(4));
+    const session = await new SessionService(db.database).ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+      "channel",
+    );
+    const input = {
+      sessionId: session.session.id,
+      computerId: fixture.computerId,
+      placementGeneration: 1,
+      connectionInstanceId: fixture.instanceId,
+    };
+    return { service, input, ...(await service.mint(input)) };
+  }
+
+  it("makes no Server ownership claim when a real receiving registry has no connection", async () => {
+    const ownerRegistry = new ConnectionRegistry();
+    await registerRuntime(ownerRegistry);
+    const proof = await mintRegisteredProof(ownerRegistry);
+    const receiverRegistry = new ConnectionRegistry();
+    const receiver = new SessionCliProofService(db.database, receiverRegistry, new Uint8Array(32).fill(4));
+
+    expect(receiverRegistry.currentInstanceId(fixture.computerId)).toBeUndefined();
+    await expect(proof.service.authenticate(proof.token)).resolves.toMatchObject({ sessionId: proof.input.sessionId });
+    await expect(receiver.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+    await expect(receiver.mint(proof.input)).rejects.toMatchObject({ code: "runtime_unavailable" });
+  });
+
+  it("rejects a disconnected real registry binding without claiming another Server owns it", async () => {
+    const registry = new ConnectionRegistry();
+    const socket = await registerRuntime(registry);
+    const proof = await mintRegisteredProof(registry);
+    registry.remove(fixture.computerId, fixture.instanceId, socket);
+    await db.database.update(computers).set({ currentInstanceId: null }).where(eq(computers.id, fixture.computerId));
+
+    expect(registry.currentInstanceId(fixture.computerId)).toBeUndefined();
+    await expect(proof.service.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+    await expect(proof.service.mint(proof.input)).rejects.toMatchObject({ code: "runtime_unavailable" });
+  });
+
+  it.each([false, true])(
+    "rejects an in-process replacement with shared state updated=%s",
+    async (updateSharedState) => {
+      const registry = new ConnectionRegistry();
+      const previous = await registerRuntime(registry);
+      const proof = await mintRegisteredProof(registry);
+      const replacementId = randomUUID();
+      await registerRuntime(registry, replacementId);
+      if (updateSharedState) {
+        await db.database
+          .update(computers)
+          .set({ currentInstanceId: replacementId })
+          .where(eq(computers.id, fixture.computerId));
+      }
+
+      expect(previous.close).toHaveBeenCalledWith(4001, "Replaced by a newer daemon instance");
+      expect(registry.currentInstanceId(fixture.computerId)).toBe(replacementId);
+      await expect(proof.service.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      await expect(proof.service.mint(proof.input)).rejects.toMatchObject({ code: "runtime_unavailable" });
+    },
+  );
+
+  it.each(["disconnected", "replaced"])("returns HTTP 401 for a %s real proof binding", async (state) => {
+    const registry = new ConnectionRegistry();
+    const socket = await registerRuntime(registry);
+    const proof = await mintRegisteredProof(registry);
+    if (state === "disconnected") registry.remove(fixture.computerId, fixture.instanceId, socket);
+    else await registerRuntime(registry, randomUUID());
+    const send = vi.fn();
+    const app = createApp({
+      loggerLevel: "silent",
+      runtimeSessions: {
+        proofs: proof.service,
+        sessions: new SessionService(db.database),
+        collaboration: { create: vi.fn(), send },
+      },
+    });
+    try {
+      const result = await app.inject({
+        method: "POST",
+        url: HTTP_PATHS.runtimeSessionMessages,
+        headers: { [SESSION_CLI_PROOF_HEADER]: proof.token },
+        payload: { messageId: randomUUID(), targetSessionId: proof.input.sessionId, message: "stale proof" },
+      });
+      expect(result.statusCode).toBe(401);
+      expect(result.json()).toMatchObject({ error: { code: "SESSION_PROOF_INVALID", category: "credential" } });
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
   });
 });
 

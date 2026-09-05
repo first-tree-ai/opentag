@@ -117,21 +117,21 @@ describe("Runtime Session CLI routes", () => {
     await app.close();
   });
 
-  it("reports when the proof belongs to a runtime owner on another Server instance", async () => {
+  it("keeps unavailable proof bindings on the credential error path", async () => {
     const app = createApp({
       runtimeSessions: {
         collaboration: { create: vi.fn(), send: vi.fn() },
         proofs: {
           authenticate: async () => {
-            throw new SessionCliProofError("runtime_owner_elsewhere", "owned elsewhere");
+            throw new SessionCliProofError("runtime_unavailable", "runtime binding is unavailable");
           },
         },
         sessions: { listInternalSessions: vi.fn() },
       },
     });
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSessions });
-    expect(response.statusCode).toBe(503);
-    expect(response.json()).toMatchObject({ error: { code: "RUNTIME_OWNER_ELSEWHERE" } });
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({ error: { code: "SESSION_PROOF_INVALID", category: "credential" } });
     await app.close();
   });
 

@@ -269,12 +269,12 @@ function response(
   return { messageId, status, ...(sessionId ? { sessionId } : {}), ...(code ? { code } : {}) };
 }
 
-function runtimeOwnerElsewhere(error: unknown): boolean {
+function runtimeInstanceReplaced(error: unknown): boolean {
   return error instanceof RuntimeRegistrySendError && error.code === "instance_replaced";
 }
 
 function runtimeReconcileFailureCode(error: unknown): string {
-  return runtimeOwnerElsewhere(error) ? "RUNTIME_OWNER_ELSEWHERE" : "runtime_not_ready";
+  return runtimeInstanceReplaced(error) ? "RUNTIME_INSTANCE_REPLACED" : "runtime_not_ready";
 }
 
 function runtimeDeliveryFailure(error: unknown): {
@@ -286,6 +286,6 @@ function runtimeDeliveryFailure(error: unknown): {
   }
   return {
     status: "unreachable",
-    code: runtimeOwnerElsewhere(error) ? "RUNTIME_OWNER_ELSEWHERE" : "runtime_unavailable",
+    code: runtimeInstanceReplaced(error) ? "RUNTIME_INSTANCE_REPLACED" : "runtime_unavailable",
   };
 }

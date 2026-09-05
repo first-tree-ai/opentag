@@ -5,6 +5,7 @@ import * as client from "@opentag/client";
 import { OpenTagApi } from "@opentag/client";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
+import { commandExitCode, toCommandError } from "../core/command/policy.js";
 import * as sessionCore from "../core/session/index.js";
 import {
   formatSessionCommandError,
@@ -161,6 +162,78 @@ describe("session CLI", () => {
       message: "The OpenTag server is unavailable",
     });
   });
+
+  it.each(["create", "send", "list"] as const)(
+    "requires a current proof after a %s HTTP 401 without backoff",
+    async (operation) => {
+      const messageId = "11111111-1111-4111-8111-111111111111";
+      const fetchImpl = vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                code: "SESSION_PROOF_INVALID",
+                category: "credential",
+                message: "The Session CLI proof is invalid or stale",
+              },
+            }),
+            { status: 401 },
+          ),
+      );
+      const api = new OpenTagApi("https://opentag.example", fetchImpl);
+      const requests = {
+        create: () =>
+          requestWithRetryKey(messageId, () =>
+            api.createInternalSession("stale-proof", { messageId, message: "task" }),
+          ),
+        send: () =>
+          requestWithRetryKey(messageId, () =>
+            api.sendSessionMessage("stale-proof", { messageId, targetSessionId: messageId, message: "task" }),
+          ),
+        list: () => api.listInternalSessions("stale-proof", { recursive: false, limit: 20 }),
+      };
+      const failure = await requests[operation]().catch((error: unknown) => error);
+      const apiFailure = failure instanceof SessionCommandRequestError ? failure.cause : failure;
+
+      expect(apiFailure).toMatchObject({
+        code: "SESSION_PROOF_INVALID",
+        category: "credential",
+        status: 401,
+        retryability: "after_auth",
+      });
+      const commandFailure = toCommandError(apiFailure, "request");
+      expect(commandFailure).toMatchObject({
+        code: "SESSION_PROOF_INVALID",
+        category: "auth",
+        retryability: "after_auth",
+      });
+      expect(commandExitCode(commandFailure)).toBe(1);
+      if (operation !== "list") expect(failure).toMatchObject({ status: "rejected", messageId });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["runtime_unavailable", "RUNTIME_INSTANCE_REPLACED"])(
+    "returns %s for explicit retry without resending automatically",
+    async (code) => {
+      const messageId = "11111111-1111-4111-8111-111111111111";
+      const fetchImpl = vi.fn(
+        async () => new Response(JSON.stringify({ status: "unreachable", code, messageId }), { status: 200 }),
+      );
+      const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+      await expect(
+        requestWithRetryKey(messageId, () =>
+          api.sendSessionMessage("runtime-proof", {
+            messageId,
+            targetSessionId: messageId,
+            message: "task",
+          }),
+        ),
+      ).resolves.toMatchObject({ status: "unreachable", code, messageId });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
 
   it("formats accepted and rejected command results and tabular list rows", () => {
     expect(formatSessionCommandResult({ status: "accepted", messageId: "m1", sessionId: "s1", code: "queued" })).toBe(

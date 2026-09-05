@@ -70,7 +70,17 @@ lease client disables automatic lifetime recycling, so it is not replaced undern
 stops background dispatch, rejects runtime mutations, reports `not_owned`, and fails `/readyz`. It then attempts to
 re-acquire the lease within the same bounded window; if recovery expires, the process exits non-zero so the supervisor
 can restart it. Proof-authenticated Session CLI HTTP and source/target SessionMessage Runtime delivery both use that
-replica's local WebSocket owner. When a request reaches an instance that does not own the connection, it returns the
-structured `RUNTIME_OWNER_ELSEWHERE` code. Ordinary multi-replica load balancing, sticky routing, and cross-replica
+replica's local WebSocket owner. Shared Computer rows identify daemon instances, but do not store the Server that owns
+the WebSocket. A missing or changed local binding therefore does not produce `RUNTIME_OWNER_ELSEWHERE`.
+
+An invalid, stale, or locally unbound Session proof returns HTTP 401 `SESSION_PROOF_INVALID` with category `credential`.
+The SDK and CLI classify this as `after_auth`: the Runtime must reconnect and reconcile with a current managed proof
+before the caller retries. Repeated requests with an obsolete proof do not repair it. A target with no local binding
+returns `unreachable` / `runtime_unavailable`; a dispatch whose selected daemon instance is no longer current returns
+`unreachable` / `RUNTIME_INSTANCE_REPLACED`. Neither result identifies a different Server owner. The CLI makes one HTTP
+attempt and reports failure; it does not automatically retry these outcomes. After the binding is ready again, an explicit
+retry must retain the message ID and identical semantic input.
+
+Ordinary multi-replica load balancing, sticky routing, and cross-replica
 owner discovery, forwarding, or delivery relay are not supported; horizontal replicas require an explicit cross-instance
 owner-routing design before they can be enabled.

@@ -344,19 +344,12 @@ function contentTypeParserErrorStatus(error: unknown): number | undefined {
   return typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : undefined;
 }
 
-function sessionCliProofFailure(
-  error: SessionCliProofError,
-):
-  | { code: "RUNTIME_OWNER_ELSEWHERE"; category: "transient"; statusCode: 503; message: string }
-  | { code: "SESSION_PROOF_INVALID"; category: "credential"; statusCode: 401; message: string } {
-  if (error.code === "runtime_owner_elsewhere") {
-    return {
-      code: "RUNTIME_OWNER_ELSEWHERE",
-      category: "transient",
-      statusCode: 503,
-      message: "The Session runtime connection is owned by another Server instance",
-    };
-  }
+function sessionCliProofFailure(): {
+  code: "SESSION_PROOF_INVALID";
+  category: "credential";
+  statusCode: 401;
+  message: string;
+} {
   return {
     code: "SESSION_PROOF_INVALID",
     category: "credential",
@@ -588,7 +581,7 @@ export function createApp(options: CreateAppOptions = {}) {
       return reply.code(error.statusCode).send(accountFacingErrorEnvelope(error, request.id));
     }
     if (error instanceof SessionCliProofError) {
-      const failure = sessionCliProofFailure(error);
+      const failure = sessionCliProofFailure();
       logClassifiedFailure(request, failure, error);
       return reply.code(failure.statusCode).send(
         ErrorEnvelopeSchema.parse({

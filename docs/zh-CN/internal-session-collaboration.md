@@ -1,7 +1,7 @@
 # Internal Session 协作
 
 > Canonical source: [internal-session-collaboration.md](../internal-session-collaboration.md)
-> Last synced with: 2026-09-05
+> Last synced with: 2026-09-06
 
 OpenTag Agent 在每个 managed Session 内通过 CLI 委派工作：
 
@@ -62,6 +62,16 @@ OpenTag 当前仅在单 Server replica 下支持这条路径。`OPENTAG_RUNTIME_
 实例会立即 fence runtime socket、停止后台投递、拒绝 runtime mutation，状态变为 `not_owned`，`/readyz` 会失败。
 随后实例会在同一个有界窗口内尝试重新获取 lease；如果恢复窗口到期，进程会以非零状态退出，由 supervisor 重启。
 proof-authenticated Session CLI HTTP 与 source/target SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。
-当请求到达不持有该连接的实例时，会返回结构化错误码 `RUNTIME_OWNER_ELSEWHERE`。当前不支持普通多 replica 负载均衡、
+共享 Computer 记录保存的是 daemon instance 身份，并未记录持有 WebSocket 的 Server。因此，本地连接缺失或变化
+不会返回 `RUNTIME_OWNER_ELSEWHERE`。
+
+无效、过期或无法关联本地连接的 Session proof 会返回 HTTP 401 `SESSION_PROOF_INVALID`，category 为 `credential`。
+SDK 与 CLI 将其归类为 `after_auth`：Runtime 需要重新连接并 reconcile，提供当前有效的 managed proof 后，调用方才能
+重试。反复使用旧 proof 不会修复它。目标没有本地连接时返回 `unreachable` / `runtime_unavailable`；派发所选的 daemon
+instance 已不再是当前连接时返回 `unreachable` / `RUNTIME_INSTANCE_REPLACED`。这两种结果都不能证明另一个 Server
+持有连接。CLI 只执行一次 HTTP 请求并报告失败，不会自动重试这些结果。连接恢复就绪后，显式重试必须沿用原
+message ID 和完全一致的语义输入。
+
+当前不支持普通多 replica 负载均衡、
 sticky routing，也不支持跨 replica owner discovery、forwarding 或 delivery relay；启用横向 replica 前必须先完成明确的
 跨实例 owner-routing 设计。

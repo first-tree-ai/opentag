@@ -59,6 +59,7 @@ interface PendingReport {
   serverStatus?: TurnReportTerminalStatus;
   terminalListeners: Set<NonNullable<TurnReportSubmitOptions["onTerminal"]>>;
   record: DurableWorkRecord<TurnReportRequest>;
+  persistencePending: boolean;
 }
 
 export class TurnReportOwnerStoppedError extends Error {
@@ -209,10 +210,14 @@ export class TurnReportOwner {
         status: "accepted",
         updatedAt: this.#now(),
       },
+      persistencePending: true,
     };
     this.#pending.set(report.turnId, pending);
     void this.#track(
       this.#persist(pending.record)
+        .finally(() => {
+          pending.persistencePending = false;
+        })
         .then(() => {
           if (this.#connection.state === "registered") this.#send(pending);
         })
@@ -238,9 +243,13 @@ export class TurnReportOwner {
         retryability: "never",
       };
       this.#emitFailure(failure);
-      await this.#transition(pending, "failed", {
-        lastError: failure,
-      });
+      try {
+        const transitioned = await this.#transition(pending, "failed", { lastError: failure });
+        if (!transitioned) return false;
+      } catch (error) {
+        this.#settle(pending, { kind: "reject", error: asError(error) });
+        return true;
+      }
       const listeners = [...pending.terminalListeners];
       pending.terminalListeners.clear();
       for (const listener of listeners) this.#notifyTerminal(listener, result.status);
@@ -250,11 +259,8 @@ export class TurnReportOwner {
     pending.confirming = true;
     try {
       await pending.confirm();
-      if (this.#pending.get(result.turnId) !== pending) return true;
-      this.#pending.delete(result.turnId);
-      this.#clearRetry(pending);
-      await this.#transition(pending, "succeeded", { nextAttemptAt: undefined });
-      pending.resolve();
+      const transitioned = await this.#transition(pending, "succeeded", { nextAttemptAt: undefined });
+      if (transitioned) this.#settle(pending, { kind: "resolve" });
     } catch (error) {
       pending.confirming = false;
       await this.#handleFailure(pending, "confirmation", error);
@@ -288,11 +294,7 @@ export class TurnReportOwner {
     for (const timer of this.#retryTimers.values()) timer.cancel();
     this.#retryTimers.clear();
     const error = new TurnReportOwnerStoppedError();
-    for (const pending of this.#pending.values()) {
-      this.#clearRetry(pending);
-      pending.reject(error);
-    }
-    this.#pending.clear();
+    for (const pending of this.#pending.values()) this.#settle(pending, { kind: "reject", error });
   }
 
   async settled(): Promise<void> {
@@ -316,7 +318,7 @@ export class TurnReportOwner {
   }
 
   #send(pending: PendingReport): void {
-    if (pending.sending || this.#stopped || pending.serverStatus) return;
+    if (!this.#canWrite(pending) || pending.sending || pending.serverStatus) return;
     this.#clearRetry(pending);
     pending.sending = true;
     void this.#track(
@@ -325,14 +327,10 @@ export class TurnReportOwner {
         .catch((error) => this.#handleFailure(pending, "transport", error))
         .finally(() => {
           pending.sending = false;
-          if (
-            pending.resendRequested &&
-            this.#pending.get(pending.report.turnId) === pending &&
-            this.#connection.state === "registered"
-          ) {
+          if (pending.resendRequested && this.#isCurrent(pending) && this.#connection.state === "registered") {
             pending.resendRequested = false;
             this.#send(pending);
-          } else if (this.#pending.get(pending.report.turnId) === pending && !pending.serverStatus) {
+          } else if (this.#isCurrent(pending) && !pending.serverStatus) {
             const record = this.#records.get(pending.report.turnId);
             if (record) this.#scheduleRetry(pending, record);
           }
@@ -347,7 +345,7 @@ export class TurnReportOwner {
       this.#retryTimers.delete(record.key);
       if (this.#connection.state !== "registered") return;
       const current = this.#records.get(record.key);
-      if (!current || current.status === "succeeded" || pending.serverStatus) return;
+      if (!current || current.status === "succeeded" || pending.serverStatus || !this.#canWrite(pending)) return;
       if (current.status === "retryable") {
         void this.#track(
           this.#transition(pending, "accepted")
@@ -414,6 +412,7 @@ export class TurnReportOwner {
       resolve: resolvePromise,
       reject: rejectPromise,
       record,
+      persistencePending: false,
       ...(serverStatus ? { serverStatus } : {}),
       terminalListeners: new Set(),
     });
@@ -423,17 +422,19 @@ export class TurnReportOwner {
     pending: PendingReport,
     status: DurableWorkRecord<TurnReportRequest>["status"],
     fields: Partial<DurableWorkRecord<TurnReportRequest>> = {},
-  ): Promise<DurableWorkRecord<TurnReportRequest>> {
+  ): Promise<DurableWorkRecord<TurnReportRequest> | undefined> {
+    if (!this.#canWrite(pending)) return undefined;
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const next = { ...record, ...fields, status, updatedAt: this.#now(), payload: pending.report };
     this.#metrics?.transition("turn-report", record.status, status);
     await this.#persist(next);
+    if (!this.#isCurrent(pending)) return undefined;
     pending.record = next;
     return next;
   }
 
   async #handleFailure(pending: PendingReport, phase: string, error: unknown): Promise<void> {
-    if (this.#stopped || pending.serverStatus) return;
+    if (!this.#canWrite(pending) || pending.serverStatus) return;
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const failure = durableFailureFromUnknown(
       pending.report.requestId,
@@ -455,23 +456,40 @@ export class TurnReportOwner {
       this.#pending.delete(pending.report.turnId);
       return;
     }
-    let retryable: DurableWorkRecord<TurnReportRequest>;
+    let retryable: DurableWorkRecord<TurnReportRequest> | undefined;
     try {
       retryable = await this.#transition(pending, "retryable", {
         ...candidate,
         nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
       });
     } catch {
-      pending.reject(new RuntimeDurabilityFailure(failure));
-      this.#pending.delete(pending.report.turnId);
+      this.#settle(pending, { kind: "reject", error: new RuntimeDurabilityFailure(failure) });
       return;
     }
+    if (!retryable) return;
     this.#scheduleRetry(pending, retryable);
   }
 
   async #persist(record: DurableWorkRecord<TurnReportRequest>): Promise<void> {
     await this.#persistence?.write(record);
     this.#records.set(record.key, record);
+  }
+
+  #isCurrent(pending: PendingReport): boolean {
+    return this.#pending.get(pending.report.turnId) === pending;
+  }
+
+  #canWrite(pending: PendingReport): boolean {
+    return !this.#stopped && this.#isCurrent(pending) && !pending.persistencePending;
+  }
+
+  #settle(pending: PendingReport, settlement: { kind: "resolve" } | { kind: "reject"; error: Error }): boolean {
+    if (!this.#isCurrent(pending)) return false;
+    this.#clearRetry(pending);
+    this.#pending.delete(pending.report.turnId);
+    if (settlement.kind === "resolve") pending.resolve();
+    else pending.reject(settlement.error);
+    return true;
   }
 
   #track<T>(operation: Promise<T>): Promise<T> {
@@ -520,6 +538,10 @@ function reportMatchesRearmClaim(report: TurnReportRequest, claim: TurnReportRea
     report.sessionId === claim.sessionId &&
     report.turnId === claim.turnId
   );
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error("Turn Report persistence failed");
 }
 
 function normalizeRetryPolicy(overrides: Partial<RuntimeRetryPolicy>): RuntimeRetryPolicy {

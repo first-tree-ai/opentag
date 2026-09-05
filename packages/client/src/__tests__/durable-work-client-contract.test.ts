@@ -163,6 +163,29 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(owner.pendingCount).toBe(0);
   });
 
+  it("keeps succeeded absorbing when an in-flight send fails after acknowledgement", async () => {
+    let releaseSend!: () => void;
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const { owner, send, persistence } = ownerFixture();
+    send.mockImplementation(async () => {
+      await sendGate;
+      throw new Error("late send failure");
+    });
+    await owner.ready();
+    const report = reportFixture();
+    const pending = submit(owner, report);
+    await waitForStatus(persistence, report, "running");
+    await acknowledge(owner, report);
+    await pending;
+    releaseSend();
+    await owner.settled();
+    expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+    expect(persistence.edges).not.toContain("succeeded -> retryable");
+    expect(persistence.edges).not.toContain("succeeded -> dead-letter");
+  });
+
   it("runs the real retry timer through retryable, accepted, and running", async () => {
     const { owner, send, persistence } = ownerFixture();
     send.mockRejectedValueOnce(new Error("transport unavailable"));

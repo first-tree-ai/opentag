@@ -7,7 +7,6 @@ import {
   RuntimeDurableWorkPayloadTooLargeError,
   RuntimeDurableWorkQuotaExceededError,
   RuntimeDurableWorkStaleWriteError,
-  RuntimeDurableWorkTimestampError,
 } from "../runtime/runtime-durable-work-store.js";
 
 const computerId = randomUUID();
@@ -119,7 +118,6 @@ describe("Runtime durable work HTTP API", () => {
     [new RuntimeDurableWorkStaleWriteError(2, 1), 409],
     [new RuntimeDurableWorkQuotaExceededError("records", 1, 1, 2), 429],
     [new RuntimeDurableWorkPayloadTooLargeError(1, 2), 413],
-    [new RuntimeDurableWorkTimestampError(1000, 1, 10), 400],
   ])("maps %s to HTTP %s", async (error, statusCode) => {
     const store = { list: vi.fn(), write: vi.fn().mockRejectedValue(error) };
     const app = createApp({

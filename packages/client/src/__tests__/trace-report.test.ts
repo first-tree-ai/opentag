@@ -379,6 +379,7 @@ describe("TurnReportOwner", () => {
     const onTerminal = vi.fn();
     let settled = false;
     const submitted = owner.submit(report, confirm, { onTerminal });
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(1));
     void submitted.then(
       () => {
         settled = true;

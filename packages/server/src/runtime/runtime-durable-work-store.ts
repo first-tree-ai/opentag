@@ -115,17 +115,6 @@ export class RuntimeDurableWorkCursorError extends Error {
   }
 }
 
-export class RuntimeDurableWorkTimestampError extends Error {
-  constructor(
-    readonly updatedAt: number,
-    readonly now: number,
-    readonly maxFutureSkewMs: number,
-  ) {
-    super("The durable Runtime updatedAt value is too far ahead of server time");
-    this.name = "RuntimeDurableWorkTimestampError";
-  }
-}
-
 export class PostgresRuntimeDurableWorkStore {
   readonly #database: DatabaseClient;
   readonly #now: () => number;
@@ -204,11 +193,9 @@ export class PostgresRuntimeDurableWorkStore {
       throw new RuntimeDurableWorkPayloadTooLargeError(this.#maxPayloadBytesPerRecord, payloadBytes);
     }
     const now = this.#now();
-    if (record.updatedAt > now + this.#maxFutureSkewMs) {
-      throw new RuntimeDurableWorkTimestampError(record.updatedAt, now, this.#maxFutureSkewMs);
-    }
+    const boundedRecord = record.updatedAt > now + this.#maxFutureSkewMs ? { ...record, updatedAt: now } : record;
     await this.#database.transaction((transaction) =>
-      this.#writeInTransaction(transaction, computerId, record, payloadBytes, now),
+      this.#writeInTransaction(transaction, computerId, boundedRecord, payloadBytes, now),
     );
   }
 

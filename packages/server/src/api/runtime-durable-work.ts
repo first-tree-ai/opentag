@@ -14,7 +14,6 @@ import {
   RuntimeDurableWorkPayloadTooLargeError,
   RuntimeDurableWorkQuotaExceededError,
   RuntimeDurableWorkStaleWriteError,
-  RuntimeDurableWorkTimestampError,
   RuntimeDurableWorkTransitionError,
 } from "../runtime/runtime-durable-work-store.js";
 import type { ComputerAuthVerifier } from "../services/computers/index.js";
@@ -108,11 +107,8 @@ function writeErrorResponse(
   if (error instanceof RuntimeDurableWorkQuotaExceededError) {
     return { statusCode: 429, body: errorEnvelope("RATE_LIMITED", "rate_limit", error.message, requestId) };
   }
-  if (error instanceof RuntimeDurableWorkPayloadTooLargeError || error instanceof RuntimeDurableWorkTimestampError) {
-    return {
-      statusCode: error instanceof RuntimeDurableWorkPayloadTooLargeError ? 413 : 400,
-      body: errorEnvelope("VALIDATION_ERROR", "validation", error.message, requestId),
-    };
+  if (error instanceof RuntimeDurableWorkPayloadTooLargeError) {
+    return { statusCode: 413, body: errorEnvelope("VALIDATION_ERROR", "validation", error.message, requestId) };
   }
   return undefined;
 }

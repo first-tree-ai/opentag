@@ -86,12 +86,16 @@ export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
   readonly #registrationTails = new Map<string, Promise<void>>();
   readonly #logger?: ServiceLogger;
+  #fenced = false;
 
   constructor(options: ConnectionRegistryOptions = {}) {
     this.#logger = options.logger;
   }
 
   async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>, publish?: () => void): Promise<void> {
+    if (this.#fenced) {
+      throw new RuntimeRegistrySendError("unavailable", "The runtime owner is fenced");
+    }
     const previousRegistration = this.#registrationTails.get(entry.computerId) ?? Promise.resolve();
     let releaseRegistration: (() => void) | undefined;
     const currentRegistration = new Promise<void>((resolve) => {
@@ -361,6 +365,9 @@ export class ConnectionRegistry {
   }
 
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
+    if (this.#fenced) {
+      throw new RuntimeRegistrySendError("unavailable", "The runtime owner is fenced");
+    }
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
       throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
@@ -490,6 +497,19 @@ export class ConnectionRegistry {
     this.#entries.delete(computerId);
     entry.socket.close(4002, "Machine credential rotated or revoked");
     return true;
+  }
+
+  fenceAll(reason = "Runtime ownership lease lost"): void {
+    this.#fenced = true;
+    const entries = [...this.#entries.values()];
+    this.#entries.clear();
+    for (const entry of entries) {
+      entry.socket.close(1013, reason);
+    }
+  }
+
+  unfence(): void {
+    this.#fenced = false;
   }
 
   closeAll(): void {

@@ -41,6 +41,20 @@ describe("RuntimeDomainOwner", () => {
     expect(() => new RuntimeDomainOwner(registry, custody, { maxPendingRequests: Number.POSITIVE_INFINITY })).toThrow();
   });
 
+  it("fails runtime mutations closed after the ownership fence engages", async () => {
+    let available = true;
+    const fixture = await ownerFixture(1_000, { isAvailable: () => available });
+    available = false;
+
+    expect(() =>
+      fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcileRequest(fixture.computerId)),
+    ).toThrow(/Runtime dispatch authority is unavailable/);
+    expect(() => fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequest())).toThrow(
+      /Runtime dispatch authority is unavailable/,
+    );
+    expect(fixture.frames).toHaveLength(0);
+  });
+
   it("deduplicates prepared reconciles and evicts the oldest preparation", async () => {
     const preparationResolvers: Array<(request: SessionReconcileRequest) => void> = [];
     const prepareReconcile = vi.fn(

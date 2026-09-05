@@ -179,6 +179,50 @@ describe("ConnectionRegistry", () => {
     expect(fresh.close).toHaveBeenCalledWith(1001, "Server shutting down");
   });
 
+  it("fences continuing traffic when the runtime ownership lease is lost", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const runtimeSocket = {
+      ...socket(),
+      readyState: WebSocket.OPEN,
+      send: vi.fn((_data: string, callback: (error?: Error) => void) => callback()),
+    } as unknown as WebSocket;
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => undefined,
+    );
+
+    registry.fenceAll();
+
+    expect(runtimeSocket.close).toHaveBeenCalledWith(1013, "Runtime ownership lease lost");
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
+    await expect(registry.send(computerId, instanceId, { type: "runtime:mutation" })).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    await expect(
+      registry.register(
+        {
+          computerId: randomUUID(),
+          installationId: randomUUID(),
+          instanceId: randomUUID(),
+          lastHeartbeatAt: 1,
+          socket: socket(),
+        },
+        async () => undefined,
+      ),
+    ).rejects.toMatchObject({ code: "unavailable" });
+
+    registry.unfence();
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
+  });
+
   it("terminates stale sockets when the injected sweep logger throws", async () => {
     const warn = vi.fn((_bindings: Record<string, unknown>, _message: string) => {
       throw new Error("logger failed");

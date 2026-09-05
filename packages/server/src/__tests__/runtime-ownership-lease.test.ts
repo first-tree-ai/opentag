@@ -64,15 +64,18 @@ describe("runtime ownership advisory lease", () => {
 
   it("stops reporting ownership when the dedicated connection closes", async () => {
     const fixture = clientFixture([true]);
+    const onLost = vi.fn();
     const lease = await acquireRuntimeOwnershipLease(
       "postgresql://opentag@localhost/opentag",
       "11111111-1111-4111-8111-111111111111",
+      { onLost },
     );
     const onclose = state.postgres.mock.calls.at(-1)?.[1]?.onclose as (() => void) | undefined;
 
     onclose?.();
 
     expect(lease.state).toEqual({ mode: "single", status: "not_owned" });
+    expect(onLost).toHaveBeenCalledOnce();
     await lease.release();
     expect(fixture.client.end).toHaveBeenCalledOnce();
   });

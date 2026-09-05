@@ -15,6 +15,8 @@ type RuntimeOwnershipContext = {
   state: RuntimeOwnershipState;
   connectionLost: boolean;
   acquired: boolean;
+  released: boolean;
+  lossReported: boolean;
 };
 
 export type RuntimeOwnershipState = {
@@ -28,6 +30,7 @@ export interface RuntimeOwnershipLeaseOptions {
   retryDelayMs?: number;
   now?: () => number;
   sleep?: (delayMs: number) => Promise<void>;
+  onLost?: () => void;
 }
 
 export class RuntimeOwnershipLeaseError extends Error {
@@ -65,8 +68,10 @@ export async function acquireRuntimeOwnershipLease(
     state: { mode: "single", status: "not_owned" },
     connectionLost: false,
     acquired: false,
+    released: false,
+    lossReported: false,
   };
-  const client = createLeaseClient(databaseUrl, context);
+  const client = createLeaseClient(databaseUrl, context, options.onLost);
   let connection: RuntimeOwnershipConnection | undefined;
 
   try {
@@ -81,12 +86,14 @@ export async function acquireRuntimeOwnershipLease(
       async release() {
         if (released) return;
         released = true;
+        context.released = true;
         context.state = { mode: "single", status: "not_owned" };
         const failure = await closeLeaseResources(client, connection, context, true);
         if (failure) throw failure;
       },
     };
   } catch (error) {
+    context.released = true;
     context.state = { mode: "single", status: "not_owned" };
     await closeLeaseResources(client, connection, context, true);
     throw error;
@@ -110,13 +117,24 @@ function resolveLeaseOptions(options: RuntimeOwnershipLeaseOptions) {
   };
 }
 
-function createLeaseClient(databaseUrl: string, context: RuntimeOwnershipContext): RuntimeOwnershipClient {
+function createLeaseClient(
+  databaseUrl: string,
+  context: RuntimeOwnershipContext,
+  onLost?: () => void,
+): RuntimeOwnershipClient {
   return postgres(databaseUrl, {
     max: 1,
     onnotice: () => undefined,
     onclose: () => {
+      if (context.released || context.lossReported) return;
+      context.lossReported = true;
       context.connectionLost = true;
       context.state = { mode: "single", status: "not_owned" };
+      try {
+        onLost?.();
+      } catch {
+        // A loss notification must not prevent the client from being closed by the owner.
+      }
     },
     connection: { application_name: RUNTIME_OWNERSHIP_APPLICATION_NAME },
   });

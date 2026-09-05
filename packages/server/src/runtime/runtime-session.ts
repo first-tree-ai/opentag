@@ -69,6 +69,7 @@ export interface RuntimeBusinessOptions {
 export interface RuntimeSessionOptions {
   authTimeoutMs?: number;
   business?: RuntimeBusinessOptions;
+  isAvailable?: () => boolean;
   /**
    * Exact channel latest target to advertise on v2 heartbeat results. Consulted per heartbeat, and
    * only sent when the `runtime.channelTarget` capability was negotiated.
@@ -90,10 +91,11 @@ export class RuntimeSession {
   readonly #socket: WebSocket;
   readonly #logger?: ServiceLogger;
   readonly #options: Required<
-    Omit<RuntimeSessionOptions, "business" | "channelTarget" | "logger" | "now" | "onRegistered">
+    Omit<RuntimeSessionOptions, "business" | "channelTarget" | "isAvailable" | "logger" | "now" | "onRegistered">
   > & {
     business?: RuntimeBusinessOptions;
     channelTarget?: () => RuntimeChannelTarget | undefined;
+    isAvailable?: () => boolean;
     now: () => Date;
     onRegistered?: RuntimeSessionOptions["onRegistered"];
   };
@@ -134,6 +136,7 @@ export class RuntimeSession {
       authTimeoutMs: positiveTimeout(options.authTimeoutMs ?? 5_000, "authTimeoutMs"),
       business: options.business,
       channelTarget: options.channelTarget,
+      isAvailable: options.isAvailable,
       heartbeatIntervalMs: heartbeat.heartbeatIntervalMs,
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
@@ -173,6 +176,7 @@ export class RuntimeSession {
   }
 
   #onMessage(data: RawData, isBinary: boolean): void {
+    this.#failIfUnavailable();
     if (this.#isClosing()) return;
     if (isBinary) {
       this.#fail("PROTOCOL_ERROR", "Binary runtime frames are not supported", 4400);
@@ -751,6 +755,11 @@ export class RuntimeSession {
 
   #isClosing(): boolean {
     return this.#state === "closing" || this.#state === "closed";
+  }
+
+  #failIfUnavailable(): void {
+    if (this.#isClosing() || !this.#options.isAvailable || this.#options.isAvailable()) return;
+    this.#fail("SERVICE_UNAVAILABLE", "The runtime owner is temporarily unavailable", 1013);
   }
 }
 

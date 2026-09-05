@@ -416,9 +416,14 @@ describe("Server startup", () => {
     await startServer();
 
     expect(state.migrateDatabase).toHaveBeenCalledWith(state.config.databaseUrl, state.config.migrationsDirectory);
-    expect(state.acquireRuntimeOwnershipLease).toHaveBeenCalledWith(state.config.databaseUrl, expect.any(String), {
-      timeoutMs: state.config.runtimeReplicaAcquireTimeoutMs,
-    });
+    expect(state.acquireRuntimeOwnershipLease).toHaveBeenCalledWith(
+      state.config.databaseUrl,
+      expect.any(String),
+      expect.objectContaining({
+        onLost: expect.any(Function),
+        timeoutMs: state.config.runtimeReplicaAcquireTimeoutMs,
+      }),
+    );
     expect(state.verifyDatabaseMigrations).not.toHaveBeenCalled();
     expect(state.events).toEqual([
       "ready:configuration",

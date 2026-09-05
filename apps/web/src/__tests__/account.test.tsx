@@ -3,6 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
 
+async function expectPreparationGate(): Promise<HTMLButtonElement> {
+  expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+  const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+  await waitFor(() => expect(continueButton.disabled).toBe(false));
+  return continueButton;
+}
+
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
 
@@ -197,7 +204,7 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete admission into Agent Setup", async () => {
     installApi({ workspaceless: true });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
@@ -207,7 +214,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
@@ -215,7 +222,7 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete admission into Agent Setup", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
@@ -232,7 +239,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ setupCompletedAt: null, agentUnbound: true });
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
     // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
@@ -246,6 +253,7 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toBe(true),
     );
+    fireEvent.click(await expectPreparationGate());
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
     expect(window.location.pathname).toBe("/agents/setup");
@@ -287,6 +295,7 @@ describe("OpenTag Web App Shell", () => {
     // The second row, so this cannot pass by binding whichever Computer happens to be first.
     fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
 
+    fireEvent.click(await expectPreparationGate());
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
     expect(window.location.pathname).toBe("/agents/setup");
@@ -295,7 +304,7 @@ describe("OpenTag Web App Shell", () => {
   it("renders Agent Setup without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    await screen.findByRole("heading", { name: "Set up Reviewer" });
+    await expectPreparationGate();
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
@@ -311,7 +320,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });

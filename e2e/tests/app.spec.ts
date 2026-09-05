@@ -18,12 +18,17 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   const cloudComputer = page.getByRole("button", { name: /^Cloud computer Coming soon / });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Back" })).toHaveCount(0);
   await rm(join(repositoryRoot, "e2e/screenshots"), { recursive: true, force: true });
   await mkdir(join(repositoryRoot, "e2e/screenshots"), { recursive: true });
   await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/agent-setup.png"), fullPage: true });
 
   await page.getByRole("button", { name: /^Local computer / }).click();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
   await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("button", { name: "Back" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   const mark = page.locator('[data-brand="codex"]');
   const lightMark = mark.locator(".otv2-codex-mark--light");
   const darkMark = mark.locator(".otv2-codex-mark--dark");
@@ -59,9 +64,56 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("button", { name: "Journey · New computer · Agent creation" }).click();
   const closeLab = page.getByRole("button", { name: "Close", exact: true });
   await expect(closeLab).toBeVisible();
+  const currentState = page.getByRole("region", { name: "Current state" });
+  await expect(currentState.getByText("Messaging support", { exact: true })).toBeVisible();
+  await expect(currentState.getByText("Lark CLI", { exact: true })).toHaveCount(0);
+  await expect(currentState.getByText("Slack CLI", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Visual edge cases" })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
 
   const scenario = page.getByRole("combobox", { name: "Start from" });
+  await scenario.click();
+  await page.getByRole("option", { name: "Checkpoint · Connect computer" }).click();
+  await closeLab.click();
+  await expect(page.getByRole("heading", { name: "Connect your computer" })).toBeVisible();
+  const step2Navigation = page.locator('[data-ui="onboarding-v2-step-2-nav"]');
+  const step2Continue = step2Navigation.getByRole("button", { name: "Continue" });
+  await expect(step2Navigation).toContainText("You can continue when this computer is ready.");
+  await expect(step2Continue).toBeDisabled();
+  const computerStep = page.locator('[data-ui="agent-setup-computer"]');
+  const computerHeader = computerStep.locator(":scope > header");
+  const computerBody = computerStep.locator(":scope > .otv2-computer-step__body");
+  const connectComputerSummary = computerBody.locator(':scope > [data-ui="agent-setup-computer-summary"]');
+  const connectAction = computerBody.locator(":scope > :nth-child(2)");
+  await expect(connectComputerSummary).toHaveCSS("height", "48px");
+  await expect(connectComputerSummary).toHaveCSS("border-top-width", "0px");
+  await expect(connectComputerSummary).toHaveCSS("border-bottom-width", "0px");
+  const [computerHeaderBox, connectSummaryBox, connectActionBox] = await Promise.all([
+    computerHeader.boundingBox(),
+    connectComputerSummary.boundingBox(),
+    connectAction.boundingBox(),
+  ]);
+  expect(computerHeaderBox).not.toBeNull();
+  expect(connectSummaryBox).not.toBeNull();
+  expect(connectActionBox).not.toBeNull();
+  if (!computerHeaderBox || !connectSummaryBox || !connectActionBox) {
+    throw new Error("Connect computer layout did not produce boxes");
+  }
+  expect(Math.round(connectSummaryBox.y - (computerHeaderBox.y + computerHeaderBox.height))).toBe(16);
+  expect(Math.round(connectActionBox.y - (connectSummaryBox.y + connectSummaryBox.height))).toBe(16);
+  const [step2NavigationBox, step2ContinueBox] = await Promise.all([
+    step2Navigation.boundingBox(),
+    step2Continue.boundingBox(),
+  ]);
+  expect(step2NavigationBox).not.toBeNull();
+  expect(step2ContinueBox).not.toBeNull();
+  if (!step2NavigationBox || !step2ContinueBox) throw new Error("Step 2 navigation did not produce layout boxes");
+  expect(Math.round(step2ContinueBox.width)).toBe(Math.round(step2NavigationBox.width));
+  await expectWithinViewport(connectComputerSummary);
+  await expectNoPageOverflow(page);
+
+  await page.getByRole("button", { name: /^Checkpoint · Connect computer ·/ }).click();
+  await expect(closeLab).toBeVisible();
   await scenario.click();
   await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
   await closeLab.click();
@@ -69,7 +121,7 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   const preparation = page.locator('[data-ui="agent-setup-preparation"]');
   const preparationHeader = preparation.locator(":scope > header");
   const computerSummary = preparation.locator('[data-ui="agent-setup-computer-summary"]');
-  const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness--compact');
+  const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness');
   const readinessRows = readiness.locator(":scope > li");
   await expect(computerSummary).toHaveCSS("height", "40px");
   const [headerBox, computerBox, readinessBox] = await Promise.all([
@@ -89,6 +141,7 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
     "No recent report from Review Mac. Finish setup there, then check again.",
   );
   await expect(readinessRows.nth(1)).toContainText("Messaging support");
+  await expect(step2Continue).toBeDisabled();
   await expectWithinViewport(readinessRows.nth(0));
   await expectWithinViewport(readinessRows.nth(1));
   await expectNoPageOverflow(page);
@@ -96,8 +149,14 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("button", { name: /^Preparation · Runtime report missing ·/ }).click();
   await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
   await page.getByRole("button", { name: "Finish readiness check" }).click();
+  await closeLab.click();
+  await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  await expect(step2Navigation).toContainText("This computer is ready. Continue to connect messaging.");
+  await expect(step2Continue).toBeEnabled();
+  await step2Continue.click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
 
+  await page.locator('[data-ui="onboarding-v2-lab"] > div > button[aria-expanded="false"]').click();
   await scenario.click();
   await page.getByRole("option", { name: "Complete · Everything ready" }).click();
   await page.getByRole("button", { name: "Fine-tune state" }).click();

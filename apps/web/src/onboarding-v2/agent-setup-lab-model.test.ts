@@ -24,6 +24,7 @@ const EXPECTED_STAGES: Record<LabScenario, string> = {
   "runtime-setup": "needs-runtime",
   "runtime-sign-in": "needs-runtime",
   "messaging-support-setup": "needs-provider-clis",
+  "preparation-ready": "needs-messaging",
   "messaging-setup": "needs-messaging",
   "messaging-handoff": "needs-messaging",
   "messaging-recovery": "needs-messaging",
@@ -42,6 +43,7 @@ const EXPECTED_PAGES: Record<LabScenario, LabPreviewPage> = {
   "runtime-setup": "checks",
   "runtime-sign-in": "checks",
   "messaging-support-setup": "checks",
+  "preparation-ready": "checks",
   "messaging-setup": "messaging",
   "messaging-handoff": "messaging",
   "messaging-recovery": "messaging",
@@ -118,6 +120,7 @@ describe("agent setup lab model", () => {
         expect.objectContaining({ provider: "slack", status: "ready", blocking: false }),
       ]),
     );
+    expect(snapshotFor("preparation-ready").messaging.kind).toBe("not-configured");
     expect(snapshotFor("messaging-setup").messaging.kind).toBe("not-configured");
     expect(snapshotFor("messaging-handoff").messaging.kind).toBe("waiting-handoff");
     expect(snapshotFor("messaging-recovery").messaging).toMatchObject({

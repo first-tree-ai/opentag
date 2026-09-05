@@ -124,29 +124,35 @@ describe("onboarding flow layout", () => {
     expect(mediaDeclarationValue("640px", ".otv2-preparation", "gap")).toBe("1rem");
   });
 
-  /*
-   * The readiness rows follow the same rule as the slots above: the reserved heights and the
-   * fixed marker are declarations the layout depends on, so they are guarded here rather than
-   * left to be deleted as decoration.
-   */
-  it("lays the readiness list out as a bordered column of padded rows", () => {
-    expect(declarationValue(".otv2-readiness", "display")).toBe("flex");
-    expect(declarationValue(".otv2-readiness", "flex-direction")).toBe("column");
-    expect(declarationValue(".otv2-readiness", "gap")).toBe("0.75rem");
-    expect(declarationValue(".otv2-readiness__line", "padding")).toBe("0.75rem");
-    expect(declarationValue(".otv2-readiness__line", "box-sizing")).toBe("border-box");
+  it("groups the current Computer state with the action that resolves it", () => {
+    expect(declarationValue(".otv2-computer-summary", "height")).toBe("48px");
+    expect(declarationValue(".otv2-computer-step", "gap")).toBe("1.25rem");
+    expect(declarationValue(".otv2-computer-step__body", "display")).toBe("flex");
+    expect(declarationValue(".otv2-computer-step__body", "flex-direction")).toBe("column");
+    expect(declarationValue(".otv2-computer-step__body", "gap")).toBe("1rem");
+    expect(mediaDeclarationValue("640px", ".otv2-computer-step", "gap")).toBe("1rem");
   });
 
-  it("restores compact divided rows for the two-item Step 2 summary", () => {
-    expect(declarationValue(".otv2-readiness--compact", "gap")).toBe("0");
-    expect(declarationValue(".otv2-readiness--compact", "overflow")).toBe("hidden");
-    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__line", "align-items")).toBe("center");
-    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__line", "padding")).toBe("1rem");
-    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__line", "border-top")).toBe(
-      "1px solid var(--color-kumo-line)",
-    );
-    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__title", "height")).toBe("auto");
-    expect(declarationValue(".otv2-readiness--compact .otv2-readiness__detail", "height")).toBe("auto");
+  it("keeps Step 2 guidance leading and makes its mobile action full width", () => {
+    expect(declarationValue(".otv2-step-footer", "display")).toBe("flex");
+    expect(declarationValue(".otv2-step-footer", "justify-content")).toBe("space-between");
+    expect(declarationValue(".otv2-step-footer__action", "min-width")).toBe("7rem");
+    expect(mediaDeclarationValue("640px", ".otv2-step-footer", "flex-direction")).toBe("column");
+    expect(mediaDeclarationValue("640px", ".otv2-step-footer", "align-items")).toBe("stretch");
+    expect(mediaDeclarationValue("640px", ".otv2-step-footer__action", "width")).toBe("100%");
+  });
+
+  it("lays the two readiness summaries out as compact divided rows", () => {
+    expect(declarationValue(".otv2-readiness", "display")).toBe("flex");
+    expect(declarationValue(".otv2-readiness", "flex-direction")).toBe("column");
+    expect(declarationValue(".otv2-readiness", "gap")).toBe("0");
+    expect(declarationValue(".otv2-readiness", "overflow")).toBe("hidden");
+    expect(declarationValue(".otv2-readiness__line", "align-items")).toBe("center");
+    expect(declarationValue(".otv2-readiness__line", "padding")).toBe("1rem");
+    expect(declarationValue(".otv2-readiness__line", "box-sizing")).toBe("border-box");
+    expect(declarationValue(".otv2-readiness__line", "border-top")).toBe("1px solid var(--color-kumo-line)");
+    expect(declarationValue(".otv2-readiness__title", "flex-direction")).toBe("row");
+    expect(declarationValue(".otv2-readiness__detail", "min-height")).toBe("1.125rem");
   });
 
   it("fixes the decorative readiness markers at 24px", () => {
@@ -155,41 +161,9 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-readiness__marker", "flex-shrink")).toBe("0");
   });
 
-  it("reserves fixed heights for the readiness title and detail slots and scrolls their overflow", () => {
-    expect(declarationValue(".otv2-readiness__title", "height")).toBe("2.75rem");
-    expect(declarationValue(".otv2-readiness__title", "line-height")).toBe("1.25rem");
-    expect(declarationValue(".otv2-readiness__detail", "height")).toBe("3.375rem");
-    expect(declarationValue(".otv2-readiness__detail", "line-height")).toBe("1.125rem");
-    // A fixed height only stays fixed when padding and borders are counted inside it.
-    expect(declarationValue(".otv2-readiness__title", "box-sizing")).toBe("border-box");
-    expect(declarationValue(".otv2-readiness__detail", "box-sizing")).toBe("border-box");
-    // Copy that does not fit scrolls inside its own slot; the slots are keyboard-focusable in
-    // the markup, and the visible focus answers the keyboard.
-    expect(declarationValue(".otv2-readiness__title", "overflow-y")).toBe("auto");
-    expect(declarationValue(".otv2-readiness__detail", "overflow-y")).toBe("auto");
-    expect(declarationValue(".otv2-readiness__detail:focus-visible", "outline")).toBe(
-      "2px solid var(--color-kumo-focus)",
-    );
-  });
-
-  it("wraps long readiness copy instead of widening the rows or clipping it", () => {
-    expect(declarationValue(".otv2-readiness__title", "white-space")).toBe("pre-wrap");
-    expect(declarationValue(".otv2-readiness__title", "overflow-wrap")).toBe("anywhere");
-    expect(declarationValue(".otv2-readiness__detail", "white-space")).toBe("pre-wrap");
+  it("wraps readiness detail instead of widening its row", () => {
     expect(declarationValue(".otv2-readiness__detail", "overflow-wrap")).toBe("anywhere");
     expect(declarationValue(".otv2-readiness__copy", "min-width")).toBe("0");
-  });
-
-  it("reserves the taller title and detail slots a narrow readiness layout needs", () => {
-    expect(mediaDeclarationValue("640px", ".otv2-readiness__title", "height")).toBe("3.75rem");
-    expect(mediaDeclarationValue("640px", ".otv2-readiness__detail", "height")).toBe("4.5rem");
-  });
-
-  it("lets lab select wrappers and their triggers shrink on narrow screens", () => {
-    expect(declarationValue(".otv2-readiness-lab__controls > div", "min-width")).toBe("0");
-    expect(declarationValue(".otv2-readiness-lab__scenario > div", "min-width")).toBe("0");
-    expect(declarationValue(".otv2-readiness-lab__select", "width")).toBe("100%");
-    expect(declarationValue('.otv2-readiness-lab__scenario [role="combobox"]', "width")).toBe("100%");
   });
 
   it("keeps readiness state emphasis on the marker, never in the row geometry", () => {
@@ -205,7 +179,7 @@ describe("onboarding flow layout", () => {
     expect(declarationValue('.otv2-readiness__line[data-state="blocked"] .otv2-readiness__marker', "background")).toBe(
       "var(--color-kumo-recessed)",
     );
-    // No rule keyed on a row state may change a fixed size.
+    // No rule keyed on a row state may change row geometry.
     stylesheet.walkRules((rule) => {
       if (!rule.selectors.some((selector) => selector.includes('data-state="'))) return;
       rule.walkDecls((declaration) => {

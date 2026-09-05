@@ -20,7 +20,7 @@ import type {
   ImProvider,
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
@@ -41,8 +41,8 @@ import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
-import { preparationIsTransitional, preparationReadinessRows } from "./preparation-readiness.js";
-import { ReadinessList } from "./readiness-list.js";
+import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
+import { CheckLine } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
@@ -100,6 +100,8 @@ const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 const IDENTITY_ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3";
 
+export type AgentSetupPreviewView = "checks" | "complete" | "computer" | "messaging";
+
 export interface AgentSetupPageProps {
   /** The exact Agent this surface sets up. Never an index, a name, or a guess. */
   readonly agentId: string;
@@ -114,6 +116,10 @@ export interface AgentSetupPageProps {
   readonly refreshSignal?: number;
   /** Review Lab intercepts Provider URLs so a simulated OAuth round trip stays inside the Lab. */
   readonly onExternalNavigation?: (url: string) => void;
+  /** Lets the Review Lab open a later screen directly without changing the production default. */
+  readonly previewInitialView?: AgentSetupPreviewView;
+  /** Reports the screen the production surface is actually showing to its Review Lab controls. */
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
@@ -560,7 +566,9 @@ export function AgentSetupPage({
   computerAdapter,
   onExternalNavigation,
   onOpenAgent,
+  onPreviewViewChange,
   onReady,
+  previewInitialView,
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
@@ -576,7 +584,9 @@ export function AgentSetupPage({
       key={agentId}
       onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
+      onPreviewViewChange={onPreviewViewChange}
       onReady={onReady}
+      previewInitialView={previewInitialView}
       refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
@@ -590,7 +600,9 @@ function AgentSetupPageContent({
   computerAdapter,
   onExternalNavigation,
   onOpenAgent,
+  onPreviewViewChange,
   onReady,
+  previewInitialView,
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
@@ -625,6 +637,8 @@ function AgentSetupPageContent({
           computerAdapter={computerAdapter}
           controller={controller}
           onOpenAgent={onOpenAgent}
+          onPreviewViewChange={onPreviewViewChange}
+          previewInitialView={previewInitialView}
           report={report}
         />
       </main>
@@ -637,12 +651,16 @@ function SetupPhaseView({
   computerAdapter,
   controller,
   onOpenAgent,
+  onPreviewViewChange,
+  previewInitialView,
   report,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
+  readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
 }) {
   const { phase } = controller;
@@ -684,14 +702,16 @@ function SetupPhaseView({
       computerAdapter={computerAdapter}
       controller={controller}
       onOpenAgent={onOpenAgent}
+      onPreviewViewChange={onPreviewViewChange}
+      previewInitialView={previewInitialView}
       report={report}
       snapshot={phase.snapshot}
     />
   );
 }
 
-function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
-  const computerComplete = stage === "needs-messaging" || stage === "ready";
+function setupSteps(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): FlowState["steps"] {
+  const computerComplete = !awaitingPreparationContinue && (stage === "needs-messaging" || stage === "ready");
   const messagingComplete = stage === "ready";
   return [
     { id: "agent", status: "complete" },
@@ -700,11 +720,34 @@ function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
   ];
 }
 
+function messagingHasStarted(snapshot: AgentSetupSnapshot): boolean {
+  return snapshot.stage === "needs-messaging" && snapshot.messaging.kind !== "not-configured";
+}
+
+function isAwaitingPreparationContinue(snapshot: AgentSetupSnapshot, preparationAccepted: boolean): boolean {
+  return snapshot.stage === "needs-messaging" && snapshot.messaging.kind === "not-configured" && !preparationAccepted;
+}
+
+function shouldShowPreparation(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): boolean {
+  return (
+    stage === "needs-computer" ||
+    stage === "needs-runtime" ||
+    stage === "needs-provider-clis" ||
+    awaitingPreparationContinue
+  );
+}
+
+function shouldShowSetupTitle(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): boolean {
+  return stage === "ready" || (stage === "needs-messaging" && !awaitingPreparationContinue);
+}
+
 function AgentSetupSnapshotView({
   agentId,
   computerAdapter,
   controller,
   onOpenAgent,
+  onPreviewViewChange,
+  previewInitialView,
   report,
   snapshot,
 }: {
@@ -712,18 +755,57 @@ function AgentSetupSnapshotView({
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
+  readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
+  const [preparationAccepted, setPreparationAccepted] = useState(
+    () => previewInitialView === "messaging" || messagingHasStarted(snapshot),
+  );
+  const focusMessagingAfterContinue = useRef(false);
+  const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
+  const awaitingPreparationContinue = isAwaitingPreparationContinue(snapshot, preparationAccepted);
+  const showingPreparation = shouldShowPreparation(stage, awaitingPreparationContinue);
   const observationFailed = snapshot.blockers.some((blocker) => blocker.code === "resource-observation-failed");
+  const computerObservationFailed = snapshot.computer.kind === "observation-failed";
   const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
+  const refreshAction = canRefresh && stage !== "ready" ? <SetupRefreshButton controller={controller} /> : undefined;
+
+  useEffect(() => {
+    const view: AgentSetupPreviewView =
+      stage === "needs-computer"
+        ? "computer"
+        : showingPreparation
+          ? "checks"
+          : stage === "needs-messaging"
+            ? "messaging"
+            : "complete";
+    onPreviewViewChange?.(view);
+  }, [onPreviewViewChange, showingPreparation, stage]);
+
+  useEffect(() => {
+    if (stage !== "needs-messaging" && preparationAccepted) setPreparationAccepted(false);
+  }, [preparationAccepted, stage]);
+
+  useEffect(() => {
+    if (!focusMessagingAfterContinue.current || !preparationAccepted || stage !== "needs-messaging") return;
+    messagingHeadingRef.current?.focus();
+    focusMessagingAfterContinue.current = false;
+  }, [preparationAccepted, stage]);
+
+  const continueToMessaging = () => {
+    focusMessagingAfterContinue.current = true;
+    setPreparationAccepted(true);
+  };
+
   return (
     <>
-      <StepRail steps={setupSteps(stage)} />
-      {stage === "needs-messaging" || stage === "ready" ? (
+      <StepRail steps={setupSteps(stage, awaitingPreparationContinue)} />
+      {shouldShowSetupTitle(stage, awaitingPreparationContinue) ? (
         <header className={SECTION_HEADER}>
-          <Text as="h1" size="lg" variant="heading">
+          <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
             {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
           </Text>
         </header>
@@ -735,10 +817,18 @@ function AgentSetupSnapshotView({
       <LocalPreparationSections
         agentId={agentId}
         computerAdapter={computerAdapter}
+        computerRefreshAction={computerObservationFailed ? refreshAction : undefined}
         onChanged={controller.reload}
+        showCompletedPreparation={awaitingPreparationContinue}
         snapshot={snapshot}
       />
-      {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
+      {computerObservationFailed ? null : refreshAction}
+      {showingPreparation ? (
+        <PreparationNavigation onContinue={continueToMessaging} ready={awaitingPreparationContinue} />
+      ) : null}
+      {stage === "needs-messaging" && !awaitingPreparationContinue ? (
+        <MessagingSetupSection controller={controller} snapshot={snapshot} />
+      ) : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
           <DoneStep
@@ -749,34 +839,55 @@ function AgentSetupSnapshotView({
           />
         </div>
       ) : null}
-      {canRefresh && stage !== "ready" ? (
-        <div className="flex">
-          <Button
-            disabled={controller.busyKey !== undefined}
-            loading={controller.busyKey === "refresh"}
-            onClick={() => {
-              controller.resetPollBudget();
-              void controller.act({ kind: "refresh" });
-            }}
-            variant="secondary"
-          >
-            {m.onboarding_v2_setup_refresh()}
-          </Button>
-        </div>
-      ) : null}
     </>
+  );
+}
+
+function PreparationNavigation({ onContinue, ready }: { readonly onContinue: () => void; readonly ready: boolean }) {
+  const hintId = useId();
+  return (
+    <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
+      <p className="text-sm text-kumo-subtle m-0" id={hintId} role="status">
+        {ready ? m.onboarding_v2_prep_continue_ready() : m.onboarding_v2_prep_continue_waiting()}
+      </p>
+      <Button aria-describedby={hintId} className="otv2-step-footer__action" disabled={!ready} onClick={onContinue}>
+        {m.onboarding_v2_nav_next()}
+      </Button>
+    </div>
+  );
+}
+
+function SetupRefreshButton({ controller }: { readonly controller: AgentSetupController }) {
+  return (
+    <div className="flex">
+      <Button
+        disabled={controller.busyKey !== undefined}
+        loading={controller.busyKey === "refresh"}
+        onClick={() => {
+          controller.resetPollBudget();
+          void controller.act({ kind: "refresh" });
+        }}
+        variant="secondary"
+      >
+        {m.onboarding_v2_setup_refresh()}
+      </Button>
+    </div>
   );
 }
 
 function LocalPreparationSections({
   agentId,
   computerAdapter,
+  computerRefreshAction,
   onChanged,
+  showCompletedPreparation,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly computerRefreshAction?: ReactNode;
   readonly onChanged: () => void;
+  readonly showCompletedPreparation: boolean;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
@@ -786,11 +897,12 @@ function LocalPreparationSections({
         <ComputerSetupSection
           agentId={agentId}
           computerAdapter={computerAdapter}
+          refreshAction={computerRefreshAction}
           onChanged={onChanged}
           snapshot={snapshot}
         />
       ) : null}
-      {stage === "needs-runtime" || stage === "needs-provider-clis" ? (
+      {stage === "needs-runtime" || stage === "needs-provider-clis" || showCompletedPreparation ? (
         <PreparationSummarySection snapshot={snapshot} />
       ) : null}
     </>
@@ -800,11 +912,13 @@ function LocalPreparationSections({
 function ComputerSetupSection({
   agentId,
   computerAdapter,
+  refreshAction,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly refreshAction?: ReactNode;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -826,41 +940,46 @@ function ComputerSetupSection({
   if (computer.kind === "requires-rebind") {
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
-      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+      <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
         <ComputerStepHeader name={snapshot.agent.displayName} />
-        <ComputerSummary
-          metadata={platformLabel(computer.platform)}
-          status={m.onboarding_v2_connect_no_computer_status()}
-          title={computer.displayName}
-          tone="neutral"
-        />
-        <p className={HINT}>
-          {m.onboarding_v2_setup_computer_rebind({
-            computerName: computer.displayName,
-            name: snapshot.agent.displayName,
-          })}
-        </p>
-        {canBind ? (
-          <AgentComputerChoice
-            adapter={computerConnectAdapter}
-            agentId={agentId}
-            inventoryAdapter={computerAdapter?.inventory}
-            onBound={onChanged}
+        <div className="otv2-computer-step__body">
+          <ComputerSummary
+            metadata={platformLabel(computer.platform)}
+            status={m.onboarding_v2_connect_no_computer_status()}
+            title={computer.displayName}
+            tone="neutral"
           />
-        ) : null}
+          <p className={HINT}>
+            {m.onboarding_v2_setup_computer_rebind({
+              computerName: computer.displayName,
+              name: snapshot.agent.displayName,
+            })}
+          </p>
+          {canBind ? (
+            <AgentComputerChoice
+              adapter={computerConnectAdapter}
+              agentId={agentId}
+              inventoryAdapter={computerAdapter?.inventory}
+              onBound={onChanged}
+            />
+          ) : null}
+        </div>
       </section>
     );
   }
   if (computer.kind === "observation-failed") {
     return (
-      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+      <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
         <ComputerStepHeader name={snapshot.agent.displayName} />
-        <ComputerSummary
-          metadata={platformLabel(computer.platform)}
-          status={m.onboarding_v2_connect_unconfirmed()}
-          title={computer.displayName}
-          tone="warning"
-        />
+        <div className="otv2-computer-step__body">
+          <ComputerSummary
+            metadata={platformLabel(computer.platform)}
+            status={m.onboarding_v2_connect_unconfirmed()}
+            title={computer.displayName}
+            tone="warning"
+          />
+          {refreshAction}
+        </div>
       </section>
     );
   }
@@ -941,25 +1060,27 @@ function NotBoundComputerSection({
 }) {
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
   return (
-    <section className={SECTION} data-state="not-bound" data-ui="agent-setup-computer">
+    <section className="otv2-computer-step flex flex-col" data-state="not-bound" data-ui="agent-setup-computer">
       <ComputerStepHeader name={name} />
-      <ComputerSummary
-        status={m.onboarding_v2_connect_no_computer_status()}
-        title={m.onboarding_v2_connect_no_computer_title()}
-        tone="neutral"
-      />
-      {/*
-       * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
-       * does it — including the choice when the Account genuinely has one to make.
-       */}
-      {canBind ? (
-        <AgentComputerChoice
-          adapter={computerConnectAdapter}
-          agentId={agentId}
-          inventoryAdapter={inventoryAdapter}
-          onBound={onChanged}
+      <div className="otv2-computer-step__body">
+        <ComputerSummary
+          status={m.onboarding_v2_connect_no_computer_status()}
+          title={m.onboarding_v2_connect_no_computer_title()}
+          tone="neutral"
         />
-      ) : null}
+        {/*
+         * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
+         * does it — including the choice when the Account genuinely has one to make.
+         */}
+        {canBind ? (
+          <AgentComputerChoice
+            adapter={computerConnectAdapter}
+            agentId={agentId}
+            inventoryAdapter={inventoryAdapter}
+            onBound={onChanged}
+          />
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -981,30 +1102,32 @@ function BoundComputerSection({
   );
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
-    <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+    <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
       <ComputerStepHeader name={snapshot.agent.displayName} />
-      <ComputerSummary
-        metadata={platformLabel(computer.platform)}
-        status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
-        title={computer.displayName}
-        tone={offline ? "warning" : "success"}
-      />
-      {repair ? (
-        <ComputerConnect
-          adapter={computerConnectAdapter}
-          intent={{
-            mode: "repair",
-            target: { computerId: repair.computerId, displayName: computer.displayName },
-          }}
-          onConnected={onChanged}
+      <div className="otv2-computer-step__body">
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+          title={computer.displayName}
+          tone={offline ? "warning" : "success"}
         />
-      ) : null}
+        {repair ? (
+          <ComputerConnect
+            adapter={computerConnectAdapter}
+            intent={{
+              mode: "repair",
+              target: { computerId: repair.computerId, displayName: computer.displayName },
+            }}
+            onConnected={onChanged}
+          />
+        ) : null}
+      </div>
     </section>
   );
 }
 
 function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const rows = useMemo(() => preparationReadinessRows(snapshot), [snapshot]);
+  const rows = useMemo(() => preparationSummaryRows(snapshot), [snapshot]);
   const { computer } = snapshot;
   if (computer.kind === "not-bound") return null;
   return (
@@ -1016,7 +1139,16 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
         <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
       <div className="otv2-preparation__checks">
-        <ReadinessList label={m.onboarding_v2_prep_title()} rows={rows} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_online()}
+          title={computer.displayName}
+          tone="success"
+        />
+        <ol aria-label={m.onboarding_v2_prep_title()} className="otv2-readiness" data-ui="readiness-list">
+          <CheckLine check={rows.runtime} component="runtime" position={1} />
+          <CheckLine check={rows.messaging} component="messaging-support" position={2} />
+        </ol>
       </div>
     </section>
   );
@@ -1210,6 +1342,11 @@ function MessagingHandoff({
       </p>
       {messaging.progress ? (
         <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>
+      ) : null}
+      {!messaging.progress && messaging.provider === "slack" ? (
+        <p className={HINT}>
+          {m.onboarding_v2_messaging_slack_observe({ provider: providerTitle(messaging.provider) })}
+        </p>
       ) : null}
       {unbind ? (
         <div>

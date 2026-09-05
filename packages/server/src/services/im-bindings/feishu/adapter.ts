@@ -582,7 +582,11 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
-    this.#policy = input.policy ?? new ExternalCallPolicy();
+    this.#policy =
+      input.policy ??
+      new ExternalCallPolicy({
+        allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
+      });
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     this.#client = new Client({
       appId: input.appId,

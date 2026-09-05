@@ -49,7 +49,12 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
   readonly #registerApp: typeof registerApp;
   readonly #policy: ExternalCallPolicy;
 
-  constructor(register: typeof registerApp = registerApp, policy: ExternalCallPolicy = new ExternalCallPolicy()) {
+  constructor(
+    register: typeof registerApp = registerApp,
+    policy: ExternalCallPolicy = new ExternalCallPolicy({
+      allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
+    }),
+  ) {
     this.#registerApp = register;
     this.#policy = policy;
   }

@@ -78,7 +78,7 @@ describe("Slack installed-binding adapter", () => {
 
   it("downloads Slack resources and rejects unavailable or oversized responses", async () => {
     const info = vi.fn().mockResolvedValue({
-      file: { url_private_download: "https://files.example/download", name: "file.txt", mimetype: "text/plain" },
+      file: { url_private_download: "https://files.slack.com/download", name: "file.txt", mimetype: "text/plain" },
     });
     const client = { auth: { test: vi.fn() }, files: { info } };
     const api = new DefaultSlackApiClient(() => client as never);
@@ -102,7 +102,7 @@ describe("Slack installed-binding adapter", () => {
       });
       expect(info).toHaveBeenCalledWith({ file: "file" });
       expect(fetchGlobal).toHaveBeenCalledWith(
-        "https://files.example/download",
+        "https://files.slack.com/download",
         expect.objectContaining({ redirect: "error" }),
       );
 
@@ -115,7 +115,7 @@ describe("Slack installed-binding adapter", () => {
           token: "xoxb-token",
         }),
       ).rejects.toThrow("SLACK_RESOURCE_UNAVAILABLE");
-      info.mockResolvedValueOnce({ file: { url_private: "https://files.example/private" } });
+      info.mockResolvedValueOnce({ file: { url_private: "https://files.slack.com/private" } });
       fetchGlobal.mockResolvedValueOnce(new Response(null, { status: 403 }));
       await expect(
         api.fetchResource({
@@ -136,6 +136,18 @@ describe("Slack installed-binding adapter", () => {
           token: "xoxb-token",
         }),
       ).rejects.toThrow("SLACK_RESOURCE_TOO_LARGE");
+
+      const callsBeforeRejectedUrl = fetchGlobal.mock.calls.length;
+      info.mockResolvedValueOnce({ file: { url_private: "http://files.slack.com/private" } });
+      await expect(
+        api.fetchResource({
+          messageExternalId: "message",
+          providerResourceKey: "insecure",
+          kind: "file",
+          token: "xoxb-token",
+        }),
+      ).rejects.toMatchObject({ code: "IM_PROVIDER_HOST_NOT_ALLOWED" });
+      expect(fetchGlobal).toHaveBeenCalledTimes(callsBeforeRejectedUrl);
     } finally {
       vi.unstubAllGlobals();
     }

@@ -23,6 +23,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
     this.#policy =
       policy ??
       new ExternalCallPolicy({
+        allowedHosts: ["slack.com", "files.slack.com"],
         transport: (input, init) => this.#fetch(input, init),
       });
   }
@@ -110,8 +111,9 @@ export class DefaultSlackApiClient implements SlackApiClient {
   async inspectInstallation(token: string): Promise<SlackInstallationInspection> {
     let response: Response;
     try {
+      const admittedUrl = this.#policy.admitUrl("https://slack.com/api/auth.test");
       response = await this.#policy.fetch(
-        "https://slack.com/api/auth.test",
+        admittedUrl,
         {
           method: "POST",
           headers: {
@@ -170,8 +172,9 @@ export class DefaultSlackApiClient implements SlackApiClient {
     );
     const url = info.file?.url_private_download ?? info.file?.url_private;
     if (!url) throw new Error("SLACK_RESOURCE_UNAVAILABLE");
+    const admittedUrl = this.#policy.admitUrl(url);
     const response = await this.#policy.fetch(
-      url,
+      admittedUrl,
       { headers: { authorization: `Bearer ${input.token}` } },
       { circuitKey: "slack:resource.download", maxAttempts: 1 },
     );

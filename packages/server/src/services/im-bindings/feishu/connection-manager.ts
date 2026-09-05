@@ -102,7 +102,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     this.#maintenanceMs = input.maintenanceMs ?? DEFAULT_MAINTENANCE_MS;
     this.#runtimeReady = async (agentId) => (await input.runtimeReady?.(agentId)) ?? true;
-    this.#policy = input.policy ?? new ExternalCallPolicy();
+    this.#policy =
+      input.policy ??
+      new ExternalCallPolicy({
+        allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
+      });
     this.#maintenanceBackoffBaseMs = Math.max(1, input.maintenanceBackoffBaseMs ?? 500);
     this.#maintenanceBackoffMaxMs = Math.max(this.#maintenanceBackoffBaseMs, input.maintenanceBackoffMaxMs ?? 30_000);
     this.#now = input.now ?? (() => new Date());

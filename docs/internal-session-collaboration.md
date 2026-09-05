@@ -64,6 +64,7 @@ for the bounded acquisition window, then fails closed with an actionable lease-h
 with a recreate strategy, such as `maxSurge=0`, so there are never two live replicas; a rolling restart waits for the old
 process to exit before the replacement acquires the lease. The lease belongs to the PostgreSQL session: a clean
 shutdown or an unclean process kill closes that session and PostgreSQL releases the lease automatically. The
+lease client disables automatic lifetime recycling, so it is not replaced underneath the advisory lock.
 `/healthz` and `/readyz` responses expose `runtimeOwnership.mode`, `runtimeOwnership.status`, and the owning
 `runtimeOwnership.instanceId`; if the lease connection drops, the instance immediately fences its runtime sockets,
 stops background dispatch, rejects runtime mutations, reports `not_owned`, and fails `/readyz`. It then attempts to

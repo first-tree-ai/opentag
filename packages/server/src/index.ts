@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { InternalNavigationVisibility, ProviderReadinessStatus } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import type { Sql } from "postgres";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
@@ -26,7 +25,11 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
-import { acquireRuntimeOwnershipLease, type RuntimeOwnershipLease } from "./runtime/runtime-ownership-lease.js";
+import {
+  acquireRuntimeOwnershipLease,
+  type RuntimeOwnershipLease,
+  type RuntimeOwnershipState,
+} from "./runtime/runtime-ownership-lease.js";
 import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
   AuthService,
@@ -129,7 +132,7 @@ class StagingInternalNavigationVisibilityService {
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
-  let sql: Sql | undefined;
+  let sql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
   let runtimeOwnershipLease: RuntimeOwnershipLease | undefined;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
@@ -165,7 +168,9 @@ export async function startServer(): Promise<void> {
     const databaseClient = createDatabaseClient(config.databaseUrl);
     const { database } = databaseClient;
     sql = databaseClient.sql;
-    runtimeOwnershipLease = await acquireRuntimeOwnershipLease(sql, instanceId);
+    runtimeOwnershipLease = await acquireRuntimeOwnershipLease(config.databaseUrl, instanceId, {
+      timeoutMs: config.runtimeReplicaAcquireTimeoutMs,
+    });
     const postAuthentication = new PostAuthenticationService(database);
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
@@ -435,7 +440,8 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
-      runtimeOwnership: runtimeOwnershipLease.state,
+      runtimeOwnership: (): RuntimeOwnershipState =>
+        runtimeOwnershipLease?.state ?? { mode: "single", status: "not_owned" },
       runtime: {
         registry,
         domainOwner,
@@ -516,4 +522,5 @@ export async function startServer(): Promise<void> {
 const isProcessEntry = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1];
 if (isProcessEntry) {
   await startServer();
+  if (process.exitCode !== undefined && process.exitCode !== 0) process.exit(process.exitCode);
 }

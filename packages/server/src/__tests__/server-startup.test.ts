@@ -320,6 +320,7 @@ function defaultConfig() {
     port: 8000,
     publicUrl: "https://opentag.example.com",
     runtimeReplicaMode: "single",
+    runtimeReplicaAcquireTimeoutMs: 30_000,
     sessionTtlSeconds: 2_592_000,
   };
 }
@@ -415,7 +416,9 @@ describe("Server startup", () => {
     await startServer();
 
     expect(state.migrateDatabase).toHaveBeenCalledWith(state.config.databaseUrl, state.config.migrationsDirectory);
-    expect(state.acquireRuntimeOwnershipLease).toHaveBeenCalledWith(state.sql, expect.any(String));
+    expect(state.acquireRuntimeOwnershipLease).toHaveBeenCalledWith(state.config.databaseUrl, expect.any(String), {
+      timeoutMs: state.config.runtimeReplicaAcquireTimeoutMs,
+    });
     expect(state.verifyDatabaseMigrations).not.toHaveBeenCalled();
     expect(state.events).toEqual([
       "ready:configuration",
@@ -530,6 +533,7 @@ describe("Server startup", () => {
     expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
     await app.close();
     expect(state.runtimeOwnershipRelease).toHaveBeenCalledOnce();
+    expect(state.sql.end).toHaveBeenCalledOnce();
     expect(state.events.slice(-5)).toEqual([
       "app:close",
       "worker:stop",
@@ -633,6 +637,21 @@ describe("Server startup", () => {
       stderr.mockRestore();
     },
   );
+
+  it("closes the database pool and exits non-zero when the runtime lease is held", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.acquireRuntimeOwnershipLease.mockRejectedValue(
+      new Error("The OpenTag runtime ownership lease is already held by another live instance"),
+    );
+
+    await startServer();
+
+    expect(process.exitCode).toBe(1);
+    expect(state.createApp).not.toHaveBeenCalled();
+    expect(state.sql.end).toHaveBeenCalledOnce();
+    expect(stderr.mock.calls.flat().join(" ")).toContain("Failed to start OpenTag server");
+    stderr.mockRestore();
+  });
 
   it("logs a redacted post-creation failure and closes every started resource", async () => {
     const app = state.app as {

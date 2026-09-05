@@ -92,6 +92,8 @@ export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
 const RuntimeReplicaModeSchema = z.literal("single").default("single");
 export type RuntimeReplicaMode = z.infer<typeof RuntimeReplicaModeSchema>;
 
+const RuntimeReplicaAcquireTimeoutSchema = z.coerce.number().int().min(1_000).max(120_000).default(30_000);
+
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
 }
@@ -138,6 +140,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     OPENTAG_RUNTIME_REPLICA_MODE: RuntimeReplicaModeSchema,
+    OPENTAG_RUNTIME_REPLICA_ACQUIRE_TIMEOUT_MS: RuntimeReplicaAcquireTimeoutSchema,
     /*
      * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
      * may be idle and still be signed in.
@@ -280,6 +283,8 @@ export interface ServerConfig {
   publicUrl: string;
   /** Runtime ownership is process-local and therefore currently requires one Server replica. */
   runtimeReplicaMode: RuntimeReplicaMode;
+  /** Maximum time to wait for the single-replica runtime ownership lease. */
+  runtimeReplicaAcquireTimeoutMs: number;
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
@@ -340,6 +345,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_RUNTIME_REPLICA_MODE: environment.OPENTAG_RUNTIME_REPLICA_MODE,
+    OPENTAG_RUNTIME_REPLICA_ACQUIRE_TIMEOUT_MS: environment.OPENTAG_RUNTIME_REPLICA_ACQUIRE_TIMEOUT_MS,
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
@@ -389,6 +395,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     runtimeReplicaMode: parsed.OPENTAG_RUNTIME_REPLICA_MODE,
+    runtimeReplicaAcquireTimeoutMs: parsed.OPENTAG_RUNTIME_REPLICA_ACQUIRE_TIMEOUT_MS,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     stagingSetupReset: parsed.OPENTAG_ENV === "staging",
   };

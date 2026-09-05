@@ -1,3 +1,4 @@
+import type { RuntimeOwnershipHealth } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { BootstrapReadiness } from "../bootstrap-readiness.js";
@@ -70,6 +71,24 @@ describe("GET /healthz", () => {
     });
     const readiness = await app.inject({ method: "GET", url: "/readyz" });
     expect(readiness.json()).toMatchObject({ runtimeOwnership: health.json().runtimeOwnership });
+  });
+
+  it("fails readiness after the runtime ownership connection is lost", async () => {
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    let runtimeOwnership: RuntimeOwnershipHealth = {
+      mode: "single",
+      status: "owned",
+      instanceId: "11111111-1111-4111-8111-111111111111",
+    };
+    const app = createApp({ readiness, runtimeOwnership: () => runtimeOwnership });
+    apps.push(app);
+
+    await expect(app.inject({ method: "GET", url: "/readyz" })).resolves.toMatchObject({ statusCode: 200 });
+    runtimeOwnership = { mode: "single", status: "not_owned" };
+    const unavailable = await app.inject({ method: "GET", url: "/readyz" });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toMatchObject({ status: "not_ready", runtimeOwnership });
   });
 
   it("probes the configured database before reporting ready", async () => {

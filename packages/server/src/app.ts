@@ -87,7 +87,7 @@ export interface CreateAppOptions {
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
-  runtimeOwnership?: RuntimeOwnershipHealth;
+  runtimeOwnership?: RuntimeOwnershipHealth | (() => RuntimeOwnershipHealth);
   runtime?: RuntimeRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
@@ -288,6 +288,7 @@ function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOpt
 }
 
 function runtimeOwnershipFor(options: CreateAppOptions): RuntimeOwnershipHealth {
+  if (typeof options.runtimeOwnership === "function") return options.runtimeOwnership();
   return options.runtimeOwnership ?? DEFAULT_RUNTIME_OWNERSHIP;
 }
 
@@ -394,7 +395,7 @@ export function createApp(options: CreateAppOptions = {}) {
     logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
-  const runtimeOwnership = runtimeOwnershipFor(options);
+  const runtimeOwnershipConfigured = options.runtimeOwnership !== undefined;
   const healthDatabase = options.database ?? options.taskService?.database;
   const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
@@ -434,7 +435,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const health = ServerHealthSchema.parse({
       status: "ok",
       service: "opentag-server",
-      runtimeOwnership,
+      runtimeOwnership: runtimeOwnershipFor(options),
     });
 
     return reply.code(200).send(health);
@@ -442,7 +443,8 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/readyz", async (request, reply) => {
     const snapshot = readiness.snapshot();
-    if (!snapshot.ready) {
+    const runtimeOwnership = runtimeOwnershipFor(options);
+    if (!snapshot.ready || (runtimeOwnershipConfigured && runtimeOwnership.status !== "owned")) {
       return reply.code(503).send({ status: "not_ready", ...snapshot, runtimeOwnership });
     }
     if (databaseReadinessProbe) {

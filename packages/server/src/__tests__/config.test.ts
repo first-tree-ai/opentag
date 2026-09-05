@@ -68,6 +68,7 @@ describe("parseServerConfig", () => {
         tracing: { endpoint: "", environment: "dev", headers: "", sampleRate: 1 },
       },
       runtimeReplicaMode: "single",
+      runtimeReplicaAcquireTimeoutMs: 30_000,
       sessionTtlSeconds: 2_592_000,
       logLevel: "info",
     });
@@ -85,6 +86,15 @@ describe("parseServerConfig", () => {
       "single",
     );
     expect(() => parseServerConfig({ ...required, OPENTAG_RUNTIME_REPLICA_MODE: "multi" })).toThrow();
+  });
+
+  it("defaults and bounds the runtime ownership acquisition timeout", () => {
+    expect(parseServerConfig(required).runtimeReplicaAcquireTimeoutMs).toBe(30_000);
+    expect(
+      parseServerConfig({ ...required, OPENTAG_RUNTIME_REPLICA_ACQUIRE_TIMEOUT_MS: "45000" })
+        .runtimeReplicaAcquireTimeoutMs,
+    ).toBe(45_000);
+    expect(() => parseServerConfig({ ...required, OPENTAG_RUNTIME_REPLICA_ACQUIRE_TIMEOUT_MS: "999" })).toThrow();
   });
 
   it("defaults the channel target coordinates to the public release endpoint", () => {

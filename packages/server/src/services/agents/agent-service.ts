@@ -20,7 +20,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -40,6 +40,10 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
 type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
 type QueryExecutor = Pick<DatabaseClient, "select">;
+
+export const AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS = 24;
+export const AGENT_ACTIVITY_READ_LIMIT = 256;
+const AGENT_ACTIVITY_RECOVERY_WINDOW_MS = AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS * 60 * 60 * 1_000;
 
 interface AgentScope {
   agent: AgentRow;
@@ -106,6 +110,16 @@ interface AgentActivityEvidence {
   reportedAt: Date | null;
   sessionEndedAt: Date | null;
   state: string;
+}
+
+interface AgentUsageAggregate {
+  agentId: string;
+  failed: string;
+  inputTokens: string;
+  cachedInputTokens: string;
+  outputTokens: string;
+  tasks: string;
+  invalidTokenCount: boolean | null;
 }
 
 function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
@@ -230,6 +244,22 @@ function deliveryUsageTokenCounts(
     tokens: runtimeUsageTotalTokens(provider, usage),
     measured: Object.values(usage).some((value) => value !== undefined),
   };
+}
+
+function parseAggregateCount(value: string | number | null, field: string): number {
+  const result = Number(value ?? 0);
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`Agent usage ${field} total exceeds the safe integer range`);
+  }
+  return result;
+}
+
+function parseAggregateTokenTotal(value: string | number | null): number {
+  const result = Number(value ?? 0);
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error("Agent usage token total exceeds the safe integer range");
+  }
+  return result;
 }
 
 function addUsageTokenCounts(
@@ -519,14 +549,11 @@ export class AgentService {
 
     const now = this.#now();
     const usageStartedAt = new Date(now.getTime() - AGENT_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
+    const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
     const activityRows = await this.#database
       .select({
         acceptedAt: imMessageDeliveries.acceptedAt,
         agentId: imBindings.agentId,
-        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
-        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
-        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
-        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
         reportedAt: imMessageDeliveries.reportedAt,
         bindingStatus: imBindings.status,
         sessionEndedAt: sessions.endedAt,
@@ -541,32 +568,97 @@ export class AgentService {
             imBindings.agentId,
             summaries.map((agent) => agent.id),
           ),
-          or(
-            and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
-            gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          and(
+            eq(imMessageDeliveries.state, "accepted"),
+            isNull(imMessageDeliveries.reportedAt),
+            gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
           ),
+        ),
+      )
+      .orderBy(desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id))
+      .limit(AGENT_ACTIVITY_READ_LIMIT);
+
+    const staleActivityRows = await this.#database
+      .selectDistinct({ agentId: imBindings.agentId })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(
+            imBindings.agentId,
+            summaries.map((agent) => agent.id),
+          ),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          lte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
         ),
       );
 
+    const inputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`;
+    const cachedInputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`;
+    const outputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`;
+    const usageRows = (await this.#database
+      .select({
+        agentId: imBindings.agentId,
+        failed: sql<string>`count(*) filter (where ${imMessageDeliveries.turnReport} ->> 'outcome' = 'failed')::text`,
+        inputTokens: sql<string>`coalesce(sum(case when ${inputTokensText} ~ '^[0-9]+$' then (${inputTokensText})::numeric else 0::numeric end), 0)::text`,
+        cachedInputTokens: sql<string>`coalesce(sum(case when ${cachedInputTokensText} ~ '^[0-9]+$' then (${cachedInputTokensText})::numeric else 0::numeric end), 0)::text`,
+        outputTokens: sql<string>`coalesce(sum(case when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric else 0::numeric end), 0)::text`,
+        tasks: sql<string>`count(*)::text`,
+        invalidTokenCount: sql<boolean>`bool_or(
+          (${inputTokensText} is not null and ${inputTokensText} !~ '^[0-9]+$') or
+          (${cachedInputTokensText} is not null and ${cachedInputTokensText} !~ '^[0-9]+$') or
+          (${outputTokensText} is not null and ${outputTokensText} !~ '^[0-9]+$')
+        )`,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(
+            imBindings.agentId,
+            summaries.map((agent) => agent.id),
+          ),
+          gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          lte(imMessageDeliveries.acceptedAt, now),
+        ),
+      )
+      .groupBy(imBindings.agentId)) as AgentUsageAggregate[];
+
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
     const activityByAgent = projectActivityByAgent(activityRows);
+    for (const row of staleActivityRows) {
+      if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
+    }
     const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
-    for (const row of activityRows) {
-      if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
-      const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
-      usage.tasks += 1;
-      if (row.outcome === "failed") usage.failed += 1;
+    for (const row of usageRows) {
+      if (row.invalidTokenCount) throw new Error("Agent usage contains an invalid token count");
       const runtimeProvider = runtimeProviderByAgent.get(row.agentId);
       if (!runtimeProvider) throw new Error("Agent usage is missing its runtime Provider");
-      usage.tokens += deliveryUsageTokenCounts(
-        runtimeProvider,
-        row.inputTokens,
-        row.cachedInputTokens,
-        row.outputTokens,
-      ).tokens;
-      if (!Number.isSafeInteger(usage.tokens))
-        throw new Error("Agent usage token total exceeds the safe integer range");
-      usageByAgent.set(row.agentId, usage);
+      const inputTokens = parseAggregateTokenTotal(row.inputTokens);
+      const cachedInputTokens = parseAggregateTokenTotal(row.cachedInputTokens);
+      const outputTokens = parseAggregateTokenTotal(row.outputTokens);
+      let tokens: number;
+      try {
+        tokens = deliveryUsageTokenCounts(
+          runtimeProvider,
+          String(inputTokens),
+          String(cachedInputTokens),
+          String(outputTokens),
+        ).tokens;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("safe integer range")) {
+          throw new Error("Agent usage token total exceeds the safe integer range");
+        }
+        throw error;
+      }
+      usageByAgent.set(row.agentId, {
+        failed: parseAggregateCount(row.failed, "failed"),
+        tasks: parseAggregateCount(row.tasks, "task"),
+        tokens,
+      });
     }
 
     return {

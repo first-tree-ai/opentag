@@ -13,7 +13,7 @@ import {
   sessions,
 } from "../../../db/schema/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
-import { AgentService } from "../index.js";
+import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
 const NOW = new Date("2026-08-24T12:00:00.000Z");
 const REPORT_OWNER = "11111111-1111-4111-8111-111111111111";
@@ -371,8 +371,8 @@ describe("AgentService", () => {
     const listed = await service.listForAccount(bootstrap.userId);
     expect(listed.agents[0]).toMatchObject({
       activity: { state: "working", startedAt: workingAt.toISOString() },
-      usage: { tasks: 2, failed: 1, tokens },
     });
+    expect(listed.agents[0]?.usage).toEqual({ windowDays: 30, tasks: 2, failed: 1, tokens });
     const usage = await service.getUsageById(bootstrap.userId, created.id, 30);
     expect(usage).toMatchObject({
       tasks: 2,
@@ -387,6 +387,38 @@ describe("AgentService", () => {
     await unitDatabase.database.update(sessions).set({ endedAt: NOW }).where(eq(sessions.id, session.id));
     await expect(service.listForAccount(bootstrap.userId)).resolves.toMatchObject({
       agents: [{ activity: { state: "idle" }, usage: { tasks: 2 } }],
+    });
+  });
+
+  it("projects an orphaned accepted delivery older than the recovery window as unknown", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "stale-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    const staleAcceptedAt = new Date(NOW.getTime() - (AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS + 1) * 60 * 60 * 1_000);
+    await createDelivery(binding.id, session.id, { acceptedAt: staleAcceptedAt });
+
+    await expect(service.listForAccount(bootstrap.userId)).resolves.toMatchObject({
+      agents: [{ id: created.id, activity: { state: "unknown" }, usage: { tasks: 1 } }],
+    });
+  });
+
+  it("keeps activity row materialisation bounded and selects the newest working delivery", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "bounded-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    for (let index = 0; index <= AGENT_ACTIVITY_READ_LIMIT; index += 1) {
+      await createDelivery(binding.id, session.id, {
+        acceptedAt: new Date(NOW.getTime() - index * 1_000),
+        usage: {},
+      });
+    }
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]).toMatchObject({
+      activity: { state: "working", startedAt: NOW.toISOString() },
+      usage: { tasks: AGENT_ACTIVITY_READ_LIMIT + 1 },
     });
   });
 
@@ -421,6 +453,9 @@ describe("AgentService", () => {
       reportedAt: NOW,
       usage: { inputTokens: Number.MAX_SAFE_INTEGER },
     });
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow(
+      "Agent usage token total exceeds the safe integer range",
+    );
     await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow(
       "token total exceeds the safe integer range",
     );

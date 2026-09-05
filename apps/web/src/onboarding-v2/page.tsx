@@ -18,6 +18,8 @@ import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
 
+export type CreationPreviewView = "agent" | "destination";
+
 const CREATE_STEPS: FlowState["steps"] = [
   { id: "agent", status: "current" },
   { id: "computer", status: "upcoming" },
@@ -43,6 +45,8 @@ export function AgentSetupSurface({
   agentId,
   computerAdapter,
   creationPreview,
+  creationPreviewInitialView,
+  onCreationPreviewViewChange,
   onBackToAgents,
   onAgentAvailable,
   onExternalNavigation,
@@ -57,6 +61,8 @@ export function AgentSetupSurface({
   agentId?: string;
   computerAdapter?: AgentSetupPageProps["computerAdapter"];
   creationPreview?: (request: CreationIntentRequest) => Promise<{ readonly id: string }>;
+  creationPreviewInitialView?: CreationPreviewView;
+  onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onExternalNavigation?: (url: string) => void;
@@ -87,6 +93,8 @@ export function AgentSetupSurface({
     <AgentCreatePage
       accountId={accountId}
       creationPreview={creationPreview}
+      creationPreviewInitialView={creationPreviewInitialView}
+      onCreationPreviewViewChange={onCreationPreviewViewChange}
       onAgentAvailable={onAgentAvailable}
       onBackToAgents={onBackToAgents}
     />
@@ -96,11 +104,15 @@ export function AgentSetupSurface({
 function AgentCreatePage({
   accountId,
   creationPreview,
+  creationPreviewInitialView = "destination",
+  onCreationPreviewViewChange,
   onAgentAvailable,
   onBackToAgents,
 }: {
   accountId: string;
   creationPreview?: (request: CreationIntentRequest) => Promise<{ readonly id: string }>;
+  creationPreviewInitialView?: CreationPreviewView;
+  onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
@@ -110,12 +122,19 @@ function AgentCreatePage({
   const [pendingIntent, setPendingIntent] = useState<CreationIntentRecord | undefined>(() =>
     creationPreview ? undefined : readCreationIntent(accountId),
   );
-  const [draft, setDraft] = useState<AgentDraft>(() => draftFromIntent(pendingIntent));
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
+  const [draft, setDraft] = useState<AgentDraft>(() => {
+    const initial = draftFromIntent(pendingIntent);
+    return creationPreviewInitialView === "agent" ? { ...initial, destination: "local" } : initial;
+  });
+  const [destinationConfirmed, setDestinationConfirmed] = useState(creationPreviewInitialView === "agent");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const [dismissedIntentId, setDismissedIntentId] = useState<string>();
   const createInFlightRef = useRef(false);
+
+  useEffect(() => {
+    onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
+  }, [destinationConfirmed, onCreationPreviewViewChange]);
 
   const selectedRequest = useMemo<CreationIntentRequest | undefined>(() => {
     if (draft.destination !== "local" || !draftIsSubmittable(draft) || !draft.runtime) return undefined;

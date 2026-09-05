@@ -1,9 +1,9 @@
-import type { AgentRuntimeProvider, AgentSetupSnapshot, ImProvider } from "@opentag/shared/browser";
+import type { AgentRuntimeProvider, ImProvider } from "@opentag/shared/browser";
 import { type RefObject, useId, useRef, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
-import { Button, Collapsible, Icon, KumoSelectControl, StatusIndicator, type StatusTone } from "../ui/design-system.js";
+import { Button, Collapsible, Icon, KumoSelectControl } from "../ui/design-system.js";
 import {
   LAB_AUTOMATIONS,
   LAB_INVENTORIES,
@@ -15,21 +15,80 @@ import {
   type LabJourney,
   type LabObservationFailure,
   type LabPendingEvent,
+  type LabPreviewPage,
   type LabScenario,
+  labPreviewPageFor,
   labScenarioStartsWithCreation,
 } from "./agent-setup-lab-model.js";
 import { RUNTIMES } from "./flow.js";
-import { preparationReadinessRows } from "./preparation-readiness.js";
 import {
   isReadinessScenario,
   READINESS_SCENARIOS,
   type ReadinessScenario,
   readinessScenarioLabel,
 } from "./readiness-lab-fixtures.js";
-import type { CheckRow } from "./readiness-list.js";
 import type { MemorySetupAdapter } from "./setup-memory-adapter.js";
 
 type LabScenarioOption = LabScenario | ReadinessScenario;
+
+interface LabPreviewPageOption {
+  readonly key: LabPreviewPage;
+  readonly label: () => string;
+  readonly scenario: LabScenario;
+}
+
+const LAB_PREVIEW_PAGES: readonly LabPreviewPageOption[] = [
+  {
+    key: "destination",
+    label: m.onboarding_v2_lab_page_creation,
+    scenario: "full-new-computer",
+  },
+  { key: "agent", label: m.onboarding_v2_lab_page_agent, scenario: "agent-creation" },
+  { key: "computer", label: m.onboarding_v2_lab_page_computer, scenario: "computer-connection" },
+  { key: "checks", label: m.onboarding_v2_lab_page_preparation, scenario: "runtime-setup" },
+  { key: "messaging", label: m.onboarding_v2_lab_page_messaging, scenario: "messaging-setup" },
+  { key: "complete", label: m.onboarding_v2_lab_page_ready, scenario: "everything-ready" },
+] as const;
+
+function LabScreenControl({
+  activePage,
+  container,
+  id,
+  onChange,
+}: {
+  readonly activePage: LabPreviewPage | undefined;
+  readonly container: RefObject<HTMLDivElement | null>;
+  readonly id: string;
+  readonly onChange: (scenario: LabScenario) => void;
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <label className="text-xs font-medium text-kumo-subtle" htmlFor={id}>
+        {m.onboarding_v2_lab_screen()}
+      </label>
+      <KumoSelectControl
+        container={container}
+        id={id}
+        onChange={(event) => {
+          const page = LAB_PREVIEW_PAGES.find((candidate) => candidate.key === event.target.value);
+          if (page) onChange(page.scenario);
+        }}
+        value={activePage ?? ""}
+      >
+        {!activePage ? (
+          <option disabled value="">
+            {m.onboarding_v2_lab_scenario_core_placeholder()}
+          </option>
+        ) : null}
+        {LAB_PREVIEW_PAGES.map((page) => (
+          <option key={page.key} value={page.key}>
+            {page.label()}
+          </option>
+        ))}
+      </KumoSelectControl>
+    </div>
+  );
+}
 
 type LabScenarioCopy = Readonly<{ label: () => string; description: () => string }>;
 
@@ -104,6 +163,17 @@ function scenarioDescription(scenario: LabScenario): string {
   return LAB_SCENARIO_COPY[scenario].description();
 }
 
+function contextualScenarioLabel(scenario: LabScenario): string {
+  const label = scenarioLabel(scenario);
+  const separator = label.indexOf(" · ");
+  return separator === -1 ? label : label.slice(separator + 3);
+}
+
+function scenariosForPage(page: LabPreviewPage | undefined): readonly LabScenario[] {
+  if (!page) return [];
+  return LAB_SCENARIOS.filter((candidate) => labPreviewPageFor(candidate) === page);
+}
+
 function scenarioAllowsRuntimeOverride(scenario: LabScenarioOption): boolean {
   return !isReadinessScenario(scenario) && !labScenarioStartsWithCreation(scenario);
 }
@@ -147,139 +217,26 @@ function pendingLabel(event: LabPendingEvent | undefined): string {
   return m.onboarding_v2_lab_nothing_waiting();
 }
 
-function controlButtonLabel(scenario: LabScenarioOption, status: string, customizationCount: number): string {
-  if (isReadinessScenario(scenario)) return status;
-  if (customizationCount > 0) return `${m.onboarding_v2_lab_custom_state()} · ${status}`;
-  return `${scenarioLabel(scenario)} · ${status}`;
-}
-
-function controlSubtitle(scenario: LabScenarioOption, status: string, customizationCount: number): string {
-  if (isReadinessScenario(scenario)) return status;
+function controlButtonLabel(customizationCount: number): string {
   if (customizationCount > 0) {
-    return `${scenarioLabel(scenario)} · ${m.onboarding_v2_lab_overrides_changed({ count: customizationCount })}`;
+    return `${m.onboarding_v2_lab_title()} · ${m.onboarding_v2_lab_overrides_changed({ count: customizationCount })}`;
   }
-  return scenarioLabel(scenario);
+  return m.onboarding_v2_lab_title();
 }
 
 function ControlTriggerContent({
   customizationCount,
   open,
-  scenario,
-  status,
 }: {
   readonly customizationCount: number;
   readonly open: boolean;
-  readonly scenario: LabScenarioOption;
-  readonly status: string;
 }) {
-  if (!open) return controlButtonLabel(scenario, status, customizationCount);
+  if (!open) return controlButtonLabel(customizationCount);
   return (
     <>
       <Icon name="close" />
       {m.common_close()}
     </>
-  );
-}
-
-function readinessTone(row: CheckRow): StatusTone {
-  if (row.state === "passed") return "success";
-  if (row.state === "failed") return "danger";
-  if (row.state === "blocked") return "warning";
-  return "neutral";
-}
-
-function readinessStatus(row: CheckRow): string {
-  return row.status === "ready" ? m.onboarding_v2_prep_status_ready() : row.statusLabel;
-}
-
-interface LabStateItem {
-  readonly key: string;
-  readonly label: string;
-  readonly status: string;
-  readonly tone: StatusTone;
-}
-
-function readinessStateItem(key: string, label: string, row: CheckRow): LabStateItem {
-  return { key, label, status: readinessStatus(row), tone: readinessTone(row) };
-}
-
-function messagingConnectionState(snapshot: AgentSetupSnapshot): LabStateItem {
-  const { messaging } = snapshot;
-  const label =
-    "provider" in messaging
-      ? spaceScriptBoundary(
-          m.onboarding_v2_lab_messaging_connection_provider({ provider: messagingProviderLabel(messaging.provider) }),
-        )
-      : m.onboarding_v2_lab_messaging_connection();
-  if (messaging.kind === "ready") {
-    return { key: "messaging-connection", label, status: m.onboarding_v2_prep_status_ready(), tone: "success" };
-  }
-  if (messaging.kind === "blocked") {
-    return { key: "messaging-connection", label, status: m.onboarding_v2_prep_needs_attention(), tone: "danger" };
-  }
-  if (messaging.kind === "waiting-handoff") {
-    return {
-      key: "messaging-connection",
-      label,
-      status: m.onboarding_v2_lab_messaging_connection_waiting_handoff(),
-      tone: "warning",
-    };
-  }
-  if (messaging.kind === "authorizing") {
-    return {
-      key: "messaging-connection",
-      label,
-      status: m.onboarding_v2_lab_messaging_connection_authorizing(),
-      tone: "neutral",
-    };
-  }
-  if (messaging.kind === "observation-failed") {
-    return {
-      key: "messaging-connection",
-      label,
-      status: m.onboarding_v2_lab_messaging_connection_observation_failed(),
-      tone: "danger",
-    };
-  }
-  return {
-    key: "messaging-connection",
-    label,
-    status: m.onboarding_v2_lab_messaging_connection_not_started(),
-    tone: "neutral",
-  };
-}
-
-function LabStateSummary({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const full = preparationReadinessRows(snapshot);
-  const rows: readonly LabStateItem[] = [
-    readinessStateItem("computer", m.onboarding_v2_prep_computer_label(), full.computer),
-    readinessStateItem(
-      "runtime",
-      m.onboarding_v2_lab_state_runtime({ runtime: runtimeLabel(snapshot.runtime.provider) }),
-      full.runtime,
-    ),
-    readinessStateItem("im-cli:feishu", `${messagingProviderLabel("feishu")} CLI`, full.feishu),
-    readinessStateItem("im-cli:slack", `${messagingProviderLabel("slack")} CLI`, full.slack),
-    messagingConnectionState(snapshot),
-  ] as const;
-  return (
-    <section
-      aria-label={m.onboarding_v2_lab_current_state()}
-      className="grid gap-2 rounded-lg bg-kumo-recessed p-3"
-      data-ui="lab-state-summary"
-    >
-      <span className="text-xs font-medium uppercase text-kumo-subtle">{m.onboarding_v2_lab_current_state()}</span>
-      <dl className="grid gap-2 m-0">
-        {rows.map(({ key, label, status, tone }) => (
-          <div className="flex min-w-0 items-center justify-between gap-3" key={key}>
-            <dt className="truncate text-sm text-kumo-strong">{label}</dt>
-            <dd className="shrink-0 m-0">
-              <StatusIndicator label={status} tone={tone} />
-            </dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   );
 }
 
@@ -302,7 +259,7 @@ function ComponentFixtureControl({
 
   return (
     <Collapsible.Root
-      className="border-t border-kumo-line pt-3"
+      className="otv2-lab-control__disclosure"
       defaultOpen={readinessFixture}
       key={readinessFixture ? "fixture" : "scenario"}
     >
@@ -312,7 +269,7 @@ function ComponentFixtureControl({
         {m.onboarding_v2_lab_component_fixtures()}
         <Icon className="size-3.5 transition-transform [[data-panel-open]_&]:rotate-180" name="chevron-down" />
       </Collapsible.Trigger>
-      <Collapsible.Panel className="mt-3 grid gap-1">
+      <Collapsible.Panel className="grid gap-1 px-1 pt-3">
         <label className="text-xs text-kumo-subtle" htmlFor={fixtureId}>
           {m.onboarding_v2_lab_component_fixtures()}
         </label>
@@ -351,49 +308,43 @@ function FlowProgressControl({
   readonly onAutomationChange: (automation: LabAutomation) => void;
   readonly onFailPending: () => void;
   readonly onRunPending: () => void;
-  readonly pending: LabPendingEvent | undefined;
+  readonly pending: LabPendingEvent;
 }) {
   return (
-    <section aria-label={m.onboarding_v2_lab_flow_progress()} className="grid gap-3 rounded-lg bg-kumo-recessed p-3">
-      <fieldset className="grid gap-2 border-0 p-0 m-0">
-        <legend className="text-xs font-medium uppercase text-kumo-subtle">
-          {m.onboarding_v2_lab_flow_progress()}
-        </legend>
-        <div className="grid grid-cols-2 gap-1">
-          {LAB_AUTOMATIONS.map((candidate) => (
-            <Button
-              aria-pressed={automation === candidate}
-              key={candidate}
-              onClick={() => onAutomationChange(candidate)}
-              size="compact"
-              variant={automation === candidate ? "secondary" : "ghost"}
-            >
-              {candidate === "manual" ? m.onboarding_v2_lab_automation_manual() : m.onboarding_v2_lab_automation_auto()}
-            </Button>
-          ))}
+    <section aria-label={m.onboarding_v2_lab_flow_progress()} className="otv2-lab-control__next grid gap-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="grid gap-1">
+          <span className="text-xs font-medium text-kumo-subtle">{m.onboarding_v2_lab_next_step()}</span>
+          <strong className="text-sm text-kumo-strong">{pendingLabel(pending)}</strong>
         </div>
-      </fieldset>
-      <div className="grid gap-2 border-t border-kumo-line pt-3">
-        <span className="text-xs font-medium uppercase text-kumo-subtle">{m.onboarding_v2_lab_next_step()}</span>
-        {pending ? (
-          <>
-            <strong className="text-sm text-kumo-strong">{pendingLabel(pending)}</strong>
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={onRunPending} size="compact">
-                {pendingLabel(pending)}
+        <fieldset className="shrink-0 border-0 p-0 m-0">
+          <legend className="sr-only">{m.onboarding_v2_lab_automation()}</legend>
+          <div className="otv2-lab-control__segmented grid grid-cols-2 gap-0.5">
+            {LAB_AUTOMATIONS.map((candidate) => (
+              <Button
+                aria-pressed={automation === candidate}
+                key={candidate}
+                onClick={() => onAutomationChange(candidate)}
+                size="compact"
+                variant={automation === candidate ? "secondary" : "ghost"}
+              >
+                {candidate === "manual"
+                  ? m.onboarding_v2_lab_automation_manual()
+                  : m.onboarding_v2_lab_automation_auto()}
               </Button>
-              {canFailPending ? (
-                <Button onClick={onFailPending} size="compact" variant="outline">
-                  {computerConnectPending
-                    ? m.onboarding_v2_lab_expire_code()
-                    : m.onboarding_v2_lab_fail_authorization()}
-                </Button>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <p className="text-sm text-kumo-subtle m-0">{m.onboarding_v2_lab_nothing_waiting()}</p>
-        )}
+            ))}
+          </div>
+        </fieldset>
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+        <Button className="justify-center" onClick={onRunPending} size="compact">
+          {pendingLabel(pending)}
+        </Button>
+        {canFailPending ? (
+          <Button onClick={onFailPending} size="compact" variant="outline">
+            {computerConnectPending ? m.onboarding_v2_lab_expire_code() : m.onboarding_v2_lab_fail_authorization()}
+          </Button>
+        ) : null}
       </div>
     </section>
   );
@@ -436,6 +387,8 @@ function RuntimeOverrideControl({
 }
 
 export function AgentSetupLabControls({
+  activePage,
+  activeScenario,
   automation,
   failure,
   inventory,
@@ -456,9 +409,10 @@ export function AgentSetupLabControls({
   pending,
   runtime,
   scenario,
-  status,
   customizationCount,
 }: {
+  readonly activePage: LabPreviewPage | undefined;
+  readonly activeScenario: LabScenarioOption;
   readonly automation: LabAutomation;
   readonly failure: LabObservationFailure;
   readonly inventory: LabInventory;
@@ -479,11 +433,11 @@ export function AgentSetupLabControls({
   readonly pending: LabPendingEvent | undefined;
   readonly runtime: AgentRuntimeProvider;
   readonly scenario: LabScenarioOption;
-  readonly status: string;
   readonly customizationCount: number;
 }) {
   const [open, setOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const screenId = useId();
   const scenarioId = useId();
   const inventoryId = useId();
   const failureId = useId();
@@ -491,7 +445,8 @@ export function AgentSetupLabControls({
   const messagingId = useId();
   const panelId = useId();
   const readinessFixture = isReadinessScenario(scenario);
-  const showJourney = !isReadinessScenario(scenario) && labScenarioStartsWithCreation(scenario);
+  const pageScenarios = scenariosForPage(activePage);
+  const showJourney = activePage === "destination" || activePage === "agent";
   const showRuntimeOverride = scenarioAllowsRuntimeOverride(scenario);
   const { computerConnectState, snapshot } = memory.inspect();
   const canFailPending =
@@ -506,84 +461,82 @@ export function AgentSetupLabControls({
 
   return (
     <aside
-      className="fixed right-3 bottom-3 z-30 flex max-w-[calc(100vw-1.5rem)] items-end gap-2 sm:right-6 sm:bottom-6"
+      className="otv2-lab-control fixed right-3 bottom-3 z-30 flex max-w-[calc(100vw-1.5rem)] items-end gap-2 sm:right-6 sm:bottom-6"
       data-open={open ? "true" : undefined}
       data-ui="onboarding-v2-lab"
     >
-      {!open && pending ? <Button onClick={onRunPending}>{pendingLabel(pending)}</Button> : null}
       <div className="flex flex-col items-end gap-2">
-        <Button aria-controls={panelId} aria-expanded={open} onClick={togglePanel} variant="secondary">
-          <ControlTriggerContent
-            customizationCount={customizationCount}
-            open={open}
-            scenario={scenario}
-            status={status}
-          />
+        <Button
+          aria-controls={panelId}
+          aria-expanded={open}
+          className="otv2-lab-control__trigger"
+          onClick={togglePanel}
+          variant="secondary"
+        >
+          {!open ? <Icon name="settings" /> : null}
+          <ControlTriggerContent customizationCount={customizationCount} open={open} />
         </Button>
         <div
-          className="flex max-h-[min(42rem,calc(100vh-7rem))] w-96 max-w-[calc(100vw-1.5rem)] flex-col gap-4 overflow-y-auto rounded-xl bg-kumo-base p-4 shadow-lg ring ring-kumo-line"
+          className="otv2-lab-control__panel flex max-h-[min(46rem,calc(100dvh-7rem))] w-[26rem] max-w-[calc(100vw-1.5rem)] flex-col overflow-y-auto bg-kumo-base"
           hidden={!open}
           id={panelId}
           ref={panelRef}
         >
-          <header className="flex items-center justify-between gap-3">
-            <div className="grid gap-0.5">
-              <strong className="text-sm text-kumo-strong">{m.onboarding_v2_lab_title()}</strong>
-              <span className="text-xs text-kumo-subtle">{controlSubtitle(scenario, status, customizationCount)}</span>
+          <header className="otv2-lab-control__header flex items-start justify-between gap-4">
+            <div className="grid gap-1">
+              <strong className="text-base text-kumo-strong">{m.onboarding_v2_lab_title()}</strong>
+              <span className="text-xs text-kumo-subtle">{m.onboarding_v2_lab_intro()}</span>
             </div>
             <Button onClick={onReset} size="compact" variant="ghost">
               {m.onboarding_v2_lab_reset()}
             </Button>
           </header>
 
-          {showJourney ? (
-            <fieldset className="grid gap-2 border-0 p-0 m-0">
-              <legend className="text-xs font-medium uppercase text-kumo-subtle">
-                {m.onboarding_v2_lab_journey()}
-              </legend>
-              <div className="grid grid-cols-2 gap-1">
-                {LAB_JOURNEYS.map((candidate) => (
-                  <Button
-                    aria-pressed={journey === candidate}
-                    key={candidate}
-                    onClick={() => onJourneyChange(candidate)}
-                    size="compact"
-                    variant={journey === candidate ? "secondary" : "ghost"}
-                  >
-                    {journeyLabel(candidate)}
-                  </Button>
-                ))}
-              </div>
-            </fieldset>
-          ) : null}
+          <div className="otv2-lab-control__primary grid gap-4">
+            <LabScreenControl activePage={activePage} container={panelRef} id={screenId} onChange={onScenarioChange} />
 
-          <div className="grid gap-1">
-            <label className="text-xs font-medium uppercase text-kumo-subtle" htmlFor={scenarioId}>
-              {m.onboarding_v2_lab_scenario()}
-            </label>
-            <KumoSelectControl
-              container={panelRef}
-              id={scenarioId}
-              onChange={(event) => onScenarioChange(event.target.value as LabScenarioOption)}
-              value={readinessFixture ? "" : scenario}
-            >
-              {readinessFixture ? (
-                <option disabled value="">
-                  {m.onboarding_v2_lab_scenario_core_placeholder()}
-                </option>
-              ) : null}
-              {LAB_SCENARIOS.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {scenarioLabel(candidate)}
-                </option>
-              ))}
-            </KumoSelectControl>
-            <LabScenarioDescription scenario={scenario} />
+            {showJourney ? (
+              <fieldset className="grid gap-2 border-0 p-0 m-0">
+                <legend className="text-xs font-medium text-kumo-subtle">{m.onboarding_v2_lab_journey()}</legend>
+                <div className="otv2-lab-control__segmented grid grid-cols-2 gap-0.5">
+                  {LAB_JOURNEYS.map((candidate) => (
+                    <Button
+                      aria-pressed={journey === candidate}
+                      key={candidate}
+                      onClick={() => onJourneyChange(candidate)}
+                      size="compact"
+                      variant={journey === candidate ? "secondary" : "ghost"}
+                    >
+                      {journeyLabel(candidate)}
+                    </Button>
+                  ))}
+                </div>
+              </fieldset>
+            ) : null}
+
+            {!readinessFixture && pageScenarios.length > 1 ? (
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium text-kumo-subtle" htmlFor={scenarioId}>
+                  {m.onboarding_v2_lab_scenario()}
+                </label>
+                <KumoSelectControl
+                  container={panelRef}
+                  id={scenarioId}
+                  onChange={(event) => onScenarioChange(event.target.value as LabScenarioOption)}
+                  value={activeScenario}
+                >
+                  {pageScenarios.map((candidate) => (
+                    <option key={candidate} value={candidate}>
+                      {contextualScenarioLabel(candidate)}
+                    </option>
+                  ))}
+                </KumoSelectControl>
+                <LabScenarioDescription scenario={activeScenario} />
+              </div>
+            ) : null}
           </div>
 
-          {!readinessFixture ? <LabStateSummary snapshot={snapshot} /> : null}
-
-          {!readinessFixture ? (
+          {!readinessFixture && pending ? (
             <FlowProgressControl
               automation={automation}
               canFailPending={canFailPending}
@@ -596,7 +549,7 @@ export function AgentSetupLabControls({
           ) : null}
 
           <div hidden={readinessFixture}>
-            <Collapsible.Root className="border-t border-kumo-line pt-3">
+            <Collapsible.Root className="otv2-lab-control__disclosure">
               <Collapsible.Trigger
                 render={<Button className="w-full justify-between" size="compact" type="button" variant="ghost" />}
               >
@@ -613,7 +566,7 @@ export function AgentSetupLabControls({
                   />
                 </span>
               </Collapsible.Trigger>
-              <Collapsible.Panel className="mt-3 grid gap-3">
+              <Collapsible.Panel className="grid gap-3 px-1 pt-3">
                 <RuntimeOverrideControl
                   container={panelRef}
                   id={runtimeId}

@@ -1,4 +1,4 @@
-import type { AgentRuntimeProvider, ImProvider } from "@opentag/shared/browser";
+import type { AgentRuntimeProvider, AgentSetupSnapshot, ImProvider } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { CreationIntentRequest } from "../agent-creation/creation-intent-store.js";
 import * as m from "../paraglide/messages.js";
@@ -14,21 +14,22 @@ import {
   type LabJourney,
   type LabObservationFailure,
   type LabPendingEvent,
+  type LabPreviewPage,
   type LabScenario,
+  labPreviewPageFor,
   labScenarioDefaults,
   labScenarioStartsWithCreation,
   labSeed,
   pendingLabEvent,
   runPendingLabEvent,
 } from "./agent-setup-lab-model.js";
-import { AgentSetupSurface } from "./page.js";
+import { AgentSetupSurface, type CreationPreviewView } from "./page.js";
 import {
   isReadinessScenario,
   PREVIEW_RUNTIMES,
   type PreviewRuntime,
   type ReadinessScenario,
   readinessRowsForScenario,
-  readinessScenarioLabel,
   runtimeLabelFor,
 } from "./readiness-lab-fixtures.js";
 import { ReadinessList } from "./readiness-list.js";
@@ -70,15 +71,69 @@ function initialPhase(scenario: LabScenarioOption): LabPhase {
   return !isReadinessScenario(scenario) && labScenarioStartsWithCreation(scenario) ? "creation" : "setup";
 }
 
-function phaseLabel(phase: LabPhase, memory: LabMemory): string {
-  if (phase === "creation") return m.onboarding_v2_lab_status_agent_creation();
-  if (phase === "admission") return m.onboarding_v2_lab_status_account_admission();
-  const { stage } = memory.inspect().snapshot;
-  if (stage === "needs-computer") return m.onboarding_v2_lab_status_computer();
-  if (stage === "needs-runtime") return m.onboarding_v2_lab_status_runtime();
-  if (stage === "needs-provider-clis") return m.onboarding_v2_lab_status_messaging_support();
-  if (stage === "needs-messaging") return m.onboarding_v2_lab_status_messaging();
-  return m.onboarding_v2_lab_status_ready();
+function initialCreationView(scenario: LabScenarioOption): CreationPreviewView {
+  return !isReadinessScenario(scenario) && labPreviewPageFor(scenario) === "agent" ? "agent" : "destination";
+}
+
+function computerScenario(snapshot: AgentSetupSnapshot): LabScenario {
+  if (snapshot.computer.kind === "requires-rebind") return "computer-rebind";
+  if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") {
+    return "computer-reconnect";
+  }
+  return "computer-connection";
+}
+
+function runtimeScenario(snapshot: AgentSetupSnapshot, configuredScenario: LabScenario): LabScenario {
+  if (snapshot.runtime.kind === "waiting") return "runtime-waiting";
+  if (snapshot.runtime.kind !== "observed") {
+    return labPreviewPageFor(configuredScenario) === "checks" ? configuredScenario : "runtime-setup";
+  }
+  if (snapshot.runtime.status === "checking") return "runtime-checking";
+  if (snapshot.runtime.status === "sign-in") return "runtime-sign-in";
+  return "runtime-setup";
+}
+
+function messagingScenario(snapshot: AgentSetupSnapshot): LabScenario {
+  if (snapshot.messaging.kind === "waiting-handoff") return "messaging-handoff";
+  if (snapshot.messaging.kind === "blocked") return "messaging-recovery";
+  return "messaging-setup";
+}
+
+function scenarioForSetupSnapshot(snapshot: AgentSetupSnapshot, configuredScenario: LabScenario): LabScenario {
+  if (snapshot.stage === "needs-computer") return computerScenario(snapshot);
+  if (snapshot.stage === "needs-runtime") return runtimeScenario(snapshot, configuredScenario);
+  if (snapshot.stage === "needs-provider-clis") return "messaging-support-setup";
+  if (snapshot.stage === "needs-messaging") return messagingScenario(snapshot);
+  return "everything-ready";
+}
+
+interface ActiveLabSelection {
+  readonly page: LabPreviewPage | undefined;
+  readonly scenario: LabScenarioOption;
+}
+
+function activeLabSelection({
+  creationView,
+  phase,
+  productionScenario,
+  readinessScenario,
+  snapshot,
+}: {
+  readonly creationView: CreationPreviewView;
+  readonly phase: LabPhase;
+  readonly productionScenario: LabScenario;
+  readonly readinessScenario: ReadinessScenario | undefined;
+  readonly snapshot: AgentSetupSnapshot;
+}): ActiveLabSelection {
+  if (readinessScenario) return { page: undefined, scenario: readinessScenario };
+  if (phase === "admission") return { page: "agent", scenario: "agent-creation" };
+  if (phase === "setup") {
+    const scenario = scenarioForSetupSnapshot(snapshot, productionScenario);
+    return { page: labPreviewPageFor(scenario), scenario };
+  }
+  if (creationView === "agent") return { page: "agent", scenario: "agent-creation" };
+  const scenario = labPreviewPageFor(productionScenario) === "destination" ? productionScenario : "full-new-computer";
+  return { page: "destination", scenario };
 }
 
 function productionScenarioFor(scenario: LabScenarioOption): LabScenario {
@@ -145,6 +200,7 @@ function updateAfterMemoryRebuild(
 export function AgentSetupLabPage() {
   const [configuration, setConfiguration] = useState<LabConfiguration>(initialConfiguration);
   const [customizations, setCustomizations] = useState<readonly LabCustomization[]>([]);
+  const [creationView, setCreationView] = useState<CreationPreviewView>("destination");
   const [navigationTarget, setNavigationTarget] = useState<LabNavigationTarget>();
   const [phase, setPhase] = useState<LabPhase>(() => initialPhase(configuration.scenario));
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime>("codex");
@@ -165,7 +221,13 @@ export function AgentSetupLabPage() {
   const version = useSyncExternalStore(memory.subscribe, memory.getVersion, memory.getVersion);
   const readinessScenario = isReadinessScenario(configuration.scenario) ? configuration.scenario : undefined;
   const pending = pendingEventFor(readinessScenario, phase, memory);
-  const status = readinessScenario ? readinessScenarioLabel(readinessScenario) : phaseLabel(phase, memory);
+  const active = activeLabSelection({
+    creationView,
+    phase,
+    productionScenario,
+    readinessScenario,
+    snapshot: memory.inspect().snapshot,
+  });
 
   const reset = useCallback(() => {
     setConfiguration(resetConfiguration);
@@ -173,6 +235,7 @@ export function AgentSetupLabPage() {
     setPreviewRuntime("codex");
     setNavigationTarget(undefined);
     setPhase(initialPhase(configuration.scenario));
+    setCreationView(initialCreationView(configuration.scenario));
   }, [configuration.scenario]);
 
   const changeScenario = useCallback((scenario: LabScenarioOption) => {
@@ -180,6 +243,7 @@ export function AgentSetupLabPage() {
     setCustomizations([]);
     setNavigationTarget(undefined);
     setPhase(initialPhase(scenario));
+    setCreationView(initialCreationView(scenario));
   }, []);
 
   const changeJourney = useCallback(
@@ -188,6 +252,7 @@ export function AgentSetupLabPage() {
       setCustomizations((current) => updateCustomizations(current, "computer", false));
       setNavigationTarget(undefined);
       setPhase(initialPhase(configuration.scenario));
+      setCreationView(initialCreationView(configuration.scenario));
     },
     [configuration.scenario],
   );
@@ -272,12 +337,13 @@ export function AgentSetupLabPage() {
   }, [configuration.automation, pending, runPending]);
 
   return (
-    <div className="relative min-h-screen pb-20 sm:pb-0" data-ui="onboarding-v2-lab-page">
+    <div className="relative min-h-screen pb-28 sm:pb-20" data-ui="onboarding-v2-lab-page">
       <LabPreview
         configuration={configuration}
         createPreviewAgent={createPreviewAgent}
         memory={memory}
         navigationTarget={navigationTarget}
+        onCreationViewChange={setCreationView}
         onNavigationTargetChange={setNavigationTarget}
         onPreviewRuntimeChange={setPreviewRuntime}
         phase={phase}
@@ -287,6 +353,8 @@ export function AgentSetupLabPage() {
         version={version}
       />
       <AgentSetupLabControls
+        activePage={active.page}
+        activeScenario={active.scenario}
         automation={configuration.automation}
         customizationCount={customizations.length}
         failure={configuration.failure}
@@ -308,7 +376,6 @@ export function AgentSetupLabPage() {
         pending={pending}
         runtime={configuration.runtime}
         scenario={configuration.scenario}
-        status={status}
       />
     </div>
   );
@@ -319,6 +386,7 @@ function LabPreview({
   createPreviewAgent,
   memory,
   navigationTarget,
+  onCreationViewChange,
   onNavigationTargetChange,
   onPreviewRuntimeChange,
   phase,
@@ -331,6 +399,7 @@ function LabPreview({
   readonly createPreviewAgent: (request: CreationIntentRequest) => Promise<{ id: string }>;
   readonly memory: LabMemory;
   readonly navigationTarget: LabNavigationTarget | undefined;
+  readonly onCreationViewChange: (view: CreationPreviewView) => void;
   readonly onNavigationTargetChange: (target: LabNavigationTarget | undefined) => void;
   readonly onPreviewRuntimeChange: (runtime: PreviewRuntime) => void;
   readonly phase: LabPhase;
@@ -356,9 +425,11 @@ function LabPreview({
       <AgentSetupSurface
         accountId={LAB_ACCOUNT_ID}
         creationPreview={createPreviewAgent}
+        creationPreviewInitialView={productionScenario === "agent-creation" ? "agent" : "destination"}
         key={`creation:${configuration.revision}:${configuration.journey}`}
         onAgentAvailable={() => undefined}
         onBackToAgents={configuration.journey === "additional" ? () => onNavigationTargetChange("agents") : undefined}
+        onCreationPreviewViewChange={onCreationViewChange}
       />
     );
   }

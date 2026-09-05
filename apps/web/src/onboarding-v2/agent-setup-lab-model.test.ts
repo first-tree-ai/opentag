@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   LAB_AGENT_ID,
   LAB_SCENARIOS,
+  type LabPreviewPage,
   type LabScenario,
+  labPreviewPageFor,
   labScenarioDefaults,
   labSeed,
   pendingLabEvent,
@@ -28,6 +30,24 @@ const EXPECTED_STAGES: Record<LabScenario, string> = {
   "everything-ready": "ready",
 };
 
+const EXPECTED_PAGES: Record<LabScenario, LabPreviewPage> = {
+  "full-new-computer": "destination",
+  "full-existing-computer": "destination",
+  "agent-creation": "agent",
+  "computer-connection": "computer",
+  "computer-reconnect": "computer",
+  "computer-rebind": "computer",
+  "runtime-waiting": "checks",
+  "runtime-checking": "checks",
+  "runtime-setup": "checks",
+  "runtime-sign-in": "checks",
+  "messaging-support-setup": "checks",
+  "messaging-setup": "messaging",
+  "messaging-handoff": "messaging",
+  "messaging-recovery": "messaging",
+  "everything-ready": "complete",
+};
+
 function snapshotFor(scenario: LabScenario) {
   return memoryFor(scenario).inspect().snapshot;
 }
@@ -42,6 +62,13 @@ describe("agent setup lab model", () => {
     expect(Object.keys(EXPECTED_STAGES)).toEqual([...LAB_SCENARIOS]);
     for (const scenario of LAB_SCENARIOS) {
       expect(snapshotFor(scenario).stage, scenario).toBe(EXPECTED_STAGES[scenario]);
+    }
+  });
+
+  it("maps every product scenario to an explicit preview page", () => {
+    expect(Object.keys(EXPECTED_PAGES)).toEqual([...LAB_SCENARIOS]);
+    for (const scenario of LAB_SCENARIOS) {
+      expect(labPreviewPageFor(scenario), scenario).toBe(EXPECTED_PAGES[scenario]);
     }
   });
 

@@ -322,6 +322,51 @@ describe("Session collaboration authority", () => {
     }
   });
 
+  it("persists every collaboration error code accepted by the session message check", async () => {
+    const fixture = await createFixture();
+    try {
+      const source = await fixture.sessions.ensureChatSession(
+        { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const codes = [
+        "runtime_unavailable",
+        "runtime_not_ready",
+        "runtime_instance_replaced",
+        "source_unavailable",
+        "target_unavailable",
+        "scope_mismatch",
+        "message_conflict",
+        "capacity",
+        "outbox_unavailable",
+        "delivery_timeout",
+      ] as const;
+      for (const [index, errorCode] of codes.entries()) {
+        const messageId = randomUUID();
+        const recorded = await fixture.sessions.authorizeAndRecordMessage({
+          messageId,
+          sourceSessionId: source.session.id,
+          sourceInstallationId: fixture.installationId,
+          sourceConnectionInstanceId: fixture.connectionInstanceId,
+          sourceComputerId: fixture.computerId,
+          sourcePlacementGeneration: 1,
+          targetSessionId: source.session.id,
+          content: `code-${index}`,
+        });
+        await expect(
+          fixture.sessions.recordMessageOutcome({
+            messageId,
+            attemptCount: recorded.attemptCount ?? 1,
+            outcome: "unreachable",
+            errorCode,
+          }),
+        ).resolves.toBe(true);
+      }
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
   it("rejects stale, ended, and cross-scope requests before recording a business message", async () => {
     const fixture = await createFixture();
     try {

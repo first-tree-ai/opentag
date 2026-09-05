@@ -77,7 +77,9 @@ An invalid, stale, or locally unbound Session proof returns HTTP 401 `SESSION_PR
 The SDK and CLI classify this as `after_auth`: the Runtime must reconnect and reconcile with a current managed proof
 before the caller retries. Repeated requests with an obsolete proof do not repair it. A target with no local binding
 returns `unreachable` / `runtime_unavailable`; a dispatch whose selected daemon instance is no longer current returns
-`unreachable` / `RUNTIME_INSTANCE_REPLACED`. Neither result identifies a different Server owner. The CLI makes one HTTP
+`unreachable` / `runtime_instance_replaced`. The runtime diagnostic surface may log the same condition as
+`RUNTIME_INSTANCE_REPLACED`; the persisted `session_messages.last_error_code` uses lowercase snake_case to satisfy its
+database check. Neither result identifies a different Server owner. The CLI makes one HTTP
 attempt and reports failure; it does not automatically retry these outcomes. After the binding is ready again, an explicit
 retry must retain the message ID and identical semantic input.
 

@@ -139,34 +139,37 @@ describe("SessionCollaborationService", () => {
     ["disconnected", 2],
     ["replaced", 1],
     ["replaced", 2],
-  ] as const)("uses the existing replacement code when %s before dispatch %i", async (state, failureDispatch) => {
-    const fixture = await registryBackedFixture(true);
-    let dispatch = 0;
-    fixture.sessions.withCollaborationDispatchAdmission.mockImplementation(async (_route, operation) => {
-      dispatch += 1;
-      if (dispatch === failureDispatch) {
-        if (state === "disconnected") {
-          fixture.registry.remove(fixture.targetComputerId, fixture.instanceId, fixture.runtimeSocket);
-        } else {
-          const replacement = { close: vi.fn(), send: vi.fn(), readyState: WebSocket.OPEN } as unknown as WebSocket;
-          await fixture.register(randomUUID(), replacement);
+  ] as const)(
+    "uses the existing not-current dispatch code when %s before dispatch %i",
+    async (state, failureDispatch) => {
+      const fixture = await registryBackedFixture(true);
+      let dispatch = 0;
+      fixture.sessions.withCollaborationDispatchAdmission.mockImplementation(async (_route, operation) => {
+        dispatch += 1;
+        if (dispatch === failureDispatch) {
+          if (state === "disconnected") {
+            fixture.registry.remove(fixture.targetComputerId, fixture.instanceId, fixture.runtimeSocket);
+          } else {
+            const replacement = { close: vi.fn(), send: vi.fn(), readyState: WebSocket.OPEN } as unknown as WebSocket;
+            await fixture.register(randomUUID(), replacement);
+          }
         }
-      }
-      return { admitted: true, result: operation(() => undefined) };
-    });
-    try {
-      await expect(fixture.service.send(fixture.request, fixture.source)).resolves.toMatchObject({
-        status: "unreachable",
-        code: "RUNTIME_INSTANCE_REPLACED",
+        return { admitted: true, result: operation(() => undefined) };
       });
-      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
-        expect.objectContaining({ errorCode: "RUNTIME_INSTANCE_REPLACED" }),
-      );
-      expect(fixture.runtimeSocket.send).toHaveBeenCalledTimes(failureDispatch - 1);
-    } finally {
-      fixture.domain.close();
-    }
-  });
+      try {
+        await expect(fixture.service.send(fixture.request, fixture.source)).resolves.toMatchObject({
+          status: "unreachable",
+          code: "runtime_instance_replaced",
+        });
+        expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+          expect.objectContaining({ errorCode: "runtime_instance_replaced" }),
+        );
+        expect(fixture.runtimeSocket.send).toHaveBeenCalledTimes(failureDispatch - 1);
+      } finally {
+        fixture.domain.close();
+      }
+    },
+  );
 
   it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {
     const fixture = serviceFixture({ targetSessionKind: "channel" });

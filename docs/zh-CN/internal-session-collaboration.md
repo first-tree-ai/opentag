@@ -68,8 +68,9 @@ proof-authenticated Session CLI HTTP 与 source/target SessionMessage Runtime �
 无效、过期或无法关联本地连接的 Session proof 会返回 HTTP 401 `SESSION_PROOF_INVALID`，category 为 `credential`。
 SDK 与 CLI 将其归类为 `after_auth`：Runtime 需要重新连接并 reconcile，提供当前有效的 managed proof 后，调用方才能
 重试。反复使用旧 proof 不会修复它。目标没有本地连接时返回 `unreachable` / `runtime_unavailable`；派发所选的 daemon
-instance 已不再是当前连接时返回 `unreachable` / `RUNTIME_INSTANCE_REPLACED`。这两种结果都不能证明另一个 Server
-持有连接。CLI 只执行一次 HTTP 请求并报告失败，不会自动重试这些结果。连接恢复就绪后，显式重试必须沿用原
+instance 已不再是当前连接时返回 `unreachable` / `runtime_instance_replaced`。Runtime diagnostic 可以将同一条件记录为
+`RUNTIME_INSTANCE_REPLACED`；持久化到 `session_messages.last_error_code` 时使用小写 snake_case，以满足数据库检查约束。
+这两种结果都不能证明另一个 Server 持有连接。CLI 只执行一次 HTTP 请求并报告失败，不会自动重试这些结果。连接恢复就绪后，显式重试必须沿用原
 message ID 和完全一致的语义输入。
 
 当前不支持普通多 replica 负载均衡、

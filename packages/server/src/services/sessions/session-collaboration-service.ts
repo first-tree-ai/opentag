@@ -274,7 +274,7 @@ function runtimeInstanceReplaced(error: unknown): boolean {
 }
 
 function runtimeReconcileFailureCode(error: unknown): string {
-  return runtimeInstanceReplaced(error) ? "RUNTIME_INSTANCE_REPLACED" : "runtime_not_ready";
+  return runtimeInstanceReplaced(error) ? "runtime_instance_replaced" : "runtime_not_ready";
 }
 
 function runtimeDeliveryFailure(error: unknown): {
@@ -286,6 +286,6 @@ function runtimeDeliveryFailure(error: unknown): {
   }
   return {
     status: "unreachable",
-    code: runtimeInstanceReplaced(error) ? "RUNTIME_INSTANCE_REPLACED" : "runtime_unavailable",
+    code: runtimeInstanceReplaced(error) ? "runtime_instance_replaced" : "runtime_unavailable",
   };
 }

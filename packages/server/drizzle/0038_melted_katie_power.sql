@@ -1,0 +1,1 @@
+CREATE INDEX "runtime_durable_work_scope_cursor_idx" ON "runtime_durable_work" USING btree ("computer_id","kind","updated_at","record_key");

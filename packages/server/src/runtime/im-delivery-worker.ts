@@ -103,6 +103,7 @@ export class ImDeliveryWorker {
   readonly #scheduler: KeyedTaskScheduler;
   readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
   #timer?: ReturnType<typeof setInterval>;
+  #paused = false;
 
   constructor(input: ImDeliveryWorkerInput) {
     this.#database = input.database;
@@ -133,18 +134,32 @@ export class ImDeliveryWorker {
 
   start(): void {
     if (this.#timer) return;
+    this.#paused = false;
     this.#schedule();
     this.#timer = setInterval(() => this.#schedule(), this.#intervalMs);
     this.#timer.unref();
   }
 
   stop(): void {
+    this.#paused = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     this.#scheduler.close();
   }
 
+  pause(): void {
+    this.#paused = true;
+    if (this.#timer) clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+
+  resume(): void {
+    if (!this.#paused) return;
+    this.start();
+  }
+
   async runOnce(): Promise<void> {
+    if (this.#paused) return;
     const claimed = await this.#claim();
     if (!claimed) return;
     const queueAge = Math.max(0, this.#now() - claimed.queuedAt);
@@ -165,6 +180,10 @@ export class ImDeliveryWorker {
       reject = fail;
     });
     const run = async () => {
+      if (this.#paused) {
+        resolve();
+        return;
+      }
       this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
       let failed = false;
       try {

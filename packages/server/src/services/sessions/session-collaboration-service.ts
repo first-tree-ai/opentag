@@ -10,7 +10,7 @@ import {
   type SessionReconcileResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { type ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
 import { type RuntimeDomainOwner, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
 import type { SessionCliSourceContext } from "./session-cli-proof-service.js";
@@ -162,9 +162,9 @@ export class SessionCollaborationService {
         undefined,
         (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
       );
-    } catch {
+    } catch (error) {
       return this.#record(
-        response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"),
+        response(attempt.message.id, "unreachable", sessionId, runtimeReconcileFailureCode(error)),
         attempt.attemptCount,
       );
     }
@@ -195,16 +195,8 @@ export class SessionCollaborationService {
       );
       return this.#record(mapDelivery(delivered, sessionId), attempt.attemptCount);
     } catch (error) {
-      const unknown = error instanceof RuntimeDomainRequestError && error.code === "timeout";
-      return this.#record(
-        response(
-          attempt.message.id,
-          unknown ? "unknown" : "unreachable",
-          sessionId,
-          unknown ? "delivery_timeout" : "runtime_unavailable",
-        ),
-        attempt.attemptCount,
-      );
+      const failure = runtimeDeliveryFailure(error);
+      return this.#record(response(attempt.message.id, failure.status, sessionId, failure.code), attempt.attemptCount);
     }
   }
 
@@ -275,4 +267,25 @@ function response(
   code?: string,
 ): SessionCliCommandResponse {
   return { messageId, status, ...(sessionId ? { sessionId } : {}), ...(code ? { code } : {}) };
+}
+
+function runtimeOwnerElsewhere(error: unknown): boolean {
+  return error instanceof RuntimeRegistrySendError && error.code === "instance_replaced";
+}
+
+function runtimeReconcileFailureCode(error: unknown): string {
+  return runtimeOwnerElsewhere(error) ? "RUNTIME_OWNER_ELSEWHERE" : "runtime_not_ready";
+}
+
+function runtimeDeliveryFailure(error: unknown): {
+  status: "unknown" | "unreachable";
+  code: string;
+} {
+  if (error instanceof RuntimeDomainRequestError && error.code === "timeout") {
+    return { status: "unknown", code: "delivery_timeout" };
+  }
+  return {
+    status: "unreachable",
+    code: runtimeOwnerElsewhere(error) ? "RUNTIME_OWNER_ELSEWHERE" : "runtime_unavailable",
+  };
 }

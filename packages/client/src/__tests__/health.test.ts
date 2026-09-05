@@ -16,15 +16,23 @@ describe("checkServerHealth", () => {
 
   it("returns a validated health response", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({ status: "ok", service: "opentag-server" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          service: "opentag-server",
+          runtimeOwnership: { mode: "single", status: "owned", instanceId: "11111111-1111-4111-8111-111111111111" },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
 
     await expect(checkServerHealth("http://127.0.0.1:8000", fetchImpl)).resolves.toEqual({
       status: "ok",
       service: "opentag-server",
+      runtimeOwnership: { mode: "single", status: "owned", instanceId: "11111111-1111-4111-8111-111111111111" },
     });
     expect(fetchImpl).toHaveBeenCalledWith(new URL("http://127.0.0.1:8000/healthz"), {
       signal: expect.any(AbortSignal),

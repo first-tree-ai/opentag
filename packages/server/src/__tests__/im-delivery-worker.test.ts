@@ -119,6 +119,24 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(await custody.getDelivery(fixture.deliveryId)).toMatchObject({ turnId: "turn-1" });
   });
 
+  it("does not drain or dispatch work while the ownership fence is active", async () => {
+    const fixture = await workerFixture(unit);
+    const requestReconcile = vi.fn();
+    const requestDelivery = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: { requestReconcile, requestDelivery } as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+    });
+
+    worker.pause();
+    await worker.runOnce();
+
+    expect(requestReconcile).not.toHaveBeenCalled();
+    expect(requestDelivery).not.toHaveBeenCalled();
+  });
+
   it("rejects admission when the agent is not active and records a bounded retry code", async () => {
     const fixture = await workerFixture(unit);
     const diagnostic = vi.fn();

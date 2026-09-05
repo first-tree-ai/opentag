@@ -202,7 +202,12 @@ export {
   type ValidationIssue,
   ValidationIssueSchema,
 } from "./errors.js";
-export { type ServerHealth, ServerHealthSchema } from "./health.js";
+export {
+  type RuntimeOwnershipHealth,
+  RuntimeOwnershipHealthSchema,
+  type ServerHealth,
+  ServerHealthSchema,
+} from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,

@@ -1,3 +1,4 @@
+import type { RuntimeOwnershipHealth } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { BootstrapReadiness } from "../bootstrap-readiness.js";
@@ -29,7 +30,7 @@ describe("GET /readyz", () => {
     }
     const ready = await app.inject({ method: "GET", url: "/readyz" });
     expect(ready.statusCode).toBe(200);
-    expect(ready.json()).toEqual({ status: "ready" });
+    expect(ready.json()).toEqual({ status: "ready", runtimeOwnership: { mode: "single", status: "not_owned" } });
   });
 });
 
@@ -45,8 +46,49 @@ describe("GET /healthz", () => {
     expect(response.json()).toEqual({
       status: "ok",
       service: "opentag-server",
+      runtimeOwnership: { mode: "single", status: "not_owned" },
     });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("reports the instance that owns the runtime lease", async () => {
+    const app = createApp({
+      runtimeOwnership: {
+        mode: "single",
+        status: "owned",
+        instanceId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    apps.push(app);
+
+    const health = await app.inject({ method: "GET", url: "/healthz" });
+    expect(health.json()).toMatchObject({
+      runtimeOwnership: {
+        mode: "single",
+        status: "owned",
+        instanceId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+    const readiness = await app.inject({ method: "GET", url: "/readyz" });
+    expect(readiness.json()).toMatchObject({ runtimeOwnership: health.json().runtimeOwnership });
+  });
+
+  it("fails readiness after the runtime ownership connection is lost", async () => {
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    let runtimeOwnership: RuntimeOwnershipHealth = {
+      mode: "single",
+      status: "owned",
+      instanceId: "11111111-1111-4111-8111-111111111111",
+    };
+    const app = createApp({ readiness, runtimeOwnership: () => runtimeOwnership });
+    apps.push(app);
+
+    await expect(app.inject({ method: "GET", url: "/readyz" })).resolves.toMatchObject({ statusCode: 200 });
+    runtimeOwnership = { mode: "single", status: "not_owned" };
+    const unavailable = await app.inject({ method: "GET", url: "/readyz" });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json()).toMatchObject({ status: "not_ready", runtimeOwnership });
   });
 
   it("probes the configured database before reporting ready", async () => {
@@ -59,7 +101,7 @@ describe("GET /healthz", () => {
     const response = await app.inject({ method: "GET", url: "/readyz" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ status: "ready" });
+    expect(response.json()).toEqual({ status: "ready", runtimeOwnership: { mode: "single", status: "not_owned" } });
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
@@ -141,7 +183,10 @@ describe("GET /healthz", () => {
       await vi.advanceTimersByTimeAsync(8_001);
       const recovered = await app.inject({ method: "GET", url: "/readyz" });
       expect(recovered.statusCode).toBe(200);
-      expect(recovered.json()).toEqual({ status: "ready" });
+      expect(recovered.json()).toEqual({
+        status: "ready",
+        runtimeOwnership: { mode: "single", status: "not_owned" },
+      });
       expect(execute).toHaveBeenCalledTimes(2);
 
       rejectFirst?.(new Error("late probe rejection"));

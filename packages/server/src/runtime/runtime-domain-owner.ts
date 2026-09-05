@@ -68,6 +68,7 @@ export type RuntimeDispatchAdmission<T> = (
 
 export interface RuntimeDomainOwnerOptions {
   logger?: ServiceLogger;
+  isAvailable?: () => boolean;
   maxPendingRequests?: number;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
   onImCredentialGrant?(
@@ -143,7 +144,7 @@ export class RuntimeDomainOwner {
   readonly #custody: RuntimeCustodyStore;
   readonly #logger?: ServiceLogger;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "prepareReconcile">;
+    Pick<RuntimeDomainOwnerOptions, "isAvailable" | "onImCredentialGrant" | "onTrace" | "prepareReconcile">;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -159,6 +160,7 @@ export class RuntimeDomainOwner {
     this.#custody = custody;
     this.#logger = options.logger;
     this.#options = {
+      isAvailable: options.isAvailable,
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
       onImCredentialGrant: options.onImCredentialGrant,
@@ -207,6 +209,7 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
   ): Promise<SessionReconcileResult> {
+    this.#assertAvailable();
     const attrs = runtimeAttrs({
       requestId: request.requestId,
       sessionId: request.sessionId,
@@ -301,6 +304,7 @@ export class RuntimeDomainOwner {
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
   ): Promise<RuntimeImSteerResult> {
+    this.#assertAvailable();
     const inputHash = computeRuntimeImSteerInputHash(request);
     const semanticHash = computeRuntimeImMessageSemanticHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -347,6 +351,7 @@ export class RuntimeDomainOwner {
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
   ): Promise<ImMessageDeliveryResult> {
+    this.#assertAvailable();
     const attrs = runtimeAttrs({
       requestId: request.requestId,
       deliveryId: request.deliveryId,
@@ -387,6 +392,7 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
   ): Promise<SessionMessageDeliveryResult> {
+    this.#assertAvailable();
     return this.#withDispatchAdmission(
       admission,
       (admissionDispatched) =>
@@ -429,6 +435,12 @@ export class RuntimeDomainOwner {
       }
       return admitted.result;
     });
+  }
+
+  #assertAvailable(): void {
+    if (this.#options.isAvailable && !this.#options.isAvailable()) {
+      throw new RuntimeDomainRequestError("authority_unavailable", "Runtime dispatch authority is unavailable");
+    }
   }
 
   #traceOnce<T>(
@@ -527,6 +539,7 @@ export class RuntimeDomainOwner {
   }
 
   async resend(requestId: string): Promise<void> {
+    this.#assertAvailable();
     const pending = this.#pending.get(requestId);
     if (!pending) throw new RuntimeDomainRequestError("not_pending", "The runtime request is not pending");
     await this.#registry.send(pending.computerId, pending.instanceId, pending.request);
@@ -681,6 +694,7 @@ export class RuntimeDomainOwner {
     semanticHash?: string,
     onDispatched?: () => void,
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
+    this.#assertAvailable();
     const existing = this.#pending.get(request.requestId);
     if (existing) {
       if (

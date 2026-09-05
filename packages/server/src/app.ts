@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
-import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
+import {
+  ErrorEnvelopeSchema,
+  HTTP_PATHS,
+  type RuntimeOwnershipHealth,
+  redactForLog,
+  ServerHealthSchema,
+} from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
 import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
@@ -81,6 +87,7 @@ export interface CreateAppOptions {
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
+  runtimeOwnership?: RuntimeOwnershipHealth | (() => RuntimeOwnershipHealth);
   runtime?: RuntimeRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
@@ -158,6 +165,7 @@ const MAX_ERROR_STACK_LENGTH = 8_192;
 const DATABASE_READINESS_TIMEOUT_MS = 1_000;
 const READINESS_ATTEMPT_MAX_AGE_MS = 10_000;
 const READINESS_MAX_LIVE_ATTEMPTS = 2;
+const DEFAULT_RUNTIME_OWNERSHIP: RuntimeOwnershipHealth = { mode: "single", status: "not_owned" };
 
 type SerializedError = { type: string; message: string; stack: string };
 type DrizzleQueryErrorLike = { params?: unknown; query?: unknown };
@@ -279,6 +287,11 @@ function createFastifyLoggerOptions(options: CreateAppOptions): FastifyLoggerOpt
   };
 }
 
+function runtimeOwnershipFor(options: CreateAppOptions): RuntimeOwnershipHealth {
+  if (typeof options.runtimeOwnership === "function") return options.runtimeOwnership();
+  return options.runtimeOwnership ?? DEFAULT_RUNTIME_OWNERSHIP;
+}
+
 type ClassifiedFailure = {
   code: string;
   category: string;
@@ -331,6 +344,27 @@ function contentTypeParserErrorStatus(error: unknown): number | undefined {
   return typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : undefined;
 }
 
+function sessionCliProofFailure(
+  error: SessionCliProofError,
+):
+  | { code: "RUNTIME_OWNER_ELSEWHERE"; category: "transient"; statusCode: 503; message: string }
+  | { code: "SESSION_PROOF_INVALID"; category: "credential"; statusCode: 401; message: string } {
+  if (error.code === "runtime_owner_elsewhere") {
+    return {
+      code: "RUNTIME_OWNER_ELSEWHERE",
+      category: "transient",
+      statusCode: 503,
+      message: "The Session runtime connection is owned by another Server instance",
+    };
+  }
+  return {
+    code: "SESSION_PROOF_INVALID",
+    category: "credential",
+    statusCode: 401,
+    message: "The Session CLI proof is invalid or stale",
+  };
+}
+
 /** Bounded, log-safe shape for a caller-supplied correlation id: the shared request-id contract. */
 const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]{1,256}$/;
 
@@ -361,6 +395,7 @@ export function createApp(options: CreateAppOptions = {}) {
     logger: createFastifyLoggerOptions(options),
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
+  const runtimeOwnershipConfigured = options.runtimeOwnership !== undefined;
   const healthDatabase = options.database ?? options.taskService?.database;
   const databaseReadinessProbe = createDatabaseReadinessProbe(healthDatabase);
 
@@ -400,6 +435,7 @@ export function createApp(options: CreateAppOptions = {}) {
     const health = ServerHealthSchema.parse({
       status: "ok",
       service: "opentag-server",
+      runtimeOwnership: runtimeOwnershipFor(options),
     });
 
     return reply.code(200).send(health);
@@ -407,18 +443,19 @@ export function createApp(options: CreateAppOptions = {}) {
 
   app.get("/readyz", async (request, reply) => {
     const snapshot = readiness.snapshot();
-    if (!snapshot.ready) {
-      return reply.code(503).send({ status: "not_ready", ...snapshot });
+    const runtimeOwnership = runtimeOwnershipFor(options);
+    if (!snapshot.ready || (runtimeOwnershipConfigured && runtimeOwnership.status !== "owned")) {
+      return reply.code(503).send({ status: "not_ready", ...snapshot, runtimeOwnership });
     }
     if (databaseReadinessProbe) {
       try {
         await databaseReadinessProbe();
       } catch (error) {
         request.log.warn({ check: "database", err: error }, "Readiness check failed");
-        return reply.code(503).send({ status: "not_ready", ...snapshot });
+        return reply.code(503).send({ status: "not_ready", ...snapshot, runtimeOwnership });
       }
     }
-    return reply.code(200).send({ status: "ready" });
+    return reply.code(200).send({ status: "ready", runtimeOwnership });
   });
 
   const slackEvents = options.slackEvents;
@@ -551,13 +588,14 @@ export function createApp(options: CreateAppOptions = {}) {
       return reply.code(error.statusCode).send(accountFacingErrorEnvelope(error, request.id));
     }
     if (error instanceof SessionCliProofError) {
-      logClassifiedFailure(request, { code: "SESSION_PROOF_INVALID", category: "credential", statusCode: 401 }, error);
-      return reply.code(401).send(
+      const failure = sessionCliProofFailure(error);
+      logClassifiedFailure(request, failure, error);
+      return reply.code(failure.statusCode).send(
         ErrorEnvelopeSchema.parse({
           error: {
-            code: "SESSION_PROOF_INVALID",
-            category: "credential",
-            message: "The Session CLI proof is invalid or stale",
+            code: failure.code,
+            category: failure.category,
+            message: failure.message,
             requestId: request.id,
           },
         }),

@@ -7,7 +7,7 @@ import {
   SessionCliListResponseSchema,
   SessionCliSendRequestSchema,
 } from "@opentag/shared";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import type { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
 import type { SessionService } from "../services/sessions/session-service.js";
@@ -17,10 +17,23 @@ export interface RuntimeSessionRoutesOptions {
   collaboration: Pick<SessionCollaborationService, "create" | "send">;
   proofs: Pick<SessionCliProofService, "authenticate">;
   sessions: Pick<SessionService, "listInternalSessions">;
+  isAvailable?: () => boolean;
 }
 
 export function registerRuntimeSessionRoutes(app: FastifyInstance, options: RuntimeSessionRoutesOptions): void {
-  app.post(HTTP_PATHS.runtimeInternalSessions, async (request, reply) => {
+  const availabilityGuard = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (!options.isAvailable || options.isAvailable()) return;
+    reply.code(503).send({
+      error: {
+        category: "transient",
+        code: "SERVICE_UNAVAILABLE",
+        message: "The runtime owner is temporarily unavailable",
+        requestId: request.id,
+      },
+    });
+  };
+
+  app.post(HTTP_PATHS.runtimeInternalSessions, { preHandler: availabilityGuard }, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const source = await authenticate(request, options.proofs);
     const input = parseRequest(SessionCliCreateRequestSchema, request.body);
@@ -28,7 +41,7 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
     return reply.header("Cache-Control", "no-store").code(200).send(result);
   });
 
-  app.post(HTTP_PATHS.runtimeSessionMessages, async (request, reply) => {
+  app.post(HTTP_PATHS.runtimeSessionMessages, { preHandler: availabilityGuard }, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const source = await authenticate(request, options.proofs);
     const input = parseRequest(SessionCliSendRequestSchema, request.body);
@@ -36,7 +49,7 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
     return reply.header("Cache-Control", "no-store").code(200).send(result);
   });
 
-  app.get(HTTP_PATHS.runtimeSessions, async (request, reply) => {
+  app.get(HTTP_PATHS.runtimeSessions, { preHandler: availabilityGuard }, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const source = await authenticate(request, options.proofs);
     const raw = (request.query ?? {}) as Record<string, unknown>;

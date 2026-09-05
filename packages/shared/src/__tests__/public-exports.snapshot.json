@@ -286,6 +286,7 @@
   "RuntimeMaxDurationMsSchema",
   "RuntimeModelSchema",
   "RuntimeNegotiatedCapabilitiesSchema",
+  "RuntimeOwnershipHealthSchema",
   "RuntimeProtocolRangeSchema",
   "RuntimeProviderMessageRefSchema",
   "RuntimeProviderReadinessCollectionSchema",

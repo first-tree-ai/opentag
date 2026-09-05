@@ -573,6 +573,9 @@ describe("SessionCliProofService with the unit database", () => {
     await expect(service.prepareReconcile(fixture.computerId, fixture.instanceId, reconcile)).resolves.toBe(reconcile);
     await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_unavailable" });
     registry.supportsCapability.mockReturnValue(true);
+    registry.currentInstanceId.mockReturnValue(randomUUID());
+    await expect(service.mint(input)).rejects.toMatchObject({ code: "runtime_owner_elsewhere" });
+    registry.currentInstanceId.mockReturnValue(fixture.instanceId);
     await expect(service.revoke(input)).resolves.toBeUndefined();
   });
 
@@ -603,7 +606,7 @@ describe("SessionCliProofService with the unit database", () => {
       .set({ generation: 1 })
       .where(eq(sessionPlacements.sessionId, session.session.id));
     registry.currentInstanceId.mockReturnValue(randomUUID());
-    await expect(service.authenticate(token)).rejects.toMatchObject({ code: "invalid_proof" });
+    await expect(service.authenticate(token)).rejects.toMatchObject({ code: "runtime_owner_elsewhere" });
     registry.currentInstanceId.mockReturnValue(fixture.instanceId);
     await db.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
     await expect(service.authenticate(token)).rejects.toMatchObject({ code: "invalid_proof" });

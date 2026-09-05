@@ -116,4 +116,48 @@ describe("Runtime Session CLI routes", () => {
     expect(response.json()).toMatchObject({ error: { code: "SESSION_PROOF_INVALID" } });
     await app.close();
   });
+
+  it("reports when the proof belongs to a runtime owner on another Server instance", async () => {
+    const app = createApp({
+      runtimeSessions: {
+        collaboration: { create: vi.fn(), send: vi.fn() },
+        proofs: {
+          authenticate: async () => {
+            throw new SessionCliProofError("runtime_owner_elsewhere", "owned elsewhere");
+          },
+        },
+        sessions: { listInternalSessions: vi.fn() },
+      },
+    });
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSessions });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "RUNTIME_OWNER_ELSEWHERE" } });
+    await app.close();
+  });
+
+  it("fails runtime mutations closed while the local owner is fenced", async () => {
+    const create = vi.fn();
+    const send = vi.fn();
+    const app = createApp({
+      runtimeSessions: {
+        collaboration: { create, send },
+        isAvailable: () => false,
+        proofs: { authenticate: vi.fn(async () => source) },
+        sessions: { listInternalSessions: vi.fn() },
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.runtimeSessionMessages,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+      payload: { messageId: randomUUID(), targetSessionId: randomUUID(), message: "blocked" },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "SERVICE_UNAVAILABLE" } });
+    expect(create).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    await app.close();
+  });
 });

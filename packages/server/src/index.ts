@@ -25,6 +25,13 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { RuntimeOwnershipFence } from "./runtime/runtime-ownership-fence.js";
+import {
+  acquireRuntimeOwnershipLease,
+  type RuntimeOwnershipLease,
+  type RuntimeOwnershipState,
+} from "./runtime/runtime-ownership-lease.js";
+import { RuntimeOwnershipRecovery } from "./runtime/runtime-ownership-recovery.js";
 import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import {
   AuthService,
@@ -127,6 +134,10 @@ class StagingInternalNavigationVisibilityService {
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  let sql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
+  let runtimeOwnershipLease: RuntimeOwnershipLease | undefined;
+  let runtimeOwnershipFence: RuntimeOwnershipFence | undefined;
+  let runtimeOwnershipRecovery!: RuntimeOwnershipRecovery;
   const knownSecrets: string[] = [];
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -135,6 +146,9 @@ export async function startServer(): Promise<void> {
     onEvent: (event) => app?.log.error({ event }, "Background diagnostic event"),
     onCounter: (name, labels) => app?.log.info({ name, ...labels }, "Background failure counter"),
   });
+  const runtimeAvailable = (): boolean =>
+    runtimeOwnershipFence?.isAvailable() === true && runtimeOwnershipLease?.state.status === "owned";
+  const handleLeaseLost = (): void => runtimeOwnershipRecovery.onLost();
 
   try {
     knownSecrets.push(
@@ -158,7 +172,9 @@ export async function startServer(): Promise<void> {
     }
     readiness.complete("migration");
 
-    const { database, sql } = createDatabaseClient(config.databaseUrl);
+    const databaseClient = createDatabaseClient(config.databaseUrl);
+    const { database } = databaseClient;
+    sql = databaseClient.sql;
     const postAuthentication = new PostAuthenticationService(database);
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
@@ -283,6 +299,7 @@ export async function startServer(): Promise<void> {
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
+      isAvailable: runtimeAvailable,
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
@@ -368,6 +385,9 @@ export async function startServer(): Promise<void> {
     const imDeliveryLogger = serviceLogger("im-delivery");
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
+      beforeDeliveryAdmission: async () => {
+        if (!runtimeAvailable()) throw new Error("Runtime ownership is unavailable");
+      },
       database,
       domain: domainOwner,
       logger: imDeliveryLogger,
@@ -375,6 +395,12 @@ export async function startServer(): Promise<void> {
       registry,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
+    });
+    runtimeOwnershipFence = new RuntimeOwnershipFence({
+      deliveryWorker: imDeliveryWorker,
+      domainOwner,
+      registry,
+      runtimeTestOwner: agentRuntimeTestOwner,
     });
     const setupResetService = config.stagingSetupReset
       ? new OnboardingResetService({
@@ -385,6 +411,39 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const internalNavigationService = new StagingInternalNavigationVisibilityService();
+    runtimeOwnershipRecovery = new RuntimeOwnershipRecovery({
+      acquire: () =>
+        acquireRuntimeOwnershipLease(config.databaseUrl, instanceId, {
+          onLost: handleLeaseLost,
+          timeoutMs: config.runtimeReplicaAcquireTimeoutMs,
+        }),
+      fence: runtimeOwnershipFence,
+      getLease: () => runtimeOwnershipLease,
+      onFailed: async (error) => {
+        process.exitCode = 1;
+        app?.log.error(
+          { detail: formatStartupError(error, knownSecrets) },
+          "Runtime ownership lease recovery failed; stopping server",
+        );
+        await app?.close().catch(() => undefined);
+        const lease = runtimeOwnershipLease;
+        runtimeOwnershipLease = undefined;
+        await lease?.release().catch(() => undefined);
+        const databaseSql = sql;
+        sql = undefined;
+        await databaseSql?.end().catch(() => undefined);
+        await shutdownTelemetry();
+      },
+      onRecovered: () => app?.log.info({ instanceId }, "Runtime ownership lease recovered"),
+      setLease: (lease) => {
+        runtimeOwnershipLease = lease;
+      },
+    });
+    runtimeOwnershipLease = await acquireRuntimeOwnershipLease(config.databaseUrl, instanceId, {
+      onLost: handleLeaseLost,
+      timeoutMs: config.runtimeReplicaAcquireTimeoutMs,
+    });
+    await runtimeOwnershipRecovery.configure();
     app = createApp({
       loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
@@ -428,7 +487,10 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
+      runtimeOwnership: (): RuntimeOwnershipState =>
+        runtimeOwnershipLease?.state ?? { mode: "single", status: "not_owned" },
       runtime: {
+        isAvailable: runtimeAvailable,
         registry,
         domainOwner,
         agentRuntimeTestOwner,
@@ -438,6 +500,7 @@ export async function startServer(): Promise<void> {
       runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
+        isAvailable: runtimeAvailable,
         proofs: sessionCliProofService,
         sessions: sessionService,
       },
@@ -469,13 +532,24 @@ export async function startServer(): Promise<void> {
     process.once("SIGINT", closeForSignal);
     process.once("SIGTERM", closeForSignal);
     app.addHook("onClose", async () => {
+      runtimeOwnershipRecovery?.stop();
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();
-      await sql.end();
+      const lease = runtimeOwnershipLease;
+      runtimeOwnershipLease = undefined;
+      await lease?.release().catch(() => {
+        app?.log.warn(
+          { code: "RUNTIME_OWNERSHIP_LEASE_RELEASE_FAILED" },
+          "Runtime ownership lease release failed during shutdown",
+        );
+      });
+      const databaseSql = sql;
+      sql = undefined;
+      await databaseSql?.end();
       await shutdownTelemetry();
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
@@ -489,6 +563,12 @@ export async function startServer(): Promise<void> {
     } else {
       process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
+    const lease = runtimeOwnershipLease;
+    runtimeOwnershipLease = undefined;
+    await lease?.release().catch(() => undefined);
+    const databaseSql = sql;
+    sql = undefined;
+    await databaseSql?.end().catch(() => undefined);
     await shutdownTelemetry();
     process.exitCode = 1;
   }
@@ -497,4 +577,5 @@ export async function startServer(): Promise<void> {
 const isProcessEntry = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1];
 if (isProcessEntry) {
   await startServer();
+  if (process.exitCode !== undefined && process.exitCode !== 0) process.exit(process.exitCode);
 }

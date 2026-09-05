@@ -84,6 +84,7 @@ export function registerRuntimeRoutes(
     channelTarget: options.channelTarget,
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
+    isAvailable: options.isAvailable,
     logger,
     now: options.now,
     onRegistered: async (input) => {
@@ -93,6 +94,10 @@ export function registerRuntimeRoutes(
     registerTimeoutMs: options.registerTimeoutMs,
   };
   app.get(HTTP_PATHS.computerRuntimeWebSocket, { websocket: true }, (socket, request) => {
+    if (options.isAvailable && !options.isAvailable()) {
+      socket.close(1013, "The runtime owner is temporarily unavailable");
+      return;
+    }
     new RuntimeSession(socket, machineAuth, computerService, registry, {
       ...sessionOptions,
       providerReadiness:

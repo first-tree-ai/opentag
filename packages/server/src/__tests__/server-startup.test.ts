@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   migrateDatabase: vi.fn(),
   verifyDatabaseMigrations: vi.fn(),
   createDatabaseClient: vi.fn(),
+  acquireRuntimeOwnershipLease: vi.fn(),
+  runtimeOwnershipRelease: vi.fn(),
   createApp: vi.fn(),
   registryCurrentInstanceId: vi.fn(),
   registrySupportsProvider: vi.fn(),
@@ -55,6 +57,9 @@ vi.mock("../config.js", () => ({
   serverEnvironmentSummary: vi.fn(() => ({ environment: "prod" })),
 }));
 vi.mock("../db/client.js", () => ({ createDatabaseClient: state.createDatabaseClient }));
+vi.mock("../runtime/runtime-ownership-lease.js", () => ({
+  acquireRuntimeOwnershipLease: state.acquireRuntimeOwnershipLease,
+}));
 vi.mock("../db/migrate.js", () => ({
   MigrationVerificationError: class extends Error {},
   migrateDatabase: state.migrateDatabase,
@@ -270,6 +275,7 @@ vi.mock("../services/setup/index.js", () => ({
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";
+import * as observability from "../observability/index.js";
 
 const originalSecrets = {
   database: process.env.OPENTAG_DATABASE_URL,
@@ -314,6 +320,8 @@ function defaultConfig() {
     },
     port: 8000,
     publicUrl: "https://opentag.example.com",
+    runtimeReplicaMode: "single",
+    runtimeReplicaAcquireTimeoutMs: 30_000,
     sessionTtlSeconds: 2_592_000,
   };
 }
@@ -347,6 +355,12 @@ beforeEach(() => {
   state.migrateDatabase.mockImplementation(async () => state.events.push("migration:run"));
   state.verifyDatabaseMigrations.mockImplementation(async () => state.events.push("migration:verify"));
   state.createDatabaseClient.mockImplementation(() => ({ database: state.database, sql: state.sql }));
+  state.acquireRuntimeOwnershipLease.mockImplementation(async () => ({
+    instanceId: "instance-1",
+    state: { mode: "single", status: "owned", instanceId: "instance-1" },
+    release: state.runtimeOwnershipRelease,
+  }));
+  state.runtimeOwnershipRelease.mockResolvedValue(undefined);
   state.registryCurrentInstanceId.mockReturnValue("instance-1");
   state.registrySupportsProvider.mockReturnValue(true);
   state.registryProviderReadiness.mockReturnValue([
@@ -360,7 +374,7 @@ beforeEach(() => {
     status: "rejected",
     code: "binding_inactive",
   });
-  const log = { info: vi.fn(), error: vi.fn() };
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   state.app = {
     addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
       state.onClose = hook;
@@ -404,6 +418,14 @@ describe("Server startup", () => {
     await startServer();
 
     expect(state.migrateDatabase).toHaveBeenCalledWith(state.config.databaseUrl, state.config.migrationsDirectory);
+    expect(state.acquireRuntimeOwnershipLease).toHaveBeenCalledWith(
+      state.config.databaseUrl,
+      expect.any(String),
+      expect.objectContaining({
+        onLost: expect.any(Function),
+        timeoutMs: state.config.runtimeReplicaAcquireTimeoutMs,
+      }),
+    );
     expect(state.verifyDatabaseMigrations).not.toHaveBeenCalled();
     expect(state.events).toEqual([
       "ready:configuration",
@@ -517,6 +539,8 @@ describe("Server startup", () => {
     const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };
     expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
     await app.close();
+    expect(state.runtimeOwnershipRelease).toHaveBeenCalledOnce();
+    expect(state.sql.end).toHaveBeenCalledOnce();
     expect(state.events.slice(-5)).toEqual([
       "app:close",
       "worker:stop",
@@ -524,6 +548,39 @@ describe("Server startup", () => {
       "feishu-connections:stop",
       "sql:end",
     ]);
+  });
+
+  it.each(["SIGTERM", "SIGINT"] as const)("continues %s shutdown after a lease release rejection", async (signal) => {
+    const telemetry = vi.spyOn(observability, "shutdownTelemetry").mockImplementation(async () => {
+      state.events.push("telemetry:shutdown");
+    });
+    try {
+      await startServer();
+      state.events.length = 0;
+      state.runtimeOwnershipRelease.mockRejectedValueOnce(new Error("private-lease-connection-detail"));
+      const app = state.app as {
+        close: ReturnType<typeof vi.fn>;
+        log: { warn: ReturnType<typeof vi.fn> };
+      };
+      const handler = process.listeners(signal).at(-1);
+      expect(handler).toBeTypeOf("function");
+      handler?.(signal);
+
+      expect(app.close).toHaveBeenCalledOnce();
+      await expect(app.close.mock.results[0]?.value).resolves.toBeUndefined();
+      expect(state.runtimeOwnershipRelease).toHaveBeenCalledOnce();
+      expect(state.sql.end).toHaveBeenCalledOnce();
+      expect(telemetry).toHaveBeenCalledOnce();
+      expect(state.events.slice(-2)).toEqual(["sql:end", "telemetry:shutdown"]);
+      expect(process.exitCode).toBeUndefined();
+      expect(app.log.warn).toHaveBeenCalledWith(
+        { code: "RUNTIME_OWNERSHIP_LEASE_RELEASE_FAILED" },
+        "Runtime ownership lease release failed during shutdown",
+      );
+      expect(JSON.stringify(app.log.warn.mock.calls)).not.toContain("private-lease-connection-detail");
+    } finally {
+      telemetry.mockRestore();
+    }
   });
 
   it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {
@@ -620,6 +677,21 @@ describe("Server startup", () => {
       stderr.mockRestore();
     },
   );
+
+  it("closes the database pool and exits non-zero when the runtime lease is held", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    state.acquireRuntimeOwnershipLease.mockRejectedValue(
+      new Error("The OpenTag runtime ownership lease is already held by another live instance"),
+    );
+
+    await startServer();
+
+    expect(process.exitCode).toBe(1);
+    expect(state.createApp).not.toHaveBeenCalled();
+    expect(state.sql.end).toHaveBeenCalledOnce();
+    expect(stderr.mock.calls.flat().join(" ")).toContain("Failed to start OpenTag server");
+    stderr.mockRestore();
+  });
 
   it("logs a redacted post-creation failure and closes every started resource", async () => {
     const app = state.app as {

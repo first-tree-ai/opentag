@@ -86,12 +86,16 @@ export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
   readonly #registrationTails = new Map<string, Promise<void>>();
   readonly #logger?: ServiceLogger;
+  #fenced = false;
+  #fenceGeneration = 0;
 
   constructor(options: ConnectionRegistryOptions = {}) {
     this.#logger = options.logger;
   }
 
   async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>, publish?: () => void): Promise<void> {
+    const registrationFenceGeneration = this.#fenceGeneration;
+    this.#assertRegistrationAllowed(entry, registrationFenceGeneration);
     const previousRegistration = this.#registrationTails.get(entry.computerId) ?? Promise.resolve();
     let releaseRegistration: (() => void) | undefined;
     const currentRegistration = new Promise<void>((resolve) => {
@@ -100,7 +104,9 @@ export class ConnectionRegistry {
     this.#registrationTails.set(entry.computerId, currentRegistration);
     await previousRegistration;
     try {
+      this.#assertRegistrationAllowed(entry, registrationFenceGeneration);
       await persist();
+      this.#assertRegistrationAllowed(entry, registrationFenceGeneration);
       const previous = this.#entries.get(entry.computerId);
       this.#entries.set(entry.computerId, entry);
       if (previous && previous.socket !== entry.socket) {
@@ -116,16 +122,19 @@ export class ConnectionRegistry {
   }
 
   isCurrent(computerId: string, instanceId: string, socket: WebSocket): boolean {
+    if (this.#fenced) return false;
     const current = this.#entries.get(computerId);
     return current?.instanceId === instanceId && current.socket === socket;
   }
 
   currentInstanceId(computerId: string): string | undefined {
+    if (this.#fenced) return undefined;
     const current = this.#entries.get(computerId);
     return current?.active === false ? undefined : current?.instanceId;
   }
 
   installationId(computerId: string): string | undefined {
+    if (this.#fenced) return undefined;
     const current = this.#entries.get(computerId);
     return current?.active === false ? undefined : current?.installationId;
   }
@@ -361,6 +370,9 @@ export class ConnectionRegistry {
   }
 
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
+    if (this.#fenced) {
+      throw new RuntimeRegistrySendError("unavailable", "The runtime owner is fenced");
+    }
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
       throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
@@ -448,6 +460,7 @@ export class ConnectionRegistry {
   }
 
   activate(computerId: string, instanceId: string, socket: WebSocket): boolean {
+    if (this.#fenced) return false;
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket) return false;
     current.active = true;
@@ -490,6 +503,26 @@ export class ConnectionRegistry {
     this.#entries.delete(computerId);
     entry.socket.close(4002, "Machine credential rotated or revoked");
     return true;
+  }
+
+  fenceAll(reason = "Runtime ownership lease lost"): void {
+    this.#fenced = true;
+    this.#fenceGeneration += 1;
+    const entries = [...this.#entries.values()];
+    this.#entries.clear();
+    for (const entry of entries) {
+      entry.socket.close(1013, reason);
+    }
+  }
+
+  #assertRegistrationAllowed(entry: RuntimeConnectionEntry, registrationFenceGeneration: number): void {
+    if (!this.#fenced && registrationFenceGeneration === this.#fenceGeneration) return;
+    entry.socket.close(1013, "Runtime ownership lease lost");
+    throw new RuntimeRegistrySendError("unavailable", "The runtime owner is fenced");
+  }
+
+  unfence(): void {
+    this.#fenced = false;
   }
 
   closeAll(): void {

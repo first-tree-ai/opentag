@@ -18,7 +18,7 @@ export interface SessionCliSourceContext {
 
 export class SessionCliProofError extends Error {
   constructor(
-    readonly code: "invalid_proof" | "runtime_unavailable",
+    readonly code: "invalid_proof" | "runtime_unavailable" | "runtime_owner_elsewhere",
     message: string,
   ) {
     super(message);
@@ -204,13 +204,29 @@ export class SessionCliProofService {
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(and(eq(sessionCliProofs.tokenHash, hashToken(token)), isNull(sessions.endedAt)))
       .limit(1);
+    const localInstanceId = row ? this.#registry.currentInstanceId(row.computerId) : undefined;
+    if (
+      row &&
+      row.agentStatus === "active" &&
+      row.bindingStatus === "active" &&
+      row.proofComputerId === row.computerId &&
+      row.placementGeneration === row.placementGenerationCurrent &&
+      row.currentInstanceId === row.connectionInstanceId &&
+      localInstanceId !== undefined &&
+      localInstanceId !== row.connectionInstanceId
+    ) {
+      throw new SessionCliProofError(
+        "runtime_owner_elsewhere",
+        "The Session runtime connection is owned by another Server instance",
+      );
+    }
     if (
       row?.agentStatus !== "active" ||
       row.bindingStatus !== "active" ||
       row.proofComputerId !== row.computerId ||
       row.placementGeneration !== row.placementGenerationCurrent ||
       row.currentInstanceId !== row.connectionInstanceId ||
-      this.#registry.currentInstanceId(row.computerId) !== row.connectionInstanceId ||
+      localInstanceId !== row.connectionInstanceId ||
       !this.#registry.supportsCapability(
         row.computerId,
         row.connectionInstanceId,
@@ -252,8 +268,15 @@ export class SessionCliProofService {
   }
 
   #assertRuntimeBinding(input: { computerId: string; connectionInstanceId: string }): void {
+    const localInstanceId = this.#registry.currentInstanceId(input.computerId);
+    if (localInstanceId !== undefined && localInstanceId !== input.connectionInstanceId) {
+      throw new SessionCliProofError(
+        "runtime_owner_elsewhere",
+        "The Session runtime connection is owned by another Server instance",
+      );
+    }
     if (
-      this.#registry.currentInstanceId(input.computerId) !== input.connectionInstanceId ||
+      localInstanceId !== input.connectionInstanceId ||
       !this.#registry.supportsCapability(
         input.computerId,
         input.connectionInstanceId,

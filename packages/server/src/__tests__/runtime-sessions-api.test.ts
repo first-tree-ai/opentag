@@ -116,4 +116,22 @@ describe("Runtime Session CLI routes", () => {
     expect(response.json()).toMatchObject({ error: { code: "SESSION_PROOF_INVALID" } });
     await app.close();
   });
+
+  it("reports when the proof belongs to a runtime owner on another Server instance", async () => {
+    const app = createApp({
+      runtimeSessions: {
+        collaboration: { create: vi.fn(), send: vi.fn() },
+        proofs: {
+          authenticate: async () => {
+            throw new SessionCliProofError("runtime_owner_elsewhere", "owned elsewhere");
+          },
+        },
+        sessions: { listInternalSessions: vi.fn() },
+      },
+    });
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSessions });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "RUNTIME_OWNER_ELSEWHERE" } });
+    await app.close();
+  });
 });

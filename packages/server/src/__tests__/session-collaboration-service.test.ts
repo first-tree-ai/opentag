@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { SessionCliCreateRequest, SessionCliSendRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { RuntimeRegistrySendError } from "../runtime/connection-registry.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
@@ -92,6 +93,18 @@ describe("SessionCollaborationService", () => {
       code: "runtime_not_ready",
     });
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+  });
+
+  it("returns the owner-elsewhere code when runtime delivery reaches a different owner", async () => {
+    const fixture = serviceFixture();
+    fixture.domain.requestReconcile.mockRejectedValue(
+      new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current"),
+    );
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "RUNTIME_OWNER_ELSEWHERE",
+    });
   });
 
   it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {

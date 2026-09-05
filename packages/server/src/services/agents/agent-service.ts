@@ -607,9 +607,15 @@ export class AgentService {
         outputTokens: sql<string>`coalesce(sum(case when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric else 0::numeric end), 0)::text`,
         tasks: sql<string>`count(*)::text`,
         invalidTokenCount: sql<boolean>`bool_or(
-          (${inputTokensText} is not null and ${inputTokensText} !~ '^[0-9]+$') or
-          (${cachedInputTokensText} is not null and ${cachedInputTokensText} !~ '^[0-9]+$') or
-          (${outputTokensText} is not null and ${outputTokensText} !~ '^[0-9]+$')
+          case when ${inputTokensText} is null then false
+            when ${inputTokensText} ~ '^[0-9]+$' then (${inputTokensText})::numeric > 9007199254740991
+            else true end or
+          case when ${cachedInputTokensText} is null then false
+            when ${cachedInputTokensText} ~ '^[0-9]+$' then (${cachedInputTokensText})::numeric > 9007199254740991
+            else true end or
+          case when ${outputTokensText} is null then false
+            when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric > 9007199254740991
+            else true end
         )`,
       })
       .from(imMessageDeliveries)

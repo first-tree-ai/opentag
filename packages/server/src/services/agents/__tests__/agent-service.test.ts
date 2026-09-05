@@ -435,6 +435,7 @@ describe("AgentService", () => {
       reportedAt: NOW,
       usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1 },
     });
+    await expect(service.listForAccount(bootstrap.userId)).rejects.toThrow("invalid token count");
     await expect(service.getUsageById(bootstrap.userId, created.id, 30)).rejects.toThrow("invalid token count");
   });
 

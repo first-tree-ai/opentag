@@ -135,6 +135,7 @@
   "onboarding_v2_messaging_feishu_description": "Also supports {provider}",
   "onboarding_v2_messaging_lark_intro": "Scan this with {provider}. You'll finish the last step inside {provider} itself.",
   "onboarding_v2_messaging_provider_description": "Your {provider} workspace",
+  "onboarding_v2_messaging_slack_observe": "In {provider}, add OpenTag to a channel and send it a message, or message it directly, to finish the connection check.",
   "onboarding_v2_messaging_slack_waiting": "Waiting for you to finish in {provider}…",
   "onboarding_v2_messaging_title": "Connect your messaging app",
   "onboarding_v2_messaging_waiting": "Waiting for you to scan…",
@@ -205,7 +206,6 @@
   "onboarding_v2_setup_title": "Set up {name}",
   "onboarding_v2_setup_unavailable_detail": "It may have been deleted, or it belongs to a different account.",
   "onboarding_v2_setup_unavailable_title": "This agent can't be set up here",
-  "onboarding_v2_start_over": "Start over",
   "onboarding_v2_step_agent_label": "Create agent",
   "onboarding_v2_step_computer_label": "Prepare computer",
   "onboarding_v2_step_messaging_label": "Connect messaging"

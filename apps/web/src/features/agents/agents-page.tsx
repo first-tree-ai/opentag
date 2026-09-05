@@ -11,7 +11,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { agentCardStatus } from "./agent-presentation.js";
+import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 
@@ -81,6 +81,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentRow({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
+  const continueSetup = agentSetupContinuation(agent);
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
@@ -112,6 +113,20 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
             {status.detail}
           </p>
+        ) : null}
+        {/*
+          Lifted above the card's own overlay link, which covers everything and is painted last.
+          Without it this would be a link the pointer can see and never reach.
+        */}
+        {continueSetup ? (
+          <Link
+            className="relative z-10 inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
+            data-ui="agent-row-continue-setup"
+            {...continueSetup.link}
+          >
+            {continueSetup.label}
+            <Icon className="size-3.5" name="chevron-right" />
+          </Link>
         ) : null}
       </div>
       <AgentUsageSummary agent={agent} />

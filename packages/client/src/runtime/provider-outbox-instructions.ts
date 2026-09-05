@@ -25,13 +25,20 @@ export function buildProviderOutboxInstructions(options: ProviderOutboxInstructi
 }
 
 /** Fixed Slack-only native CLI guidance. Kept under 4 KiB so the managed prompt stays bounded. */
-const SLACK_NATIVE_CLI_GUIDANCE = [
-  "Use the native CLI as `slack api chat.postMessage --json '<json>'`. Pass exactly one JSON object; never key=value pairs, which form-encode the token into the request body.",
+export const SLACK_NATIVE_CLI_GUIDANCE_MAX_BYTES = 4 * 1024;
+
+export const SLACK_NATIVE_CLI_GUIDANCE = [
+  "Use the native CLI as `slack api chat.postMessage --json '<json>'`. Other methods use the same form: `slack api <method> --json '<json>'`. Pass exactly one JSON object; never key=value pairs, which form-encode the token into the request body.",
   "Do not pass --token, --app, --team, -w, --workspace, --config-dir, --skip-update, or other token, app, team, workspace, config, or update override flags. The launcher and environment already bind this Turn.",
   "Set channel to the supplied channelId. Thread placement is a Session policy decision: when the current context includes threadTs, that value is this Session's Slack thread_ts; otherwise messageTs identifies the source message you may thread from.",
-  "Put the body in `text` (at most 4,000 characters) or `markdown_text` (at most 12,000 characters). Split longer content across multiple chat.postMessage calls rather than truncating silently.",
-  "Post at most 1 message per second per channel. Mention users as `<@U...>` with provider-native user IDs.",
-  "conversations.history and similar reads are rate-limited; query sparingly and do not poll in a tight loop.",
+  "You may discover, read, or write another public channel, private channel, DM, or existing MPIM with its provider-native ID when that conversation is relevant to the current task, even if the user did not name it. Otherwise stay in this Session's conversation. Do not roam through, bulk-join, or inspect task-unrelated conversations.",
+  "Discover the Team, users, channels, DMs, and existing MPIMs with team.info, users.info, users.list, conversations.info, and conversations.list. Paginate list methods with limit and response_metadata.next_cursor; stop when the cursor is empty.",
+  "Read a targeted channel with conversations.history and a thread with conversations.replies (channel plus ts). conversations.history and similar reads are rate-limited; query sparingly and do not poll in a tight loop. On HTTP 429, wait Retry-After seconds or a short backoff once before retrying.",
+  "Post with chat.postMessage, edit with chat.update, delete with chat.delete, and schedule with chat.scheduleMessage. Cancel a scheduled message immediately by its scheduled_message_id with chat.deleteScheduledMessage, leave enough lead time, and verify it is absent with chat.scheduledMessages.list. Put the body in `text` (at most 4,000 characters) or `markdown_text` (at most 12,000 characters). Split longer content across multiple chat.postMessage calls rather than truncating silently. Post at most 1 message per second per channel. Mention users as `<@U...>` with provider-native user IDs.",
+  "Open or resume a 1:1 DM with conversations.open `{users}` containing exactly one user ID. Do not use it to create an MPIM; read or write an existing MPIM only when the bot already has access.",
+  "For not_in_channel, first confirm with conversations.info or conversations.list that the target is a public channel and relevant to the current task. Then call conversations.join `{channel}` once and retry the original action once. Joining enrolls future messages in normal OpenTag ingress: they are persisted, then mention_only or all_message controls delivery. Do not join merely to explore. For private channels, MPIMs, channel_not_found, or an unknown type, ask the user to invite the bot; do not guess or retry.",
+  "Add, read, or remove emoji with reactions.add, reactions.get, and reactions.remove using channel, timestamp, and name.",
+  "Upload files with Slack's current external flow only: files.getUploadURLExternal `{filename,length}` → HTTP POST the raw bytes to upload_url (not via slack api) → files.completeUploadExternal `{files:[{id,title}],channel_id,thread_ts?}`. Do not call the deprecated files.upload method.",
   "Never print credentials, tokens, or the environment file. CLI argv and command output are visible on the OpenTag runtime console.",
 ] as const;
 

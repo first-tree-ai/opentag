@@ -89,6 +89,63 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(persistence.edges).toContain("accepted -> succeeded");
   });
 
+  it("settles a failed reopening write and preserves dead-letter bookkeeping", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "dead-letter"));
+    let failAcceptedWrite = true;
+    const persistedWrite = persistence.write.bind(persistence);
+    persistence.write = async (record) => {
+      if (failAcceptedWrite && record.status === "accepted") {
+        failAcceptedWrite = false;
+        throw {
+          category: "conflict",
+          code: "reopen_failed",
+          message: "reopening was rejected",
+          phase: "persistence",
+          requestId: report.requestId,
+          retryability: "never",
+        };
+      }
+      await persistedWrite(record);
+    };
+    const { owner } = ownerFixture(persistence);
+    await owner.ready();
+    await expect(submit(owner, report)).rejects.toMatchObject({ name: "RuntimeDurabilityFailure" });
+    expect(await persistence.status("turn-report", report.turnId)).toBe("dead-letter");
+    const stored = await persistence.list("turn-report");
+    expect(stored[0]).toMatchObject({ attempts: 1, lastError: { code: "reopen_failed" }, status: "dead-letter" });
+    expect(persistence.edges).toContain("dead-letter -> dead-letter");
+  });
+
+  it("unwedges MVP replay when reopening persistence fails", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "dead-letter"));
+    persistence.write = async () => {
+      throw new Error("server unavailable");
+    };
+    const { owner } = ownerFixture(persistence);
+    await owner.ready();
+    const { recovery, request, logs } = replayFixture(owner, report);
+    const result = await recovery.prepare(request, {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: report.sessionId,
+      placementGeneration: 1,
+      status: "recovery_required",
+      reason: "unresolved_turn",
+      turn: { deliveryId: report.deliveryId, turnId: report.turnId },
+    });
+    recovery.afterReconciled(request, result);
+    await vi.waitFor(
+      () => expect(logs.some((entry) => entry.message === "Turn Report replay remains pending")).toBe(true),
+      { interval: 1 },
+    );
+    expect(owner.pendingCount).toBe(0);
+    expect(persistence.rejected).toEqual([]);
+  });
+
   it("settles a normal acknowledgement after the zero-delay timeout persisted retryable", async () => {
     expect(vi.isFakeTimers()).toBe(false);
     const { owner, send, persistence } = ownerFixture();

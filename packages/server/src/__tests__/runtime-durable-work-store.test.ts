@@ -12,6 +12,7 @@ import {
   RuntimeDurableWorkPayloadTooLargeError,
   RuntimeDurableWorkQuotaExceededError,
   RuntimeDurableWorkStaleWriteError,
+  RuntimeDurableWorkTimestampError,
   RuntimeDurableWorkTransitionError,
 } from "../runtime/runtime-durable-work-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -153,6 +154,16 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     await limited.write(computerId, { ...second, status: "running", updatedAt: 4 });
     await expect(limited.write(computerId, { ...first, status: "running", updatedAt: 5 })).resolves.toBeUndefined();
     await limited.write(computerId, { ...second, status: "succeeded", updatedAt: 6 });
+  });
+
+  it("rejects far-future timestamps before they can occupy a quota slot", async () => {
+    const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 100, maxFutureSkewMs: 10 });
+    const future = { ...sessionRecord(), key: "future", updatedAt: Number.MAX_SAFE_INTEGER };
+    await expect(store.write(computerId, future)).rejects.toBeInstanceOf(RuntimeDurableWorkTimestampError);
+    await expect(store.write(computerId, { ...future, key: "valid", updatedAt: 100 })).resolves.toBeUndefined();
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [{ key: "valid", updatedAt: 100 }],
+    });
   });
 
   it.each(["failed", "dead-letter"] as const)("allows %s rearm at the active row quota", async (status) => {

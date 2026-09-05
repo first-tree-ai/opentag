@@ -263,10 +263,11 @@ describe("TurnReportOwner", () => {
     });
     const report = owner.create(reportInput({ turnId: "turn-persist-rejected" }));
     const submitted = owner.submit(report, vi.fn());
+    void submitted.catch(() => undefined);
     await vi.waitFor(() => expect(writes).toBeGreaterThanOrEqual(2));
     expect(owner.getState(report.turnId)).toMatchObject({ status: "accepted" });
     owner.stop();
-    await expect(submitted).rejects.toThrow("stopped");
+    await expect(submitted).rejects.toThrow("quota rejected");
   });
 
   it("bounds confirmation retries and records a dead-letter state with injected time", async () => {

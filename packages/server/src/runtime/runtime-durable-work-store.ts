@@ -318,16 +318,15 @@ export class PostgresRuntimeDurableWorkStore {
     kind: RuntimeDurableWorkKind,
     now: number,
   ): Promise<void> {
+    const futureCutoff = now + this.#maxFutureSkewMs;
+    await transaction
+      .update(runtimeDurableWork)
+      .set({ updatedAt: now })
+      .where(and(eq(runtimeDurableWork.computerId, computerId), gt(runtimeDurableWork.updatedAt, futureCutoff)));
     const cutoff = now - this.#retentionMs;
     await transaction
       .delete(runtimeDurableWork)
-      .where(
-        and(
-          eq(runtimeDurableWork.computerId, computerId),
-          eq(runtimeDurableWork.kind, kind),
-          lt(runtimeDurableWork.updatedAt, cutoff),
-        ),
-      );
+      .where(and(eq(runtimeDurableWork.computerId, computerId), lt(runtimeDurableWork.updatedAt, cutoff)));
     const terminal = await transaction
       .select({ id: runtimeDurableWork.id })
       .from(runtimeDurableWork)

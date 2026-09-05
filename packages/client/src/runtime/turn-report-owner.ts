@@ -424,6 +424,7 @@ export class TurnReportOwner {
     fields: Partial<DurableWorkRecord<TurnReportRequest>> = {},
   ): Promise<DurableWorkRecord<TurnReportRequest> | undefined> {
     if (!this.#canWrite(pending)) return undefined;
+    // #records is published only after persistence succeeds, so it is the last server-backed from-state.
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     const next = { ...record, ...fields, status, updatedAt: this.#now(), payload: pending.report };
     this.#metrics?.transition("turn-report", record.status, status);
@@ -452,8 +453,7 @@ export class TurnReportOwner {
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
     if (failure.retryability === "never" || retryExhausted(this.#retryPolicy, candidate, now)) {
       await this.#transition(pending, "dead-letter", { ...candidate, nextAttemptAt: undefined }).catch(() => undefined);
-      pending.reject(new RuntimeDurabilityFailure(failure));
-      this.#pending.delete(pending.report.turnId);
+      this.#settle(pending, { kind: "reject", error: new RuntimeDurabilityFailure(failure) });
       return;
     }
     let retryable: DurableWorkRecord<TurnReportRequest> | undefined;
@@ -463,7 +463,12 @@ export class TurnReportOwner {
         nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
       });
     } catch {
-      this.#settle(pending, { kind: "reject", error: new RuntimeDurabilityFailure(failure) });
+      if (this.#isCurrent(pending)) {
+        this.#scheduleRetry(pending, {
+          ...candidate,
+          nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
+        });
+      }
       return;
     }
     if (!retryable) return;

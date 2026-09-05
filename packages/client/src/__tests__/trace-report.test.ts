@@ -267,7 +267,7 @@ describe("TurnReportOwner", () => {
     await vi.waitFor(() => expect(writes).toBeGreaterThanOrEqual(2));
     expect(owner.getState(report.turnId)).toMatchObject({ status: "accepted" });
     owner.stop();
-    await expect(submitted).rejects.toThrow("quota rejected");
+    await expect(submitted).rejects.toThrow("stopped");
   });
 
   it("bounds confirmation retries and records a dead-letter state with injected time", async () => {

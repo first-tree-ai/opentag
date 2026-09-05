@@ -159,13 +159,30 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 100, maxFutureSkewMs: 10 });
     const future = { ...sessionRecord(), key: "future", updatedAt: Number.MAX_SAFE_INTEGER };
     await expect(store.write(computerId, future)).resolves.toBeUndefined();
+    await expect(
+      store.write(computerId, { ...future, key: "ordinary-future", updatedAt: 500 }),
+    ).resolves.toBeUndefined();
     await expect(store.write(computerId, { ...future, key: "valid", updatedAt: 100 })).resolves.toBeUndefined();
     await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
       items: [
         { key: "future", updatedAt: 100 },
+        { key: "ordinary-future", updatedAt: 100 },
         { key: "valid", updatedAt: 100 },
       ],
     });
+    const legacyFuture = { ...sessionRecord(), key: "legacy-future", updatedAt: Number.MAX_SAFE_INTEGER };
+    await unit.database.insert(runtimeDurableWork).values({
+      computerId,
+      kind: legacyFuture.kind,
+      recordKey: legacyFuture.key,
+      payload: legacyFuture.payload,
+      status: legacyFuture.status,
+      attempts: legacyFuture.attempts,
+      acceptedAt: legacyFuture.acceptedAt,
+      updatedAt: legacyFuture.updatedAt,
+    });
+    const repaired = await store.list(computerId, "session-message");
+    expect(repaired.items.find((row) => row.key === "legacy-future")?.updatedAt).toBe(100);
   });
 
   it.each(["failed", "dead-letter"] as const)("allows %s rearm at the active row quota", async (status) => {

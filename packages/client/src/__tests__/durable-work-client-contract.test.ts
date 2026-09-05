@@ -22,6 +22,7 @@ afterEach(async () => {
 function ownerFixture(
   persistence = new ObservedDurabilityStore(),
   initialState: "registered" | "stopped" = "registered",
+  retryPolicy: Partial<Record<"baseDelayMs" | "maxDelayMs" | "maxAgeMs" | "maxAttempts", number>> = {},
 ) {
   let now = 10_000;
   const state = initialState;
@@ -39,7 +40,7 @@ function ownerFixture(
     },
     persistence,
     now: () => ++now,
-    retryPolicy: { baseDelayMs: 100, maxDelayMs: 100, maxAgeMs: 1_000, maxAttempts: 10 },
+    retryPolicy: { baseDelayMs: 100, maxDelayMs: 100, maxAgeMs: 1_000, maxAttempts: 10, ...retryPolicy },
   });
   cleanups.push(async () => {
     owner.stop();
@@ -125,7 +126,7 @@ describe("Real-scheduler Client durable-work contract", () => {
     persistence.write = async () => {
       throw new Error("server unavailable");
     };
-    const { owner } = ownerFixture(persistence);
+    const { owner } = ownerFixture(persistence, "registered", { maxAttempts: 1 });
     await owner.ready();
     const { recovery, request, logs } = replayFixture(owner, report);
     const result = await recovery.prepare(request, {
@@ -184,6 +185,52 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
     expect(persistence.edges).not.toContain("succeeded -> retryable");
     expect(persistence.edges).not.toContain("succeeded -> dead-letter");
+  });
+
+  it("retries when the retryable state persist fails transiently", async () => {
+    const persistence = new ObservedDurabilityStore();
+    let failRetryableWrite = true;
+    const persistedWrite = persistence.write.bind(persistence);
+    persistence.write = async (record) => {
+      if (failRetryableWrite && record.status === "retryable") {
+        failRetryableWrite = false;
+        throw new Error("temporary persistence outage");
+      }
+      await persistedWrite(record);
+    };
+    const { owner, send } = ownerFixture(persistence);
+    send.mockRejectedValueOnce(new Error("transport unavailable"));
+    await owner.ready();
+    const report = reportFixture();
+    const pending = submit(owner, report);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(2), { interval: 1 });
+    await acknowledge(owner, report);
+    await pending;
+    expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+  });
+
+  it("settles a conflict result when its failed-state persist is rejected", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "accepted"));
+    const persistedWrite = persistence.write.bind(persistence);
+    persistence.write = async (record) => {
+      if (record.status === "failed") throw new Error("failed-state persist rejected");
+      await persistedWrite(record);
+    };
+    const { owner } = ownerFixture(persistence, "stopped");
+    await owner.ready();
+    const pending = submit(owner, report);
+    void pending.catch(() => undefined);
+    await owner.handleResult({
+      type: "turn:report:result",
+      requestId: report.requestId,
+      turnId: report.turnId,
+      status: "conflict",
+      resultHash: report.resultHash,
+    });
+    await expect(pending).rejects.toThrow("failed-state persist rejected");
+    expect(owner.pendingCount).toBe(0);
   });
 
   it("runs the real retry timer through retryable, accepted, and running", async () => {

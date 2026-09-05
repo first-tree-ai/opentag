@@ -119,6 +119,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
     expect(screen.getByText("Lark · @reviewer")).toBeTruthy();
+    // Two labelled sections already describe a connected page, so the empty state's sentence stays there.
+    expect(screen.queryByText("Connect a messaging app so teammates can send messages to this Agent.")).toBeNull();
     const identity = document.querySelector('[data-ui="messaging-app-identity"]') as HTMLElement;
     expect(identity).toBeTruthy();
     expect(identity.className).toContain("grid-cols-[auto_minmax(0,1fr)_auto]");

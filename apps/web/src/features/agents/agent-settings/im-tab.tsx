@@ -102,7 +102,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
           {m.im_messaging_page_title()}
         </Text>
-        <p className="text-sm text-kumo-subtle">{m.im_messaging_page_description()}</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -138,10 +137,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                   {(binding) => (
                     <div className="grid gap-6">
                       {/*
-                       * With nothing connected this page holds one thing to do and its own title
-                       * already names it, so a section heading here would only say it twice. Once a
-                       * channel is connected the page carries two sections, and this one needs a
-                       * label of its own to stay distinct from the trigger rules below it.
+                       * With nothing connected this page holds one thing to do, so it is said once:
+                       * the sentence below, and no section heading repeating the page title above
+                       * it. A connected page describes itself through its two labelled sections
+                       * instead, so the heading comes back to keep this one distinct from the
+                       * trigger rules, and the page-level sentence would only be a third telling.
                        */}
                       <section aria-label={m.im_messaging_app()} className="grid gap-4">
                         {binding ? (
@@ -214,6 +214,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           </>
                         ) : (
                           <>
+                            <p className="text-sm text-kumo-subtle">{m.im_messaging_empty_description()}</p>
                             {/*
                              * Neither channel is the recommended one — which app a team already lives in decides this,
                              * not us — so both connect actions share one neutral variant and carry their own mark.

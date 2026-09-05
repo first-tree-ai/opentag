@@ -177,10 +177,14 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     let handoff: { imBindingId: string; epoch: number; generation: number; appId: string } | undefined;
     const detachHandlers = this.#attachHandlers(candidate, () => handoff);
     try {
-      const identity = await this.#policy.run("feishu.binding.validate", () => candidate.validateBinding(), {
-        maxAttempts: 1,
-        circuitKey: `feishu:binding:${input.appId}`,
-      });
+      const identity = await this.#policy.run(
+        "feishu.binding.validate",
+        (signal) => candidate.validateBinding(signal),
+        {
+          maxAttempts: 1,
+          circuitKey: `feishu:binding:${input.appId}`,
+        },
+      );
       if (identity.externalAppId !== input.appId) throw new FeishuOperationError("FEISHU_APP_IDENTITY_MISMATCH");
       const grantedScopes = await this.#policy.run(
         "feishu.binding.scopes",
@@ -436,7 +440,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           adapter = createdAdapter;
           const identity = await this.#policy.run(
             "feishu.connection.validate",
-            () => createdAdapter.validateBinding(),
+            (signal) => createdAdapter.validateBinding(signal),
             {
               maxAttempts: 1,
               signal,

@@ -6,20 +6,37 @@ import type { ProviderResourceInput, ReadableResource } from "../provider-adapte
 import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
 
 const SLACK_AUTH_TEST_TIMEOUT_MS = 10_000;
+const SLACK_WEB_CLIENT_TIMEOUT_MS = 15_000;
 
 export const SLACK_WEB_CLIENT_OPTIONS = {
   retryConfig: { retries: 0 },
   rejectRateLimitedCalls: true,
+  timeout: SLACK_WEB_CLIENT_TIMEOUT_MS,
 } satisfies WebClientOptions;
 
+function mergeAbortSignals(signal: AbortSignal | undefined, init: RequestInit | undefined): RequestInit | undefined {
+  if (!signal) return init;
+  return { ...init, signal: init?.signal ? AbortSignal.any([signal, init.signal]) : signal };
+}
+
 export class DefaultSlackApiClient implements SlackApiClient {
-  readonly #createClient: (token: string) => WebClient;
+  readonly #createClient: (token: string, signal?: AbortSignal) => WebClient;
   readonly #fetch: typeof fetch;
   readonly #policy: ExternalCallPolicy;
 
-  constructor(createClient?: (token: string) => WebClient, fetchImpl?: typeof fetch, policy?: ExternalCallPolicy) {
-    this.#createClient = createClient ?? ((token) => new WebClient(token, SLACK_WEB_CLIENT_OPTIONS));
+  constructor(
+    createClient?: (token: string, signal?: AbortSignal) => WebClient,
+    fetchImpl?: typeof fetch,
+    policy?: ExternalCallPolicy,
+  ) {
     this.#fetch = fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+    this.#createClient =
+      createClient ??
+      ((token, signal) =>
+        new WebClient(token, {
+          ...SLACK_WEB_CLIENT_OPTIONS,
+          fetch: (input, init) => this.#fetch(input, mergeAbortSignals(signal, init)),
+        }));
     this.#policy =
       policy ??
       new ExternalCallPolicy({
@@ -29,10 +46,14 @@ export class DefaultSlackApiClient implements SlackApiClient {
   }
 
   async authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }> {
-    const result = await this.#policy.run("slack.auth.test", () => this.#createClient(token).auth.test(), {
-      circuitKey: "slack:auth.test",
-      maxAttempts: 1,
-    });
+    const result = await this.#policy.run(
+      "slack.auth.test",
+      (signal) => this.#createClient(token, signal).auth.test(),
+      {
+        circuitKey: "slack:auth.test",
+        maxAttempts: 1,
+      },
+    );
     if (typeof result.team_id !== "string" || typeof result.user_id !== "string" || typeof result.bot_id !== "string") {
       throw new Error("SLACK_AUTH_IDENTITY_INCOMPLETE");
     }
@@ -167,7 +188,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
   async fetchResource(input: ProviderResourceInput & { token: string }): Promise<ReadableResource> {
     const info = await this.#policy.run(
       "slack.files.info",
-      () => this.#createClient(input.token).files.info({ file: input.providerResourceKey }),
+      (signal) => this.#createClient(input.token, signal).files.info({ file: input.providerResourceKey }),
       { circuitKey: "slack:files.info", maxAttempts: 1 },
     );
     const url = info.file?.url_private_download ?? info.file?.url_private;

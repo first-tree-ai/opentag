@@ -3,7 +3,10 @@ import {
   Client,
   createLarkChannel,
   Domain,
+  defaultHttpInstance,
   EventDispatcher,
+  type HttpInstance,
+  type HttpRequestOptions,
   type LarkChannel,
   LoggerLevel,
   type NormalizedMessage,
@@ -69,7 +72,7 @@ interface RawFeishuRecallEvent {
 
 export interface FeishuChannel {
   botIdentity?: { openId: string; name?: string };
-  connect(): Promise<void>;
+  connect(signal?: AbortSignal): Promise<void>;
   disconnect(): Promise<void>;
   on(handlers: {
     message?: (message: NormalizedMessage) => Promise<void> | void;
@@ -80,7 +83,7 @@ export interface FeishuChannel {
 }
 
 export interface FeishuHttpCapability {
-  fetchResource(input: ProviderResourceInput): Promise<ReadableResource>;
+  fetchResource(input: ProviderResourceInput, signal?: AbortSignal): Promise<ReadableResource>;
   resolveSenderName?(input: { chatId: string; senderOpenId: string }): Promise<string | undefined>;
 }
 
@@ -106,7 +109,7 @@ export interface FeishuHttpClient {
         }>;
       };
       messageResource: {
-        get(input: unknown): Promise<{ getReadableStream(): Readable }>;
+        get(input: unknown, options?: { signal?: AbortSignal }): Promise<{ getReadableStream(): Readable }>;
       };
     };
   };
@@ -541,7 +544,8 @@ class ReliableFeishuChannel implements FeishuChannel {
     void this.#wsClient.start({ eventDispatcher: dispatcher });
   }
 
-  async connect(): Promise<void> {
+  async connect(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw signal.reason;
     await this.#outbound.connect();
     this.botIdentity = this.#outbound.botIdentity;
     await this.#ready;
@@ -558,6 +562,22 @@ class ReliableFeishuChannel implements FeishuChannel {
       if (this.#handlers === handlers) this.#handlers = {};
     };
   }
+}
+
+function createSignalAwareHttpInstance(signal: AbortSignal): HttpInstance {
+  const instance = defaultHttpInstance as unknown as HttpInstance;
+  const withSignal = <D>(options: HttpRequestOptions<D> | undefined): HttpRequestOptions<D> =>
+    ({ ...(options ?? {}), signal }) as HttpRequestOptions<D>;
+  return {
+    request: (options) => instance.request(withSignal(options)),
+    get: (url, options) => instance.get(url, withSignal(options)),
+    delete: (url, options) => instance.delete(url, withSignal(options)),
+    head: (url, options) => instance.head(url, withSignal(options)),
+    options: (url, options) => instance.options(url, withSignal(options)),
+    post: (url, data, options) => instance.post(url, data, withSignal(options)),
+    put: (url, data, options) => instance.put(url, data, withSignal(options)),
+    patch: (url, data, options) => instance.patch(url, data, withSignal(options)),
+  } as HttpInstance;
 }
 
 export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> {
@@ -588,15 +608,25 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
         allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
       });
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
-    this.#client = new Client({
+    const clientOptions = {
       appId: input.appId,
       appSecret: input.appSecret,
       domain,
       logger: REDACTING_SDK_LOGGER,
       loggerLevel: LoggerLevel.error,
-    });
+    };
+    this.#client = new Client(clientOptions);
     this.#scopeList = input.scopeList ?? (() => this.#client.application.v6.scope.list({}));
-    this.#http = input.http ?? createFeishuHttpCapability(this.#client as unknown as FeishuHttpClient);
+    this.#http =
+      input.http ??
+      createFeishuHttpCapability(
+        this.#client as unknown as FeishuHttpClient,
+        (signal) =>
+          new Client({
+            ...clientOptions,
+            httpInstance: createSignalAwareHttpInstance(signal),
+          }) as unknown as FeishuHttpClient,
+      );
     this.#channel =
       input.channel === null
         ? undefined
@@ -608,9 +638,9 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     return this.#channel;
   }
 
-  async validateBinding(): Promise<VerifiedBotIdentity> {
+  async validateBinding(signal?: AbortSignal): Promise<VerifiedBotIdentity> {
     const channel = this.channel;
-    await channel.connect();
+    await channel.connect(signal);
     const bot = channel.botIdentity;
     if (!bot) throw new Error("FEISHU_BOT_IDENTITY_MISSING");
     return { externalAppId: this.#appId, externalTeamId: this.#teamId ?? this.#appId, externalBotId: bot.openId };
@@ -636,7 +666,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   }
 
   async fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {
-    return this.#policy.run("feishu.resource.fetch", () => this.#http.fetchResource(input), {
+    return this.#policy.run("feishu.resource.fetch", (signal) => this.#http.fetchResource(input, signal), {
       circuitKey: `feishu:resource:${this.#appId}`,
       maxAttempts: 1,
     });
@@ -758,14 +788,21 @@ function createCachedFeishuSenderNameResolver(
   };
 }
 
-export function createFeishuHttpCapability(client: FeishuHttpClient): FeishuHttpCapability {
+export function createFeishuHttpCapability(
+  client: FeishuHttpClient,
+  createClientForSignal: (signal: AbortSignal) => FeishuHttpClient = () => client,
+): FeishuHttpCapability {
   const resolveSenderName = createCachedFeishuSenderNameResolver(client);
   return {
-    async fetchResource(input) {
-      const response = await client.im.v1.messageResource.get({
+    async fetchResource(input, signal) {
+      const activeClient = signal ? createClientForSignal(signal) : client;
+      const payload = {
         path: { message_id: input.messageExternalId, file_key: input.providerResourceKey },
         params: { type: input.kind === "image" ? "image" : "file" },
-      });
+      };
+      const response = signal
+        ? await activeClient.im.v1.messageResource.get(payload, { signal })
+        : await activeClient.im.v1.messageResource.get(payload);
       return { stream: response.getReadableStream() };
     },
     resolveSenderName,

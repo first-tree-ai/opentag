@@ -112,24 +112,24 @@ export function createImDeliveryMaintenanceScheduler(
   };
 }
 
-export function createImDeliveryMaintenanceSchedulers(
-  expiryRun: () => Promise<void>,
-  retentionRun: () => Promise<void>,
-  supervisor: BackgroundFailureSupervisor | undefined,
-  onDiagnostic: (code: string) => void,
-): { expiry: () => void; retention: () => void } {
+export function createImDeliveryMaintenanceSchedulers(input: {
+  expiryRun: () => Promise<void>;
+  retentionRun: () => Promise<void>;
+  supervisor: BackgroundFailureSupervisor | undefined;
+  onDiagnostic: (code: string) => void;
+}): { expiry: () => void; retention: () => void } {
   return {
     expiry: createImDeliveryMaintenanceScheduler(
-      expiryRun,
-      supervisor,
-      onDiagnostic,
+      input.expiryRun,
+      input.supervisor,
+      input.onDiagnostic,
       "IM_DELIVERY_WORKER_JANITOR_FAILED",
       "im-delivery-worker.janitor",
     ),
     retention: createImDeliveryMaintenanceScheduler(
-      retentionRun,
-      supervisor,
-      onDiagnostic,
+      input.retentionRun,
+      input.supervisor,
+      input.onDiagnostic,
       "IM_DELIVERY_WORKER_RETENTION_FAILED",
       "im-delivery-worker.retention",
     ),

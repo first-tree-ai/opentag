@@ -144,12 +144,12 @@ export class ImDeliveryWorker {
       supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
-    const schedulers = createImDeliveryMaintenanceSchedulers(
-      () => runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
-      () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
-      this.#supervisor,
-      this.#onDiagnostic,
-    );
+    const schedulers = createImDeliveryMaintenanceSchedulers({
+      expiryRun: () => runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      supervisor: this.#supervisor,
+      onDiagnostic: this.#onDiagnostic,
+    });
     this.#scheduleJanitor = schedulers.expiry;
     this.#scheduleRetention = schedulers.retention;
   }

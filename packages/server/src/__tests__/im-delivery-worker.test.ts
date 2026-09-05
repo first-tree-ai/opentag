@@ -896,6 +896,42 @@ describe("ImDeliveryWorker database workflow", () => {
     }
   });
 
+  it("routes expiry and retention timers to their configured cadences", async () => {
+    vi.useFakeTimers();
+    try {
+      const expiryExecute = vi.fn().mockResolvedValue([]);
+      const retentionTransaction = { execute: vi.fn().mockResolvedValue([]) };
+      const database = {
+        execute: expiryExecute,
+        transaction: vi.fn(async (callback: (transaction: typeof retentionTransaction) => Promise<unknown>) =>
+          callback(retentionTransaction),
+        ),
+      };
+      const worker = new ImDeliveryWorker({
+        database: database as never,
+        domain: {} as never,
+        assembler: { assembleForSession: vi.fn() },
+        registry: {} as never,
+        intervalMs: 1_000,
+        janitorIntervalMs: 10,
+        retentionIntervalMs: 20,
+      });
+      vi.spyOn(worker, "runOnce").mockResolvedValue(undefined);
+
+      worker.start();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(expiryExecute).toHaveBeenCalledTimes(1);
+      expect(database.transaction).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(database.transaction).toHaveBeenCalledTimes(1);
+      expect(retentionTransaction.execute).toHaveBeenCalledTimes(4);
+      worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("dispatches steering when another accepted turn owns the agent", async () => {
     const fixture = await steerFixture(unit);
     const custody = new PostgresRuntimeCustodyStore(unit.database);

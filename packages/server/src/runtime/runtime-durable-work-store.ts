@@ -30,7 +30,7 @@ export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
   succeeded: ["succeeded"],
   retryable: ["retryable", "accepted", "running", "succeeded", "failed", "dead-letter"],
   failed: ["failed", "running", "dead-letter"],
-  "dead-letter": ["dead-letter", "accepted"],
+  "dead-letter": ["accepted"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
 
 export interface RuntimeDurableWorkStoreOptions {

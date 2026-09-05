@@ -59,11 +59,15 @@ older; a new Client connected to an older Server rejects the delivery before ack
 remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.
 
 OpenTag currently supports this path only with a single Server replica. `OPENTAG_RUNTIME_REPLICA_MODE` defaults to
-`single`, and the Server claims a PostgreSQL session advisory-lock lease before startup. A second live instance fails
-closed with an actionable lease-held error; clean shutdown releases the lease so the deployment can restart. The
+`single`, and the Server claims a PostgreSQL session advisory-lock lease before startup. A second live instance waits
+for the bounded acquisition window, then fails closed with an actionable lease-held error if the holder remains. Deploy
+with a recreate strategy, such as `maxSurge=0`, so there are never two live replicas; a rolling restart waits for the old
+process to exit before the replacement acquires the lease. The lease belongs to the PostgreSQL session: a clean
+shutdown or an unclean process kill closes that session and PostgreSQL releases the lease automatically. The
 `/healthz` and `/readyz` responses expose `runtimeOwnership.mode`, `runtimeOwnership.status`, and the owning
-`runtimeOwnership.instanceId`. Proof-authenticated Session CLI HTTP and source/target SessionMessage Runtime delivery
-both use that replica's local WebSocket owner. When a request reaches an instance that does not own the connection, it
-returns the structured `RUNTIME_OWNER_ELSEWHERE` code. Ordinary multi-replica load balancing, sticky routing, and
-cross-replica owner discovery, forwarding, or delivery relay are not supported; horizontal replicas require an
-explicit cross-instance owner-routing design before they can be enabled.
+`runtimeOwnership.instanceId`; if the lease connection drops, the status becomes `not_owned` and `/readyz` fails. Proof-
+authenticated Session CLI HTTP and source/target SessionMessage Runtime delivery both use that replica's local WebSocket
+owner. When a request reaches an instance that does not own the connection, it returns the structured
+`RUNTIME_OWNER_ELSEWHERE` code. Ordinary multi-replica load balancing, sticky routing, and cross-replica owner
+discovery, forwarding, or delivery relay are not supported; horizontal replicas require an explicit cross-instance
+owner-routing design before they can be enabled.

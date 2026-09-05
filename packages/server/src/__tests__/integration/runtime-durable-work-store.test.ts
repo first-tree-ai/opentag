@@ -73,6 +73,40 @@ describe("Runtime durable work persistence on PostgreSQL", () => {
     expect(await database.database.select().from(runtimeDurableWork)).toHaveLength(1);
   });
 
+  it("accepts the client retry re-arm sequence", async () => {
+    const store = new PostgresRuntimeDurableWorkStore(database.database, { now: () => 1 });
+    const accepted = sessionRecord("retry-sequence");
+    const running = { ...accepted, status: "running" as const, updatedAt: 2 };
+    const retryable = { ...running, status: "retryable" as const, nextAttemptAt: 4, updatedAt: 3 };
+    const rearmed = { ...retryable, status: "accepted" as const, updatedAt: 4 };
+
+    await expect(store.write(computerId, accepted)).resolves.toBeUndefined();
+    await expect(store.write(computerId, running)).resolves.toBeUndefined();
+    await expect(store.write(computerId, retryable)).resolves.toBeUndefined();
+    await expect(store.write(computerId, rearmed)).resolves.toBeUndefined();
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [{ status: "accepted", updatedAt: 4 }],
+    });
+  });
+
+  it("allows a terminal transition at the active row quota and admits a freed slot", async () => {
+    const store = new PostgresRuntimeDurableWorkStore(database.database, {
+      now: () => 1,
+      maxRecordsPerComputer: 1,
+    });
+    const accepted = sessionRecord("terminal-slot");
+    await store.write(computerId, accepted);
+    await store.write(computerId, { ...accepted, status: "running", updatedAt: 2 });
+    await expect(store.write(computerId, { ...accepted, status: "succeeded", updatedAt: 3 })).resolves.toBeUndefined();
+    await expect(store.write(computerId, sessionRecord("freed-slot"))).resolves.toBeUndefined();
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [
+        { key: expect.stringContaining("freed-slot"), status: "accepted" },
+        { key: expect.stringContaining("terminal-slot"), status: "succeeded" },
+      ],
+    });
+  });
+
   it("rejects an out-of-order writer from moving succeeded work back to accepted", async () => {
     const store = new PostgresRuntimeDurableWorkStore(database.database, { now: () => 1 });
     const record = sessionRecord("monotonic");

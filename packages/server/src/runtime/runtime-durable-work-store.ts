@@ -13,7 +13,7 @@ import { type RuntimeDurableWorkRow, runtimeDurableWork } from "../db/schema/run
 
 export const DEFAULT_RUNTIME_DURABLE_WORK_RETENTION_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_RUNTIME_DURABLE_WORK_TERMINAL_LIMIT = 512;
-/** Maximum number of live and terminal records retained for one Computer. */
+/** Maximum number of non-terminal records retained for one Computer. */
 export const DEFAULT_RUNTIME_DURABLE_WORK_RECORD_LIMIT = 4_096;
 /** Maximum UTF-8 bytes of serialized payloads retained for one Computer. */
 export const DEFAULT_RUNTIME_DURABLE_WORK_PAYLOAD_BYTES_LIMIT = 16 * 1024 * 1024;
@@ -27,7 +27,7 @@ export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
   accepted: ["accepted", "running", "dead-letter"],
   running: ["running", "succeeded", "failed", "retryable", "dead-letter"],
   succeeded: ["succeeded"],
-  retryable: ["retryable", "running", "dead-letter"],
+  retryable: ["retryable", "accepted", "running", "dead-letter"],
   failed: ["failed"],
   "dead-letter": ["dead-letter"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
@@ -234,7 +234,9 @@ export class PostgresRuntimeDurableWorkStore {
     if (!isAllowedTransition(existing.status, record.status)) {
       throw new RuntimeDurableWorkTransitionError(existing.status, record.status);
     }
-    await this.#assertQuota(transaction, computerId, payloadBytes, existing);
+    if (payloadBytes > serializedPayloadBytes(existing.payload)) {
+      await this.#assertQuota(transaction, computerId, payloadBytes, existing);
+    }
     const updated = await transaction
       .update(runtimeDurableWork)
       .set(recordValues(computerId, record))
@@ -252,13 +254,13 @@ export class PostgresRuntimeDurableWorkStore {
     replacing?: RuntimeDurableWorkRow,
   ): Promise<void> {
     const rows = await transaction
-      .select({ id: runtimeDurableWork.id, payload: runtimeDurableWork.payload })
+      .select({ id: runtimeDurableWork.id, payload: runtimeDurableWork.payload, status: runtimeDurableWork.status })
       .from(runtimeDurableWork)
       .where(eq(runtimeDurableWork.computerId, computerId));
-    const currentRecords = rows.length - (replacing ? 1 : 0);
-    const currentPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
-    const requestedRecords = currentRecords + 1;
-    if (requestedRecords > this.#maxRecordsPerComputer) {
+    const currentRecords = rows.filter((row) => isNonTerminalStatus(row.status)).length;
+    const replacingNonTerminal = replacing ? isNonTerminalStatus(replacing.status) : false;
+    const requestedRecords = currentRecords - (replacingNonTerminal ? 1 : 0) + 1;
+    if (!replacing && requestedRecords > this.#maxRecordsPerComputer) {
       throw new RuntimeDurableWorkQuotaExceededError(
         "records",
         this.#maxRecordsPerComputer,
@@ -266,6 +268,7 @@ export class PostgresRuntimeDurableWorkStore {
         requestedRecords,
       );
     }
+    const currentPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
     const requestedPayloadBytes =
       currentPayloadBytes - (replacing ? serializedPayloadBytes(replacing.payload) : 0) + incomingPayloadBytes;
     if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
@@ -375,6 +378,10 @@ function isAllowedTransition(
   to: RuntimeDurableWorkRecord["status"],
 ): boolean {
   return (RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS[from] as readonly string[]).includes(to);
+}
+
+function isNonTerminalStatus(status: RuntimeDurableWorkRecord["status"]): boolean {
+  return status === "accepted" || status === "running" || status === "retryable";
 }
 
 function serializedPayloadBytes(value: unknown): number {

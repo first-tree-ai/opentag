@@ -113,13 +113,14 @@ inbox、启动 Session、创建 Task 或追加上下文。
 
 ## IM 历史与 delivery 保留
 
-IM delivery worker 默认每 5 秒运行一次有界维护任务。每次最多把 100 条过期 pending delivery 标记为
-`expired`，然后以有界批次清理旧的终态历史。保留期限分别按 message 的 `occurred_at`、delivery 的
+IM delivery worker 默认每 5 秒运行一次有界 expiry 任务；retention 使用独立的有界任务，默认每 60 秒运行一次，
+因为 90 天的保留窗口不需要与 expiry 使用相同频率。保留期限分别按 message 的 `occurred_at`、delivery 的
 `expires_at` 以及 provider receipt 的 `received_at` 计算。
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | expiry 与 retention 维护任务的间隔 |
+| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | expiry 任务间隔 |
+| `OPENTAG_IM_DELIVERY_RETENTION_INTERVAL_MS` | `60000` | retention 任务间隔 |
 | `OPENTAG_IM_DELIVERY_EXPIRY_BATCH_SIZE` | `100` | 每次最多标记为 `expired` 的 pending delivery 数量 |
 | `OPENTAG_IM_DELIVERY_RETENTION_BATCH_SIZE` | `100` | 每张历史表每次最多删除的行数 |
 | `OPENTAG_IM_MESSAGES_RETENTION_MS` | 90 天 | `im_messages` 保留期限 |

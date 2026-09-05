@@ -3,6 +3,7 @@ import type { DatabaseClient } from "../db/client.js";
 import type { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
 
 const DEFAULT_JANITOR_INTERVAL_MS = 5_000;
+const DEFAULT_RETENTION_INTERVAL_MS = 60_000;
 const DEFAULT_EXPIRY_BATCH_SIZE = 100;
 const DEFAULT_RETENTION_BATCH_SIZE = 100;
 const DEFAULT_MESSAGE_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
@@ -22,6 +23,7 @@ function configuredWorkerLimit(value: number | undefined, environmentName: strin
 
 export interface ImDeliveryJanitorConfig {
   janitorIntervalMs: number;
+  retentionIntervalMs: number;
   expiryBatchSize: number;
   retentionBatchSize: number;
   imMessagesRetentionMs: number;
@@ -32,6 +34,7 @@ export interface ImDeliveryJanitorConfig {
 
 export interface ImDeliveryJanitorInput {
   janitorIntervalMs?: number;
+  retentionIntervalMs?: number;
   expiryBatchSize?: number;
   retentionBatchSize?: number;
   imMessagesRetentionMs?: number;
@@ -46,6 +49,11 @@ export function resolveImDeliveryJanitorConfig(input: ImDeliveryJanitorInput): I
       input.janitorIntervalMs,
       "OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS",
       DEFAULT_JANITOR_INTERVAL_MS,
+    ),
+    retentionIntervalMs: configuredWorkerLimit(
+      input.retentionIntervalMs,
+      "OPENTAG_IM_DELIVERY_RETENTION_INTERVAL_MS",
+      DEFAULT_RETENTION_INTERVAL_MS,
     ),
     expiryBatchSize: configuredWorkerLimit(
       input.expiryBatchSize,
@@ -80,22 +88,72 @@ export function resolveImDeliveryJanitorConfig(input: ImDeliveryJanitorInput): I
   };
 }
 
-export function scheduleImDeliveryJanitor(
+export function createImDeliveryMaintenanceScheduler(
   run: () => Promise<void>,
   supervisor: BackgroundFailureSupervisor | undefined,
   onDiagnostic: (code: string) => void,
+  failureCode: string,
+  operationName: string,
+): () => void {
+  let running = false;
+  return () => {
+    if (running) return;
+    running = true;
+    scheduleImDeliveryMaintenance(
+      () =>
+        run().finally(() => {
+          running = false;
+        }),
+      supervisor,
+      onDiagnostic,
+      failureCode,
+      operationName,
+    );
+  };
+}
+
+export function createImDeliveryMaintenanceSchedulers(
+  expiryRun: () => Promise<void>,
+  retentionRun: () => Promise<void>,
+  supervisor: BackgroundFailureSupervisor | undefined,
+  onDiagnostic: (code: string) => void,
+): { expiry: () => void; retention: () => void } {
+  return {
+    expiry: createImDeliveryMaintenanceScheduler(
+      expiryRun,
+      supervisor,
+      onDiagnostic,
+      "IM_DELIVERY_WORKER_JANITOR_FAILED",
+      "im-delivery-worker.janitor",
+    ),
+    retention: createImDeliveryMaintenanceScheduler(
+      retentionRun,
+      supervisor,
+      onDiagnostic,
+      "IM_DELIVERY_WORKER_RETENTION_FAILED",
+      "im-delivery-worker.retention",
+    ),
+  };
+}
+
+function scheduleImDeliveryMaintenance(
+  run: () => Promise<void>,
+  supervisor: BackgroundFailureSupervisor | undefined,
+  onDiagnostic: (code: string) => void,
+  failureCode: string,
+  operationName: string,
 ): void {
   const operation = run().catch((error: unknown) => {
-    onDiagnostic("IM_DELIVERY_WORKER_JANITOR_FAILED");
+    onDiagnostic(failureCode);
     throw error;
   });
   if (supervisor) {
     supervisor.track(operation, {
-      code: "IM_DELIVERY_WORKER_JANITOR_FAILED",
+      code: failureCode,
       category: "internal",
       retryability: "backoff",
       phase: "worker",
-      operation: "im-delivery-worker.janitor",
+      operation: operationName,
     });
     return;
   }
@@ -112,14 +170,9 @@ export interface ImDeliveryJanitorOptions {
   feishuInboundReceiptsRetentionMs: number;
 }
 
-export async function runImDeliveryJanitor(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
+export async function runImDeliveryExpiry(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
-  const imMessageDeliveriesCutoff = new Date(now - options.imMessageDeliveriesRetentionMs).toISOString();
-  const imMessagesCutoff = new Date(now - options.imMessagesRetentionMs).toISOString();
-  const slackWebhookReceiptsCutoff = new Date(now - options.slackWebhookReceiptsRetentionMs).toISOString();
-  const feishuInboundReceiptsCutoff = new Date(now - options.feishuInboundReceiptsRetentionMs).toISOString();
-
   await database.execute(sql`
     with expired as (
       select id
@@ -136,7 +189,17 @@ export async function runImDeliveryJanitor(database: DatabaseClient, options: Im
     from expired
     where delivery.id = expired.id
   `);
+}
 
+export async function runImDeliveryRetention(
+  database: DatabaseClient,
+  options: ImDeliveryJanitorOptions,
+): Promise<void> {
+  const now = options.clock().getTime();
+  const imMessageDeliveriesCutoff = new Date(now - options.imMessageDeliveriesRetentionMs).toISOString();
+  const imMessagesCutoff = new Date(now - options.imMessagesRetentionMs).toISOString();
+  const slackWebhookReceiptsCutoff = new Date(now - options.slackWebhookReceiptsRetentionMs).toISOString();
+  const feishuInboundReceiptsCutoff = new Date(now - options.feishuInboundReceiptsRetentionMs).toISOString();
   await database.transaction(async (transaction) => {
     await transaction.execute(sql`
       with candidates as (
@@ -210,4 +273,9 @@ export async function runImDeliveryJanitor(database: DatabaseClient, options: Im
       where receipt.id = candidates.id
     `);
   });
+}
+
+export async function runImDeliveryJanitor(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
+  await runImDeliveryExpiry(database, options);
+  await runImDeliveryRetention(database, options);
 }

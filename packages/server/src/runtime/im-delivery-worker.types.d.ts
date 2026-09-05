@@ -32,6 +32,7 @@ export interface ImDeliveryWorkerInput {
   logger?: ServiceLogger;
   intervalMs?: number;
   janitorIntervalMs?: number;
+  retentionIntervalMs?: number;
   expiryBatchSize?: number;
   retentionBatchSize?: number;
   imMessagesRetentionMs?: number;

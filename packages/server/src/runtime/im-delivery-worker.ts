@@ -61,10 +61,12 @@ import {
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { withOperationDeadline } from "./im-delivery-deadline.js";
 import {
+  createImDeliveryMaintenanceSchedulers,
   type ImDeliveryJanitorConfig,
   resolveImDeliveryJanitorConfig,
+  runImDeliveryExpiry,
   runImDeliveryJanitor,
-  scheduleImDeliveryJanitor,
+  runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
 import type { ImDeliveryWorkerInput, RuntimeDeliveryWorkerMetric, WorkerClaim } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
@@ -112,7 +114,9 @@ export class ImDeliveryWorker {
   readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
   #timer?: ReturnType<typeof setInterval>;
   #janitorTimer?: ReturnType<typeof setInterval>;
-  #janitorRunning = false;
+  #retentionTimer?: ReturnType<typeof setInterval>;
+  readonly #scheduleJanitor: () => void;
+  readonly #scheduleRetention: () => void;
 
   constructor(input: ImDeliveryWorkerInput) {
     this.#database = input.database;
@@ -140,6 +144,14 @@ export class ImDeliveryWorker {
       supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
+    const schedulers = createImDeliveryMaintenanceSchedulers(
+      () => runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      this.#supervisor,
+      this.#onDiagnostic,
+    );
+    this.#scheduleJanitor = schedulers.expiry;
+    this.#scheduleRetention = schedulers.retention;
   }
 
   start(): void {
@@ -149,6 +161,8 @@ export class ImDeliveryWorker {
     this.#timer.unref();
     this.#janitorTimer = setInterval(() => this.#scheduleJanitor(), this.#janitorConfig.janitorIntervalMs);
     this.#janitorTimer.unref();
+    this.#retentionTimer = setInterval(() => this.#scheduleRetention(), this.#janitorConfig.retentionIntervalMs);
+    this.#retentionTimer.unref();
   }
 
   stop(): void {
@@ -156,6 +170,8 @@ export class ImDeliveryWorker {
     this.#timer = undefined;
     if (this.#janitorTimer) clearInterval(this.#janitorTimer);
     this.#janitorTimer = undefined;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = undefined;
     this.#scheduler.close();
   }
 
@@ -239,19 +255,6 @@ export class ImDeliveryWorker {
     }
     this.#onMetric({ name: "queued_tasks", value: this.#scheduler.stats().queued, agentId: claimed.agentId });
     await complete;
-  }
-
-  #scheduleJanitor(): void {
-    if (this.#janitorRunning) return;
-    this.#janitorRunning = true;
-    scheduleImDeliveryJanitor(
-      () =>
-        this.runJanitorOnce().finally(() => {
-          this.#janitorRunning = false;
-        }),
-      this.#supervisor,
-      this.#onDiagnostic,
-    );
   }
 
   #schedule(): void {

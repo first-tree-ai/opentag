@@ -121,13 +121,14 @@ content. A duplicate is acknowledged without a second inbox write, Session run, 
 
 ## IM history and delivery retention
 
-The IM delivery worker runs a bounded maintenance pass every 5 seconds by default. The pass marks at most 100
-expired pending deliveries per run, then removes old terminal history in bounded batches. Retention is based on
+The IM delivery worker runs a bounded expiry pass every 5 seconds by default. Retention runs in its own bounded pass
+every 60 seconds by default because its 90-day window does not need the expiry cadence. Retention is based on
 `occurred_at` for messages, `expires_at` for deliveries, and `received_at` for provider receipts.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | Interval between expiry and retention passes |
+| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | Expiry pass interval |
+| `OPENTAG_IM_DELIVERY_RETENTION_INTERVAL_MS` | `60000` | Retention pass interval |
 | `OPENTAG_IM_DELIVERY_EXPIRY_BATCH_SIZE` | `100` | Maximum pending deliveries marked `expired` per pass |
 | `OPENTAG_IM_DELIVERY_RETENTION_BATCH_SIZE` | `100` | Maximum rows removed from each history table per pass |
 | `OPENTAG_IM_MESSAGES_RETENTION_MS` | 90 days | `im_messages` retention window |

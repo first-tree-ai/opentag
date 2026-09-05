@@ -112,6 +112,13 @@ export const imMessageDeliveries = pgTable(
   (table) => [
     uniqueIndex("im_message_deliveries_message_session_unique").on(table.messageId, table.sessionId),
     index("im_message_deliveries_session_id_idx").on(table.sessionId),
+    index("im_message_deliveries_overflow_idx").on(
+      table.sessionId,
+      table.attention,
+      table.state,
+      table.reason,
+      table.messageId,
+    ),
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
     uniqueIndex("im_message_deliveries_dispatch_request_unique")

@@ -67,7 +67,8 @@ describe("Runtime durable work HTTP API", () => {
   });
 
   it("returns one valid page when more than 1024 records exist", async () => {
-    const items = Array.from({ length: 1024 }, (_, index) => ({ ...record, key: `record-${index}` }));
+    const allItems = Array.from({ length: 1_025 }, (_, index) => ({ ...record, key: `record-${index}` }));
+    const items = allItems.slice(0, 1_024);
     const store = { list: vi.fn().mockResolvedValue({ items, nextCursor: "next-page" }), write: vi.fn() };
     const app = createApp({
       runtimeDurableWork: {

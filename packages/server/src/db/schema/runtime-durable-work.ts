@@ -33,6 +33,7 @@ export const runtimeDurableWork = pgTable(
   (table) => [
     uniqueIndex("runtime_durable_work_scope_key_unique").on(table.computerId, table.kind, table.recordKey),
     index("runtime_durable_work_scope_status_idx").on(table.computerId, table.kind, table.status),
+    index("runtime_durable_work_scope_cursor_idx").on(table.computerId, table.kind, table.updatedAt, table.recordKey),
     check("runtime_durable_work_key_shape", sql`${table.recordKey} ~ '^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$'`),
     check("runtime_durable_work_attempts_nonnegative", sql`${table.attempts} >= 0`),
     check("runtime_durable_work_accepted_at_nonnegative", sql`${table.acceptedAt} >= 0`),

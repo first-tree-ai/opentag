@@ -90,7 +90,10 @@ export const RuntimeDurableWorkRecordSchema = z
   })
   .strict();
 export const RuntimeDurableWorkListResponseSchema = z
-  .object({ items: z.array(RuntimeDurableWorkRecordSchema).max(1024) })
+  .object({
+    items: z.array(RuntimeDurableWorkRecordSchema).max(1024),
+    nextCursor: z.string().min(1).max(1024).optional(),
+  })
   .strict();
 
 export const RuntimeRevisionSchema = z

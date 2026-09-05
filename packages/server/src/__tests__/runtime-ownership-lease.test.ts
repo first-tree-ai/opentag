@@ -99,7 +99,6 @@ describe("runtime ownership advisory lease", () => {
   });
 
   it("bounds a lock query that never responds with the whole acquisition deadline", async () => {
-    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
     const fixture = clientFixture([true]);
     fixture.connection.mockImplementationOnce(() => new Promise<never>(() => undefined));
     const acquisition = acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "instance", {
@@ -107,9 +106,24 @@ describe("runtime ownership advisory lease", () => {
       endTimeoutMs: 10,
     });
     const assertion = expect(acquisition).rejects.toMatchObject({ code: "RUNTIME_OWNER_LEASE_HELD" });
-
-    await vi.advanceTimersByTimeAsync(100);
+    const startedAt = Date.now();
     await assertion;
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    expect(fixture.client.end).toHaveBeenCalled();
+  });
+
+  it("covers the lock-query timeout through the real acquisition function when the TCP proxy is unavailable", async () => {
+    const fixture = clientFixture([true]);
+    fixture.connection.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const acquisition = acquireRuntimeOwnershipLease("postgresql://fault-proxy.invalid/opentag", "instance", {
+      timeoutMs: 100,
+      endTimeoutMs: 10,
+      clientFactory: () => fixture.client as never,
+    });
+    const assertion = expect(acquisition).rejects.toMatchObject({ code: "RUNTIME_OWNER_LEASE_HELD" });
+    const startedAt = Date.now();
+    await assertion;
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
     expect(fixture.client.end).toHaveBeenCalled();
   });
 

@@ -46,12 +46,13 @@ async function startLeaseProxy(
   mode: "handshake" | "query",
 ): Promise<{ databaseUrl: string; close(): Promise<void> }> {
   const target = new URL(databaseUrl);
+  const upstreamHost = target.hostname === "localhost" ? "127.0.0.1" : target.hostname;
   const sockets = new Set<net.Socket>();
   const server = net.createServer((socket) => {
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
     if (mode === "handshake") return;
-    const upstream = net.connect(Number(target.port), target.hostname);
+    const upstream = net.connect(Number(target.port), upstreamHost);
     let ready = false;
     let dropResponses = false;
     socket.on("data", (chunk) => {
@@ -59,7 +60,7 @@ async function startLeaseProxy(
     });
     upstream.on("data", (chunk) => {
       if (dropResponses) return;
-      if (!ready && Buffer.isBuffer(chunk) && chunk.includes(0x5a)) {
+      if (mode === "query" && !ready && Buffer.isBuffer(chunk) && chunk.includes(0x5a)) {
         const readyIndex = chunk.lastIndexOf(0x5a);
         socket.write(chunk.subarray(0, Math.min(chunk.length, readyIndex + 6)));
         ready = true;
@@ -269,7 +270,7 @@ describe("runtime ownership advisory lease", () => {
     ).resolves.toBe("settled");
   }, 120_000);
 
-  it("bounds an established but unresponsive advisory-lock query and closes the client", async () => {
+  it("bounds a reservation stall after the PostgreSQL handshake", async () => {
     const proxy = await startLeaseProxy(container.getConnectionUri(), "query");
     const startedAt = Date.now();
     try {

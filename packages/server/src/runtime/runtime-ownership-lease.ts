@@ -12,6 +12,8 @@ const RUNTIME_OWNERSHIP_APPLICATION_NAME = "opentag-runtime-ownership";
 type RuntimeOwnershipConnection = Awaited<ReturnType<Sql["reserve"]>>;
 type RuntimeOwnershipClient = ReturnType<typeof postgres>;
 
+export type RuntimeOwnershipLeaseClient = RuntimeOwnershipClient;
+
 type RuntimeOwnershipContext = {
   state: RuntimeOwnershipState;
   connectionLost: boolean;
@@ -30,6 +32,8 @@ export interface RuntimeOwnershipLeaseOptions {
   /** Total unlock and client close budget, followed by a 100 ms timer grace period. */
   endTimeoutMs?: number;
   maxLifetimeSeconds?: number | null;
+  /** Narrow test seam used only when a TCP fault proxy cannot reach the query boundary. */
+  clientFactory?: (databaseUrl: string, maxLifetimeSeconds: number | null) => RuntimeOwnershipLeaseClient;
   timeoutMs?: number;
   retryDelayMs?: number;
   now?: () => number;
@@ -76,7 +80,9 @@ export async function acquireRuntimeOwnershipLease(
     released: false,
     lossReported: false,
   };
-  const client = createLeaseClient(databaseUrl, context, options.onLost, acquireOptions.maxLifetimeSeconds);
+  const client = options.clientFactory
+    ? options.clientFactory(databaseUrl, acquireOptions.maxLifetimeSeconds)
+    : createLeaseClient(databaseUrl, context, options.onLost, acquireOptions.maxLifetimeSeconds);
   let connection: RuntimeOwnershipConnection | undefined;
 
   try {

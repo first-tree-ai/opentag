@@ -6,7 +6,13 @@ import type { SessionReconcileRequest, TurnReportRequest } from "@opentag/shared
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
-import { FileRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
+import {
+  type DurableWorkKind,
+  type DurableWorkRecord,
+  FileRuntimeDurabilityStore,
+  MemoryRuntimeDurabilityStore,
+  type RuntimeDurabilityStore,
+} from "../runtime/runtime-durability.js";
 import type { LocalSessionBinding } from "../runtime/session-binding-store.js";
 import { SessionMessageInbox } from "../runtime/session-message-inbox.js";
 import { TurnReportOwner, type TurnReportOwnerOptions } from "../runtime/turn-report-owner.js";
@@ -91,6 +97,76 @@ async function waitForStatus(
   await vi.waitFor(async () => expect(await persistence.status("turn-report", report.turnId)).toBe(status), {
     interval: 1,
   });
+}
+
+/**
+ * Match the production FileRuntimeDurabilityStore's FIFO writes while allowing
+ * a test to hold one committed write open.
+ */
+class FifoFileLikeStore implements RuntimeDurabilityStore {
+  readonly storage = new MemoryRuntimeDurabilityStore();
+  readonly edges: string[] = [];
+  gateStatus: DurableWorkRecord["status"] | undefined;
+  #tail: Promise<unknown> = Promise.resolve();
+  #release: (() => void) | undefined;
+  readonly gateEntered: Promise<void>;
+  #enteredResolve!: () => void;
+
+  constructor() {
+    this.gateEntered = new Promise<void>((resolve) => {
+      this.#enteredResolve = resolve;
+    });
+  }
+
+  list<T>(kind: DurableWorkKind): Promise<DurableWorkRecord<T>[]> {
+    return this.storage.list<T>(kind);
+  }
+
+  write<T>(record: DurableWorkRecord<T>): Promise<void> {
+    const run = this.#tail.then(async () => {
+      if (record.status === this.gateStatus) {
+        this.gateStatus = undefined;
+        const gate = new Promise<void>((resolve) => {
+          this.#release = resolve;
+        });
+        this.#enteredResolve();
+        await gate;
+      }
+      const previous = (await this.storage.list(record.kind)).find((item) => item.key === record.key);
+      if (previous) this.edges.push(`${previous.status} -> ${record.status}`);
+      await this.storage.write(record);
+    });
+    this.#tail = run.catch(() => undefined);
+    return run;
+  }
+
+  release(): void {
+    this.#release?.();
+  }
+
+  async status(kind: DurableWorkKind, key: string): Promise<DurableWorkRecord["status"] | undefined> {
+    return (await this.storage.list(kind)).find((record) => record.key === key)?.status;
+  }
+}
+
+function manualScheduler() {
+  const jobs: (() => void)[] = [];
+  return {
+    scheduler: {
+      schedule(_delay: number, run: () => void) {
+        jobs.push(run);
+        return { cancel: () => undefined };
+      },
+    },
+    fire() {
+      const job = jobs.shift();
+      if (!job) throw new Error("no scheduled job");
+      job();
+    },
+    get size() {
+      return jobs.length;
+    },
+  };
 }
 
 describe("Real-scheduler Client durable-work contract", () => {
@@ -289,6 +365,68 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
     expect(persistence.edges).not.toContain("succeeded -> retryable");
     expect(persistence.edges).not.toContain("succeeded -> dead-letter");
+  });
+
+  it("does not overwrite the committed succeeded row when acknowledgement overlaps a retry", async () => {
+    const persistence = new FifoFileLikeStore();
+    const retry = manualScheduler();
+    let now = 10_000;
+    const send = vi.fn(async (): Promise<void> => undefined);
+    const owner = new TurnReportOwner({
+      connection: {
+        get state() {
+          return "registered" as const;
+        },
+        send,
+        subscribeState(listener) {
+          listener("registered");
+          return () => undefined;
+        },
+      },
+      persistence,
+      now: () => ++now,
+      retryDelayMs: 5_000,
+      scheduler: retry.scheduler,
+      retryPolicy: { baseDelayMs: 100, maxDelayMs: 100, maxAgeMs: 1_000_000, maxAttempts: 10 },
+    });
+    await owner.ready();
+
+    const report = reportFixture();
+    const pending = owner.submit(report, async () => undefined);
+    void pending.catch(() => undefined);
+
+    try {
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1), { interval: 1 });
+      await vi.waitFor(async () => expect(await persistence.status("turn-report", report.turnId)).toBe("running"), {
+        interval: 1,
+      });
+      await vi.waitFor(() => expect(retry.size).toBe(1), { interval: 1 });
+
+      // Hold the succeeded commit open so the acknowledgement timer can run in parallel.
+      persistence.gateStatus = "succeeded";
+      const handled = owner.handleResult({
+        type: "turn:report:result",
+        requestId: report.requestId,
+        turnId: report.turnId,
+        resultHash: report.resultHash,
+        status: "recorded",
+      });
+      await persistence.gateEntered;
+      retry.fire();
+
+      persistence.release();
+      await handled;
+      await pending;
+      await owner.settled();
+
+      // These assertions inspect writes committed by the durable store, not the owner mirror.
+      expect(persistence.edges).not.toContain("succeeded -> retryable");
+      expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+    } finally {
+      persistence.release();
+      owner.stop();
+      await owner.settled();
+    }
   });
 
   it("retries when the retryable state persist fails transiently", async () => {

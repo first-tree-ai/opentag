@@ -19,15 +19,21 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
-function ownerFixture(persistence = new ObservedDurabilityStore()) {
+function ownerFixture(
+  persistence = new ObservedDurabilityStore(),
+  initialState: "registered" | "stopped" = "registered",
+) {
   let now = 10_000;
+  const state = initialState;
   const send = vi.fn(async (_frame: unknown): Promise<void> => undefined);
   const owner = new TurnReportOwner({
     connection: {
-      state: "registered",
+      get state() {
+        return state;
+      },
       send,
       subscribeState(listener) {
-        listener("registered");
+        listener(state);
         return () => undefined;
       },
     },
@@ -70,6 +76,19 @@ async function waitForStatus(
 }
 
 describe("Real-scheduler Client durable-work contract", () => {
+  it("accepts a late acknowledgement while the retained row is still accepted", async () => {
+    const persistence = new ObservedDurabilityStore();
+    const report = reportFixture();
+    await persistence.storage.write(reportReceipt(report, "accepted"));
+    const { owner } = ownerFixture(persistence, "stopped");
+    await owner.ready();
+    const pending = submit(owner, report);
+    await acknowledge(owner, report);
+    await pending;
+    expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+    expect(persistence.edges).toContain("accepted -> succeeded");
+  });
+
   it("settles a normal acknowledgement after the zero-delay timeout persisted retryable", async () => {
     expect(vi.isFakeTimers()).toBe(false);
     const { owner, send, persistence } = ownerFixture();
@@ -175,7 +194,12 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(send).toHaveBeenCalledWith(report, { priority: "report" });
     expect(recordResult).toHaveBeenCalledTimes(1);
     expect(persistence.edges).toEqual(
-      expect.arrayContaining(["accepted -> dead-letter", "dead-letter -> dead-letter", "dead-letter -> running"]),
+      expect.arrayContaining([
+        "accepted -> dead-letter",
+        "dead-letter -> accepted",
+        "accepted -> running",
+        "running -> succeeded",
+      ]),
     );
     expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
   });

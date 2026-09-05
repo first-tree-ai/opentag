@@ -137,7 +137,7 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     );
   });
 
-  it("lets existing work finish after budgets are reduced but still charges rearm", async () => {
+  it("lets existing work finish and rearm after budgets are reduced", async () => {
     const original = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
     const first = { ...sessionRecord(), key: "first" };
     const second = { ...sessionRecord(), key: "second" };
@@ -151,17 +151,11 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     await limited.write(computerId, { ...first, status: "running", updatedAt: 2 });
     await limited.write(computerId, { ...first, status: "failed", updatedAt: 3 });
     await limited.write(computerId, { ...second, status: "running", updatedAt: 4 });
-    await expect(limited.write(computerId, { ...first, status: "running", updatedAt: 5 })).rejects.toMatchObject({
-      name: "RuntimeDurableWorkQuotaExceededError",
-      quota: "records",
-      current: 1,
-      requested: 2,
-    });
+    await expect(limited.write(computerId, { ...first, status: "running", updatedAt: 5 })).resolves.toBeUndefined();
     await limited.write(computerId, { ...second, status: "succeeded", updatedAt: 6 });
-    await expect(limited.write(computerId, { ...first, status: "running", updatedAt: 7 })).resolves.toBeUndefined();
   });
 
-  it.each(["failed", "dead-letter"] as const)("charges %s rearm against the active row quota", async (status) => {
+  it.each(["failed", "dead-letter"] as const)("allows %s rearm at the active row quota", async (status) => {
     const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 10, maxRecordsPerComputer: 1 });
     const first = { ...sessionRecord(), key: "first", updatedAt: 10 };
     const second = { ...sessionRecord(), key: "second", updatedAt: 13 };
@@ -170,21 +164,23 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     await store.write(computerId, { ...first, status, updatedAt: 12 });
     await store.write(computerId, second);
 
-    await expect(store.write(computerId, { ...first, status: "running", updatedAt: 14 })).rejects.toMatchObject({
+    await expect(
+      store.write(computerId, {
+        ...first,
+        status: status === "dead-letter" ? "accepted" : "running",
+        updatedAt: 14,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(store.write(computerId, { ...second, status: "running", updatedAt: 15 })).resolves.toBeUndefined();
+    await expect(
+      store.write(computerId, { ...sessionRecord(), status: "accepted", updatedAt: 16 }),
+    ).rejects.toMatchObject({
       name: "RuntimeDurableWorkQuotaExceededError",
       quota: "records",
       limit: 1,
-      current: 1,
-      requested: 2,
+      current: 2,
+      requested: 3,
     });
-    expect(
-      (await store.list(computerId, "session-message")).items.filter(
-        (row) => row.status === "accepted" || row.status === "running",
-      ),
-    ).toHaveLength(1);
-    await store.write(computerId, { ...second, status: "running", updatedAt: 15 });
-    await store.write(computerId, { ...second, status: "succeeded", updatedAt: 16 });
-    await expect(store.write(computerId, { ...first, status: "running", updatedAt: 17 })).resolves.toBeUndefined();
   });
 });
 

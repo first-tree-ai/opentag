@@ -246,6 +246,29 @@ describe("TurnReportOwner", () => {
     owner.stop();
   });
 
+  it("does not advance the in-memory Report mirror when a transition persist is rejected", async () => {
+    let writes = 0;
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        writes += 1;
+        if (writes > 1) throw new Error("quota rejected");
+      }),
+    };
+    const scheduler: RuntimeRetryScheduler = { schedule: () => ({ cancel: () => undefined }) };
+    const owner = new TurnReportOwner({
+      connection: new FakeConnection("registered"),
+      persistence,
+      scheduler,
+    });
+    const report = owner.create(reportInput({ turnId: "turn-persist-rejected" }));
+    const submitted = owner.submit(report, vi.fn());
+    await vi.waitFor(() => expect(writes).toBeGreaterThanOrEqual(2));
+    expect(owner.getState(report.turnId)).toMatchObject({ status: "accepted" });
+    owner.stop();
+    await expect(submitted).rejects.toThrow("stopped");
+  });
+
   it("bounds confirmation retries and records a dead-letter state with injected time", async () => {
     const scheduled: Array<() => void> = [];
     const scheduler: RuntimeRetryScheduler = {

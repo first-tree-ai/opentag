@@ -67,7 +67,8 @@ function structuredPhase(phase: PolicyPhase): StructuredError["phase"] {
 
 type ExternalCallMetricCore =
   | { type: "call" | "circuit"; operation: string; requestId: string }
-  | { type: "queue"; operation: string; requestId: string; queueDepth: number; queueRejections: number };
+  | { type: "queue"; operation: string; requestId: string; queueDepth: number; queueRejections: number }
+  | { type: "abandoned"; operation: string; requestId: string };
 type ExternalCallMetricDuration = { durationMs?: number };
 type ExternalCallMetricSuccess = { success?: boolean };
 type ExternalCallMetricErrorCode = { errorCode?: string };
@@ -90,6 +91,7 @@ type ExternalCallPolicyLimitOptions = {
   maxConcurrency?: number;
   maxAttempts?: number;
   maxQueueDepth?: number;
+  abandonmentWindowMs?: number;
 };
 type ExternalCallPolicyBackoffOptions = { backoffBaseMs?: number; backoffMaxMs?: number };
 type ExternalCallPolicyCircuitOptions = { circuitFailureThreshold?: number; circuitResetMs?: number };
@@ -106,7 +108,11 @@ type ExternalCallPolicyOptionsWithCircuit = ExternalCallPolicyOptionsCore &
 type ExternalCallPolicyOptionsWithSecurity = ExternalCallPolicyOptionsWithCircuit & ExternalCallPolicySecurityOptions;
 export type ExternalCallPolicyOptions = ExternalCallPolicyOptionsWithSecurity & ExternalCallPolicyMetricOptions;
 
-type ExternalCallOptionsDeadline = { timeoutMs?: number; signal?: AbortSignal };
+type ExternalCallOptionsDeadline = {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  abandonmentWindowMs?: number;
+};
 type ExternalCallOptionsRetry = { maxAttempts?: number; retryable?: (error: unknown) => boolean };
 type ExternalCallOptionsCircuit = { circuitKey?: string };
 type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry;
@@ -121,6 +127,7 @@ const DEFAULT_BACKOFF_MAX_MS = 2_000;
 const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_RESET_MS = 30_000;
 const DEFAULT_MAX_QUEUE_DEPTH = 32;
+const DEFAULT_ABANDONMENT_WINDOW_MS = 1_000;
 
 function errorCode(error: unknown): string | undefined {
   return error instanceof ExternalCallPolicyError ? error.code : undefined;
@@ -226,6 +233,7 @@ export class ExternalCallPolicy {
   readonly #maxConcurrency: number;
   readonly #maxAttempts: number;
   readonly #maxQueueDepth: number;
+  readonly #abandonmentWindowMs: number | undefined;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;
   readonly #circuitFailureThreshold: number;
@@ -246,6 +254,8 @@ export class ExternalCallPolicy {
     this.#maxConcurrency = Math.max(1, options.maxConcurrency ?? 8);
     this.#maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
     this.#maxQueueDepth = Math.max(0, Math.floor(options.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH));
+    this.#abandonmentWindowMs =
+      options.abandonmentWindowMs === undefined ? undefined : Math.max(1, options.abandonmentWindowMs);
     this.#backoffBaseMs = Math.max(0, options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS);
     this.#backoffMaxMs = Math.max(this.#backoffBaseMs, options.backoffMaxMs ?? DEFAULT_BACKOFF_MAX_MS);
     this.#circuitFailureThreshold = Math.max(1, options.circuitFailureThreshold ?? DEFAULT_CIRCUIT_FAILURE_THRESHOLD);
@@ -413,7 +423,36 @@ export class ExternalCallPolicy {
   ): DeadlineAttempt<T> {
     const controller = new AbortController();
     const timeoutMs = Math.max(1, options.timeoutMs ?? this.#defaultTimeoutMs);
-    const onAbort = () => controller.abort(options.signal?.reason);
+    const abandonmentWindowMs = Math.max(
+      1,
+      options.abandonmentWindowMs ?? this.#abandonmentWindowMs ?? Math.min(timeoutMs, DEFAULT_ABANDONMENT_WINDOW_MS),
+    );
+    let abandonmentTimer: ReturnType<typeof setTimeout> | undefined;
+    let abandon: (() => void) | undefined;
+    const abandonment = new Promise<void>((resolve) => {
+      abandon = () => {
+        this.#onMetric({ type: "abandoned", operation, requestId });
+        resolve();
+      };
+    });
+    const scheduleAbandonment = () => {
+      if (abandonmentTimer) return;
+      abandonmentTimer = setTimeout(() => abandon?.(), abandonmentWindowMs);
+      abandonmentTimer.unref?.();
+    };
+    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
+    const actionSettled = actionPromise.then(
+      () => undefined,
+      () => undefined,
+    );
+    actionSettled.then(() => {
+      if (abandonmentTimer) clearTimeout(abandonmentTimer);
+    });
+    const settled = Promise.race([actionSettled, abandonment]);
+    const onAbort = () => {
+      controller.abort(options.signal?.reason);
+      scheduleAbandonment();
+    };
     if (options.signal) {
       if (options.signal.aborted) onAbort();
       else options.signal.addEventListener("abort", onAbort, { once: true });
@@ -432,13 +471,15 @@ export class ExternalCallPolicy {
           },
         );
         controller.abort(error);
+        scheduleAbandonment();
         reject(error);
       }, timeoutMs);
     });
     let rejectCancelledListener: (() => void) | undefined;
     const cancelled = options.signal
       ? new Promise<never>((_, reject) => {
-          rejectCancelledListener = () =>
+          rejectCancelledListener = () => {
+            scheduleAbandonment();
             reject(
               new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
                 category: "availability",
@@ -448,15 +489,11 @@ export class ExternalCallPolicy {
                 cause: options.signal?.reason,
               }),
             );
+          };
           if (options.signal?.aborted) rejectCancelledListener?.();
           else options.signal?.addEventListener("abort", rejectCancelledListener, { once: true });
         })
       : undefined;
-    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
-    const settled = actionPromise.then(
-      () => undefined,
-      () => undefined,
-    );
     actionPromise.catch(() => undefined);
     const result = (async () => {
       try {

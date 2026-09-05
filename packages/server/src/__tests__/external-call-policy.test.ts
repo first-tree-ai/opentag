@@ -324,7 +324,12 @@ describe("ExternalCallPolicy", () => {
         resolve();
       };
     });
-    const policy = new ExternalCallPolicy({ maxConcurrency: 1, maxAttempts: 1, defaultTimeoutMs: 10 });
+    const policy = new ExternalCallPolicy({
+      maxConcurrency: 1,
+      maxAttempts: 1,
+      defaultTimeoutMs: 10,
+      abandonmentWindowMs: 1_000,
+    });
     const timedOut = policy.run("deadline.holds", async () => actionGate, { timeoutMs: 10 });
     await expect(timedOut).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
     expect(actionSettled).toBe(false);
@@ -340,6 +345,39 @@ describe("ExternalCallPolicy", () => {
     settleAction();
     await expect(queued).resolves.toBe("released");
     expect(actionSettled).toBe(true);
+  });
+
+  it("releases a permit after the bounded abandonment window", async () => {
+    const metrics: Array<{ type: string; operation: string }> = [];
+    const policy = new ExternalCallPolicy({
+      maxConcurrency: 1,
+      maxAttempts: 1,
+      defaultTimeoutMs: 10,
+      abandonmentWindowMs: 10,
+      onMetric: (metric) => metrics.push(metric),
+    });
+    const abandoned = policy.run("abandoned", async () => new Promise<void>(() => undefined));
+    await expect(abandoned).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+
+    await expect(policy.run("after-abandonment", async () => "released", { timeoutMs: 100 })).resolves.toBe("released");
+    expect(metrics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "abandoned", operation: "abandoned" })]),
+    );
+  });
+
+  it("does not retry a timed-out action while its provider call is still pending", async () => {
+    let dispatches = 0;
+    const policy = new ExternalCallPolicy({
+      defaultTimeoutMs: 10,
+      abandonmentWindowMs: 10,
+    });
+    const call = policy.run("no-overlap", async () => {
+      dispatches += 1;
+      return new Promise<void>(() => undefined);
+    });
+
+    await expect(call).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+    expect(dispatches).toBe(1);
   });
 
   it("backs off and transitions the circuit", async () => {

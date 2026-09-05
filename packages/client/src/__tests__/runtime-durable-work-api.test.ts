@@ -34,7 +34,13 @@ describe("OpenTagApi durable Runtime pagination", () => {
         }),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ items: [{ ...record, key: "turn-2" }] }), {
+        new Response(JSON.stringify({ items: [{ ...record, key: "turn-2" }], nextCursor: "next-2" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ items: [{ ...record, key: "turn-3" }] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -44,10 +50,12 @@ describe("OpenTagApi durable Runtime pagination", () => {
     await expect(api.listRuntimeDurableWork("machine", "turn-report")).resolves.toEqual([
       record,
       { ...record, key: "turn-2" },
+      { ...record, key: "turn-3" },
     ]);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("kind=turn-report");
     expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain("cursor=");
     expect(String(fetchImpl.mock.calls[1]?.[0])).toContain("cursor=next");
+    expect(String(fetchImpl.mock.calls[2]?.[0])).toContain("cursor=next-2");
   });
 });

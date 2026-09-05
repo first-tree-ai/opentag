@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   LAB_AGENT_ID,
   LAB_SCENARIOS,
+  type LabPreviewPage,
   type LabScenario,
+  labPreviewPageFor,
   labScenarioDefaults,
   labSeed,
   pendingLabEvent,
@@ -22,10 +24,30 @@ const EXPECTED_STAGES: Record<LabScenario, string> = {
   "runtime-setup": "needs-runtime",
   "runtime-sign-in": "needs-runtime",
   "messaging-support-setup": "needs-provider-clis",
+  "preparation-ready": "needs-messaging",
   "messaging-setup": "needs-messaging",
   "messaging-handoff": "needs-messaging",
   "messaging-recovery": "needs-messaging",
   "everything-ready": "ready",
+};
+
+const EXPECTED_PAGES: Record<LabScenario, LabPreviewPage> = {
+  "full-new-computer": "destination",
+  "full-existing-computer": "destination",
+  "agent-creation": "agent",
+  "computer-connection": "computer",
+  "computer-reconnect": "computer",
+  "computer-rebind": "computer",
+  "runtime-waiting": "checks",
+  "runtime-checking": "checks",
+  "runtime-setup": "checks",
+  "runtime-sign-in": "checks",
+  "messaging-support-setup": "checks",
+  "preparation-ready": "checks",
+  "messaging-setup": "messaging",
+  "messaging-handoff": "messaging",
+  "messaging-recovery": "messaging",
+  "everything-ready": "complete",
 };
 
 function snapshotFor(scenario: LabScenario) {
@@ -42,6 +64,13 @@ describe("agent setup lab model", () => {
     expect(Object.keys(EXPECTED_STAGES)).toEqual([...LAB_SCENARIOS]);
     for (const scenario of LAB_SCENARIOS) {
       expect(snapshotFor(scenario).stage, scenario).toBe(EXPECTED_STAGES[scenario]);
+    }
+  });
+
+  it("maps every product scenario to an explicit preview page", () => {
+    expect(Object.keys(EXPECTED_PAGES)).toEqual([...LAB_SCENARIOS]);
+    for (const scenario of LAB_SCENARIOS) {
+      expect(labPreviewPageFor(scenario), scenario).toBe(EXPECTED_PAGES[scenario]);
     }
   });
 
@@ -91,6 +120,7 @@ describe("agent setup lab model", () => {
         expect.objectContaining({ provider: "slack", status: "ready", blocking: false }),
       ]),
     );
+    expect(snapshotFor("preparation-ready").messaging.kind).toBe("not-configured");
     expect(snapshotFor("messaging-setup").messaging.kind).toBe("not-configured");
     expect(snapshotFor("messaging-handoff").messaging.kind).toBe("waiting-handoff");
     expect(snapshotFor("messaging-recovery").messaging).toMatchObject({

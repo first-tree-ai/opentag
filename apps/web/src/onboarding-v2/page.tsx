@@ -1,15 +1,17 @@
 import type { CreateAgentRequest } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
-import { AgentSetupPage, type AgentSetupPageProps } from "./agent-setup-page.js";
+import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
+
+export type CreationPreviewView = "agent" | "destination";
 
 const CREATE_STEPS: FlowState["steps"] = [
   { id: "agent", status: "current" },
@@ -64,27 +66,35 @@ export function AgentSetupSurface({
   agentId,
   computerAdapter,
   creationPreview,
+  creationPreviewInitialView,
+  onCreationPreviewViewChange,
   onBackToAgents,
   onAgentAvailable,
   onExternalNavigation,
   onOpenAgent,
   onReady,
+  onSetupPreviewViewChange,
   refreshSignal,
   reviewMode = false,
   setupAdapter,
+  setupPreviewInitialView,
   slackOAuthError,
 }: {
   agentId?: string;
   computerAdapter?: AgentSetupPageProps["computerAdapter"];
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
+  creationPreviewInitialView?: CreationPreviewView;
+  onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onExternalNavigation?: (url: string) => void;
   onOpenAgent?: () => void;
   onReady?: (agentId: string) => Promise<void> | void;
+  onSetupPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   refreshSignal?: number;
   reviewMode?: boolean;
   setupAdapter?: AgentSetupAdapter;
+  setupPreviewInitialView?: AgentSetupPreviewView;
   slackOAuthError?: string;
 } = {}) {
   if (agentId) {
@@ -95,7 +105,9 @@ export function AgentSetupSurface({
         computerAdapter={computerAdapter}
         onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
+        onPreviewViewChange={onSetupPreviewViewChange}
         onReady={onReady}
+        previewInitialView={setupPreviewInitialView}
         refreshSignal={refreshSignal}
         reviewMode={reviewMode}
         slackOAuthError={slackOAuthError}
@@ -105,6 +117,8 @@ export function AgentSetupSurface({
   return (
     <AgentCreatePage
       creationPreview={creationPreview}
+      creationPreviewInitialView={creationPreviewInitialView}
+      onCreationPreviewViewChange={onCreationPreviewViewChange}
       onAgentAvailable={onAgentAvailable}
       onBackToAgents={onBackToAgents}
     />
@@ -113,15 +127,22 @@ export function AgentSetupSurface({
 
 function AgentCreatePage({
   creationPreview,
+  creationPreviewInitialView = "destination",
+  onCreationPreviewViewChange,
   onAgentAvailable,
   onBackToAgents,
 }: {
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
+  creationPreviewInitialView?: CreationPreviewView;
+  onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
-  const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
+  const [draft, setDraft] = useState<AgentDraft>(() => {
+    const initial = emptyDraft();
+    return creationPreviewInitialView === "agent" ? { ...initial, destination: "local" } : initial;
+  });
+  const [destinationConfirmed, setDestinationConfirmed] = useState(creationPreviewInitialView === "agent");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   /**
@@ -133,6 +154,10 @@ function AgentCreatePage({
   const [taken, setTaken] = useState<{ id: string; name: string } | "unnamed">();
   /** One creation at a time. A second press before the first answers would ask for a second Agent. */
   const createInFlight = useRef(false);
+
+  useEffect(() => {
+    onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
+  }, [destinationConfirmed, onCreationPreviewViewChange]);
 
   /*
    * What a refusal offers, if anything. Naming the Agent is always worth saying: it is somewhere

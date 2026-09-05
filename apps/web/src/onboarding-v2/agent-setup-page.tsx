@@ -100,6 +100,8 @@ const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 const IDENTITY_ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3";
 
+export type AgentSetupPreviewView = "checks" | "complete" | "computer" | "messaging";
+
 export interface AgentSetupPageProps {
   /** The exact Agent this surface sets up. Never an index, a name, or a guess. */
   readonly agentId: string;
@@ -114,6 +116,10 @@ export interface AgentSetupPageProps {
   readonly refreshSignal?: number;
   /** Review Lab intercepts Provider URLs so a simulated OAuth round trip stays inside the Lab. */
   readonly onExternalNavigation?: (url: string) => void;
+  /** Lets the Review Lab open a later screen directly without changing the production default. */
+  readonly previewInitialView?: AgentSetupPreviewView;
+  /** Reports the screen the production surface is actually showing to its Review Lab controls. */
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
@@ -560,7 +566,9 @@ export function AgentSetupPage({
   computerAdapter,
   onExternalNavigation,
   onOpenAgent,
+  onPreviewViewChange,
   onReady,
+  previewInitialView,
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
@@ -576,7 +584,9 @@ export function AgentSetupPage({
       key={agentId}
       onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
+      onPreviewViewChange={onPreviewViewChange}
       onReady={onReady}
+      previewInitialView={previewInitialView}
       refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
@@ -590,7 +600,9 @@ function AgentSetupPageContent({
   computerAdapter,
   onExternalNavigation,
   onOpenAgent,
+  onPreviewViewChange,
   onReady,
+  previewInitialView,
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
@@ -625,6 +637,8 @@ function AgentSetupPageContent({
           computerAdapter={computerAdapter}
           controller={controller}
           onOpenAgent={onOpenAgent}
+          onPreviewViewChange={onPreviewViewChange}
+          previewInitialView={previewInitialView}
           report={report}
         />
       </main>
@@ -637,12 +651,16 @@ function SetupPhaseView({
   computerAdapter,
   controller,
   onOpenAgent,
+  onPreviewViewChange,
+  previewInitialView,
   report,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
+  readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
 }) {
   const { phase } = controller;
@@ -684,6 +702,8 @@ function SetupPhaseView({
       computerAdapter={computerAdapter}
       controller={controller}
       onOpenAgent={onOpenAgent}
+      onPreviewViewChange={onPreviewViewChange}
+      previewInitialView={previewInitialView}
       report={report}
       snapshot={phase.snapshot}
     />
@@ -726,6 +746,8 @@ function AgentSetupSnapshotView({
   computerAdapter,
   controller,
   onOpenAgent,
+  onPreviewViewChange,
+  previewInitialView,
   report,
   snapshot,
 }: {
@@ -733,11 +755,15 @@ function AgentSetupSnapshotView({
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
   readonly onOpenAgent?: () => void;
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
+  readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
-  const [preparationAccepted, setPreparationAccepted] = useState(() => messagingHasStarted(snapshot));
+  const [preparationAccepted, setPreparationAccepted] = useState(
+    () => previewInitialView === "messaging" || messagingHasStarted(snapshot),
+  );
   const focusMessagingAfterContinue = useRef(false);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
   const awaitingPreparationContinue = isAwaitingPreparationContinue(snapshot, preparationAccepted);
@@ -746,6 +772,18 @@ function AgentSetupSnapshotView({
   const computerObservationFailed = snapshot.computer.kind === "observation-failed";
   const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
   const refreshAction = canRefresh && stage !== "ready" ? <SetupRefreshButton controller={controller} /> : undefined;
+
+  useEffect(() => {
+    const view: AgentSetupPreviewView =
+      stage === "needs-computer"
+        ? "computer"
+        : showingPreparation
+          ? "checks"
+          : stage === "needs-messaging"
+            ? "messaging"
+            : "complete";
+    onPreviewViewChange?.(view);
+  }, [onPreviewViewChange, showingPreparation, stage]);
 
   useEffect(() => {
     if (stage !== "needs-messaging" && preparationAccepted) setPreparationAccepted(false);

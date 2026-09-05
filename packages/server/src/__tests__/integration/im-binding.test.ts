@@ -19,10 +19,12 @@ import {
   type UpdateAgentRequest,
 } from "@opentag/shared";
 import { and, eq, inArray, isNull } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
+import * as schema from "../../db/schema/index.js";
 import {
   agentRuntimeConfigs,
   agents,
@@ -204,6 +206,56 @@ async function unboundFixture() {
     cipher,
     imBindingService,
   };
+}
+
+async function seedPendingDeliveries(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  imBindingId: string,
+  sessionId: string,
+  count: number,
+  prefix: string,
+  attention: "direct" | "ambient" = "direct",
+): Promise<string[]> {
+  const fillerMessages = await database
+    .insert(imMessages)
+    .values(
+      Array.from({ length: count }, (_, index) => ({
+        imBindingId,
+        providerEventId: `${prefix}-${index}`,
+        channelId: "C1",
+        externalMessageId: `${prefix}-message-${index}`,
+        providerRevisionKey: "1",
+        operation: "created" as const,
+        direction: "inbound" as const,
+        providerContext: { provider: "slack" as const, channelType: "channel" },
+        threadKey: null,
+        replyToExternalId: null,
+        authorKind: "human" as const,
+        authorExternalId: "U_HUMAN",
+        authorDisplayName: "Human",
+        content: {
+          version: 1 as const,
+          fallbackText: "filler",
+          blocks: [{ type: "text" as const, text: "filler" }],
+          truncated: false,
+        },
+        occurredAt: new Date(`2026-08-19T00:00:01.${String(index + 1).padStart(3, "0")}Z`),
+      })),
+    )
+    .returning({ id: imMessages.id });
+  const deliveryRows = await database
+    .insert(imMessageDeliveries)
+    .values(
+      fillerMessages.map((message) => ({
+        messageId: message.id,
+        sessionId,
+        attention,
+        placementGeneration: 1,
+        expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      })),
+    )
+    .returning({ id: imMessageDeliveries.id });
+  return deliveryRows.map((row) => row.id);
 }
 
 function imDeliveryWorker(input: Omit<ConstructorParameters<typeof ImDeliveryWorker>[0], "assembler">) {
@@ -1723,6 +1775,104 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("does not run the ordered overflow pass inside an under-capacity ingest", async () => {
+    const value = await fixture();
+    try {
+      let overflowPasses = 0;
+      const queries: string[] = [];
+      const database = drizzle(value.sql, { schema, logger: { logQuery: (query) => queries.push(query) } });
+      const inbox = new ImMessageInbox(database, {
+        beforeOverflowExpiry: async () => {
+          overflowPasses += 1;
+        },
+      });
+      for (let index = 0; index < 20; index += 1) {
+        await inbox.ingest(
+          value.imBindingId,
+          1,
+          revisionEvent({
+            providerEventId: `under-capacity-${index}`,
+            externalMessageId: `under-capacity-message-${index}`,
+            operation: "created",
+            occurredAt: "2026-08-19T00:00:01.000Z",
+            revisionKey: "1",
+          }),
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(overflowPasses).toBe(0);
+      expect(
+        queries.filter((query) => query.includes("count(*)") && query.includes("im_message_deliveries")),
+      ).toHaveLength(20);
+      expect(queries.filter((query) => /offset/i.test(query))).toHaveLength(0);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("commits ingests while one overflow pass is queued for the session and attention", async () => {
+    const value = await fixture();
+    const gate = deferred<void>();
+    try {
+      let overflowPasses = 0;
+      const inbox = new ImMessageInbox(value.database, {
+        beforeOverflowExpiry: async () => {
+          overflowPasses += 1;
+          await gate.promise;
+        },
+      });
+      const first = await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "queued-overflow-first",
+          externalMessageId: "queued-overflow-first-message",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const firstDeliveryId = first.deliveryIds[0];
+      if (!firstDeliveryId) throw new Error("Queued overflow fixture was not created");
+      const [session] = await value.database.select().from(sessions);
+      if (!session) throw new Error("Queued overflow session was not created");
+      await seedPendingDeliveries(value.database, value.imBindingId, session.id, 99, "queued-overflow-filler");
+      for (const suffix of ["second", "third"]) {
+        const result = await settleWithin(
+          inbox.ingest(
+            value.imBindingId,
+            1,
+            revisionEvent({
+              providerEventId: `queued-overflow-${suffix}`,
+              externalMessageId: `queued-overflow-${suffix}-message`,
+              operation: "created",
+              occurredAt: "2026-08-19T00:00:02.000Z",
+              revisionKey: "1",
+            }),
+          ),
+        );
+        expect(result.deliveryIds).toHaveLength(1);
+      }
+      expect(overflowPasses).toBe(1);
+      gate.resolve();
+      await expect
+        .poll(
+          async () =>
+            (
+              await value.database
+                .select({ state: imMessageDeliveries.state })
+                .from(imMessageDeliveries)
+                .where(eq(imMessageDeliveries.id, firstDeliveryId))
+            )[0]?.state,
+        )
+        .toBe("expired");
+      expect(overflowPasses).toBe(1);
+    } finally {
+      gate.resolve();
+      await value.sql.end();
+    }
+  });
+
   it("preserves in-flight custody when capacity eviction commits before acceptance", async () => {
     const value = await fixture();
     try {
@@ -1763,43 +1913,14 @@ describe("IM binding persistence", () => {
         .toBe(1);
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
-      const fillerMessages = await value.database
-        .insert(imMessages)
-        .values(
-          Array.from({ length: 99 }, (_, index) => ({
-            imBindingId: value.imBindingId,
-            providerEventId: `capacity-filler-${index}`,
-            channelId: "C1",
-            externalMessageId: `capacity-filler-message-${index}`,
-            providerRevisionKey: "1",
-            operation: "created" as const,
-            direction: "inbound" as const,
-            providerContext: { provider: "slack" as const, channelType: "channel" },
-            threadKey: null,
-            replyToExternalId: null,
-            authorKind: "human" as const,
-            authorExternalId: "U_HUMAN",
-            authorDisplayName: "Human",
-            content: {
-              version: 1 as const,
-              fallbackText: "filler",
-              blocks: [{ type: "text" as const, text: "filler" }],
-              truncated: false,
-            },
-            occurredAt: new Date(`2026-08-19T00:00:01.${String(index + 1).padStart(3, "0")}Z`),
-          })),
-        )
-        .returning({ id: imMessages.id });
-      await value.database.insert(imMessageDeliveries).values(
-        fillerMessages.map((message) => ({
-          messageId: message.id,
-          sessionId: session.id,
-          attention: "direct" as const,
-          placementGeneration: 1,
-          expiresAt: new Date("2026-08-26T00:00:00.000Z"),
-        })),
+      const fillerDeliveryIds = await seedPendingDeliveries(
+        value.database,
+        value.imBindingId,
+        session.id,
+        99,
+        "capacity-filler",
       );
-      await inbox.ingest(
+      const second = await inbox.ingest(
         value.imBindingId,
         1,
         revisionEvent({
@@ -1810,10 +1931,26 @@ describe("IM binding persistence", () => {
           revisionKey: "1",
         }),
       );
+      await expect
+        .poll(async () => {
+          const [row] = await value.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, deliveryId));
+          return row;
+        })
+        .toMatchObject({ state: "expired", reason: "capacity" });
       const [evicted] = await value.database
         .select()
         .from(imMessageDeliveries)
         .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(second.deliveryIds).toHaveLength(1);
+      const retained = await value.database
+        .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+        .from(imMessageDeliveries)
+        .where(inArray(imMessageDeliveries.id, [...fillerDeliveryIds, ...second.deliveryIds]));
+      expect(retained).toHaveLength(100);
+      expect(retained.every((delivery) => delivery.state === "pending" && delivery.reason === null)).toBe(true);
       expect(evicted).toMatchObject({ state: "expired", reason: "capacity" });
       const turnId = `turn-${deliveryId}`;
       deliveryGate.resolve();
@@ -1838,6 +1975,144 @@ describe("IM binding persistence", () => {
         ),
       ).resolves.toMatchObject({ status: "recorded" });
       runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("expires ambient deliveries beyond capacity and preserves the 500 retained entries", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const inbox = new ImMessageInbox(value.database);
+      const firstEvent = revisionEvent({
+        providerEventId: "ambient-capacity-first",
+        externalMessageId: "ambient-capacity-first-message",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      firstEvent.mentions = [];
+      const first = await inbox.ingest(value.imBindingId, 1, firstEvent);
+      const firstDeliveryId = first.deliveryIds[0];
+      if (!firstDeliveryId) throw new Error("Ambient capacity fixture was not created");
+      const [session] = await value.database.select().from(sessions);
+      if (!session) throw new Error("Ambient capacity session was not created");
+      const fillerIds = await seedPendingDeliveries(
+        value.database,
+        value.imBindingId,
+        session.id,
+        499,
+        "ambient-capacity-filler",
+        "ambient",
+      );
+      const secondEvent = revisionEvent({
+        providerEventId: "ambient-capacity-second",
+        externalMessageId: "ambient-capacity-second-message",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "1",
+      });
+      secondEvent.mentions = [];
+      const second = await inbox.ingest(value.imBindingId, 1, secondEvent);
+      await expect
+        .poll(
+          async () =>
+            (
+              await value.database
+                .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+                .from(imMessageDeliveries)
+                .where(eq(imMessageDeliveries.id, firstDeliveryId))
+            )[0],
+        )
+        .toMatchObject({ state: "expired", reason: "capacity" });
+      const retained = await value.database
+        .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+        .from(imMessageDeliveries)
+        .where(inArray(imMessageDeliveries.id, [...fillerIds, ...second.deliveryIds]));
+      expect(retained).toHaveLength(500);
+      expect(retained.every((delivery) => delivery.state === "pending" && delivery.reason === null)).toBe(true);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps a committed ingest when async overflow expiry fails and retries it later", async () => {
+    const value = await fixture();
+    try {
+      let overflowPasses = 0;
+      const logger = { error: vi.fn() };
+      const inbox = new ImMessageInbox(value.database, {
+        beforeOverflowExpiry: async () => {
+          overflowPasses += 1;
+          if (overflowPasses === 1) throw new Error("overflow pass failed");
+        },
+        logger,
+      });
+      const first = await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "async-overflow-first",
+          externalMessageId: "async-overflow-first-message",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const firstDeliveryId = first.deliveryIds[0];
+      if (!firstDeliveryId) throw new Error("Async overflow fixture was not created");
+      const [session] = await value.database.select().from(sessions);
+      if (!session) throw new Error("Async overflow session was not created");
+      await seedPendingDeliveries(value.database, value.imBindingId, session.id, 99, "async-overflow-filler");
+
+      const second = await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "async-overflow-second",
+          externalMessageId: "async-overflow-second-message",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+          revisionKey: "1",
+        }),
+      );
+      expect(second.deliveryIds).toHaveLength(1);
+      await expect.poll(() => overflowPasses).toBe(1);
+      await expect.poll(() => logger.error.mock.calls.length).toBe(1);
+      expect(
+        (
+          await value.database
+            .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, firstDeliveryId))
+        )[0],
+      ).toMatchObject({ state: "pending", reason: null });
+
+      const third = await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "async-overflow-third",
+          externalMessageId: "async-overflow-third-message",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+          revisionKey: "1",
+        }),
+      );
+      expect(third.deliveryIds).toHaveLength(1);
+      await expect.poll(() => overflowPasses).toBe(2);
+      await expect
+        .poll(
+          async () =>
+            (
+              await value.database
+                .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+                .from(imMessageDeliveries)
+                .where(eq(imMessageDeliveries.id, firstDeliveryId))
+            )[0],
+        )
+        .toMatchObject({ state: "expired", reason: "capacity" });
     } finally {
       await value.sql.end();
     }

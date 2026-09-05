@@ -41,4 +41,23 @@ describe("RuntimeOwnershipRecovery", () => {
 
     expect(events).toEqual(["fence", "old:release", "resume", "recovered"]);
   });
+
+  it("propagates an acquisition deadline to the terminal recovery path", async () => {
+    const onFailed = vi.fn(async () => undefined);
+    const fence = { fence: vi.fn(), resume: vi.fn() };
+    const recovery = new RuntimeOwnershipRecovery({
+      acquire: vi.fn().mockRejectedValue(new Error("RUNTIME_OWNER_LEASE_HELD")),
+      fence,
+      getLease: () => undefined,
+      onFailed,
+      onRecovered: vi.fn(),
+      setLease: vi.fn(),
+    });
+
+    await recovery.configure();
+    recovery.onLost();
+    await vi.waitFor(() => expect(onFailed).toHaveBeenCalledOnce());
+    expect(fence.fence).toHaveBeenCalledOnce();
+    expect(fence.resume).not.toHaveBeenCalled();
+  });
 });

@@ -1,0 +1,2 @@
+CREATE INDEX "feishu_inbound_receipts_retention_idx" ON "feishu_inbound_receipts" USING btree ("received_at","id") WHERE "feishu_inbound_receipts"."status" in ('processed', 'failed');--> statement-breakpoint
+CREATE INDEX "slack_webhook_receipts_retention_idx" ON "slack_webhook_receipts" USING btree ("received_at","id") WHERE "slack_webhook_receipts"."status" in ('processed', 'failed');

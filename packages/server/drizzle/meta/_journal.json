@@ -281,6 +281,13 @@
       "when": 1788627669542,
       "tag": "0039_dizzy_albert_cleary",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1788633065374,
+      "tag": "0040_tranquil_vargas",
+      "breakpoints": true
     }
   ]
 }

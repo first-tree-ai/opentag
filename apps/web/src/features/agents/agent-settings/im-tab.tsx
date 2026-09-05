@@ -1,6 +1,6 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type Ref, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { spaceScriptBoundary } from "../../../i18n/format.js";
 import { FeishuSetup } from "../../../im/feishu-setup.js";
@@ -14,9 +14,7 @@ import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { messagingConnectionLabel, messagingConnectionTone } from "../agent-presentation.js";
 
-type Confirmation =
-  | { bindingId: string; kind: "disable_binding"; provider: ImBindingSummary["provider"] }
-  | { kind: "every_message" };
+type Confirmation = { bindingId: string; provider: ImBindingSummary["provider"] };
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const queryClient = useQueryClient();
@@ -27,7 +25,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [restoreFocusTarget, setRestoreFocusTarget] = useState<"messaging" | "trigger_rules">();
   const [receiveModePending, setReceiveModePending] = useState(false);
-  const allMessagesButtonRef = useRef<HTMLButtonElement>(null);
   const disableBindingButtonRef = useRef<HTMLButtonElement>(null);
   const activeFeishuTriggerRef = useRef<HTMLElement | null>(null);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -51,23 +48,17 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
     if (receiveModePending) return;
     try {
       setReceiveModePending(true);
-      setConfirmationBusy(true);
       setError(undefined);
       setSuccessMessage(undefined);
-      setConfirmationError(undefined);
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       reload();
       setRestoreFocusTarget("trigger_rules");
-      setConfirmation(undefined);
       onAgentChanged();
     } catch {
-      const nextError = m.im_receive_mode_failed();
-      if (confirmation?.kind === "every_message") setConfirmationError(nextError);
-      else setError(nextError);
+      setError(m.im_receive_mode_failed());
     } finally {
       setReceiveModePending(false);
-      setConfirmationBusy(false);
     }
   }
 
@@ -137,28 +128,32 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                 <AsyncState state={state}>
                   {(binding) => (
                     <div className="grid gap-6">
-                      <section className="grid gap-4" aria-labelledby="messaging-app-heading">
-                        <Text as="h2" id="messaging-app-heading" variant="heading">
-                          {m.im_messaging_app()}
-                        </Text>
+                      {/*
+                       * With nothing connected the page holds one thing to do and its own title and
+                       * sentence already name it, so a heading here would say it a third time. Once
+                       * a channel is connected the page carries two sections, and this one needs a
+                       * label of its own to stay distinct from the receive mode below it.
+                       */}
+                      <section aria-label={m.im_messaging_app()} className="grid gap-4">
                         {binding ? (
                           <>
+                            <Text as="h2" variant="heading">
+                              {m.im_messaging_app()}
+                            </Text>
                             <div
-                              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3"
+                              className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3"
                               data-ui="messaging-app-identity"
                             >
                               <ProviderIcon className="size-6" provider={binding.provider} />
-                              <span className="grid min-w-0 gap-1">
+                              <span className="grid min-w-0 justify-items-start gap-1">
                                 <strong className="text-base font-semibold text-kumo-strong">
                                   {binding.bot.displayName ?? messagingProviderLabel(binding.provider)}
                                 </strong>
-                                <span className="text-sm text-kumo-subtle">{messagingAppDetail(agent, binding)}</span>
+                                <StatusIndicator
+                                  label={messagingConnectionLabel(binding)}
+                                  tone={messagingConnectionTone(binding)}
+                                />
                               </span>
-                              <StatusIndicator
-                                className="justify-self-end"
-                                label={messagingConnectionLabel(binding)}
-                                tone={messagingConnectionTone(binding)}
-                              />
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                               {messagingRecoveryLabel(binding) ? (
@@ -193,11 +188,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 variant="secondary-destructive"
                                 onClick={() => {
                                   setConfirmationError(undefined);
-                                  setConfirmation({
-                                    bindingId: binding.id,
-                                    kind: "disable_binding",
-                                    provider: binding.provider,
-                                  });
+                                  setConfirmation({ bindingId: binding.id, provider: binding.provider });
                                 }}
                               >
                                 {spaceScriptBoundary(
@@ -208,14 +199,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           </>
                         ) : (
                           <>
-                            <p className="text-sm text-kumo-subtle">
-                              {spaceScriptBoundary(
-                                m.im_messaging_connect_description({
-                                  alternateProvider: messagingProviderLabel("feishu"),
-                                  provider: messagingProviderLabel("slack"),
-                                }),
-                              )}
-                            </p>
                             {/*
                              * Neither channel is the recommended one — which app a team already lives in decides this,
                              * not us — so both connect actions share one neutral variant and carry their own mark.
@@ -257,13 +240,13 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               tabIndex={-1}
                               variant="heading"
                             >
-                              {triggerModeHeading(binding.provider)}
+                              {m.im_receive_mode()}
                             </Text>
                             <p className="text-sm text-kumo-subtle">{triggerModeExplanation(binding.provider)}</p>
                           </div>
                           <div className="grid gap-3">
                             <fieldset
-                              aria-label={triggerModeHeading(binding.provider)}
+                              aria-label={m.im_receive_mode()}
                               className="flex w-fit flex-wrap items-center gap-1 rounded-md bg-kumo-recessed p-1"
                             >
                               <TriggerModeOption
@@ -275,12 +258,8 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               <TriggerModeOption
                                 busy={receiveModePending}
                                 label={m.im_every_message()}
-                                ref={allMessagesButtonRef}
                                 selected={binding.receiveMode === "all_message"}
-                                onSelect={() => {
-                                  setConfirmationError(undefined);
-                                  setConfirmation({ kind: "every_message" });
-                                }}
+                                onSelect={() => void changeReceiveMode("all_message")}
                               />
                             </fieldset>
                             <p className="text-sm text-kumo-subtle">{triggerModeDescription(binding.receiveMode)}</p>
@@ -303,7 +282,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         )}
       </FeishuSetup>
 
-      {confirmation?.kind === "disable_binding" ? (
+      {confirmation ? (
         <Dialog
           busy={confirmationBusy}
           description={spaceScriptBoundary(
@@ -331,30 +310,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
           </div>
         </Dialog>
       ) : null}
-
-      {confirmation?.kind === "every_message" ? (
-        <Dialog
-          busy={confirmationBusy}
-          description={m.im_every_message_confirm_description()}
-          returnFocusRef={allMessagesButtonRef}
-          title={m.im_every_message_confirm_title()}
-          onClose={closeConfirmation}
-        >
-          {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
-          <div className="flex flex-wrap justify-end gap-3">
-            <Button disabled={confirmationBusy} variant="ghost" onClick={closeConfirmation}>
-              {m.common_cancel()}
-            </Button>
-            <Button
-              disabled={confirmationBusy}
-              loading={confirmationBusy}
-              onClick={() => void changeReceiveMode("all_message")}
-            >
-              {m.im_every_message_confirm_button()}
-            </Button>
-          </div>
-        </Dialog>
-      ) : null}
     </div>
   );
 }
@@ -363,20 +318,17 @@ function TriggerModeOption({
   busy = false,
   label,
   onSelect,
-  ref,
   selected,
 }: {
   busy?: boolean;
   label: string;
   onSelect: () => void;
-  ref?: Ref<HTMLButtonElement>;
   selected: boolean;
 }) {
   return (
     <Button
       aria-pressed={selected}
       disabled={busy}
-      ref={ref}
       size="compact"
       type="button"
       variant={selected ? "secondary" : "inline"}
@@ -387,23 +339,10 @@ function TriggerModeOption({
   );
 }
 
-function messagingAppDetail(agent: AgentDetailView, binding: ImBindingSummary): string {
-  return binding.provider === "feishu"
-    ? m.agent_settings_channel_detail_with_name({
-        provider: messagingProviderLabel(binding.provider),
-        name: agent.name,
-      })
-    : m.agent_settings_channel_detail({ provider: messagingProviderLabel(binding.provider) });
-}
-
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
   if (binding.bindingState === "reauthorization_required") return m.im_update_permissions();
   if (binding.bindingState === "error" || binding.bindingState === "disabled") return m.im_reconnect();
   return undefined;
-}
-
-function triggerModeHeading(provider: ImBindingSummary["provider"]): string {
-  return provider === "feishu" ? m.im_group_chat_messages() : m.im_channel_messages();
 }
 
 function triggerModeExplanation(provider: ImBindingSummary["provider"]): string {

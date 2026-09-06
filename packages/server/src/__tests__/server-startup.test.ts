@@ -603,7 +603,7 @@ describe("Server startup", () => {
 
   it("forces a non-zero exit and identifies the shutdown step that exceeds the deadline", async () => {
     vi.useFakeTimers();
-    const exit = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
       process.exitCode = code ?? 0;
       return undefined as never;
     });

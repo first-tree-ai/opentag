@@ -123,6 +123,7 @@ describe("runtime ownership advisory lease", () => {
         now: () => now,
         sleep: async (delayMs) => {
           now += delayMs;
+          if (now > 1) throw new Error("The deterministic acquisition test exceeded its guard");
         },
       }),
     ).rejects.toMatchObject({

@@ -131,6 +131,8 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 
+const SERVER_SHUTDOWN_TIMEOUT_MS = 10_000;
+
 class StagingInternalNavigationVisibilityService {
   #value: InternalNavigationVisibility = { integrations: false, skills: false };
 
@@ -545,25 +547,51 @@ export async function startServer(): Promise<void> {
     process.once("SIGINT", closeForSignal);
     process.once("SIGTERM", closeForSignal);
     app.addHook("onClose", async () => {
-      runtimeOwnershipRecovery?.stop();
-      process.off("SIGINT", closeForSignal);
-      process.off("SIGTERM", closeForSignal);
-      channelTargetPoller.stop();
-      imDeliveryWorker.stop();
-      await feishuSetupService.stop();
-      await feishuConnections.stop();
-      const lease = runtimeOwnershipLease;
-      runtimeOwnershipLease = undefined;
-      await lease?.release().catch(() => {
-        app?.log.warn(
-          { code: "RUNTIME_OWNERSHIP_LEASE_RELEASE_FAILED" },
-          "Runtime ownership lease release failed during shutdown",
-        );
+      let outstandingStep = "runtime-ownership-recovery.stop";
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+      const shutdown = (async () => {
+        runtimeOwnershipRecovery?.stop();
+        process.off("SIGINT", closeForSignal);
+        process.off("SIGTERM", closeForSignal);
+        channelTargetPoller.stop();
+        imDeliveryWorker.stop();
+        outstandingStep = "feishuSetupService.stop";
+        await feishuSetupService.stop();
+        outstandingStep = "feishuConnections.stop";
+        await feishuConnections.stop();
+        const lease = runtimeOwnershipLease;
+        runtimeOwnershipLease = undefined;
+        outstandingStep = "lease.release";
+        await lease?.release().catch(() => {
+          app?.log.warn(
+            { code: "RUNTIME_OWNERSHIP_LEASE_RELEASE_FAILED" },
+            "Runtime ownership lease release failed during shutdown",
+          );
+        });
+        const databaseSql = sql;
+        sql = undefined;
+        outstandingStep = "databaseSql.end";
+        await databaseSql?.end();
+        outstandingStep = "shutdownTelemetry";
+        await shutdownTelemetry();
+      })();
+      const timeout = new Promise<"timeout">((resolve) => {
+        deadlineTimer = setTimeout(() => resolve("timeout"), SERVER_SHUTDOWN_TIMEOUT_MS);
+        deadlineTimer.unref();
       });
-      const databaseSql = sql;
-      sql = undefined;
-      await databaseSql?.end();
-      await shutdownTelemetry();
+      try {
+        const outcome = await Promise.race([shutdown.then(() => "complete" as const), timeout]);
+        if (outcome === "timeout") {
+          process.exitCode = 1;
+          app?.log.error(
+            { code: "SERVER_SHUTDOWN_TIMEOUT", step: outstandingStep, timeoutMs: SERVER_SHUTDOWN_TIMEOUT_MS },
+            "Server shutdown exceeded its deadline",
+          );
+          process.exit(1);
+        }
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+      }
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     readiness.complete("application");

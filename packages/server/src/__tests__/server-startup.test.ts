@@ -583,6 +583,56 @@ describe("Server startup", () => {
     }
   });
 
+  it("completes the lease, database, and telemetry shutdown steps when resources settle", async () => {
+    const telemetry = vi.spyOn(observability, "shutdownTelemetry").mockImplementation(async () => {
+      state.events.push("telemetry:shutdown");
+    });
+    try {
+      await startServer();
+      const app = state.app as { close(): Promise<void> };
+      await app.close();
+
+      expect(state.runtimeOwnershipRelease).toHaveBeenCalledOnce();
+      expect(state.sql.end).toHaveBeenCalledOnce();
+      expect(telemetry).toHaveBeenCalledOnce();
+      expect(state.events.slice(-2)).toEqual(["sql:end", "telemetry:shutdown"]);
+    } finally {
+      telemetry.mockRestore();
+    }
+  });
+
+  it("forces a non-zero exit and identifies the shutdown step that exceeds the deadline", async () => {
+    vi.useFakeTimers();
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: number) => {
+      process.exitCode = code ?? 0;
+      return undefined as never;
+    });
+    try {
+      await startServer();
+      state.feishuConnectionStop.mockImplementation(() => new Promise<never>(() => undefined));
+      const app = state.app as {
+        close(): Promise<void>;
+        log: { error: ReturnType<typeof vi.fn> };
+      };
+      const closing = app.close();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(closing).resolves.toBeUndefined();
+
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(app.log.error).toHaveBeenCalledWith(
+        { code: "SERVER_SHUTDOWN_TIMEOUT", step: "feishuConnections.stop", timeoutMs: 10_000 },
+        "Server shutdown exceeded its deadline",
+      );
+      expect(state.runtimeOwnershipRelease).not.toHaveBeenCalled();
+      expect(state.sql.end).not.toHaveBeenCalled();
+    } finally {
+      state.feishuConnectionStop.mockReset();
+      exit.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {
     await startServer();
 

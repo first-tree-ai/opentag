@@ -249,7 +249,7 @@ describe("runtime ownership advisory lease", () => {
       expect(result.userId).toMatch(/^[0-9a-f-]{36}$/u);
     } finally {
       if (timer) clearTimeout(timer);
-      await bootstrapClient.sql.end();
+      await bootstrapClient.sql.end({ timeout: 1 }).catch(() => undefined);
       await lease.release();
     }
   }, 120_000);

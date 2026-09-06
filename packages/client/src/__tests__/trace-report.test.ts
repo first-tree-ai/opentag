@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import type { AgentTraceBatch, TurnReportHashInput, TurnReportRequest } from "@opentag/shared";
+import type {
+  AgentTraceBatch,
+  RuntimeDurableFailure,
+  RuntimeDurableWorkRecord,
+  TurnReportHashInput,
+  TurnReportRequest,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import {
@@ -9,6 +15,7 @@ import {
   RuntimeDurabilityMetrics,
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
+import { ServerRuntimeDurabilityStore } from "../runtime/server-runtime-durability-store.js";
 import { TurnTraceBuffer } from "../runtime/trace-buffer.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 
@@ -148,6 +155,53 @@ describe("TurnReportOwner", () => {
     await Promise.allSettled(pending);
   });
 
+  it("rearms a persisted stale-generation report and sends it through the server adapter", async () => {
+    const seed = new TurnReportOwner({ connection: new FakeConnection("stopped") });
+    const report = seed.create(reportInput({ turnId: "turn-stale-generation" }));
+    seed.stop();
+    const failure: RuntimeDurableFailure = {
+      category: "conflict",
+      code: "stale_generation",
+      message: "stale generation",
+      phase: "request",
+      requestId: report.requestId,
+      retryability: "terminal",
+    };
+    const failed = {
+      acceptedAt: 10_000,
+      attempts: 0,
+      key: report.turnId,
+      kind: "turn-report" as const,
+      lastError: failure,
+      payload: report,
+      status: "failed" as const,
+      updatedAt: 10_000,
+    } satisfies RuntimeDurableWorkRecord;
+    const writes: RuntimeDurableWorkRecord[] = [];
+    const api = {
+      listRuntimeDurableWork: vi.fn().mockResolvedValue([failed]),
+      writeRuntimeDurableWork: vi.fn(async (_machineToken: string, next: RuntimeDurableWorkRecord) => {
+        writes.push(next);
+      }),
+    };
+    const persistence = new ServerRuntimeDurabilityStore({ api, machineToken: "machine-token" });
+    const connection = new FakeConnection("registered");
+    const scheduler: RuntimeRetryScheduler = {
+      schedule: () => ({ cancel: () => undefined }),
+    };
+    const owner = new TurnReportOwner({ connection, persistence, scheduler });
+    await owner.ready();
+
+    expect(owner.rearmTerminal(report)).toBe(true);
+    const submitted = owner.submit(report, vi.fn());
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(1));
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+    expect(writes[0]).toMatchObject({ key: report.turnId, status: "running" });
+    expect(connection.sent[0]?.frame).toEqual(report);
+    owner.stop();
+    await expect(submitted).rejects.toThrow("stopped");
+  });
+
   it("dead-letters structured transport failures without leaking unbounded messages", async () => {
     const report = new TurnReportOwner({ connection: new FakeConnection("registered") }).create(reportInput());
     const error = {
@@ -190,6 +244,30 @@ describe("TurnReportOwner", () => {
     await expect(submitted).rejects.toMatchObject({ code: "runtime_failed", retryability: "backoff" });
     expect(failures).toEqual([expect.objectContaining({ code: "runtime_failed", phase: "persistence" })]);
     owner.stop();
+  });
+
+  it("does not advance the in-memory Report mirror when a transition persist is rejected", async () => {
+    let writes = 0;
+    const persistence = {
+      list: vi.fn(async () => []),
+      write: vi.fn(async () => {
+        writes += 1;
+        if (writes > 1) throw new Error("quota rejected");
+      }),
+    };
+    const scheduler: RuntimeRetryScheduler = { schedule: () => ({ cancel: () => undefined }) };
+    const owner = new TurnReportOwner({
+      connection: new FakeConnection("registered"),
+      persistence,
+      scheduler,
+    });
+    const report = owner.create(reportInput({ turnId: "turn-persist-rejected" }));
+    const submitted = owner.submit(report, vi.fn());
+    void submitted.catch(() => undefined);
+    await vi.waitFor(() => expect(writes).toBeGreaterThanOrEqual(2));
+    expect(owner.getState(report.turnId)).toMatchObject({ status: "accepted" });
+    owner.stop();
+    await expect(submitted).rejects.toThrow("stopped");
   });
 
   it("bounds confirmation retries and records a dead-letter state with injected time", async () => {
@@ -301,6 +379,7 @@ describe("TurnReportOwner", () => {
     const onTerminal = vi.fn();
     let settled = false;
     const submitted = owner.submit(report, confirm, { onTerminal });
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(1));
     void submitted.then(
       () => {
         settled = true;

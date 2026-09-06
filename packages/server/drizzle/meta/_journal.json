@@ -267,6 +267,13 @@
       "when": 1788231695621,
       "tag": "0037_drop_workspace_ownership_persistence",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1788610362692,
+      "tag": "0038_melted_katie_power",
+      "breakpoints": true
     }
   ]
 }

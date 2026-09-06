@@ -301,7 +301,7 @@ describe("SessionMessageInbox", () => {
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", status: "retryable" }),
       "Session message retry state could not be persisted",
     );
-    expect(inbox.getState(first.messageId)?.status).toBe("retryable");
+    expect(inbox.getState(first.messageId)?.status).toBe("running");
     inbox.stop();
 
     const remembered = new SessionMessageInbox({

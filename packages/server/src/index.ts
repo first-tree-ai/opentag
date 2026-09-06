@@ -94,11 +94,24 @@ export {
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
 export {
+  DEFAULT_RUNTIME_DURABLE_WORK_PAGE_SIZE,
+  DEFAULT_RUNTIME_DURABLE_WORK_PAYLOAD_BYTES_LIMIT,
+  DEFAULT_RUNTIME_DURABLE_WORK_RECORD_LIMIT,
   DEFAULT_RUNTIME_DURABLE_WORK_RETENTION_MS,
+  DEFAULT_RUNTIME_DURABLE_WORK_SINGLE_PAYLOAD_BYTES_LIMIT,
   DEFAULT_RUNTIME_DURABLE_WORK_TERMINAL_LIMIT,
   PostgresRuntimeDurableWorkStore,
+  RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS,
+  RUNTIME_DURABLE_WORK_MAX_PAGE_SIZE,
   RuntimeDurableWorkConflictError,
+  RuntimeDurableWorkCursorError,
+  type RuntimeDurableWorkListOptions,
+  type RuntimeDurableWorkListPage,
+  RuntimeDurableWorkPayloadTooLargeError,
+  RuntimeDurableWorkQuotaExceededError,
+  RuntimeDurableWorkStaleWriteError,
   type RuntimeDurableWorkStoreOptions,
+  RuntimeDurableWorkTransitionError,
 } from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";

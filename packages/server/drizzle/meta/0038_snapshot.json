@@ -1,5 +1,5 @@
 {
-  "id": "f84da679-7ba0-424f-9f98-9a9d007a1232",
+  "id": "c5a26abb-b036-4a00-aed1-fed9381146a1",
   "prevId": "89b7dc98-e8e0-4616-87ef-f743b7bd10a8",
   "version": "7",
   "dialect": "postgresql",
@@ -2195,22 +2195,6 @@
           "method": "btree",
           "with": {}
         },
-        "im_message_deliveries_expiry_idx": {
-          "name": "im_message_deliveries_expiry_idx",
-          "columns": [
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"im_message_deliveries\".\"state\" = 'pending' and \"im_message_deliveries\".\"reason\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "im_message_deliveries_dispatch_request_unique": {
           "name": "im_message_deliveries_dispatch_request_unique",
           "columns": [
@@ -2679,6 +2663,39 @@
             },
             {
               "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "runtime_durable_work_scope_cursor_idx": {
+          "name": "runtime_durable_work_scope_cursor_idx",
+          "columns": [
+            {
+              "expression": "computer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "record_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

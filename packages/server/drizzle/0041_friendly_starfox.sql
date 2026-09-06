@@ -1,2 +1,0 @@
-DROP INDEX "im_message_deliveries_expiry_idx";--> statement-breakpoint
-CREATE INDEX "im_message_deliveries_expiry_idx" ON "im_message_deliveries" USING btree ("expires_at","id") WHERE "im_message_deliveries"."state" = 'pending' and "im_message_deliveries"."reason" is null;

@@ -15,7 +15,9 @@ services:
     volumes:
       - opentag-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opentag -d opentag"]
+      # Probe over TCP: the image's temporary initialization server listens on the Unix socket only,
+      # so a socket probe reports ready before the real server exists.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U opentag -d opentag"]
       interval: 5s
       timeout: 5s
       retries: 10

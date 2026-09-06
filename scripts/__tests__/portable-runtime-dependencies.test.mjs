@@ -57,7 +57,7 @@ function fakeCliEntry(version, binName) {
 
 function writeContextTreePackage(
   nodeModulesDir,
-  { assets = true, dependencies = { commander: "^15.0.0" }, extra = {}, version = "0.1.8" } = {},
+  { assets = true, dependencies = { commander: "^15.0.0" }, extra = {}, version = "0.1.10" } = {},
 ) {
   const packageDir = join(nodeModulesDir, "@first-tree-ai", "context-tree");
   writeJson(join(packageDir, "package.json"), {
@@ -96,7 +96,7 @@ function fixtureCliRoot(root, { version = "0.0.2" } = {}) {
     license: "Apache-2.0",
     description: "portable fixture CLI",
     bin: { opentag: "./dist/cli/index.mjs" },
-    dependencies: { "@first-tree-ai/context-tree": "0.1.8" },
+    dependencies: { "@first-tree-ai/context-tree": "0.1.10" },
   });
   writeText(join(cliRoot, "dist", "cli", "index.mjs"), fakeCliEntry(version, "opentag"));
   writeText(join(cliRoot, "dist", "index.mjs"), "export {};\n");
@@ -134,15 +134,15 @@ function assembleFixtureApp(root) {
     name: "open-tag",
     version: "0.0.2",
     type: "module",
-    dependencies: { "@first-tree-ai/context-tree": "0.1.8" },
+    dependencies: { "@first-tree-ai/context-tree": "0.1.10" },
   });
   writeDependencyClosureFile(appDir, closure);
   return appDir;
 }
 
 test("the portable runtime dependency contract accepts only the supported exact pin", () => {
-  assert.deepEqual(readPortableDirectDependencyPins({ dependencies: { "@first-tree-ai/context-tree": "0.1.8" } }), [
-    { name: "@first-tree-ai/context-tree", version: "0.1.8" },
+  assert.deepEqual(readPortableDirectDependencyPins({ dependencies: { "@first-tree-ai/context-tree": "0.1.10" } }), [
+    { name: "@first-tree-ai/context-tree", version: "0.1.10" },
   ]);
   assert.deepEqual(readPortableDirectDependencyPins({}), []);
   assert.deepEqual(readPortableDirectDependencyPins({ dependencies: {} }), []);
@@ -151,7 +151,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
     /unsupported runtime dependency/,
   );
   assert.throws(
-    () => readPortableDirectDependencyPins({ dependencies: { "@first-tree-ai/context-tree": "^0.1.8" } }),
+    () => readPortableDirectDependencyPins({ dependencies: { "@first-tree-ai/context-tree": "^0.1.10" } }),
     /exact x\.y\.z/,
   );
   assert.throws(
@@ -161,7 +161,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
   assert.throws(
     () =>
       readPortableDirectDependencyPins({
-        dependencies: { "@first-tree-ai/context-tree": "0.1.8" },
+        dependencies: { "@first-tree-ai/context-tree": "0.1.10" },
         optionalDependencies: { bufferutil: "^4.0.0" },
       }),
     /non-empty optionalDependencies/,
@@ -169,7 +169,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
   assert.throws(
     () =>
       readPortableDirectDependencyPins({
-        dependencies: { "@first-tree-ai/context-tree": "0.1.8" },
+        dependencies: { "@first-tree-ai/context-tree": "0.1.10" },
         peerDependencies: { react: "^19.0.0" },
       }),
     /non-empty peerDependencies/,
@@ -179,7 +179,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
 test("the checked-in apps/cli manifest is accepted under the portable shipping contract", () => {
   const cliManifest = JSON.parse(readFileSync(join(repoRoot, "apps", "cli", "package.json"), "utf8"));
   assert.deepEqual(readPortableDirectDependencyPins(cliManifest), [
-    { name: "@first-tree-ai/context-tree", version: "0.1.8" },
+    { name: "@first-tree-ai/context-tree", version: "0.1.10" },
   ]);
 });
 
@@ -196,7 +196,7 @@ test("materializing the closure copies published content and never runs lifecycl
     nodeModulesDir: join(appDir, "node_modules"),
     sourceManifestPath: join(cliRoot, "package.json"),
   });
-  assert.deepEqual(closure.direct, [{ name: "@first-tree-ai/context-tree", version: "0.1.8" }]);
+  assert.deepEqual(closure.direct, [{ name: "@first-tree-ai/context-tree", version: "0.1.10" }]);
   assert.deepEqual(
     closure.packages.map((entry) => entry.name),
     ["@first-tree-ai/context-tree", "commander"],
@@ -227,7 +227,7 @@ test("the installed direct dependency must match the exact source pin", async (t
   writeContextTreePackage(join(cliRoot, "node_modules"), { version: "0.1.9" });
   assert.throws(
     () => collectRuntimeDependencyClosure({ sourceManifestPath: join(cliRoot, "package.json") }),
-    /installed package @first-tree-ai\/context-tree is version 0\.1\.9, but the source pins 0\.1\.8/,
+    /installed package @first-tree-ai\/context-tree is version 0\.1\.9, but the source pins 0\.1\.10/,
   );
 });
 
@@ -372,7 +372,7 @@ test("the graph verifier rejects extra, missing, and unreferenced packages", asy
   const withDroppedLink = assembleFixtureApp(join(root, "dropped"));
   writeJson(join(withDroppedLink, "node_modules", "@first-tree-ai", "context-tree", "package.json"), {
     name: "@first-tree-ai/context-tree",
-    version: "0.1.8",
+    version: "0.1.10",
     dependencies: {},
   });
   assert.throws(() => verifyPortableDependencyGraph(withDroppedLink), /unreferenced dependency package/);
@@ -458,7 +458,7 @@ test("dependency-free apps keep the legacy shape and verify clean", () => {
       name: "open-tag",
       version: "0.0.2",
       type: "module",
-      dependencies: { "@first-tree-ai/context-tree": "0.1.8" },
+      dependencies: { "@first-tree-ai/context-tree": "0.1.10" },
     });
     assert.throws(() => verifyPortableDependencyGraph(appDir), /missing dependency-closure\.json/);
   } finally {
@@ -478,7 +478,7 @@ test("createAppTemplate assembles a verified app from an offline fixture", async
   t.after(() => rm(template.root, { force: true, recursive: true }));
   const appPackage = JSON.parse(readFileSync(join(template.appDir, "package.json"), "utf8"));
   assert.equal(appPackage.name, "open-tag");
-  assert.deepEqual(appPackage.dependencies, { "@first-tree-ai/context-tree": "0.1.8" });
+  assert.deepEqual(appPackage.dependencies, { "@first-tree-ai/context-tree": "0.1.10" });
   assert.equal(
     existsSync(join(template.appDir, "node_modules", "@first-tree-ai", "context-tree", "dist", "cli", "index.mjs")),
     true,
@@ -525,13 +525,13 @@ test("the real frozen install closure assembles, verifies, and runs the embedded
   });
   assert.equal(closure.direct.length, 1);
   assert.equal(closure.packages[0].name, "@first-tree-ai/context-tree");
-  assert.equal(closure.packages[0].version, "0.1.8");
+  assert.equal(closure.packages[0].version, "0.1.10");
   assert.ok(closure.packages.length >= 20, `real closure is unexpectedly small: ${closure.packages.length}`);
   writeJson(join(appDir, "package.json"), {
     name: "open-tag",
     version: "0.0.2",
     type: "module",
-    dependencies: { "@first-tree-ai/context-tree": "0.1.8" },
+    dependencies: { "@first-tree-ai/context-tree": "0.1.10" },
   });
   writeDependencyClosureFile(appDir, closure);
   writeText(join(appDir, "cli", "index.mjs"), "export {};\n");

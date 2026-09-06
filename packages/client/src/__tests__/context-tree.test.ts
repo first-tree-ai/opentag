@@ -34,14 +34,14 @@ const installReply = {
   ],
   schemaVersion: 1,
   skipped: [],
-  version: "0.1.8",
+  version: "0.1.10",
 };
 const skippedInstallReply = (reason: unknown) =>
   ({
     installed: [],
     schemaVersion: 1,
     skipped: [{ host: "codex", reason }],
-    version: "0.1.8",
+    version: "0.1.10",
   }) as unknown;
 
 /** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
@@ -141,7 +141,7 @@ describe("ContextTreeManager", () => {
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/trees/team" });
     // `connect` already returns the resolved tree, so no separate `resolve` round-trip is needed.
     expect(calls).toEqual([
-      ["connect", "team-context-tree", "--project-path", cwd],
+      ["connect", "team-context-tree", "--project-path", cwd, "--json"],
       ["install", "--host", "claude", "--project", cwd],
       ["install", "--host", "codex"],
     ]);
@@ -177,14 +177,14 @@ describe("ContextTreeManager", () => {
       "/home/user/.codex does not exist; install codex first.",
     ],
     [skippedInstallReply(""), "CODEX_NOT_INSTALLED"],
-    [{ installed: [], schemaVersion: 1, skipped: [], version: "0.1.8" }, "CODEX_NOT_INSTALLED"],
+    [{ installed: [], schemaVersion: 1, skipped: [], version: "0.1.10" }, "CODEX_NOT_INSTALLED"],
   ])("reports an unavailable Codex host install for %j", async (installPayload, reason) => {
     const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: installPayload });
     const { cwd, manager } = await computer({ execFile, target: managed });
 
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unavailable", reason });
     // The tree itself connected before the install, so connect must still have run.
-    expect(calls[0]).toEqual(["connect", "team-context-tree", "--project-path", cwd]);
+    expect(calls[0]).toEqual(["connect", "team-context-tree", "--project-path", cwd, "--json"]);
   });
 
   it("activates a target recorded after start, and follows every target change", async () => {
@@ -224,7 +224,7 @@ describe("ContextTreeManager", () => {
     const { cwd, manager } = await computer({ execFile, target });
 
     await expect(manager.ensureAgent(cwd)).resolves.toMatchObject({ status: "ready" });
-    expect(calls[0]).toEqual([...expected, "--project-path", cwd]);
+    expect(calls[0]).toEqual([...expected, "--project-path", cwd, "--json"]);
   });
 
   it.each([

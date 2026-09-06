@@ -45,8 +45,8 @@ whenever `npm_config_global` was set — which npm also sets for the dependencie
 install, so `npm i -g open-tag` would have written six skill directories into the user's personal
 `~/.claude` and `~/.codex` as an invisible side effect. `@first-tree-ai/context-tree` now also
 requires that it is the install *target* rather than a nested copy, so being a dependency has no
-side effects. That guard first ships in **0.1.8**, which is the pinned version; **do not relax the
-pin below it.** `scripts/cli-pack-smoke.mjs` holds the line empirically: for the production
+side effects. That guard first ships in **0.1.8**. The coordinated CLI and client pins target
+**0.1.10**, which removes project instruction writes; do not lower those pins. `scripts/cli-pack-smoke.mjs` holds the line empirically: for the production
 identity it installs the packed CLI globally under an isolated `HOME`, asserts no `.claude` or
 `.codex` appears, and then runs the nested `postinstall` with `npm_config_global=true` to prove the
 dependency guard is what kept it inert rather than a script that merely failed to run.
@@ -95,7 +95,7 @@ workspace once per recorded target, cached in memory:
 
 ```text
 cwd = await workspace.cwd(agentId)
-connect <target> --project-path <cwd>     # clones on first use when the kind is github
+connect <target> --project-path <cwd> --json  # clones on first use when the kind is github
 install --host claude --project <cwd>     # -> <cwd>/.claude/skills/context-tree-*
 install --host codex                      # -> $CODEX_HOME/skills/context-tree-*
 ```
@@ -110,8 +110,7 @@ tree shared across Agents.
 
 The path always comes from `AgentWorkspaceManager.cwd(agentId)`, which refuses to return a path
 until the workspace layout state is schema-v3 `complete`. That ordering is load-bearing: it is
-what keeps the connection from writing into a workspace still mid-migration, where an unproven
-root `AGENTS.md` would make the transition fail closed.
+what keeps preparation from installing skills into a workspace still mid-migration.
 
 Preparation runs in `SessionRuntimeManager` at Provider Runtime start, not in workspace
 preparation. `verifyAgent` delegates to `prepareAgent` and the preflight calls it on every Turn
@@ -196,10 +195,10 @@ Two consequences to hold in view:
   `effectiveSnapshotHash` therefore does not fully determine future Session behaviour. V1 accepts
   this because the workspace is OpenTag's own private per-Agent directory and Claude Code already
   runs there with bypassed permissions.
-- `context-tree connect` writes a marker-delimited pointer into `<workspace>/AGENTS.md` and
-  symlinks `CLAUDE.md` to it. With project settings loaded, that block becomes the Session's
-  ambient notice of the tree path — OpenTag-controlled text, but a second instruction channel
-  alongside the managed prompt. Suppressing it needs a `--no-pointer` flag upstream.
+- Context Tree leaves workspace `AGENTS.md` unchanged. When it is a regular file and no
+  `CLAUDE.md` entry exists, connection best-effort creates a `CLAUDE.md → AGENTS.md` symlink.
+  OpenTag supplies memory instructions through its managed prompt. Existing instruction
+  content, including legacy pointer blocks, is preserved.
 
 ### Codex
 
@@ -312,9 +311,7 @@ which is why the failure reader honours both shapes.
 Both delivery mechanisms were confirmed against the real CLIs before the surrounding work landed:
 
 - Claude Code under `--print --input-format stream-json --setting-sources project` discovers
-  `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not. The same
-  contrast holds for the workspace `AGENTS.md` pointer, which is inert without project settings
-  and ambient with them.
+  `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not.
 - Codex discovers `~/.codex/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
   `skip_host_skill_discovery` feature is separate from both.
 
@@ -359,7 +356,6 @@ the dependency from the published bundle.
   `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
   OpenTag-written content.
 - Server-propagated target, so a Computer inherits it when it connects.
-- Suppressing the workspace `AGENTS.md` pointer with an upstream `--no-pointer` flag.
 - Project-scoped trees, so several Agents share a tree without sharing all Computer memory.
 - Windows support, which needs Provider lifecycle, path, lock, and isolated-home CI coverage
   first. The shim is POSIX and reports `shim_unavailable` elsewhere.

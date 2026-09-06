@@ -463,7 +463,6 @@ export class SessionMessageInbox {
     fields: Partial<DurableWorkRecord<SessionMessageDeliveryRequest>> = {},
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequest>> {
     const next = { ...record, ...fields, status, updatedAt: this.#now() };
-    this.#records.set(record.key, next);
     this.#metrics?.transition("session-message", record.status, status);
     await this.#persist(next);
     return next;
@@ -542,8 +541,8 @@ export class SessionMessageInbox {
   }
 
   async #persist(record: DurableWorkRecord<SessionMessageDeliveryRequest>): Promise<void> {
-    this.#records.set(record.key, record);
     await this.#persistence?.write(record);
+    this.#records.set(record.key, record);
   }
 
   #remember(key: string, value: RememberedMessage): void {

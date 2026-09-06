@@ -27,6 +27,9 @@ export const feishuInboundReceipts = pgTable(
   (table) => [
     uniqueIndex("feishu_inbound_receipts_identity_unique").on(table.imBindingId, table.eventId),
     index("feishu_inbound_receipts_status_idx").on(table.status, table.receivedAt),
+    index("feishu_inbound_receipts_retention_idx")
+      .on(table.receivedAt, table.id)
+      .where(sql`${table.status} in ('processed', 'failed')`),
     check("feishu_inbound_receipts_generation_nonnegative", sql`${table.credentialGeneration} >= 1`),
     check("feishu_inbound_receipts_event_id_bounded", sql`length(${table.eventId}) between 1 and 512`),
     check(

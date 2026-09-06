@@ -1737,11 +1737,13 @@ describe("IM binding persistence", () => {
         .update(imMessageDeliveries)
         .set({ expiresAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, deliveryId));
-      await imDeliveryWorker({
+      const expiryWorker = imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
-      }).runOnce();
+      });
+      await expiryWorker.runJanitorOnce();
+      await expiryWorker.runOnce();
       expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
         state: "expired",
         reason: "ttl",
@@ -4651,6 +4653,7 @@ describe("IM binding persistence", () => {
         .update(imMessageDeliveries)
         .set({ expiresAt: new Date(0), nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, failed?.id as string));
+      await worker.runJanitorOnce();
       await worker.runOnce();
       expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
         state: "expired",
@@ -4994,11 +4997,13 @@ describe("IM binding persistence", () => {
             requestReconcile: dispatchedRuntimeResult({ status: "recovery_required" }),
             requestDelivery: vi.fn(),
           };
-          await imDeliveryWorker({
+          const expiryWorker = imDeliveryWorker({
             database: value.database,
             registry: first.registry,
             domain: expiryDomain as never,
-          }).runOnce();
+          });
+          await expiryWorker.runJanitorOnce();
+          await expiryWorker.runOnce();
           expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
             dispatchRequestId: firstFrame.requestId,
             state: "expired",
@@ -5123,11 +5128,13 @@ describe("IM binding persistence", () => {
         installationId: value.computer.currentInstallationId,
       });
       owners.push(second.domain);
-      await imDeliveryWorker({
+      const secondWorker = imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
-      }).runOnce();
+      });
+      await secondWorker.runJanitorOnce();
+      await secondWorker.runOnce();
       expect(second.frames.filter((frame) => (frame as { type?: unknown }).type === "im:deliver")).toEqual([]);
       expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
         dispatchInputHash: null,
@@ -5321,11 +5328,13 @@ describe("IM binding persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await imDeliveryWorker({
+      const secondWorker = imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
-      }).runOnce();
+      });
+      await secondWorker.runJanitorOnce();
+      await secondWorker.runOnce();
       expect(second.frames.filter((frame) => (frame as { type?: unknown }).type === "im:deliver")).toEqual([]);
       expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
         dispatchRequestId: oldRequest.requestId,
@@ -5526,11 +5535,13 @@ describe("IM binding persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await imDeliveryWorker({
+      const secondWorker = imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
-      }).runOnce();
+      });
+      await secondWorker.runJanitorOnce();
+      await secondWorker.runOnce();
       expect(second.frames.filter((frame) => (frame as { type?: unknown }).type === "im:deliver")).toEqual([]);
       expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
         dispatchInputHash: null,

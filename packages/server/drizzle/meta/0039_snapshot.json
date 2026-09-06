@@ -1,6 +1,6 @@
 {
-  "id": "05383bd0-6a76-4822-8bcc-64b2d2f04133",
-  "prevId": "89b7dc98-e8e0-4616-87ef-f743b7bd10a8",
+  "id": "398d534b-5d4e-4e48-bd0d-a88a00d6cec8",
+  "prevId": "c5a26abb-b036-4a00-aed1-fed9381146a1",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1540,6 +1540,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "feishu_inbound_receipts_retention_idx": {
+          "name": "feishu_inbound_receipts_retention_idx",
+          "columns": [
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"feishu_inbound_receipts\".\"status\" in ('processed', 'failed')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -2159,45 +2181,6 @@
           "method": "btree",
           "with": {}
         },
-        "im_message_deliveries_overflow_idx": {
-          "name": "im_message_deliveries_overflow_idx",
-          "columns": [
-            {
-              "expression": "session_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "attention",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "state",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "reason",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "message_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "im_message_deliveries_steer_target_idx": {
           "name": "im_message_deliveries_steer_target_idx",
           "columns": [
@@ -2230,6 +2213,50 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "im_message_deliveries_expiry_idx": {
+          "name": "im_message_deliveries_expiry_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"im_message_deliveries\".\"state\" = 'pending' and \"im_message_deliveries\".\"reason\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "im_message_deliveries_retention_idx": {
+          "name": "im_message_deliveries_retention_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"im_message_deliveries\".\"state\" in ('expired', 'terminal_rejected')\n          or (\"im_message_deliveries\".\"state\" = 'accepted' and \"im_message_deliveries\".\"reported_at\" is not null)\n          or (\"im_message_deliveries\".\"state\" = 'steered' and \"im_message_deliveries\".\"steered_at\" is not null))",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -2560,6 +2587,27 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "im_messages_retention_idx": {
+          "name": "im_messages_retention_idx",
+          "columns": [
+            {
+              "expression": "occurred_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -2702,6 +2750,39 @@
             },
             {
               "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "runtime_durable_work_scope_cursor_idx": {
+          "name": "runtime_durable_work_scope_cursor_idx",
+          "columns": [
+            {
+              "expression": "computer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "record_key",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -4190,6 +4271,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "slack_webhook_receipts_retention_idx": {
+          "name": "slack_webhook_receipts_retention_idx",
+          "columns": [
+            {
+              "expression": "received_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"slack_webhook_receipts\".\"status\" in ('processed', 'failed')",
           "concurrently": false,
           "method": "btree",
           "with": {}

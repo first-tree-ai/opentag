@@ -102,7 +102,11 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     this.#maintenanceMs = input.maintenanceMs ?? DEFAULT_MAINTENANCE_MS;
     this.#runtimeReady = async (agentId) => (await input.runtimeReady?.(agentId)) ?? true;
-    this.#policy = input.policy ?? new ExternalCallPolicy();
+    this.#policy =
+      input.policy ??
+      new ExternalCallPolicy({
+        allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
+      });
     this.#maintenanceBackoffBaseMs = Math.max(1, input.maintenanceBackoffBaseMs ?? 500);
     this.#maintenanceBackoffMaxMs = Math.max(this.#maintenanceBackoffBaseMs, input.maintenanceBackoffMaxMs ?? 30_000);
     this.#now = input.now ?? (() => new Date());
@@ -173,10 +177,14 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     let handoff: { imBindingId: string; epoch: number; generation: number; appId: string } | undefined;
     const detachHandlers = this.#attachHandlers(candidate, () => handoff);
     try {
-      const identity = await this.#policy.run("feishu.binding.validate", () => candidate.validateBinding(), {
-        maxAttempts: 1,
-        circuitKey: `feishu:binding:${input.appId}`,
-      });
+      const identity = await this.#policy.run(
+        "feishu.binding.validate",
+        (signal) => candidate.validateBinding(signal),
+        {
+          maxAttempts: 1,
+          circuitKey: `feishu:binding:${input.appId}`,
+        },
+      );
       if (identity.externalAppId !== input.appId) throw new FeishuOperationError("FEISHU_APP_IDENTITY_MISMATCH");
       const grantedScopes = await this.#policy.run(
         "feishu.binding.scopes",
@@ -432,7 +440,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           adapter = createdAdapter;
           const identity = await this.#policy.run(
             "feishu.connection.validate",
-            () => createdAdapter.validateBinding(),
+            (signal) => createdAdapter.validateBinding(signal),
             {
               maxAttempts: 1,
               signal,

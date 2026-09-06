@@ -281,6 +281,13 @@
       "when": 1788655711464,
       "tag": "0039_clean_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1788658011768,
+      "tag": "0040_watery_electro",
+      "breakpoints": true
     }
   ]
 }

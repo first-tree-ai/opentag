@@ -200,6 +200,11 @@
       "idx": 39,
       "tag": "0039_clean_squirrel_girl",
       "sha256": "1227cc81680dfac002f160469d19d424d02e5ce4697974280ef1c4149cecd016"
+    },
+    {
+      "idx": 40,
+      "tag": "0040_watery_electro",
+      "sha256": "9f0e919374569a7f309184c5e950a9cee9c2fd85052b60d7ca6f01fede69cb39"
     }
   ]
 }

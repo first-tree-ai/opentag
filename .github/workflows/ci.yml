@@ -318,6 +318,7 @@ jobs:
   container-smoke:
     name: Container Smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -346,27 +347,35 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
-          docker network create opentag-ci
-          docker run --detach --name opentag-postgres-ci --network opentag-ci \
+          set -euo pipefail
+          smoke_marker() {
+            printf '[container-smoke] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
+          }
+          smoke_marker "docker network create opentag-ci"
+          timeout 30s docker network create opentag-ci
+          smoke_marker "docker run postgres:17-alpine"
+          timeout 60s docker run --detach --name opentag-postgres-ci --network opentag-ci \
             --env POSTGRES_DB=opentag \
             --env POSTGRES_USER=opentag \
             --env POSTGRES_PASSWORD=opentag \
             postgres:17-alpine
-          for _ in $(seq 1 30); do
+          for attempt in $(seq 1 30); do
             # Probe over TCP: the image's temporary initialization server listens on the Unix socket
             # only, so a socket probe reports ready before the real server exists.
-            if docker exec opentag-postgres-ci pg_isready --host 127.0.0.1 --username opentag --dbname opentag; then
+            smoke_marker "docker exec pg_isready attempt ${attempt}"
+            if timeout 15s docker exec opentag-postgres-ci pg_isready --host 127.0.0.1 --username opentag --dbname opentag; then
               exit 0
             fi
             sleep 1
           done
-          docker logs opentag-postgres-ci
+          smoke_marker "docker logs postgres after readiness failure"
+          timeout 30s docker logs opentag-postgres-ci
           exit 1
 
       - name: Start container
         # Container Smoke runs one server process, so assert the documented single-process boundary explicitly.
         run: >-
-          docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
+          timeout 60s docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
           --env OPENTAG_DATABASE_URL=postgresql://opentag:opentag@opentag-postgres-ci:5432/opentag
           --env OPENTAG_JWT_SECRET=ci-only-secret-that-is-at-least-32-characters
           --env BETTER_AUTH_SECRET=ci-only-better-auth-secret-at-least-32-characters
@@ -377,11 +386,17 @@ jobs:
 
       - name: Wait for readiness endpoint
         run: |
-          for _ in $(seq 1 30); do
-            if response=$(curl --fail --silent http://127.0.0.1:18000/readyz); then
+          set -euo pipefail
+          smoke_marker() {
+            printf '[container-smoke] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
+          }
+          for attempt in $(seq 1 30); do
+            smoke_marker "curl GET /readyz attempt ${attempt}"
+            if response=$(timeout 15s curl --fail --silent http://127.0.0.1:18000/readyz); then
               # The JavaScript source uses template literals and must not be shell-expanded.
+              smoke_marker "node readiness JSON validation attempt ${attempt}"
               # shellcheck disable=SC2016
-              node -e '
+              timeout 15s node -e '
                 const readiness = JSON.parse(process.argv[1]);
                 if (readiness.status !== "ready") {
                   throw new Error(`Unexpected readiness response: ${process.argv[1]}`);
@@ -391,27 +406,47 @@ jobs:
             fi
             sleep 1
           done
-          docker logs opentag-server-ci
+          smoke_marker "docker logs server after readiness failure"
+          timeout 30s docker logs opentag-server-ci
           exit 1
 
       - name: Smoke production Web App entrypoints and Computer runtime
         run: |
-          curl --fail --silent http://127.0.0.1:18000/ | grep -q "<title>OpenTag</title>"
+          set -euo pipefail
+          smoke_marker() {
+            printf '[container-smoke] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
+          }
+          wait_for_daemon() {
+            local pid="$1"
+            # shellcheck disable=SC2016
+            timeout 30s sh -c 'while kill -0 "$1" 2>/dev/null && [ "$(ps -o stat= -p "$1" | tr -d " ")" != "Z" ]; do sleep 0.2; done' sh "$pid"
+            local probe_status=$?
+            if [ "$probe_status" -ne 0 ]; then
+              return "$probe_status"
+            fi
+            wait "$pid"
+          }
+          smoke_marker "curl GET /"
+          timeout 15s curl --fail --silent http://127.0.0.1:18000/ | grep -q "<title>OpenTag</title>"
           # The JavaScript source must stay single-quoted so the shell does not rewrite its strings.
+          smoke_marker "node fetch API route /api/v1/not-a-route"
           # shellcheck disable=SC2016
-          node -e '
+          timeout 20s node -e '
             const response = await fetch("http://127.0.0.1:18000/api/v1/not-a-route");
             const body = await response.text();
             if (response.status !== 404 || body.includes("<title>OpenTag</title>")) {
               throw new Error("Web App SPA fallback captured an API route");
             }
           '
-          docker exec opentag-server-ci node packages/server/dist/db/migrate-cli.mjs
-          bootstrap=$(docker exec \
+          smoke_marker "docker exec migrate-cli"
+          timeout 60s docker exec opentag-server-ci node packages/server/dist/db/migrate-cli.mjs
+          smoke_marker "docker exec bootstrap admin CLI"
+          bootstrap=$(timeout 30s docker exec \
             --env OPENTAG_BOOTSTRAP_EMAIL=admin@example.com \
             --env OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin \
             opentag-server-ci node packages/server/dist/admin/bootstrap-cli.mjs)
-          connect_code=$(node -e '
+          smoke_marker "node validate bootstrap response"
+          connect_code=$(timeout 15s node -e '
             const result = JSON.parse(process.argv[1]);
             if (!result.userId || !result.connectCode || !result.expiresAt) {
               throw new Error("Bootstrap output is incomplete");
@@ -423,12 +458,15 @@ jobs:
           daemon_log="$runtime_home/daemon.log"
           cleanup_runtime() {
             if [ -n "${daemon_pid:-}" ] && kill -0 "$daemon_pid" 2>/dev/null; then
+              smoke_marker "cleanup kill -TERM daemon"
               kill -TERM "$daemon_pid" || true
-              wait "$daemon_pid" || true
+              smoke_marker "cleanup wait daemon (timeout 30s)"
+              wait_for_daemon "$daemon_pid" || true
             fi
           }
           trap cleanup_runtime EXIT
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
+          smoke_marker "node CLI login"
+          OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs \
             login --server http://127.0.0.1:18000 -- "$connect_code"
           test -f "$runtime_home/config/credentials.json"
           test ! -e "$runtime_home/config/computer.json"
@@ -437,8 +475,9 @@ jobs:
           test ! -e "$runtime_home/credentials.json"
           test ! -e "$runtime_home/computer.json"
           # The JavaScript source uses template literals and must not be shell-expanded.
+          smoke_marker "node fetch computer connect-code API"
           # shellcheck disable=SC2016
-          machine_connect_code=$(node --input-type=module -e '
+          machine_connect_code=$(timeout 20s node --input-type=module -e '
             import { readFileSync } from "node:fs";
             const credentials = JSON.parse(readFileSync(process.argv[1], "utf8"));
             const response = await fetch(
@@ -451,16 +490,19 @@ jobs:
             if (!match) throw new Error("Computer connect bootstrap command did not contain a code");
             process.stdout.write(match[1]);
           ' "$runtime_home/config/credentials.json")
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer connect \
+          smoke_marker "node CLI computer connect"
+          OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs computer connect \
             --server http://127.0.0.1:18000 --no-start -- "$machine_connect_code"
           test -f "$runtime_home/config/computer.json"
           test -f "$runtime_home/config/computer-credentials.json"
-          OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
+          smoke_marker "start node CLI daemon service-run"
+          OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 timeout 10m node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$daemon_log" 2>&1 &
           daemon_pid=$!
 
           for attempt in $(seq 1 30); do
-            if OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'; then
+            smoke_marker "node CLI computer list online attempt ${attempt}"
+            if OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'; then
               break
             fi
             if [ "$attempt" = 30 ]; then
@@ -471,10 +513,12 @@ jobs:
           done
           test -f "$runtime_home/state/daemon/owner.json"
           test -f "$runtime_home/logs/client.log"
-          OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon service-run \
+          smoke_marker "node CLI daemon service-run second instance"
+          OPENTAG_HOME="$runtime_home" timeout 10s node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$runtime_home/second.log" 2>&1
           grep -q "already running" "$runtime_home/second.log"
-          computer_list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list)
+          smoke_marker "node CLI computer list online verification"
+          computer_list=$(OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs computer list)
           printf '%s\n' "$computer_list" | grep -q $'\tonline\t'
           installation_id=$(node -p \
             "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
@@ -493,7 +537,8 @@ jobs:
           test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/computer.json"
 
-          if OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
+          smoke_marker "node CLI reject installation-id agent create"
+          if OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs agent create \
             --name installation-id-agent \
             --display-name "Installation ID Agent" \
             --provider codex \
@@ -504,37 +549,50 @@ jobs:
             exit 1
           fi
           grep -q "is not owned by this Account" "$runtime_home/installation-id-agent.err"
-          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list)" = \
+          smoke_marker "node CLI agent list after rejected create"
+          test "$(OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs agent list)" = \
             "No Agents registered"
 
-          agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
+          smoke_marker "node CLI agent create"
+          agent_create=$(OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs agent create \
             --name ci-agent \
             --display-name "CI Agent" \
             --provider codex \
             --computer "$computer_id")
           agent_id=$(printf '%s\n' "$agent_create" | awk '{print $3}')
           test -n "$agent_id"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list | grep -q "$agent_id"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent show "$agent_id" | grep -q $'revision\t1'
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent update "$agent_id" \
+          smoke_marker "node CLI agent list"
+          OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs agent list | grep -q "$agent_id"
+          smoke_marker "node CLI agent show"
+          OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs agent show "$agent_id" | grep -q $'revision\t1'
+          smoke_marker "node CLI agent update"
+          OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs agent update "$agent_id" \
             --display-name "Updated CI Agent" | grep -q $'revision\t2'
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent suspend "$agent_id" | \
+          smoke_marker "node CLI agent suspend"
+          OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs agent suspend "$agent_id" | \
             grep -q $'status\tsuspended'
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent delete "$agent_id" | grep -q "$agent_id"
-          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list)" = \
+          smoke_marker "node CLI agent delete"
+          OPENTAG_HOME="$runtime_home" timeout 30s node apps/cli/dist/cli/index.mjs agent delete "$agent_id" | grep -q "$agent_id"
+          smoke_marker "node CLI agent list after delete"
+          test "$(OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs agent list)" = \
             "No Agents registered"
 
+          smoke_marker "kill -INT first daemon"
           kill -INT "$daemon_pid"
-          wait "$daemon_pid"
+          smoke_marker "wait first daemon (timeout 30s)"
+          wait_for_daemon "$daemon_pid"
           unset daemon_pid
           test ! -e "$runtime_home/state/daemon/owner.json"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\toffline\t'
+          smoke_marker "node CLI computer list offline verification"
+          OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs computer list | grep -q $'\toffline\t'
 
-          OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
+          smoke_marker "start node CLI daemon service-run second instance"
+          OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 timeout 10m node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$daemon_log" 2>&1 &
           daemon_pid=$!
           for attempt in $(seq 1 30); do
-            if list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list) && \
+            smoke_marker "node CLI computer list online retry attempt ${attempt}"
+            if list=$(OPENTAG_HOME="$runtime_home" timeout 20s node apps/cli/dist/cli/index.mjs computer list) && \
               printf '%s\n' "$list" | grep -q "$computer_id" && printf '%s\n' "$list" | grep -q $'\tonline\t'; then
               break
             fi
@@ -544,19 +602,28 @@ jobs:
             fi
             sleep 1
           done
+          smoke_marker "kill -INT second daemon"
           kill -INT "$daemon_pid"
-          wait "$daemon_pid"
+          smoke_marker "wait second daemon (timeout 30s)"
+          wait_for_daemon "$daemon_pid"
           unset daemon_pid
           trap - EXIT
 
       - name: Verify runtime boundary
         run: |
-          test "$(docker inspect --format '{{.Config.User}}' opentag-server-ci)" = "opentag"
-          if docker exec opentag-server-ci test -e /app/apps/cli; then
+          set -euo pipefail
+          smoke_marker() {
+            printf '[container-smoke] %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"
+          }
+          smoke_marker "docker inspect server runtime user"
+          timeout 30s docker inspect --format '{{.Config.User}}' opentag-server-ci | grep -q '^opentag$'
+          smoke_marker "docker exec verify CLI artifact absent"
+          if timeout 30s docker exec opentag-server-ci test -e /app/apps/cli; then
             echo "CLI artifact must not be present in the server image" >&2
             exit 1
           fi
-          docker exec opentag-server-ci test -f /app/LICENSE
+          smoke_marker "docker exec verify server LICENSE"
+          timeout 30s docker exec opentag-server-ci test -f /app/LICENSE
 
       - name: Stop container
         if: always()

@@ -114,10 +114,16 @@ describe("runtime ownership advisory lease", () => {
 
   it("fails closed after the bounded acquisition window and closes the lease client", async () => {
     const fixture = clientFixture([false]);
+    let now = 0;
 
     await expect(
       acquireRuntimeOwnershipLease("postgresql://opentag@localhost/opentag", "22222222-2222-4222-8222-222222222222", {
         timeoutMs: 1,
+        retryDelayMs: 1,
+        now: () => now,
+        sleep: async (delayMs) => {
+          now += delayMs;
+        },
       }),
     ).rejects.toMatchObject({
       code: "RUNTIME_OWNER_LEASE_HELD",

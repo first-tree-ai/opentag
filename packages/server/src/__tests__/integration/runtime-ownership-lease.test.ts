@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
+import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
   acquireRuntimeOwnershipLease,
@@ -211,6 +213,7 @@ describe("runtime ownership advisory lease", () => {
       timeoutMs: 5_000,
       retryDelayMs: 20,
     });
+
     const releaseTimer = setTimeout(() => {
       void firstLease.release();
     }, 150);
@@ -223,6 +226,31 @@ describe("runtime ownership advisory lease", () => {
     } finally {
       clearTimeout(releaseTimer);
       await firstLease.release();
+    }
+  }, 120_000);
+
+  it("does not block initial admin bootstrap behind the runtime ownership lease", async () => {
+    const databaseUrl = container.getConnectionUri();
+    await migrateDatabase(databaseUrl, migrationsFolder);
+    const lease = await acquireRuntimeOwnershipLease(databaseUrl, "12121212-1212-4121-8121-121212121212");
+    const bootstrapClient = createDatabaseClient(databaseUrl, { max: 1 });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const result = await Promise.race([
+        bootstrapInitialAdmin(bootstrapClient.database, {
+          email: "bootstrap-lock-test@example.com",
+          displayName: "Bootstrap Lock Test",
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("Bootstrap remained blocked behind the runtime lease")), 2_000);
+        }),
+      ]);
+      expect(result.userId).toMatch(/^[0-9a-f-]{36}$/u);
+    } finally {
+      if (timer) clearTimeout(timer);
+      await bootstrapClient.sql.end();
+      await lease.release();
     }
   }, 120_000);
 

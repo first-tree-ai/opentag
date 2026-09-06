@@ -5,6 +5,9 @@ import type { DatabaseClient } from "../db/client.js";
 import { users } from "../db/schema/index.js";
 import { CONNECT_CODE_TTL_SECONDS, issueConnectCodeInTransaction } from "../services/auth/index.js";
 
+/** Serializes initial-admin bootstrap attempts without contending with the runtime ownership lease. */
+export const BOOTSTRAP_ADMIN_ADVISORY_LOCK_ID = 8_621_303_413;
+
 export const BootstrapAdminInputSchema = z
   .object({
     connectCodeTtlSeconds: z.number().int().positive().default(CONNECT_CODE_TTL_SECONDS),
@@ -29,7 +32,7 @@ export async function bootstrapInitialAdmin(
   const validated = BootstrapAdminInputSchema.parse(input);
 
   return database.transaction(async (transaction) => {
-    await transaction.execute(sql`select pg_advisory_xact_lock(8621303412)`);
+    await transaction.execute(sql`select pg_advisory_xact_lock(${BOOTSTRAP_ADMIN_ADVISORY_LOCK_ID})`);
     const [existingUser] = await transaction.select({ id: users.id }).from(users).limit(1).for("update");
     if (existingUser) {
       throw new Error("Bootstrap has already been completed");

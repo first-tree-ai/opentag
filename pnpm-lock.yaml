@@ -984,7 +984,7 @@ packages:
     resolution: {integrity: sha512-g89ag4BCcD9YP5wBZXixzoLnuf5j89p/sXFcfpCiv2pdEkYYukBEoK3heVzqsp0EAtszVDc2BBZG0KZqeAShIA==}
 
   '@first-tree-ai/context-tree@0.1.10':
-    resolution: {integrity: sha512-zpf1Z+m3KKApeJQDNXAd6kK0gK0fe+0h1Z5beYnQXLlBoDZdkzpbAITEj19pPaKKjd5hJGuRmKK0zfgOlU5ymQ==}
+    resolution: {integrity: sha512-35+QaHOKSqIL01t9rtNA/NqHkUM/Ze8w7wExt7ZdYrX6wArRYXEq4N6kcPHqvB8OqX2p2fjzT3kAx9fmYWZJaw==}
     engines: {node: '>=22.13.0'}
     hasBin: true
 

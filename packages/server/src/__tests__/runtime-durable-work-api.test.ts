@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import { HTTP_PATHS, type RuntimeDurableWorkRecord } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { RuntimeDurableWorkConflictError } from "../runtime/runtime-durable-work-store.js";
+import {
+  RuntimeDurableWorkConflictError,
+  RuntimeDurableWorkPayloadTooLargeError,
+  RuntimeDurableWorkQuotaExceededError,
+  RuntimeDurableWorkStaleWriteError,
+} from "../runtime/runtime-durable-work-store.js";
 
 const computerId = randomUUID();
 const agentId = randomUUID();
@@ -36,7 +41,7 @@ const record: RuntimeDurableWorkRecord = {
 
 describe("Runtime durable work HTTP API", () => {
   it("authenticates the Computer and scopes list/write to its identity", async () => {
-    const store = { list: vi.fn().mockResolvedValue([record]), write: vi.fn().mockResolvedValue(undefined) };
+    const store = { list: vi.fn().mockResolvedValue({ items: [record] }), write: vi.fn().mockResolvedValue(undefined) };
     const verifyMachineToken = vi.fn().mockResolvedValue({ computerId });
     const app = createApp({
       runtimeDurableWork: { machineAuth: { verifyMachineToken }, store },
@@ -58,6 +63,27 @@ describe("Runtime durable work HTTP API", () => {
     });
     expect(write.statusCode).toBe(204);
     expect(store.write).toHaveBeenCalledWith(computerId, record);
+    await app.close();
+  });
+
+  it("returns one valid page when more than 1024 records exist", async () => {
+    const allItems = Array.from({ length: 1_025 }, (_, index) => ({ ...record, key: `record-${index}` }));
+    const items = allItems.slice(0, 1_024);
+    const store = { list: vi.fn().mockResolvedValue({ items, nextCursor: "next-page" }), write: vi.fn() };
+    const app = createApp({
+      runtimeDurableWork: {
+        machineAuth: { verifyMachineToken: vi.fn().mockResolvedValue({ computerId }) },
+        store,
+      },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.runtimeDurableWork}?kind=session-message&limit=1024`,
+      headers: { authorization: "Bearer machine" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ items, nextCursor: "next-page" });
+    expect(store.list).toHaveBeenCalledWith(computerId, "session-message", { limit: 1024 });
     await app.close();
   });
 
@@ -85,6 +111,28 @@ describe("Runtime durable work HTTP API", () => {
       payload: record,
     });
     expect(conflict.statusCode).toBe(409);
+    await app.close();
+  });
+
+  it.each([
+    [new RuntimeDurableWorkStaleWriteError(2, 1), 409],
+    [new RuntimeDurableWorkQuotaExceededError("records", 1, 1, 2), 429],
+    [new RuntimeDurableWorkPayloadTooLargeError(1, 2), 413],
+  ])("maps %s to HTTP %s", async (error, statusCode) => {
+    const store = { list: vi.fn(), write: vi.fn().mockRejectedValue(error) };
+    const app = createApp({
+      runtimeDurableWork: {
+        machineAuth: { verifyMachineToken: vi.fn().mockResolvedValue({ computerId }) },
+        store,
+      },
+    });
+    const response = await app.inject({
+      method: "PUT",
+      url: `${HTTP_PATHS.runtimeDurableWork}/session-message/${encodeURIComponent(record.key)}`,
+      headers: { authorization: "Bearer machine", "content-type": "application/json" },
+      payload: record,
+    });
+    expect(response.statusCode).toBe(statusCode);
     await app.close();
   });
 });

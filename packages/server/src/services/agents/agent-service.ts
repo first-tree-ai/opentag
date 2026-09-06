@@ -16,11 +16,12 @@ import {
   type CreateAgentRuntimeConfig,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
+  RUNTIME_MAX_DURATION_MS,
   runtimeUsageTotalTokens,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -40,6 +41,13 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
 type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
 type QueryExecutor = Pick<DatabaseClient, "select">;
+
+const AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS = 1;
+const MILLISECONDS_PER_HOUR = 60 * 60 * 1_000;
+export const AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS =
+  RUNTIME_MAX_DURATION_MS / MILLISECONDS_PER_HOUR + AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS;
+export const AGENT_ACTIVITY_READ_LIMIT = 256;
+const AGENT_ACTIVITY_RECOVERY_WINDOW_MS = AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS * MILLISECONDS_PER_HOUR;
 
 interface AgentScope {
   agent: AgentRow;
@@ -102,22 +110,24 @@ function toAgentComputer(row: {
 interface AgentActivityEvidence {
   acceptedAt: Date | null;
   agentId: string;
-  bindingStatus: string;
   reportedAt: Date | null;
-  sessionEndedAt: Date | null;
   state: string;
+}
+
+interface AgentUsageAggregate {
+  agentId: string;
+  failed: string;
+  inputTokens: string;
+  cachedInputTokens: string;
+  outputTokens: string;
+  tasks: string;
+  invalidTokenCount: boolean | null;
 }
 
 function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
   const workingStartedAt = new Map<string, Date>();
   for (const row of rows) {
-    if (
-      row.state !== "accepted" ||
-      row.reportedAt !== null ||
-      !row.acceptedAt ||
-      row.bindingStatus !== "active" ||
-      row.sessionEndedAt !== null
-    ) {
+    if (row.state !== "accepted" || row.reportedAt !== null || !row.acceptedAt) {
       continue;
     }
     const current = workingStartedAt.get(row.agentId);
@@ -230,6 +240,22 @@ function deliveryUsageTokenCounts(
     tokens: runtimeUsageTotalTokens(provider, usage),
     measured: Object.values(usage).some((value) => value !== undefined),
   };
+}
+
+function parseAggregateCount(value: string | number | null, field: string): number {
+  const result = Number(value ?? 0);
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`Agent usage ${field} total exceeds the safe integer range`);
+  }
+  return result;
+}
+
+function parseAggregateTokenTotal(value: string | number | null): number {
+  const result = Number(value ?? 0);
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error("Agent usage token total exceeds the safe integer range");
+  }
+  return result;
 }
 
 function addUsageTokenCounts(
@@ -485,6 +511,55 @@ export class AgentService {
     return toAgentAdminConfig(row.agent, row.runtimeConfig, row.computerId);
   }
 
+  async #readActivityByAgent(
+    agentIds: readonly string[],
+    recoveryStartedAt: Date,
+  ): Promise<Map<string, AgentListActivity>> {
+    const activityRows = await this.#database
+      .selectDistinctOn([imBindings.agentId], {
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        agentId: imBindings.agentId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(imBindings.agentId, agentIds),
+          eq(imBindings.status, "active"),
+          isNull(sessions.endedAt),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
+        ),
+      )
+      .orderBy(imBindings.agentId, desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id));
+
+    const staleActivityRows = await this.#database
+      .selectDistinct({ agentId: imBindings.agentId })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(imBindings.agentId, agentIds),
+          eq(imBindings.status, "active"),
+          isNull(sessions.endedAt),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          lt(imMessageDeliveries.acceptedAt, recoveryStartedAt),
+        ),
+      );
+
+    const activityByAgent = projectActivityByAgent(activityRows);
+    for (const row of staleActivityRows) {
+      if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
+    }
+    return activityByAgent;
+  }
+
   async listForAccount(callerUserId: string): Promise<ListAgentsResponse> {
     const creator = alias(users, "agent_creator");
     const rows = await this.#database
@@ -519,18 +594,34 @@ export class AgentService {
 
     const now = this.#now();
     const usageStartedAt = new Date(now.getTime() - AGENT_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
-    const activityRows = await this.#database
+    const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+    const activityByAgent = await this.#readActivityByAgent(
+      summaries.map((agent) => agent.id),
+      recoveryStartedAt,
+    );
+
+    const inputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`;
+    const cachedInputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`;
+    const outputTokensText = sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`;
+    const usageRows = (await this.#database
       .select({
-        acceptedAt: imMessageDeliveries.acceptedAt,
         agentId: imBindings.agentId,
-        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
-        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
-        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
-        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
-        reportedAt: imMessageDeliveries.reportedAt,
-        bindingStatus: imBindings.status,
-        sessionEndedAt: sessions.endedAt,
-        state: imMessageDeliveries.state,
+        failed: sql<string>`count(*) filter (where ${imMessageDeliveries.turnReport} ->> 'outcome' = 'failed')::text`,
+        inputTokens: sql<string>`coalesce(sum(case when ${inputTokensText} ~ '^[0-9]+$' then (${inputTokensText})::numeric else 0::numeric end), 0)::text`,
+        cachedInputTokens: sql<string>`coalesce(sum(case when ${cachedInputTokensText} ~ '^[0-9]+$' then (${cachedInputTokensText})::numeric else 0::numeric end), 0)::text`,
+        outputTokens: sql<string>`coalesce(sum(case when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric else 0::numeric end), 0)::text`,
+        tasks: sql<string>`count(*)::text`,
+        invalidTokenCount: sql<boolean>`bool_or(
+          case when ${inputTokensText} is null then false
+            when ${inputTokensText} ~ '^[0-9]+$' then (${inputTokensText})::numeric > 9007199254740991
+            else true end or
+          case when ${cachedInputTokensText} is null then false
+            when ${cachedInputTokensText} ~ '^[0-9]+$' then (${cachedInputTokensText})::numeric > 9007199254740991
+            else true end or
+          case when ${outputTokensText} is null then false
+            when ${outputTokensText} ~ '^[0-9]+$' then (${outputTokensText})::numeric > 9007199254740991
+            else true end
+        )`,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -541,32 +632,40 @@ export class AgentService {
             imBindings.agentId,
             summaries.map((agent) => agent.id),
           ),
-          or(
-            and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
-            gte(imMessageDeliveries.acceptedAt, usageStartedAt),
-          ),
+          gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          lte(imMessageDeliveries.acceptedAt, now),
         ),
-      );
+      )
+      .groupBy(imBindings.agentId)) as AgentUsageAggregate[];
 
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
-    const activityByAgent = projectActivityByAgent(activityRows);
     const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
-    for (const row of activityRows) {
-      if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
-      const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
-      usage.tasks += 1;
-      if (row.outcome === "failed") usage.failed += 1;
+    for (const row of usageRows) {
+      if (row.invalidTokenCount) throw new Error("Agent usage contains an invalid token count");
       const runtimeProvider = runtimeProviderByAgent.get(row.agentId);
       if (!runtimeProvider) throw new Error("Agent usage is missing its runtime Provider");
-      usage.tokens += deliveryUsageTokenCounts(
-        runtimeProvider,
-        row.inputTokens,
-        row.cachedInputTokens,
-        row.outputTokens,
-      ).tokens;
-      if (!Number.isSafeInteger(usage.tokens))
-        throw new Error("Agent usage token total exceeds the safe integer range");
-      usageByAgent.set(row.agentId, usage);
+      const inputTokens = parseAggregateTokenTotal(row.inputTokens);
+      const cachedInputTokens = parseAggregateTokenTotal(row.cachedInputTokens);
+      const outputTokens = parseAggregateTokenTotal(row.outputTokens);
+      let tokens: number;
+      try {
+        tokens = deliveryUsageTokenCounts(
+          runtimeProvider,
+          String(inputTokens),
+          String(cachedInputTokens),
+          String(outputTokens),
+        ).tokens;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("safe integer range")) {
+          throw new Error("Agent usage token total exceeds the safe integer range");
+        }
+        throw error;
+      }
+      usageByAgent.set(row.agentId, {
+        failed: parseAggregateCount(row.failed, "failed"),
+        tasks: parseAggregateCount(row.tasks, "task"),
+        tokens,
+      });
     }
 
     return {
@@ -607,28 +706,11 @@ export class AgentService {
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
-    const activityRows = await this.#database
-      .select({
-        acceptedAt: imMessageDeliveries.acceptedAt,
-        agentId: imBindings.agentId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        bindingStatus: imBindings.status,
-        sessionEndedAt: sessions.endedAt,
-        state: imMessageDeliveries.state,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          eq(imBindings.agentId, agentId),
-          eq(imMessageDeliveries.state, "accepted"),
-          isNull(imMessageDeliveries.reportedAt),
-        ),
-      );
+    const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+    const activityByAgent = await this.#readActivityByAgent([agentId], recoveryStartedAt);
     return {
       ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
-      activity: projectActivityByAgent(activityRows).get(agentId) ?? { state: "idle" },
+      activity: activityByAgent.get(agentId) ?? { state: "idle" },
     };
   }
 

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 import { type Readable, Transform } from "node:stream";
+import { domainToASCII } from "node:url";
 import { redactSensitive, type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
@@ -63,7 +65,10 @@ function structuredPhase(phase: PolicyPhase): StructuredError["phase"] {
   return "request";
 }
 
-type ExternalCallMetricCore = { type: "call" | "circuit"; operation: string; requestId: string };
+type ExternalCallMetricCore =
+  | { type: "call" | "circuit"; operation: string; requestId: string }
+  | { type: "queue"; operation: string; requestId: string; queueDepth: number; queueRejections: number }
+  | { type: "abandoned"; operation: string; requestId: string };
 type ExternalCallMetricDuration = { durationMs?: number };
 type ExternalCallMetricSuccess = { success?: boolean };
 type ExternalCallMetricErrorCode = { errorCode?: string };
@@ -81,10 +86,20 @@ type ExternalCallPolicyTransportOptions = { transport?: typeof fetch };
 type ExternalCallPolicyTimingOptions = ExternalCallPolicyClockOptions &
   /* type-only */ ExternalCallPolicySleepOptions &
   /* type-only */ ExternalCallPolicyTransportOptions;
-type ExternalCallPolicyLimitOptions = { defaultTimeoutMs?: number; maxConcurrency?: number; maxAttempts?: number };
+type ExternalCallPolicyLimitOptions = {
+  defaultTimeoutMs?: number;
+  maxConcurrency?: number;
+  maxAttempts?: number;
+  maxQueueDepth?: number;
+  abandonmentWindowMs?: number;
+};
 type ExternalCallPolicyBackoffOptions = { backoffBaseMs?: number; backoffMaxMs?: number };
 type ExternalCallPolicyCircuitOptions = { circuitFailureThreshold?: number; circuitResetMs?: number };
-type ExternalCallPolicySecurityOptions = { allowedHosts?: readonly string[] };
+type ExternalCallPolicySecurityOptions = {
+  allowedHosts?: readonly string[];
+  /** Test-only escape hatch for a loopback HTTP transport. Production wiring never sets this. */
+  allowHttpLoopbackForTests?: boolean;
+};
 type ExternalCallPolicyMetricOptions = { onMetric?: (metric: ExternalCallMetric) => void };
 type ExternalCallPolicyOptionsCore = ExternalCallPolicyTimingOptions & ExternalCallPolicyLimitOptions;
 type ExternalCallPolicyOptionsWithCircuit = ExternalCallPolicyOptionsCore &
@@ -93,7 +108,11 @@ type ExternalCallPolicyOptionsWithCircuit = ExternalCallPolicyOptionsCore &
 type ExternalCallPolicyOptionsWithSecurity = ExternalCallPolicyOptionsWithCircuit & ExternalCallPolicySecurityOptions;
 export type ExternalCallPolicyOptions = ExternalCallPolicyOptionsWithSecurity & ExternalCallPolicyMetricOptions;
 
-type ExternalCallOptionsDeadline = { timeoutMs?: number; signal?: AbortSignal };
+type ExternalCallOptionsDeadline = {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  abandonmentWindowMs?: number;
+};
 type ExternalCallOptionsRetry = { maxAttempts?: number; retryable?: (error: unknown) => boolean };
 type ExternalCallOptionsCircuit = { circuitKey?: string };
 type ExternalCallOptionsCore = ExternalCallOptionsDeadline & ExternalCallOptionsRetry;
@@ -107,6 +126,8 @@ const DEFAULT_BACKOFF_BASE_MS = 100;
 const DEFAULT_BACKOFF_MAX_MS = 2_000;
 const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_RESET_MS = 30_000;
+const DEFAULT_MAX_QUEUE_DEPTH = 32;
+const DEFAULT_ABANDONMENT_WINDOW_MS = 1_000;
 
 function errorCode(error: unknown): string | undefined {
   return error instanceof ExternalCallPolicyError ? error.code : undefined;
@@ -127,13 +148,82 @@ function isCancellation(error: unknown): boolean {
   return error instanceof ExternalCallPolicyError && error.code === "IM_PROVIDER_CALL_ABORTED";
 }
 
+function isDeadlineExceeded(error: unknown): boolean {
+  return error instanceof ExternalCallPolicyError && error.code === "IM_PROVIDER_CALL_DEADLINE_EXCEEDED";
+}
+
+function stripIpv6Brackets(hostname: string): string {
+  return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+}
+
+function isIpLiteral(hostname: string): boolean {
+  const candidate = stripIpv6Brackets(hostname);
+  if (isIP(candidate) !== 0) return true;
+  try {
+    return isIP(decodeURIComponent(candidate)) !== 0;
+  } catch {
+    return true;
+  }
+}
+
+function normalizedHostname(hostname: string): string | undefined {
+  const candidate = stripIpv6Brackets(hostname).replace(/\.+$/, "");
+  if (!candidate || isIpLiteral(candidate)) return undefined;
+  const ascii = domainToASCII(candidate);
+  return ascii ? ascii.toLowerCase() : undefined;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const candidate = stripIpv6Brackets(hostname).toLowerCase();
+  if (candidate === "localhost") return true;
+  const ipVersion = isIP(candidate);
+  if (ipVersion === 4) return candidate.split(".")[0] === "127";
+  return ipVersion === 6 && candidate === "::1";
+}
+
 function hostAllowed(url: URL, allowedHosts: readonly string[]): boolean {
-  if (allowedHosts.length === 0) return true;
-  return allowedHosts.some((allowed) => {
-    const normalized = allowed.toLowerCase();
-    return url.hostname.toLowerCase() === normalized || url.host.toLowerCase() === normalized;
+  const hostname = normalizedHostname(url.hostname);
+  if (allowedHosts.length === 0) return false;
+  if (hostname) return allowedHosts.some((allowed) => normalizedHostname(allowed) === hostname);
+  const rawHostname = stripIpv6Brackets(url.hostname).toLowerCase();
+  return allowedHosts.some((allowed) => stripIpv6Brackets(allowed).toLowerCase() === rawHostname);
+}
+
+function hostNotAllowedError(message = "The provider URL is not allowlisted"): ExternalCallPolicyError {
+  return new ExternalCallPolicyError("IM_PROVIDER_HOST_NOT_ALLOWED", message, {
+    category: "security",
+    retryability: "not_retryable",
+    phase: "request",
   });
 }
+
+function hasEncodedAuthority(input: string | URL): boolean {
+  if (input instanceof URL) return false;
+  const authority = /^[a-z][a-z\d+.-]*:\/\/([^/?#]*)/i.exec(input)?.[1];
+  if (!authority) return false;
+  const hostPort = authority.slice(authority.lastIndexOf("@") + 1);
+  return hostPort.includes("%");
+}
+
+function parseProviderUrl(input: string | URL): URL {
+  try {
+    return new URL(input.toString());
+  } catch (error) {
+    throw new ExternalCallPolicyError("IM_PROVIDER_HOST_NOT_ALLOWED", "The provider URL is invalid", {
+      category: "security",
+      retryability: "not_retryable",
+      phase: "request",
+      cause: error,
+    });
+  }
+}
+
+function usesAllowedTransport(url: URL, allowHttpLoopbackForTests: boolean): boolean {
+  if (url.protocol === "https:" && url.port === "") return true;
+  return allowHttpLoopbackForTests && url.protocol === "http:" && url.port === "" && isLoopbackHostname(url.hostname);
+}
+
+type DeadlineAttempt<T> = { result: Promise<T>; settled: Promise<void> };
 
 export class ExternalCallPolicy {
   readonly #clock: () => Date;
@@ -142,6 +232,8 @@ export class ExternalCallPolicy {
   readonly #defaultTimeoutMs: number;
   readonly #maxConcurrency: number;
   readonly #maxAttempts: number;
+  readonly #maxQueueDepth: number;
+  readonly #abandonmentWindowMs: number | undefined;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;
   readonly #circuitFailureThreshold: number;
@@ -151,6 +243,8 @@ export class ExternalCallPolicy {
   readonly #circuits = new Map<string, CircuitEntry>();
   #active = 0;
   readonly #waiters: ConcurrencyWaiter[] = [];
+  #queueRejections = 0;
+  readonly #allowHttpLoopbackForTests: boolean;
 
   constructor(options: ExternalCallPolicyOptions = {}) {
     this.#clock = options.clock ?? (() => new Date());
@@ -159,64 +253,51 @@ export class ExternalCallPolicy {
     this.#defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#maxConcurrency = Math.max(1, options.maxConcurrency ?? 8);
     this.#maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
+    this.#maxQueueDepth = Math.max(0, Math.floor(options.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH));
+    this.#abandonmentWindowMs =
+      options.abandonmentWindowMs === undefined ? undefined : Math.max(1, options.abandonmentWindowMs);
     this.#backoffBaseMs = Math.max(0, options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS);
     this.#backoffMaxMs = Math.max(this.#backoffBaseMs, options.backoffMaxMs ?? DEFAULT_BACKOFF_MAX_MS);
     this.#circuitFailureThreshold = Math.max(1, options.circuitFailureThreshold ?? DEFAULT_CIRCUIT_FAILURE_THRESHOLD);
     this.#circuitResetMs = Math.max(1, options.circuitResetMs ?? DEFAULT_CIRCUIT_RESET_MS);
     this.#allowedHosts = [...(options.allowedHosts ?? [])];
+    this.#allowHttpLoopbackForTests = options.allowHttpLoopbackForTests === true;
     this.#onMetric = options.onMetric ?? (() => undefined);
+  }
+
+  /** Validate a provider URL before any credential-bearing request headers are constructed. */
+  admitUrl(input: string | URL): URL {
+    if (hasEncodedAuthority(input)) throw hostNotAllowedError("Encoded provider hosts are not allowed");
+    const url = parseProviderUrl(input);
+    const isLoopbackHttp = url.protocol === "http:" && isLoopbackHostname(url.hostname);
+    if (!usesAllowedTransport(url, this.#allowHttpLoopbackForTests)) {
+      throw hostNotAllowedError("The provider URL must use HTTPS and its default port");
+    }
+    if (isIpLiteral(url.hostname) && !isLoopbackHttp) {
+      throw hostNotAllowedError("Provider IP literals are not allowed");
+    }
+    if (!hostAllowed(url, this.#allowedHosts)) {
+      throw hostNotAllowedError();
+    }
+    return url;
   }
 
   async run<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions = {}): Promise<T> {
     const requestId = randomUUID();
     const circuitKey = options.circuitKey ?? operation;
     const circuit = this.#circuit(circuitKey);
-    const current = this.#clock().getTime();
-    if (circuit.state === "open") {
-      if (current - (circuit.openedAt ?? current) < this.#circuitResetMs) {
-        const error = new ExternalCallPolicyError("IM_PROVIDER_CIRCUIT_OPEN", "The provider circuit is open", {
-          category: "availability",
-          retryability: "retryable",
-          phase: "circuit",
-          requestId,
-        });
-        this.#onMetric({ type: "call", operation, requestId, durationMs: 0, success: false, errorCode: error.code });
-        throw error;
-      }
-      circuit.state = "half_open";
-      this.#onMetric({ type: "circuit", operation, requestId, state: "half_open" });
-    }
+    this.#assertCircuitAvailable(circuit, operation, requestId);
 
     await this.#acquire(operation, requestId, options);
     const startedAt = this.#clock().getTime();
+    let permitSettled = Promise.resolve();
     try {
-      const attempts = Math.max(1, options.maxAttempts ?? this.#maxAttempts);
-      let lastError: unknown;
-      for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        try {
-          const result = await this.#withDeadline(operation, requestId, action, options);
-          const wasOpen = circuit.state !== "closed";
-          circuit.failures = 0;
-          circuit.state = "closed";
-          if (wasOpen) this.#onMetric({ type: "circuit", operation, requestId, state: "closed" });
-          this.#onMetric({
-            type: "call",
-            operation,
-            requestId,
-            durationMs: Math.max(0, this.#clock().getTime() - startedAt),
-            success: true,
-          });
-          return result;
-        } catch (error) {
-          lastError = error;
-          const retry = (options.retryable ?? isRetryable)(error);
-          if (!retry || attempt >= attempts) break;
-          const delay = Math.min(this.#backoffMaxMs, this.#backoffBaseMs * 2 ** (attempt - 1));
-          await this.#sleep(delay);
-        }
-      }
-      this.#recordFailure(circuit, operation, requestId, lastError);
-      const code = errorCode(lastError);
+      return await this.#runAttempts(operation, requestId, action, options, circuit, startedAt, (settled) => {
+        permitSettled = settled;
+      });
+    } catch (error) {
+      this.#recordFailure(circuit, operation, requestId, error);
+      const code = errorCode(error);
       this.#onMetric({
         type: "call",
         operation,
@@ -225,21 +306,71 @@ export class ExternalCallPolicy {
         success: false,
         ...(code ? { errorCode: code } : {}),
       });
-      throw lastError;
+      throw error;
     } finally {
-      this.#release();
+      void permitSettled.then(() => this.#release());
     }
   }
 
-  async fetch(input: string | URL, init: RequestInit = {}, options: ExternalCallOptions = {}): Promise<Response> {
-    const url = new URL(input.toString());
-    if (!hostAllowed(url, this.#allowedHosts)) {
-      throw new ExternalCallPolicyError("IM_PROVIDER_HOST_NOT_ALLOWED", "The provider host is not allowlisted", {
-        category: "security",
-        retryability: "not_retryable",
-        phase: "request",
+  #assertCircuitAvailable(circuit: CircuitEntry, operation: string, requestId: string): void {
+    if (circuit.state !== "open") return;
+    const current = this.#clock().getTime();
+    if (current - (circuit.openedAt ?? current) < this.#circuitResetMs) {
+      const error = new ExternalCallPolicyError("IM_PROVIDER_CIRCUIT_OPEN", "The provider circuit is open", {
+        category: "availability",
+        retryability: "retryable",
+        phase: "circuit",
+        requestId,
       });
+      this.#onMetric({ type: "call", operation, requestId, durationMs: 0, success: false, errorCode: error.code });
+      throw error;
     }
+    circuit.state = "half_open";
+    this.#onMetric({ type: "circuit", operation, requestId, state: "half_open" });
+  }
+
+  async #runAttempts<T>(
+    operation: string,
+    requestId: string,
+    action: PolicyAction<T>,
+    options: ExternalCallOptions,
+    circuit: CircuitEntry,
+    startedAt: number,
+    onPermitSettled: (settled: Promise<void>) => void,
+  ): Promise<T> {
+    const attempts = Math.max(1, options.maxAttempts ?? this.#maxAttempts);
+    let lastError: unknown;
+    for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber += 1) {
+      try {
+        const attempt = this.#withDeadline(operation, requestId, action, options);
+        onPermitSettled(attempt.settled);
+        const result = await attempt.result;
+        const wasOpen = circuit.state !== "closed";
+        circuit.failures = 0;
+        circuit.state = "closed";
+        if (wasOpen) this.#onMetric({ type: "circuit", operation, requestId, state: "closed" });
+        this.#onMetric({
+          type: "call",
+          operation,
+          requestId,
+          durationMs: Math.max(0, this.#clock().getTime() - startedAt),
+          success: true,
+        });
+        return result;
+      } catch (error) {
+        lastError = error;
+        if (isDeadlineExceeded(error) || isCancellation(error)) break;
+        const retry = (options.retryable ?? isRetryable)(error);
+        if (!retry || attemptNumber >= attempts) break;
+        const delay = Math.min(this.#backoffMaxMs, this.#backoffBaseMs * 2 ** (attemptNumber - 1));
+        await this.#sleep(delay);
+      }
+    }
+    throw lastError;
+  }
+
+  async fetch(input: string | URL, init: RequestInit = {}, options: ExternalCallOptions = {}): Promise<Response> {
+    const url = this.admitUrl(input);
     const requestSignal = init.signal ?? undefined;
     const runOptions = requestSignal
       ? {
@@ -259,12 +390,14 @@ export class ExternalCallPolicy {
           });
         }
         if (response.url) {
-          const finalUrl = new URL(response.url);
-          if (!hostAllowed(finalUrl, this.#allowedHosts)) {
+          try {
+            this.admitUrl(response.url);
+          } catch (error) {
             throw new ExternalCallPolicyError("IM_PROVIDER_REDIRECT_REJECTED", "Provider redirects are not allowed", {
               category: "security",
               retryability: "not_retryable",
               phase: "response",
+              cause: error,
             });
           }
         }
@@ -282,15 +415,44 @@ export class ExternalCallPolicy {
     return limitReadableStream(stream, maxBytes);
   }
 
-  async #withDeadline<T>(
+  #withDeadline<T>(
     operation: string,
     requestId: string,
     action: PolicyAction<T>,
     options: ExternalCallOptions,
-  ): Promise<T> {
+  ): DeadlineAttempt<T> {
     const controller = new AbortController();
     const timeoutMs = Math.max(1, options.timeoutMs ?? this.#defaultTimeoutMs);
-    const onAbort = () => controller.abort(options.signal?.reason);
+    const abandonmentWindowMs = Math.max(
+      1,
+      options.abandonmentWindowMs ?? this.#abandonmentWindowMs ?? Math.min(timeoutMs, DEFAULT_ABANDONMENT_WINDOW_MS),
+    );
+    let abandonmentTimer: ReturnType<typeof setTimeout> | undefined;
+    let abandon: (() => void) | undefined;
+    const abandonment = new Promise<void>((resolve) => {
+      abandon = () => {
+        this.#onMetric({ type: "abandoned", operation, requestId });
+        resolve();
+      };
+    });
+    const scheduleAbandonment = () => {
+      if (abandonmentTimer) return;
+      abandonmentTimer = setTimeout(() => abandon?.(), abandonmentWindowMs);
+      abandonmentTimer.unref?.();
+    };
+    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
+    const actionSettled = actionPromise.then(
+      () => undefined,
+      () => undefined,
+    );
+    actionSettled.then(() => {
+      if (abandonmentTimer) clearTimeout(abandonmentTimer);
+    });
+    const settled = Promise.race([actionSettled, abandonment]);
+    const onAbort = () => {
+      controller.abort(options.signal?.reason);
+      scheduleAbandonment();
+    };
     if (options.signal) {
       if (options.signal.aborted) onAbort();
       else options.signal.addEventListener("abort", onAbort, { once: true });
@@ -309,13 +471,15 @@ export class ExternalCallPolicy {
           },
         );
         controller.abort(error);
+        scheduleAbandonment();
         reject(error);
       }, timeoutMs);
     });
     let rejectCancelledListener: (() => void) | undefined;
     const cancelled = options.signal
       ? new Promise<never>((_, reject) => {
-          rejectCancelledListener = () =>
+          rejectCancelledListener = () => {
+            scheduleAbandonment();
             reject(
               new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
                 category: "availability",
@@ -325,30 +489,33 @@ export class ExternalCallPolicy {
                 cause: options.signal?.reason,
               }),
             );
+          };
           if (options.signal?.aborted) rejectCancelledListener?.();
           else options.signal?.addEventListener("abort", rejectCancelledListener, { once: true });
         })
       : undefined;
-    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
     actionPromise.catch(() => undefined);
-    try {
-      return await Promise.race(cancelled ? [actionPromise, timeout, cancelled] : [actionPromise, timeout]);
-    } catch (error) {
-      if (controller.signal.aborted && !(error instanceof ExternalCallPolicyError)) {
-        throw new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
-          category: "availability",
-          retryability: "retryable",
-          phase: "request",
-          requestId,
-          cause: error,
-        });
+    const result = (async () => {
+      try {
+        return await Promise.race(cancelled ? [actionPromise, timeout, cancelled] : [actionPromise, timeout]);
+      } catch (error) {
+        if (controller.signal.aborted && !(error instanceof ExternalCallPolicyError)) {
+          throw new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
+            category: "availability",
+            retryability: "retryable",
+            phase: "request",
+            requestId,
+            cause: error,
+          });
+        }
+        throw error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+        if (rejectCancelledListener) options.signal?.removeEventListener("abort", rejectCancelledListener);
       }
-      throw error;
-    } finally {
-      if (timer) clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      if (rejectCancelledListener) options.signal?.removeEventListener("abort", rejectCancelledListener);
-    }
+    })();
+    return { result, settled };
   }
 
   #circuit(key: string): CircuitEntry {
@@ -379,6 +546,24 @@ export class ExternalCallPolicy {
     if (this.#active < this.#maxConcurrency) {
       this.#active += 1;
       return;
+    }
+    if (this.#waiters.length >= this.#maxQueueDepth) {
+      this.#queueRejections += 1;
+      const error = new ExternalCallPolicyError("IM_PROVIDER_OVERLOADED", "The provider call queue is full", {
+        category: "availability",
+        retryability: "retryable",
+        phase: "request",
+        requestId,
+      });
+      this.#onMetric({
+        type: "queue",
+        operation,
+        requestId,
+        queueDepth: this.#waiters.length,
+        queueRejections: this.#queueRejections,
+        errorCode: error.code,
+      });
+      throw error;
     }
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -437,6 +622,13 @@ export class ExternalCallPolicy {
       );
       options.signal?.addEventListener("abort", onAbort, { once: true });
       this.#waiters.push(waiter);
+      this.#onMetric({
+        type: "queue",
+        operation,
+        requestId,
+        queueDepth: this.#waiters.length,
+        queueRejections: this.#queueRejections,
+      });
     });
   }
 

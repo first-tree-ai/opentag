@@ -59,6 +59,15 @@ import {
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import { withOperationDeadline } from "./im-delivery-deadline.js";
+import {
+  createImDeliveryMaintenanceSchedulers,
+  type ImDeliveryJanitorConfig,
+  resolveImDeliveryJanitorConfig,
+  runImDeliveryExpiry,
+  runImDeliveryJanitor,
+  runImDeliveryRetention,
+} from "./im-delivery-janitor.js";
 import type { ImDeliveryWorkerInput, RuntimeDeliveryWorkerMetric, WorkerClaim } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
@@ -70,8 +79,7 @@ const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
 // Replica model: persisted recoverable ownership. The durable marker bridges the
 // transaction-to-runtime gap. Advisory locks serialize competing claims; the
-// marker keeps later transactions fenced after commit and allows a new replica to
-// reconcile work after a process restart. In-memory maps are only optimisations.
+// marker keeps later transactions fenced after commit.
 const DISPATCH_CLAIM_PREFIX = "IM_DELIVERY_CLAIM_";
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
@@ -90,10 +98,11 @@ export class ImDeliveryWorker {
   readonly #assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
   readonly #registry: ConnectionRegistry;
   readonly #intervalMs: number;
+  readonly #janitorConfig: ImDeliveryJanitorConfig;
   readonly #claimLeaseMs: number;
   readonly #claimRenewMs: number;
   readonly #afterClaimRowLocked?: () => Promise<void>;
-  readonly #beforeDeliveryAdmission?: () => Promise<void>;
+  readonly #beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void>;
   readonly #onDiagnostic: (code: string) => void;
   readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #clock: () => Date;
@@ -103,6 +112,10 @@ export class ImDeliveryWorker {
   readonly #scheduler: KeyedTaskScheduler;
   readonly #onMetric: (metric: RuntimeDeliveryWorkerMetric) => void;
   #timer?: ReturnType<typeof setInterval>;
+  #janitorTimer?: ReturnType<typeof setInterval>;
+  #retentionTimer?: ReturnType<typeof setInterval>;
+  readonly #scheduleJanitor: () => void;
+  readonly #scheduleRetention: () => void;
   #paused = false;
 
   constructor(input: ImDeliveryWorkerInput) {
@@ -111,6 +124,7 @@ export class ImDeliveryWorker {
     this.#assembler = input.assembler;
     this.#registry = input.registry;
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.#janitorConfig = resolveImDeliveryJanitorConfig(input);
     this.#claimLeaseMs = input.claimLeaseMs ?? CLAIM_LEASE_MS;
     this.#claimRenewMs = input.claimRenewMs ?? CLAIM_RENEW_MS;
     this.#afterClaimRowLocked = input.afterClaimRowLocked;
@@ -130,6 +144,14 @@ export class ImDeliveryWorker {
       supervisor: this.#supervisor,
     });
     this.#onMetric = input.onMetric ?? (() => undefined);
+    const schedulers = createImDeliveryMaintenanceSchedulers({
+      expiryRun: () => runImDeliveryExpiry(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      supervisor: this.#supervisor,
+      onDiagnostic: this.#onDiagnostic,
+    });
+    this.#scheduleJanitor = schedulers.expiry;
+    this.#scheduleRetention = schedulers.retention;
   }
 
   start(): void {
@@ -138,12 +160,20 @@ export class ImDeliveryWorker {
     this.#schedule();
     this.#timer = setInterval(() => this.#schedule(), this.#intervalMs);
     this.#timer.unref();
+    this.#janitorTimer = setInterval(() => this.#scheduleJanitor(), this.#janitorConfig.janitorIntervalMs);
+    this.#janitorTimer.unref();
+    this.#retentionTimer = setInterval(() => this.#scheduleRetention(), this.#janitorConfig.retentionIntervalMs);
+    this.#retentionTimer.unref();
   }
 
   stop(): void {
     this.#paused = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    if (this.#janitorTimer) clearInterval(this.#janitorTimer);
+    this.#janitorTimer = undefined;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = undefined;
     this.#scheduler.close();
   }
 
@@ -151,11 +181,20 @@ export class ImDeliveryWorker {
     this.#paused = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    if (this.#janitorTimer) clearInterval(this.#janitorTimer);
+    this.#janitorTimer = undefined;
+    if (this.#retentionTimer) clearInterval(this.#retentionTimer);
+    this.#retentionTimer = undefined;
   }
 
   resume(): void {
     if (!this.#paused) return;
     this.start();
+  }
+
+  async runJanitorOnce(): Promise<void> {
+    if (this.#paused) return;
+    await runImDeliveryJanitor(this.#database, { ...this.#janitorConfig, clock: this.#clock });
   }
 
   async runOnce(): Promise<void> {
@@ -187,13 +226,29 @@ export class ImDeliveryWorker {
       this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
       let failed = false;
       try {
-        await this.#withOperationDeadline(claimed, async () => {
-          await traceDeliveryClaim(claimed, async (claim) => {
-            if (claim.kind === "pending") await this.#deliver(claim.id, claim.claimToken);
-            else if (claim.kind === "steer") await this.#deliverSteer(claim);
-            else await this.#recover(claim.id);
-          });
-        });
+        await withOperationDeadline(
+          this.#operationTimeoutMs,
+          async (signal) => {
+            await traceDeliveryClaim(claimed, async (claim) => {
+              if (claim.kind === "pending") await this.#deliver(claim.id, claim.claimToken, signal);
+              else if (claim.kind === "steer") await this.#deliverSteer(claim, signal);
+              else await this.#recover(claim.id);
+            });
+          },
+          async () => {
+            this.#onMetric({ name: "timeout", value: 1, agentId: claimed.agentId });
+            await this.#recordFailure(
+              claimed.id,
+              "IM_DELIVERY_OPERATION_TIMEOUT",
+              "claimToken" in claimed ? claimed.claimToken : undefined,
+            );
+          },
+          () => {
+            this.#onDiagnostic("IM_DELIVERY_OPERATION_LATE_SETTLE");
+            this.#onMetric({ name: "late_settle", value: 1, agentId: claimed.agentId });
+          },
+          () => this.#onDiagnostic("IM_DELIVERY_OPERATION_ABANDONED"),
+        );
       } catch (error) {
         failed = true;
         reject(error);
@@ -226,30 +281,6 @@ export class ImDeliveryWorker {
     await complete;
   }
 
-  async #withOperationDeadline(claim: WorkerClaim, operation: () => Promise<void>): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("IM_DELIVERY_OPERATION_TIMEOUT")), this.#operationTimeoutMs);
-      timer.unref();
-    });
-    try {
-      await Promise.race([operation(), timeout]);
-    } catch (error) {
-      if (error instanceof Error && error.message === "IM_DELIVERY_OPERATION_TIMEOUT") {
-        this.#onMetric({ name: "timeout", value: 1, agentId: claim.agentId });
-        await this.#recordFailure(
-          claim.id,
-          "IM_DELIVERY_OPERATION_TIMEOUT",
-          "claimToken" in claim ? claim.claimToken : undefined,
-        );
-        return;
-      }
-      throw error;
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
-
   #schedule(): void {
     const operation = this.runOnce().catch((error: unknown) => {
       this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED");
@@ -271,16 +302,6 @@ export class ImDeliveryWorker {
   async #claim(): Promise<WorkerClaim | undefined> {
     const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
-      await transaction
-        .update(imMessageDeliveries)
-        .set({ state: "expired", reason: "ttl" })
-        .where(
-          and(
-            eq(imMessageDeliveries.state, "pending"),
-            isNull(imMessageDeliveries.reason),
-            lte(imMessageDeliveries.expiresAt, now),
-          ),
-        );
       const [row] = await transaction
         .select({
           id: imMessageDeliveries.id,
@@ -499,21 +520,24 @@ export class ImDeliveryWorker {
     return claim;
   }
 
-  async #deliver(deliveryId: string, claimToken: string): Promise<void> {
+  async #deliver(deliveryId: string, claimToken: string, signal: AbortSignal): Promise<void> {
     const lease = this.#maintainClaimLease(deliveryId, claimToken);
     try {
-      await this.#deliverClaimed(deliveryId, claimToken, lease);
+      await this.#deliverClaimed(deliveryId, claimToken, lease, signal);
     } finally {
       await lease.stop();
     }
   }
 
-  async #deliverSteer(claim: {
-    id: string;
-    claimToken: string;
-    rootDeliveryId: string;
-    expectedTurnId: string;
-  }): Promise<void> {
+  async #deliverSteer(
+    claim: {
+      id: string;
+      claimToken: string;
+      rootDeliveryId: string;
+      expectedTurnId: string;
+    },
+    signal: AbortSignal,
+  ): Promise<void> {
     const lease = this.#maintainClaimLease(claim.id, claim.claimToken);
     try {
       const [row] = await this.#database
@@ -628,6 +652,7 @@ export class ImDeliveryWorker {
           sessionId: row.session.id,
         },
         (onDispatched) => this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
+        signal,
       );
       if (!admitted.admitted) {
         await this.#recordFailure(claim.id, "IM_DELIVERY_AGENT_NOT_ACTIVE", claim.claimToken);
@@ -651,7 +676,7 @@ export class ImDeliveryWorker {
     }
   }
 
-  async #deliverClaimed(deliveryId: string, claimToken: string, lease: ClaimLease): Promise<void> {
+  async #deliverClaimed(deliveryId: string, claimToken: string, lease: ClaimLease, signal: AbortSignal): Promise<void> {
     const [row] = await this.#database
       .select({
         delivery: imMessageDeliveries,
@@ -765,22 +790,25 @@ export class ImDeliveryWorker {
         placementGeneration: row.placement.generation,
         sessionId: row.session.id,
       };
-      const admittedReconcile = await this.#withActiveAgentAdmission(admission, (onDispatched) =>
-        this.#domain.requestReconcile(
-          row.computer.id,
-          instanceId,
-          {
-            type: "session:reconcile",
-            requestId: randomUUID(),
-            installationId: row.computer.currentInstallationId,
-            sessionId: row.session.id,
-            agentId: row.agent.id,
-            placementGeneration: row.placement.generation,
-            desired: "ready",
-            runtime,
-          },
-          onDispatched,
-        ),
+      const admittedReconcile = await this.#withActiveAgentAdmission(
+        admission,
+        (onDispatched) =>
+          this.#domain.requestReconcile(
+            row.computer.id,
+            instanceId,
+            {
+              type: "session:reconcile",
+              requestId: randomUUID(),
+              installationId: row.computer.currentInstallationId,
+              sessionId: row.session.id,
+              agentId: row.agent.id,
+              placementGeneration: row.placement.generation,
+              desired: "ready",
+              runtime,
+            },
+            onDispatched,
+          ),
+        signal,
       );
       if (!admittedReconcile.admitted) {
         await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_NOT_ACTIVE", claimToken);
@@ -846,9 +874,11 @@ export class ImDeliveryWorker {
       };
       fitDeliveryFrame(request);
       if (!(await lease.assertOwned())) return;
-      await this.#beforeDeliveryAdmission?.();
-      const admittedDelivery = await this.#withActiveAgentAdmission(admission, (onDispatched) =>
-        this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched),
+      await this.#beforeDeliveryAdmission?.(signal);
+      const admittedDelivery = await this.#withActiveAgentAdmission(
+        admission,
+        (onDispatched) => this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched),
+        signal,
       );
       if (!admittedDelivery.admitted) {
         await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_NOT_ACTIVE", claimToken);
@@ -1005,7 +1035,9 @@ export class ImDeliveryWorker {
       sessionId: string;
     },
     operation: (onDispatched: () => void) => Promise<T>,
+    signal?: AbortSignal,
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    if (signal?.aborted) return { admitted: false };
     const admitted = await this.#database.transaction(async (transaction) => {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, createdByUserId: agents.createdByUserId, status: agents.status })
@@ -1035,6 +1067,7 @@ export class ImDeliveryWorker {
       return true;
     });
     if (!admitted) return { admitted: false };
+    if (signal?.aborted) return { admitted: false };
     let markDispatched: () => void = () => undefined;
     const dispatched = new Promise<void>((resolve) => {
       markDispatched = resolve;

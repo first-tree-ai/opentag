@@ -9,13 +9,14 @@ __Your model, your machine, your AI coworker__
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/first-tree-ai/opentag?style=flat)](https://github.com/first-tree-ai/opentag/stargazers)
-[![Node.js](https://img.shields.io/badge/node-22.22%20%7C%2024%20%7C%2026-5FA04E?style=flat&logo=node.js&logoColor=white)](#contributing)
 
-[Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quickstart](#quickstart) · [Docs](#documentation) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
+[Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quick Start](#quick-start) · [Docs](#documentation) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
 **English | [简体中文](./README.zh-CN.md)**
 
 </div>
+
+## About
 
 OpenTag is an open-source, multi-model AI coworker. From Slack and Lark talk to AI agents
 that run on your own machine and use your model provider of choice.
@@ -29,186 +30,71 @@ that run on your own machine and use your model provider of choice.
   <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag in four steps: bring your own subscription, an AI worker in your team chat, shared knowledge kept on your own machine, and connecting the rest of your stack." width="100%">
 </p>
 
----
+## Quick Start
 
-## Quickstart
+Run these local setup commands from the root of your cloned repository; see the [development guide](./DEVELOPMENT.md) for advanced configuration.
 
-The one prerequisite: the machine that will run agents needs an [agent CLI](#runtimes), `codex` or
-`claude`, installed and signed in. OpenTag drives them; it doesn't ship them.
+### 1. Install OpenTag
+
+On macOS or Linux, install Node.js 24 (24.15.0 or later), pnpm 10.12.1, Docker with Compose support, and a signed-in Codex or Claude Code CLI.
 
 ```bash
-git clone https://github.com/first-tree-ai/opentag.git && cd opentag
-pnpm install && ./scripts/dev-install.sh
+./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
 ```
 
-Needs Node.js 22.22.2 or newer on the 22.x line, 24.15.0+, or 26.x, plus Corepack and pnpm 10.12.1.
-`dev-install.sh` links `opentag-dev` into `~/.local/bin`, so keep that directory first on `PATH` in
-your shell profile as well. See [Project status](#project-status) for published install channels.
+### 2. Start the local server
 
-<details>
-<summary><b>Running the server</b></summary>
-
-<br/>
+Wait for PostgreSQL, generate the secrets, enable loopback-only developer sign-in, and bootstrap your account before starting the foreground server:
 
 ```bash
-docker compose up -d postgres
-export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
-export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+docker compose up -d --wait postgres
+export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@127.0.0.1:5432/opentag
+export OPENTAG_JWT_SECRET=$(openssl rand -base64 32)
 export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_ENV=dev
+export OPENTAG_HOST=127.0.0.1
+export OPENTAG_PORT=8000
 export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
+export OPENTAG_DEV_AUTH_EMAIL="$OPENTAG_BOOTSTRAP_EMAIL"
 
-pnpm build
-pnpm --filter @opentag/server bootstrap:admin   # migrates, creates the first Account, prints its login code
-pnpm --filter @opentag/server start             # runs in the foreground; leave it running
+pnpm --filter @opentag/server bootstrap:admin
+pnpm --filter @opentag/server start
 ```
 
-Bootstrap migrates an empty database itself, so run it before the server takes over the terminal. The [deployment guide](./docs/deploying.md) covers running
-it on your own infrastructure instead.
+### 3. Connect your agent
 
-</details>
-
----
-
-## Your first agent in five minutes
-
-**1. Sign in.** `opentag-dev login --server <your-server> -- <account-login-code>`, then open the Web
-at that same URL.
-
-**2. Connect a computer.** A *Computer* is any machine agents can work on: your laptop, or a cloud
-box. Open **Agents** in the Web, generate a connection command, and run it on that machine:
+Open <http://127.0.0.1:8000>, choose **Developer sign-in**, and follow the **Agents** setup flow to create an agent, run its generated connection command in a second terminal after setting the PATH below, and connect chat.
 
 ```bash
-opentag-dev computer connect --server <your-server> -- <computer-connect-code>
-opentag-dev computer list     # the Computer should read as online
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+# Paste and run the connection command generated by the Agents setup flow.
 ```
 
-It stores a connection-scoped machine credential and installs a per-user daemon on Linux and macOS.
-
-**3. Create an agent.**
-
-```bash
-opentag-dev agent create --name code-reviewer --display-name "Code Reviewer" --provider codex
-```
-
-**4. Put it in a channel.** Bind the Agent to Lark or Slack from the Web, invite the bot, and tag it.
-
-Full walkthrough: [DEVELOPMENT.md](./DEVELOPMENT.md) · [Chat platforms](#chat-platforms)
-
----
-
-## Runtimes
-
-OpenTag does not ship a model. It drives the agent CLI already installed and authenticated on the
-connected Computer, so switching providers is a field on the Agent, not a migration.
-
-| Provider | CLI | Runtime configuration |
-| --- | --- | --- |
-| OpenAI Codex | `codex` | Model, reasoning effort, and max Turn duration, validated by the bound Computer |
-| Claude Code | `claude` | Supported as a runtime; Effective Runtime Snapshots are not exposed yet |
-
-## Chat platforms
-
-| Platform | How it binds | Setup |
-| --- | --- | --- |
-| Lark / Feishu | Custom app, bound from the Agent's IM setup flow in the Web | In-product |
-| Slack | OAuth install plus an events endpoint on your `OPENTAG_PUBLIC_URL` | [Slack App configuration](./docs/slack-app-setup.md) |
-
-Both platforms share the same routing: one Channel Session per Agent and channel, Thread Sessions
-materialized on demand, and replies sent by the agent through the provider's own CLI.
-
----
-
-## Architecture
-
-```text
-        Slack  ·  Lark / Feishu            Browser (same-origin Web)
-                     │                              │
-                     └──────────────┬───────────────┘
-                                    ▼
-                     ┌──────────────────────────────┐      ┌───────────────┐
-                     │   OpenTag Server (Fastify)   │─────>│  PostgreSQL   │
-                     │   REST · Better Auth · WS    │<─────│               │
-                     └──────────────┬───────────────┘      └───────────────┘
-                                    │  Runtime protocol over WebSocket
-                                    ▼
-                     ┌──────────────────────────────┐
-                     │   OpenTag daemon             │  your laptop or cloud box
-                     │   (per-user service)         │  next to your code
-                     └──────────────┬───────────────┘
-                                    │  spawns
-                     ┌──────────────┴───────────────┐
-                     │   codex  ·  claude           │  your CLI, your plan
-                     └──────────────────────────────┘
-```
-
-| Layer | Stack |
-| --- | --- |
-| Server | Fastify, Better Auth, PostgreSQL migrations, Computer WebSocket endpoint |
-| Web | React, served same-origin by the Server |
-| CLI | Commander; `opentag-dev` from a checkout, `opentag` once install channels ship |
-| Client / daemon | TypeScript runtime that connects a Computer and executes Agent Turns |
-| Shared | Zod schemas and HTTP path contracts used by every workspace |
-
-Wire-level details: [Runtime protocol](./docs/runtime-protocol.md).
-
----
+Choose Codex or Claude Code with Lark / Feishu or Slack; follow the in-product chat setup and [Slack's additional configuration](./docs/slack-app-setup.md).
 
 ## Documentation
 
-| I want to… | Start here |
-| --- | --- |
-| Get it running locally | [Quickstart](#quickstart) · [Development guide](./DEVELOPMENT.md) |
-| Understand how messages reach an agent | [IM Channel and Thread Sessions](./docs/thread-sessions.md) · [Runtime protocol](./docs/runtime-protocol.md) |
-| Let the agent reply and react on its own | [Direct provider CLI messaging](./docs/direct-provider-cli.md) |
-| Connect Slack | [Slack App configuration](./docs/slack-app-setup.md) |
-| Have agents talk to each other | [Internal Session collaboration](./docs/internal-session-collaboration.md) |
-| Run it on my own infrastructure | [Deployment guide](./docs/deploying.md) · [Observability](./docs/observability.md) |
-| Ship or install a build | [Release guide](./docs/releasing.md) · [Portable release guide](./docs/portable-release.md) |
-| Contribute | [Contributing guide](./CONTRIBUTING.md) · [Code of Conduct](./CODE_OF_CONDUCT.md) |
-| Follow work an agent is doing | [Tasks](./docs/tasks.md) |
-| Report a vulnerability | [Security policy](./SECURITY.md) · [Trademarks](./TRADEMARKS.md) |
-
-Chinese translations live in [`docs/zh-CN/`](./docs/zh-CN).
-
----
+- [Development guide](./DEVELOPMENT.md) — local workflow, architecture, and advanced configuration.
+- Chat setup — Lark / Feishu in the Agents setup flow; [Slack App configuration](./docs/slack-app-setup.md).
+- [Technical documentation](./docs/README.md) — specialist guides, including the staging deployment guide.
+- [Contributing guide](./CONTRIBUTING.md) — development checks and pull requests.
 
 ## Project status
 
-OpenTag is pre-alpha. The control plane, the local Computer connection and daemon, Agent Runtime,
-durable IM delivery, Feishu and Slack inbound routing, Channel and Thread Sessions, and direct
-provider CLI handoff are all implemented. Public APIs and package boundaries may change before the
-first stable release.
-
-Not there yet: the npm and portable install channels described in [releasing.md](./docs/releasing.md)
-and [portable-release.md](./docs/portable-release.md) are built but not publicly serving, so build
-from a checkout. Windows daemon services are out of scope for v0.1. The Skills and Integrations
-areas of the Web are interface previews backed by demo data. There is no hosted OpenTag; you run the
-server.
-
----
+OpenTag is pre-alpha: public APIs and package boundaries may change before the first stable release.
+Build from a checkout; npm and portable install channels are not yet publicly available.
+Windows daemon services are not supported for v0.1, and the Skills and Integrations pages use demo data.
+There is no hosted OpenTag service; you run the server.
 
 ## Contributing
 
-OpenTag is built in small, validated vertical slices, and `main` moves quickly, so pull often.
-
-```bash
-pnpm install
-pnpm check && pnpm build && pnpm typecheck && pnpm test
-```
-
-That is the required pull request check, the `CI` fan-in job, minus the CLI tarball installs and the
-container smoke it also runs. Agent Runtime keeps its own 100% coverage gate.
-
-Start with the **[Contributing guide](./CONTRIBUTING.md)**; the full local workflow, validation
-commands, and recovery notes are in [DEVELOPMENT.md](./DEVELOPMENT.md). Issues and pull requests are
-welcome. Please read the [Code of Conduct](./CODE_OF_CONDUCT.md) first, and report vulnerabilities
-through the [Security policy](./SECURITY.md) rather than a public issue.
-
----
+Issues and pull requests are welcome; start with the [Contributing guide](./CONTRIBUTING.md) and
+[Code of Conduct](./CODE_OF_CONDUCT.md), and report vulnerabilities through the [Security policy](./SECURITY.md).
 
 ## License
 

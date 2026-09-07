@@ -271,6 +271,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         ...(managed.creatorSessionId ? { creatorSessionId: managed.creatorSessionId } : {}),
         cliCommand: this.#cliCommand,
         sessionCliAvailable: Boolean(managed.proofPath),
+        agentHome: managed.cwd,
         ...contextTree.promptContext,
       }),
       workspace: {

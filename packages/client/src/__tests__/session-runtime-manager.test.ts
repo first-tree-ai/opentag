@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import {
@@ -407,6 +407,47 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created[0]?.systemPrompt).toContain("preparation is continuing in the background");
     expect(factory.created[0]?.systemPrompt).toContain("not active for this Session");
     expect(factory.created[0]?.systemPrompt).not.toContain("repair the tree");
+    await manager.close();
+  });
+
+  it("wires the same Agent Home into every Session prompt without creating source-repos, worktrees, or files", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-agent-home-prompt-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const first = reconcile(computerId, snapshot(1));
+    const second = { ...reconcile(computerId, snapshot(1)), requestId: randomUUID(), sessionId: "session-2" };
+
+    await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(first.sessionId);
+    await expect(reconciler.reconcile(second)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(second.sessionId);
+
+    const cwd = await workspace.cwd("agent-1");
+    expect(factory.created).toHaveLength(2);
+    expect(factory.created[0]?.workspace.cwd).toBe(cwd);
+    expect(factory.created[1]?.workspace.cwd).toBe(cwd);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([cwd]);
+    expect(factory.created[1]?.workspace.writableRoots).toEqual([cwd]);
+    expect(factory.created[0]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
+    expect(factory.created[1]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
+    expect(factory.created[0]?.systemPrompt).toContain("source-repos/<unique-repo-key>/");
+    expect(factory.created[1]?.systemPrompt).toContain("worktrees/<unique-task-key>/");
+    await expect(readdir(cwd)).resolves.toEqual([]);
     await manager.close();
   });
 

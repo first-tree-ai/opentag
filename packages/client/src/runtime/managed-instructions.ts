@@ -8,6 +8,7 @@ export interface ManagedSessionContext {
   cliCommand: string;
   sessionCliAvailable: boolean;
   contextTree?: ContextTreeStatus;
+  agentHome?: string;
 }
 
 /**
@@ -46,9 +47,30 @@ function renderContextTree(status: ContextTreeStatus, cliCommand: string): reado
   ];
 }
 
+function renderAgentHome(agentHome?: string): readonly string[] {
+  const location = agentHome
+    ? `Your Agent Home is ${agentHome}. One persistent Home is shared across this Agent's Sessions on this Computer.`
+    : "One persistent Home is shared across this Agent's Sessions on this Computer.";
+  return [
+    "## Agent Home",
+    "",
+    location,
+    "Files survive tasks. Use absolute paths; resolve the directories below from Agent Home, not the task cwd.",
+    "",
+    "These directories are prompt conventions, not platform-managed resources or automatic cleanup policies. Create them only as needed:",
+    "- `source-repos/<unique-repo-key>/` — agent-managed bare source clones. Repository identity comes from the user or task, not from platform bindings. Before reusing an existing clone, verify it belongs to the intended repository. Preserve existing files. Do not clone into the Home root.",
+    "- `worktrees/<unique-task-key>/` — agent-managed checkouts for source access and code work. Concurrent code tasks each use a distinct worktree (and a distinct branch when editing). Keep later operations for the same task in its own worktree. No two code tasks edit one checkout.",
+    "- `files/<unique-task-key>/` — non-repository task artifacts, created only when needed.",
+    "",
+    'Context Tree stays the separately configured shared tree managed by its matching CLI and skills. When running Context Tree project commands from a task subdirectory, pass `--project-path "<Agent Home>"` to use the connected Home; do not create or reconnect a tree just because the task cwd changed. Follow the matching skill write protocol. Do not invent an independent Git policy for Tree writes.',
+    "",
+  ];
+}
+
 export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, context?: ManagedSessionContext): string {
   const session = context
     ? [
+        ...renderAgentHome(context.agentHome),
         "## Session",
         "",
         `Current Session: ${context.sessionId}`,

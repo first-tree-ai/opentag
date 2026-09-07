@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-09-01
+> Last synced with: 2026-09-07
 
 ## 前置要求
 
@@ -217,7 +217,14 @@ ${OPENTAG_HOME}/
 runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
 
 OpenTag 不会在 Agent work area 内维护控制文件。Platform 与 Agent instructions 通过所选 Provider 的原生系统
-提示词接口注入。新 work area 直接以根目录作为 Provider cwd。既有 schema v1/v2 本地 Workspace layout 会执行一次兼容
+提示词接口注入。新 work area 直接以根目录作为 Provider cwd。该 cwd 即 Agent Home：同一 Computer 上该 Agent 的各
+Session 共享一个持久目录。托管 prompt 约定由 Agent 自行管理 `source-repos/<unique-repo-key>/` 裸克隆（仓库身份来自
+用户或任务，而非平台绑定）、用 `worktrees/<unique-task-key>/` 做源码访问与代码工作（并发代码任务各自使用独立
+checkout）、以及仅在需要时创建的 `files/<unique-task-key>/` 非仓库产物。OpenTag 不声明仓库、不自动创建这些目录、
+也不做回收。Context Tree 仍是另行配置的共享树；从任务子目录运行 Context Tree 项目命令时传入该 Home 的
+`--project-path`，不要因为任务 cwd 变化而新建或重连一棵树。
+
+既有 schema v1/v2 本地 Workspace layout 会执行一次兼容
 过渡：继续以 `files/` 为 cwd，而不搬动用户文件；只删除可由旧 state 证明 provenance 的 OpenTag legacy
 instruction file。用户创建或已修改的冲突文件会原样保留并 fail closed。清理前先持久化 transition state，
 因此中断后可幂等重试。过渡完成后，Client 只用 workspace state 保持 layout 与 identity，不再检查或管理

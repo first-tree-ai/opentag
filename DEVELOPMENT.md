@@ -223,9 +223,17 @@ files (`0600`). Directories and files are created only when their owner needs th
 daemon; runtime recovery records and workspaces appear on the first relevant reconcile.
 
 OpenTag does not maintain control files inside an Agent work area. Platform and Agent instructions are injected through
-the selected Provider's native system-prompt surface. A new work-area root is the Provider cwd. For an existing
-schema-v1/v2 local Workspace layout, one compatibility transition preserves `files/` as the cwd instead of moving user files. It
-removes only legacy instruction files whose OpenTag provenance can be established from the old state; a user-authored or
+the selected Provider's native system-prompt surface. A new work-area root is the Provider cwd. That cwd is the Agent
+Home: one persistent directory shared across this Agent's Sessions on this Computer. The managed prompt describes
+agent-managed `source-repos/<unique-repo-key>/` bare clones (identity from the user or task, not platform bindings),
+`worktrees/<unique-task-key>/` for source access and code work (one checkout per concurrent code task), and
+`files/<unique-task-key>/` for non-repository artifacts created only when needed. OpenTag does not declare repositories,
+create those directories, or garbage-collect them. Context Tree remains the separately configured shared tree; from a
+task subdirectory, Context Tree project commands pass `--project-path` for that Home instead of creating or reconnecting
+a tree because cwd changed.
+
+For an existing schema-v1/v2 local Workspace layout, one compatibility transition preserves `files/` as the cwd instead of
+moving user files. It removes only legacy instruction files whose OpenTag provenance can be established from the old state; a user-authored or
 changed conflict is preserved and fails closed. The transition state is written before cleanup so an interrupted attempt
 is idempotent. After it completes, the Client uses workspace state only to preserve layout and identity and no longer
 inspects or manages local Workspace entries. Schema v3 is also a downgrade fence: older v1/v2 Clients reject it instead

@@ -3,6 +3,39 @@
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
 > Last synced with: 2026-09-07
 
+## 架构
+
+```text
+        Slack  ·  飞书 / Lark                浏览器（同源 Web）
+                     │                              │
+                     └──────────────┬───────────────┘
+                                    ▼
+                     ┌──────────────────────────────┐      ┌───────────────┐
+                     │   OpenTag Server (Fastify)   │─────>│  PostgreSQL   │
+                     │   REST · Better Auth · WS    │<─────│               │
+                     └──────────────┬───────────────┘      └───────────────┘
+                                    │  Runtime 协议走 WebSocket
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │   OpenTag daemon             │  你的笔记本或云主机
+                     │   （当前用户的 service）      │  紧挨着你的代码
+                     └──────────────┬───────────────┘
+                                    │  spawn
+                     ┌──────────────┴───────────────┐
+                     │   codex  ·  claude           │  你的 CLI、你的订阅
+                     └──────────────────────────────┘
+```
+
+| 层 | 技术栈 |
+| --- | --- |
+| Server | Fastify、Better Auth、PostgreSQL migration、Computer WebSocket endpoint |
+| Web | React，由 Server 同源提供 |
+| CLI | Commander；源码 checkout 下为 `opentag-dev`，安装渠道上线后为 `opentag` |
+| Client / daemon | 负责连接 Computer 与执行 Agent Turn 的 TypeScript 运行时 |
+| Shared | 各 workspace 共用的 Zod schema 与 HTTP path 契约 |
+
+协议细节：[Runtime 协议](./docs/zh-CN/runtime-protocol.md)。
+
 ## 前置要求
 
 - Node.js 24.19.0（仓库固定的开发版本；支持范围为 Node.js 22.x（最低 22.22.2）、Node.js 24.x（最低 24.15）或 Node.js 26.x，
@@ -397,7 +430,7 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 ```
 
 `OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
-`Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户，再通过 Better Auth 签发正常浏览器
+`开发者登录`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户，再通过 Better Auth 签发正常浏览器
 session，因此它与 Google 登录产生的是同一种可吊销 session，登出即可结束它。签入哪个 Account 由配置固定，不取自请求。
 它不会创建 Account 或内部兼容记录，且仍会拒绝 suspended Account；email 不存在或有重复匹配时会 fail closed。
 Server 会在 `staging` 和 `prod` 环境拒绝这组配置。

@@ -2,6 +2,39 @@
 
 [简体中文](./DEVELOPMENT.zh-CN.md)
 
+## Architecture
+
+```text
+        Slack  ·  Lark / Feishu            Browser (same-origin Web)
+                     │                              │
+                     └──────────────┬───────────────┘
+                                    ▼
+                     ┌──────────────────────────────┐      ┌───────────────┐
+                     │   OpenTag Server (Fastify)   │─────>│  PostgreSQL   │
+                     │   REST · Better Auth · WS    │<─────│               │
+                     └──────────────┬───────────────┘      └───────────────┘
+                                    │  Runtime protocol over WebSocket
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │   OpenTag daemon             │  your laptop or cloud box
+                     │   (per-user service)         │  next to your code
+                     └──────────────┬───────────────┘
+                                    │  spawns
+                     ┌──────────────┴───────────────┐
+                     │   codex  ·  claude           │  your CLI, your plan
+                     └──────────────────────────────┘
+```
+
+| Layer | Stack |
+| --- | --- |
+| Server | Fastify, Better Auth, PostgreSQL migrations, Computer WebSocket endpoint |
+| Web | React, served same-origin by the Server |
+| CLI | Commander; `opentag-dev` from a checkout, `opentag` once install channels ship |
+| Client / daemon | TypeScript runtime that connects a Computer and executes Agent Turns |
+| Shared | Zod schemas and HTTP path contracts used by every workspace |
+
+Wire-level details: [Runtime protocol](./docs/runtime-protocol.md).
+
 ## Prerequisites
 
 - Node.js 24.19.0 for the pinned development toolchain (the supported range is Node.js 22.22.2 or newer on 22.x,
@@ -432,7 +465,7 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 ```
 
 Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
-`Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and then issues the
+`Developer sign-in`. The callback resolves exactly one existing user by case-insensitive email and then issues the
 normal browser session through Better Auth, so it is the same revocable session a Google sign-in produces and signing
 out ends it. Which Account it signs in is fixed from configuration, not taken from the request. It never creates an
 Account or internal compatibility records and still rejects suspended Accounts; a missing or duplicate email match

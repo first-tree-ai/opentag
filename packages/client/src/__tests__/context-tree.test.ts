@@ -34,14 +34,14 @@ const installReply = {
   ],
   schemaVersion: 1,
   skipped: [],
-  version: "0.1.10",
+  version: "0.1.11",
 };
 const skippedInstallReply = (reason: unknown) =>
   ({
     installed: [],
     schemaVersion: 1,
     skipped: [{ host: "codex", reason }],
-    version: "0.1.10",
+    version: "0.1.11",
   }) as unknown;
 
 /** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
@@ -177,7 +177,7 @@ describe("ContextTreeManager", () => {
       "/home/user/.codex does not exist; install codex first.",
     ],
     [skippedInstallReply(""), "CODEX_NOT_INSTALLED"],
-    [{ installed: [], schemaVersion: 1, skipped: [], version: "0.1.10" }, "CODEX_NOT_INSTALLED"],
+    [{ installed: [], schemaVersion: 1, skipped: [], version: "0.1.11" }, "CODEX_NOT_INSTALLED"],
   ])("reports an unavailable Codex host install for %j", async (installPayload, reason) => {
     const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: installPayload });
     const { cwd, manager } = await computer({ execFile, target: managed });

@@ -45,8 +45,7 @@ whenever `npm_config_global` was set — which npm also sets for the dependencie
 install, so `npm i -g open-tag` would have written six skill directories into the user's personal
 `~/.claude` and `~/.codex` as an invisible side effect. `@first-tree-ai/context-tree` now also
 requires that it is the install *target* rather than a nested copy, so being a dependency has no
-side effects. That guard first ships in **0.1.8**. The coordinated CLI and client pins target
-**0.1.10**, which removes project instruction writes; do not lower those pins. `scripts/cli-pack-smoke.mjs` holds the line empirically: for the production
+side effects. That guard first ships in **0.1.8**. `scripts/cli-pack-smoke.mjs` holds the line empirically: for the production
 identity it installs the packed CLI globally under an isolated `HOME`, asserts no `.claude` or
 `.codex` appears, and then runs the nested `postinstall` with `npm_config_global=true` to prove the
 dependency guard is what kept it inert rather than a script that merely failed to run.

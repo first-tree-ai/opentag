@@ -70,6 +70,7 @@
   "im_slack_connected": "{provider} 已连接。",
   "im_slack_permissions_missing": "{provider} 权限不完整。请更新权限后重试。",
   "im_slack_unavailable": "{provider} 当前不可用。请检查连接后重试。",
+  "im_slack_workspace_already_connected": "此 {provider} 工作区已连接到另一个 Agent。请先在该 Agent 中断开连接，或选择其他工作区。",
   "im_status_unavailable": "暂时无法获取消息状态",
   "im_update_permissions": "更新权限"
 }

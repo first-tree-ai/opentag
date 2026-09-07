@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
+import { usageVisualFixtures } from "./usage-visual-fixtures.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -61,19 +62,19 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
 
 test("Agent Setup Lab exposes recoverable core states through its real controls", async ({ page }) => {
   await page.goto("/internal/agent-setup", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Journey · New computer · Agent creation" }).click();
+  const openLab = page.getByRole("button", { name: "Mock control" });
+  await openLab.click();
   const closeLab = page.getByRole("button", { name: "Close", exact: true });
   await expect(closeLab).toBeVisible();
-  const currentState = page.getByRole("region", { name: "Current state" });
-  await expect(currentState.getByText("Messaging support", { exact: true })).toBeVisible();
-  await expect(currentState.getByText("Lark CLI", { exact: true })).toHaveCount(0);
-  await expect(currentState.getByText("Slack CLI", { exact: true })).toHaveCount(0);
+  const screen = page.getByRole("combobox", { name: "Screen", exact: true });
+  await expect(screen).toContainText("Choose location");
+  await expect(page.getByRole("button", { name: "First Agent" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("region", { name: "Current state" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Visual edge cases" })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
 
-  const scenario = page.getByRole("combobox", { name: "Start from" });
-  await scenario.click();
-  await page.getByRole("option", { name: "Checkpoint · Connect computer" }).click();
+  await screen.click();
+  await page.getByRole("option", { name: "Connect computer" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Connect your computer" })).toBeVisible();
   const step2Navigation = page.locator('[data-ui="onboarding-v2-step-2-nav"]');
@@ -112,10 +113,13 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await expectWithinViewport(connectComputerSummary);
   await expectNoPageOverflow(page);
 
-  await page.getByRole("button", { name: /^Checkpoint · Connect computer ·/ }).click();
+  await openLab.click();
   await expect(closeLab).toBeVisible();
+  await screen.click();
+  await page.getByRole("option", { name: "Verify environment" }).click();
+  const scenario = page.getByRole("combobox", { name: "Screen state", exact: true });
   await scenario.click();
-  await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
+  await page.getByRole("option", { name: "Runtime report missing" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
   const preparation = page.locator('[data-ui="agent-setup-preparation"]');
@@ -146,8 +150,9 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await expectWithinViewport(readinessRows.nth(1));
   await expectNoPageOverflow(page);
 
-  await page.getByRole("button", { name: /^Preparation · Runtime report missing ·/ }).click();
-  await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
+  await openLab.click();
+  await page.getByRole("button", { name: "Fine-tune state" }).click();
+  await expect(page.getByRole("region", { name: "Simulated flow" })).toContainText("Finish readiness check");
   await page.getByRole("button", { name: "Finish readiness check" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
@@ -156,10 +161,12 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await step2Continue.click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
 
-  await page.locator('[data-ui="onboarding-v2-lab"] > div > button[aria-expanded="false"]').click();
-  await scenario.click();
-  await page.getByRole("option", { name: "Complete · Everything ready" }).click();
-  await page.getByRole("button", { name: "Fine-tune state" }).click();
+  await openLab.click();
+  await screen.click();
+  await page.getByRole("option", { name: "Ready" }).click();
+  await expect(screen).toContainText("Ready");
+  const fineTune = page.getByRole("button", { name: "Fine-tune state" });
+  await expect(fineTune).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Take computer offline" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Reconnect computer" }).click();
@@ -234,13 +241,11 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
 });
 
-test("Agent navigation reaches every Agent-owned destination", async ({ page }) => {
+test("Agent navigation reaches every visible Agent-owned destination", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   const destinations = [
     { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
-    { name: "Skills", heading: "Skills", path: `/agents/${agentId}/skills` },
-    { name: "Integrations", heading: "Integrations", path: `/agents/${agentId}/integrations` },
     { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
   for (const destination of destinations) {
@@ -351,6 +356,13 @@ test("Agents and Usage keep their compact composition when their own containers 
 
   await page.setViewportSize({ width: 1100, height: 900 });
 
+  const usageFixture = usageVisualFixtures.find((fixture) => fixture.name === "steady-volume");
+  if (!usageFixture) throw new Error("Missing steady-volume Usage fixture");
+  const { name: _fixtureName, ...usageResponse } = usageFixture;
+  const usageApi = `**/api/v1/agents/${agentId}/usage?**`;
+  await page.route(usageApi, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(usageResponse) });
+  });
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
   const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
   await expect(usageAnalysisCards).toHaveCount(2);
@@ -360,6 +372,7 @@ test("Agents and Usage keep their compact composition when their own containers 
   ]);
   if (!trendCard || !breakdownCard) throw new Error("Usage analysis cards did not produce layout boxes");
   expect(trendCard.y).toBeCloseTo(breakdownCard.y, 1);
+  await page.unroute(usageApi);
 });
 
 test("an unauthenticated protected visit redirects to login", async ({ browser }) => {

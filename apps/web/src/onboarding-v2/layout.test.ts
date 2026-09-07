@@ -136,10 +136,23 @@ describe("onboarding flow layout", () => {
   it("keeps Step 2 guidance leading and makes its mobile action full width", () => {
     expect(declarationValue(".otv2-step-footer", "display")).toBe("flex");
     expect(declarationValue(".otv2-step-footer", "justify-content")).toBe("space-between");
+    expect(declarationValue(".otv2-step-footer", "margin-top")).toBe("0.5rem");
+    expect(declarationValue(".otv2-step-footer__actions", "display")).toBe("flex");
+    expect(declarationValue(".otv2-step-footer__actions", "gap")).toBe("0.75rem");
     expect(declarationValue(".otv2-step-footer__action", "min-width")).toBe("7rem");
     expect(mediaDeclarationValue("640px", ".otv2-step-footer", "flex-direction")).toBe("column");
     expect(mediaDeclarationValue("640px", ".otv2-step-footer", "align-items")).toBe("stretch");
+    expect(mediaDeclarationValue("640px", ".otv2-step-footer__actions", "flex-direction")).toBe("column");
     expect(mediaDeclarationValue("640px", ".otv2-step-footer__action", "width")).toBe("100%");
+  });
+
+  it("separates destructive messaging actions with space rather than a divider", () => {
+    expect(declarationValue(".otv2-destructive-action", "margin-top")).toBe("0.5rem");
+    expect(declarationValue(".otv2-destructive-action", "border-top")).toBe("0");
+    expect(declarationValue(".otv2-messaging-recovery", "gap")).toBe("1rem");
+    expect(declarationValue(".otv2-messaging-recovery", "max-width")).toBe("36rem");
+    expect(declarationValue(".otv2-messaging-recovery__identity", "display")).toBe("flex");
+    expect(declarationValue(".otv2-messaging-recovery > .otv2-destructive-action", "margin-top")).toBe("1rem");
   });
 
   it("lays the two readiness summaries out as compact divided rows", () => {

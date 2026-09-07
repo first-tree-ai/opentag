@@ -69,10 +69,15 @@ function armAutomaticPollWindow(
   budget: { current: number },
   inFlight: { current: Promise<boolean> | undefined },
   read: () => Promise<boolean>,
+  onExhausted?: () => void,
 ): () => void {
   let cancelled = false;
   let timer: number | undefined;
   const poll = async (): Promise<void> => {
+    if (pollClass === "bounded" && budget.current <= 0) {
+      onExhausted?.();
+      return;
+    }
     let turn = inFlight.current;
     if (turn === undefined) {
       if (pollClass === "bounded") budget.current -= 1;
@@ -82,10 +87,14 @@ function armAutomaticPollWindow(
     await turn;
     if (inFlight.current === turn) inFlight.current = undefined;
     if (cancelled) return;
-    if (pollClass === "bounded" && budget.current <= 0) return;
+    if (pollClass === "bounded" && budget.current <= 0) {
+      onExhausted?.();
+      return;
+    }
     timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
   };
-  timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
+  if (pollClass === "bounded" && budget.current <= 0) onExhausted?.();
+  else timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
   return () => {
     cancelled = true;
     window.clearTimeout(timer);
@@ -98,7 +107,6 @@ const HINT = "text-sm text-kumo-subtle m-0";
 const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
   "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
-const IDENTITY_ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3";
 
 export type AgentSetupPreviewView = "checks" | "complete" | "computer" | "messaging";
 
@@ -434,6 +442,8 @@ interface AgentSetupController {
   readonly reload: () => void;
   /** An explicit Check again restarts the finite local-preparation observation window. */
   readonly resetPollBudget: () => void;
+  /** The automatic local-preparation window ended without reaching a settled state. */
+  readonly pollExhausted: boolean;
 }
 
 function useAgentSetup(
@@ -454,18 +464,28 @@ function useAgentSetup(
    * never start a second automatic read while an earlier one is still in flight.
    */
   const autoPollInFlight = useRef<Promise<boolean> | undefined>(undefined);
+  const [pollExhausted, setPollExhausted] = useState(false);
   // A stateful restart signal: an explicit Check again must reopen a bounded observation window
   // even when the busyKey updates around the refresh are collapsed into one render.
   const [pollRestartKey, setPollRestartKey] = useState(0);
   /** An explicit Check again opens a fresh bounded observation window. */
   const resetPollBudget = useCallback(() => {
     pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    setPollExhausted(false);
     setPollRestartKey((value) => value + 1);
   }, []);
+  // Exhaustion describes only the bounded transitional state that consumed the window. Once the
+  // snapshot settles or moves to another polling class, a later transition deserves a fresh
+  // window and must not inherit the old "paused" message.
+  useEffect(() => {
+    if (pollClass === "bounded") return;
+    pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    setPollExhausted(false);
+  }, [pollClass]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pollRestartKey explicitly restarts the observation window.
   useEffect(() => {
     if (pollClass === undefined || actions.busyKey !== undefined) return;
-    return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read);
+    return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read, () => setPollExhausted(true));
   }, [pollClass, actions.busyKey, pollRestartKey, reader.read]);
 
   /*
@@ -509,7 +529,13 @@ function useAgentSetup(
   }, [actions.busyKey, reader.phase.kind, reader.read, resetPollBudget]);
 
   const reload = useCallback(() => void reader.read(), [reader.read]);
-  return { ...reader, ...actions, reload, resetPollBudget };
+  return {
+    ...reader,
+    ...actions,
+    pollExhausted: pollClass === "bounded" && pollExhausted,
+    reload,
+    resetPollBudget,
+  };
 }
 
 type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
@@ -631,11 +657,11 @@ function AgentSetupPageContent({
         ) : null}
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
-        {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
         <SetupPhaseView
           agentId={agentId}
           computerAdapter={computerAdapter}
           controller={controller}
+          oauthError={oauthError}
           onOpenAgent={onOpenAgent}
           onPreviewViewChange={onPreviewViewChange}
           previewInitialView={previewInitialView}
@@ -650,6 +676,7 @@ function SetupPhaseView({
   agentId,
   computerAdapter,
   controller,
+  oauthError,
   onOpenAgent,
   onPreviewViewChange,
   previewInitialView,
@@ -658,6 +685,7 @@ function SetupPhaseView({
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
+  readonly oauthError?: string;
   readonly onOpenAgent?: () => void;
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   readonly previewInitialView?: AgentSetupPreviewView;
@@ -701,6 +729,7 @@ function SetupPhaseView({
       agentId={agentId}
       computerAdapter={computerAdapter}
       controller={controller}
+      oauthError={oauthError}
       onOpenAgent={onOpenAgent}
       onPreviewViewChange={onPreviewViewChange}
       previewInitialView={previewInitialView}
@@ -745,6 +774,7 @@ function AgentSetupSnapshotView({
   agentId,
   computerAdapter,
   controller,
+  oauthError,
   onOpenAgent,
   onPreviewViewChange,
   previewInitialView,
@@ -754,6 +784,7 @@ function AgentSetupSnapshotView({
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
+  readonly oauthError?: string;
   readonly onOpenAgent?: () => void;
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   readonly previewInitialView?: AgentSetupPreviewView;
@@ -762,7 +793,7 @@ function AgentSetupSnapshotView({
 }) {
   const { stage } = snapshot;
   const [preparationAccepted, setPreparationAccepted] = useState(
-    () => previewInitialView === "messaging" || messagingHasStarted(snapshot),
+    () => previewInitialView === "messaging" || messagingHasStarted(snapshot) || oauthError !== undefined,
   );
   const focusMessagingAfterContinue = useRef(false);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -770,8 +801,7 @@ function AgentSetupSnapshotView({
   const showingPreparation = shouldShowPreparation(stage, awaitingPreparationContinue);
   const observationFailed = snapshot.blockers.some((blocker) => blocker.code === "resource-observation-failed");
   const computerObservationFailed = snapshot.computer.kind === "observation-failed";
-  const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
-  const refreshAction = canRefresh && stage !== "ready" ? <SetupRefreshButton controller={controller} /> : undefined;
+  const refreshAction = setupRefreshAction(snapshot, controller);
 
   useEffect(() => {
     const view: AgentSetupPreviewView =
@@ -822,12 +852,17 @@ function AgentSetupSnapshotView({
         showCompletedPreparation={awaitingPreparationContinue}
         snapshot={snapshot}
       />
-      {computerObservationFailed ? null : refreshAction}
-      {showingPreparation ? (
-        <PreparationNavigation onContinue={continueToMessaging} ready={awaitingPreparationContinue} />
-      ) : null}
+      <SetupStageNavigation
+        computerObservationFailed={computerObservationFailed}
+        controller={controller}
+        onContinue={continueToMessaging}
+        ready={awaitingPreparationContinue}
+        refreshAction={refreshAction}
+        showingPreparation={showingPreparation}
+        snapshot={snapshot}
+      />
       {stage === "needs-messaging" && !awaitingPreparationContinue ? (
-        <MessagingSetupSection controller={controller} snapshot={snapshot} />
+        <MessagingSetupSection controller={controller} oauthError={oauthError} snapshot={snapshot} />
       ) : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
@@ -843,35 +878,102 @@ function AgentSetupSnapshotView({
   );
 }
 
-function PreparationNavigation({ onContinue, ready }: { readonly onContinue: () => void; readonly ready: boolean }) {
+function setupRefreshAction(snapshot: AgentSetupSnapshot, controller: AgentSetupController): ReactNode {
+  const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
+  return canRefresh && snapshot.stage !== "ready" ? <SetupRefreshButton controller={controller} /> : undefined;
+}
+
+function SetupStageNavigation({
+  computerObservationFailed,
+  controller,
+  onContinue,
+  ready,
+  refreshAction,
+  showingPreparation,
+  snapshot,
+}: {
+  readonly computerObservationFailed: boolean;
+  readonly controller: AgentSetupController;
+  readonly onContinue: () => void;
+  readonly ready: boolean;
+  readonly refreshAction?: ReactNode;
+  readonly showingPreparation: boolean;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
+  if (!showingPreparation) return computerObservationFailed ? null : refreshAction;
+  const pollClass = snapshotPollClass(snapshot);
+  const preparationRefreshAction =
+    !computerObservationFailed && (pollClass !== "bounded" || controller.pollExhausted) ? refreshAction : undefined;
+  return (
+    <PreparationNavigation
+      checking={pollClass === "bounded" && !controller.pollExhausted}
+      onContinue={onContinue}
+      pollExhausted={controller.pollExhausted}
+      ready={ready}
+      refreshAction={preparationRefreshAction}
+      snapshot={snapshot}
+    />
+  );
+}
+
+function PreparationNavigation({
+  checking,
+  onContinue,
+  pollExhausted,
+  ready,
+  refreshAction,
+  snapshot,
+}: {
+  readonly checking: boolean;
+  readonly onContinue: () => void;
+  readonly pollExhausted: boolean;
+  readonly ready: boolean;
+  readonly refreshAction?: ReactNode;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
   const hintId = useId();
+  const rows = preparationSummaryRows(snapshot);
+  const checkingItem =
+    rows.runtime.status === "checking" || rows.runtime.status === "waiting" ? rows.runtime.label : rows.messaging.label;
+  const hint = ready
+    ? m.onboarding_v2_prep_continue_ready()
+    : checking
+      ? m.onboarding_v2_prep_checking_automatically({ item: checkingItem })
+      : pollExhausted
+        ? m.onboarding_v2_prep_checking_paused()
+        : refreshAction
+          ? m.onboarding_v2_prep_complete_action()
+          : m.onboarding_v2_prep_continue_waiting();
   return (
     <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
-      <p className="text-sm text-kumo-subtle m-0" id={hintId} role="status">
-        {ready ? m.onboarding_v2_prep_continue_ready() : m.onboarding_v2_prep_continue_waiting()}
+      <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0" id={hintId} role="status">
+        {checking ? <span aria-hidden="true" className="otv2-inline-spinner" /> : null}
+        {hint}
       </p>
-      <Button aria-describedby={hintId} className="otv2-step-footer__action" disabled={!ready} onClick={onContinue}>
-        {m.onboarding_v2_nav_next()}
-      </Button>
+      <div className="otv2-step-footer__actions">
+        {refreshAction}
+        <Button aria-describedby={hintId} className="otv2-step-footer__action" disabled={!ready} onClick={onContinue}>
+          {m.onboarding_v2_nav_next()}
+        </Button>
+      </div>
     </div>
   );
 }
 
 function SetupRefreshButton({ controller }: { readonly controller: AgentSetupController }) {
   return (
-    <div className="flex">
-      <Button
-        disabled={controller.busyKey !== undefined}
-        loading={controller.busyKey === "refresh"}
-        onClick={() => {
-          controller.resetPollBudget();
-          void controller.act({ kind: "refresh" });
-        }}
-        variant="secondary"
-      >
-        {m.onboarding_v2_setup_refresh()}
-      </Button>
-    </div>
+    <Button
+      className="otv2-step-footer__secondary-action"
+      disabled={controller.busyKey !== undefined}
+      loading={controller.busyKey === "refresh"}
+      onClick={() => {
+        controller.resetPollBudget();
+        void controller.act({ kind: "refresh" });
+      }}
+      variant="secondary"
+    >
+      {m.onboarding_v2_setup_refresh()}
+    </Button>
   );
 }
 
@@ -1156,19 +1258,24 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
 
 function MessagingSetupSection({
   controller,
+  oauthError,
   snapshot,
 }: {
   readonly controller: AgentSetupController;
+  readonly oauthError?: string;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { messaging } = snapshot;
+  const title =
+    messaging.kind === "blocked" ? m.onboarding_v2_messaging_recovery_title() : m.onboarding_v2_messaging_title();
   return (
     <section className={SECTION} data-state={messaging.kind} data-ui="agent-setup-messaging">
       <header className={SECTION_HEADER}>
         <Text as="h2" variant="heading">
-          {m.onboarding_v2_messaging_title()}
+          {title}
         </Text>
       </header>
+      {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
       {messaging.kind === "not-configured" ? (
         <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
       ) : null}
@@ -1349,7 +1456,7 @@ function MessagingHandoff({
         </p>
       ) : null}
       {unbind ? (
-        <div>
+        <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
           <Button
             disabled={controller.busyKey !== undefined}
             onClick={() => setUnbindAsked(true)}
@@ -1435,17 +1542,13 @@ function BlockedMessaging({
   );
   const busy = controller.busyKey !== undefined;
   return (
-    <>
-      <div className={IDENTITY_ROW} data-ui="agent-setup-messaging-identity">
+    <div className="otv2-messaging-recovery" data-ui="agent-setup-messaging-recovery">
+      <div className="otv2-messaging-recovery__identity" data-ui="agent-setup-messaging-identity">
         <ProviderIcon className="size-6" provider={messaging.provider} />
         <strong className="min-w-0 text-base font-semibold text-kumo-strong">
           {providerTitle(messaging.provider)}
         </strong>
-        <StatusIndicator
-          className="justify-self-end"
-          label={m.onboarding_v2_setup_messaging_needs_attention()}
-          tone="warning"
-        />
+        <StatusIndicator label={m.onboarding_v2_setup_messaging_needs_attention()} tone="warning" />
       </div>
       <p className={HINT}>{blockedMessagingCopy(messaging)}</p>
       {switchBlocker ? (
@@ -1456,27 +1559,31 @@ function BlockedMessaging({
           })}
         </p>
       ) : null}
-      <div className="flex flex-wrap gap-3">
-        {reauthorize ? (
-          <Button
-            disabled={busy}
-            loading={controller.busyKey === "reauthorize-messaging"}
-            onClick={() => void controller.act(reauthorize)}
-          >
-            {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
-          </Button>
-        ) : null}
-        {replace ? (
-          <Button
-            disabled={busy}
-            loading={controller.busyKey === "replace-messaging"}
-            onClick={() => void controller.act(replace)}
-            variant="secondary"
-          >
-            {m.im_change_bot()}
-          </Button>
-        ) : null}
-        {unbind ? (
+      {reauthorize || replace ? (
+        <div className="otv2-messaging-recovery__actions" data-ui="agent-setup-messaging-recovery-actions">
+          {reauthorize ? (
+            <Button
+              disabled={busy}
+              loading={controller.busyKey === "reauthorize-messaging"}
+              onClick={() => void controller.act(reauthorize)}
+            >
+              {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
+            </Button>
+          ) : null}
+          {replace ? (
+            <Button
+              disabled={busy}
+              loading={controller.busyKey === "replace-messaging"}
+              onClick={() => void controller.act(replace)}
+              variant="secondary"
+            >
+              {m.im_change_bot()}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {unbind ? (
+        <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
           <Button
             disabled={busy}
             onClick={() => setUnbindAsked(true)}
@@ -1485,8 +1592,8 @@ function BlockedMessaging({
           >
             {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {controller.actionError && !unbindAsked ? (
         <Banner variant="error" role="alert" description={controller.actionError} />
       ) : null}
@@ -1500,7 +1607,7 @@ function BlockedMessaging({
           returnFocusRef={unbindButtonRef}
         />
       ) : null}
-    </>
+    </div>
   );
 }
 

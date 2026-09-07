@@ -394,6 +394,7 @@ function LabPreview({
       <AgentSetupSurface
         creationPreview={createPreviewAgent}
         creationPreviewInitialView={configuration.scenario === "agent-creation" ? "agent" : "destination"}
+        existingAgentNames={configuration.journey === "additional" ? ["opentag"] : []}
         key={`creation:${configuration.revision}:${configuration.journey}`}
         onAgentAvailable={() => undefined}
         onBackToAgents={configuration.journey === "additional" ? () => onNavigationTargetChange("agents") : undefined}

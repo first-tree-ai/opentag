@@ -74,6 +74,15 @@ pnpm --filter @opentag/server test:integration
 
 仅检查 lint 可运行 `pnpm lint`；应用 Biome 格式化可运行 `pnpm format`。
 
+共享 Agent Home 回归测试包含在 Client 离线测试中。构建后可单独运行：
+
+```bash
+pnpm --filter @opentag/client exec vitest run src/__tests__/agent-home-context.integration.test.ts --maxWorkers=1
+```
+
+测试在临时账户中使用真实本地 Git worktree 和配套 Context Tree CLI，验证共享 Home 持久性、代码修改互不混入，
+以及从任务目录显式指定 Home 后串行进行双向记忆读写。无需 Provider 凭据或网络；不证明模型遵守提示词或 sandbox 隔离。
+
 独立的 `Unit Coverage` workflow 会在每周一 03:17 UTC 针对 `main` 运行 `pnpm test:coverage`，也支持手动触发。
 该命令会先构建 workspace，再统计 CLI、Web、Shared、Client 和 Server 的离线单测覆盖率，并将统一报告保留
 14 天。修改根 coverage 配置或调查覆盖率缺口时，应在本地运行该命令。统计会纳入未被测试 import 的生产源码，

@@ -77,6 +77,16 @@ pnpm --filter @opentag/server test:integration
 
 Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
 
+The shared Agent Home regression is included in the Client's offline test suite. To run it alone after building:
+
+```bash
+pnpm --filter @opentag/client exec vitest run src/__tests__/agent-home-context.integration.test.ts --maxWorkers=1
+```
+
+It uses real local Git worktrees and the packaged Context Tree CLI in a temporary account to check shared Home
+persistence, independent code edits, and sequential bidirectional memory writes from task directories anchored to Home.
+It needs no Provider credentials or network and does not establish model compliance or sandbox isolation.
+
 The separate `Unit Coverage` workflow runs `pnpm test:coverage` against `main` every Monday at 03:17 UTC and can also be
 started manually. It builds the workspaces and measures the offline unit tests for CLI, Web, Shared, Client, and Server,
 then retains the unified report for 14 days. Run the command locally when changing the root coverage configuration or

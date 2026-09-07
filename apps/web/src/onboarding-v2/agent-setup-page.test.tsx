@@ -822,11 +822,7 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(cancel).toHaveBeenCalledWith(attemptId);
-    expect(
-      screen.getByText(
-        "The Lark authorization didn't complete. Disconnect this incomplete connection, then start again.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText("Lark authorization didn't complete. Disconnect Lark, then reconnect it.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
   });

@@ -168,6 +168,7 @@ export function buttonClassName({
 } = {}): string {
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
+    "justify-center",
     variant === "primary" &&
       "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
     variant === "danger" &&

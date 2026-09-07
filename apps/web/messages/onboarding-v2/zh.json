@@ -190,7 +190,7 @@
   "onboarding_v2_runtime_codex_title": "Codex",
   "onboarding_v2_setup_computer_rebind": "{computerName} 属于其他 Account。请为 {name} 选择一台属于当前 Account 的 Computer。",
   "onboarding_v2_setup_load_failed": "无法读取你的 Agent 的设置状态。",
-  "onboarding_v2_setup_messaging_auth_failed": "{provider} 授权未完成。请先断开这条未完成的连接，再重新开始。",
+  "onboarding_v2_setup_messaging_auth_failed": "{provider} 授权未完成。请断开 {provider}，然后重新连接。",
   "onboarding_v2_setup_messaging_computer_attention": "使用这台电脑上的编码 Agent 修复 {provider} 连接，然后重新检查。",
   "onboarding_v2_setup_messaging_confirming_computer": "正在确认这台电脑可以连接到 {provider}…",
   "onboarding_v2_setup_messaging_needs_attention": "需要处理",

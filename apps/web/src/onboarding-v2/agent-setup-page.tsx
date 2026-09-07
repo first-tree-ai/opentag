@@ -106,7 +106,7 @@ const SECTION_HEADER = "flex flex-col gap-1";
 const HINT = "text-sm text-kumo-subtle m-0";
 const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
-  "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
+  "otv2-choice flex w-full items-center justify-start gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 
 export type AgentSetupPreviewView = "checks" | "complete" | "computer" | "messaging";
 

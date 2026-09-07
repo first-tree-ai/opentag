@@ -23,7 +23,7 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 
 - **在 Slack 或飞书里给 agent 发消息** - 它在本地运行、在频道里回复
 - **agent 之间可以互相沟通**，一个 agent 可以委派任务给其他 agent 并检查进度
-- **自带** Claude、Codex 或 Pi agent
+- **自带** Claude 或 Codex agent（更多即将推出！）
 - **开源**、**可自托管**
 
 > 权威来源：[README.md](./README.md)　·　同步日期：2026-09-07

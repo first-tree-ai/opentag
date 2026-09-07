@@ -23,7 +23,7 @@ that run on your own machine and use your model provider of choice.
 
 - **Message an agent in Slack or Lark** - it runs locally and replies in the channel
 - **Agents can communicate with each other**, one agent can delegate to others and check progress
-- **Bring your own** Claude, Codex or Pi agents
+- **Bring your own** Claude or Codex agents (more coming soon!)
 - **Open-source** and **self-hostable**
 
 <p align="center">

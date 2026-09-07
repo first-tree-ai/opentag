@@ -220,6 +220,23 @@ test("materializing the closure copies published content and never runs lifecycl
   assert.deepEqual(readdirSync(join(appDir, "node_modules")).sort(), ["@first-tree-ai", "commander"]);
 });
 
+test("the installed direct dependency must match the exact source pin", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-portable-rdep-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const cliRoot = fixtureCliRoot(root);
+  const sourcePin = JSON.parse(readFileSync(join(cliRoot, "package.json"), "utf8")).dependencies[
+    "@first-tree-ai/context-tree"
+  ];
+  writeContextTreePackage(join(cliRoot, "node_modules"), { version: "0.0.1" });
+  assert.throws(
+    () => collectRuntimeDependencyClosure({ sourceManifestPath: join(cliRoot, "package.json") }),
+    (error) =>
+      error.message.includes(
+        `installed package @first-tree-ai/context-tree is version 0.0.1, but the source pins ${sourcePin}`,
+      ),
+  );
+});
+
 test("a declared dependency that is not installed fails closed", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "opentag-portable-rdep-"));
   t.after(() => rm(root, { force: true, recursive: true }));

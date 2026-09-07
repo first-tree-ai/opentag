@@ -26,21 +26,21 @@
     "remark-gfm": "4.0.1"
   },
   "devDependencies": {
-    "@babel/parser": "7.29.8",
+    "@babel/parser": "8.0.4",
     "@inlang/paraglide-js": "2.25.0",
-    "@inlang/plugin-message-format": "4.4.3",
+    "@inlang/plugin-message-format": "4.4.4",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/router-plugin": "^1.168.35",
     "@testing-library/react": "^16.3.3",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.11",
-    "@types/react-dom": "^19.2.5",
+    "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^30.0.1",
-    "postcss": "^8.5.26",
+    "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }

@@ -384,7 +384,7 @@ test("an unauthenticated protected visit redirects to login", async ({ browser }
   try {
     await page.goto("/agents", { waitUntil: "networkidle" });
     await expect(page).toHaveURL(/\/login\?next=%2Fagents$/);
-    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to OpenTag" })).toBeVisible();
   } finally {
     await context.close();
   }
@@ -401,7 +401,7 @@ test("the screenshot pass captures every primary page and writes a contact sheet
   const screenshots = join(repositoryRoot, "e2e/screenshots");
   await mkdir(screenshots, { recursive: true });
   const pages: Array<{ file: string; route: string; heading: string }> = [
-    { file: "login", route: "/login", heading: "Welcome back" },
+    { file: "login", route: "/login", heading: "Sign in to OpenTag" },
     { file: "home", route: "/", heading: "Agents" },
     { file: "agents", route: "/agents", heading: "Agents" },
     { file: "agents-setup-create", route: "/agents/setup?action=create", heading: AGENT_SETUP_CREATE_HEADING },

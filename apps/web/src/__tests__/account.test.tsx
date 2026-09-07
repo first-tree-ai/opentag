@@ -378,7 +378,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
     const { menu: accountMenu } = await openAccountMenu();
     fireEvent.click(within(accountMenu).getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       "/api/v1/auth/browser/logout",
       expect.objectContaining({ method: "POST" }),
@@ -396,7 +396,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("link", { name: "Open Reviewer" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
 
     await act(async () => {
       window.history.pushState({}, "", "/agents");
@@ -408,7 +408,7 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));
     });
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
   });
 
   it("discards an Account refresh that outlived the session that started it", async () => {
@@ -433,7 +433,7 @@ describe("OpenTag Web App Shell", () => {
     // retire that read, because the cache never started it.
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
 
     // It left with a cookie that was still valid, so it answers for the Account that just left.
     await act(async () => {
@@ -456,7 +456,7 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));
     });
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
   });
 
   it("opens the Computers page from the account menu", async () => {

@@ -1,0 +1,51 @@
+/* Google is a third-party brand treatment, not a second OpenTag button theme.
+ * The light fill, ink, stroke and typography follow Google's HTML button configurator:
+ * https://developers.google.com/identity/branding-guidelines
+ * Keep these colors scoped to this provider. Use the shared focus token and a 44px touch target. */
+.auth-google-link {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) 1.25rem;
+  align-items: center;
+  gap: 0.625rem;
+  min-height: 2.75rem;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #747775;
+  border-radius: 0.5rem;
+  background: #fff;
+  color: #1f1f1f;
+  box-shadow: none;
+  font-family: "Roboto", Arial, sans-serif;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  text-align: center;
+  text-decoration: none;
+  transition: background-color 150ms;
+}
+
+.auth-google-link:not([aria-disabled="true"]):hover {
+  background: #f8fafd;
+}
+
+.auth-google-link:not([aria-disabled="true"]):active {
+  background: #edf0f5;
+}
+
+.auth-google-link:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: 3px;
+}
+
+.auth-google-link[aria-disabled="true"] {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-google-link {
+    transition: none;
+  }
+}

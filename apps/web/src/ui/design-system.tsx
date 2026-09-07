@@ -51,6 +51,8 @@ import {
   Copy,
   Cpu,
   DotsThreeVertical,
+  Eye,
+  EyeSlash,
   Gear,
   House,
   type IconWeight,
@@ -392,6 +394,8 @@ export type IconName =
   | "chevron-up"
   | "close"
   | "copy"
+  | "eye"
+  | "eye-slash"
   | "instructions"
   | "home"
   | "integrations"
@@ -415,6 +419,8 @@ const icons: Record<IconName, PhosphorIcon> = {
   "chevron-up": CaretUp,
   close: X,
   copy: Copy,
+  eye: Eye,
+  "eye-slash": EyeSlash,
   instructions: List,
   home: House,
   integrations: PlugsConnected,

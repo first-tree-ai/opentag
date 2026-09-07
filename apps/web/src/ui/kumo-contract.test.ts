@@ -148,6 +148,7 @@ describe("Kumo integration contract", () => {
   it("keeps module-owned stylesheet imports at reviewed seams", () => {
     const allowedImports = new Set([
       "main.tsx -> ./app.css",
+      "features/auth/login-provider-link.tsx -> ./google-sign-in.css",
       "onboarding-v2/agent-setup-page.tsx -> ./onboarding-v2.css",
       "onboarding-v2/page.tsx -> ./onboarding-v2.css",
       "setup/command-block.tsx -> ./setup.css",
@@ -174,7 +175,14 @@ describe("Kumo integration contract", () => {
   });
 
   it("keeps raw colors at the theme seam or an explicitly reviewed module stylesheet", () => {
-    const allowedFiles = new Set(["app.css", "setup/setup.css", "ui/kumo-theme.css", "ui/kumo-theme.tokens.ts"]);
+    const allowedFiles = new Set([
+      "app.css",
+      "setup/setup.css",
+      "ui/kumo-theme.css",
+      "ui/kumo-theme.tokens.ts",
+      // Google's provider identity has reviewed colors independent of the OpenTag semantic palette.
+      "features/auth/google-sign-in.css",
+    ]);
     const violations = [...productModules, ...stylesheets]
       .filter(({ content }) => hasRawColorLiteral(content))
       .map(({ path }) => path)

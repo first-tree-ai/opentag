@@ -23,8 +23,8 @@ cannot enlarge those rights.
 
 ## Assets carried in this repository
 
-Each file records where and when it came from in a comment at its top. These publisher-controlled
-files are carried only so the interface can identify a supported or previewed integration. None of
+SVG files record where and when they came from in a comment at the top; bitmap provenance is recorded below.
+These publisher-controlled files are carried only so the interface can identify a supported or previewed integration. None of
 them has been redrawn, recoloured, or restyled, and the repository licence does not relicense them.
 
 | File | Mark | Owner |
@@ -34,7 +34,7 @@ them has been redrawn, recoloured, or restyled, and the repository licence does 
 | `apps/web/src/assets/claude.svg` | Claude | Anthropic PBC |
 | `apps/web/src/assets/openai-blossom-black.svg` | OpenAI Blossom, black | OpenAI, L.L.C. |
 | `apps/web/src/assets/openai-blossom-white.svg` | OpenAI Blossom, white | OpenAI, L.L.C. |
-| `apps/web/src/assets/google-sign-in-light@2x.png` | Sign in with Google | Google LLC |
+| `apps/web/src/assets/google-g.png` | Google G | Google LLC |
 | `apps/web/src/assets/integration-github.svg` | GitHub | GitHub, Inc. |
 | `apps/web/src/assets/integration-google-drive.svg` | Google Drive | Google LLC |
 | `apps/web/src/assets/integration-linear.svg` | Linear | Linear Orbit, Inc. |
@@ -58,7 +58,9 @@ them has been redrawn, recoloured, or restyled, and the repository licence does 
   [GitHub's logo guidelines](https://brand.github.com/foundations/logo). It remains secondary to
   OpenTag and does not imply affiliation.
 - **Google.** The sign-in button follows
-  [Google's identity guidelines](https://developers.google.com/identity/branding-guidelines). The
+  [Google's identity guidelines](https://developers.google.com/identity/branding-guidelines). Its unmodified G mark was
+  retrieved from [Google's published asset](https://developers.google.com/static/identity/images/g-logo.png) on
+  2026-09-07; the button label is localized HTML text. The
   Google Drive mark identifies that integration and follows
   [Google Drive's branding guidelines](https://developers.google.com/workspace/drive/api/guides/branding).
 - **Linear.** The logo-only mark is used in a compact integrations list and follows
@@ -77,7 +79,7 @@ them has been redrawn, recoloured, or restyled, and the repository licence does 
 
 Use a file from the publisher's brand kit, media kit, or publisher-controlled website without
 changing its visible artwork. Put it in `apps/web/src/assets/`, record its source and retrieval date
-in a comment at the top, and add a row above. Source comments and non-rendering XML normalization
+in a top-of-file SVG comment or in this document for a bitmap, and add a row above. Source comments and non-rendering XML normalization
 are permitted; geometry, colours, proportions, and appearance must remain unchanged. Confirm that
 the proposed display is a truthful, narrow reference to a product or integration and is consistent
 with the owner's current guidelines. If those terms prohibit carrying the file in this repository,

@@ -2,6 +2,8 @@
 
 [English](./TRADEMARKS.md)
 
+> Last synced with: 2026-09-07
+
 OpenTag 会连接其它公司的产品。为了在界面里指明这些产品，我们展示各自权利人发布的官方标识。
 
 ## 归属
@@ -20,7 +22,8 @@ OpenTag 自己的名称与标识属于本项目，但**不**在仓库 [LICENSE](
 
 ## 仓库中携带的素材
 
-每个文件的开头都用注释记录了它的来源和获取日期。这些由发布方控制的文件仅为界面识别已支持或预览中
+SVG 文件的开头用注释记录来源和获取日期，位图的来源记录在下方。
+这些由发布方控制的文件仅为界面识别已支持或预览中
 的集成而随仓库携带。所有文件均未被重绘、改色或改样式，仓库许可证也不会把它们重新授权。
 
 | 文件 | 标识 | 权利人 |
@@ -30,7 +33,7 @@ OpenTag 自己的名称与标识属于本项目，但**不**在仓库 [LICENSE](
 | `apps/web/src/assets/claude.svg` | Claude | Anthropic PBC |
 | `apps/web/src/assets/openai-blossom-black.svg` | OpenAI Blossom（黑色） | OpenAI, L.L.C. |
 | `apps/web/src/assets/openai-blossom-white.svg` | OpenAI Blossom（白色） | OpenAI, L.L.C. |
-| `apps/web/src/assets/google-sign-in-light@2x.png` | Sign in with Google | Google LLC |
+| `apps/web/src/assets/google-g.png` | Google G | Google LLC |
 | `apps/web/src/assets/integration-github.svg` | GitHub | GitHub, Inc. |
 | `apps/web/src/assets/integration-google-drive.svg` | Google Drive | Google LLC |
 | `apps/web/src/assets/integration-linear.svg` | Linear | Linear Orbit, Inc. |
@@ -51,7 +54,8 @@ OpenTag 自己的名称与标识属于本项目，但**不**在仓库 [LICENSE](
   [GitHub 标识规范](https://brand.github.com/foundations/logo)所说明的用途。它的视觉层级低于 OpenTag，
   且不暗示关联关系。
 - **Google。** 登录按钮遵循
-  [Google 身份标识规范](https://developers.google.com/identity/branding-guidelines)。Google Drive 标识用于
+  [Google 身份标识规范](https://developers.google.com/identity/branding-guidelines)。未经修改的 G 标识于 2026-09-07
+  获取自 [Google 官方素材](https://developers.google.com/static/identity/images/g-logo.png)，按钮文案为本地化 HTML 文本。Google Drive 标识用于
   识别该集成，并遵循
   [Google Drive 品牌规范](https://developers.google.com/workspace/drive/api/guides/branding)。
 - **Linear。** 在紧凑的集成列表中使用仅含标识的版本，并遵循
@@ -67,7 +71,7 @@ OpenTag 自己的名称与标识属于本项目，但**不**在仓库 [LICENSE](
 ## 新增一个标识时
 
 使用来自发布方品牌素材包、媒体素材包或发布方控制网站的文件，并保持其可见图稿不变。把它放进
-`apps/web/src/assets/`，在文件开头的注释里记录来源与获取日期，并在上表中加一行。可以添加来源注释或进行
+`apps/web/src/assets/`，在 SVG 文件开头的注释里记录来源与获取日期；位图则在本文中记录。并在上表中加一行。可以添加来源注释或进行
 不影响渲染的 XML 规范化，但几何形状、颜色、比例和外观必须保持不变。确认展示方式真实、仅限于指明产品
 或集成，并符合权利人的现行规范。如果相关条款禁止仓库携带该文件，则在适当情况下引用权利人托管的素材，
 或不展示该标识。不得重绘、改色、添加动画，也不得与 OpenTag 自身标识组合。

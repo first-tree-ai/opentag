@@ -9,7 +9,7 @@ test.describe("320px minimum supported width", () => {
   test("keeps sign-in visible, keyboard ordered, and free of page overflow", async ({ page }) => {
     await page.goto("/agents", { waitUntil: "networkidle" });
     await expect(page).toHaveURL(/\/login\?next=%2Fagents$/);
-    await expect(page.getByRole("heading", { name: "Welcome back", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to OpenTag", exact: true })).toBeVisible();
     await expectWithinViewport(page.locator('[data-ui="login-card"]'));
     await expectNoPageOverflow(page);
 

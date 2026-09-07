@@ -213,6 +213,9 @@ describe("agent setup lab page", () => {
 
     await openControls();
     fireEvent.click(screen.getByRole("button", { name: "Additional Agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("opentag-2");
     fireEvent.click(await screen.findByRole("button", { name: "Back to agents" }));
     expect(
       await screen.findByText(
@@ -304,7 +307,7 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await chooseOption("Connected messaging app", "Slack");
-    expect(await screen.findByText("Tag @reviewer in Slack to put it to work.")).toBeTruthy();
+    expect(await screen.findByText("Tag @OpenTag in Slack to put it to work.")).toBeTruthy();
     expect(screen.getByText("1 changed")).toBeTruthy();
   });
 });

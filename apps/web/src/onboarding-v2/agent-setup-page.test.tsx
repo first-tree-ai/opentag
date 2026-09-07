@@ -259,7 +259,13 @@ describe("AgentSetupPage stages", () => {
     expect(rowDetail("runtime")).toContain("Install Codex on Review Mac, then check again.");
     expect(rowDetail("runtime")).toContain("OpenTag won't install it for you");
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    const footer = document.querySelector('[data-ui="onboarding-v2-step-2-nav"]');
+    const refresh = screen.getByRole("button", { name: "Check again" });
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(footer?.contains(refresh)).toBe(true);
+    expect(footer?.contains(continueButton)).toBe(true);
+    expect(screen.getByRole("status").textContent).toBe("Complete the action above, then check again.");
+    expect(continueButton.hasAttribute("disabled")).toBe(true);
   });
 
   it("shows a real checking observation as checking and nothing else animates", async () => {
@@ -272,6 +278,9 @@ describe("AgentSetupPage stages", () => {
     expect(rowTitle("runtime")).toContain("Codex");
     expect(rowTitle("runtime")).toContain("Checking");
     expect(rowDetail("runtime")).toContain("Checking the version and sign-in on Review Mac");
+    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
 
   it("keeps Step 2 visible when preparation passes, then moves to Messaging after Continue", async () => {
@@ -409,6 +418,21 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByText(/This install link expires/)).toBeTruthy();
   });
 
+  it("returns a conflicting Slack workspace to the messaging action with a specific recovery path", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent() });
+    renderSetup(memory.adapter, { slackOAuthError: "SLACK_APP_TEAM_ALREADY_BOUND" });
+    await settle();
+
+    expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Prepare this computer" })).toBeNull();
+    const messaging = document.querySelector('[data-ui="agent-setup-messaging"]');
+    const alert = screen.getByRole("alert");
+    expect(messaging?.contains(alert)).toBe(true);
+    expect(alert.textContent).toBe(
+      "This Slack workspace is already connected to another Agent. Disconnect it from that Agent, or choose a different workspace.",
+    );
+  });
+
   it("shows the handoff wait once an app is connected but not yet reachable", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
@@ -428,10 +452,19 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
+    expect(screen.getByRole("heading", { name: "Restore your messaging connection" })).toBeTruthy();
     expect(screen.getByText("Lark needs updated permissions.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Change bot" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
+    const recoveryActions = document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]');
+    const destructiveAction = document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]');
+    const identity = document.querySelector('[data-ui="agent-setup-messaging-identity"]');
+    expect(identity?.contains(screen.getByText("Lark"))).toBe(true);
+    expect(identity?.contains(screen.getByText("Needs attention"))).toBe(true);
+    expect(recoveryActions?.contains(screen.getByRole("button", { name: "Update permissions" }))).toBe(true);
+    expect(recoveryActions?.contains(screen.getByRole("button", { name: "Change bot" }))).toBe(true);
+    expect(destructiveAction?.contains(screen.getByRole("button", { name: "Disconnect Lark" }))).toBe(true);
     // No direct switch: the other Provider's start is not offered while a binding is current.
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
@@ -448,7 +481,7 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
     // Provider identity reaches the done screen from the snapshot, not from page state.
-    expect(screen.getByText("Tag @reviewer in Slack to put it to work.")).toBeTruthy();
+    expect(screen.getByText("Tag @OpenTag in Slack to put it to work.")).toBeTruthy();
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
     expect(onReady).toHaveBeenCalledTimes(1);
   });
@@ -695,7 +728,7 @@ describe("AgentSetupPage transitions", () => {
     expect(calls).toBe(3);
   });
 
-  it("keeps automatic reads single-flight across a manual restart and fences the stale reply", async () => {
+  it("keeps automatic reads single-flight across an external refresh and fences the stale reply", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
     const modelRead = memory.adapter.readSnapshot;
     const slow = deferred<AgentSetupSnapshot>();
@@ -711,7 +744,12 @@ describe("AgentSetupPage transitions", () => {
       }
       return snapshot;
     });
-    renderSetup(memory.adapter);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <AgentSetupPage adapter={memory.adapter} agentId={SETUP_AGENT_ID} refreshSignal={0} />
+      </QueryClientProvider>,
+    );
     await settle();
     expect(calls).toBe(1);
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
@@ -719,8 +757,13 @@ describe("AgentSetupPage transitions", () => {
     await advance(POLL_MS + 10);
     expect(calls).toBe(2);
 
-    // An explicit Check again supersedes the hanging poll and re-reads immediately.
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    // A Lab-side mutation supersedes the hanging poll and re-reads immediately. The in-progress
+    // UI deliberately has no Check again action because automatic checking needs no user input.
+    view.rerender(
+      <QueryClientProvider client={queryClient}>
+        <AgentSetupPage adapter={memory.adapter} agentId={SETUP_AGENT_ID} refreshSignal={1} />
+      </QueryClientProvider>,
+    );
     await settle();
     expect(calls).toBe(3);
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
@@ -1243,6 +1286,28 @@ describe("AgentSetupPage preparation polling", () => {
 
     await advance(POLL_MS * 4);
     expect(reads).toHaveBeenCalledTimes(31);
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+
+  it("clears an exhausted checking message when the final poll finds a manual action", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "checking" });
+    const modelRead = memory.adapter.readSnapshot;
+    let reads = 0;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation(async (agentId) => {
+      reads += 1;
+      if (reads === 31) memory.controls.setRuntimeStatus("install");
+      return modelRead(agentId);
+    });
+    renderSetup(memory.adapter);
+    await settle();
+
+    await advance(POLL_MS * 31 + 10);
+    await settle();
+
+    expect(reads).toBe(31);
+    expect(screen.getByRole("status").textContent).toBe("Complete the action above, then check again.");
+    expect(screen.queryByText("Automatic checking paused. Check again to retry.")).toBeNull();
   });
 
   it("polls while one blocking required CLI is transitional, even beside a settled row", async () => {

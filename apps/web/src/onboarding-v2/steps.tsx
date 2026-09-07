@@ -335,6 +335,7 @@ export function DoneStep({
   name: string;
   provider?: ImProvider;
 }) {
+  const providerMention = provider === "slack" ? "OpenTag" : name;
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -350,7 +351,10 @@ export function DoneStep({
         <p className="text-kumo-subtle m-0">
           {provider
             ? spaceScriptBoundary(
-                m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
+                m.onboarding_v2_done_description({
+                  mention: providerMention,
+                  provider: messagingProviderLabel(provider),
+                }),
               )
             : m.onboarding_v2_done_description_any_app({ name })}
         </p>

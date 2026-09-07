@@ -30,17 +30,21 @@ type TargetResolution =
   | { kind: "loading" }
   | { kind: "read-failed" }
   | { kind: "unavailable" }
-  | { kind: "create" }
+  | { kind: "create"; existingAgentNames: readonly string[] }
   | { kind: "redirect"; agentId: string }
   | { kind: "choice"; agents: readonly ActiveAgentTarget[] }
   | { kind: "exact"; agentId: string };
 
-function resolveTargets(agentId: string | undefined, active: readonly ActiveAgentTarget[]): TargetResolution {
+function resolveTargets(
+  agentId: string | undefined,
+  active: readonly ActiveAgentTarget[],
+  existingAgentNames: readonly string[],
+): TargetResolution {
   if (agentId !== undefined) {
     return active.some((candidate) => candidate.id === agentId) ? { kind: "exact", agentId } : { kind: "unavailable" };
   }
   const [single] = active;
-  if (active.length === 0) return { kind: "create" };
+  if (active.length === 0) return { kind: "create", existingAgentNames };
   if (active.length === 1 && single) return { agentId: single.id, kind: "redirect" };
   return { agents: active, kind: "choice" };
 }
@@ -153,12 +157,6 @@ function TargetedAgentSetup({
         live = false;
       };
     }
-    if (action === "create") {
-      setResolution({ kind: "create" });
-      return () => {
-        live = false;
-      };
-    }
     // A malformed id can never become valid by asking the Server, so nothing is asked.
     if (agentId !== undefined && !AGENT_ID_PATTERN.test(agentId)) {
       setResolution({ kind: "unavailable" });
@@ -169,10 +167,15 @@ function TargetedAgentSetup({
     void browserApi.agents().then(
       ({ agents }) => {
         if (!live) return;
+        const existingAgentNames = agents.map((candidate) => candidate.name);
+        if (action === "create") {
+          setResolution({ kind: "create", existingAgentNames });
+          return;
+        }
         const active = agents.flatMap((candidate) =>
           candidate.status === "active" ? [{ displayName: candidate.displayName, id: candidate.id }] : [],
         );
-        setResolution(resolveTargets(agentId, active));
+        setResolution(resolveTargets(agentId, active, existingAgentNames));
       },
       // A failed read is not "you must be new": treating it as zero would offer a creation form
       // that ends at a name collision, so the failure is named and the read offered again.
@@ -280,7 +283,11 @@ function TargetedAgentSetup({
   }
 
   return (
-    <AgentSetupSurface onBackToAgents={accountCompleted ? onBackToAgents : undefined} onAgentAvailable={onTarget} />
+    <AgentSetupSurface
+      existingAgentNames={resolution.existingAgentNames}
+      onBackToAgents={accountCompleted ? onBackToAgents : undefined}
+      onAgentAvailable={onTarget}
+    />
   );
 }
 

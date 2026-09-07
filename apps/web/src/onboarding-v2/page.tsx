@@ -67,6 +67,7 @@ export function AgentSetupSurface({
   computerAdapter,
   creationPreview,
   creationPreviewInitialView,
+  existingAgentNames,
   onCreationPreviewViewChange,
   onBackToAgents,
   onAgentAvailable,
@@ -84,6 +85,7 @@ export function AgentSetupSurface({
   computerAdapter?: AgentSetupPageProps["computerAdapter"];
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   creationPreviewInitialView?: CreationPreviewView;
+  existingAgentNames?: readonly string[];
   onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
@@ -118,6 +120,7 @@ export function AgentSetupSurface({
     <AgentCreatePage
       creationPreview={creationPreview}
       creationPreviewInitialView={creationPreviewInitialView}
+      existingAgentNames={existingAgentNames}
       onCreationPreviewViewChange={onCreationPreviewViewChange}
       onAgentAvailable={onAgentAvailable}
       onBackToAgents={onBackToAgents}
@@ -128,18 +131,20 @@ export function AgentSetupSurface({
 function AgentCreatePage({
   creationPreview,
   creationPreviewInitialView = "destination",
+  existingAgentNames = [],
   onCreationPreviewViewChange,
   onAgentAvailable,
   onBackToAgents,
 }: {
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
   creationPreviewInitialView?: CreationPreviewView;
+  existingAgentNames?: readonly string[];
   onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
   const [draft, setDraft] = useState<AgentDraft>(() => {
-    const initial = emptyDraft();
+    const initial = emptyDraft(existingAgentNames);
     return creationPreviewInitialView === "agent" ? { ...initial, destination: "local" } : initial;
   });
   const [destinationConfirmed, setDestinationConfirmed] = useState(creationPreviewInitialView === "agent");

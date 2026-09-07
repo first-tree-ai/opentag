@@ -183,10 +183,63 @@
   justify-content: space-between;
   gap: 1rem;
   min-height: 40px;
+  margin-top: 0.5rem;
+}
+
+.otv2-step-footer__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
 }
 
 .otv2-step-footer__action {
   min-width: 7rem;
+}
+
+.otv2-inline-spinner {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 9999px;
+  animation: otv2-inline-spin 800ms linear infinite;
+}
+
+@keyframes otv2-inline-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Destructive Messaging actions stay in the same section without needing a decorative rule. */
+.otv2-destructive-action {
+  border-top: 0;
+  margin-top: 0.5rem;
+}
+
+/* Recovery is one compact task group; its status stays attached to the Provider it describes. */
+.otv2-messaging-recovery {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1rem;
+  width: 100%;
+  max-width: 36rem;
+}
+
+.otv2-messaging-recovery__identity,
+.otv2-messaging-recovery__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+/* Combined with the recovery group's 16px gap, this leaves 32px before the destructive exit. */
+.otv2-messaging-recovery > .otv2-destructive-action {
+  margin-top: 1rem;
 }
 
 /* Cards sit side by side wherever two tracks fit, and stack when they do not. */
@@ -237,8 +290,28 @@
     align-items: stretch;
   }
 
-  .otv2-step-footer__action {
+  .otv2-step-footer__actions {
+    flex-direction: column;
+    align-items: stretch;
     width: 100%;
+  }
+
+  .otv2-step-footer__action,
+  .otv2-step-footer .otv2-step-footer__secondary-action {
+    width: 100%;
+  }
+
+  .otv2-messaging-recovery__actions,
+  .otv2-messaging-recovery > .otv2-destructive-action,
+  .otv2-messaging-recovery__actions > button,
+  .otv2-messaging-recovery > .otv2-destructive-action > button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .otv2-inline-spinner {
+    animation: none;
   }
 }
 

@@ -302,7 +302,7 @@ describe("F6 cross-layer gating, page level", () => {
     }
     expect(rowTitle("runtime")).toContain("Codex");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
-    expect(screen.getByRole("status").textContent).toBe("You can continue when this computer is ready.");
+    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
     expect(screen.queryByText("Checking")).toBeNull();
     expect(screen.queryByText("Installing")).toBeNull();
     expect(screen.queryByText("Installation required")).toBeNull();

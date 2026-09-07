@@ -121,7 +121,7 @@ describe("Agent Setup route boundary", () => {
     expect(agentCreationPosts()).toHaveLength(0);
   });
 
-  it("starts explicit creation without resolving existing Agents, then canonicalizes to the created Agent", async () => {
+  it("starts explicit creation with an available default name, then canonicalizes to the created Agent", async () => {
     installAgentSetupApi();
     window.history.replaceState({}, "", "/agents/setup?action=create");
     render(<App />);
@@ -137,8 +137,34 @@ describe("Agent Setup route boundary", () => {
     expect(posts).toHaveLength(1);
     const body = JSON.parse(String(posts[0]?.[1]?.body)) as Record<string, unknown>;
     expect(body.runtimeProvider).toBe("codex");
+    expect(body.name).toBe("opentag");
     expect(body).not.toHaveProperty("creationIntentId");
     expect(body).not.toHaveProperty("computerId");
+  });
+
+  it("suggests the first available numbered name for an additional Agent", async () => {
+    installAgentSetupApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (input === "/api/v1/agents" && init?.method === undefined) {
+        return json({
+          agents: [
+            { ...agentListItem, name: "opentag", displayName: "OpenTag" },
+            { ...secondAgentListItem, name: "opentag-2", displayName: "OpenTag 2", status: "suspended" },
+          ],
+        });
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents/setup?action=create");
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect((screen.getByLabelText("Agent name") as HTMLInputElement).value).toBe("opentag-3");
+    expect(agentListReads()).toHaveLength(1);
   });
 
   it("fails closed when action=create conflicts with an exact target", async () => {
@@ -381,8 +407,10 @@ describe("Agent Setup route boundary", () => {
     installAgentSetupApi();
     const fallback = vi.mocked(fetch).getMockImplementation();
     if (!fallback) throw new Error("installAgentSetupApi did not install fetch");
+    let creationAttempted = false;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       if (input === "/api/v1/agents" && init?.method === "POST") {
+        creationAttempted = true;
         return json(
           {
             error: {
@@ -394,7 +422,7 @@ describe("Agent Setup route boundary", () => {
           409,
         );
       }
-      if (input === "/api/v1/agents" && init?.method === undefined) {
+      if (input === "/api/v1/agents" && init?.method === undefined && creationAttempted) {
         throw new TypeError("Connection closed before the result arrived");
       }
       return fallback(input, init);

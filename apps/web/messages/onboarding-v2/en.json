@@ -190,7 +190,7 @@
   "onboarding_v2_runtime_codex_title": "Codex",
   "onboarding_v2_setup_computer_rebind": "{computerName} belongs to another Account. Choose a Computer owned by this Account for {name}.",
   "onboarding_v2_setup_load_failed": "We couldn't read your agent's setup.",
-  "onboarding_v2_setup_messaging_auth_failed": "The {provider} authorization didn't complete. Disconnect this incomplete connection, then start again.",
+  "onboarding_v2_setup_messaging_auth_failed": "{provider} authorization didn't complete. Disconnect {provider}, then reconnect it.",
   "onboarding_v2_setup_messaging_computer_attention": "Repair the {provider} connection in the coding agent on this computer, then check again.",
   "onboarding_v2_setup_messaging_confirming_computer": "Confirming the computer can connect to {provider}…",
   "onboarding_v2_setup_messaging_needs_attention": "Needs attention",

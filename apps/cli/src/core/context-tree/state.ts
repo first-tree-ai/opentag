@@ -34,11 +34,11 @@ export async function readContextTreeState(deps: ContextTreeCommandDeps = {}): P
   if (!assets) return { configPath, target, tree: "unknown", detail: "the Context Tree package is missing" };
 
   if (configured.kind === "path") {
-    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", configured.path]);
+    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", configured.path, "--json"]);
     if (failureCode === undefined) return { configPath, target, tree: "valid" };
     return { configPath, target, tree: "invalid", detail: failureCode };
   }
-  const { payload, failureCode } = await runContextTreeCli(assets, ["list"]);
+  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"]);
   if (failureCode !== undefined) return { configPath, target, tree: "unknown", detail: failureCode };
   const trees = (payload as { trees?: readonly { name?: unknown; tree?: { repository?: unknown } }[] }).trees ?? [];
   if (configured.kind === "managed") {

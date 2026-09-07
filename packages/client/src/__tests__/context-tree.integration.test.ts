@@ -58,7 +58,9 @@ async function isolatedAccount(prefix: string): Promise<{
   );
   const environment: NodeJS.ProcessEnv = { HOME: accountHome, PATH: process.env.PATH };
   const seed = await temporaryDirectory(`${prefix}-seed-`);
-  const { treePath } = (await runCli(["create", "--project-path", seed], environment)) as { treePath: string };
+  const { treePath } = (await runCli(["create", "--project-path", seed, "--json"], environment)) as {
+    treePath: string;
+  };
 
   previousHome = process.env.HOME;
   homeWasSet = true;
@@ -105,6 +107,12 @@ describe("Context Tree end-to-end", () => {
     // Sharing one tree across Agents is the point of the feature, so both must land on it.
     await expect(manager.ensureAgent(workspaceB)).resolves.toEqual(first);
 
+    for (const workspace of [workspaceA, workspaceB]) {
+      for (const file of ["AGENTS.md", "CLAUDE.md"]) {
+        await expect(readFile(join(workspace, file))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    }
+
     // Each workspace carries the skills Claude Code discovers under `--setting-sources project`.
     for (const workspace of [workspaceA, workspaceB]) {
       await expect(
@@ -116,7 +124,7 @@ describe("Context Tree end-to-end", () => {
     ).resolves.toContain("context-tree");
 
     // Exactly what a Session does: run the bare command name with the shim directory on PATH.
-    const { stdout } = await execFileAsync("context-tree", ["resolve", "--project-path", workspaceA], {
+    const { stdout } = await execFileAsync("context-tree", ["resolve", "--project-path", workspaceA, "--json"], {
       encoding: "utf8",
       env: { HOME: accountHome, PATH: `${manager.binDirectory()}${delimiter}${process.env.PATH ?? ""}` },
     });
@@ -197,7 +205,7 @@ describe("Context Tree end-to-end", () => {
 
     // Agent B, in a different workspace, reads it from the shared tree.
     const read = (await runCli(
-      ["read", "members/researcher-agent/memory.md", "--tree-path", treePath],
+      ["read", "members/researcher-agent/memory.md", "--tree-path", treePath, "--json"],
       environment,
     )) as { node: { body: string } };
     expect(read.node.body).toContain("Prefer the repository formatter");

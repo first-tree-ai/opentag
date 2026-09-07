@@ -106,7 +106,7 @@ export function codexInstallSkipReason(payload: unknown): string | undefined {
 
 /** `connect` arguments for one target kind, mirroring the CLI's own argument shape. */
 function connectArguments(target: ContextTreeConfig["target"], projectPath: string): readonly string[] {
-  const project = ["--project-path", projectPath];
+  const project = ["--project-path", projectPath, "--json"];
   if (target.kind === "managed") return ["connect", target.name, ...project];
   if (target.kind === "github") return ["connect", target.repository, ...project];
   return ["connect", "--tree-path", target.path, ...project];

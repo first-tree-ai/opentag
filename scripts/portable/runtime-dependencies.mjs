@@ -583,7 +583,7 @@ export function runContextTreeRuntimeProbe({ appDir, nodePath, homeDir, probeOpe
   }
   let listing;
   try {
-    listing = JSON.parse(runNode(nodePath, [cliPath, "list"], cleanEnv).stdout.trim());
+    listing = JSON.parse(runNode(nodePath, [cliPath, "list", "--json"], cleanEnv).stdout.trim());
   } catch {
     fail("embedded Context Tree list did not emit its JSON payload");
   }

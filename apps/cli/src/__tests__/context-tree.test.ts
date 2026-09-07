@@ -33,6 +33,7 @@ async function fakeCli(responses: Readonly<Record<string, unknown>>): Promise<Co
   await writeFile(
     cliPath,
     `const table = ${JSON.stringify(responses)};
+if (!process.argv.includes("--json")) { process.stdout.write("Human-readable text"); process.exit(0); }
 const entry = table[process.argv[2]];
 if (entry === undefined) { process.stdout.write(JSON.stringify({ error: { code: "UNKNOWN", message: "" }, ok: false })); process.exit(1); }
 process.stdout.write(JSON.stringify(entry.payload));

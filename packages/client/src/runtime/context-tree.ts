@@ -200,6 +200,8 @@ export class ContextTreeManager {
   readonly #cooldown = new Map<string, { target: string; status: ContextTreeStatus; until: number }>();
   readonly #inFlight = new Map<string, { target: string; promise: Promise<ContextTreeStatus> }>();
   readonly #observedTarget = new Map<string, string>();
+  #shimPreparation: Promise<boolean> | undefined;
+  #shimRetryAt = 0;
   #pending: Promise<unknown> = Promise.resolve();
 
   constructor(options: ContextTreeManagerOptions) {
@@ -231,18 +233,22 @@ export class ContextTreeManager {
    * connection from writing into a workspace still mid-migration.
    */
   async ensureAgent(cwd: string): Promise<ContextTreeStatus> {
-    if (!this.#package) return { status: "unavailable", reason: "PACKAGE_MISSING" };
-    const shim = await this.#writeShim().catch((error: unknown) => {
-      this.#logger.warn({ err: describe(error) }, "Context Tree shim could not be created");
-      return false;
-    });
-    if (!shim) return { status: "unavailable", reason: "SHIM_UNAVAILABLE" };
+    return this.#withinSessionStartBudget(this.#prepareAgent(cwd));
+  }
+
+  async #prepareAgent(cwd: string): Promise<ContextTreeStatus> {
+    const executableFailure = !this.#package
+      ? "PACKAGE_MISSING"
+      : (await this.#prepareShim())
+        ? undefined
+        : "SHIM_UNAVAILABLE";
 
     // Read the configuration before consulting the cache. `opentag context-tree connect` only
     // writes the file, so a Computer configured after this daemon started must still activate,
     // and an entry recorded under another target must never be served for this one.
     const config = await this.readConfig();
-    if (!config) return { status: "unconfigured" };
+    if (!config)
+      return executableFailure ? { status: "unavailable", reason: executableFailure } : { status: "unconfigured" };
     const target = formatContextTreeTarget(config.target);
     if (this.#observedTarget.get(cwd) !== target) {
       this.#observedTarget.set(cwd, target);
@@ -254,7 +260,7 @@ export class ContextTreeManager {
     const cooling = this.#cooldown.get(cwd);
     if (cooling?.target === target && cooling.until > Date.now()) return cooling.status;
     if (cooling) this.#cooldown.delete(cwd);
-    return this.#withinSessionStartBudget(this.#joinPreparation(cwd, config, target));
+    return this.#joinPreparation(cwd, config, target, executableFailure);
   }
 
   async readConfig(): Promise<ContextTreeConfig | undefined> {
@@ -322,6 +328,22 @@ export class ContextTreeManager {
    * The shim pins the same Node.js runtime OpenTag uses, so a Session cannot resolve a different
    * one from the user's shell configuration.
    */
+  #prepareShim(): Promise<boolean> {
+    if (this.#shimPreparation && Date.now() < this.#shimRetryAt) return this.#shimPreparation;
+    if (this.#shimPreparation && this.#shimRetryAt === 0) return this.#shimPreparation;
+    this.#shimRetryAt = 0;
+    this.#shimPreparation = this.#writeShim()
+      .catch((error: unknown) => {
+        this.#logger.warn({ err: describe(error) }, "Context Tree shim could not be created");
+        return false;
+      })
+      .then((success) => {
+        if (!success) this.#shimRetryAt = Date.now() + this.#failureCooldownMs;
+        return success;
+      });
+    return this.#shimPreparation;
+  }
+
   async #writeShim(): Promise<boolean> {
     if (!this.#package) return false;
     if (this.#platform === "win32") {
@@ -348,12 +370,19 @@ export class ContextTreeManager {
     return { status: "unavailable", reason };
   }
 
-  #joinPreparation(cwd: string, config: ContextTreeConfig, target: string): Promise<ContextTreeStatus> {
+  #joinPreparation(
+    cwd: string,
+    config: ContextTreeConfig,
+    target: string,
+    executableFailure?: string,
+  ): Promise<ContextTreeStatus> {
     const current = this.#inFlight.get(cwd);
     if (current?.target === target) return current.promise;
     // The CLI's connection store has no cross-process lock, so background work remains serialized
     // even though Session callers stop waiting after their short budget.
-    const prepared = this.#serialize(() => this.#ensureAgentOnce(cwd, config)).catch((error: unknown) => {
+    const prepared = this.#serialize(async () =>
+      executableFailure ? this.#unavailable(executableFailure, config) : this.#ensureAgentOnce(cwd, config),
+    ).catch((error: unknown) => {
       this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
       return { status: "unavailable", reason: "CLI_FAILED" } as const;
     });

@@ -79,6 +79,10 @@ The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree.js
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
 reinterpreting it.
 
+Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
+still applies when reading it, but direct edits bypass command-level target validation. Later
+Provider Runtime starts consume the changed target.
+
 `connect` validates without side effects: `list` for a managed name, `verify` for an exact path.
 It deliberately does not connect a throwaway project directory to test a target, because that
 would leave a stale record in the CLI's connection store and write instruction files into it.
@@ -120,7 +124,7 @@ admission, so work placed there would run per Turn.
 The CLI replaces its connection store atomically but without a cross-process lock, so concurrent
 read-modify-write can lose unrelated records. OpenTag serializes its own invocations behind one
 in-process mutex. Concurrent starts for the same workspace join one in-flight preparation.
-Session start races that work against a 5-second budget: if preparation is still running, the
+Session start races the full pipeline, including shim preparation and configuration reads, against a 5-second budget: if preparation is still running, the
 Session receives `PREPARING` and starts without durable memory while the serialized work continues
 in the background. A completed success is cached per workspace and target. A failure is held in a
 one-minute cooldown, limiting an unreachable target to one attempt per minute per workspace while
@@ -162,6 +166,12 @@ CLI with the same Node.js runtime OpenTag itself uses, so a Session cannot resol
 from the user's shell configuration. That directory is prepended to the Provider `PATH` during
 Client composition, unconditionally — it is a stable OpenTag-owned path, and a directory that does
 not exist yet is inert on `PATH`.
+
+Shim preparation is shared across workspaces and cached after success for the manager's lifetime;
+restart the daemon to refresh it. Failed preparation retries after the one-minute cooldown.
+Configured package and shim failures replace the durable preparation record and use the workspace
+cooldown. Without a target they remain unavailable statuses without creating a preparation record;
+they are distinct from ordinary unconfigured state.
 
 The shim is prepared before checking Computer configuration, so an unconfigured Computer can run
 the bundled command without creating or connecting a tree. Preparation failures retain the existing
@@ -227,6 +237,11 @@ This mutates user configuration, which an earlier revision of this document reje
 a managed `CODEX_HOME`. That option was dropped because it changes provider artifact identity,
 invalidating existing bindings, and forces a visible one-time `codex login` in the managed home.
 Writing one owned, reversible skill directory is the smaller intrusion.
+
+OpenTag creates the Computer config directory before granting access. Linux grants that directory,
+allowing initial file creation, atomic replacement, and changes to sibling configuration files.
+macOS retains the Context Tree config-file grant. If directory creation fails, OpenTag logs the
+failure and starts the provider without that grant, preserving workspace, Slack, and tree grants.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather
@@ -370,3 +385,20 @@ the dependency from the published bundle.
 - Windows support, which needs Provider lifecycle, path, lock, and isolated-home CI coverage
   first. The shim is POSIX and reports `shim_unavailable` elsewhere.
 - Any Provider beyond Codex and Claude Code.
+
+### Linux configuration-grant smoke verification (2026-09-08)
+
+An offline smoke run used Codex CLI 0.114.0 (Linux aarch64), Node 24 in Docker,
+and the built OpenTag CLI with Context Tree 0.1.11. The container used
+`--network none --security-opt seccomp=unconfined`; Codex itself actively enforced
+`sandbox linux --full-auto` with
+`sandbox_workspace_write.writable_roots=["/computer/config"]`, cwd `/workspace`.
+Codex's `sandbox_workspace_write.network_access=true` allowed Node's local subprocess
+machinery; Docker still disabled external networking. With Codex network access disabled,
+Node subprocess creation returned `EPERM`, so that configuration did not complete the smoke.
+
+After creating two real local trees outside the sandbox, the sandboxed OpenTag command
+created an absent `/computer/config/context-tree.json` with
+`context-tree connect --tree-path <first-tree>`, then replaced it with the second target.
+A write to `/computer/unrelated` failed with `Permission denied`, confirming filesystem
+enforcement outside the granted directory. This was not an unsandboxed container run.

@@ -261,7 +261,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // never throws, so a failure only changes what the prompt reports.
     const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
     const homeLayout = resolveOpenTagHomeLayout(this.#home);
-    await mkdir(homeLayout.config, { mode: 0o700, recursive: true });
+    const configurationRoots = await prepareConfigurationRoots(homeLayout);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -292,7 +292,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             managed.binding.sessionId,
             this.#slackConfigWritableRoot,
           ),
-          homeLayout.contextTreeConfigFile,
+          ...configurationRoots,
           ...contextTree.writableRoots,
         ],
       },
@@ -505,4 +505,17 @@ function visibleProviderCliPath(
   resolveLaunchPath: ((sessionId: string) => string | undefined) | undefined,
 ): { pathPrepend?: string } {
   return managed.sessionKind === "visible" ? { pathPrepend: resolveLaunchPath?.(managed.binding.sessionId) } : {};
+}
+
+async function prepareConfigurationRoots(layout: ReturnType<typeof resolveOpenTagHomeLayout>): Promise<string[]> {
+  try {
+    await mkdir(layout.config, { mode: 0o700, recursive: true });
+    return [process.platform === "linux" ? layout.config : layout.contextTreeConfigFile];
+  } catch (error) {
+    logger.warn(
+      { err: error instanceof Error ? error.name : "unknown" },
+      "Computer configuration directory could not be created",
+    );
+    return [];
+  }
 }

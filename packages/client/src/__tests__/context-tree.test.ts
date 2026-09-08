@@ -9,6 +9,7 @@ import {
   contextTreeFailureCode,
   resolveContextTreePackage,
 } from "../runtime/context-tree.js";
+import * as durableFile from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
 const directories: string[] = [];
@@ -298,6 +299,103 @@ describe("ContextTreeManager", () => {
       },
       { interval: 5, timeout: 1_000 },
     );
+  });
+
+  it("shares successful shim preparation across concurrent and repeated starts", async () => {
+    const { home, manager, cwd } = await computer();
+    const writes = vi.spyOn(durableFile, "writeDurableFile");
+    await Promise.all([manager.ensureAgent(cwd), manager.ensureAgent(`${cwd}-other`)]);
+    const shim = join(resolveOpenTagHomeLayout(home).contextTreeBin, "context-tree");
+    const before = await stat(shim);
+    await manager.ensureAgent(cwd);
+    expect((await stat(shim)).ino).toBe(before.ino);
+    expect((await stat(shim)).mtimeMs).toBe(before.mtimeMs);
+    expect(writes).toHaveBeenCalledTimes(1);
+    writes.mockRestore();
+  });
+
+  it("bounds stalled shim preparation and shares its background work", async () => {
+    const { manager, cwd } = await computer({ sessionStartBudgetMs: 10 });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = durableFile.writeDurableFile;
+    const writes = vi.spyOn(durableFile, "writeDurableFile").mockImplementation(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    try {
+      expect(await Promise.all([manager.ensureAgent(cwd), manager.ensureAgent(`${cwd}-other`)])).toEqual([
+        { status: "unavailable", reason: "PREPARING" },
+        { status: "unavailable", reason: "PREPARING" },
+      ]);
+      expect(writes).toHaveBeenCalledTimes(1);
+      release();
+      await vi.waitFor(async () => {
+        await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
+      });
+    } finally {
+      release();
+      writes.mockRestore();
+    }
+  });
+
+  it("bounds stalled configuration reads", async () => {
+    const { manager, cwd } = await computer({ sessionStartBudgetMs: 10 });
+    let release!: (value: undefined) => void;
+    vi.spyOn(manager, "readConfig").mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unavailable", reason: "PREPARING" });
+    release(undefined);
+  });
+
+  it.each([
+    { packaged: false as const, reason: "PACKAGE_MISSING" },
+    { platform: "win32" as const, reason: "SHIM_UNAVAILABLE" },
+  ])("replaces stale records for configured $reason", async (options) => {
+    const { home, manager, cwd } = await computer({ ...options, target: managed });
+    const file = resolveOpenTagHomeLayout(home).contextTreePreparationFile;
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(
+      file,
+      JSON.stringify({
+        schemaVersion: 1,
+        target: "old",
+        status: "unavailable",
+        reason: "OLD",
+        at: new Date().toISOString(),
+      }),
+    );
+    await manager.ensureAgent(cwd);
+    expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ reason: options.reason, target: managed.name });
+    const recorded = await stat(file);
+    await manager.ensureAgent(cwd);
+    expect((await stat(file)).mtimeMs).toBe(recorded.mtimeMs);
+
+    const unconfigured = await computer(options);
+    await expect(unconfigured.manager.ensureAgent(unconfigured.cwd)).resolves.toEqual({
+      status: "unavailable",
+      reason: options.reason,
+    });
+    await expect(stat(resolveOpenTagHomeLayout(unconfigured.home).contextTreePreparationFile)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("retries failed shim preparation after cooldown and recovers", async () => {
+    const { home, manager, cwd } = await computer({ failureCooldownMs: 30 });
+    const bin = resolveOpenTagHomeLayout(home).contextTreeBin;
+    await mkdir(join(bin, ".."), { recursive: true });
+    await writeFile(bin, "blocked");
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unavailable", reason: "SHIM_UNAVAILABLE" });
+    await rm(bin);
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unavailable", reason: "SHIM_UNAVAILABLE" });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
   });
 
   it("degrades on a platform with no shim, and on unreadable configuration", async () => {

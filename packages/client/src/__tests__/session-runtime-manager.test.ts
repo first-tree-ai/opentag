@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -52,9 +52,10 @@ afterEach(async () => {
 });
 
 describe("SessionRuntimeManager", () => {
-  it("materializes a runtime-managed proof for internal Sessions without exposing IM credentials", async () => {
+  it.each([false, true])("starts internal Sessions with configuration directory failure=%s", async (configFailure) => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
     homes.push(home);
+    if (configFailure) await writeFile(resolve(home, "config"), "blocked");
     const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
@@ -96,10 +97,12 @@ describe("SessionRuntimeManager", () => {
     });
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,
-      resolve(home, "config/context-tree.json"),
+      ...(configFailure ? [] : [resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json")]),
     ]);
-    expect((await stat(resolve(home, "config"))).isDirectory()).toBe(true);
-    await expect(stat(resolve(home, "config/context-tree.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(resolve(home, "config"))).isDirectory()).toBe(!configFailure);
+    await expect(stat(resolve(home, "config/context-tree.json"))).rejects.toMatchObject({
+      code: configFailure ? "ENOTDIR" : "ENOENT",
+    });
     expect(factory.created[0]?.hostedTools).toBeUndefined();
     expect(factory.created[0]?.systemPrompt).toContain("opentag-dev session send");
     expect(factory.created[0]?.systemPrompt).toContain(
@@ -154,7 +157,7 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,
       slackLeaf,
-      resolve(home, "config/context-tree.json"),
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
     ]);
     expect(factory.created[0]?.workspace.writableRoots).not.toContain(parentCredentials);
     expect(factory.created[0]?.workspace.environment).toMatchObject({
@@ -191,7 +194,7 @@ describe("SessionRuntimeManager", () => {
     expect(internalResolved).toEqual([]);
     expect(internalFactory.created[0]?.workspace.writableRoots).toEqual([
       internalFactory.created[0]?.workspace.cwd,
-      resolve(home, "config/context-tree.json"),
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
     ]);
     expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("OPENTAG_PROVIDER_ENV_FILE");
 
@@ -215,7 +218,7 @@ describe("SessionRuntimeManager", () => {
     await feishuManager.ensureRuntime(feishuRequest.sessionId);
     expect(feishuFactory.created[0]?.workspace.writableRoots).toEqual([
       feishuFactory.created[0]?.workspace.cwd,
-      resolve(home, "config/context-tree.json"),
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
     ]);
 
     await manager.close();
@@ -311,7 +314,11 @@ describe("SessionRuntimeManager", () => {
     const cwd = await workspace.cwd(request.agentId);
     expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
     // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
-    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree.json"), treePath]);
+    expect(created?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
+      treePath,
+    ]);
     expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
     expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
     await manager.close();
@@ -347,7 +354,10 @@ describe("SessionRuntimeManager", () => {
 
     const created = factory.created[0];
     const cwd = await workspace.cwd(request.agentId);
-    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree.json")]);
+    expect(created?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
+    ]);
     expect(created?.systemPrompt).toContain("Context Tree unavailable (DIRTY_TREE)");
     expect(created?.systemPrompt).toContain("Do not assume earlier decisions were recorded");
     await manager.close();
@@ -417,8 +427,14 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created).toHaveLength(2);
     expect(factory.created[0]?.workspace.cwd).toBe(cwd);
     expect(factory.created[1]?.workspace.cwd).toBe(cwd);
-    expect(factory.created[0]?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree.json")]);
-    expect(factory.created[1]?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree.json")]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
+    ]);
+    expect(factory.created[1]?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(home, process.platform === "linux" ? "config" : "config/context-tree.json"),
+    ]);
     expect(factory.created[0]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
     expect(factory.created[1]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
     expect(factory.created[0]?.systemPrompt).toContain("source-repos/<unique-repo-key>/");
@@ -479,7 +495,7 @@ describe("SessionRuntimeManager", () => {
     await manager.ensureRuntime("session-1");
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,
-      resolve(process.env.OPENTAG_HOME as string, "config/context-tree.json"),
+      resolve(process.env.OPENTAG_HOME as string, process.platform === "linux" ? "config" : "config/context-tree.json"),
     ]);
     expect((await stat(resolve(process.env.OPENTAG_HOME as string, "config"))).isDirectory()).toBe(true);
     await manager.ensureRuntime("session-1", new AbortController().signal);

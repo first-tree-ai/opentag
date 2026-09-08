@@ -1,7 +1,7 @@
 # OpenTag Portable 发布指南
 
 > Canonical source: [../portable-release.md](../portable-release.md)
-> Last synced with: 2026-09-03
+> Last synced with: 2026-09-07
 
 Portable release 是一份自包含的 OpenTag 安装包：每个平台一个 tarball，同时携带 bundle 后的 CLI **和它自己的
 Node.js runtime**，因此没有 Node.js、没有 npm、没有任何 package manager 的机器也能安装并运行 OpenTag。它发布到
@@ -18,7 +18,7 @@ identity 改写和相同的 version coordinate，coordinate 的推导方式见 [
 ## 安装
 
 ~~~bash
-curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
+curl -fsSL https://dl.opentag.build/releases/prod/install.sh | sh
 ~~~
 
 installer 会解析 channel 的 `latest.json`，下载所检测平台对应的 tarball，校验其已发布的 SHA-256，解压，运行一次新
@@ -107,8 +107,9 @@ daemon 的 updater 遵循严格的契约：
 <prefix>/<channel>/<version>/<package>-<version>-<platform>.tar.gz
 ~~~
 
-默认 coordinate 是 `opentag-release` bucket 的 `releases` prefix，通过
-`https://storage.googleapis.com/opentag-release/releases` 对外提供。
+默认 coordinate 是 `opentag-release` bucket 的 `releases` prefix。该 bucket 通过 `dl.opentag.build` 自定义域名对外
+提供，因此默认的 download base URL 是 `https://dl.opentag.build/releases`。storage coordinate 与公网 host 是两个
+相互独立的设置：上传路径只会用 bucket 与 prefix 拼出 `gs://` URI，而 download base URL 从不由 bucket 名推导。
 
 version prefix 下的一切都是不可变的，写入时带 create-only precondition（`--if-generation-match=0`）以及
 `--content-md5` digest，因此 Cloud Storage 会同时拒绝静默覆盖和损坏的上传。只有 `latest.json` 与 `install.sh` 可变；
@@ -228,7 +229,7 @@ preflight，使不可变 prefix 冲突在 release 仍可重试时就失败；随
 | `OPENTAG_PORTABLE_GCS_BUCKET` | bucket 名称（默认 `opentag-release`） |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | channel 段之前的 object prefix（默认 `releases`） |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | 执行 `gcloud` 调用所用的 project |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://storage.googleapis.com/opentag-release/releases`） |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://dl.opentag.build/releases`） |
 | `OPENTAG_PORTABLE_PLATFORMS` | 可选的构建平台过滤 |
 
 发布使用 workload identity federation，因此仓库中不保存任何 service-account key。该 service account 需要 bucket 上的
@@ -240,8 +241,10 @@ preflight，使不可变 prefix 冲突在 release 仍可重试时就失败；随
 workload identity provider 必须带上把它固定到本仓库的 attribute condition。若不设置，任何地方的 GitHub Actions
 workflow 都能为该 pool 换取 token 并冒充这个 release service account。
 
-bucket 必须在 download base URL 上公开提供 release prefix。在此之前，上传仍会成功，但公网校验闸门会失败，channel
-指针会被刻意保持原样。
+download base URL 必须逐字节地公开提供刚刚上传的那些 object。由于该 host 是 bucket 前面的自定义域名、而不是 bucket
+自身的 endpoint，这里失败可能来自两侧中的任意一侧：bucket 的公开访问权限，或域名映射。该域名还必须遵守上传时设置的
+object `Cache-Control` 头，因为 channel 指针以 `no-cache` 发布并会在紧随其后被重新读取。在这些条件全部满足之前，
+上传仍会成功，但公网校验闸门会失败，channel 指针会被刻意保持原样。
 
 ## 运维说明
 

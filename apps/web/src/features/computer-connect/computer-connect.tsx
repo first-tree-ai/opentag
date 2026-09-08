@@ -1,5 +1,7 @@
 import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { analytics } from "../../analytics/analytics.js";
+import { ANALYTICS_EVENT, activationStep } from "../../analytics/events.js";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
@@ -289,6 +291,9 @@ function ComputerConnectAttempt({
     try {
       const issued = await adapter.issue(intent);
       if (!mounted.current || generation.current !== mine) return;
+      // The command is now on screen. Everything after this is the reader leaving for a terminal,
+      // so this is the last thing that can be attributed to the page rather than to their patience.
+      analytics.track(ANALYTICS_EVENT.computerConnectStarted, { mode: intent.mode });
       setState({
         kind: "issued",
         issued: {
@@ -337,6 +342,12 @@ function ComputerConnectAttempt({
       if (!current()) return;
       completed = true;
       setError(undefined);
+      // Every surface that connects a Computer — onboarding, the bind step, the Computers page —
+      // ends here, and the latch above means one attempt reports once.
+      analytics.track(ANALYTICS_EVENT.computerConnected, {
+        mode: targetComputerId ? "repair" : "create",
+        ...activationStep("computer_connected"),
+      });
       setState({ kind: "connected", issued: state.issued, computer });
       onConnectedRef.current?.(computer);
     };

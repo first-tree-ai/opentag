@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
+import { useSignedInReport } from "../analytics/milestones.js";
 import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
 import { AsyncState, toResourceState } from "../features/resource/resource-state.js";
@@ -31,6 +32,9 @@ function AuthenticatedAccountGate() {
   });
   const queryClient = useQueryClient();
   const state = toResourceState(useQuery({ queryKey: queryKeys.me(), queryFn: () => browserApi.me() }));
+  // The one place every signed-in surface passes through, however it was reached — a form that
+  // navigated the browser, an identity provider's redirect, or a session that was already there.
+  useSignedInReport(state.kind === "ready" ? state.value.user.id : undefined);
   /**
    * Which session the Account on screen belongs to. Clearing the cache ends the session for every
    * read the cache started, but not for `refreshMe`, which the cache never started — so the session

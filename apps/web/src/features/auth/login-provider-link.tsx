@@ -1,3 +1,4 @@
+import { rememberSignInIntent } from "../../analytics/sign-in-intent.js";
 import googleMark from "../../assets/google-g.png";
 import { spaceScriptBoundary } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
@@ -33,6 +34,10 @@ export function LoginProviderLink({
       })}
       data-ui={google ? "login-provider-google" : "login-provider"}
       href={disabled ? undefined : href.href}
+      // The press is the last thing that happens in this document: what follows is the Server, then
+      // the provider, then a redirect back that says only where to land. So the method is written
+      // down here and reported by whichever page the Account returns to.
+      onClick={disabled ? undefined : () => rememberSignInIntent({ method: provider.id, registering })}
       role={disabled ? "link" : undefined}
       tabIndex={disabled ? -1 : undefined}
     >

@@ -21,6 +21,7 @@ import type {
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useAgentSetupStageReport } from "../analytics/milestones.js";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
@@ -681,6 +682,9 @@ function AgentSetupPageContent({
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
   const ready = snapshot?.stage === "ready";
+  // The stages between a connected Computer and a usable Agent, which is where a reader who never
+  // holds a conversation actually stops. Reported per stage, not per re-read.
+  useAgentSetupStageReport(agentId, snapshot?.stage);
 
   useEffect(() => {
     if (previousRefreshSignal.current === refreshSignal) return;

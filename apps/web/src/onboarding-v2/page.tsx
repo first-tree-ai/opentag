@@ -1,6 +1,8 @@
 import type { CreateAgentRequest } from "@opentag/shared/browser";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { analytics } from "../analytics/analytics.js";
+import { ANALYTICS_EVENT, activationStep } from "../analytics/events.js";
 import { ApiError, browserApi } from "../api.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
@@ -56,6 +58,37 @@ async function refusedNameHolder(
 ): Promise<{ id: string; name: string } | "unnamed" | undefined> {
   if (!(cause instanceof ApiError) || cause.code !== "AGENT_NAME_CONFLICT") return undefined;
   return (await agentHoldingName(name)) ?? "unnamed";
+}
+
+interface CreationReport {
+  readonly created: (runtimeProvider: string) => void;
+  readonly refused: (cause: unknown) => void;
+}
+
+/** A preview creates no Agent, so it has nothing to report about one. */
+const SILENT_CREATION_REPORT: CreationReport = { created: () => undefined, refused: () => undefined };
+
+/**
+ * What one creation attempt reports.
+ *
+ * The refusal is worth as much as the success: a name that is already taken is somebody recovering,
+ * and any other failure is somebody stopped. Neither carries the name itself, which the reader
+ * chose and which is theirs.
+ */
+function creationReport(preview: unknown): CreationReport {
+  if (preview) return SILENT_CREATION_REPORT;
+  return {
+    created: (runtimeProvider) => {
+      analytics.track(ANALYTICS_EVENT.agentCreated, {
+        runtime_provider: runtimeProvider,
+        ...activationStep("agent_created"),
+      });
+    },
+    refused: (cause) => {
+      const nameConflict = cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT";
+      analytics.track(ANALYTICS_EVENT.agentCreateFailed, { reason: nameConflict ? "name_conflict" : "error" });
+    },
+  };
 }
 
 /**
@@ -199,10 +232,13 @@ function AgentCreatePage({
       // Cleared with the error it belongs to: an offer left over from a previous refusal would sit
       // under a failure it does not describe.
       setTaken(undefined);
+      const report = creationReport(creationPreview);
       try {
         const created = creationPreview ? await creationPreview(request) : await browserApi.createAgent(request);
+        report.created(request.runtimeProvider);
         await Promise.resolve(onAgentAvailable?.(created.id));
       } catch (cause) {
+        report.refused(cause);
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
         setTaken(await refusedNameHolder(cause, request.name));
       } finally {

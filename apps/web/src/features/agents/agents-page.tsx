@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import { useFirstConversationReport } from "../../analytics/milestones.js";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
@@ -21,6 +22,10 @@ export function AgentsPage() {
     () => new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined,
   );
   const state = useAgentListView(me.user.id);
+  // The Agent list is the only surface that both re-reads on an interval and carries a Task count,
+  // so it is where this application can notice that a conversation has happened in the messaging
+  // app. It notices late, and only for a reader who came back; see the hook for what that costs.
+  useFirstConversationReport(state.kind === "ready" ? state.value.agents : undefined);
   useEffect(() => {
     if (!oauthError) return;
     const url = new URL(window.location.href);

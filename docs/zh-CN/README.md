@@ -26,6 +26,7 @@
 - [发布指南](./releasing.md)
 - [便携版发布指南](./portable-release.md)
 - [国际化](./i18n.md)
+- [Web App 分析](./web-analytics.md)
 
 ## 设计文档（英文）
 

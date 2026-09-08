@@ -2,6 +2,8 @@ import type { AccountComputerSummary as Computer, ComputerConnectCodeStatus } fr
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { analytics } from "../../analytics/analytics.js";
+import type { GtagCommand } from "../../analytics/gtag.js";
 import { browserApi } from "../../api.js";
 import { ComputerConnect } from "./computer-connect.js";
 
@@ -65,6 +67,7 @@ describe("ComputerConnect", () => {
   });
 
   afterEach(() => {
+    analytics.disarm();
     vi.restoreAllMocks();
     vi.useRealTimers();
     Reflect.deleteProperty(navigator, "clipboard");
@@ -179,6 +182,27 @@ describe("ComputerConnect", () => {
     expect(computers).toHaveBeenCalledOnce();
     expect(onConnected).toHaveBeenCalledWith(computer);
     expect(screen.getByText("Ada's Mac is connected")).toBeTruthy();
+  });
+
+  it("reports the command being shown and the connection that follows it, once each", async () => {
+    const sent: GtagCommand[] = [];
+    analytics.arm((command) => sent.push(command));
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+
+    render(<ComputerConnect intent={{ mode: "create" }} />);
+    await flushAsync();
+    // The poll keeps running after the latch; a second verdict must not be a second connection.
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sent.map((command) => command[1])).toEqual(["computer_connect_started", "computer_connected"]);
+    expect(sent[1]?.[2]).toEqual({ mode: "create", funnel: "activation", funnel_step: 3 });
   });
 
   it("does not let another Computer satisfy a repair attempt", async () => {

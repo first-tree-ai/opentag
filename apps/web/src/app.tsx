@@ -2,6 +2,7 @@ import { type LinkComponentProps, LinkProvider, TooltipProvider } from "@cloudfl
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Link as RouterLink, RouterProvider } from "@tanstack/react-router";
 import { forwardRef, useEffect, useState } from "react";
+import { installRouteAnalytics } from "./analytics/route-analytics.js";
 import { AppErrorBoundary } from "./features/error-boundary.js";
 import { createQueryClient } from "./query/client.js";
 import { type AppRouter, createAppRouter } from "./router.js";
@@ -33,6 +34,9 @@ export function App({ router }: { router?: AppRouter } = {}) {
     if (!owned) return;
     return () => instance.history.destroy();
   }, [instance, owned]);
+  // Page views follow the router rather than the document, which loads once. Subscribing here
+  // rather than inside the router factory keeps the subscription tied to the mount that owns it.
+  useEffect(() => installRouteAnalytics(instance), [instance]);
   return (
     // The boundary sits outside the providers because a provider that fails to render is exactly the
     // failure a route-level boundary cannot catch.

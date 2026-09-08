@@ -12,6 +12,45 @@ if (mode === "sleep") {
   process.on("SIGTERM", () => finish("SIGTERM"));
   process.on("SIGINT", () => finish("SIGINT"));
   setInterval(() => undefined, 60_000);
+} else if (mode === "lark-cli") {
+  const argv = process.argv.slice(2);
+  const messagePath = argv.find((argument) => argument.includes("/open-apis/im/v1/messages/"));
+  const isGet = argv.includes("GET") && Boolean(messagePath);
+  const messageId = messagePath ? messagePath.split("/").pop() : "";
+  if (isGet && process.env.OPENTAG_TEST_LARK_REQUIRE_BOT_JSON === "1") {
+    if (!argv.includes("--as") || !argv.includes("bot") || !argv.includes("--json")) {
+      process.exit(2);
+    }
+  }
+  if (
+    isGet &&
+    (process.env.OPENTAG_TEST_LARK_GET_HANG === "1" || process.env[`OPENTAG_TEST_LARK_GET_HANG_${messageId}`] === "1")
+  ) {
+    setInterval(() => undefined, 60_000);
+  } else if (isGet) {
+    const namedDelay = process.env[`OPENTAG_TEST_LARK_GET_DELAY_${messageId}`];
+    const delay = Number(namedDelay ?? process.env.OPENTAG_TEST_LARK_GET_DELAY_MS ?? "0");
+    if (delay > 0) {
+      const end = Date.now() + delay;
+      while (Date.now() < end) {
+        /* bounded test delay */
+      }
+    }
+    const envelope = process.env.OPENTAG_TEST_LARK_GET_ENVELOPE;
+    if (envelope) process.stdout.write(envelope.endsWith("\n") ? envelope : `${envelope}\n`);
+    process.exit(Number(process.env.OPENTAG_TEST_LARK_GET_EXIT ?? "0"));
+  } else {
+    const envelope =
+      process.env.OPENTAG_TEST_LARK_ENVELOPE ??
+      JSON.stringify({
+        ok: true,
+        identity: "bot",
+        data: { message_id: "om_sent", chat_id: "oc_chat", create_time: "2026-09-08 16:33:38" },
+      });
+    process.stdout.write(envelope.endsWith("\n") ? envelope : `${envelope}\n`);
+    process.stderr.write("target-stderr\n");
+    process.exit(Number(process.env.OPENTAG_TEST_TARGET_EXIT ?? "0"));
+  }
 } else {
   let stdin = "";
   try {

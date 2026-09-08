@@ -32,6 +32,7 @@ import { ProviderIcon } from "../ui/provider-icon.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
 import { TaskMessageBody } from "./task-message-body.js";
+import { TaskOutgoingReplies } from "./task-outgoing-replies.js";
 
 type TaskFilter = "all" | TaskStatus;
 
@@ -537,23 +538,70 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
               <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
                 {m.tasks_included_in_active_work()}
               </p>
-            ) : report?.finalText ? (
-              <TaskMessageBody format="markdown" text={report.finalText} />
-            ) : report?.errorReason ? (
-              <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p>
             ) : (
-              <p
-                className="text-sm text-kumo-subtle"
-                data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
-              >
-                {turn.delivery.state === "accepted"
-                  ? m.tasks_work_in_progress()
-                  : m.tasks_message_state({ state: deliveryStateLabel(turn.delivery.state).toLocaleLowerCase() })}
-              </p>
+              <TaskAgentReplyBody turn={turn} />
             )}
           </section>
         </div>
       </article>
+    </section>
+  );
+}
+
+function TaskAgentReplyBody({ turn }: { turn: TaskTurn }) {
+  const report = turn.report;
+  if (!report) return <TaskUnreportedBody state={turn.delivery.state} />;
+  return (
+    <div className="grid gap-4">
+      <TaskCapturedReplies report={report} />
+      {report.finalText ? (
+        <TaskExecutionSummary text={report.finalText} truncated={report.outgoingReplies?.runtimeSummaryTruncated} />
+      ) : report.outgoingReplies?.runtimeSummaryTruncated ? (
+        <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
+      ) : null}
+      {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
+    </div>
+  );
+}
+
+function TaskUnreportedBody({ state }: { state: TaskTurn["delivery"]["state"] }) {
+  return (
+    <p className="text-sm text-kumo-subtle" data-state={state === "accepted" ? "progress" : "attention"}>
+      {state === "accepted"
+        ? m.tasks_work_in_progress()
+        : m.tasks_message_state({ state: deliveryStateLabel(state).toLocaleLowerCase() })}
+    </p>
+  );
+}
+
+function TaskCapturedReplies({ report }: { report: NonNullable<TaskTurn["report"]> }) {
+  const snapshot = report.outgoingReplies;
+  if (!snapshot || snapshot.status === "unavailable") {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
+        {m.tasks_reply_data_unavailable()}
+      </p>
+    );
+  }
+  if (snapshot.replies.length > 0 || snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0) {
+    return <TaskOutgoingReplies snapshot={snapshot} />;
+  }
+  if (snapshot.status === "complete") {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-no-reply">
+        {m.tasks_no_reply_sent()}
+      </p>
+    );
+  }
+  return null;
+}
+
+function TaskExecutionSummary({ text, truncated }: { text: string; truncated?: boolean }) {
+  return (
+    <section className="grid gap-2" data-ui="task-execution-summary" aria-label={m.tasks_execution_summary()}>
+      <strong className="text-sm">{m.tasks_execution_summary()}</strong>
+      <TaskMessageBody format="markdown" text={text} />
+      {truncated ? <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p> : null}
     </section>
   );
 }

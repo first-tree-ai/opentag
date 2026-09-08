@@ -2,12 +2,14 @@ import {
   computeRuntimeImMessageSemanticHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  RUNTIME_CAPABILITY,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeImSteerRequest,
   type RuntimeImSteerResult,
   redactForLog,
   type TurnFailureReason,
+  type TurnOutgoingReplySnapshot,
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -19,6 +21,14 @@ import {
   type ImCredentialEnvironmentManager,
 } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
+import {
+  budgetTurnReportHashInput,
+  emptyCompleteOutgoingReplies,
+  feishuOutgoingReplyScope,
+  snapshotOutgoingReplies,
+  unavailableOutgoingReplies,
+} from "./provider-cli/outgoing-reply-report.js";
+import type { ProviderCliOutgoingReplyCollectResult } from "./provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
@@ -29,9 +39,19 @@ import { TurnTraceBuffer } from "./trace-buffer.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
 
+export interface AgentTurnOutgoingReplyCollector {
+  collect(input: {
+    readonly sessionId: string;
+    readonly runId: string;
+  }): Promise<ProviderCliOutgoingReplyCollectResult>;
+  cleanup(input: { readonly sessionId: string; readonly runId: string }): Promise<void>;
+}
+
 export interface AgentTurnRunnerOptions {
   readonly bindingStore: SessionBindingStore;
-  readonly connection: Pick<RuntimeConnection, "send">;
+  readonly connection: Pick<RuntimeConnection, "send"> & {
+    capabilityVersion?(capability: string): number | undefined;
+  };
   readonly custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
   readonly logger?: ClientLogger;
   readonly now?: () => number;
@@ -44,11 +64,13 @@ export interface AgentTurnRunnerOptions {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
   };
+  readonly outgoingReplies?: AgentTurnOutgoingReplyCollector;
 }
 
 interface RunningTurn {
   readonly abort: AbortController;
   readonly owner: LiveTurnOwner;
+  readonly captureInReport: boolean;
   phase: "starting" | "running" | "reporting";
   promise: Promise<void>;
   runtime?: AgentRuntime;
@@ -64,7 +86,7 @@ export interface TurnCompletion {
 
 export class AgentTurnRunner {
   readonly #bindingStore: SessionBindingStore;
-  readonly #connection: Pick<RuntimeConnection, "send">;
+  readonly #connection: AgentTurnRunnerOptions["connection"];
   readonly #custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
   readonly #logger: ClientLogger;
   readonly #now: () => number;
@@ -74,6 +96,7 @@ export class AgentTurnRunner {
   readonly #runtimeManager: SessionRuntimeManager;
   readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
+  readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
 
@@ -89,6 +112,7 @@ export class AgentTurnRunner {
     this.#runtimeManager = options.runtimeManager;
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
+    this.#outgoingReplies = options.outgoingReplies;
   }
 
   get activeCount(): number {
@@ -101,6 +125,9 @@ export class AgentTurnRunner {
     const turn: RunningTurn = {
       abort,
       owner,
+      // Negotiation is cleared on disconnect. Keep this Turn's report contract
+      // until its durable report can be replayed after reconnection.
+      captureInReport: this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) === 2,
       phase: "starting",
       promise: Promise.resolve(),
     };
@@ -288,7 +315,8 @@ export class AgentTurnRunner {
         "Turn completed",
       );
     }
-    const reportInput: TurnReportHashInput = {
+    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.captureInReport);
+    const reportInput = budgetTurnReportHashInput({
       deliveryId: owner.request.deliveryId,
       turnId: owner.turnId,
       sessionId: owner.request.sessionId,
@@ -300,15 +328,18 @@ export class AgentTurnRunner {
       ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
       ...(completion.usage ? { usage: completion.usage } : {}),
       traceSummary,
-    };
+      ...(outgoingReplies ? { outgoingReplies } : {}),
+    });
     let report: TurnReportRequest;
     try {
       report = this.#reportOwner.create(reportInput);
       await this.#custody.markReporting(owner.turnId, report);
     } catch {
       this.#logger.warn(fields, "Turn could not enter the reporting phase");
+      // Receipts remain the only durable evidence if report persistence fails.
       return;
     }
+    await this.#cleanupOutgoingReplies(turnPlanInput, owner.turnId);
     void this.#reportOwner
       .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
       .catch((error: unknown) => {
@@ -320,6 +351,40 @@ export class AgentTurnRunner {
           "Turn Report submission failed",
         );
       });
+  }
+
+  async #collectOutgoingReplies(
+    turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined,
+    owner: LiveTurnOwner,
+    includeInReport: boolean,
+  ): Promise<TurnOutgoingReplySnapshot | undefined> {
+    if (turnPlanInput?.provider !== "feishu" || !this.#outgoingReplies) return undefined;
+    let collected: ProviderCliOutgoingReplyCollectResult;
+    try {
+      collected = await this.#outgoingReplies.collect({
+        sessionId: turnPlanInput.sessionId,
+        runId: owner.turnId,
+      });
+    } catch {
+      this.#logger.debug({ code: "outgoing_reply_collect_failed" }, "Outgoing reply collection failed");
+      return includeInReport ? unavailableOutgoingReplies() : undefined;
+    }
+    if (!includeInReport) return undefined;
+    const scope = feishuOutgoingReplyScope(owner.request.content.providerRef);
+    if (!scope) return emptyCompleteOutgoingReplies();
+    try {
+      return snapshotOutgoingReplies(collected, scope);
+    } catch {
+      return unavailableOutgoingReplies();
+    }
+  }
+
+  async #cleanupOutgoingReplies(
+    turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined,
+    runId: string,
+  ): Promise<void> {
+    if (turnPlanInput?.provider !== "feishu" || !this.#outgoingReplies) return;
+    await this.#outgoingReplies.cleanup({ sessionId: turnPlanInput.sessionId, runId }).catch(() => undefined);
   }
 }
 

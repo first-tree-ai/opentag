@@ -12,6 +12,7 @@ import {
 } from "../../storage/durable-file.js";
 import { type ProviderCliAccountLayout, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
+import { recoverSessionOutgoingReplyEvidence } from "./outgoing-reply-store.js";
 import {
   type ProviderCliSelectionRecord,
   providerCliSelectionTargetPath,
@@ -187,6 +188,11 @@ export class ProviderCliTurnPlanManager {
       if (!isProviderCliSessionKey(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
       const sessionDir = join(homeDir, entry.name);
       assertPlanWithinRoot(homeDir, sessionDir);
+      const keptReceipts = await recoverSessionOutgoingReplyEvidence({
+        plansRoot: this.#layout.plans,
+        sessionDir,
+      });
+      if (keptReceipts) continue;
       await rm(sessionDir, { recursive: true, force: true });
     }
   }

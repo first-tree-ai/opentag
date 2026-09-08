@@ -7,6 +7,7 @@ import {
   ImConversationKindSchema,
   ImMessageOperationSchema,
 } from "./im-message.js";
+import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
 export const TaskStatusSchema = z.enum(["queued", "running", "completed", "failed", "expired", "ended", "idle"]);
 export const TaskSessionKindSchema = z.enum(["channel", "thread"]);
@@ -120,6 +121,7 @@ export const TaskTurnSchema = z
             droppedEvents: z.number().int().nonnegative(),
           })
           .strict(),
+        outgoingReplies: TurnOutgoingReplySnapshotSchema.nullable(),
         reportedAt: z.string().datetime(),
       })
       .strict()

@@ -19,6 +19,7 @@ export const MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES = 4096;
 
 const HOME_NAMESPACE_PATTERN = /^h-[0-9a-f]{40}$/;
 const SESSION_KEY_PATTERN = /^s-[0-9a-f]{40}$/;
+const RUN_KEY_PATTERN = /^r-[0-9a-f]{40}$/;
 const FINGERPRINT_PATTERN = /^v1:[0-9a-f]{64}$/;
 const logger = createLogger("runtime-provider-cli-turn-plan");
 
@@ -136,6 +137,16 @@ export function isProviderCliSessionKey(value: string): boolean {
   return SESSION_KEY_PATTERN.test(value);
 }
 
+/** Irreversible Run directory key; caller-supplied IDs never become path segments. */
+export function deriveProviderCliRunKey(runId: string): string {
+  assertIdentity("runId", runId);
+  return irreversibleKey("run", runId);
+}
+
+export function isProviderCliRunKey(value: string): boolean {
+  return RUN_KEY_PATTERN.test(value);
+}
+
 export function providerCliPlanHomeDir(layout: ProviderCliAccountLayout, homeNamespace: string): string {
   assertSafeKey(homeNamespace, HOME_NAMESPACE_PATTERN, "home namespace");
   return join(layout.plans, homeNamespace);
@@ -152,6 +163,18 @@ export function providerCliPlanSessionDir(
 
 export function providerCliTurnPlanPath(sessionDir: string): string {
   return join(sessionDir, "plan.json");
+}
+
+export function providerCliOutgoingReplyRunDir(sessionDir: string, runId: string): string {
+  return join(sessionDir, "runs", deriveProviderCliRunKey(runId));
+}
+
+export function providerCliOutgoingReplyReceiptsDir(sessionDir: string, runId: string): string {
+  return join(providerCliOutgoingReplyRunDir(sessionDir, runId), "outgoing-replies");
+}
+
+export function providerCliOutgoingReplyInflightDir(sessionDir: string, runId: string): string {
+  return join(providerCliOutgoingReplyRunDir(sessionDir, runId), "inflight");
 }
 
 export function providerCliTurnLauncherPath(sessionDir: string, command: ProviderCliTurnPlanCommand): string {
@@ -485,7 +508,7 @@ export function managedArtifactDigest(artifactId: string): string | undefined {
   return digest && digest.length > 0 ? digest : undefined;
 }
 
-function irreversibleKey(kind: "home" | "session", value: string): string {
+function irreversibleKey(kind: "home" | "session" | "run", value: string): string {
   const digest = createHash("sha256").update(`${kind}\0${value}`, "utf8").digest("hex");
   return `${kind[0]}-${digest.slice(0, 40)}`;
 }

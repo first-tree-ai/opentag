@@ -255,6 +255,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
                 }
               : null,
             traceSummary: report.traceSummary,
+            outgoingReplies: report.outgoingReplies ?? null,
             reportedAt: toIso(row.reportedAt),
           }
         : null,

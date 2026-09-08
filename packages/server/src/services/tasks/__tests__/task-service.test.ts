@@ -179,6 +179,7 @@ interface DeliveryOptions {
   at?: Date;
   reported?: boolean;
   outcome?: "completed" | "failed" | "cancelled" | "unknown";
+  turnReport?: TurnReportRequest;
   absorbedByDeliveryId?: string;
   reason?: string;
   expiresAt?: Date;
@@ -208,7 +209,7 @@ function reportColumns(state: DeliveryState, at: Date, options: DeliveryOptions)
   if (state !== "accepted" || !options.reported) return {};
   return {
     reportedAt: new Date(at.getTime() + 1_000),
-    turnReport: report({ outcome: options.outcome ?? "completed" }),
+    turnReport: options.turnReport ?? report({ outcome: options.outcome ?? "completed" }),
     resultHash: "b".repeat(64),
   };
 }
@@ -585,6 +586,7 @@ describe("TaskService", () => {
       report: {
         outcome: "completed",
         finalText: "Done",
+        outgoingReplies: null,
         usage: { inputTokens: 3, cachedInputTokens: 2, outputTokens: 4 },
       },
       message: { fallbackText: "Root request", authorDisplayName: "Mia" },
@@ -600,6 +602,32 @@ describe("TaskService", () => {
     await expect(service.get(bootstrap.userId, reply.id, { limit: 10 })).resolves.toMatchObject({
       task: { id: root.id },
     });
+  });
+
+  it("projects captured outgoing replies and keeps legacy reports null", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const session = await createSession(binding.id, { channelId: DM, kind: "channel", conversationKind: "dm" });
+    const message = await createMessage(binding.id, { text: "hello", occurredAt: minutes(0) });
+    const snapshot = {
+      status: "complete" as const,
+      replies: [
+        {
+          provider: "feishu" as const,
+          teamBrand: "lark" as const,
+          messageId: "om_sent",
+          chatId: "oc_dm",
+          content: { msgType: "text" as const, text: "actual reply" },
+        },
+      ],
+    };
+    await createDelivery(session.id, message.id, {
+      at: minutes(1),
+      reported: true,
+      turnReport: report({ outgoingReplies: snapshot, finalText: "summary" }),
+    });
+    const detail = await service.get(bootstrap.userId, message.id, { limit: 10 });
+    expect(detail.turns[0]?.report?.outgoingReplies).toEqual(snapshot);
+    expect(detail.turns[0]?.report?.finalText).toBe("summary");
   });
 
   it("unifies a Feishu topic whose replies carry a thread id different from the root message", async () => {

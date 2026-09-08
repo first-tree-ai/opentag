@@ -12,6 +12,10 @@ import {
   resolveProviderCliAccountLayout,
   writeProviderCliSelection,
 } from "../index.js";
+import {
+  collectOutgoingReplyReceipts,
+  writeOutgoingReplyReceipt,
+} from "../runtime/provider-cli/outgoing-reply-store.js";
 import { makeTempDir } from "./fixtures/provider-cli.js";
 import {
   installTurnTarget,
@@ -383,6 +387,37 @@ describe("ProviderCliTurnPlanManager isolation and cleanup", () => {
     await expect(stat(local.planPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await lstat(foreign.planPath)).isFile()).toBe(true);
     expect(foreign.homeNamespace).not.toBe(local.homeNamespace);
+  });
+
+  it("crash recovery preserves outgoing receipt evidence and still drops the plan", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const local = await manager.prepare({ provider: "feishu", sessionId: "s-keep", runId: "run-keep" });
+    await writeOutgoingReplyReceipt({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-keep",
+      receipt: {
+        recordedAt: "2026-09-08T08:00:00.000Z",
+        sequenceHint: 1,
+        kind: "send",
+        messageId: "om_kept",
+        chatId: "oc_chat",
+        contentStatus: "unavailable",
+        content: { msgType: "unknown", unavailable: "content_read_failed" },
+      },
+    });
+    await manager.recover();
+    await expect(stat(local.planPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(local.sessionDir)).isDirectory()).toBe(true);
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-keep",
+      waitMs: 0,
+    });
+    expect(collected.receipts.map((receipt) => receipt.messageId)).toEqual(["om_kept"]);
   });
 
   it("crash recovery refuses a symlinked plans root", async () => {

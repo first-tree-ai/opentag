@@ -146,7 +146,7 @@ opentag agent im diagnose <agent-id>
 1. 按 `opentag.im.binding.id` 查询 `feishu.connection.connect`、`feishu.connection.transition` 和 `feishu.connection.error`，确认当前 replica 已连接，且没有持续重连或凭据失败。
 2. 用同一 binding 查询 `im.inbound.process`。存在该 span 才能证明 OpenTag SDK callback 被调用；error code 可区分 admission、normalization、fencing 和 persistence 失败。
 3. persistence 成功后，使用 `opentag.im.message.id` 和 `opentag.im.delivery.id` 串联 `im.delivery.dispatch`、`runtime.reconcile`、`runtime.delivery` 和 `runtime.report`。
-4. 若 Agent 已运行但 provider 中没有回复，检查 Agent trace 与 provider CLI 结果；OpenTag 不接收或追踪 provider 出站写入。
+4. 若 Agent 已运行但 provider 中没有回复，检查 Agent trace、provider CLI 结果，以及 Turn report 中（若存在）捕获的 Lark 出站回执快照。OpenTag 不追踪 provider 出站写入；Task 历史可以包含有界发送回执，这不是已读回执。
 
 没有 `im.inbound.process` 只表示 OpenTag 在已采样时间窗口内没有观测到 provider callback，不能证明飞书已经投递 event。需要结合 `connection`、`lastInboundAt`、`providerCliReadiness`、已授权 scopes 和飞书事件订阅状态判断。
 

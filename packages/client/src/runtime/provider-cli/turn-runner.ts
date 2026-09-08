@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -7,6 +6,13 @@ import { validatePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveAccountHome, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliCatalogEntry } from "./catalog.js";
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
+import {
+  captureFeishuOutgoingReply,
+  PROVIDER_CLI_OUTGOING_REPLY_STDOUT_CAPTURE_MAX_BYTES,
+  spawnCapturedProcess,
+  withOutgoingReplyInflight,
+} from "./outgoing-reply-capture.js";
+import { markOutgoingReplyCaptureStatus } from "./outgoing-reply-store.js";
 import {
   assertPlanWithinRoot,
   assertProviderCliSlackConfigDir,
@@ -43,6 +49,7 @@ export interface ExecuteProviderCliTurnPlanOptions {
     args: readonly string[],
     options: { env: NodeJS.ProcessEnv },
   ) => Promise<number>;
+  readonly expectedSenderIds?: readonly string[];
 }
 
 export function parseProviderCliTurnRunnerArgv(argv: readonly string[]): ProviderCliTurnRunnerArgv {
@@ -123,8 +130,53 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
   const baseEnv = options.env ?? process.env;
   const env = plan.selectionKind === "managed" ? { ...baseEnv, ...entry.managedEnvironment } : { ...baseEnv };
   const args = await turnPlanArguments(plan, options.argv, entry);
-  const spawnTarget = options.spawnTarget ?? spawnProviderCliTarget;
-  return spawnTarget(plan.targetPath, args, { env });
+  const plansRoot = options.plansRoot ?? resolveProviderCliAccountLayout(resolveAccountHome()).plans;
+  if (options.spawnTarget) {
+    return options.spawnTarget(plan.targetPath, args, { env });
+  }
+  return withOutgoingReplyInflight({
+    plansRoot,
+    planPath: options.planPath,
+    runId: plan.runId,
+    enabled: plan.provider === "feishu",
+    run: async () => {
+      const spawned = await spawnCapturedProcess({
+        file: plan.targetPath,
+        args,
+        env,
+        maxBytes: PROVIDER_CLI_OUTGOING_REPLY_STDOUT_CAPTURE_MAX_BYTES,
+        forward: true,
+      }).catch((error: unknown) => {
+        throw new ProviderCliTurnPlanError(
+          "runner_failed",
+          error instanceof Error ? error.message : "Provider CLI Turn runner failed",
+        );
+      });
+      if (plan.provider === "feishu") {
+        await captureFeishuOutgoingReply({
+          plan,
+          planPath: options.planPath,
+          plansRoot,
+          userArgv: options.argv,
+          spawnArgs: args,
+          env,
+          code: spawned.code,
+          stdout: spawned.stdout,
+          stdoutTruncated: spawned.truncated,
+          ...(options.expectedSenderIds ? { expectedSenderIds: options.expectedSenderIds } : {}),
+        }).catch(() => {
+          logger.debug({ code: "outgoing_reply_capture_failed" }, "Outgoing reply capture failed");
+          return markOutgoingReplyCaptureStatus({
+            plansRoot,
+            sessionDir: dirname(options.planPath),
+            runId: plan.runId,
+            status: "incomplete",
+          });
+        });
+      }
+      return spawned.code;
+    },
+  });
 }
 
 export async function runProviderCliTurnRunner(
@@ -276,53 +328,6 @@ async function assertPrivateSlackConfigDirectory(configDir: string): Promise<voi
   if (canonical !== frozen) {
     throw new ProviderCliTurnPlanError("unsafe", "Slack config directory must not traverse a symlink");
   }
-}
-
-function spawnProviderCliTarget(
-  file: string,
-  args: readonly string[],
-  options: { env: NodeJS.ProcessEnv },
-): Promise<number> {
-  return new Promise((resolveExit, reject) => {
-    const child = spawn(file, [...args], {
-      env: options.env,
-      shell: false,
-      stdio: "inherit",
-      windowsHide: true,
-    });
-    const forward = (signal: NodeJS.Signals): void => {
-      if (child.killed || child.exitCode !== null) return;
-      child.kill(signal);
-    };
-    const onSigterm = (): void => forward("SIGTERM");
-    const onSigint = (): void => forward("SIGINT");
-    process.on("SIGTERM", onSigterm);
-    process.on("SIGINT", onSigint);
-    const stopListening = (): void => {
-      process.off("SIGTERM", onSigterm);
-      process.off("SIGINT", onSigint);
-    };
-    child.once("error", (error) => {
-      stopListening();
-      reject(new ProviderCliTurnPlanError("runner_failed", error.message));
-    });
-    child.once("exit", (code, signal) => {
-      stopListening();
-      if (code !== null) {
-        resolveExit(code);
-        return;
-      }
-      if (signal === "SIGTERM") {
-        resolveExit(143);
-        return;
-      }
-      if (signal === "SIGINT") {
-        resolveExit(130);
-        return;
-      }
-      resolveExit(1);
-    });
-  });
 }
 
 function mapTargetError(error: unknown): ProviderCliTurnPlanError {

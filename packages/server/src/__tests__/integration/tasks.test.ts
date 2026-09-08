@@ -1,5 +1,5 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
+import { computeTurnResultHash, type TurnReportRequest, TurnReportRequestSchema } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -136,6 +136,53 @@ async function fixture() {
 }
 
 describe("Task topic queries", () => {
+  it("round-trips actual replies through JSONB with empty finalText and a stable report hash", async () => {
+    const value = await fixture();
+    try {
+      const [stored] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, value.deliveryId));
+      if (!stored?.turnReport) throw new Error("Expected stored report");
+      const { finalText: _summary, ...base } = stored.turnReport;
+      const report: TurnReportRequest = {
+        ...base,
+        outgoingReplies: {
+          status: "complete",
+          replies: [
+            {
+              provider: "feishu",
+              teamBrand: "lark",
+              messageId: "om_actual_reply",
+              chatId: "oc_debug",
+              content: {
+                msgType: "post",
+                text: "Actual title\n\nActual body",
+                post: { title: "Actual title", content: [[], [{ tag: "text", text: "Actual body" }]] },
+              },
+            },
+          ],
+        },
+      };
+      report.resultHash = computeTurnResultHash(report);
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ turnReport: report, resultHash: report.resultHash })
+        .where(eq(imMessageDeliveries.id, value.deliveryId));
+      const [reloaded] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, value.deliveryId));
+      expect(TurnReportRequestSchema.parse(reloaded?.turnReport)).toEqual(report);
+      const detail = await value.service.get(value.bootstrap.userId, value.message.id, { limit: 50 });
+      expect(detail.turns[0]?.report?.finalText).toBeNull();
+      expect(detail.turns[0]?.report?.outgoingReplies).toEqual(report.outgoingReplies);
+      await expect(value.service.get(crypto.randomUUID(), value.message.id, { limit: 50 })).rejects.toThrow();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("projects a private chat as one Task with its stored Turn report", async () => {
     const value = await fixture();
     try {

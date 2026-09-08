@@ -11,8 +11,8 @@ import type { AgentSetupSnapshot } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, browserApi } from "../api.js";
-import { AgentSetupPage } from "./agent-setup-page.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from "../api.js";
+import { AgentSetupPage, BOUNDED_POLL_ATTEMPTS, BOUNDED_POLL_WINDOW_MS, SETUP_POLL_MS } from "./agent-setup-page.js";
 import {
   deferred,
   SETUP_AGENT_ID,
@@ -22,11 +22,11 @@ import {
   setupAgent,
 } from "./agent-setup-test-fixtures.js";
 import { AgentSetupSurface } from "./page.js";
-import type { AgentSetupAdapter } from "./setup-adapter.js";
+import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import type { MemorySetupSeed } from "./setup-memory-adapter.js";
 import { createMemorySetupAdapter } from "./setup-memory-adapter.js";
 
-const POLL_MS = 2_000;
+const POLL_MS = SETUP_POLL_MS;
 
 /** Flushes the promise queue: reads, writes, and QR rendering all settle without a clock. */
 async function settle(rounds = 6): Promise<void> {
@@ -566,7 +566,7 @@ describe("preparation review regressions", () => {
     expect(adapter.readSnapshot).toHaveBeenCalledTimes(2);
   });
 
-  it("queues one return refresh behind an existing automatic poll", async () => {
+  it("retires a hung automatic poll on focus and coalesces the recovery read", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
     const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
     const pending = deferred<AgentSetupSnapshot>();
@@ -583,10 +583,12 @@ describe("preparation review regressions", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await settle();
-    expect(adapter.readSnapshot).toHaveBeenCalledTimes(2);
-    pending.resolve(snapshot);
+    expect(adapter.readSnapshot).toHaveBeenCalledTimes(3);
+    pending.resolve({ ...snapshot, agent: { ...snapshot.agent, displayName: "Stale Reviewer" } });
     await settle();
     expect(adapter.readSnapshot).toHaveBeenCalledTimes(3);
+    expect(screen.queryByText("Stale Reviewer")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
   });
 
   it("continues observing required CLI work after a Runtime failure", async () => {
@@ -726,12 +728,13 @@ describe("AgentSetupPage transitions", () => {
     await settle();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    // The documented budget: 30 polls at the 2s interval, then the timer stops on its own.
-    await advance(POLL_MS * 31 + 10);
-    expect(reads.mock.calls.length).toBe(31);
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeGreaterThan(1);
+    expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
 
     await advance(POLL_MS * 4);
-    expect(reads.mock.calls.length).toBe(31);
+    expect(reads.mock.calls.length).toBe(stopped);
   });
 
   it("reopens the bounded observation window on an explicit Check again", async () => {
@@ -741,15 +744,16 @@ describe("AgentSetupPage transitions", () => {
     await settle();
     expect(reads.mock.calls.length).toBe(1);
 
-    await advance(POLL_MS * 31 + 10);
-    expect(reads.mock.calls.length).toBe(31);
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeGreaterThan(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await settle();
-    expect(reads.mock.calls.length).toBe(32);
+    expect(reads.mock.calls.length).toBe(stopped + 1);
 
     await advance(POLL_MS + 10);
-    expect(reads.mock.calls.length).toBe(33);
+    expect(reads.mock.calls.length).toBe(stopped + 2);
   });
 
   it("does not overlap automatic reads when a bounded poll is slow", async () => {
@@ -1454,31 +1458,38 @@ describe("AgentSetupPage preparation polling", () => {
     await settle();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    await advance(POLL_MS * 31 + 10);
-    expect(reads).toHaveBeenCalledTimes(31);
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeGreaterThan(1);
+    expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
 
     await advance(POLL_MS * 4);
-    expect(reads).toHaveBeenCalledTimes(31);
+    expect(reads).toHaveBeenCalledTimes(stopped);
     expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
-  it("clears an exhausted checking message when the final poll finds a manual action", async () => {
+  it("clears an exhausted checking message when an outstanding poll finds a manual action", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "checking" });
     const modelRead = memory.adapter.readSnapshot;
-    let reads = 0;
+    const finalRead = deferred<AgentSetupSnapshot>();
+    let deferReads = false;
     vi.spyOn(memory.adapter, "readSnapshot").mockImplementation(async (agentId) => {
-      reads += 1;
-      if (reads === 31) memory.controls.setRuntimeStatus("install");
+      if (deferReads) return finalRead.promise;
       return modelRead(agentId);
     });
     renderSetup(memory.adapter);
     await settle();
 
-    await advance(POLL_MS * 31 + 10);
+    await advance(BOUNDED_POLL_WINDOW_MS - POLL_MS * 2);
+    deferReads = true;
+    await advance(POLL_MS * 2 + 10);
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+
+    memory.controls.setRuntimeStatus("install");
+    finalRead.resolve(await modelRead(SETUP_AGENT_ID));
     await settle();
 
-    expect(reads).toBe(31);
     expect(screen.getByRole("status").textContent).toBe("Complete the action above, then check again.");
     expect(screen.queryByText("Automatic checking paused. Check again to retry.")).toBeNull();
   });
@@ -1496,9 +1507,287 @@ describe("AgentSetupPage preparation polling", () => {
     await advance(POLL_MS * 3 + 10);
     expect(reads.mock.calls.length).toBeGreaterThan(1);
 
-    // The budget still ends the window on an unchanged snapshot.
-    await advance(POLL_MS * 28);
-    expect(reads.mock.calls.length).toBe(31);
+    await advance(BOUNDED_POLL_WINDOW_MS);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
+    await advance(POLL_MS * 4);
+    expect(reads.mock.calls.length).toBe(stopped);
+  });
+});
+
+describe("AgentSetupPage hung-read recovery", () => {
+  it("offers a localized retry when the initial read times out", async () => {
+    const ready = createMemorySetupAdapter({ agent: setupAgent() });
+    let calls = 0;
+    const adapter = scriptedAdapter((agentId) => {
+      calls += 1;
+      return calls === 1 ? new Promise(() => undefined) : ready.adapter.readSnapshot(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS);
+    expect(screen.getByRole("alert").textContent).toBe("We couldn't read your agent's setup.");
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("stops at the deadline when slow reads leave no request in flight at expiry", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "checking" });
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation(async (agentId) => {
+      calls += 1;
+      if (calls > 1) await new Promise((resolve) => setTimeout(resolve, 800));
+      return modelRead(agentId);
+    });
+    renderSetup(memory.adapter);
+    await settle();
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+    const callsAtPause = calls;
+    expect(callsAtPause).toBeGreaterThan(1);
+    expect(callsAtPause).toBeLessThan(BOUNDED_POLL_ATTEMPTS);
+    await advance(BOUNDED_POLL_WINDOW_MS);
+    expect(calls).toBe(callsAtPause);
+  });
+
+  it("enables Continue after a hung checking read times out and a later read is ready", async () => {
+    const checking = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    });
+    const ready = createMemorySetupAdapter({ agent: setupAgent() });
+    const hung = deferred<AgentSetupSnapshot>();
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls === 1) return checking.adapter.readSnapshot(agentId);
+      if (calls === 2) return hung.promise;
+      return ready.adapter.readSnapshot(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("checking");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(2);
+
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS);
+    await settle();
+    await advance(POLL_MS + 10);
+    await settle();
+
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    hung.resolve(await checking.adapter.readSnapshot(SETUP_AGENT_ID));
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("pauses automatic checking when hung reads exhaust the wall-clock window", async () => {
+    const checking = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    });
+    const snapshot = await checking.adapter.readSnapshot(SETUP_AGENT_ID);
+    let calls = 0;
+    const adapter = scriptedAdapter(async () => {
+      calls += 1;
+      if (calls === 1) return snapshot;
+      return new Promise(() => undefined);
+    });
+    renderSetup(adapter);
+    await settle();
+
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    await settle();
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    const callsAtPause = calls;
+    await advance(BOUNDED_POLL_WINDOW_MS);
+    expect(calls).toBe(callsAtPause);
+  });
+
+  it("resumes from the paused retry after hung reads once Check again sees a ready snapshot", async () => {
+    const checking = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    });
+    const ready = createMemorySetupAdapter({ agent: setupAgent() });
+    let hang = true;
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (hang && calls > 1) return new Promise(() => undefined);
+      if (hang) return checking.adapter.readSnapshot(agentId);
+      return ready.adapter.readSnapshot(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    await settle();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+
+    hang = false;
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("recovers on focus while a checking read is hung and fences the late stale reply", async () => {
+    const checking = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    });
+    const ready = createMemorySetupAdapter({ agent: setupAgent() });
+    const hung = deferred<AgentSetupSnapshot>();
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls === 1) return checking.adapter.readSnapshot(agentId);
+      if (calls === 2) return hung.promise;
+      return ready.adapter.readSnapshot(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(2);
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    await settle();
+    expect(calls).toBe(3);
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+
+    const stale = await checking.adapter.readSnapshot(SETUP_AGENT_ID);
+    hung.resolve({ ...stale, agent: { ...stale.agent, displayName: "Stale Reviewer" } });
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.queryByText("Stale Reviewer")).toBeNull();
+  });
+
+  it("recovers unbounded offline polling after a single hung read", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
+    const hung = deferred<AgentSetupSnapshot>();
+    const modelRead = memory.adapter.readSnapshot;
+    let calls = 0;
+    vi.spyOn(memory.adapter, "readSnapshot").mockImplementation((agentId) => {
+      calls += 1;
+      if (calls === 2) return hung.promise;
+      return modelRead(agentId);
+    });
+    renderSetup(memory.adapter);
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(2);
+
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS);
+    await settle();
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(3);
+    expect(screen.getByText("Offline")).toBeTruthy();
+  });
+
+  it("does not apply a late error after a hung read has been superseded", async () => {
+    const checking = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    });
+    const ready = createMemorySetupAdapter({ agent: setupAgent() });
+    const hung = deferred<AgentSetupSnapshot>();
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls === 1) return checking.adapter.readSnapshot(agentId);
+      if (calls === 2) return hung.promise;
+      return ready.adapter.readSnapshot(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+    await advance(POLL_MS + 10);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    hung.reject(new Error("late network failure"));
+    await settle();
+    expect(screen.queryByText("late network failure")).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it("releases a hung read on unmount without applying it later", async () => {
+    const checking = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    });
+    const hung = deferred<AgentSetupSnapshot>();
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls === 1) return checking.adapter.readSnapshot(agentId);
+      return hung.promise;
+    });
+    const view = renderSetup(adapter);
+    await settle();
+    await advance(POLL_MS + 10);
+    view.unmount();
+    hung.resolve(await checking.adapter.readSnapshot(SETUP_AGENT_ID));
+    await settle();
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS);
+    await settle();
+    expect(calls).toBe(2);
+  });
+
+  it("converges an isolated HTTP-backed first installation through a hung messaging check", async () => {
+    const offline = await createMemorySetupAdapter({
+      agent: setupAgent(),
+      computerOnline: false,
+      runtimeMissing: true,
+      imCliReadiness: {},
+    }).adapter.readSnapshot(SETUP_AGENT_ID);
+    const checking = await createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "checking", slack: "checking" },
+    }).adapter.readSnapshot(SETUP_AGENT_ID);
+    const ready = await createMemorySetupAdapter({ agent: setupAgent() }).adapter.readSnapshot(SETUP_AGENT_ID);
+    let phase: "offline" | "checking" | "hung" | "ready" = "offline";
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const path = String(input);
+      if (!path.endsWith("/setup")) throw new Error(`unexpected request: ${path}`);
+      if (phase === "hung") return new Promise(() => undefined);
+      const snapshot = phase === "offline" ? offline : phase === "checking" ? checking : ready;
+      return new Response(JSON.stringify(snapshot), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
+    renderSetup(adapter);
+    await settle();
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    phase = "checking";
+    await advance(POLL_MS + 10);
+    await settle();
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("checking");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    phase = "hung";
+    await advance(POLL_MS + 10);
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS);
+    await settle();
+    phase = "ready";
+    await advance(POLL_MS + 10);
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
   });
 });
 

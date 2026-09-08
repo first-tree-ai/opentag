@@ -121,6 +121,39 @@ export class CancelledRequestError extends Error {
   }
 }
 
+/** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
+export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
+ * best-effort; the deadline itself always rejects, including while a response body is hanging.
+ */
+export async function withDeadline<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeoutError = (): CancelledRequestError => {
+    const cause = new Error("The operation timed out.");
+    cause.name = "TimeoutError";
+    return new CancelledRequestError(cause);
+  };
+  const operation = Promise.resolve().then(() => run(controller.signal));
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const error = timeoutError();
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (timedOut) void operation.catch(() => undefined);
+  }
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -208,9 +241,12 @@ export class BrowserApi {
   /**
    * The canonical setup state of one exact Agent. Stage, blockers, and permitted actions all
    * arrive derived by the Server; callers render them rather than re-deriving them locally.
+   * The deadline covers fetch and every body read; it does not depend on the transport honoring abort.
    */
   agentSetup(agentId: string): Promise<AgentSetupSnapshot> {
-    return this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema);
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema, { signal }),
+    );
   }
 
   /** Starts a fresh Computer-owned preparation for this exact bound Agent. */

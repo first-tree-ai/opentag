@@ -21,7 +21,7 @@ import type {
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ApiError } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
@@ -47,34 +47,46 @@ import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
 /** The snapshot doubles as the observation channel while the outside world is expected to move it. */
-const SETUP_POLL_MS = 2_000;
+export const SETUP_POLL_MS = 2_000;
 /** How many times to report readiness before the reader is offered an explicit retry. */
 const READY_REPORT_ATTEMPTS = 3;
 /**
- * The finite budget for automatic local-preparation polls (a required IM CLI still waiting or
- * checking behind the gate, a Runtime report missing or still checking): 30 polls at 2s is
- * roughly a one-minute observation window. Exhaustion stops the timer; an explicit Check again
- * restarts a fresh window. The budget never resets on an unchanged snapshot, and
- * Messaging/offline observation keeps its unbounded beat.
+ * The finite attempt cap for automatic local-preparation polls (a required IM CLI still waiting
+ * or checking behind the gate, a Runtime report missing or still checking). An explicit Check
+ * again or returning to the page restarts a fresh window. The cap never resets on an unchanged
+ * snapshot, and Messaging/offline observation keeps its unbounded beat.
  */
-const BOUNDED_POLL_ATTEMPTS = 30;
+export const BOUNDED_POLL_ATTEMPTS = 30;
+/** Wall-clock bound for the same window, so a hung or slow read cannot stretch automatic checking. */
+export const BOUNDED_POLL_WINDOW_MS = 60_000;
+
+function boundedWindowRemaining(startedAt: { current: number | undefined }): number {
+  const started = startedAt.current ?? Date.now();
+  startedAt.current = started;
+  return BOUNDED_POLL_WINDOW_MS - (Date.now() - started);
+}
 
 /**
  * Arms one automatic-read observation window. The window is single-flight across effect
  * restarts: an automatic read an earlier window started is awaited before a new one begins, and
- * a manual refresh deliberately supersedes its reply through the request lifecycle instead.
+ * a manual refresh, focus recovery, timeout, or unmount retires it. Bounded observation expires
+ * in elapsed time even while a read is still outstanding.
  */
 function armAutomaticPollWindow(
   pollClass: Exclude<SetupPollClass, undefined>,
   budget: { current: number },
+  windowStartedAt: { current: number | undefined },
   inFlight: { current: Promise<boolean> | undefined },
   read: () => Promise<boolean>,
   onExhausted?: () => void,
 ): () => void {
   let cancelled = false;
   let timer: number | undefined;
+  let expiryTimer: number | undefined;
+  const exhaustAttempts = (): boolean => pollClass === "bounded" && budget.current <= 0;
   const poll = async (): Promise<void> => {
-    if (pollClass === "bounded" && budget.current <= 0) {
+    if (cancelled) return;
+    if (exhaustAttempts()) {
       onExhausted?.();
       return;
     }
@@ -87,17 +99,34 @@ function armAutomaticPollWindow(
     await turn;
     if (inFlight.current === turn) inFlight.current = undefined;
     if (cancelled) return;
-    if (pollClass === "bounded" && budget.current <= 0) {
+    if (exhaustAttempts()) {
       onExhausted?.();
       return;
     }
     timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
   };
-  if (pollClass === "bounded" && budget.current <= 0) onExhausted?.();
-  else timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
+  if (exhaustAttempts() || (pollClass === "bounded" && boundedWindowRemaining(windowStartedAt) <= 0)) {
+    onExhausted?.();
+    return () => {
+      cancelled = true;
+    };
+  }
+  if (pollClass === "bounded") {
+    expiryTimer = window.setTimeout(
+      () => {
+        if (cancelled) return;
+        cancelled = true;
+        window.clearTimeout(timer);
+        onExhausted?.();
+      },
+      Math.max(0, boundedWindowRemaining(windowStartedAt)),
+    );
+  }
+  timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
   return () => {
     cancelled = true;
     window.clearTimeout(timer);
+    window.clearTimeout(expiryTimer);
   };
 }
 
@@ -174,6 +203,7 @@ export function setupSnapshotIsTransitional(snapshot: AgentSetupSnapshot): boole
 }
 
 function setupReadError(cause: unknown): string {
+  if (cause instanceof CancelledRequestError) return m.onboarding_v2_setup_load_failed();
   return cause instanceof Error && cause.message ? cause.message : m.onboarding_v2_setup_load_failed();
 }
 
@@ -340,13 +370,16 @@ function useSnapshotReader(
   const read = useCallback(async (): Promise<boolean> => {
     const ticket = lifecycle.next();
     try {
-      const snapshot = await adapter.readSnapshot(agentId);
+      const snapshot = await withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, () => adapter.readSnapshot(agentId));
       if (!lifecycle.isCurrent(ticket)) return false;
       setRefreshError(undefined);
       setPhase({ kind: "ready", snapshot });
       return true;
     } catch (cause) {
       if (!lifecycle.isCurrent(ticket)) return false;
+      // A timed-out automatic re-read must settle so polling and focus can continue; the last-good
+      // snapshot stays until a later read or the bounded window offers Check again.
+      if (cause instanceof CancelledRequestError && phaseRef.current.kind === "ready") return false;
       failRead(cause);
       return false;
     }
@@ -458,34 +491,46 @@ function useAgentSetup(
   const snapshot = reader.phase.kind === "ready" ? reader.phase.snapshot : undefined;
   const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
   const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);
+  const pollWindowStartedAt = useRef<number | undefined>(undefined);
   /**
-   * The one automatic read the mounted controller allows at a time. A manual refresh deliberately
-   * supersedes a pending automatic read through the request lifecycle, but a new poll effect must
-   * never start a second automatic read while an earlier one is still in flight.
+   * The one automatic read the mounted controller allows at a time. Timeout, unmount, Check again,
+   * and focus recovery retire it so a hung adapter cannot own the window indefinitely. A new poll
+   * effect never starts a second automatic read while an earlier one is still in flight.
    */
   const autoPollInFlight = useRef<Promise<boolean> | undefined>(undefined);
   const [pollExhausted, setPollExhausted] = useState(false);
   // A stateful restart signal: an explicit Check again must reopen a bounded observation window
   // even when the busyKey updates around the refresh are collapsed into one render.
   const [pollRestartKey, setPollRestartKey] = useState(0);
-  /** An explicit Check again opens a fresh bounded observation window. */
+  /** An explicit Check again or return to the page opens a fresh bounded observation window. */
   const resetPollBudget = useCallback(() => {
     pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    pollWindowStartedAt.current = Date.now();
+    autoPollInFlight.current = undefined;
     setPollExhausted(false);
     setPollRestartKey((value) => value + 1);
   }, []);
   // Exhaustion describes only the bounded transitional state that consumed the window. Once the
   // snapshot settles or moves to another polling class, a later transition deserves a fresh
-  // window and must not inherit the old "paused" message.
+  // window and must not inherit the old "paused" message. Effect restarts of the same class keep
+  // the elapsed start so they cannot silently extend unchanged state.
   useEffect(() => {
     if (pollClass === "bounded") return;
     pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    pollWindowStartedAt.current = undefined;
     setPollExhausted(false);
   }, [pollClass]);
+  useEffect(() => {
+    return () => {
+      autoPollInFlight.current = undefined;
+    };
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pollRestartKey explicitly restarts the observation window.
   useEffect(() => {
     if (pollClass === undefined || actions.busyKey !== undefined) return;
-    return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read, () => setPollExhausted(true));
+    return armAutomaticPollWindow(pollClass, pollBudget, pollWindowStartedAt, autoPollInFlight, reader.read, () =>
+      setPollExhausted(true),
+    );
   }, [pollClass, actions.busyKey, pollRestartKey, reader.read]);
 
   /*
@@ -493,9 +538,10 @@ function useAgentSetup(
    * daemon reconnect, a Runtime report, a handoff) may have moved it while the reader was away.
    * The refresh rides the same request lifecycle as every other read — a reply superseded by a
    * newer read or by an action is discarded, a transient failure over a good snapshot keeps the
-   * last-good snapshot on screen, and the automatic poll window never overlaps itself — and it
-   * is skipped while an action is in flight and when no snapshot is on screen yet (loading,
-   * load-failed, and unavailable keep their own manual flows).
+   * last-good snapshot on screen — and it is skipped while an action is in flight and when no
+   * snapshot is on screen yet (loading, load-failed, and unavailable keep their own manual flows).
+   * A hung automatic read is retired rather than queued behind: focus burst coalescing still
+   * collapses to one recovery read.
    */
   useEffect(() => {
     if (actions.busyKey !== undefined || reader.phase.kind !== "ready") return;
@@ -504,15 +550,11 @@ function useAgentSetup(
     const refreshOnReturn = (): void => {
       if (document.visibilityState !== "visible" || returnRead !== undefined) return;
       resetPollBudget();
-      const pending = autoPollInFlight.current;
-      // A return queues one fresh read behind an existing poll, never another concurrent one.
-      const turn =
-        pending === undefined
-          ? reader.read()
-          : pending.then(() => (cancelled || document.visibilityState !== "visible" ? false : reader.read()));
+      const turn = reader.read();
       returnRead = turn;
       autoPollInFlight.current = turn;
       void turn.then(() => {
+        if (cancelled) return;
         if (returnRead === turn) returnRead = undefined;
         if (autoPollInFlight.current === turn) autoPollInFlight.current = undefined;
       });

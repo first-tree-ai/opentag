@@ -369,11 +369,11 @@ function useSetupActions(
   onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
 ): {
   actionError: string | undefined;
-  busyKey: AgentSetupAction["kind"] | undefined;
+  busyKey: AgentSetupAction | undefined;
   act: (action: AgentSetupAction) => Promise<boolean>;
 } {
   const [actionError, setActionError] = useState<string>();
-  const [busyKey, setBusyKey] = useState<AgentSetupAction["kind"]>();
+  const [busyKey, setBusyKey] = useState<AgentSetupAction>();
   const busyRef = useRef(false);
   const actionRun = useRef(0);
 
@@ -389,7 +389,7 @@ function useSetupActions(
     async (action: AgentSetupAction): Promise<boolean> => {
       if (busyRef.current) return false;
       busyRef.current = true;
-      setBusyKey(action.kind);
+      setBusyKey(action);
       setActionError(undefined);
       // A poll started before the write could commit the state the write just made obsolete; the
       // hold keeps the on-screen snapshot frozen until the post-action read lifts it.
@@ -434,8 +434,8 @@ interface AgentSetupController {
   readonly refreshError: string | undefined;
   /** The last action's failure, in words that name what was being attempted. */
   readonly actionError: string | undefined;
-  /** Which action kind is in flight, so every action control can refuse a second submission. */
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  /** The in-flight action identity, so loading can name the selected control while every action stays disabled. */
+  readonly busyKey: AgentSetupAction | undefined;
   /** Runs one snapshot-listed action to completion and re-reads. Resolves false when it failed. */
   readonly act: (action: AgentSetupAction) => Promise<boolean>;
   /** A silent re-read, for surfaces that finished their own work (a bind, a repair). */
@@ -965,7 +965,7 @@ function SetupRefreshButton({ controller }: { readonly controller: AgentSetupCon
     <Button
       className="otv2-step-footer__secondary-action"
       disabled={controller.busyKey !== undefined}
-      loading={controller.busyKey === "refresh"}
+      loading={controller.busyKey?.kind === "refresh"}
       onClick={() => {
         controller.resetPollBudget();
         void controller.act({ kind: "refresh" });
@@ -1309,7 +1309,7 @@ function MessagingStartChoice({
   onStart,
   snapshot,
 }: {
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  readonly busyKey: AgentSetupAction | undefined;
   readonly onStart: (action: AgentSetupAction) => Promise<boolean>;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -1326,7 +1326,7 @@ function MessagingStartChoice({
             <Button
               className={CARD}
               disabled={busyKey !== undefined}
-              loading={busyKey === "start-messaging"}
+              loading={busyKey?.kind === "start-messaging" && busyKey.provider === action.provider}
               onClick={() => void onStart(action)}
               variant="ghost"
             >
@@ -1357,7 +1357,7 @@ function FeishuAuthorizing({
   onAct,
   snapshot,
 }: {
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  readonly busyKey: AgentSetupAction | undefined;
   readonly messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "authorizing"; provider: "feishu" }>;
   readonly onAct: (action: AgentSetupAction) => Promise<boolean>;
   readonly snapshot: AgentSetupSnapshot;
@@ -1381,7 +1381,7 @@ function FeishuAuthorizing({
         <div>
           <Button
             disabled={busyKey !== undefined}
-            loading={busyKey === "cancel-messaging-attempt"}
+            loading={busyKey?.kind === "cancel-messaging-attempt"}
             onClick={() => void onAct(cancel)}
             variant="ghost"
           >
@@ -1564,7 +1564,7 @@ function BlockedMessaging({
           {reauthorize ? (
             <Button
               disabled={busy}
-              loading={controller.busyKey === "reauthorize-messaging"}
+              loading={controller.busyKey?.kind === "reauthorize-messaging"}
               onClick={() => void controller.act(reauthorize)}
             >
               {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
@@ -1573,7 +1573,7 @@ function BlockedMessaging({
           {replace ? (
             <Button
               disabled={busy}
-              loading={controller.busyKey === "replace-messaging"}
+              loading={controller.busyKey?.kind === "replace-messaging"}
               onClick={() => void controller.act(replace)}
               variant="secondary"
             >
@@ -1625,14 +1625,14 @@ function UnbindMessagingDialog({
   returnFocusRef,
 }: {
   readonly action: Extract<AgentSetupAction, { kind: "unbind-messaging" }>;
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  readonly busyKey: AgentSetupAction | undefined;
   readonly error: string | undefined;
   readonly onAct: (action: AgentSetupAction) => Promise<boolean>;
   readonly onClose: () => void;
   readonly returnFocusRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   const providerName = providerTitle(action.provider);
-  const busy = busyKey === "unbind-messaging";
+  const busy = busyKey?.kind === "unbind-messaging";
   return (
     <Dialog
       busy={busy}

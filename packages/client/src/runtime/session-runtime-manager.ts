@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import { delimiter } from "node:path";
 import type {
   EffectiveRuntimeSnapshot,
@@ -7,6 +8,7 @@ import type {
 } from "@opentag/shared";
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
@@ -74,7 +76,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
-  readonly #home: string;
+  readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
@@ -95,7 +97,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (options.contextTree) this.#contextTree = options.contextTree;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
-    this.#home = options.home ?? "";
+    this.#home = options.home;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
@@ -263,6 +265,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // caches per workspace, revalidates that entry against the Computer's recorded target, and
     // never throws, so a failure only changes what the prompt reports.
     const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
+    const homeLayout = resolveOpenTagHomeLayout(this.#home);
+    await mkdir(homeLayout.config, { mode: 0o700, recursive: true });
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -293,6 +297,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             managed.binding.sessionId,
             this.#slackConfigWritableRoot,
           ),
+          homeLayout.contextTreeConfigFile,
           ...contextTree.writableRoots,
         ],
       },

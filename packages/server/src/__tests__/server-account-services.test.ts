@@ -590,7 +590,7 @@ describe("machine authentication and Computer services", () => {
       }),
     ).toBe(
       'opentag_installer="$(mktemp)" && curl -fsSL https://mirror.example/releases/staging/install.sh -o "$opentag_installer"' +
-        ' && sh "$opentag_installer" && rm -f "$opentag_installer"' +
+        ' && sh "$opentag_installer"' +
         ' && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- abc',
     );
     expect(

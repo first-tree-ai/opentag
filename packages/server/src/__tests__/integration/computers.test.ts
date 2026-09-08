@@ -611,7 +611,7 @@ describe("Computer connection persistence", () => {
         expect(issued.headers["cache-control"]).toBe("no-store");
         const command = issued.json().bootstrapCommand as string;
         expect(command).toContain(
-          'opentag_installer="$(mktemp)" && curl -fsSL https://storage.googleapis.com/opentag-release/releases/staging/install.sh -o "$opentag_installer" && sh "$opentag_installer" && rm -f "$opentag_installer" && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- otcc_',
+          'opentag_installer="$(mktemp)" && curl -fsSL https://storage.googleapis.com/opentag-release/releases/staging/install.sh -o "$opentag_installer" && sh "$opentag_installer" && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- otcc_',
         );
         const code = command.split(" -- ").at(-1);
         if (!code) throw new Error("Computer connect command did not contain a code");

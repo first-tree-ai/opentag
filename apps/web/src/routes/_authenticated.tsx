@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
+import { analytics } from "../analytics/analytics.js";
 import { useSignedInReport } from "../analytics/milestones.js";
 import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
@@ -44,6 +45,10 @@ function AuthenticatedAccountGate() {
   const session = useRef(0);
   const endSession = useCallback(() => {
     session.current += 1;
+    // The analytics identity is Account-derived state like any other read under this session, and
+    // signing out is a client-side navigation — without this the login page that follows, and every
+    // page after it, would still be reported as the Account that just left.
+    analytics.identify(null);
     queryClient.clear();
   }, [queryClient]);
   /**

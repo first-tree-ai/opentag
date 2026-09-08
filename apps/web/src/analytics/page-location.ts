@@ -1,19 +1,27 @@
-import { routeTemplate } from "../observability/diagnostics.js";
-
 /**
  * What a measured page is allowed to say about the URL it is.
  *
  * Google Analytics reports the raw `window.location.href` unless it is given something else, and
  * this application's URLs name Agents, Tasks and Computers by uuid, carry a `next` destination
- * through sign-in, and carry provider errors back from OAuth. None of that belongs in a third
- * party's records, and none of it is worth having there: a report grouped by
- * `/agents/:id/tasks/:id` answers which surface people use, while one grouped by every distinct
- * uuid answers nothing at all.
+ * through sign-in, carry provider errors back from OAuth, and — under `/invites` — carry a token
+ * that grants access to an Account.
  *
- * Campaign parameters are the deliberate exception. They are the reason a marketing site is
- * measured, they are written by whoever built the link rather than by this application, and they
- * name no one. Everything else in the query string is dropped, so a parameter added later is
- * private until someone chooses otherwise.
+ * The location is therefore built from the *matched route*, never from the address. Classifying the
+ * address by shape was tried and is not sound: a route may declare a free-form parameter, so
+ * `/agents/<uuid>/settings/<anything>` matches and renders, and no rule over segment length or
+ * character set can tell a section name from a secret. Projecting the declared path instead means a
+ * value can only be reported if a route was written to name it, which is a decision somebody makes
+ * on purpose rather than a filter that has to anticipate every shape.
+ */
+const NOT_FOUND_PATH = "/(not-found)";
+
+/**
+ * Campaign parameters are the deliberate exception, and even they are not trusted.
+ *
+ * They are the reason a marketing site is measured and they are written by whoever built the link —
+ * which is also why their values are caller-controlled rather than safe. Google's own guidance is
+ * that these must not carry personal data, so anything address-shaped or implausibly long is
+ * dropped rather than forwarded on the assumption that whoever tagged the link read that guidance.
  */
 const CAMPAIGN_PARAMETERS = new Set([
   "dclid",
@@ -28,56 +36,52 @@ const CAMPAIGN_PARAMETERS = new Set([
   "utm_term",
   "wbraid",
 ]);
+const CAMPAIGN_VALUE_MAX_LENGTH = 100;
+
+export { NOT_FOUND_PATH };
 
 /**
- * The shortest path segment this treats as opaque.
- *
- * `routeTemplate` reduces uuids and integers, which is what a diagnostic needs. It is not enough
- * here: `/invites/<token>` is a real route this application serves, and its token is a credential —
- * forty-three characters that grant access to an Account. This application's own path segments are
- * short words (`integrations`, the longest, is twelve), so anything at or past this length is not a
- * route name, and reducing it costs a report nothing while a leaked one cannot be taken back.
+ * A matched route's declared path, as the template a report groups by: `/agents/$agentId` becomes
+ * `/agents/:agentId`. The parameter keeps its name, which says more than `:id` does and still names
+ * nobody, because the name comes from the route file rather than from the address.
  */
-const OPAQUE_SEGMENT_LENGTH = 16;
-const TOKEN_SEGMENT = /^[A-Za-z0-9_-]+$/;
-
-/** The low-cardinality path a report groups by: every identifying segment becomes `:id`. */
-export function analyticsPagePath(pathname: string): string {
-  return routeTemplate(pathname)
+export function analyticsRoutePath(fullPath: string): string {
+  const trimmed = fullPath.replace(/\/+$/u, "");
+  if (!trimmed) return "/";
+  return trimmed
     .split("/")
-    .map((segment) => (segment.length >= OPAQUE_SEGMENT_LENGTH && TOKEN_SEGMENT.test(segment) ? ":id" : segment))
+    .map((segment) => (segment.startsWith("$") ? `:${segment.slice(1) || "splat"}` : segment))
     .join("/");
 }
 
-/**
- * The absolute location, rebuilt rather than trimmed. Starting from the parts that are allowed to
- * survive means a URL shape nobody anticipated cannot leak through a filter that failed to match.
- */
-export function analyticsPageLocation(href: string, base?: string): string | undefined {
-  const url = parseUrl(href, base);
-  if (!url) return undefined;
-  const sanitized = new URL(`${url.origin}${analyticsPagePath(url.pathname)}`);
-  for (const [key, value] of url.searchParams) {
-    if (CAMPAIGN_PARAMETERS.has(key.toLowerCase())) sanitized.searchParams.append(key, value);
+/** The absolute location: an origin, a route template, and the campaign parameters that survive. */
+export function analyticsLocation(origin: string, path: string, search: string): string {
+  const url = new URL(`${origin}${path}`);
+  for (const [key, value] of new URLSearchParams(search)) {
+    if (CAMPAIGN_PARAMETERS.has(key.toLowerCase()) && isReportableCampaignValue(value)) {
+      url.searchParams.append(key, value);
+    }
   }
-  return sanitized.href;
+  return url.href;
+}
+
+function isReportableCampaignValue(value: string): boolean {
+  return value.length > 0 && value.length <= CAMPAIGN_VALUE_MAX_LENGTH && !value.includes("@");
 }
 
 /**
- * The referrer, held to the same rule when it is one of this application's own pages and reduced to
- * a bare origin when it is not. An external referrer's own path is somebody else's data and can
- * carry their identifiers or tokens; the origin is the whole of what attribution needs.
+ * A referrer, reduced to its origin.
+ *
+ * Only the origin, because another site's path is that site's data and can carry its identifiers or
+ * tokens, and because this application's own paths are reported from the route rather than the
+ * address — a referrer read off the document has no route to project onto. An opaque origin, which
+ * an Android app or an `about:` document produces, is nothing rather than the string `"null"`.
  */
-export function analyticsPageReferrer(referrer: string, origin: string): string | undefined {
-  const url = parseUrl(referrer);
-  if (!url) return undefined;
-  return url.origin === origin ? analyticsPageLocation(url.href) : url.origin;
-}
-
-function parseUrl(value: string, base?: string): URL | undefined {
-  if (!value) return undefined;
+export function analyticsReferrerOrigin(referrer: string): string | undefined {
+  if (!referrer) return undefined;
   try {
-    return new URL(value, base);
+    const { origin } = new URL(referrer);
+    return origin === "null" ? undefined : origin;
   } catch {
     return undefined;
   }

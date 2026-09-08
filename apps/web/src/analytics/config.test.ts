@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { analyticsEnabled, isMeasuredHost } from "./config.js";
+import { analyticsEnabled, analyticsTrafficType, isMeasuredHost } from "./config.js";
 
 describe("analytics switch", () => {
   it("measures this site and its subdomains", () => {
+    // app.opentag.build is what serves readers; the rest is the marketing site and staging.
+    expect(isMeasuredHost("app.opentag.build")).toBe(true);
     expect(isMeasuredHost("opentag.build")).toBe(true);
     expect(isMeasuredHost("www.opentag.build")).toBe(true);
     expect(isMeasuredHost("staging.opentag.build")).toBe(true);
-    expect(isMeasuredHost("OPENTAG.BUILD")).toBe(true);
+    expect(isMeasuredHost("APP.OPENTAG.BUILD")).toBe(true);
+  });
+
+  it("calls everything but the production host internal traffic", () => {
+    expect(analyticsTrafficType("app.opentag.build")).toBeUndefined();
+    expect(analyticsTrafficType("APP.OPENTAG.BUILD")).toBeUndefined();
+    // Staging shares the property, so it has to say so or it fuses into every production number.
+    expect(analyticsTrafficType("staging.opentag.build")).toBe("internal");
+    expect(analyticsTrafficType("opentag.build")).toBe("internal");
   });
 
   it("refuses every loopback origin, which is what the end-to-end stack and a local preview serve", () => {

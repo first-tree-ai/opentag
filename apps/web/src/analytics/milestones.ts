@@ -109,10 +109,15 @@ export function useSignedInReport(userId: string | undefined): void {
  * Report that an Agent has held a conversation, the first time this application sees that it has.
  *
  * Conversations happen in the messaging app, not here, so this is an observation and is named as
- * one. The bias it carries is worth stating plainly: it can only fire while a reader has the Agent
- * list open, so somebody who connects a Computer, talks to their Agent in Slack and never returns
- * to this site is never counted. The step is therefore a floor on the real conversion, not an
- * estimate of it.
+ * one. Two biases are worth stating plainly, because both only ever lose events:
+ *
+ * - It can fire only while a reader has the Agent list open, so somebody who connects a Computer,
+ *   talks to their Agent in Slack and never returns to this site is never counted.
+ * - `usage.tasks` is a rolling thirty-day aggregate, not a lifetime count, so an Agent whose only
+ *   conversations are older than that window reads here as one that has held none.
+ *
+ * The step is therefore a floor on the real conversion rather than an estimate of it, and must not
+ * be read as "readers who have ever held a conversation".
  */
 export function useFirstConversationReport(
   agents: readonly { readonly id: string; readonly usage: { readonly tasks: number } }[] | undefined,

@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { rememberSignInIntent, takeSignInIntent } from "./sign-in-intent.js";
 
-afterEach(() => window.sessionStorage.clear());
+afterEach(() => {
+  window.sessionStorage.clear();
+  vi.useRealTimers();
+});
 
 describe("sign-in intent", () => {
   it("carries the method across the load that signs the Account in", () => {
@@ -19,6 +22,26 @@ describe("sign-in intent", () => {
 
   it("says nothing when the Account arrived with a session it already had", () => {
     expect(takeSignInIntent()).toBeUndefined();
+  });
+
+  it("forgets a press that never became a sign-in", () => {
+    // The redirect providers record on the press. Abandon the consent screen, come back an hour
+    // later with the session you already had, and this must not report a sign-in that never was.
+    vi.useFakeTimers();
+    rememberSignInIntent({ method: "google", registering: false });
+
+    vi.advanceTimersByTime(11 * 60 * 1000);
+
+    expect(takeSignInIntent()).toBeUndefined();
+  });
+
+  it("still honours an intent that is merely slow, because a consent screen takes time", () => {
+    vi.useFakeTimers();
+    rememberSignInIntent({ method: "google", registering: false });
+
+    vi.advanceTimersByTime(5 * 60 * 1000);
+
+    expect(takeSignInIntent()).toEqual({ method: "google", registering: false });
   });
 
   it("ignores a stored value that is not an intent rather than reporting a malformed one", () => {

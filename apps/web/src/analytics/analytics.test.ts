@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { AnalyticsReporter } from "./analytics.js";
+import { AnalyticsReporter, isPreviewPath, syncAnalyticsSuppression } from "./analytics.js";
+import { ANALYTICS_MEASUREMENT_ID } from "./config.js";
 import type { GtagCommand } from "./gtag.js";
 
 function reporterOn(pathname: string): { reporter: AnalyticsReporter; sent: GtagCommand[] } {
@@ -17,12 +18,7 @@ describe("analytics reporter", () => {
     expect(() => {
       reporter.track("agent_created", {});
       reporter.identify("6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b");
-      reporter.page({
-        href: "https://opentag.example/agents",
-        origin: "https://opentag.example",
-        referrer: "",
-        title: "OpenTag",
-      });
+      reporter.page({ location: "https://app.opentag.build/agents", path: "/agents", title: "OpenTag" });
     }).not.toThrow();
   });
 
@@ -47,29 +43,28 @@ describe("analytics reporter", () => {
 
     reporter.track("computer_connected", { mode: "create" });
     reporter.page({
-      href: "https://opentag.example/internal/agent-setup",
-      origin: "https://opentag.example",
-      referrer: "",
+      location: "https://app.opentag.build/internal/agent-setup",
+      path: "/internal/agent-setup",
       title: "OpenTag",
     });
 
     expect(sent).toEqual([]);
   });
 
-  it("sends a page view whose location and referrer carry no identifiers, and records it as a default", () => {
+  it("records the page view as a default as well as sending it", () => {
     const { reporter, sent } = reporterOn("/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b");
 
     reporter.page({
-      href: "https://opentag.example/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b?agentId=6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b",
-      origin: "https://opentag.example",
-      referrer: "https://opentag.example/agents/11112222-3333-4444-8555-666677778888",
+      location: "https://app.opentag.build/agents/:agentId",
+      path: "/agents/:agentId",
+      referrer: "https://app.opentag.build/agents",
       title: "OpenTag",
     });
 
     const expected = {
-      page_location: "https://opentag.example/agents/:id",
-      page_path: "/agents/:id",
-      page_referrer: "https://opentag.example/agents/:id",
+      page_location: "https://app.opentag.build/agents/:agentId",
+      page_path: "/agents/:agentId",
+      page_referrer: "https://app.opentag.build/agents",
       page_title: "OpenTag",
     };
     // Set as well as sent: a hit the tag raises on its own must not read the raw URL back off the
@@ -78,7 +73,26 @@ describe("analytics reporter", () => {
       ["set", expected],
       ["event", "page_view", expected],
     ]);
-    expect(JSON.stringify(sent)).not.toContain("6f1b3c2e");
+  });
+
+  it("turns the tag itself off on a preview surface, not just this application's calls", () => {
+    // Enhanced Measurement raises scroll, click and form events of the tag's own accord, which
+    // refusing `track()` and `page()` cannot stop. Google's flag is read at hit time.
+    const flag = `ga-disable-${ANALYTICS_MEASUREMENT_ID}`;
+    const target = { location: { pathname: "/internal/agent-setup" } } as unknown as Window;
+
+    syncAnalyticsSuppression("/internal/agent-setup", target);
+    expect(Reflect.get(target, flag)).toBe(true);
+
+    // And back on when the reader navigates away, so a preview does not silence the whole visit.
+    syncAnalyticsSuppression("/agents", target);
+    expect(Reflect.get(target, flag)).toBe(false);
+  });
+
+  it("counts every internal route as a preview, however it was entered", () => {
+    expect(isPreviewPath("/internal")).toBe(true);
+    expect(isPreviewPath("/internal/agent-setup")).toBe(true);
+    expect(isPreviewPath("/agents")).toBe(false);
   });
 
   it("stops reporting once disarmed", () => {

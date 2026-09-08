@@ -29,9 +29,27 @@ export const ANALYTICS_MEASUREMENT_ID = "G-RMDF361W1B";
  */
 const MEASURED_HOST_SUFFIX = "opentag.build";
 
+/** The one host that serves readers. Everything else on the domain is ours: staging, previews. */
+const PRODUCTION_HOST = "app.opentag.build";
+
 export function isMeasuredHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return host === MEASURED_HOST_SUFFIX || host.endsWith(`.${MEASURED_HOST_SUFFIX}`);
+}
+
+/**
+ * What Google Analytics should call this document's traffic.
+ *
+ * One image is promoted unchanged, so staging reports into the same property as production. Marking
+ * everything that is not the production host as `internal` is what makes that survivable: Google
+ * Analytics can then exclude it from every report through one Internal Traffic filter, rather than
+ * leaving each report to remember to segment by hostname — which one report eventually will not.
+ *
+ * The filter is an admin setting; until it exists this parameter changes nothing, and it is safe for
+ * it to arrive first.
+ */
+export function analyticsTrafficType(hostname: string): "internal" | undefined {
+  return hostname.toLowerCase() === PRODUCTION_HOST ? undefined : "internal";
 }
 
 /**

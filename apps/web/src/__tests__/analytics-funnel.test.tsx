@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analytics } from "../analytics/analytics.js";
 import type { AnalyticsParams, GtagCommand } from "../analytics/gtag.js";
@@ -8,7 +8,14 @@ import { App } from "../app.js";
 import { LoginProviderLink } from "../features/auth/login-provider-link.js";
 import { PasswordSignInForm } from "../features/auth/password-sign-in-form.js";
 import { AgentSetupSurface } from "../onboarding-v2/page.js";
-import { agentId, agentListItem, installApi, resetWebAppState, userId } from "./support/app-fixtures.js";
+import {
+  agentId,
+  agentListItem,
+  installApi,
+  openAccountMenu,
+  resetWebAppState,
+  userId,
+} from "./support/app-fixtures.js";
 import { renderInRouter } from "./support/router.js";
 
 const sent: GtagCommand[] = [];
@@ -26,6 +33,13 @@ function identities(): (string | number | boolean | null | undefined)[] {
     .filter((command): command is readonly ["set", AnalyticsParams] => command[0] === "set")
     .filter((command) => "user_id" in command[1])
     .map((command) => command[1].user_id);
+}
+
+function pageViewParams(): AnalyticsParams[] {
+  return sent
+    .filter((command): command is readonly ["event", string, AnalyticsParams] => command[0] === "event")
+    .filter((command) => command[1] === "page_view")
+    .map((command) => command[2]);
 }
 
 async function createAnAgent(): Promise<void> {
@@ -85,6 +99,47 @@ describe("activation funnel reporting", () => {
     expect(events("sign_up")).toHaveLength(0);
     // Identified regardless: who is reading is not the same question as how they got here.
     expect(identities()).toEqual([userId]);
+  });
+
+  it("names a real dynamic route by its template, against the generated route tree", async () => {
+    installApi({ bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Reviewer" });
+
+    // The generated tree declares this leaf as `/agents/$agentId/`; the report groups by its shape.
+    expect(pageViewParams()[0]).toMatchObject({ page_path: "/agents/:agentId" });
+    expect(JSON.stringify(pageViewParams())).not.toContain(agentId);
+  });
+
+  it("gives an unrouted URL one constant path, carrying none of the address", async () => {
+    // `/invites/<token>` renders the standalone not-found page rather than failing to match, and the
+    // token grants access to an Account. This is the assumption the whole sanitizer rests on.
+    const token = "A".repeat(43);
+    installApi();
+    window.history.replaceState({}, "", `/invites/${token}`);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Page not found" });
+
+    expect(pageViewParams()[0]).toMatchObject({ page_path: "/(not-found)" });
+    expect(JSON.stringify(pageViewParams())).not.toContain(token);
+  });
+
+  it("stops attributing anything to the Account once it signs out", async () => {
+    installApi();
+    window.history.replaceState({}, "", "/agents");
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Agents" });
+    const { menu } = await openAccountMenu();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Sign out" }));
+    await screen.findByRole("heading", { name: "Sign in to OpenTag" });
+
+    // Signing out is a client-side navigation, so without an explicit clear the login page — and
+    // every page after it — would still be reported as the Account that just left.
+    expect(identities()).toEqual([userId, null]);
   });
 
   it("records the method both sign-in paths know before they leave the document", async () => {

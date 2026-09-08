@@ -1,7 +1,6 @@
-import { ANALYTICS_MEASUREMENT_ID, analyticsEnabled } from "./config.js";
+import { ANALYTICS_MEASUREMENT_ID, analyticsEnabled, analyticsTrafficType } from "./config.js";
 import { ANALYTICS_EVENT } from "./events.js";
 import { type AnalyticsParams, type AnalyticsSink, appendGtagScript, dataLayerSink } from "./gtag.js";
-import { analyticsPageLocation, analyticsPagePath, analyticsPageReferrer } from "./page-location.js";
 
 /**
  * The preview surfaces. Everything under `/internal` is a staging-only lab that drives the real
@@ -10,6 +9,24 @@ import { analyticsPageLocation, analyticsPagePath, analyticsPageReferrer } from 
  * the call sites that a lab and a reader share.
  */
 const PREVIEW_PATH_PREFIX = "/internal";
+
+export function isPreviewPath(pathname: string): boolean {
+  return pathname.startsWith(PREVIEW_PATH_PREFIX);
+}
+
+/**
+ * Turn the tag itself off while a preview surface is on screen, and on again when it is not.
+ *
+ * Refusing this application's own calls is not the same as reporting nothing. Enhanced Measurement
+ * is on by default and raises scroll, outbound-click, file-download and form events of the tag's
+ * own accord; `send_page_view: false` does not touch them. So the exclusion is enforced where the
+ * tag decides whether to send at all — Google's documented `ga-disable-<id>` flag, which is read at
+ * hit time, so keeping it in step with the route covers a direct entry and a later navigation
+ * alike.
+ */
+export function syncAnalyticsSuppression(pathname: string, target: Window = window): void {
+  Reflect.set(target, `ga-disable-${ANALYTICS_MEASUREMENT_ID}`, isPreviewPath(pathname));
+}
 
 export interface AnalyticsReporterOptions {
   /** Where the reporter reads the current path from, so a test can place itself on a route. */
@@ -53,13 +70,26 @@ export class AnalyticsReporter {
     this.#sink?.(["set", { user_id: userId }]);
   }
 
-  /** One measured navigation, with the URL reduced to what a report may hold. */
-  page({ href, origin, referrer, title }: { href: string; origin: string; referrer: string; title: string }): void {
+  /**
+   * One measured navigation. The location and path are route templates the caller has already
+   * projected: this reports what it is given rather than deriving anything from the address.
+   */
+  page({
+    location,
+    path,
+    referrer,
+    title,
+  }: {
+    location: string;
+    path: string;
+    referrer?: string;
+    title: string;
+  }): void {
     if (!this.#reporting()) return;
     const params: AnalyticsParams = {
-      page_location: analyticsPageLocation(href),
-      page_path: analyticsPagePath(new URL(href).pathname),
-      page_referrer: analyticsPageReferrer(referrer, origin),
+      page_location: location,
+      page_path: path,
+      page_referrer: referrer,
       page_title: title,
     };
     // Recorded as defaults as well as sent, so that any hit the tag raises on its own — a history
@@ -91,6 +121,8 @@ export const analytics = new AnalyticsReporter();
  */
 export function installAnalytics(target: Window = window, reporter: AnalyticsReporter = analytics): () => void {
   if (!analyticsEnabled(target)) return () => undefined;
+  // Before the tag can send anything, including on a document that opened straight onto a preview.
+  syncAnalyticsSuppression(target.location.pathname, target);
   const sink = dataLayerSink(target);
   sink(["js", new Date()]);
   sink([
@@ -104,6 +136,9 @@ export function installAnalytics(target: Window = window, reporter: AnalyticsRep
       // Google identity to a session that this application deliberately identifies by an opaque id.
       allow_google_signals: false,
       allow_ad_personalization_signals: false,
+      // Staging shares this property with production, so it says which it is and Google Analytics
+      // excludes it through one filter instead of every report remembering to.
+      traffic_type: analyticsTrafficType(target.location.hostname),
     },
   ]);
   appendGtagScript(ANALYTICS_MEASUREMENT_ID, target);

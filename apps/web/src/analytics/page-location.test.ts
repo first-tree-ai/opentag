@@ -1,65 +1,60 @@
 import { describe, expect, it } from "vitest";
-import { analyticsPageLocation, analyticsPagePath, analyticsPageReferrer } from "./page-location.js";
+import { analyticsLocation, analyticsReferrerOrigin, analyticsRoutePath, NOT_FOUND_PATH } from "./page-location.js";
 
 describe("analytics page location", () => {
-  it("reduces identifier-bearing paths to a route template", () => {
-    expect(
-      analyticsPagePath("/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b/tasks/11112222-3333-4444-8555-666677778888"),
-    ).toBe("/agents/:id/tasks/:id");
-    expect(analyticsPagePath("/agents")).toBe("/agents");
+  it("projects a route's declared parameters, keeping the name the route file gave them", () => {
+    expect(analyticsRoutePath("/agents/$agentId/tasks/$taskId")).toBe("/agents/:agentId/tasks/:taskId");
+    expect(analyticsRoutePath("/agents/$agentId/settings/$section")).toBe("/agents/:agentId/settings/:section");
+    expect(analyticsRoutePath("/agents")).toBe("/agents");
+    expect(analyticsRoutePath("/")).toBe("/");
+    expect(analyticsRoutePath("/agents/")).toBe("/agents");
+    expect(analyticsRoutePath("/files/$")).toBe("/files/:splat");
+  });
+
+  it("builds a location from an origin and a template, keeping campaign parameters", () => {
+    expect(analyticsLocation("https://app.opentag.build", "/agents/:agentId", "?utm_source=newsletter")).toBe(
+      "https://app.opentag.build/agents/:agentId?utm_source=newsletter",
+    );
   });
 
   it("drops every query parameter that is not a campaign parameter", () => {
-    const location = analyticsPageLocation(
-      "https://opentag.example/login?next=%2Fagents%2F6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b&utm_source=newsletter&slack_oauth_error=denied#section",
+    const location = analyticsLocation(
+      "https://app.opentag.build",
+      "/login",
+      "?next=%2Fagents%2F6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b&utm_source=newsletter&slack_oauth_error=denied",
     );
 
-    expect(location).toBe("https://opentag.example/login?utm_source=newsletter");
+    expect(location).toBe("https://app.opentag.build/login?utm_source=newsletter");
     expect(location).not.toContain("6f1b3c2e");
     expect(location).not.toContain("slack_oauth_error");
-    expect(location).not.toContain("section");
   });
 
-  it("keeps the identifiers out of the location itself, not only out of the query", () => {
-    expect(analyticsPageLocation("https://opentag.example/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b/settings")).toBe(
-      "https://opentag.example/agents/:id/settings",
+  it("refuses a campaign value that is address-shaped or implausibly long", () => {
+    // Allowlisting the key does not make the value trusted: it is written by whoever built the link.
+    expect(analyticsLocation("https://app.opentag.build", "/", "?utm_source=alice@example.com")).toBe(
+      "https://app.opentag.build/",
+    );
+    expect(analyticsLocation("https://app.opentag.build", "/", `?utm_campaign=${"x".repeat(101)}`)).toBe(
+      "https://app.opentag.build/",
+    );
+    expect(analyticsLocation("https://app.opentag.build", "/", "?utm_campaign=launch")).toContain(
+      "utm_campaign=launch",
     );
   });
 
-  it("reduces an opaque segment that is neither a uuid nor an integer", () => {
-    // `/invites/<token>` is a real route, and the token grants access to an Account. `routeTemplate`
-    // alone does not catch it, which is why this pass exists.
-    const token = "A".repeat(43);
-    expect(analyticsPagePath(`/invites/${token}`)).toBe("/invites/:id");
-    expect(analyticsPageLocation(`https://opentag.example/invites/${token}`)).toBe(
-      "https://opentag.example/invites/:id",
-    );
-    expect(analyticsPageLocation(`https://opentag.example/invites/${token}`)).not.toContain(token);
+  it("names a referring site by origin and nothing more", () => {
+    expect(analyticsReferrerOrigin("https://mail.example/inbox/thread?token=secret")).toBe("https://mail.example");
+    expect(analyticsReferrerOrigin("")).toBeUndefined();
+    expect(analyticsReferrerOrigin("not a url")).toBeUndefined();
   });
 
-  it("leaves this application's own route names alone", () => {
-    for (const path of ["/", "/login", "/agents", "/agents/setup", "/agents/computers", "/internal/agent-setup"]) {
-      expect(analyticsPagePath(path)).toBe(path);
-    }
-    expect(analyticsPagePath("/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b/settings/messaging")).toBe(
-      "/agents/:id/settings/messaging",
-    );
+  it("reports an opaque referrer as nothing rather than as the string null", () => {
+    // An Android app or an `about:` document produces `origin === "null"`.
+    expect(analyticsReferrerOrigin("about:blank")).toBeUndefined();
+    expect(analyticsReferrerOrigin("android-app://com.example.app")).toBeUndefined();
   });
 
-  it("returns nothing for a value that is not a URL", () => {
-    expect(analyticsPageLocation("")).toBeUndefined();
-    expect(analyticsPageLocation("not a url")).toBeUndefined();
-  });
-
-  it("sanitizes a same-origin referrer and reduces a foreign one to its origin", () => {
-    const origin = "https://opentag.example";
-
-    expect(analyticsPageReferrer(`${origin}/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b`, origin)).toBe(
-      `${origin}/agents/:id`,
-    );
-    expect(analyticsPageReferrer("https://mail.example/inbox/thread?token=secret", origin)).toBe(
-      "https://mail.example",
-    );
-    expect(analyticsPageReferrer("", origin)).toBeUndefined();
+  it("names one constant path for anything the router did not match", () => {
+    expect(NOT_FOUND_PATH).toBe("/(not-found)");
   });
 });

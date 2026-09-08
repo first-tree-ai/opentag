@@ -623,7 +623,6 @@ export async function createClientRuntime(
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
     providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
-    inheritedPath: sourceEnvironment.PATH,
     slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
     workspace,

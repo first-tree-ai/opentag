@@ -157,11 +157,16 @@ What this costs, stated rather than left implicit:
 
 ### The CLI shim
 
-`<OPENTAG_HOME>/context-tree/bin/context-tree` is a generated `0700` shim that execs the installed
+`<OPENTAG_HOME>/context-tree/bin/context-tree` is a generated `0700` shim that execs the bundled
 CLI with the same Node.js runtime OpenTag itself uses, so a Session cannot resolve a different one
 from the user's shell configuration. That directory is prepended to the Provider `PATH` during
 Client composition, unconditionally — it is a stable OpenTag-owned path, and a directory that does
 not exist yet is inert on `PATH`.
+
+The shim is prepared before checking Computer configuration, so an unconfigured Computer can run
+the bundled command without creating or connecting a tree. Preparation failures retain the existing
+unavailable statuses. Managed instructions identify command availability failures as runtime setup
+problems; a global install is unnecessary.
 
 The package's own `node_modules/.bin/context-tree` is not used for this: npm populates
 `<consumer>/node_modules/.bin` but pnpm's virtual store does not, so the location is not portable
@@ -171,6 +176,12 @@ resolve whatever `node` the Session's `PATH` happens to find.
 It is prepended at composition rather than through per-Session workspace environment because a
 Session-level `PATH` would replace the value the factory composes, including the discovered
 executable directory that lets `codex` and `claude` resolve at all.
+
+Visible Sessions supply their tool directory through workspace `pathPrepend`. Every Provider factory
+prepends it after composing its environment, preserving the Context Tree and executable directories.
+Internal Sessions retain Context Tree without adding visible-Session tools.
+
+Rollout requires restarting the daemon and affected Sessions after release; no migration is needed.
 
 OpenTag's own invocations never rely on the shim: they exec the resolved CLI path directly, so a
 broken or shadowed shim cannot change what OpenTag executes.

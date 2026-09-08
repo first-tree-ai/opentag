@@ -308,7 +308,7 @@ describe("ContextTreeManager", () => {
     });
 
     // A recorded target that has since been corrupted on disk.
-    const corrupt = await computer({ packaged: false, target: managed });
+    const corrupt = await computer({ target: managed });
     await writeFile(resolveOpenTagHomeLayout(corrupt.home).contextTreeConfigFile, "{ not json", "utf8");
     await expect(corrupt.manager.readConfig()).resolves.toBeUndefined();
     await expect(corrupt.manager.ensureAgent(corrupt.cwd)).resolves.toEqual({ status: "unconfigured" });

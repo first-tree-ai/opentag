@@ -231,6 +231,13 @@ export class ContextTreeManager {
    * connection from writing into a workspace still mid-migration.
    */
   async ensureAgent(cwd: string): Promise<ContextTreeStatus> {
+    if (!this.#package) return { status: "unavailable", reason: "PACKAGE_MISSING" };
+    const shim = await this.#writeShim().catch((error: unknown) => {
+      this.#logger.warn({ err: describe(error) }, "Context Tree shim could not be created");
+      return false;
+    });
+    if (!shim) return { status: "unavailable", reason: "SHIM_UNAVAILABLE" };
+
     // Read the configuration before consulting the cache. `opentag context-tree connect` only
     // writes the file, so a Computer configured after this daemon started must still activate,
     // and an entry recorded under another target must never be served for this one.
@@ -266,11 +273,6 @@ export class ContextTreeManager {
     // The CLI never reads `CODEX_HOME`; `install --host codex` targets `<HOME>/.codex/skills`.
     // An unsupported home is diagnosed before any CLI work, so nothing can land in the wrong place.
     if (!this.#codexHomeIsDefaultNamed) return this.#unavailable("CODEX_HOME_UNSUPPORTED", config);
-    const shim = await this.#writeShim().catch((error: unknown) => {
-      this.#logger.warn({ err: describe(error) }, "Context Tree shim could not be created");
-      return false;
-    });
-    if (!shim) return this.#unavailable("SHIM_UNAVAILABLE", config);
 
     try {
       // `connect` is idempotent for an identical connection and already returns the resolved

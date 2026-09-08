@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
@@ -233,7 +233,6 @@ describe("SessionRuntimeManager", () => {
     const manager = new SessionRuntimeManager({
       bindingStore: store,
       home,
-      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
       providers: await providerRegistry(factory),
       providerCliLaunchPath: (sessionId) => resolve(home, "plans", sessionId),
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
@@ -248,16 +247,13 @@ describe("SessionRuntimeManager", () => {
     await manager.ensureRuntime("session-1");
     const created = factory.created[0];
     if (!created) throw new Error("visible runtime was not created");
-    const path = created.workspace.environment?.PATH ?? "";
-    expect(path.startsWith(`${launchDir}${delimiter}`)).toBe(true);
-    expect(path).toContain("/tmp/ambient-slack");
-    expect(path.indexOf(launchDir)).toBeLessThan(path.indexOf("/tmp/ambient-slack"));
+    expect(created.workspace.pathPrepend).toBe(launchDir);
+    expect(created.workspace.environment).not.toHaveProperty("PATH");
 
     const internalFactory = new FakeFactory();
     const internalManager = new SessionRuntimeManager({
       bindingStore: store,
       home,
-      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
       providers: await providerRegistry(internalFactory),
       providerCliLaunchPath: () => launchDir,
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
@@ -277,53 +273,10 @@ describe("SessionRuntimeManager", () => {
     ).resolves.toMatchObject({ status: "ready" });
     await internalManager.ensureRuntime("session-internal");
     expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("PATH");
-
-    const exactFactory = new FakeFactory();
-    const exactManager = new SessionRuntimeManager({
-      bindingStore: store,
-      home,
-      inheritedPath: launchDir,
-      providers: await providerRegistry(exactFactory),
-      providerCliLaunchPath: () => launchDir,
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const exactRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-exact-path" };
-    await expect(
-      new SessionReconciler({
-        installationId: computerId,
-        preparation: exactManager,
-        localPolicy: exactManager,
-      }).reconcile(exactRequest),
-    ).resolves.toMatchObject({ status: "ready" });
-    await exactManager.ensureRuntime(exactRequest.sessionId);
-    expect(exactFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
-
-    const isolatedFactory = new FakeFactory();
-    const isolatedManager = new SessionRuntimeManager({
-      bindingStore: store,
-      home,
-      inheritedPath: "",
-      providers: await providerRegistry(isolatedFactory),
-      providerCliLaunchPath: () => launchDir,
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const isolatedRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-isolated-path" };
-    await expect(
-      new SessionReconciler({
-        installationId: computerId,
-        preparation: isolatedManager,
-        localPolicy: isolatedManager,
-      }).reconcile(isolatedRequest),
-    ).resolves.toMatchObject({ status: "ready" });
-    await isolatedManager.ensureRuntime(isolatedRequest.sessionId);
-    expect(isolatedFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
+    expect(internalFactory.created[0]?.workspace.pathPrepend).toBeUndefined();
 
     await manager.close();
     await internalManager.close();
-    await exactManager.close();
-    await isolatedManager.close();
   });
 
   it("prepares Context Tree once per Agent workspace and names the tree as a writable root", async () => {

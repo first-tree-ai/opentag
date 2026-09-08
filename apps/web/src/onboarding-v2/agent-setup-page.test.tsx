@@ -61,6 +61,7 @@ function renderSetup(
   adapter: AgentSetupAdapter,
   props: {
     agentId?: string;
+    onExternalNavigation?: (url: string) => void;
     onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
     reviewMode?: boolean;
@@ -73,6 +74,7 @@ function renderSetup(
       <AgentSetupPage
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
+        onExternalNavigation={props.onExternalNavigation}
         onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
         reviewMode={props.reviewMode}
@@ -132,6 +134,51 @@ function continueFromPreparation(): void {
   const button = screen.getByRole("button", { name: "Continue" });
   expect(button.hasAttribute("disabled")).toBe(false);
   fireEvent.click(button);
+}
+
+function messagingChoices(): HTMLElement {
+  const list = document.querySelector('[data-ui="agent-setup-messaging-choices"]');
+  if (!list) throw new Error("Missing messaging choices");
+  return list as HTMLElement;
+}
+
+function messagingChoice(name: RegExp): HTMLElement {
+  return within(messagingChoices()).getByRole("button", { name });
+}
+
+/** Kumo Button loading renders a Loader with role=status and aria-label="Loading". */
+function choiceHasLoadingDom(button: HTMLElement): boolean {
+  return within(button).queryByRole("status", { name: "Loading" }) !== null;
+}
+
+function expectPendingMessagingChoice(selected: RegExp, idle: RegExp): void {
+  const selectedButton = messagingChoice(selected);
+  const idleButton = messagingChoice(idle);
+  expect(choiceHasLoadingDom(selectedButton)).toBe(true);
+  expect(choiceHasLoadingDom(idleButton)).toBe(false);
+  expect(selectedButton.hasAttribute("disabled")).toBe(true);
+  expect(idleButton.hasAttribute("disabled")).toBe(true);
+}
+
+function expectIdleMessagingChoices(): void {
+  const slack = messagingChoice(/Slack/);
+  const lark = messagingChoice(/Lark/);
+  expect(choiceHasLoadingDom(slack)).toBe(false);
+  expect(choiceHasLoadingDom(lark)).toBe(false);
+  expect(slack.hasAttribute("disabled")).toBe(false);
+  expect(lark.hasAttribute("disabled")).toBe(false);
+}
+
+async function renderMessagingStartChoice(
+  overrides: Partial<AgentSetupAdapter> = {},
+  props: Parameters<typeof renderSetup>[1] = {},
+): Promise<AgentSetupAdapter> {
+  const memory = createMemorySetupAdapter({ agent: setupAgent() });
+  const adapter = scriptedAdapter((agentId) => memory.adapter.readSnapshot(agentId), overrides);
+  renderSetup(adapter, props);
+  await settle();
+  continueFromPreparation();
+  return adapter;
 }
 
 async function currentBindingId(adapter: AgentSetupAdapter): Promise<string> {
@@ -1045,6 +1092,136 @@ describe("AgentSetupPage transitions", () => {
 
     expect(screen.getByText("network is down")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+  });
+});
+
+describe("AgentSetupPage messaging choice loading", () => {
+  it("shows a spinner only on Slack while both choices stay disabled", async () => {
+    const gate = deferred<string>();
+    await renderMessagingStartChoice(
+      {
+        startSlackInstall: vi.fn(async () => gate.promise),
+      },
+      { onExternalNavigation: vi.fn() },
+    );
+
+    fireEvent.click(messagingChoice(/Slack/));
+    await settle();
+
+    expectPendingMessagingChoice(/Slack/, /Lark/);
+    gate.resolve("https://slack.com/oauth/v2/authorize?state=scripted");
+    await settle();
+  });
+
+  it("shows a spinner only on Lark while both choices stay disabled", async () => {
+    const gate = deferred<void>();
+    await renderMessagingStartChoice({
+      startFeishuAttempt: vi.fn(async () => gate.promise),
+    });
+
+    fireEvent.click(messagingChoice(/Lark/));
+    await settle();
+
+    expectPendingMessagingChoice(/Lark/, /Slack/);
+    gate.resolve();
+    await settle();
+  });
+
+  it("clears both spinners when a pending start resolves with the choices still visible", async () => {
+    const slackGate = deferred<string>();
+    const larkGate = deferred<void>();
+    const navigate = vi.fn();
+    const adapter = await renderMessagingStartChoice(
+      {
+        startSlackInstall: vi.fn(async () => slackGate.promise),
+        startFeishuAttempt: vi.fn(async () => larkGate.promise),
+      },
+      { onExternalNavigation: navigate },
+    );
+
+    fireEvent.click(messagingChoice(/Slack/));
+    await settle();
+    expectPendingMessagingChoice(/Slack/, /Lark/);
+    slackGate.resolve("https://slack.com/oauth/v2/authorize?state=scripted");
+    await settle();
+    expectIdleMessagingChoices();
+    expect(navigate).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(messagingChoice(/Lark/));
+    await settle();
+    expectPendingMessagingChoice(/Lark/, /Slack/);
+    larkGate.resolve();
+    await settle();
+    expectIdleMessagingChoices();
+    expect(adapter.startSlackInstall).toHaveBeenCalledTimes(1);
+    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Slack", "Lark"] as const)("clears a failed %s start before retrying the other provider", async (name) => {
+    const gates = { Slack: deferred<void>(), Lark: deferred<void>() };
+    const other = name === "Slack" ? "Lark" : "Slack";
+    const selectedPattern = new RegExp(name);
+    const otherPattern = new RegExp(other);
+    const adapter = await renderMessagingStartChoice(
+      {
+        startFeishuAttempt: vi.fn(async () => gates.Lark.promise),
+        startSlackInstall: vi.fn(async () => {
+          await gates.Slack.promise;
+          return "https://slack.com/oauth/v2/authorize?state=scripted";
+        }),
+      },
+      { onExternalNavigation: vi.fn() },
+    );
+
+    fireEvent.click(messagingChoice(selectedPattern));
+    await settle();
+    expectPendingMessagingChoice(selectedPattern, otherPattern);
+
+    gates[name].reject(new Error("refused"));
+    await settle();
+    expectIdleMessagingChoices();
+    expect(screen.getByRole("alert")).toBeTruthy();
+
+    fireEvent.click(messagingChoice(otherPattern));
+    await settle();
+    expectPendingMessagingChoice(otherPattern, selectedPattern);
+    expect(screen.queryByRole("alert")).toBeNull();
+    gates[other].resolve();
+    await settle();
+    expectIdleMessagingChoices();
+    expect(adapter.startSlackInstall).toHaveBeenCalledTimes(1);
+    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Slack", "Lark"] as const)("refuses same-event-loop duplicate clicks starting with %s", async (name) => {
+    const gates = { Slack: deferred<string>(), Lark: deferred<void>() };
+    const selectedPattern = new RegExp(name);
+    const otherPattern = name === "Slack" ? /Lark/ : /Slack/;
+    const adapter = await renderMessagingStartChoice(
+      {
+        startFeishuAttempt: vi.fn(async () => gates.Lark.promise),
+        startSlackInstall: vi.fn(async () => gates.Slack.promise),
+      },
+      { onExternalNavigation: vi.fn() },
+    );
+
+    const selected = messagingChoice(selectedPattern);
+    const other = messagingChoice(otherPattern);
+    // Batch the clicks before React can commit disabled buttons, exercising the synchronous guard.
+    act(() => {
+      fireEvent.click(selected);
+      fireEvent.click(selected);
+      fireEvent.click(other);
+    });
+    await settle();
+
+    expect(adapter.startFeishuAttempt).toHaveBeenCalledTimes(name === "Lark" ? 1 : 0);
+    expect(adapter.startSlackInstall).toHaveBeenCalledTimes(name === "Slack" ? 1 : 0);
+    expectPendingMessagingChoice(selectedPattern, otherPattern);
+    gates.Slack.resolve("https://slack.com/oauth/v2/authorize?state=scripted");
+    gates.Lark.resolve();
+    await settle();
+    expectIdleMessagingChoices();
   });
 });
 

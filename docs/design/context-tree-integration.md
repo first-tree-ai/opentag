@@ -74,7 +74,7 @@ There is deliberately no `inspect` subcommand. `opentag doctor` already owns dia
 the injectable-inspector seam, and two surfaces over one piece of state means every future reason
 code has to be rendered twice.
 
-The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree.json`, mode
+The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree/config.json`, mode
 `0600`, credential-free. The Server is not involved. The three target kinds mirror
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
 reinterpreting it.
@@ -238,10 +238,12 @@ a managed `CODEX_HOME`. That option was dropped because it changes provider arti
 invalidating existing bindings, and forces a visible one-time `codex login` in the managed home.
 Writing one owned, reversible skill directory is the smaller intrusion.
 
-OpenTag creates the Computer config directory before granting access. Linux grants that directory,
-allowing initial file creation, atomic replacement, and changes to sibling configuration files.
-macOS retains the Context Tree config-file grant. If directory creation fails, OpenTag logs the
-failure and starts the provider without that grant, preserving workspace, Slack, and tree grants.
+OpenTag creates the Context Tree config leaf — `<OPENTAG_HOME>/config/context-tree/` — before
+granting access, on both platforms. The grant is that leaf directory, which contains exactly one
+file, so it carries no more authority on Linux than the macOS file grant and never touches
+`<OPENTAG_HOME>/config`, where the Computer's identity and machine credential live. If directory
+creation fails, OpenTag logs the failure and starts the provider without that grant, preserving
+workspace, Slack, and tree grants.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather
@@ -385,20 +387,3 @@ the dependency from the published bundle.
 - Windows support, which needs Provider lifecycle, path, lock, and isolated-home CI coverage
   first. The shim is POSIX and reports `shim_unavailable` elsewhere.
 - Any Provider beyond Codex and Claude Code.
-
-### Linux configuration-grant smoke verification (2026-09-08)
-
-An offline smoke run used Codex CLI 0.114.0 (Linux aarch64), Node 24 in Docker,
-and the built OpenTag CLI with Context Tree 0.1.11. The container used
-`--network none --security-opt seccomp=unconfined`; Codex itself actively enforced
-`sandbox linux --full-auto` with
-`sandbox_workspace_write.writable_roots=["/computer/config"]`, cwd `/workspace`.
-Codex's `sandbox_workspace_write.network_access=true` allowed Node's local subprocess
-machinery; Docker still disabled external networking. With Codex network access disabled,
-Node subprocess creation returned `EPERM`, so that configuration did not complete the smoke.
-
-After creating two real local trees outside the sandbox, the sandboxed OpenTag command
-created an absent `/computer/config/context-tree.json` with
-`context-tree connect --tree-path <first-tree>`, then replaced it with the second target.
-A write to `/computer/unrelated` failed with `Permission denied`, confirming filesystem
-enforcement outside the granted directory. This was not an unsandboxed container run.

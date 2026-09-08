@@ -48,7 +48,7 @@ const skippedInstallReply = (reason: unknown) =>
 /** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
 async function writeTarget(home: string, target: unknown): Promise<void> {
   const layout = resolveOpenTagHomeLayout(home);
-  await mkdir(layout.config, { mode: 0o700, recursive: true });
+  await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
   await writeFile(layout.contextTreeConfigFile, `${JSON.stringify({ schemaVersion: 1, target })}\n`, "utf8");
 }
 

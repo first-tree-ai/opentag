@@ -68,7 +68,7 @@ async function isolatedAccount(prefix: string): Promise<{
 
   const openTagHome = await temporaryDirectory(`${prefix}-home-`);
   const layout = resolveOpenTagHomeLayout(openTagHome);
-  await mkdir(layout.config, { mode: 0o700, recursive: true });
+  await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
   await writeFile(
     layout.contextTreeConfigFile,
     `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,

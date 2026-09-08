@@ -509,12 +509,12 @@ function visibleProviderCliPath(
 
 async function prepareConfigurationRoots(layout: ReturnType<typeof resolveOpenTagHomeLayout>): Promise<string[]> {
   try {
-    await mkdir(layout.config, { mode: 0o700, recursive: true });
-    return [process.platform === "linux" ? layout.config : layout.contextTreeConfigFile];
+    await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
+    return [layout.contextTreeConfigDir];
   } catch (error) {
     logger.warn(
-      { err: error instanceof Error ? error.name : "unknown" },
-      "Computer configuration directory could not be created",
+      { code: error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined },
+      "Context Tree configuration directory could not be created",
     );
     return [];
   }

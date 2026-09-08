@@ -53,7 +53,7 @@ function capture(): { deps: { stdout: (chunk: string) => void; stderr: (chunk: s
 const listing = (names: readonly string[]) => ({
   payload: { schemaVersion: 1, trees: names.map((name) => ({ name, tree: { kind: "local", path: `/t/${name}` } })) },
 });
-const configFile = (home: string) => join(home, "config", "context-tree.json");
+const configFile = (home: string) => join(home, "config", "context-tree", "config.json");
 const invalid = { findings: [{ code: "MISSING_ROOT" }], ok: false };
 
 describe("opentag context-tree connect", () => {
@@ -159,7 +159,7 @@ describe("readContextTreeState", () => {
   ])("reports %s", async (_label, target, responses, expected) => {
     const home = await temporaryDirectory("opentag-ct-state-");
     if (target !== undefined) {
-      await mkdir(join(home, "config"), { mode: 0o700, recursive: true });
+      await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
       await writeFile(configFile(home), JSON.stringify({ schemaVersion: 1, target }), "utf8");
     }
 
@@ -170,7 +170,7 @@ describe("readContextTreeState", () => {
 
   it("treats unreadable configuration as unknown rather than failing", async () => {
     const home = await temporaryDirectory("opentag-ct-state-bad-");
-    await mkdir(join(home, "config"), { mode: 0o700, recursive: true });
+    await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
     await writeFile(configFile(home), "{ not json", "utf8");
 
     await expect(readContextTreeState({ home, contextTreePackage: await fakeCli({}) })).resolves.toMatchObject({
@@ -182,7 +182,7 @@ describe("readContextTreeState", () => {
     "reports recorded %s preparation instead of not cloned",
     async (reason) => {
       const home = await temporaryDirectory("opentag-ct-state-preparation-");
-      await mkdir(join(home, "config"), { mode: 0o700, recursive: true });
+      await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
       await mkdir(join(home, "state"), { mode: 0o700, recursive: true });
       await writeFile(
         configFile(home),

@@ -10,12 +10,24 @@ deliberately not sent, and the one property setting the code cannot make for its
 Measurement is decided entirely in the browser, by `apps/web/src/analytics/config.ts`:
 
 - the build must be a production build, which excludes every development server; and
-- the hostname must not be loopback, which excludes the end-to-end stack, `vite preview`, and any local run of
-  `apps/web/dist`.
+- the hostname must be `opentag.build` or one of its subdomains.
 
-When either test fails nothing happens at all — no tag is fetched and no event is queued. There is no environment
-variable. A single image is built per commit and promoted unchanged to every environment, so a build-time value could
-not differ between them, and a runtime one would travel through the Server for a value that never changes.
+When either test fails nothing happens at all — no tag is fetched and no event is queued.
+
+The host rule is an **allowlist, not a loopback exclusion**, and that matters more than it looks. OpenTag is open
+source and meant to be self-hosted. Excluding only loopback would mean **every self-hosted deployment quietly
+reported its operators and their readers into this property** — data nobody asked to send and nobody here wants to
+hold. The allowlist also fails in the safe direction: an unlisted host is simply not measured, which is a silent gap
+rather than a silent leak. It excludes the end-to-end stack and local previews for free, since neither runs on this
+domain.
+
+**A self-hosted OpenTag deployment loads no tag and reports nothing.** If you fork this and want your own
+measurement, change `ANALYTICS_MEASUREMENT_ID` and `MEASURED_HOST_SUFFIX` together.
+
+There is no environment variable. A single image is built per commit and promoted unchanged to every environment, so a
+build-time value could not differ between them, and a runtime one would travel through the Server for a value that
+never changes. (Injecting it into `index.html` at boot does not work either: `@fastify/static` is registered with
+`wildcard: false`, so `/` and `/index.html` are served from disk and never pass through the cached string.)
 
 The accepted consequence: **staging and production report into the same property.** Separate them in Google Analytics
 by hostname.
@@ -32,13 +44,17 @@ built from the step number rather than from a hand-ordered list of events.
 | `agent_created` | 2 | `onboarding-v2/page.tsx`, after the Server returns an id | `runtime_provider` |
 | `agent_create_failed` | — | same, on refusal | `reason`: `name_conflict` or `error` |
 | `computer_connect_started` | — | `features/computer-connect/computer-connect.tsx`, when the command is shown | `mode` |
-| `computer_connected` | 3 | same, when the redeemed Computer comes online | `mode` |
+| `computer_connected` | 3 (only when `mode` is `create`) | same, when the redeemed Computer comes online | `mode` |
 | `agent_setup_stage_reached` | — | `onboarding-v2/agent-setup-page.tsx`, once per Agent and stage | `stage` |
 | `agent_setup_completed` | — | same, when the stage first reads `ready` | — |
 | `first_conversation_observed` | 4 | `features/agents/agents-page.tsx`, when the Agent list first shows a Task | — |
 | `page_view` | — | `analytics/route-analytics.ts`, per resolved route | sanitized location |
 
 The three transitions the funnel answers are the drops between steps 1→2, 2→3 and 3→4.
+
+A `computer_connected` with `mode: "repair"` carries **no** `funnel_step`: it reconnects a Computer the Account already
+had, so counting it would report the same reader reaching step 3 again — inflating that step and understating the drop
+out of it. The event is still worth having, because a repair is somebody recovering.
 
 ### Neither sign-in path can report itself
 
@@ -62,10 +78,13 @@ through the GA4 Measurement Protocol where the turn report lands; that is delibe
 - **No address, no display name, no Agent name.** The only identifier is the Account's own uuid, set as `user_id` so
   the funnel survives a reader moving between devices.
 - **No raw URL.** `analytics/page-location.ts` rebuilds the location from the parts allowed to survive: the origin, the
-  route template with every uuid and integer segment reduced to `:id`, and an allowlist of campaign parameters
-  (`utm_*`, `gclid`, and siblings). Everything else in the query string is dropped, so a parameter added later is
-  private until someone chooses otherwise. A same-origin referrer is held to the same rule; a foreign one is reduced to
-  its bare origin.
+  route template, and an allowlist of campaign parameters (`utm_*`, `gclid`, and siblings). Everything else in the
+  query string is dropped, so a parameter added later is private until someone chooses otherwise. A same-origin
+  referrer is held to the same rule; a foreign one is reduced to its bare origin.
+- **No tokens.** The route template reduces uuid and integer segments, and additionally any segment of 16 characters or
+  more. That second rule is not cosmetic: `/invites/<token>` is a real route and its token grants access to an Account.
+  This application's own path segments are short words — `integrations`, the longest, is twelve — so nothing legitimate
+  is caught, and a leaked credential could not be taken back.
 - **No advertising signals.** `allow_google_signals` and `allow_ad_personalization_signals` are both off.
 - **Nothing from `/internal`.** The preview lab drives the real components against in-memory adapters, so an Agent
   "created" there is not an Agent.

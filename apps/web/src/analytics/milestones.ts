@@ -70,6 +70,21 @@ export function reportMilestoneOnce(key: string, emit: () => void, target: Windo
 }
 
 /**
+ * A connected Computer.
+ *
+ * Only a first connection is an activation step. A repair reconnects a Computer the Account already
+ * had, so counting it would report the same reader reaching step 3 a second time — inflating that
+ * step and understating the drop out of it. The event is still worth having: a repair is somebody
+ * recovering, which is its own thing to know.
+ */
+export function reportComputerConnected(mode: "create" | "repair"): void {
+  analytics.track(ANALYTICS_EVENT.computerConnected, {
+    mode,
+    ...(mode === "create" ? activationStep("computer_connected") : {}),
+  });
+}
+
+/**
  * Attach the Account, and report the sign-in that produced it.
  *
  * This runs wherever an authenticated surface first resolves the Account, which is every load of

@@ -9,9 +9,15 @@ Web App 会向 Google Analytics 4 上报一条激活漏斗。本文说明测量�
 是否测量完全在浏览器侧决定，由 `apps/web/src/analytics/config.ts` 判断：
 
 - 必须是 production 构建，这排除了所有开发服务器；并且
-- hostname 不能是 loopback，这排除了端到端测试栈、`vite preview`，以及任何本地运行的 `apps/web/dist`。
+- hostname 必须是 `opentag.build` 或其子域名。
 
-任一条件不满足时什么都不会发生 —— 不加载 tag，也不排队任何事件。这里没有环境变量：每个 commit 只构建一个镜像并原样推到各环境，构建期的值无法区分环境，而运行期的值又要为一个永不变化的常量绕经 Server。
+任一条件不满足时什么都不会发生 —— 不加载 tag，也不排队任何事件。
+
+主机规则是**白名单，而不是排除 loopback**，这一点比看上去更重要。OpenTag 是开源的，设计上就支持自部署。若只排除 loopback，就意味着**每一个自部署实例都会把其运营者与其读者的行为悄悄上报进这个属性** —— 这是没有人要求发送、我们这边也不希望持有的数据。白名单同时朝安全方向失败：未列入的主机只是不被测量，这是一个静默的缺口，而不是一次静默的泄露。它也顺带排除了端到端测试栈和本地预览，因为二者都不在该域名下运行。
+
+**自部署的 OpenTag 不加载 tag，也不上报任何内容。** 若你 fork 本项目并希望使用自己的统计，请同时修改 `ANALYTICS_MEASUREMENT_ID` 与 `MEASURED_HOST_SUFFIX`。
+
+这里没有环境变量：每个 commit 只构建一个镜像并原样推到各环境，构建期的值无法区分环境，而运行期的值又要为一个永不变化的常量绕经 Server。（在启动时注入 `index.html` 同样行不通：`@fastify/static` 以 `wildcard: false` 注册，因此 `/` 与 `/index.html` 直接由磁盘提供，根本不经过那份被缓存的字符串。）
 
 需要接受的后果：**staging 与生产上报到同一个属性。** 请在 Google Analytics 中按 hostname 区分。
 
@@ -26,13 +32,15 @@ Web App 会向 Google Analytics 4 上报一条激活漏斗。本文说明测量�
 | `agent_created` | 2 | `onboarding-v2/page.tsx`，Server 返回 id 之后 | `runtime_provider` |
 | `agent_create_failed` | — | 同上，创建被拒绝时 | `reason`：`name_conflict` 或 `error` |
 | `computer_connect_started` | — | `features/computer-connect/computer-connect.tsx`，命令展示时 | `mode` |
-| `computer_connected` | 3 | 同上，兑换后的 Computer 上线时 | `mode` |
+| `computer_connected` | 3（仅当 `mode` 为 `create`） | 同上，兑换后的 Computer 上线时 | `mode` |
 | `agent_setup_stage_reached` | — | `onboarding-v2/agent-setup-page.tsx`，每个 Agent 每个 stage 一次 | `stage` |
 | `agent_setup_completed` | — | 同上，stage 首次读到 `ready` 时 | — |
 | `first_conversation_observed` | 4 | `features/agents/agents-page.tsx`，Agent 列表首次出现 Task 时 | — |
 | `page_view` | — | `analytics/route-analytics.ts`，每次路由解析 | 已脱敏的 location |
 
 漏斗要回答的三段转化，就是步骤 1→2、2→3、3→4 之间的流失。
+
+`mode: "repair"` 的 `computer_connected` **不携带** `funnel_step`：它重连的是 Account 本就拥有的 Computer，计入会让同一位用户再次「到达」步骤 3，从而抬高该步骤、压低其后的流失。该事件本身仍值得保留 —— 修复意味着有人正在自救。
 
 ### 两条登录路径都无法自己上报
 
@@ -47,7 +55,8 @@ Web App 会向 Google Analytics 4 上报一条激活漏斗。本文说明测量�
 ## 绝不发送什么
 
 - **不发送邮箱、显示名、Agent 名称。** 唯一标识是 Account 自身的 uuid，作为 `user_id` 设置，使漏斗能跨设备延续。
-- **不发送原始 URL。** `analytics/page-location.ts` 只用被允许保留的部分重建 location：origin、把每个 uuid 与整数段归约为 `:id` 的路由模板，以及一份营销参数白名单（`utm_*`、`gclid` 等）。查询串中的其余部分一律丢弃，因此日后新增的参数默认是私有的。同源 referrer 适用同一规则；外部 referrer 只保留 origin。
+- **不发送原始 URL。** `analytics/page-location.ts` 只用被允许保留的部分重建 location：origin、路由模板，以及一份营销参数白名单（`utm_*`、`gclid` 等）。查询串中的其余部分一律丢弃，因此日后新增的参数默认是私有的。同源 referrer 适用同一规则；外部 referrer 只保留 origin。
+- **不发送任何 token。** 路由模板会归约 uuid 与整数段，另外还会归约长度 ≥ 16 的任意段。第二条规则并非可有可无：`/invites/<token>` 是真实存在的路由，其 token 可用于访问一个 Account。本应用自身的路径段都是短单词（最长的 `integrations` 也只有 12 个字符），因此不会误伤合法路由；而一旦凭据泄露则无法收回。
 - **不发送广告信号。** `allow_google_signals` 与 `allow_ad_personalization_signals` 均已关闭。
 - **不上报 `/internal` 下的任何内容。** 预览 Lab 用内存适配器驱动真实组件，在那里「创建」的 Agent 并不是 Agent。
 

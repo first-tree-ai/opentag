@@ -1,7 +1,8 @@
 import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { analytics } from "../../analytics/analytics.js";
-import { ANALYTICS_EVENT, activationStep } from "../../analytics/events.js";
+import { ANALYTICS_EVENT } from "../../analytics/events.js";
+import { reportComputerConnected } from "../../analytics/milestones.js";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
@@ -344,10 +345,7 @@ function ComputerConnectAttempt({
       setError(undefined);
       // Every surface that connects a Computer — onboarding, the bind step, the Computers page —
       // ends here, and the latch above means one attempt reports once.
-      analytics.track(ANALYTICS_EVENT.computerConnected, {
-        mode: targetComputerId ? "repair" : "create",
-        ...activationStep("computer_connected"),
-      });
+      reportComputerConnected(targetComputerId ? "repair" : "create");
       setState({ kind: "connected", issued: state.issued, computer });
       onConnectedRef.current?.(computer);
     };

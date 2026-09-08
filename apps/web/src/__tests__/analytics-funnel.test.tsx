@@ -146,6 +146,25 @@ describe("activation funnel reporting", () => {
     expect(events("agent_created")).toHaveLength(0);
   });
 
+  it("does not turn a created Agent into a failed one when what follows the creation fails", async () => {
+    vi.spyOn(browserApi, "createAgent").mockResolvedValue({ id: agentId } as never);
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] } as never);
+
+    await renderInRouter(
+      <AgentSetupSurface
+        onAgentAvailable={() => {
+          throw new Error("navigation failed");
+        }}
+      />,
+    );
+    await createAnAgent();
+    await screen.findByRole("alert");
+
+    // The Server made the Agent. A route that could not be reached afterwards is not a refusal.
+    expect(events("agent_created")).toHaveLength(1);
+    expect(events("agent_create_failed")).toHaveLength(0);
+  });
+
   it("reports nothing for a preview creation, which creates no Agent", async () => {
     const createAgent = vi.spyOn(browserApi, "createAgent");
 

@@ -205,6 +205,31 @@ describe("ComputerConnect", () => {
     expect(sent[1]?.[2]).toEqual({ mode: "create", funnel: "activation", funnel_step: 3 });
   });
 
+  it("keeps a repair out of the activation funnel, while still reporting it", async () => {
+    const sent: GtagCommand[] = [];
+    analytics.arm((command) => sent.push(command));
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+
+    render(
+      <ComputerConnect
+        intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    await flushAsync();
+
+    // Reconnecting a Computer the Account already had is not somebody reaching step 3 again.
+    expect(sent.map((command) => command[1])).toEqual(["computer_connect_started", "computer_connected"]);
+    expect(sent[1]?.[2]).toEqual({ mode: "repair" });
+  });
+
   it("does not let another Computer satisfy a repair attempt", async () => {
     const onConnected = vi.fn();
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({

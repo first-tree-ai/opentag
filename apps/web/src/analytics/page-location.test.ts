@@ -26,6 +26,26 @@ describe("analytics page location", () => {
     );
   });
 
+  it("reduces an opaque segment that is neither a uuid nor an integer", () => {
+    // `/invites/<token>` is a real route, and the token grants access to an Account. `routeTemplate`
+    // alone does not catch it, which is why this pass exists.
+    const token = "A".repeat(43);
+    expect(analyticsPagePath(`/invites/${token}`)).toBe("/invites/:id");
+    expect(analyticsPageLocation(`https://opentag.example/invites/${token}`)).toBe(
+      "https://opentag.example/invites/:id",
+    );
+    expect(analyticsPageLocation(`https://opentag.example/invites/${token}`)).not.toContain(token);
+  });
+
+  it("leaves this application's own route names alone", () => {
+    for (const path of ["/", "/login", "/agents", "/agents/setup", "/agents/computers", "/internal/agent-setup"]) {
+      expect(analyticsPagePath(path)).toBe(path);
+    }
+    expect(analyticsPagePath("/agents/6f1b3c2e-9d4a-4f8b-8a11-2c3d4e5f6a7b/settings/messaging")).toBe(
+      "/agents/:id/settings/messaging",
+    );
+  });
+
   it("returns nothing for a value that is not a URL", () => {
     expect(analyticsPageLocation("")).toBeUndefined();
     expect(analyticsPageLocation("not a url")).toBeUndefined();

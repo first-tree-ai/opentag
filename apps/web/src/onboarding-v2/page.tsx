@@ -77,14 +77,22 @@ const SILENT_CREATION_REPORT: CreationReport = { created: () => undefined, refus
  */
 function creationReport(preview: unknown): CreationReport {
   if (preview) return SILENT_CREATION_REPORT;
+  /*
+   * One attempt reports one outcome. What follows a created Agent — canonicalizing the route to it —
+   * runs inside the same `try`, so a navigation that fails would otherwise be reported as a creation
+   * that failed, against an Agent the Server had already made.
+   */
+  let created = false;
   return {
     created: (runtimeProvider) => {
+      created = true;
       analytics.track(ANALYTICS_EVENT.agentCreated, {
         runtime_provider: runtimeProvider,
         ...activationStep("agent_created"),
       });
     },
     refused: (cause) => {
+      if (created) return;
       const nameConflict = cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT";
       analytics.track(ANALYTICS_EVENT.agentCreateFailed, { reason: nameConflict ? "name_conflict" : "error" });
     },

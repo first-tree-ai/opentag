@@ -16,12 +16,22 @@
  */
 export const ANALYTICS_MEASUREMENT_ID = "G-RMDF361W1B";
 
-/** Hosts that only ever serve a rehearsal: the end-to-end stack, a local preview, a dev server. */
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
+/**
+ * The only site this measures: OpenTag's own, and its subdomains.
+ *
+ * An allowlist rather than a loopback exclusion, because OpenTag is open source and meant to be
+ * self-hosted. Excluding only loopback would mean every self-hosted deployment quietly reported its
+ * operators' and their readers' activity into this property — data nobody asked to send and nobody
+ * here wants to hold. It also fails in the safe direction: a host nobody listed is not measured,
+ * which is a silent gap rather than a silent leak.
+ *
+ * It covers the end-to-end stack and local previews for free, since neither runs on this domain.
+ */
+const MEASURED_HOST_SUFFIX = "opentag.build";
 
 export function isMeasuredHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
-  return host.length > 0 && !LOOPBACK_HOSTS.has(host) && !host.endsWith(".localhost");
+  return host === MEASURED_HOST_SUFFIX || host.endsWith(`.${MEASURED_HOST_SUFFIX}`);
 }
 
 /**

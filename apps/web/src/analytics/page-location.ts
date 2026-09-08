@@ -29,9 +29,24 @@ const CAMPAIGN_PARAMETERS = new Set([
   "wbraid",
 ]);
 
-/** The low-cardinality path a report groups by: every uuid and integer segment becomes `:id`. */
+/**
+ * The shortest path segment this treats as opaque.
+ *
+ * `routeTemplate` reduces uuids and integers, which is what a diagnostic needs. It is not enough
+ * here: `/invites/<token>` is a real route this application serves, and its token is a credential —
+ * forty-three characters that grant access to an Account. This application's own path segments are
+ * short words (`integrations`, the longest, is twelve), so anything at or past this length is not a
+ * route name, and reducing it costs a report nothing while a leaked one cannot be taken back.
+ */
+const OPAQUE_SEGMENT_LENGTH = 16;
+const TOKEN_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/** The low-cardinality path a report groups by: every identifying segment becomes `:id`. */
 export function analyticsPagePath(pathname: string): string {
-  return routeTemplate(pathname);
+  return routeTemplate(pathname)
+    .split("/")
+    .map((segment) => (segment.length >= OPAQUE_SEGMENT_LENGTH && TOKEN_SEGMENT.test(segment) ? ":id" : segment))
+    .join("/");
 }
 
 /**

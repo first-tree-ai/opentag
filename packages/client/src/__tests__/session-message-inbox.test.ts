@@ -867,6 +867,7 @@ describe("SessionMessageInbox", () => {
     expect(order).toEqual(["prepare", "plan", "runtime", "prompt", "plan-cleanup", "cleanup"]);
     expect(turnPlan.prepare).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "feishu", runId: expect.stringMatching(/^session-message-/) }),
+      expect.any(AbortSignal),
     );
     visible.stop();
 
@@ -886,6 +887,113 @@ describe("SessionMessageInbox", () => {
     await internal.settled();
     expect(internalPlan.prepare).not.toHaveBeenCalled();
     internal.stop();
+  });
+
+  it("bounds visible plan preparation with the Run timeout and does not start the model", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return {
+          cancel() {
+            fireTimeout = () => undefined;
+          },
+        };
+      },
+    };
+    const turnPlan = {
+      prepare: vi.fn((_input: unknown, signal?: AbortSignal) => {
+        return new Promise((_resolve, reject) => {
+          const onAbort = () => {
+            reject(signal?.reason ?? new Error("aborted"));
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const ensureRuntime = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: ensureRuntime as never,
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      timeoutScheduler,
+      turnPlan,
+    });
+    expect((await inbox.accept(delivery())).status).toBe("accepted");
+    await vi.waitFor(() => expect(turnPlan.prepare).toHaveBeenCalledOnce());
+    expect(turnPlan.prepare).toHaveBeenCalledWith(expect.any(Object), expect.any(AbortSignal));
+    fireTimeout();
+    await inbox.settled();
+    expect(ensureRuntime).not.toHaveBeenCalled();
+    expect(turnPlan.cleanup).not.toHaveBeenCalled();
+    inbox.stop();
+  });
+
+  it("does not start the model when the Run signal aborts after plan prepare", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return {
+          cancel() {
+            fireTimeout = () => undefined;
+          },
+        };
+      },
+    };
+    const turnPlan = {
+      prepare: vi.fn(async () => {
+        fireTimeout();
+        return { sessionDir: "/tmp/plans" };
+      }),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const ensureRuntime = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: ensureRuntime as never,
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      timeoutScheduler,
+      turnPlan,
+    });
+    expect((await inbox.accept(delivery())).status).toBe("accepted");
+    await inbox.settled();
+    expect(turnPlan.prepare).toHaveBeenCalledOnce();
+    expect(ensureRuntime).not.toHaveBeenCalled();
+    inbox.stop();
   });
 
   it("rejects a visible callback before ACK under grant v1 and accepts the same message after v2 is restored", async () => {

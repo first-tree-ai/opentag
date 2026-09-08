@@ -51,17 +51,14 @@ export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentList({ agents }: { agents: AgentListItem[] }) {
   const shownOrder = useRef<readonly string[]>([]);
-  const byPriority = [...agents].sort(
-    (left, right) => agentCardStatus(left).priority - agentCardStatus(right).priority,
-  );
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   /*
    * Written during render on purpose. `orderAgentIds` is stable under reapplication, so a
    * repeated render of the same list produces the same order; deferring it to an effect would
-   * show one frame of the resorted list before restoring the order the viewer is pointing at.
+   * show one frame of a changed order before restoring the order the viewer is pointing at.
    */
   const order = orderAgentIds(
-    byPriority.map((agent) => agent.id),
+    agents.map((agent) => agent.id),
     shownOrder.current,
   );
   shownOrder.current = order;

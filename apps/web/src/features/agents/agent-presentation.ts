@@ -20,25 +20,24 @@ import type { AgentSettingsSection } from "./agent-settings/sections.js";
 type AgentCardStatus = {
   detail?: string;
   label: string;
-  priority: number;
   tone: StatusTone;
 };
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   if (agent.status === "suspended" || agent.availability.state === "suspended") {
-    return { label: m.agents_card_status_paused(), priority: 4, tone: "neutral" };
+    return { label: m.agents_card_status_paused(), tone: "neutral" };
   }
   if (!agent.evidenceConfirmed || agent.availability.state === "unconfirmed") {
-    return { label: m.agents_card_status_unavailable(), priority: 1, tone: "neutral" };
+    return { label: m.agents_card_status_unavailable(), tone: "neutral" };
   }
   if (agent.availability.state === "ready") {
     return readyAgentCardStatus(agent);
   }
   if (agent.availability.state === "setting_up") {
-    return { label: m.agents_card_status_setting_up_messaging(), priority: 2, tone: "info" };
+    return { label: m.agents_card_status_setting_up_messaging(), tone: "info" };
   }
   if (agent.availability.state === "not_connected") {
-    return { label: m.agents_card_status_messaging_not_connected(), priority: 2, tone: "neutral" };
+    return { label: m.agents_card_status_messaging_not_connected(), tone: "neutral" };
   }
   return blockedAgentCardStatus(agent);
 }
@@ -50,50 +49,48 @@ function readyAgentCardStatus(agent: AgentListItem): AgentCardStatus {
         ? m.agents_card_activity_working({ elapsed: formatElapsedCompact(agent.activity.startedAt) })
         : undefined,
     label: m.agents_card_status_ready(),
-    priority: 3,
     tone: "success",
   };
 }
 
 function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
   if (agent.availability.reason === "computer_not_bound") {
-    return { label: m.agents_card_status_no_computer(), priority: 2, tone: "neutral" };
+    return { label: m.agents_card_status_no_computer(), tone: "neutral" };
   }
   if (agent.availability.reason === "computer_offline") {
-    return { label: m.agents_card_status_computer_offline(), priority: 0, tone: "warning" };
+    return { label: m.agents_card_status_computer_offline(), tone: "warning" };
   }
   if (agent.availability.reason === "runtime_unavailable") {
     return runtimeAgentCardStatus(agent);
   }
   if (agent.availability.reason === "im_reauthorization_required") {
-    return { label: m.agents_card_status_messaging_permissions_required(), priority: 0, tone: "warning" };
+    return { label: m.agents_card_status_messaging_permissions_required(), tone: "warning" };
   }
   if (agent.availability.reason === "im_disabled") {
-    return { label: m.agents_card_status_messaging_disconnected(), priority: 2, tone: "neutral" };
+    return { label: m.agents_card_status_messaging_disconnected(), tone: "neutral" };
   }
   if (agent.availability.reason === "handoff_unavailable") {
-    return { label: m.agents_card_status_cannot_receive_messages(), priority: 0, tone: "warning" };
+    return { label: m.agents_card_status_cannot_receive_messages(), tone: "warning" };
   }
-  return { label: m.agents_card_status_messaging_connection_failed(), priority: 0, tone: "warning" };
+  return { label: m.agents_card_status_messaging_connection_failed(), tone: "warning" };
 }
 
 function runtimeAgentCardStatus(agent: AgentListItem): AgentCardStatus {
   const { provider, status } = agent.availability.dependencies.runtime;
   const providerName = runtimeProviderName(provider);
   if (status === "checking") {
-    return { label: m.agents_card_status_runtime_checking({ providerName }), priority: 2, tone: "info" };
+    return { label: m.agents_card_status_runtime_checking({ providerName }), tone: "info" };
   }
   if (status === "install") {
-    return { label: m.agents_card_status_runtime_not_installed({ providerName }), priority: 0, tone: "warning" };
+    return { label: m.agents_card_status_runtime_not_installed({ providerName }), tone: "warning" };
   }
   if (status === "sign-in") {
     return {
       label: m.agents_card_status_runtime_sign_in_required({ providerName }),
-      priority: 0,
       tone: "warning",
     };
   }
-  return { label: m.agents_card_status_runtime_unavailable({ providerName }), priority: 0, tone: "warning" };
+  return { label: m.agents_card_status_runtime_unavailable({ providerName }), tone: "warning" };
 }
 
 /**

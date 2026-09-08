@@ -584,7 +584,7 @@ export class AgentService {
       .innerJoin(creator, eq(creator.id, agents.createdByUserId))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
-      .orderBy(asc(agents.name), asc(agents.id));
+      .orderBy(asc(agents.createdAt), asc(agents.id));
     const summaries = rows.flatMap((row) => {
       if (!row.id) return [];
       if (!row.creatorDisplayName) throw new Error("Active Agent is missing its creator audit record");

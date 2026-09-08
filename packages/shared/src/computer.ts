@@ -35,7 +35,94 @@ export const ProviderCliValidationResultReasonSchema = z.enum([
   ...INTEGRATION_CREDENTIAL_EXECUTION_REASONS,
   ...PROVIDER_CLI_VALIDATION_RETRY_REASONS,
 ]);
+/** Allowlisted artifact failure reasons that may leave the machine. */
+export const PROVIDER_CLI_ARTIFACT_PUBLIC_REASONS = [
+  "unsupported_platform",
+  "global_bin_unavailable",
+  "integrity_failed",
+  "version_incompatible",
+] as const;
+export const ProviderCliArtifactPublicReasonSchema = z.enum(PROVIDER_CLI_ARTIFACT_PUBLIC_REASONS);
+export const PROVIDER_CLI_PUBLIC_FAILURE_REASONS = [
+  ...INTEGRATION_CREDENTIAL_EXECUTION_REASONS,
+  ...PROVIDER_CLI_ARTIFACT_PUBLIC_REASONS,
+] as const;
+export const ProviderCliPublicFailureReasonSchema = z.enum(PROVIDER_CLI_PUBLIC_FAILURE_REASONS);
+export const PROVIDER_CLI_PUBLIC_NEXT_ACTIONS = [
+  "retry",
+  "repair_cli",
+  "use_supported_computer",
+  "fix_permissions",
+  "retry_verified_download",
+  "install_supported_version",
+] as const;
+export const ProviderCliPublicNextActionSchema = z.enum(PROVIDER_CLI_PUBLIC_NEXT_ACTIONS);
+export type ProviderCliArtifactPublicReason = z.infer<typeof ProviderCliArtifactPublicReasonSchema>;
+export type ProviderCliPublicFailureReason = z.infer<typeof ProviderCliPublicFailureReasonSchema>;
+export type ProviderCliPublicNextAction = z.infer<typeof ProviderCliPublicNextActionSchema>;
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
+
+const PROVIDER_CLI_ALWAYS_MANUAL_ARTIFACT_REASONS = new Set<string>([
+  "unsupported_platform",
+  "global_bin_unavailable",
+  "integrity_failed",
+]);
+
+/** Map a local diagnostic code onto the public artifact allowlist. Unknown codes stay unpublished. */
+export function publicProviderCliArtifactReason(code: string | undefined): ProviderCliArtifactPublicReason | undefined {
+  if (
+    code === "unsupported_platform" ||
+    code === "global_bin_unavailable" ||
+    code === "integrity_failed" ||
+    code === "version_incompatible"
+  ) {
+    return code;
+  }
+  return undefined;
+}
+
+/**
+ * Manual failures need a user or release change. `version_incompatible` is manual only after a
+ * final ensure: an inspection may still be repaired by installing a supported managed artifact.
+ */
+export function providerCliArtifactFailureIsManual(input: {
+  reason: string | undefined;
+  stage: "inspect" | "ensure";
+}): boolean {
+  if (!input.reason) return false;
+  if (PROVIDER_CLI_ALWAYS_MANUAL_ARTIFACT_REASONS.has(input.reason)) return true;
+  return input.reason === "version_incompatible" && input.stage === "ensure";
+}
+
+function providerCliHumanNextAction(reason: ProviderCliArtifactPublicReason | undefined): ProviderCliPublicNextAction {
+  switch (reason) {
+    case "unsupported_platform":
+      return "use_supported_computer";
+    case "global_bin_unavailable":
+      return "fix_permissions";
+    case "integrity_failed":
+      return "retry_verified_download";
+    case "version_incompatible":
+      return "install_supported_version";
+    default:
+      return "repair_cli";
+  }
+}
+
+/** Shared Client/Server/Web/Agent classification for one Provider CLI artifact failure. */
+export function classifyProviderCliArtifactFailure(input: { reason?: string; stage: "inspect" | "ensure" }): {
+  publicReason?: ProviderCliArtifactPublicReason;
+  manual: boolean;
+  nextAction?: ProviderCliPublicNextAction;
+} {
+  const publicReason = publicProviderCliArtifactReason(input.reason);
+  const manual = providerCliArtifactFailureIsManual({ reason: input.reason, stage: input.stage });
+  return {
+    ...(publicReason ? { publicReason } : {}),
+    manual,
+    nextAction: manual ? providerCliHumanNextAction(publicReason) : "repair_cli",
+  };
+}
 
 export const ComputerConnectCodeModeSchema = z.enum(["create", "repair"]);
 
@@ -238,6 +325,7 @@ export const ComputerImCliReadinessSchema = z
     provider: ImCliProviderSchema,
     status: ImCliReadinessStatusSchema,
     observedAt: z.string().datetime().nullable(),
+    reason: ProviderCliArtifactPublicReasonSchema.optional(),
   })
   .strict();
 

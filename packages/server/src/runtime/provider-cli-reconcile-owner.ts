@@ -4,6 +4,7 @@ import {
   IM_CLI_PROVIDERS,
   type ImCliProvider,
   PROVIDER_CLI_VALIDATION_RETRY_REASONS,
+  type ProviderCliArtifactPublicReason,
   type ProviderCliArtifactStatusFrame,
   ProviderCliArtifactStatusFrameSchema,
   type ProviderCliCancelFrame,
@@ -17,6 +18,7 @@ import {
   ProviderCliValidationResultFrameSchema,
   type ProviderCliValidationResultReason,
   type ProviderCliValidationRetryReason,
+  providerCliArtifactFailureIsManual,
   RUNTIME_CAPABILITY,
   RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION,
   RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS,
@@ -61,6 +63,7 @@ type ProviderCliCredentialReadiness = ReturnType<ConnectionRegistry["providerCli
 
 interface CurrentRequest {
   agentId: string;
+  artifactRepairStopped: boolean;
   artifactRetryAttempt: number;
   /** True only while a bounded artifact re-dispatch timer is actually armed. */
   artifactRetryPending: boolean;
@@ -70,6 +73,8 @@ interface CurrentRequest {
   expectedIdentity: ProviderCliExpectedIdentity;
   grantConsumed: boolean;
   grantExpiresAt?: number;
+  grantIssue?: Promise<void>;
+  grantRepairStopped: boolean;
   grantRequestId?: string;
   grantRetryAttempt: number;
   instanceId: string;
@@ -134,6 +139,7 @@ export class ProviderCliReconcileOwner {
   readonly #random: () => number;
   readonly #registry: ConnectionRegistry;
   readonly #inflightFresh = new Map<string, Promise<void>>();
+  readonly #inflightPrepare = new Map<string, Promise<void>>();
   readonly #preparations = new Map<string, CurrentPreparation>();
   readonly #requests = new Map<string, CurrentRequest>();
   #closed = false;
@@ -335,10 +341,25 @@ export class ProviderCliReconcileOwner {
     runtimeProvider: AgentRuntimeProvider;
   }): Promise<void> {
     if (this.#closed) return;
+    const key = `${input.computerId}:${input.agentId}`;
+    const existing = this.#inflightPrepare.get(key);
+    if (existing) return existing;
+    const task = this.#prepareComputer(input).finally(() => {
+      if (this.#inflightPrepare.get(key) === task) this.#inflightPrepare.delete(key);
+    });
+    this.#inflightPrepare.set(key, task);
+    await task;
+  }
+
+  async #prepareComputer(input: {
+    agentId: string;
+    computerId: string;
+    runtimeProvider: AgentRuntimeProvider;
+  }): Promise<void> {
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     const installationId = this.#registry.installationId(input.computerId);
     if (!instanceId || !installationId) throw new Error("The Computer runtime is not connected");
-    const started = await this.#dispatchSetupPrewarm(
+    const startedPrewarm = await this.#dispatchSetupPrewarm(
       {
         computerId: input.computerId,
         installationId,
@@ -347,7 +368,13 @@ export class ProviderCliReconcileOwner {
       },
       "ensure",
     );
-    if (!started) throw new Error("The Computer preparation operation could not be started");
+    const startedRetry = await this.#retryActiveRequirements({
+      agentId: input.agentId,
+      computerId: input.computerId,
+      installationId,
+      instanceId,
+    });
+    if (!startedPrewarm && !startedRetry) throw new Error("The Computer preparation operation could not be started");
   }
 
   async onAgentPlacementChanged(input: {
@@ -361,11 +388,13 @@ export class ProviderCliReconcileOwner {
       await this.#retireAgentOnComputer(input.agentId, input.previousComputerId);
     }
     if (!input.computerId) return;
-    // Preparation is best-effort on placement. Ineligible Computers, missing daemons, and v1
-    // prewarm send failures must not suppress active-binding reconcile; the throw still surfaces
-    // through the existing placement-notification diagnostic after reconcile has run.
+    // Automatic first-setup ensure belongs to a real Computer change or first bind. A repeated
+    // identical placement, including a replay with no previousComputerId, must not reset budgets.
+    const hasEpisode = [...this.#requests.values()].some(
+      (current) => current.computerId === input.computerId && current.agentId === input.agentId,
+    );
     try {
-      if (input.runtimeProvider) {
+      if (input.runtimeProvider && !hasEpisode) {
         await this.prepareComputer({
           agentId: input.agentId,
           computerId: input.computerId,
@@ -395,6 +424,7 @@ export class ProviderCliReconcileOwner {
   close(): void {
     this.#closed = true;
     this.#inflightFresh.clear();
+    this.#inflightPrepare.clear();
     for (const key of [...this.#requests.keys()]) void this.#retireRequest(key);
     for (const [computerId, current] of this.#preparations) {
       if (current.timer) clearTimeout(current.timer);
@@ -408,30 +438,26 @@ export class ProviderCliReconcileOwner {
     installationId: string,
     instanceId: string,
     requirement: ProviderCliRequirementSnapshot,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; resetBudget?: boolean; retry?: boolean } = {},
   ): Promise<void> {
     const key = requestKey(computerId, requirement.integrationId);
     const existing = this.#requests.get(key);
-    if (
-      !options.force &&
-      existing &&
-      existing.instanceId === instanceId &&
-      existing.credentialGeneration === requirement.credentialGeneration &&
-      existing.agentId === requirement.agentId
-    ) {
-      return;
-    }
+    const sameEpisode = this.#sameEpisode(existing, instanceId, requirement);
+    if (this.#shouldSkipDispatch(computerId, existing, sameEpisode, options)) return;
+    const prior = sameEpisode && existing && !options.resetBudget ? existing : undefined;
     await this.#retireRequest(key);
     const requestId = randomUUID();
     this.#requests.set(key, {
       agentId: requirement.agentId,
-      artifactRetryAttempt: existing && options.force ? existing.artifactRetryAttempt : 0,
+      artifactRepairStopped: prior?.artifactRepairStopped ?? false,
+      artifactRetryAttempt: prior?.artifactRetryAttempt ?? 0,
       artifactRetryPending: false,
       computerId,
       credentialGeneration: requirement.credentialGeneration,
       expectedIdentity: requirement.expectedIdentity,
       grantConsumed: false,
-      grantRetryAttempt: 0,
+      grantRepairStopped: prior?.grantRepairStopped ?? false,
+      grantRetryAttempt: prior?.grantRetryAttempt ?? 0,
       instanceId,
       installationId,
       integrationId: requirement.integrationId,
@@ -482,6 +508,72 @@ export class ProviderCliReconcileOwner {
     }
   }
 
+  #sameEpisode(
+    existing: CurrentRequest | undefined,
+    instanceId: string,
+    requirement: ProviderCliRequirementSnapshot,
+  ): existing is CurrentRequest {
+    return (
+      existing !== undefined &&
+      existing.instanceId === instanceId &&
+      existing.credentialGeneration === requirement.credentialGeneration &&
+      existing.agentId === requirement.agentId
+    );
+  }
+
+  #shouldSkipDispatch(
+    computerId: string,
+    existing: CurrentRequest | undefined,
+    sameEpisode: boolean,
+    options: { force?: boolean; resetBudget?: boolean; retry?: boolean },
+  ): boolean {
+    if (!sameEpisode || !existing || options.resetBudget) return false;
+    if (!options.force) return true;
+    if (this.#episodeStopped(existing)) return true;
+    return !options.retry && this.#shouldHoldForceRedispatch(computerId, existing);
+  }
+
+  #episodeStopped(current: CurrentRequest): boolean {
+    return current.artifactRepairStopped || current.grantRepairStopped;
+  }
+
+  #shouldHoldForceRedispatch(computerId: string, current: CurrentRequest): boolean {
+    if (current.artifactRetryPending || current.retryTimer) return true;
+    const now = this.#now();
+    const artifact = matchObservation(this.#registry.providerCliArtifactReadiness(computerId, now), current.snapshot);
+    const credential = matchObservation(
+      this.#registry.providerCliCredentialReadiness(computerId, now),
+      current.snapshot,
+    );
+    if (isReconcileInFlight(artifact, credential)) return true;
+    return artifact?.status === "ready" && credential?.status === "ready";
+  }
+
+  async #retryActiveRequirements(input: {
+    agentId: string;
+    computerId: string;
+    installationId: string;
+    instanceId: string;
+  }): Promise<boolean> {
+    if (
+      !this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
+    ) {
+      return false;
+    }
+    const requirements = (await this.#bindings.listActiveProviderCliRequirements(input.computerId)).filter(
+      (requirement) => requirement.agentId === input.agentId,
+    );
+    if (this.#registry.currentInstanceId(input.computerId) !== input.instanceId) return false;
+    if (this.#registry.installationId(input.computerId) !== input.installationId) return false;
+    if (requirements.length === 0) return false;
+    for (const requirement of requirements) {
+      await this.#dispatchRequirement(input.computerId, input.installationId, input.instanceId, requirement, {
+        resetBudget: true,
+      });
+    }
+    return true;
+  }
+
   async #handle(
     frame: ProviderCliArtifactStatusFrame | ProviderCliPrewarmResultFrame | ProviderCliValidationResultFrame,
     context: RuntimeBusinessContext,
@@ -502,6 +594,7 @@ export class ProviderCliReconcileOwner {
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
     if (!this.#acceptsArtifact(current, frame, context)) return undefined;
+    const reason = frame.status === "unavailable" ? frame.reason : undefined;
     this.#registry.setProviderCliArtifactObservation(
       context.computerId,
       context.instanceId,
@@ -512,20 +605,53 @@ export class ProviderCliReconcileOwner {
         credentialGeneration: frame.credentialGeneration,
         requestId: frame.requestId,
         status: frame.status,
+        ...(reason ? { reason } : {}),
       },
       this.#now(),
     );
-    this.#invalidateCredentialOnArtifactFailure(frame, context);
-    if (frame.status === "ready") await this.#issueGrant(current);
-    if (frame.status === "unavailable") this.#scheduleArtifactRetry(current);
+    this.#invalidateCredentialOnArtifactFailure(current, frame, context);
+    if (frame.status === "ready") {
+      current.artifactRepairStopped = false;
+      if (current.artifactRetryPending) {
+        current.artifactRetryPending = false;
+        if (current.retryTimer) {
+          clearTimeout(current.retryTimer);
+          current.retryTimer = undefined;
+        }
+      }
+      await this.#issueGrant(current);
+    }
+    if (frame.status === "unavailable") this.#settleOrRetryArtifact(current, reason);
     return undefined;
   }
 
-  #invalidateCredentialOnArtifactFailure(frame: ProviderCliArtifactStatusFrame, context: RuntimeBusinessContext): void {
+  #settleOrRetryArtifact(current: CurrentRequest, reason: ProviderCliArtifactPublicReason | undefined): void {
+    if (providerCliArtifactFailureIsManual({ reason, stage: "ensure" })) {
+      current.artifactRepairStopped = true;
+      current.artifactRetryPending = false;
+      if (current.retryTimer) {
+        clearTimeout(current.retryTimer);
+        current.retryTimer = undefined;
+      }
+      return;
+    }
+    this.#scheduleArtifactRetry(current);
+  }
+
+  #invalidateCredentialOnArtifactFailure(
+    current: CurrentRequest,
+    frame: ProviderCliArtifactStatusFrame,
+    context: RuntimeBusinessContext,
+  ): void {
     if (frame.status === "ready") return;
-    // Credential execution readiness is evidence about one exact accepted
-    // artifact selection. Any new check or artifact failure invalidates it
-    // until a fresh validation grant succeeds.
+    if (current.grantRequestId && !current.grantConsumed) current.grantConsumed = true;
+    const credential = matchObservation(
+      this.#registry.providerCliCredentialReadiness(context.computerId, this.#now()),
+      current.snapshot,
+    );
+    // Terminal credential failures stay until an explicit new recovery; a repeated artifact
+    // check must not launder needs_attention or retry exhaustion.
+    if (credential?.status === "needs_attention" || current.grantRepairStopped) return;
     this.#registry.setProviderCliCredentialObservation(
       context.computerId,
       context.instanceId,
@@ -547,30 +673,8 @@ export class ProviderCliReconcileOwner {
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
     if (!this.#acceptsGrantResult(current, frame, context)) return undefined;
-    if (frame.status === "retrying") {
-      if (isInternalRetryReason(frame.reason)) {
-        await this.#scheduleInternalRetry(current, frame.reason);
-        return undefined;
-      }
-      const reason =
-        frame.reason === "rate_limited" || frame.reason === "provider_unreachable" ? frame.reason : undefined;
-      this.#registry.setProviderCliCredentialObservation(
-        context.computerId,
-        context.instanceId,
-        {
-          agentId: frame.agentId,
-          integrationId: frame.integrationId,
-          provider: frame.provider,
-          credentialGeneration: frame.credentialGeneration,
-          requestId: frame.requestId,
-          status: "retrying",
-          ...(reason ? { reason } : {}),
-        },
-        this.#now(),
-      );
-      this.#scheduleGrantRetry(current, reason ?? "provider_unreachable");
-      return undefined;
-    }
+    if (frame.status === "retrying") return this.#handleRetryingValidation(current, frame, context);
+    if (frame.status === "ready" && !this.#artifactIsReady(current)) return undefined;
     this.#registry.setProviderCliCredentialObservation(
       context.computerId,
       context.instanceId,
@@ -585,11 +689,63 @@ export class ProviderCliReconcileOwner {
       },
       this.#now(),
     );
+    if (frame.status === "ready") this.#endFailureEpisode(current);
+    if (frame.status === "needs_attention") current.grantRepairStopped = true;
     return undefined;
   }
 
+  async #handleRetryingValidation(
+    current: CurrentRequest,
+    frame: ProviderCliValidationResultFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<undefined> {
+    if (isInternalRetryReason(frame.reason)) {
+      await this.#scheduleInternalRetry(current, frame.reason);
+      return undefined;
+    }
+    const reason =
+      frame.reason === "rate_limited" || frame.reason === "provider_unreachable" ? frame.reason : undefined;
+    this.#registry.setProviderCliCredentialObservation(
+      context.computerId,
+      context.instanceId,
+      {
+        agentId: frame.agentId,
+        integrationId: frame.integrationId,
+        provider: frame.provider,
+        credentialGeneration: frame.credentialGeneration,
+        requestId: frame.requestId,
+        status: "retrying",
+        ...(reason ? { reason } : {}),
+      },
+      this.#now(),
+    );
+    this.#scheduleGrantRetry(current, reason ?? "provider_unreachable");
+    return undefined;
+  }
+
+  #endFailureEpisode(current: CurrentRequest): void {
+    current.artifactRetryAttempt = 0;
+    current.grantRetryAttempt = 0;
+    current.artifactRepairStopped = false;
+    current.grantRepairStopped = false;
+    current.grantRequestId = undefined;
+    current.grantConsumed = false;
+    current.grantExpiresAt = undefined;
+  }
+
   async #issueGrant(current: CurrentRequest): Promise<void> {
-    if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now()) return;
+    if (current.grantIssue) return current.grantIssue;
+    const task = this.#performIssueGrant(current).finally(() => {
+      if (current.grantIssue === task) current.grantIssue = undefined;
+    });
+    current.grantIssue = task;
+    await task;
+  }
+
+  async #performIssueGrant(current: CurrentRequest): Promise<void> {
+    if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
+    if (this.#shouldSkipGrant(current)) return;
+    if (!this.#artifactIsReady(current)) return;
     const material = await this.#bindings.issueIntegrationCliValidationGrant({
       agentId: current.agentId,
       computerId: current.computerId,
@@ -600,7 +756,9 @@ export class ProviderCliReconcileOwner {
     });
     const stillCurrent = this.#requests.get(requestKey(current.computerId, current.integrationId));
     if (!material || stillCurrent !== current) return;
+    if (!this.#artifactIsReady(current)) return;
     if (!expectedIdentitiesMatch(current.expectedIdentity, material.expectedIdentity)) {
+      current.grantRepairStopped = true;
       this.#registry.setProviderCliCredentialObservation(
         current.computerId,
         current.instanceId,
@@ -649,12 +807,41 @@ export class ProviderCliReconcileOwner {
     try {
       await this.#registry.send(current.computerId, current.instanceId, frame);
     } catch {
-      current.grantRequestId = undefined;
+      current.grantConsumed = true;
+      this.#scheduleGrantRetry(current, "provider_unreachable");
     }
+  }
+
+  #shouldSkipGrant(current: CurrentRequest): boolean {
+    if (current.grantRepairStopped) return true;
+    if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now()) return true;
+    if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) <= this.#now()) {
+      current.grantConsumed = true;
+      this.#scheduleGrantRetry(current, "provider_unreachable");
+      return true;
+    }
+    const credential = matchObservation(
+      this.#registry.providerCliCredentialReadiness(current.computerId, this.#now()),
+      current.snapshot,
+    );
+    if (credential?.status === "needs_attention") {
+      current.grantRepairStopped = true;
+      return true;
+    }
+    if (credential?.status === "ready") return true;
+    return Boolean(current.retryTimer && !current.artifactRetryPending);
+  }
+
+  #artifactIsReady(current: CurrentRequest): boolean {
+    return (
+      matchObservation(this.#registry.providerCliArtifactReadiness(current.computerId, this.#now()), current.snapshot)
+        ?.status === "ready"
+    );
   }
 
   #scheduleGrantRetry(current: CurrentRequest, reason: "rate_limited" | "provider_unreachable"): void {
     if (current.grantRetryAttempt >= this.#maxRetries) {
+      current.grantRepairStopped = true;
       this.#registry.setProviderCliCredentialObservation(
         current.computerId,
         current.instanceId,
@@ -687,6 +874,7 @@ export class ProviderCliReconcileOwner {
     current.grantConsumed = true;
     if (reason === "artifact_changed") {
       if (current.artifactRetryAttempt >= this.#maxRetries) {
+        current.artifactRepairStopped = true;
         this.#registry.setProviderCliArtifactObservation(
           current.computerId,
           current.instanceId,
@@ -708,11 +896,12 @@ export class ProviderCliReconcileOwner {
         current.installationId,
         current.instanceId,
         current.snapshot,
-        { force: true },
+        { force: true, retry: true },
       );
       return;
     }
     if (current.grantRetryAttempt >= this.#maxRetries) {
+      current.grantRepairStopped = true;
       this.#registry.setProviderCliCredentialObservation(
         current.computerId,
         current.instanceId,
@@ -740,7 +929,9 @@ export class ProviderCliReconcileOwner {
 
   #scheduleArtifactRetry(current: CurrentRequest | undefined): void {
     if (!current) return;
+    if (current.artifactRepairStopped) return;
     if (current.artifactRetryAttempt >= this.#maxRetries) {
+      current.artifactRepairStopped = true;
       current.artifactRetryPending = false;
       return;
     }
@@ -750,12 +941,13 @@ export class ProviderCliReconcileOwner {
       current,
       () => {
         current.artifactRetryPending = false;
+        if (this.#artifactIsReady(current)) return;
         void this.#dispatchRequirement(
           current.computerId,
           current.installationId,
           current.instanceId,
           current.snapshot,
-          { force: true },
+          { force: true, retry: true },
         );
       },
       this.#jitteredDelay(1000 * 2 ** (current.artifactRetryAttempt - 1)),
@@ -768,8 +960,10 @@ export class ProviderCliReconcileOwner {
 
   #armTimer(current: CurrentRequest, callback: () => void, delayMs: number): void {
     if (current.retryTimer) clearTimeout(current.retryTimer);
+    const key = requestKey(current.computerId, current.integrationId);
     current.retryTimer = setTimeout(() => {
       current.retryTimer = undefined;
+      if (this.#requests.get(key) !== current) return;
       callback();
     }, delayMs);
     current.retryTimer.unref();
@@ -820,6 +1014,7 @@ export class ProviderCliReconcileOwner {
       return false;
     }
     current.grantConsumed = true;
+    if (frame.status === "ready" && !this.#artifactIsReady(current)) return false;
     return true;
   }
 
@@ -869,17 +1064,15 @@ export class ProviderCliReconcileOwner {
       await this.#dispatchRequirement(computerId, installationId, instanceId, requirement);
       return;
     }
-    // A retained "unavailable" artifact observation is terminal, not in-flight work. While a
-    // bounded retry is armed it is left alone; once the budget is exhausted the demand read is
-    // the recovery path, restarting the requirement with a fresh bounded budget on the same
-    // connection instead of waiting for a reconnect that may never come.
-    if (artifact?.status === "unavailable") {
-      if (current.artifactRetryPending) return;
-      await this.#retireRequest(requestKey(computerId, requirement.integrationId));
-      await this.#dispatchRequirement(computerId, installationId, instanceId, requirement);
+    if (this.#episodeStopped(current)) return;
+    // A retained unavailable observation is terminal. Demand reads must not retire it or refill
+    // the budget; explicit retry / reconnect / generation change start a new recovery.
+    if (artifact?.status === "unavailable") return;
+    if (isReconcileInFlight(artifact, credential) || current.artifactRetryPending || current.retryTimer) return;
+    if (current.grantRequestId) {
+      await this.#issueGrant(current);
       return;
     }
-    if (isReconcileInFlight(artifact, credential)) return;
     if (artifact?.status === "ready" && !credential) {
       await this.#issueGrant(current);
       return;

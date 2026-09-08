@@ -200,13 +200,14 @@ describe("provider CLI reconciler", () => {
     await reconciler.close();
   });
 
-  it("revalidates drift but refuses the Run that discovered it", async () => {
+  it("fails closed on Run selection drift without starting another ensure", async () => {
     const runtime = connection();
     const fixture = await externalReadyFixture();
     const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const ensure = vi.fn();
     const reconciler = new ProviderCliReconciler({
       connection: runtime,
-      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      manager: { inspect, ensure, layout: fixture.layout },
       validation: { run: vi.fn(), cleanupAll: vi.fn() },
     });
     await runtime.emit(requirement);
@@ -244,19 +245,12 @@ describe("provider CLI reconciler", () => {
         },
       }),
     );
+    runtime.send.mockClear();
+    ensure.mockClear();
 
     await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
-    expect(
-      runtime.send.mock.calls.filter((call) => (call[0] as RuntimeBusinessFrame).status === "checking"),
-    ).toHaveLength(2);
-    expect(runtime.send).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
-      expect.anything(),
-    );
-    await expect(reconciler.readySelectionForRun("slack")).resolves.toMatchObject({
-      generation: selection.generation,
-      path: identity.path,
-    });
+    expect(ensure).not.toHaveBeenCalled();
+    expect(runtime.send).not.toHaveBeenCalled();
     await reconciler.close();
   });
 
@@ -882,9 +876,12 @@ describe("provider CLI reconciler", () => {
       published.filter((observation) => observation.provider === "slack" && observation.status === "install"),
     ).toHaveLength(0);
     feishuInspection = notReadyInspect("feishu", "unavailable", { code: "install_incomplete" });
+    runtime.setImCliReadiness.mockClear();
     await reconciler.refreshPublishedImCliReadiness();
-    expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "feishu", status: "checking" });
-    expect(runtime.setImCliReadiness).toHaveBeenLastCalledWith({ provider: "slack", status: "ready" });
+    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).not.toContainEqual({
+      provider: "feishu",
+      status: "checking",
+    });
     expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "feishu", status: "unavailable" });
     expect(runtime.setImCliReadiness).toHaveBeenCalledWith({ provider: "slack", status: "ready" });
     await reconciler.close();
@@ -971,5 +968,216 @@ describe("provider CLI reconciler", () => {
     expect(inspect).not.toHaveBeenCalled();
     expect(ensure).not.toHaveBeenCalled();
     expect(runtime.setImCliReadiness).not.toHaveBeenCalled();
+  });
+
+  it("skips ensure for inspect-time manual failures and sends the public reason to v2 peers", async () => {
+    const runtime = connection({
+      capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.providerCliReconcile ? 2 : 1),
+    });
+    const ensure = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: {
+        inspect: vi.fn().mockResolvedValue({
+          readiness: "unavailable",
+          diagnostic: { code: "unsupported_platform" },
+        }),
+        ensure,
+        layout: { root: "/tmp" } as never,
+      },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    expect(ensure).not.toHaveBeenCalled();
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "provider-cli:artifact:status",
+        status: "unavailable",
+        reason: "unsupported_platform",
+      }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("keeps exact v1 unavailable frames without a reason", async () => {
+    const runtime = connection();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: {
+        inspect: vi.fn().mockResolvedValue({
+          readiness: "unavailable",
+          diagnostic: { code: "unsupported_platform" },
+        }),
+        ensure: vi.fn(),
+        layout: { root: "/tmp" } as never,
+      },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    const frame = runtime.send.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(frame).toMatchObject({ type: "provider-cli:artifact:status", status: "unavailable" });
+    expect(frame).not.toHaveProperty("reason");
+    await reconciler.close();
+  });
+
+  it("inspects an active requirement without flickering checking and recovers after a local repair", async () => {
+    const runtime = connection({
+      capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.providerCliReconcile ? 2 : 1),
+    });
+    const fixture = await externalReadyFixture();
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce({ readiness: "unavailable", diagnostic: { code: "integrity_failed" } })
+      .mockResolvedValueOnce({ readiness: "unavailable", diagnostic: { code: "integrity_failed" } })
+      .mockResolvedValue(fixture.inspection);
+    const ensure = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    expect(ensure).not.toHaveBeenCalled();
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "unavailable", reason: "integrity_failed" }),
+      expect.anything(),
+    );
+    runtime.send.mockClear();
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(ensure).not.toHaveBeenCalled();
+    expect(
+      runtime.send.mock.calls.filter((call) => (call[0] as RuntimeBusinessFrame).status === "checking"),
+    ).toHaveLength(0);
+    expect(runtime.send).not.toHaveBeenCalled();
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("does not attach a coalesced ensure result to a successor requirement", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let releaseInspect!: (inspection: ProviderCliInspection) => void;
+    const inspect = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<ProviderCliInspection>((resolve) => {
+            releaseInspect = resolve;
+          }),
+      )
+      .mockResolvedValue(fixture.inspection);
+    const ensure = vi.fn().mockResolvedValue({ ok: true, action: "installed-managed" } as never);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const first = runtime.emit(requirement);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+    const successorRequestId = "77777777-7777-4777-8777-777777777777";
+    const successor = runtime.emit({ ...requirement, requestId: successorRequestId });
+    runtime.send.mockClear();
+    releaseInspect({ readiness: "unavailable", diagnostic: { code: "not_installed" } } as ProviderCliInspection);
+    await Promise.all([first, successor]);
+    expect(
+      runtime.send.mock.calls.some(
+        (call) =>
+          (call[0] as RuntimeBusinessFrame).requestId === requestId &&
+          (call[0] as RuntimeBusinessFrame).type === "provider-cli:artifact:status",
+      ),
+    ).toBe(false);
+    await reconciler.close();
+  });
+
+  it("retries an artifact status after a failed send instead of hiding it behind lastStatus", async () => {
+    const runtime = connection({
+      capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.providerCliReconcile ? 2 : 1),
+    });
+    runtime.send.mockResolvedValueOnce(undefined);
+    runtime.send.mockRejectedValueOnce(new Error("offline"));
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: {
+        inspect: vi.fn().mockResolvedValue({
+          readiness: "unavailable",
+          diagnostic: { code: "unsupported_platform" },
+        }),
+        ensure: vi.fn(),
+        layout: { root: "/tmp" } as never,
+      },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    runtime.send.mockClear();
+    runtime.send.mockResolvedValue(undefined);
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "provider-cli:artifact:status",
+        status: "unavailable",
+        reason: "unsupported_platform",
+      }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("does not let a stale passive inspect overwrite ready after overlapping ensure", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let initial = true;
+    let ensured = false;
+    let releaseEnsure!: () => void;
+    let ensureStarted!: () => void;
+    let releasePassive!: (value: ProviderCliInspection) => void;
+    const started = new Promise<void>((resolve) => {
+      ensureStarted = resolve;
+    });
+    const ensureGate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    const passiveGate = new Promise<ProviderCliInspection>((resolve) => {
+      releasePassive = resolve;
+    });
+    const inspect = vi.fn(async () => {
+      if (initial) {
+        initial = false;
+        return notReadyInspect("slack", "install", { code: "not_installed" });
+      }
+      if (!ensured) return passiveGate;
+      return fixture.inspection;
+    });
+    const ensure = vi.fn(async () => {
+      ensureStarted();
+      await ensureGate;
+      ensured = true;
+      return { ok: true, action: "installed-managed" } as never;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const active = runtime.emit(requirement);
+    await started;
+    const passive = reconciler.refreshPublishedImCliReadiness();
+    releaseEnsure();
+    await active;
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
+      expect.anything(),
+    );
+    releasePassive(notReadyInspect("slack", "unavailable", { code: "not_installed" }));
+    await passive;
+    expect(runtime.send).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
+      expect.anything(),
+    );
+    await reconciler.close();
   });
 });

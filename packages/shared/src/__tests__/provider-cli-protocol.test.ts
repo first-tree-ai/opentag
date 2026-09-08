@@ -55,12 +55,18 @@ const requirement = {
 
 describe("provider CLI reconcile protocol", () => {
   it("negotiates the reconcile capability so old Clients never receive unknown frames", () => {
-    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerCliReconcile]).toEqual({ min: 1, max: 1 });
-    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerCliReconcile]).toEqual({ min: 1, max: 1 });
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerCliReconcile]).toEqual({ min: 1, max: 2 });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.providerCliReconcile]).toEqual({ min: 1, max: 2 });
     expect(
       negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, RUNTIME_SERVER_CAPABILITY_OFFERS)[
         RUNTIME_CAPABILITY.providerCliReconcile
       ],
+    ).toBe(2);
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.providerCliReconcile]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      )[RUNTIME_CAPABILITY.providerCliReconcile],
     ).toBe(1);
     expect(
       missingRuntimeCapabilities(
@@ -186,6 +192,13 @@ describe("provider CLI reconcile protocol", () => {
     };
     expect(ProviderCliArtifactStatusFrameSchema.parse(status)).toEqual(status);
     expect(ClientRuntimeBusinessFrameSchema.parse(status)).toEqual(status);
+    expect(
+      ProviderCliArtifactStatusFrameSchema.parse({ ...status, status: "unavailable", reason: "integrity_failed" }),
+    ).toMatchObject({ status: "unavailable", reason: "integrity_failed" });
+    expect(() => ProviderCliArtifactStatusFrameSchema.parse({ ...status, reason: "unsupported_platform" })).toThrow();
+    expect(() =>
+      ProviderCliArtifactStatusFrameSchema.parse({ ...status, status: "unavailable", reason: "not_installed" }),
+    ).toThrow();
     expect(() => ProviderCliArtifactStatusFrameSchema.parse({ ...status, fingerprint: "abc" })).toThrow();
     expect(() => ProviderCliArtifactStatusFrameSchema.parse({ ...status, path: "/bin/slack" })).toThrow();
     expect(() => ProviderCliArtifactStatusFrameSchema.parse({ ...status, status: "install" })).toThrow();

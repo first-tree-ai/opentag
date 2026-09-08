@@ -257,15 +257,18 @@ export async function startServer(): Promise<void> {
         if (!computerId) return "unavailable";
         refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliArtifactReadiness(computerId);
-        return (
-          observations.find(
-            ({ observation }) =>
-              observation.agentId === agentId &&
-              observation.provider === provider &&
-              observation.integrationId === integrationId &&
-              observation.credentialGeneration === credentialGeneration,
-          )?.observation.status ?? "checking"
-        );
+        const observation = observations.find(
+          ({ observation }) =>
+            observation.agentId === agentId &&
+            observation.provider === provider &&
+            observation.integrationId === integrationId &&
+            observation.credentialGeneration === credentialGeneration,
+        )?.observation;
+        if (!observation) return "checking";
+        return {
+          status: observation.status,
+          ...(observation.reason ? { reason: observation.reason } : {}),
+        };
       },
       credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);

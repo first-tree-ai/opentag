@@ -3,10 +3,17 @@ import {
   type ComputerImCliReadinessCollection,
   type ComputerProviderReadinessCollection,
   IM_CLI_PROVIDERS,
+  type ProviderCliArtifactPublicReason,
+  publicProviderCliArtifactReason,
   type RuntimeImCliReadinessObservation,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../runtime-config/index.js";
+
+function artifactPublicReason(observation: object): ProviderCliArtifactPublicReason | undefined {
+  if (!("reason" in observation) || typeof observation.reason !== "string") return undefined;
+  return publicProviderCliArtifactReason(observation.reason);
+}
 
 export interface ProviderReadinessSource {
   providerReadiness(
@@ -23,6 +30,7 @@ export interface ProviderReadinessSource {
   ): readonly {
     observation: {
       provider: RuntimeImCliReadinessObservation["provider"];
+      reason?: ProviderCliArtifactPublicReason;
       status: RuntimeImCliReadinessObservation["status"];
     };
     observedAt: number;
@@ -46,15 +54,17 @@ export function projectComputerImCliReadiness(
   // Provider report is a fact for the caller to present as waiting, never a synthesized checking.
   return IM_CLI_PROVIDERS.flatMap((provider) => {
     const snapshot = artifactByProvider.get(provider) ?? genericByProvider.get(provider);
-    return snapshot
-      ? [
-          {
-            provider,
-            status: snapshot.observation.status,
-            observedAt: new Date(snapshot.observedAt).toISOString(),
-          },
-        ]
-      : [];
+    if (!snapshot) return [];
+    const reason =
+      snapshot.observation.status === "unavailable" ? artifactPublicReason(snapshot.observation) : undefined;
+    return [
+      {
+        provider,
+        status: snapshot.observation.status,
+        observedAt: new Date(snapshot.observedAt).toISOString(),
+        ...(reason ? { reason } : {}),
+      },
+    ];
   });
 }
 

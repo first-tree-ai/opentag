@@ -7,12 +7,16 @@ import {
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
   ComputerImCliReadinessCollectionSchema,
+  ComputerImCliReadinessSchema,
   ComputerProviderReadinessCollectionSchema,
+  classifyProviderCliArtifactFailure,
   clientSupportsComputerRuntimeProvider,
   LocalComputerPreparationResultSchema,
   LocalPreparationActionSchema,
   LocalPreparationCheckSchema,
   LocalPreparationComponentSchema,
+  providerCliArtifactFailureIsManual,
+  publicProviderCliArtifactReason,
   withComputerRuntimeProviderSupport,
 } from "../computer.js";
 import { compareSemVer } from "../semver.js";
@@ -549,6 +553,65 @@ describe("computer contracts", () => {
     );
     expect(() =>
       LocalComputerPreparationResultSchema.parse({ ...result, components: [], requiredCount: 0, readyCount: 0 }),
+    ).toThrow();
+  });
+
+  it("classifies Provider CLI artifact failures without leaking local details", () => {
+    expect(publicProviderCliArtifactReason("/usr/local/bin/slack")).toBeUndefined();
+    expect(publicProviderCliArtifactReason("not_installed")).toBeUndefined();
+    expect(publicProviderCliArtifactReason("operation_in_progress")).toBeUndefined();
+    expect(publicProviderCliArtifactReason("global_command_shadowed")).toBeUndefined();
+    expect(publicProviderCliArtifactReason("unsupported_platform")).toBe("unsupported_platform");
+    expect(providerCliArtifactFailureIsManual({ reason: "unsupported_platform", stage: "inspect" })).toBe(true);
+    expect(providerCliArtifactFailureIsManual({ reason: "global_bin_unavailable", stage: "inspect" })).toBe(true);
+    expect(providerCliArtifactFailureIsManual({ reason: "integrity_failed", stage: "ensure" })).toBe(true);
+    expect(providerCliArtifactFailureIsManual({ reason: "version_incompatible", stage: "inspect" })).toBe(false);
+    expect(providerCliArtifactFailureIsManual({ reason: "version_incompatible", stage: "ensure" })).toBe(true);
+    expect(providerCliArtifactFailureIsManual({ reason: undefined, stage: "ensure" })).toBe(false);
+    expect(classifyProviderCliArtifactFailure({ reason: "version_incompatible", stage: "inspect" })).toEqual({
+      publicReason: "version_incompatible",
+      manual: false,
+      nextAction: "repair_cli",
+    });
+    expect(classifyProviderCliArtifactFailure({ reason: "version_incompatible", stage: "ensure" })).toEqual({
+      publicReason: "version_incompatible",
+      manual: true,
+      nextAction: "install_supported_version",
+    });
+    expect(classifyProviderCliArtifactFailure({ reason: "unsupported_platform", stage: "inspect" })).toEqual({
+      publicReason: "unsupported_platform",
+      manual: true,
+      nextAction: "use_supported_computer",
+    });
+    expect(classifyProviderCliArtifactFailure({ reason: "global_bin_unavailable", stage: "ensure" })).toEqual({
+      publicReason: "global_bin_unavailable",
+      manual: true,
+      nextAction: "fix_permissions",
+    });
+    expect(classifyProviderCliArtifactFailure({ reason: "integrity_failed", stage: "ensure" })).toEqual({
+      publicReason: "integrity_failed",
+      manual: true,
+      nextAction: "retry_verified_download",
+    });
+    expect(classifyProviderCliArtifactFailure({ reason: "not_installed", stage: "inspect" })).toEqual({
+      manual: false,
+      nextAction: "repair_cli",
+    });
+    expect(
+      ComputerImCliReadinessSchema.parse({
+        provider: "slack",
+        status: "unavailable",
+        observedAt: null,
+        reason: "unsupported_platform",
+      }),
+    ).toMatchObject({ reason: "unsupported_platform" });
+    expect(() =>
+      ComputerImCliReadinessSchema.parse({
+        provider: "slack",
+        status: "unavailable",
+        observedAt: null,
+        reason: "/tmp/slack",
+      }),
     ).toThrow();
   });
 });

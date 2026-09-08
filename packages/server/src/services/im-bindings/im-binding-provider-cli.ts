@@ -5,12 +5,18 @@ import type {
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
+  ProviderCliArtifactPublicReason,
   ProviderCliExpectedIdentity,
   ProviderCliHandoffProgress,
+  ProviderCliPublicNextAction,
   ProviderCliValidationGrantFrame,
   ProviderReadinessStatus,
 } from "@opentag/shared";
-import { hasRequiredFeishuTenantScopes, hasRequiredSlackBotScopes } from "@opentag/shared";
+import {
+  classifyProviderCliArtifactFailure,
+  hasRequiredFeishuTenantScopes,
+  hasRequiredSlackBotScopes,
+} from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, computers, imBindings, slackInstallations } from "../../db/schema/index.js";
@@ -35,6 +41,8 @@ export interface ImBindingReadiness {
   handoff: ImBindingHandoffStatus;
   agentRuntimeReadiness: ProviderReadinessStatus;
   providerCliReadiness: ImCliReadinessStatus;
+  providerCliReason?: ProviderCliArtifactPublicReason;
+  providerCliNextAction?: ProviderCliPublicNextAction;
   credentialExecutionReadiness: IntegrationCredentialExecutionStatus;
   credentialExecutionReason?: IntegrationCredentialExecutionReason;
   reauthorizationRequired: boolean;
@@ -70,12 +78,17 @@ type ReadinessReader = (
   credentialGeneration: number,
 ) => Promise<CredentialReadiness>;
 
+type ArtifactReadiness = {
+  status: ImCliReadinessStatus;
+  reason?: ProviderCliArtifactPublicReason;
+};
+
 type ArtifactReadinessReader = (
   agentId: string,
   provider: ImCliProvider,
   integrationId: string,
   credentialGeneration: number,
-) => Promise<ImCliReadinessStatus>;
+) => Promise<ImCliReadinessStatus | ArtifactReadiness>;
 
 type BindingRow = typeof imBindings.$inferSelect;
 type SlackInstallationRow = typeof slackInstallations.$inferSelect;
@@ -128,15 +141,39 @@ function requirementFromRow(
   };
 }
 
+function normalizeArtifactReadiness(value: ImCliReadinessStatus | ArtifactReadiness): ArtifactReadiness {
+  return typeof value === "string" ? { status: value } : value;
+}
+
+function artifactHandoff(artifact: ArtifactReadiness): Pick<ProviderCliHandoffProgress, "reason" | "nextAction"> {
+  if (artifact.status !== "unavailable") return {};
+  const classified = classifyProviderCliArtifactFailure({
+    reason: artifact.reason,
+    stage: "ensure",
+  });
+  return {
+    ...(classified.publicReason ? { reason: classified.publicReason } : {}),
+    ...(classified.nextAction ? { nextAction: classified.nextAction } : {}),
+  };
+}
+
 function providerCliProgress(
-  artifactStatus: ImCliReadinessStatus,
+  artifact: ArtifactReadiness,
   credential: CredentialReadiness,
 ): ProviderCliHandoffProgress | undefined {
   if (credential.reason === "upgrade_required" || credential.status === "needs_attention") {
-    return { phase: "needs_attention", ...(credential.reason ? { reason: credential.reason } : {}) };
+    return {
+      phase: "needs_attention",
+      ...(credential.reason ? { reason: credential.reason } : {}),
+      ...(credential.reason === "provider_unreachable" || credential.reason === "rate_limited"
+        ? { nextAction: "retry" as const }
+        : {}),
+    };
   }
-  if (artifactStatus !== "ready") {
-    return artifactStatus === "unavailable" ? { phase: "needs_attention" } : { phase: "preparing_cli" };
+  if (artifact.status !== "ready") {
+    return artifact.status === "unavailable"
+      ? { phase: "needs_attention", ...artifactHandoff(artifact) }
+      : { phase: "preparing_cli" };
   }
   return credential.status === "ready" ? undefined : { phase: "checking_credentials" };
 }
@@ -169,17 +206,17 @@ function projectHandoff(input: {
   bindingState: ImBindingState;
   connectionReady: boolean;
   agentRuntimeReadiness: ProviderReadinessStatus;
-  providerCliReadiness: ImCliReadinessStatus;
+  providerCli: ArtifactReadiness;
   credentialExecution: CredentialReadiness;
 }): ImBindingHandoffStatus {
   if (input.bindingState !== "active") return { bindingState: input.bindingState, handoffReady: false };
   const ready =
     input.connectionReady &&
     input.agentRuntimeReadiness === "ready" &&
-    input.providerCliReadiness === "ready" &&
+    input.providerCli.status === "ready" &&
     input.credentialExecution.status === "ready";
   if (ready) return { bindingState: input.bindingState, handoffReady: true };
-  const providerCli = providerCliProgress(input.providerCliReadiness, input.credentialExecution);
+  const providerCli = providerCliProgress(input.providerCli, input.credentialExecution);
   return {
     bindingState: input.bindingState,
     handoffReady: false,
@@ -308,11 +345,16 @@ export class ImBindingProviderCli {
     agentRuntimeReadiness: Promise<ProviderReadinessStatus>,
     now: Date,
   ): Promise<ImBindingReadiness> {
-    const [runtime, artifact, credential] = await Promise.all([
+    const [runtime, artifactValue, credential] = await Promise.all([
       agentRuntimeReadiness,
       this.#artifactReadiness(input.agentId, input.provider, input.id, input.credentialGeneration),
       this.#credentialReadiness(input.agentId, input.provider, input.id, input.credentialGeneration),
     ]);
+    const artifact = normalizeArtifactReadiness(artifactValue);
+    const classified =
+      artifact.status === "unavailable"
+        ? classifyProviderCliArtifactFailure({ reason: artifact.reason, stage: "ensure" })
+        : undefined;
     const needsReauthorization = reauthorizationRequired(input);
     const bindingState = needsReauthorization ? "reauthorization_required" : input.status;
     const connection = connectionObservation(input, now);
@@ -323,11 +365,13 @@ export class ImBindingProviderCli {
         bindingState,
         connectionReady,
         agentRuntimeReadiness: runtime,
-        providerCliReadiness: artifact,
+        providerCli: artifact,
         credentialExecution: credential,
       }),
       agentRuntimeReadiness: runtime,
-      providerCliReadiness: artifact,
+      providerCliReadiness: artifact.status,
+      ...(classified?.publicReason ? { providerCliReason: classified.publicReason } : {}),
+      ...(classified?.nextAction ? { providerCliNextAction: classified.nextAction } : {}),
       credentialExecutionReadiness: credential.status,
       ...(credential.reason ? { credentialExecutionReason: credential.reason } : {}),
       reauthorizationRequired: needsReauthorization,

@@ -431,6 +431,30 @@ describe("IM binding contracts", () => {
     };
     expect(ImBindingDiagnosticsSchema.parse(diagnostics)).toEqual(diagnostics);
     expect(() => ImBindingDiagnosticsSchema.parse({ ...diagnostics, credentialGeneration: -1 })).toThrow();
+    expect(
+      ImBindingDiagnosticsSchema.parse({
+        ...diagnostics,
+        providerCliReadiness: "unavailable",
+        providerCliReason: "unsupported_platform",
+        providerCliNextAction: "use_supported_computer",
+      }),
+    ).toMatchObject({
+      providerCliReason: "unsupported_platform",
+      providerCliNextAction: "use_supported_computer",
+    });
+    expect(
+      ImBindingHandoffStatusSchema.parse({
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: {
+          phase: "needs_attention",
+          reason: "version_incompatible",
+          nextAction: "install_supported_version",
+        },
+      }),
+    ).toMatchObject({
+      providerCli: { nextAction: "install_supported_version", reason: "version_incompatible" },
+    });
   });
 });
 

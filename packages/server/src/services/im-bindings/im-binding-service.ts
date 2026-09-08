@@ -9,6 +9,7 @@ import type {
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
+  ProviderCliArtifactPublicReason,
   ProviderReadinessStatus,
   RuntimeImCredentialGrantRequest,
   RuntimeImCredentialGrantResult,
@@ -296,6 +297,15 @@ function credentialExecutionReasonProjection(
   return reason ? { credentialExecutionReason: reason } : {};
 }
 
+function providerCliDiagnosticProjection(
+  readiness: ImBindingReadiness,
+): Partial<Pick<ImBindingDiagnostics, "providerCliReason" | "providerCliNextAction">> {
+  return {
+    ...(readiness.providerCliReason ? { providerCliReason: readiness.providerCliReason } : {}),
+    ...(readiness.providerCliNextAction ? { providerCliNextAction: readiness.providerCliNextAction } : {}),
+  };
+}
+
 function feishuOutboxProjection(
   version: 1 | 2 | undefined,
   input: { sessionKind: "channel" | "thread"; chatId: string; threadId: string | null },
@@ -350,7 +360,10 @@ export class ImBindingService {
         provider: "feishu" | "slack",
         integrationId: string,
         credentialGeneration: number,
-      ) => Promise<ImCliReadinessStatus> | ImCliReadinessStatus;
+      ) =>
+        | Promise<ImCliReadinessStatus | { status: ImCliReadinessStatus; reason?: ProviderCliArtifactPublicReason }>
+        | ImCliReadinessStatus
+        | { status: ImCliReadinessStatus; reason?: ProviderCliArtifactPublicReason };
       credentialExecutionReadiness?: (
         agentId: string,
         provider: "feishu" | "slack",
@@ -1049,6 +1062,7 @@ export class ImBindingService {
       ready: readiness.handoff.handoffReady,
       agentRuntimeReadiness: readiness.agentRuntimeReadiness,
       providerCliReadiness: readiness.providerCliReadiness,
+      ...providerCliDiagnosticProjection(readiness),
       credentialExecutionReadiness: readiness.credentialExecutionReadiness,
       ...credentialExecutionReasonProjection(readiness.credentialExecutionReason),
       credentialGeneration: imBinding.credentialGeneration,

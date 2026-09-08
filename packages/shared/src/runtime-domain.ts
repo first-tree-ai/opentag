@@ -5,6 +5,7 @@ import {
   IM_CLI_PROVIDERS,
   ImCliProviderSchema,
   ImCliReadinessStatusSchema,
+  ProviderCliArtifactPublicReasonSchema,
   ProviderCliValidationResultReasonSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
@@ -908,8 +909,18 @@ export const ProviderCliArtifactStatusFrameSchema = z
     type: z.literal("provider-cli:artifact:status"),
     ...providerCliFenceShape,
     status: z.enum(["checking", "ready", "unavailable"]),
+    reason: ProviderCliArtifactPublicReasonSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status !== "unavailable" && frame.reason !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "An artifact reason is only valid on unavailable",
+      });
+    }
+  });
 
 const IntegrationCliValidationGrantMaterialSchema = z.discriminatedUnion("provider", [
   z

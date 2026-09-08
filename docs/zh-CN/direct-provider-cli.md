@@ -14,8 +14,17 @@ daemon 会独立检查并上报两套 CLI 状态，不会与前台安装争用�
 
 有效的 Feishu/Lark 或 Slack binding 产生对应依赖后，daemon 只可修复该 binding 所需的
 OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证同一个精确 CLI；不得替换
-外部安装或非 OpenTag shim。`opentag doctor` 与 portable installer 只报告 account-global
-静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
+外部安装或非 OpenTag shim。自动安装/修复与凭证校验都有预算：Server 在同一条连接上保留终态观察，
+普通 readiness GET 不会重置计数，替换 request/grant id 也不能开启新一轮恢复。`unsupported_platform`、
+`global_bin_unavailable`、`integrity_failed` 以及最终 ensure 的 `version_incompatible` 会立即结束自动重试，并给出具体下一步
+（`use_supported_computer`、`fix_permissions`、`retry_verified_download`、`install_supported_version`）；
+检查阶段的 `version_incompatible` 仍可用受支持的 managed artifact 修复。Client 周期性检查保持只读，保留可见失败，
+并在本机真实修复后无需 ensure 即可恢复。明确的「再检查」/`refreshPreparation` 为该 Agent 打开一轮新的有界恢复
+（重复点击会合并）。重连、凭证 generation 变化、以及真正的 Computer 迁移可以开启新一轮；重复的相同 placement
+通知不得重置预算。公开原因走允许列表，并通过 reconcile capability v2 协商；旧对端仍发送精确 v1 帧，未知失败
+只允许有界一轮，随后给出稳定的通用诊断。
+
+`opentag doctor` 与 portable installer 只报告 account-global 静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
 
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
 `0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方

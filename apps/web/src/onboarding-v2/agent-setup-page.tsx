@@ -52,14 +52,18 @@ export const SETUP_POLL_MS = 2_000;
 /** How many times to report readiness before the reader is offered an explicit retry. */
 const READY_REPORT_ATTEMPTS = 3;
 /**
- * The finite attempt cap for automatic local-preparation polls (a required IM CLI still waiting
- * or checking behind the gate, a Runtime report missing or still checking). An explicit Check
- * again or returning to the page restarts a fresh window. The cap never resets on an unchanged
- * snapshot, and Messaging/offline observation keeps its unbounded beat.
+ * The finite attempt cap for automatic local-preparation polls. Connected blocking snapshots
+ * (`needs-runtime` or `needs-provider-clis`) share one 90s / 45-attempt read window, including
+ * install, sign-in, and unavailable. Two default daemon heartbeats (30s) plus delivery margin must
+ * fit inside the bound — the page must not depend on a late request after expiry. The snapshot has
+ * no provenance that can tell a stale first install report from a lasting manual-action failure, so
+ * GET observation continues until ready or the bound is exhausted. An explicit Check again or a new
+ * mount restarts a fresh window. Changes among checking, waiting, install, sign-in, and unavailable
+ * never reset the same window. Messaging/offline observation keeps its unbounded beat.
  */
-export const BOUNDED_POLL_ATTEMPTS = 30;
-/** Wall-clock bound for the same window, so a hung or slow read cannot stretch automatic checking. */
-export const BOUNDED_POLL_WINDOW_MS = 60_000;
+export const BOUNDED_POLL_ATTEMPTS = 45;
+/** Three default heartbeat periods at the 2s GET cadence, so a hung or slow read cannot stretch automatic checking. */
+export const BOUNDED_POLL_WINDOW_MS = 90_000;
 
 function boundedWindowRemaining(startedAt: { current: number | undefined }): number {
   const started = startedAt.current ?? Date.now();
@@ -178,24 +182,25 @@ type SetupPollClass = "bounded" | "unbounded" | undefined;
 
 /**
  * How a snapshot the outside world is still moving should be watched. Messaging authorizing,
- * waiting-handoff, and an offline Computer keep the existing unbounded beat. Local preparation
- * polls inside a finite budget only while a leg is genuinely transitional: a required IM CLI
- * whose report is missing or still checking, or a Runtime report missing or still
- * checking. A settled manual-action failure (install, sign-in, unavailable) never polls on its
- * own — nothing on this page can install, sign in, or repair a CLI. Check again or returning
- * to this page retrieves a fresh snapshot after an operator acts.
+ * waiting-handoff, and an offline Computer keep the existing unbounded beat. Connected local
+ * preparation (`needs-runtime` or `needs-provider-clis`) always uses the finite read window —
+ * GET only, never `refreshPreparation` and never an automatic install. The rows stay truthful
+ * while that window is open; genuine waiting/checking copy is a separate visual decision.
  */
 function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
   if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
   if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return "unbounded";
-  if (
-    (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") &&
-    preparationIsTransitional(snapshot)
-  )
-    return "bounded";
+  if (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") return "bounded";
   if (snapshot.runtime.kind === "waiting") return "bounded";
   if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return "bounded";
   return undefined;
+}
+
+/** Footer spinner and "checking automatically" copy follow a real waiting/checking observation. */
+function preparationShowsAutomaticChecking(snapshot: AgentSetupSnapshot): boolean {
+  if (snapshot.runtime.kind === "waiting") return true;
+  if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return true;
+  return preparationIsTransitional(snapshot);
 }
 
 /** A snapshot the outside world is still moving: read it again on a beat until it settles. */
@@ -511,10 +516,10 @@ function useAgentSetup(
     setPollExhausted(false);
     setPollRestartKey((value) => value + 1);
   }, []);
-  // Exhaustion describes only the bounded transitional state that consumed the window. Once the
-  // snapshot settles or moves to another polling class, a later transition deserves a fresh
-  // window and must not inherit the old "paused" message. Effect restarts of the same class keep
-  // the elapsed start so they cannot silently extend unchanged state.
+  // Exhaustion describes the bounded window that consumed its budget. Checking, waiting, install,
+  // sign-in, and unavailable share that class, so a late shift among them must not clear the
+  // paused retry. Leaving bounded observation (ready, messaging, offline) deserves a fresh window.
+  // Effect restarts of the same class keep the elapsed start so they cannot silently extend it.
   useEffect(() => {
     if (pollClass === "bounded") return;
     pollBudget.current = BOUNDED_POLL_ATTEMPTS;
@@ -948,11 +953,15 @@ function SetupStageNavigation({
 }) {
   if (!showingPreparation) return computerObservationFailed ? null : refreshAction;
   const pollClass = snapshotPollClass(snapshot);
+  const observingAutomatically = pollClass === "bounded" && !controller.pollExhausted;
+  const genuineChecking = preparationShowsAutomaticChecking(snapshot);
+  // Hide Check again only while a real waiting/checking observation is in flight. Settled
+  // install/sign-in/unavailable rows keep the immediate retry while background GETs continue.
   const preparationRefreshAction =
-    !computerObservationFailed && (pollClass !== "bounded" || controller.pollExhausted) ? refreshAction : undefined;
+    !computerObservationFailed && !(observingAutomatically && genuineChecking) ? refreshAction : undefined;
   return (
     <PreparationNavigation
-      checking={pollClass === "bounded" && !controller.pollExhausted}
+      checking={observingAutomatically && genuineChecking}
       onContinue={onContinue}
       pollExhausted={controller.pollExhausted}
       ready={ready}

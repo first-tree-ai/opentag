@@ -421,7 +421,7 @@ describe("F6 cross-layer gating, page level", () => {
     // The row never fabricates a checking state for an unavailable report.
     expect(rowTitle("messaging-support")).not.toContain("Checking");
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
-    // A manual Check again is the only page move: it re-reads; nothing installs anything.
+    // A manual Check again is the only page move that writes: it re-reads; nothing installs anything.
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await settle();

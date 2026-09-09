@@ -2,15 +2,13 @@
 
 <img src="https://opentag.build/assets/opentag-logo.png" alt="OpenTag" width="72">
 
-# OpenTag
+<h3>OpenTag</h3>
 
-__你的模型、你的机器、你的 AI 同事__
-
----
+你的模型、你的机器、你的 AI 同事
 
 [官网](https://opentag.build/zh?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [快速开始](#快速开始) · [文档](./docs/zh-CN/README.md) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全策略](./SECURITY.zh-CN.md)
 
-**[English](./README.md) | 简体中文**
+[English](./README.md) | 简体中文
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)

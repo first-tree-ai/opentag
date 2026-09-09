@@ -2,15 +2,13 @@
 
 <img src="https://opentag.build/assets/opentag-logo.png" alt="OpenTag" width="72">
 
-# OpenTag
+<h3>OpenTag</h3>
 
-__Your model, your machine, your AI coworker__
-
----
+Your model, your machine, your AI coworker
 
 [Website](https://opentag.build/?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [Quick Start](#quick-start) · [Docs](./docs/README.md) · [Contributing](./CONTRIBUTING.md) · [Security](./SECURITY.md)
 
-**English | [简体中文](./README.zh-CN.md)**
+English | [简体中文](./README.zh-CN.md)
 
 [![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)

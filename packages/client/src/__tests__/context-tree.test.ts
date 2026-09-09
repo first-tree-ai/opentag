@@ -129,6 +129,26 @@ describe("ContextTreeManager", () => {
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
   });
 
+  it("ignores the old configuration and activates a reconnected target while the old file remains", async () => {
+    const { execFile, calls } = recording({ connect: treeReply("/srv/trees/new"), install: installReply });
+    const { home, cwd, manager } = await computer({ execFile });
+    const oldFile = join(home, "config", "context-tree.json");
+    const oldConfig = JSON.stringify({ schemaVersion: 1, target: managed });
+    await mkdir(join(home, "config"), { recursive: true });
+    await writeFile(oldFile, oldConfig);
+
+    await expect(manager.readConfig()).resolves.toBeUndefined();
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
+    expect(calls).toEqual([]);
+
+    const target = { kind: "path", path: "/srv/trees/new" };
+    await writeTarget(home, target);
+    await expect(manager.readConfig()).resolves.toMatchObject({ target });
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: target.path });
+    expect(calls[0]).toEqual(["connect", "--tree-path", target.path, "--project-path", cwd, "--json"]);
+    await expect(readFile(oldFile, "utf8")).resolves.toBe(oldConfig);
+  });
+
   it("reports a missing package without running anything", async () => {
     const { cwd, manager } = await computer({ target: managed, packaged: false });
 

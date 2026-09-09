@@ -513,7 +513,7 @@ async function prepareConfigurationRoots(layout: ReturnType<typeof resolveOpenTa
     return [layout.contextTreeConfigDir];
   } catch (error) {
     logger.warn(
-      { code: error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined },
+      { code: (error as NodeJS.ErrnoException).code },
       "Context Tree configuration directory could not be created",
     );
     return [];

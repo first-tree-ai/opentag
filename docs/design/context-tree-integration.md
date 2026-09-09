@@ -79,6 +79,14 @@ The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree/co
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
 reinterpreting it.
 
+**Upgrade requires reconnecting.** Existing `<OPENTAG_HOME>/config/context-tree.json` files are
+ignored, so previously configured installations report unconfigured until reconnected. Run
+`opentag context-tree connect <managed-name>`, `opentag context-tree connect OWNER/REPO`, or
+`opentag context-tree connect --tree-path <path>` using the previous target. Restart the daemon
+and affected Sessions to pick up the Runtime changes, then verify the connection with
+`opentag doctor`. The old configuration and existing tree data remain on disk; there is no
+fallback or automatic migration.
+
 Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
 still applies when reading it, but direct edits bypass command-level target validation. Later
 Provider Runtime starts consume the changed target.
@@ -191,7 +199,8 @@ Visible Sessions supply their tool directory through workspace `pathPrepend`. Ev
 prepends it after composing its environment, preserving the Context Tree and executable directories.
 Internal Sessions retain Context Tree without adding visible-Session tools.
 
-Rollout requires restarting the daemon and affected Sessions after release; no migration is needed.
+Rollout requires reconnecting existing installations and restarting the daemon and affected Sessions
+as described in the upgrade instructions above.
 
 OpenTag's own invocations never rely on the shim: they exec the resolved CLI path directly, so a
 broken or shadowed shim cannot change what OpenTag executes.

@@ -77,6 +77,34 @@ describe("opentag context-tree connect", () => {
     expect(text()).toContain("team-context-tree");
   });
 
+  it("requires reconnecting an old-only configuration and reads the new target afterward", async () => {
+    const home = await temporaryDirectory("opentag-ct-upgrade-");
+    const oldFile = join(home, "config", "context-tree.json");
+    const oldConfig = JSON.stringify({ schemaVersion: 1, target: { kind: "managed", name: "old-tree" } });
+    await mkdir(join(home, "config"), { recursive: true });
+    await writeFile(oldFile, oldConfig);
+    const contextTreePackage = await fakeCli({ list: listing(["new-tree"]) });
+
+    await expect(readContextTreeState({ home, contextTreePackage })).resolves.toEqual({
+      configPath: configFile(home),
+      tree: "unknown",
+    });
+    await expect(readFile(configFile(home))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      runContextTreeConnect({ ...capture().deps, home, contextTreePackage, target: "new-tree" }),
+    ).resolves.toEqual({ exitCode: 0 });
+    expect(JSON.parse(await readFile(configFile(home), "utf8"))).toEqual({
+      schemaVersion: 1,
+      target: { kind: "managed", name: "new-tree" },
+    });
+    await expect(readContextTreeState({ home, contextTreePackage })).resolves.toEqual({
+      configPath: configFile(home),
+      target: "new-tree",
+      tree: "valid",
+    });
+    await expect(readFile(oldFile, "utf8")).resolves.toBe(oldConfig);
+  });
+
   it("accepts a GitHub target without network work, and says who clones it", async () => {
     const home = await temporaryDirectory("opentag-ct-github-");
     const { deps, text } = capture();

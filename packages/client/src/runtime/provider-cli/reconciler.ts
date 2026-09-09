@@ -106,11 +106,13 @@ export class ProviderCliReconciler {
   readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ProviderCliInspection | undefined>>();
   readonly #logger: Pick<ClientLogger, "info" | "warn">;
   readonly #providerJobs = new Map<string, Promise<ProviderCliReconcileOutcome>>();
+  readonly #acceptedOnce = new Set<ProviderCliProvider>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #unsubscribe: () => void;
   readonly #validation: ProviderCliReconcilerOptions["validation"];
+  readonly #waiterAbort = new AbortController();
   #closePromise?: Promise<void>;
   #closed = false;
 
@@ -143,6 +145,7 @@ export class ProviderCliReconciler {
 
   async #performClose(): Promise<void> {
     this.#closed = true;
+    this.#waiterAbort.abort();
     this.#unsubscribe();
     this.#imCliPublished.clear();
     this.#abortAll();
@@ -159,11 +162,104 @@ export class ProviderCliReconciler {
   }
 
   /**
-   * Return the exact selection already accepted by daemon readiness. Drift is
-   * inspected and failed closed here; bounded repair stays on the requirement owner.
+   * Return the exact selection already accepted by daemon readiness.
+   *
+   * An already-accepted selection that still matches the live CLI is admitted
+   * immediately. A never-accepted, already-healthy live CLI joins in-flight owner
+   * work when present, otherwise confirms read-only if identity stays stable. A
+   * provider that was accepted once and later failed or rotated is not treated as
+   * a fresh cold start and does not start Run-triggered ensure. Caller cancellation
+   * interrupts inspect and shared-work wait without cancelling other waiters.
    */
-  async readySelectionForRun(provider: ProviderCliProvider): Promise<ProviderCliReadySelection | undefined> {
-    if (this.#closed || this.#signal?.aborted) return undefined;
+  async readySelectionForRun(
+    provider: ProviderCliProvider,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliReadySelection | undefined> {
+    try {
+      return await this.#selectReadyForRun(provider, signal);
+    } catch (error) {
+      this.#throwIfReadinessAborted(signal);
+      if (this.#closed || this.#waiterAbort.signal.aborted) return undefined;
+      throw error;
+    }
+  }
+
+  async #selectReadyForRun(
+    provider: ProviderCliProvider,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliReadySelection | undefined> {
+    this.#throwIfReadinessAborted(signal);
+    if (this.#closed) return undefined;
+    const live = await this.#awaitReadiness(this.#inspectLiveSelection(provider), signal);
+    this.#throwIfReadinessAborted(signal);
+    if (this.#closed) return undefined;
+    const accepted = this.#readySelection.get(provider);
+    if (accepted && live && selectionsMatch(accepted, live)) return { ...live };
+
+    // Never-accepted + already-healthy is initial confirmation. An accepted,
+    // failed, or rotated selection must not reset to never-initialized.
+    const initialConfirmation = accepted === undefined && live !== undefined && !this.#acceptedOnce.has(provider);
+    if (!initialConfirmation || !live) return undefined;
+    const existing = this.#providerRepairJob(provider);
+    if (existing) {
+      const outcome = await this.#awaitReadiness(existing, signal);
+      this.#throwIfReadinessAborted(signal);
+      if (this.#closed || outcome.status !== "ready") return undefined;
+      return this.#admitUnchangedInitialSelection(provider, live, signal);
+    }
+    return this.#confirmInitialSelection(provider, live, signal);
+  }
+
+  async #confirmInitialSelection(
+    provider: ProviderCliProvider,
+    live: ProviderCliReadySelection,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliReadySelection | undefined> {
+    const liveAfter = await this.#awaitReadiness(this.#inspectLiveSelection(provider), signal);
+    this.#throwIfReadinessAborted(signal);
+    if (this.#closed) return undefined;
+    if (!liveAfter || !selectionsMatch(live, liveAfter)) return undefined;
+    const accepted = this.#readySelection.get(provider);
+    if (this.#acceptedOnce.has(provider)) {
+      return accepted && selectionsMatch(accepted, liveAfter) ? { ...liveAfter } : undefined;
+    }
+    this.#readySelection.set(provider, liveAfter);
+    this.#acceptedOnce.add(provider);
+    return { ...liveAfter };
+  }
+
+  async #admitUnchangedInitialSelection(
+    provider: ProviderCliProvider,
+    live: ProviderCliReadySelection,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliReadySelection | undefined> {
+    const acceptedAfter = this.#readySelection.get(provider);
+    if (!acceptedAfter || !selectionsMatch(acceptedAfter, live)) return undefined;
+    const liveAfter = await this.#awaitReadiness(this.#inspectLiveSelection(provider), signal);
+    this.#throwIfReadinessAborted(signal);
+    if (this.#closed) return undefined;
+    if (!liveAfter || !selectionsMatch(acceptedAfter, liveAfter) || !selectionsMatch(live, liveAfter)) {
+      return undefined;
+    }
+    return { ...liveAfter };
+  }
+
+  #throwIfReadinessAborted(signal?: AbortSignal): void {
+    signal?.throwIfAborted();
+    this.#signal?.throwIfAborted();
+  }
+
+  #readinessSignals(signal?: AbortSignal): AbortSignal[] {
+    return [this.#signal, this.#waiterAbort.signal, signal].filter(
+      (candidate): candidate is AbortSignal => candidate !== undefined,
+    );
+  }
+
+  async #awaitReadiness<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+    return joinSharedWork(work, this.#readinessSignals(signal));
+  }
+
+  async #inspectLiveSelection(provider: ProviderCliProvider): Promise<ProviderCliReadySelection | undefined> {
     const inspection = await this.#manager.inspect(provider).catch((error: unknown) => {
       logger.debug(
         { code: "ready_inspection_failed", provider, error: String(error) },
@@ -171,12 +267,7 @@ export class ProviderCliReconciler {
       );
       return undefined;
     });
-    const live = inspection ? await readySelectionFromInspect(this.#manager.layout, provider, inspection) : undefined;
-    const accepted = this.#readySelection.get(provider);
-    if (accepted && live && selectionsMatch(accepted, live)) return { ...live };
-    // Fail closed: a Run must not bypass stopped repair policy or start another ensure.
-    // Drift repair stays on the bounded requirement owner path.
-    return undefined;
+    return inspection ? readySelectionFromInspect(this.#manager.layout, provider, inspection) : undefined;
   }
 
   async #handleFrame(frame: RuntimeBusinessFrame): Promise<void> {
@@ -289,8 +380,10 @@ export class ProviderCliReconciler {
       const stillLive = liveTargets.filter(
         (target) => this.#current.get(target.integrationId)?.requestId === target.requestId,
       );
-      if (ready) this.#readySelection.set(provider, ready);
-      else this.#readySelection.delete(provider);
+      if (ready) {
+        this.#readySelection.set(provider, ready);
+        this.#acceptedOnce.add(provider);
+      } else this.#readySelection.delete(provider);
       await Promise.all(
         stillLive.map((requirement) => this.#publishArtifact(requirement, ready ? "ready" : "unavailable")),
       );
@@ -431,6 +524,7 @@ export class ProviderCliReconciler {
           return { status: "unavailable" };
         }
         this.#readySelection.set(provider, ready);
+        this.#acceptedOnce.add(provider);
         return { status: "ready" };
       }
       this.#readySelection.delete(provider);
@@ -726,6 +820,48 @@ function unavailableOutcome(code: string | undefined, stage: "inspect" | "ensure
     return { status: "unavailable" };
   }
   return { status: "unavailable", reason: publicReason };
+}
+
+/**
+ * Wait for shared work without cancelling it. One waiter's abort only stops that
+ * waiter; the underlying job keeps running for everyone else.
+ */
+function joinSharedWork<T>(work: Promise<T>, signals: readonly AbortSignal[]): Promise<T> {
+  if (signals.length === 0) return work;
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const cleanup = (): void => {
+      for (const signal of signals) signal.removeEventListener("abort", onAbort);
+    };
+    const finishOk = (value: T): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+    const finishErr = (error: unknown): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = (): void => {
+      for (const signal of signals) {
+        if (!signal.aborted) continue;
+        try {
+          signal.throwIfAborted();
+        } catch (error) {
+          finishErr(error);
+          return;
+        }
+      }
+      finishErr(new DOMException("This operation was aborted", "AbortError"));
+    };
+    for (const signal of signals) signal.addEventListener("abort", onAbort, { once: true });
+    // Starting work may synchronously abort a caller; still observe its rejection.
+    void work.then(finishOk, finishErr);
+    if (signals.some((signal) => signal.aborted)) onAbort();
+  });
 }
 
 function expectedIdentitiesMatch(

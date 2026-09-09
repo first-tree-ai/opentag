@@ -49,7 +49,7 @@ export interface SessionMessageInboxOptions {
   credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
   turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
-    prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
+    prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
   };
   imCredentialGrantVersion(): number | undefined;
   logger?: Pick<ClientLogger, "warn">;
@@ -295,6 +295,18 @@ export class SessionMessageInbox {
     let credentialPrepared = false;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
+    const timeout = new AbortController();
+    let timer: { cancel(): void } | undefined;
+    let runSignal: AbortSignal | undefined;
+    const ensureRunSignal = (): AbortSignal => {
+      if (runSignal) return runSignal;
+      timer = this.#timeoutScheduler.schedule(
+        next.request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS,
+        () => timeout.abort(new Error("Session message Run timed out")),
+      );
+      runSignal = AbortSignal.any([this.#abort.signal, timeout.signal]);
+      return runSignal;
+    };
     try {
       if (current) current = await this.#transition(current, "running");
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
@@ -318,34 +330,28 @@ export class SessionMessageInbox {
           throw new Error("The credential grant did not include visible Session outbox context");
         }
         outboxContext = prepared.outboxContext;
-        turnPlanInput = await this.#prepareTurnPlan(sessionId, runId, prepared);
+        turnPlanInput = await this.#prepareTurnPlan(sessionId, runId, prepared, ensureRunSignal());
       }
       phase = "runtime";
-      const runtime = await this.#runtimeManager.ensureRuntime(sessionId, this.#abort.signal);
+      const runtimeSignal = sessionKind === "visible" ? ensureRunSignal() : this.#abort.signal;
+      runtimeSignal.throwIfAborted();
+      const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
       phase = "prompt";
-      const timeout = new AbortController();
-      const timer = this.#timeoutScheduler.schedule(
-        next.request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS,
-        () => timeout.abort(new Error("Session message Run timed out")),
-      );
-      try {
-        const result = await runtime.prompt({
-          runId,
-          input: buildSessionMessageInput(
-            next.request,
-            this.#cliCommand,
-            sessionKind === "visible"
-              ? { sessionKind, outboxContext: requireOutboxContext(outboxContext) }
-              : { sessionKind },
-          ),
-          signal: AbortSignal.any([this.#abort.signal, timeout.signal]),
-        });
-        if (result.status !== "completed") {
-          throw new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
-        }
-      } finally {
-        timer.cancel();
+      ensureRunSignal().throwIfAborted();
+      const result = await runtime.prompt({
+        runId,
+        input: buildSessionMessageInput(
+          next.request,
+          this.#cliCommand,
+          sessionKind === "visible"
+            ? { sessionKind, outboxContext: requireOutboxContext(outboxContext) }
+            : { sessionKind },
+        ),
+        signal: ensureRunSignal(),
+      });
+      if (result.status !== "completed") {
+        throw new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
       }
       if (current && !this.#abort.signal.aborted) {
         await this.#transition(current, "succeeded");
@@ -354,6 +360,7 @@ export class SessionMessageInbox {
     } catch (error) {
       if (current) await this.#handleFailure(current, next.hash, phase, error);
     } finally {
+      timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) await this.#credentialEnvironment.cleanup(sessionId).catch(() => undefined);
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
@@ -387,6 +394,7 @@ export class SessionMessageInbox {
     sessionId: string,
     runId: string,
     prepared: PreparedImCredentialEnvironment,
+    signal: AbortSignal,
   ): Promise<ProviderCliTurnPlanPrepareInput | undefined> {
     if (!this.#turnPlan) return undefined;
     const input: ProviderCliTurnPlanPrepareInput = {
@@ -395,7 +403,7 @@ export class SessionMessageInbox {
       runId,
       ...(prepared.slackConfigDir ? { configDir: prepared.slackConfigDir } : {}),
     };
-    await this.#turnPlan.prepare(input);
+    await this.#turnPlan.prepare(input, signal);
     return input;
   }
 

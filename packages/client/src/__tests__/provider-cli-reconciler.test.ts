@@ -13,6 +13,7 @@ import {
   type ProviderCliReconcilerOptions,
   ProviderCliValidationRunner,
   type RuntimeBusinessFrame,
+  readProviderCliSelection,
   resolveProviderCliAccountLayout,
   writeProviderCliSelection,
 } from "../index.js";
@@ -142,6 +143,32 @@ async function externalReadyFixture() {
   };
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve: () => resolve() };
+}
+
+function holdFirstInspect(result: () => ProviderCliInspection | Promise<ProviderCliInspection>) {
+  const gate = deferred();
+  let hold = true;
+  const inspect = vi.fn(async () => {
+    if (hold) {
+      hold = false;
+      await gate.promise;
+    }
+    return result();
+  });
+  return { inspect, release: () => gate.resolve() };
+}
+
+function isAbortFailure(error: unknown, reason?: unknown): boolean {
+  if (reason !== undefined && error === reason) return true;
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function grantFrame(overrides: Record<string, unknown> = {}) {
   return {
     type: "provider-cli:validation:grant",
@@ -249,6 +276,346 @@ describe("provider CLI reconciler", () => {
     ensure.mockClear();
 
     await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    expect(ensure).not.toHaveBeenCalled();
+    expect(runtime.send).not.toHaveBeenCalled();
+    await reconciler.close();
+  });
+
+  it("does not treat a previously accepted then unavailable provider as initial confirmation", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let failInspect = false;
+    let inspection = fixture.inspection;
+    const inspect = vi.fn(async () => {
+      if (failInspect) throw new Error("Synthetic inspection failure");
+      return inspection;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    const accepted = await reconciler.readySelectionForRun("slack");
+    expect(accepted).toMatchObject({ generation: fixture.selection.generation });
+
+    failInspect = true;
+    await runtime.emit({ ...requirement, requestId: "99999999-9999-4999-8999-999999999999" });
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:artifact:status", status: "unavailable" }),
+      expect.anything(),
+    );
+
+    const replacement = join(dirname(fixture.inspection.selection.path), "slack-history");
+    await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const identity = await computeFileIdentity(replacement);
+    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    const selection = await writeProviderCliSelection(
+      fixture.layout,
+      "slack",
+      {
+        kind: "external",
+        executablePath: identity.path,
+        fingerprint,
+        trust: "catalog-verified",
+        version: "4.7.0",
+      },
+      fixture.selection,
+    );
+    inspection = readyInspect({
+      fingerprint,
+      selection: {
+        kind: "external",
+        path: identity.path,
+        version: "4.7.0",
+        generation: selection.generation,
+        trust: "catalog-verified",
+      },
+    });
+    failInspect = false;
+
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    await runtime.emit({
+      ...requirement,
+      requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toMatchObject({
+      generation: selection.generation,
+      path: identity.path,
+    });
+    expect(selection.generation).not.toBe(accepted?.generation);
+    await reconciler.close();
+  });
+
+  it("admits concurrent first Runs after the in-flight initial reconcile when identity is unchanged", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const { inspect, release } = holdFirstInspect(() => fixture.inspection);
+    const ensure = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const requirementJob = runtime.emit(requirement);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce());
+    const first = reconciler.readySelectionForRun("slack");
+    const second = reconciler.readySelectionForRun("slack");
+    await vi.waitFor(() => expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(3));
+    expect(ensure).not.toHaveBeenCalled();
+    release();
+    await requirementJob;
+    await expect(first).resolves.toMatchObject({
+      generation: fixture.selection.generation,
+      path: fixture.inspection.selection.path,
+      version: fixture.inspection.selection.version,
+      fingerprint: fixture.inspection.fingerprint,
+    });
+    await expect(second).resolves.toMatchObject({
+      generation: fixture.selection.generation,
+      path: fixture.inspection.selection.path,
+    });
+    expect(ensure).not.toHaveBeenCalled();
+    await reconciler.close();
+  });
+
+  it("keeps one waiter's abort independent of another waiter's initial admission", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const { inspect, release } = holdFirstInspect(() => fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const requirementJob = runtime.emit(requirement);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce());
+    const cancelled = new AbortController();
+    const aborted = reconciler.readySelectionForRun("slack", cancelled.signal);
+    const surviving = reconciler.readySelectionForRun("slack");
+    await vi.waitFor(() => expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(3));
+    cancelled.abort("turn_timeout");
+    await expect(aborted).rejects.toSatisfy((error) => isAbortFailure(error, "turn_timeout"));
+    release();
+    await requirementJob;
+    await expect(surviving).resolves.toMatchObject({ generation: fixture.selection.generation });
+    await reconciler.close();
+  });
+
+  it("rejects an initial Run when selection generation changes during the wait", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const { inspect, release } = holdFirstInspect(async () => {
+      const record = await readProviderCliSelection(fixture.layout, "slack");
+      if (!record) return fixture.inspection;
+      return readyInspect({
+        fingerprint: record.selection.fingerprint,
+        selection: {
+          kind: "external",
+          path:
+            record.selection.kind === "external" ? record.selection.executablePath : fixture.inspection.selection.path,
+          version: record.selection.version,
+          generation: record.generation,
+          trust: "catalog-verified",
+        },
+      });
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const requirementJob = runtime.emit(requirement);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce());
+    const waiting = reconciler.readySelectionForRun("slack");
+    await vi.waitFor(() => expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const replacement = join(dirname(fixture.inspection.selection.path), "slack-rotated");
+    await writeFile(replacement, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const identity = await computeFileIdentity(replacement);
+    const fingerprint = computeTargetFingerprint(identity, "4.7.0");
+    await writeProviderCliSelection(
+      fixture.layout,
+      "slack",
+      {
+        kind: "external",
+        executablePath: identity.path,
+        fingerprint,
+        trust: "catalog-verified",
+        version: "4.7.0",
+      },
+      fixture.selection,
+    );
+    release();
+    await requirementJob;
+    await expect(waiting).resolves.toBeUndefined();
+    await reconciler.close();
+  });
+
+  it("does not admit a waiting Run after close even if reconcile later succeeds", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const { inspect, release } = holdFirstInspect(() => fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const requirementJob = runtime.emit(requirement);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce());
+    const waiting = reconciler.readySelectionForRun("slack");
+    await vi.waitFor(() => expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const closing = reconciler.close();
+    await expect(waiting).resolves.toBeUndefined();
+    release();
+    await Promise.all([requirementJob, closing]);
+  });
+
+  it("interrupts a pending initial readiness inspection when the caller aborts", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const gate = deferred();
+    const entered = deferred();
+    const inspect = vi.fn(async () => {
+      entered.resolve();
+      await gate.promise;
+      return fixture.inspection;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const abort = new AbortController();
+    const caller = reconciler.readySelectionForRun("slack", abort.signal).then(
+      () => ({ outcome: "resolved" as const }),
+      (error: unknown) => ({ outcome: "rejected" as const, error }),
+    );
+    await entered.promise;
+    abort.abort("turn_timeout");
+    const result = await Promise.race([
+      caller,
+      new Promise<{ outcome: string }>((resolve) => {
+        setTimeout(() => resolve({ outcome: "still_waiting" }), 100);
+      }),
+    ]);
+    expect(result.outcome).toBe("rejected");
+    expect(isAbortFailure((result as { error?: unknown }).error, "turn_timeout")).toBe(true);
+    gate.resolve();
+    await caller;
+    await reconciler.close();
+  });
+
+  it("interrupts joining in-flight owner work when the caller aborts", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const held = holdFirstInspect(() => fixture.inspection);
+    const abort = new AbortController();
+    const ensure = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: held.inspect, ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const requirementJob = runtime.emit(requirement);
+    try {
+      await vi.waitFor(() => expect(held.inspect).toHaveBeenCalledOnce());
+      const waiting = reconciler.readySelectionForRun("slack", abort.signal);
+      await vi.waitFor(() => expect(held.inspect.mock.calls.length).toBeGreaterThanOrEqual(2));
+      abort.abort("turn_timeout");
+      await expect(waiting).rejects.toBe("turn_timeout");
+      expect(ensure).not.toHaveBeenCalled();
+    } finally {
+      held.release();
+      await requirementJob;
+      await reconciler.close();
+    }
+  });
+
+  it("interrupts a pending final readiness recheck when the caller aborts", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const finalHold = deferred();
+    const finalEntered = deferred();
+    let inspectCalls = 0;
+    const inspect = vi.fn(async () => {
+      inspectCalls += 1;
+      if (inspectCalls === 2) {
+        finalEntered.resolve();
+        await finalHold.promise;
+      }
+      return fixture.inspection;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    const abort = new AbortController();
+    const caller = reconciler.readySelectionForRun("slack", abort.signal).then(
+      () => ({ outcome: "resolved" as const }),
+      (error: unknown) => ({ outcome: "rejected" as const, error }),
+    );
+    await finalEntered.promise;
+    abort.abort("turn_timeout");
+    const result = await Promise.race([
+      caller,
+      new Promise<{ outcome: string }>((resolve) => {
+        setTimeout(() => resolve({ outcome: "still_waiting" }), 100);
+      }),
+    ]);
+    expect(result.outcome).toBe("rejected");
+    finalHold.resolve();
+    await caller;
+    await reconciler.close();
+  });
+
+  it("fails closed when the live CLI is missing at the start of the wait", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const gate = deferred();
+    let hold = true;
+    const inspect = vi.fn(async () => {
+      if (hold) {
+        hold = false;
+        await gate.promise;
+        return fixture.inspection;
+      }
+      return notReadyInspect("slack", "install", { code: "not_installed" });
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const requirementJob = runtime.emit(requirement);
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledOnce());
+    const waiting = reconciler.readySelectionForRun("slack");
+    await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(2));
+    gate.resolve();
+    await requirementJob;
+    await expect(waiting).resolves.toBeUndefined();
+    await reconciler.close();
+  });
+
+  it("admits a never-accepted healthy selection without ensure", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const ensure = vi.fn();
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect: vi.fn().mockResolvedValue(fixture.inspection), ensure, layout: fixture.layout },
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+    await expect(reconciler.readySelectionForRun("slack")).resolves.toMatchObject({
+      generation: fixture.selection.generation,
+      path: fixture.inspection.selection.path,
+    });
     expect(ensure).not.toHaveBeenCalled();
     expect(runtime.send).not.toHaveBeenCalled();
     await reconciler.close();

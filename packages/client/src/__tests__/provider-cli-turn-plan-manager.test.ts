@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deriveProviderCliHomeNamespace,
   deriveProviderCliSessionKey,
@@ -12,6 +12,7 @@ import {
   resolveProviderCliAccountLayout,
   writeProviderCliSelection,
 } from "../index.js";
+import * as turnPlanStorage from "../runtime/provider-cli/turn-plan.js";
 import { makeTempDir } from "./fixtures/provider-cli.js";
 import {
   installTurnTarget,
@@ -262,6 +263,109 @@ describe("ProviderCliTurnPlanManager prepare", () => {
     await expect(manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" })).rejects.toMatchObject({
       code: "selection_invalid",
     });
+  });
+
+  it("does not publish a plan when the caller aborts while waiting for readiness", async () => {
+    const base = await makeTurnPlanHarness();
+    tempDirs.push(base.accountHome, base.openTagHome);
+    const target = await installTurnTarget(join(base.accountHome, "bin"));
+    const record = await writeExternalTurnSelection(base.layout, "feishu", target);
+    const ready = {
+      fingerprint: record.selection.fingerprint,
+      generation: record.generation,
+      path: target,
+      version: record.selection.version,
+    };
+    let settleReady!: (value: typeof ready) => void;
+    const readySelection = vi.fn((_provider: "feishu" | "slack", signal?: AbortSignal) => {
+      return new Promise<typeof ready>((resolve, reject) => {
+        const onAbort = () => {
+          signal?.removeEventListener("abort", onAbort);
+          reject(signal?.reason ?? new DOMException("This operation was aborted", "AbortError"));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        settleReady = (value) => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve(value);
+        };
+      });
+    });
+    const manager = new ProviderCliTurnPlanManager({
+      accountHome: base.accountHome,
+      openTagHome: base.openTagHome,
+      readySelection,
+      runnerInvocation: providerCliTurnRunnerInvocation(),
+    });
+    const abort = new AbortController();
+    const preparing = manager.prepare(
+      { provider: "feishu", sessionId: "s-abort-wait", runId: "run-abort-wait" },
+      abort.signal,
+    );
+    await vi.waitFor(() => expect(readySelection).toHaveBeenCalledOnce());
+    expect(readySelection).toHaveBeenCalledWith("feishu", abort.signal);
+    abort.abort("turn_timeout");
+    await expect(preparing).rejects.toSatisfy(
+      (error) => error === "turn_timeout" || (error instanceof Error && error.name === "AbortError"),
+    );
+    settleReady(ready);
+    await Promise.resolve();
+    await expect(
+      readProviderCliTurnPlan(join(manager.sessionDir("s-abort-wait"), "plan.json")),
+    ).resolves.toBeUndefined();
+  });
+
+  it("discards this Run's plan when abort races exclusive publication", async () => {
+    const base = await makeTurnPlanHarness();
+    tempDirs.push(base.accountHome, base.openTagHome);
+    const target = await installTurnTarget(join(base.accountHome, "bin"));
+    const record = await writeExternalTurnSelection(base.layout, "feishu", target);
+    const abort = new AbortController();
+    const manager = new ProviderCliTurnPlanManager({
+      accountHome: base.accountHome,
+      openTagHome: base.openTagHome,
+      readySelection: async () => ({
+        fingerprint: record.selection.fingerprint,
+        generation: record.generation,
+        path: target,
+        version: record.selection.version,
+      }),
+      runnerInvocation: providerCliTurnRunnerInvocation(),
+    });
+    let didPublish!: () => void;
+    const published = new Promise<void>((resolve) => {
+      didPublish = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const publish = turnPlanStorage.publishProviderCliTurnPlanExclusive;
+    const publishing = vi
+      .spyOn(turnPlanStorage, "publishProviderCliTurnPlanExclusive")
+      .mockImplementationOnce(async (path, plan) => {
+        const result = await publish(path, plan);
+        expect(await readProviderCliTurnPlan(path)).toMatchObject({ runId: "run-late-publish" });
+        didPublish();
+        await released;
+        return result;
+      });
+    try {
+      const first = manager.prepare(
+        { provider: "feishu", sessionId: "s-late-publish", runId: "run-late-publish" },
+        abort.signal,
+      );
+      const rejected = expect(first).rejects.toBe("turn_timeout");
+      await published;
+      abort.abort("turn_timeout");
+      const next = manager.prepare({ provider: "feishu", sessionId: "s-late-publish", runId: "run-next" });
+      release();
+      await rejected;
+      const prepared = await next;
+      expect(await readProviderCliTurnPlan(prepared.planPath)).toMatchObject({ runId: "run-next" });
+    } finally {
+      release();
+      publishing.mockRestore();
+    }
   });
 
   it("rejects empty, oversized, or control-character identities", async () => {

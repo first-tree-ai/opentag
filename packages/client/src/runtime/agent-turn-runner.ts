@@ -42,7 +42,7 @@ export interface AgentTurnRunnerOptions {
   readonly credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
   readonly turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
-    prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
+    prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
   };
 }
 
@@ -221,8 +221,9 @@ export class AgentTurnRunner {
           runId: owner.turnId,
           ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
         };
-        await this.#turnPlan.prepare(turnPlanInput);
+        await this.#turnPlan.prepare(turnPlanInput, signal);
       }
+      signal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
       turn.runtime = runtime;
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);

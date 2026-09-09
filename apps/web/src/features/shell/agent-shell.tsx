@@ -43,14 +43,14 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   ] as const;
   return (
     <>
-      <Sidebar.Header className="h-16 border-b-0 px-3">
+      <Sidebar.Header className="h-16 border-b-0 px-1.5">
         <Sidebar.Menu className="min-w-0 flex-1">
           <Sidebar.MenuItem>
             <AgentSwitcher agent={agent} agents={agents} pathname={pathname} agentId={agentId} />
           </Sidebar.MenuItem>
         </Sidebar.Menu>
       </Sidebar.Header>
-      <Sidebar.Content className="md:[&_[data-sidebar=viewport]]:pt-0">
+      <Sidebar.Content className="[&_[data-sidebar=viewport]]:px-1.5 [&_[data-sidebar=viewport]]:pt-0">
         <nav aria-label={m.shell_agent()}>
           <Sidebar.Group className="pt-1">
             <Sidebar.Menu className="gap-1">
@@ -61,9 +61,13 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
                     key={item.section}
                     active={active}
                     aria-current={active ? "page" : undefined}
-                    className="min-h-11 rounded-lg px-3 data-[active]:bg-(--brand-soft) focus-visible:ring-2 focus-visible:ring-kumo-focus"
+                    className="min-h-11 rounded-lg px-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-medium focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
                     href={router.buildLocation(item.link).href}
-                    icon={<Icon className="size-4.5" name={item.icon} />}
+                    icon={
+                      <span className="grid size-6 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
+                        <Icon className="size-4" name={item.icon} />
+                      </span>
+                    }
                   >
                     {item.label}
                   </Sidebar.MenuButton>
@@ -108,10 +112,10 @@ function AgentSwitcher({
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
-            className="min-h-11 rounded-lg px-2 hover:bg-kumo-fill-hover"
+            className="min-h-11 rounded-lg px-3 hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
             icon={
               <span
-                className="grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold group-data-[state=collapsed]/sidebar:size-4 group-data-[state=collapsed]/sidebar:text-xs"
+                className="grid size-6 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-semibold"
                 aria-hidden="true"
               >
                 {agent ? initials(agent.displayName) : "A"}

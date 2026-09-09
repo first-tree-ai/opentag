@@ -48,10 +48,10 @@ export function AccountMenu({
       <Sidebar.MenuButton
         ref={triggerRef}
         aria-label={m.shell_account_menu()}
-        className="app-account-trigger justify-start"
+        className="app-account-trigger justify-start [&>div]:translate-none"
         data-compact={placement === "dock" ? "true" : undefined}
         icon={
-          <span className="flex w-8 shrink-0 items-center justify-center" aria-hidden="true">
+          <span className="app-account-icon grid size-6 shrink-0 place-items-center" aria-hidden="true">
             <span className="app-account-avatar grid size-6 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
               {initials(me.user.displayName)}
             </span>

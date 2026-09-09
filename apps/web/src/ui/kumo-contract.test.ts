@@ -212,7 +212,7 @@ describe("Kumo integration contract", () => {
     const shell = ["app-shell.tsx", "agent-shell.tsx", "shell-main.tsx", "account-menu.tsx"]
       .map((file) => readFileSync(resolve(root, "features/shell", file), "utf8"))
       .join("\n");
-    expect(shell).toContain('<Sidebar.Header className="h-16 border-b-0 px-3">');
+    expect(shell).toMatch(/<Sidebar\.Header(?:\s|>)/);
     expect(shell).toMatch(/<Sidebar\.Content(?:\s|>)/);
     expect(shell).toContain('<Sidebar.Menu className="gap-1">');
     expect(shell).toContain("<Sidebar.MenuButton");
@@ -220,7 +220,6 @@ describe("Kumo integration contract", () => {
     expect(shell).toContain("<DropdownMenu.LinkItem");
     expect(shell).toContain("<DropdownMenu.Separator />");
     expect(shell).toContain('aria-current={candidate.id === agentId ? "true" : undefined}');
-    expect(shell).toContain('className="flex w-8 shrink-0 items-center justify-center"');
     expect(shell).not.toContain("accountMenuRef");
     expect(shell).not.toContain("<Sidebar.Rail />");
     expect(shell).toContain('collapsible={isMobile ? "icon" : "none"}');

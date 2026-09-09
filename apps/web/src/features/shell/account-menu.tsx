@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import { initials } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
-import { Button, DropdownMenu, Icon, type IconName, Loader, Sidebar, Tooltip } from "../../ui/design-system.js";
+import { Button, DropdownMenu, Icon, Loader, Sidebar, Tooltip } from "../../ui/design-system.js";
 import { useAccount } from "../session/session-context.js";
+import { MenuItemIcon } from "./menu-item-icon.js";
 
 export function AccountMenu({
   onNavigate,
@@ -20,6 +21,7 @@ export function AccountMenu({
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const internalToolsOffered =
     useQuery({
       queryKey: queryKeys.internalToolsOffered(),
@@ -44,6 +46,7 @@ export function AccountMenu({
   const trigger =
     placement !== "page" ? (
       <Sidebar.MenuButton
+        ref={triggerRef}
         aria-label={m.shell_account_menu()}
         className="app-account-trigger justify-start"
         data-compact={placement === "dock" ? "true" : undefined}
@@ -59,7 +62,13 @@ export function AccountMenu({
         <Icon className="app-nav-label size-3.5 text-kumo-subtle" name="chevron-up" />
       </Sidebar.MenuButton>
     ) : (
-      <Button aria-label={m.shell_account_menu()} className="app-account-trigger gap-2" size="compact" variant="ghost">
+      <Button
+        ref={triggerRef}
+        aria-label={m.shell_account_menu()}
+        className="app-account-trigger gap-2"
+        size="compact"
+        variant="ghost"
+      >
         <span
           className="app-account-avatar grid size-8 place-items-center rounded-full bg-kumo-tint text-sm font-semibold"
           aria-hidden="true"
@@ -81,10 +90,11 @@ export function AccountMenu({
       />
       <DropdownMenu.Content
         align={placement === "sidebar" ? "start" : "end"}
-        aria-label={m.shell_account()}
         className="app-account-menu"
-        render={<nav />}
-        role="navigation"
+        // Keep the popup within its owning landmark without introducing a transient navigation region.
+        container={triggerRef.current?.closest<HTMLElement>("aside, nav, header, main")}
+        positionMethod="fixed"
+        style={{ zIndex: 50 }}
         side={placement === "dock" ? "right" : placement === "sidebar" ? "top" : "bottom"}
         sideOffset={placement === "dock" ? 16 : 8}
       >
@@ -133,13 +143,5 @@ export function AccountMenu({
         ) : null}
       </DropdownMenu.Content>
     </DropdownMenu>
-  );
-}
-
-function MenuItemIcon({ name }: { name: IconName }) {
-  return (
-    <span className="mr-2 grid size-4 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
-      <Icon name={name} />
-    </span>
   );
 }

@@ -72,8 +72,8 @@ function toolPages() {
  * The internal tools index for staging and opted-in local development. Simple operations — the ones that are a button and a
  * confirmation — live here directly; anything that needs a flow of its own is a linked sub-page.
  *
- * Every mutation here is reflexive: it targets the authenticated Account and never accepts a
- * client-selected one, which is what makes the page safe to offer to every signed-in staging tester.
+ * Account resets target the authenticated Account and never accept a client-selected one.
+ * Navigation previews apply to the whole Server and are available to every signed-in tester.
  */
 export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageProps) {
   const [confirming, setConfirming] = useState<ResetOperation | null>(null);

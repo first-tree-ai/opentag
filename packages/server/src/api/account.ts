@@ -235,9 +235,9 @@ export function registerAccountRoutes(
      * what makes this safe to offer to every signed-in tester rather than to administrators.
      */
     /*
-     * Reachability is the whole answer a client needs: outside staging the reset is absent rather
-     * than closed, so a deployment that does not offer it is indistinguishable from one that never
-     * had it. A caller asks this before offering the operations, rather than discovering the answer
+     * Reachability is the whole answer a client needs: without Internal tools the reset is absent
+     * rather than closed, so a deployment that does not offer it is indistinguishable from one that
+     * never had it. A caller asks this before offering the operations, rather than discovering the answer
      * by attempting one.
      */
     app.get(HTTP_PATHS.accountSetupReset, { preHandler }, async (_request, reply) => {

@@ -24,7 +24,7 @@
   "common_enabled": "已启用",
   "common_internal_navigation": "Agent 导航预览",
   "common_internal_navigation_description": "选择要为此 Server 的全部用户在 Agent 左侧导航中展示哪些尚未开放的页面。Server 重启后会恢复隐藏；页面直达链接仍可使用。",
-  "common_internal_navigation_save_failed": "无法保存 导航设置。",
+  "common_internal_navigation_save_failed": "无法保存导航设置。",
   "common_internal_tool_pages": "内部工具页面",
   "common_internal_tools": "内部工具",
   "common_internal_tools_scope": "这些操作只会作用于使用 {email} 登录的账户，不会访问其他人的数据。其他测试人员使用自己的账户登录时不受影响。",

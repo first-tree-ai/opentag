@@ -416,7 +416,7 @@ export class BrowserApi {
   }
 
   /**
-   * Reads the staging-wide navigation preview. A deployment without Internal Tools has no endpoint,
+   * Reads the Server-wide navigation preview. A deployment without Internal Tools has no endpoint,
    * which is the same product answer as both previews being hidden.
    */
   async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
@@ -437,7 +437,7 @@ export class BrowserApi {
   }
 
   /**
-   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * Undoes setup for the authenticated test-environment Account; it accepts no client-selected Account.
    * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
    */
   resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {

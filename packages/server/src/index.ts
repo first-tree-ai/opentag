@@ -124,7 +124,7 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 
-class StagingInternalNavigationVisibilityService {
+class InternalNavigationVisibilityService {
   #value: InternalNavigationVisibility = { integrations: false, skills: false };
 
   read(): InternalNavigationVisibility {
@@ -401,7 +401,7 @@ export async function startServer(): Promise<void> {
           registry,
         })
       : undefined;
-    const internalNavigationService = new StagingInternalNavigationVisibilityService();
+    const internalNavigationService = new InternalNavigationVisibilityService();
     app = createApp({
       loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },

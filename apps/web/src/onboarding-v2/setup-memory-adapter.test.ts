@@ -51,6 +51,8 @@ describe("createMemorySetupAdapter", () => {
     expect(issued.bootstrapCommand).toContain('"$HOME/.local/bin/opentag" connect');
     expect(issued.bootstrapCommand).toContain("--server https://opentag.invalid -- memory-");
     expect(issued.bootstrapCommand).not.toContain("opentag.ai");
+    expect(issued.bootstrapCommand).not.toMatch(/(?:^|[\s;|&])rm\s+-f(?:\s|$)/);
+    expect(issued.bootstrapCommand).not.toContain("|");
   });
 
   it.each([

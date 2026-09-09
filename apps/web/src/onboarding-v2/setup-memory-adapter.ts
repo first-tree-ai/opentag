@@ -661,7 +661,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
         // pointing a copy-pasted fixture at a real installer or control plane.
         bootstrapCommand:
           'opentag_installer="$(mktemp)" && curl -fsSL https://download.opentag.invalid/releases/prod/install.sh' +
-          ' -o "$opentag_installer" && sh "$opentag_installer" && rm -f "$opentag_installer"' +
+          ' -o "$opentag_installer" && sh "$opentag_installer"' +
           ` && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag" connect` +
           ` --server https://opentag.invalid -- memory-${connectCodeId}`,
         connectCodeId,

@@ -179,7 +179,7 @@ test("the portable runtime dependency contract accepts only the supported exact 
 test("the checked-in apps/cli manifest is accepted under the portable shipping contract", () => {
   const cliManifest = JSON.parse(readFileSync(join(repoRoot, "apps", "cli", "package.json"), "utf8"));
   assert.deepEqual(readPortableDirectDependencyPins(cliManifest), [
-    { name: "@first-tree-ai/context-tree", version: "0.1.11" },
+    { name: "@first-tree-ai/context-tree", version: "0.1.12" },
   ]);
 });
 
@@ -531,13 +531,13 @@ test("the real frozen install closure assembles, verifies, and runs the embedded
   });
   assert.equal(closure.direct.length, 1);
   assert.equal(closure.packages[0].name, "@first-tree-ai/context-tree");
-  assert.equal(closure.packages[0].version, "0.1.11");
+  assert.equal(closure.packages[0].version, "0.1.12");
   assert.ok(closure.packages.length >= 20, `real closure is unexpectedly small: ${closure.packages.length}`);
   writeJson(join(appDir, "package.json"), {
     name: "open-tag",
     version: "0.0.2",
     type: "module",
-    dependencies: { "@first-tree-ai/context-tree": "0.1.11" },
+    dependencies: { "@first-tree-ai/context-tree": "0.1.12" },
   });
   writeDependencyClosureFile(appDir, closure);
   writeText(join(appDir, "cli", "index.mjs"), "export {};\n");

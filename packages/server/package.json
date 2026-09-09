@@ -50,6 +50,6 @@
     "@testcontainers/postgresql": "^12.1.0",
     "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.0"
   }
 }

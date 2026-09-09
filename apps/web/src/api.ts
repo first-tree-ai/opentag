@@ -405,9 +405,8 @@ export class BrowserApi {
   }
 
   /**
-   * Whether this deployment offers the staging internal tools. Outside staging the interface is
-   * absent rather than closed, and everything behind it is open to any authenticated Account where
-   * it is present, so reachability is the whole answer.
+   * Whether this deployment offers Internal Tools: staging or an opted-in local preview. Everything
+   * behind it is open to any authenticated Account where present, so reachability is the whole answer.
    */
   async internalToolsOffered(): Promise<boolean> {
     const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);

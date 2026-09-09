@@ -5,7 +5,7 @@ import { useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
-import { Button, Dialog, Switch, Text } from "../ui/design-system.js";
+import { Button, Dialog, Icon, Switch, Text } from "../ui/design-system.js";
 import { useInternalNavigationVisibility } from "./navigation-visibility.js";
 
 type InternalNavigationItem = "integrations" | "skills";
@@ -31,7 +31,7 @@ interface ResetOperation {
 }
 
 /**
- * The two staging Account resets, described by what they cost rather than by what they call. Both
+ * The two test-environment Account resets, described by what they cost rather than by what they call. Both
  * act on the signed-in Account and nobody else's, so the copy names the Account rather than warning
  * about scope.
  */
@@ -69,7 +69,7 @@ function toolPages() {
 }
 
 /**
- * The staging-only internal tools index. Simple operations — the ones that are a button and a
+ * The internal tools index for staging and opted-in local development. Simple operations — the ones that are a button and a
  * confirmation — live here directly; anything that needs a flow of its own is a linked sub-page.
  *
  * Every mutation here is reflexive: it targets the authenticated Account and never accepts a
@@ -124,7 +124,14 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
   return (
     <main className="mx-auto grid w-full max-w-2xl gap-8 p-6" data-ui="internal-tools">
       <header className="grid gap-1">
-        <span className="text-xs font-medium uppercase text-kumo-subtle">{m.common_staging_only()}</span>
+        <Link
+          className="mb-4 inline-flex min-h-11 w-fit items-center gap-2 rounded-lg px-2 text-sm text-kumo-subtle hover:bg-kumo-fill-hover hover:text-kumo-default focus-visible:ring-2 focus-visible:ring-kumo-focus"
+          to="/agents"
+        >
+          <Icon name="arrow-left" />
+          {m.shell_all_agents()}
+        </Link>
+        <span className="text-xs font-medium uppercase text-kumo-subtle">{m.common_test_environments_only()}</span>
         <Text as="h1" variant="heading">
           {m.common_internal_tools()}
         </Text>
@@ -215,7 +222,7 @@ export function InternalToolsPage({ onResetSucceeded, user }: InternalToolsPageP
         <Dialog
           busy={pending}
           description={confirming.confirmDescription}
-          eyebrow={m.common_staging_only()}
+          eyebrow={m.common_test_environments_only()}
           returnFocusRef={{ current: triggerRefs.current.get(confirming.mode) ?? null }}
           title={confirming.confirmTitle}
           onClose={() => setConfirming(null)}

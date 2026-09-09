@@ -392,8 +392,9 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
     });
-    const setupResetService = config.stagingSetupReset
+    const setupResetService = config.internalTools
       ? new OnboardingResetService({
+          allowLocalPreview: config.environment === "dev",
           agents: agentService,
           database,
           environment: config.environment,

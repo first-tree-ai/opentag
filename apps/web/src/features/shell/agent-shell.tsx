@@ -124,7 +124,7 @@ function AgentSwitcher({
       <DropdownMenu.Content
         align="start"
         aria-label={m.shell_switch_agent()}
-        className="min-w-(--anchor-width)"
+        className="app-agent-menu w-(--anchor-width) max-w-[calc(100vw-1.5rem)]"
         side="bottom"
       >
         {agents.map((candidate) => (

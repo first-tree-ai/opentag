@@ -67,13 +67,13 @@ export interface AccountRoutesOptions {
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
   /**
-   * Undoing setup so onboarding can be walked again. Staging decides whether it exists at all: the
+   * Undoing setup so onboarding can be walked again. The environment decides whether it exists: the
    * routes are registered only where the service is supplied, and each one re-checks `enabled`
    * before doing anything, so a deployment that has the routes but not the feature answers exactly
    * like one that never registered them.
    */
   setupResetService?: AccountSetupResetService;
-  /** Process-wide staging preview state; absent everywhere the internal tools are absent. */
+  /** Process-wide preview state; absent everywhere the internal tools are absent. */
   internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
@@ -81,7 +81,7 @@ export interface AccountRoutesOptions {
 
 /** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
 export interface AccountSetupResetService {
-  /** Whether this deployment offers the reset at all; false outside staging. */
+  /** Whether this deployment offers the reset; production always refuses it. */
   readonly enabled: boolean;
   reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;

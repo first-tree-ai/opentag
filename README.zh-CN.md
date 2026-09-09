@@ -2,7 +2,7 @@
 
 <img src="https://opentag.build/assets/opentag-logo.png" alt="OpenTag" width="72">
 
-<h3>OpenTag</h3>
+# OpenTag
 
 你的模型、你的机器、你的 AI 同事
 

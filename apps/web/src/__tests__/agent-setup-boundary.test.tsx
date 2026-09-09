@@ -593,7 +593,7 @@ describe("Agent Setup route boundary", () => {
 
     expect(await screen.findByRole("heading", { name: "This agent cannot be set up" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/setup");
-    expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "All Agents" })).toBeNull();
   });
 
   it("retries Account admission explicitly without starting Agent setup before access opens", async () => {
@@ -671,7 +671,7 @@ describe("Agent Setup route boundary", () => {
     await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toContain(`agentId=${agentId}`);
-    expect(screen.queryByRole("heading", { name: "Agents" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "All Agents" })).toBeNull();
     expect(
       vi
         .mocked(fetch)

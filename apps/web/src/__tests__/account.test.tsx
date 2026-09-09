@@ -312,7 +312,7 @@ describe("OpenTag Web App Shell", () => {
     // The sidebar is an <aside>, so it is `complementary`; asking for `navigation` here matched
     // nothing whether or not the shell rendered.
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "All Agents" })).toBeNull();
     expect(screen.queryAllByRole("link", { name: "OpenTag" })).toHaveLength(0);
   });
 
@@ -356,7 +356,7 @@ describe("OpenTag Web App Shell", () => {
     ).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
     expect(
       vi

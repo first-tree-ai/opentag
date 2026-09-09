@@ -64,6 +64,7 @@ import {
   PlugsConnected,
   Plus,
   Shield,
+  SquaresFour,
   User,
   Wrench,
   X,
@@ -397,6 +398,7 @@ export type IconName =
   | "eye"
   | "eye-slash"
   | "instructions"
+  | "overview"
   | "home"
   | "integrations"
   | "laptop"
@@ -423,6 +425,7 @@ const icons: Record<IconName, PhosphorIcon> = {
   "eye-slash": EyeSlash,
   instructions: List,
   home: House,
+  overview: SquaresFour,
   integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,

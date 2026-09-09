@@ -84,7 +84,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
 
     expect(events("login")).toEqual([
       { name: "login", params: { method: "password", funnel: "activation", funnel_step: 1 } },
@@ -98,7 +98,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
 
     expect(events("sign_up")).toHaveLength(1);
     expect(events("login")).toHaveLength(0);
@@ -109,7 +109,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
 
     expect(events("login")).toHaveLength(0);
     expect(events("sign_up")).toHaveLength(0);
@@ -148,7 +148,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
     const { menu } = await openAccountMenu();
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Sign out" }));
     await screen.findByRole("heading", { name: "Sign in to OpenTag" });
@@ -178,7 +178,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
     expect(identities()).toEqual([userId]);
 
     sessionValid = false;
@@ -209,7 +209,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
 
     reachable = false;
     onlineManager.setOnline(false);
@@ -316,7 +316,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     const view = render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
     // The list re-reads on focus; a second answer saying the same thing is not a second conversation.
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(events("first_conversation_observed").length).toBeGreaterThan(0));
@@ -332,7 +332,7 @@ describe("activation funnel reporting", () => {
     window.history.replaceState({}, "", "/agents");
 
     render(<App />);
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "All Agents" });
 
     expect(events("first_conversation_observed")).toHaveLength(0);
   });

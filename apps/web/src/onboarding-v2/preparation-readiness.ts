@@ -37,6 +37,7 @@ import type {
 } from "@opentag/shared/browser";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
+import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import type { CheckRow } from "./readiness-list.js";
 
 export type PreparationReadinessRows = Readonly<{
@@ -324,15 +325,20 @@ function imCliRow(snapshot: AgentSetupSnapshot, provider: ImCliProvider): CheckR
         detail: m.onboarding_v2_prep_cli_install({ computerName: computer }),
         detailLabel,
       };
-    case "unavailable":
+    case "unavailable": {
+      const boundComputer = snapshot.computer.kind === "bound" ? snapshot.computer : undefined;
+      const reason = boundComputer?.imCliReadiness.find((entry) => entry.provider === provider)?.reason;
       return {
         label,
         state: "failed",
         status: "needs-attention",
         statusLabel: m.onboarding_v2_prep_needs_attention(),
-        detail: m.onboarding_v2_prep_cli_unavailable({ computerName: computer }),
+        detail: reason
+          ? providerCliWaitingCopy({ phase: "needs_attention", reason })
+          : m.onboarding_v2_prep_cli_unavailable({ computerName: computer }),
         detailLabel,
       };
+    }
   }
 }
 
@@ -373,11 +379,19 @@ export function preparationSummaryRows(snapshot: AgentSetupSnapshot): Preparatio
     label: m.onboarding_v2_prep_messaging_label(),
   };
   if (requiredRows.some((row) => row.status === "needs-attention")) {
+    const boundComputer = snapshot.computer.kind === "bound" ? snapshot.computer : undefined;
+    const publicReason = boundComputer
+      ? snapshot.requiredImCliProviders
+          .map((provider) => boundComputer.imCliReadiness.find((entry) => entry.provider === provider)?.reason)
+          .find((reason) => reason !== undefined)
+      : undefined;
     return {
       runtime,
       messaging: {
         ...shared,
-        detail: m.onboarding_v2_prep_messaging_attention({ computerName: name }),
+        detail: publicReason
+          ? providerCliWaitingCopy({ phase: "needs_attention", reason: publicReason })
+          : m.onboarding_v2_prep_messaging_attention({ computerName: name }),
         state: "failed",
         status: "needs-attention",
         statusLabel: m.onboarding_v2_prep_needs_attention(),

@@ -162,6 +162,22 @@ describe("Agent CLI core", () => {
       lastErrorCode: null,
     };
     expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReason\t-");
+    expect(formatImBindingDiagnostics(diagnostics)).not.toContain("providerCliNextAction");
+    expect(
+      formatImBindingDiagnostics({
+        ...diagnostics,
+        providerCliReadiness: "unavailable",
+        providerCliReason: "integrity_failed",
+      }),
+    ).toContain("providerCliReason\tintegrity_failed");
+    expect(
+      formatImBindingDiagnostics({
+        ...diagnostics,
+        providerCliReadiness: "unavailable",
+        providerCliReason: "unsupported_platform",
+      }),
+    ).toContain("providerCliReason\tunsupported_platform");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialExecutionReadiness\tunconfirmed");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialGeneration\t0");

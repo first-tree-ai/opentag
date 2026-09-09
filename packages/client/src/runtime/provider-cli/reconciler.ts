@@ -1,5 +1,6 @@
 import type {
   ImCliReadinessStatus,
+  ProviderCliArtifactPublicReason,
   ProviderCliArtifactStatusFrame,
   ProviderCliCancelFrame,
   ProviderCliPrewarmFrame,
@@ -15,6 +16,8 @@ import {
   ProviderCliPrewarmResultFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
+  providerCliArtifactFailureIsManual,
+  publicProviderCliArtifactReason,
   RUNTIME_CAPABILITY,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
@@ -34,7 +37,6 @@ import type {
 } from "./types.js";
 import type { ProviderCliValidationRequest, ProviderCliValidationRunner } from "./validation-runner.js";
 
-const UNREPAIRABLE = new Set(["unsupported_platform", "global_bin_unavailable"]);
 const GRANT_REPLAY_RETENTION_MS = 60_000;
 const logger = createLogger("runtime-provider-cli-reconciler");
 
@@ -72,8 +74,16 @@ interface TrackedRequirement {
   readonly credentialGeneration: number;
   readonly expectedIdentity: ProviderCliRequirementFrame["expectedIdentity"];
   readonly integrationId: string;
+  lastPublishOk?: boolean;
+  lastReason?: ProviderCliArtifactPublicReason;
+  lastStatus?: ProviderCliArtifactStatusFrame["status"];
   readonly provider: ProviderCliProvider;
   readonly requestId: string;
+}
+
+interface ProviderCliReconcileOutcome {
+  readonly reason?: ProviderCliArtifactPublicReason;
+  readonly status: ProviderCliArtifactStatusFrame["status"];
 }
 
 interface GrantState {
@@ -93,9 +103,9 @@ export class ProviderCliReconciler {
   readonly #refreshRuntimeProvider?: ProviderCliReconcilerOptions["refreshRuntimeProvider"];
   readonly #frameJobs = new Set<Promise<void>>();
   readonly #imCliPublished = new Map<ProviderCliProvider, ImCliReadinessStatus>();
-  readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ImCliReadinessStatus>>();
+  readonly #inspectionJobs = new Map<ProviderCliProvider, Promise<ProviderCliInspection | undefined>>();
   readonly #logger: Pick<ClientLogger, "info" | "warn">;
-  readonly #providerJobs = new Map<string, Promise<ProviderCliArtifactStatusFrame["status"]>>();
+  readonly #providerJobs = new Map<string, Promise<ProviderCliReconcileOutcome>>();
   readonly #acceptedOnce = new Set<ProviderCliProvider>();
   readonly #readySelection = new Map<ProviderCliProvider, ProviderCliReadySelection>();
   readonly #signal?: AbortSignal;
@@ -123,10 +133,14 @@ export class ProviderCliReconciler {
     return this.#closePromise;
   }
 
-  /** Re-inspect each published CLI so heartbeat freshness reflects current local state. */
+  /** Re-inspect published CLIs and active requirement Providers without mutating repair state. */
   async refreshPublishedImCliReadiness(): Promise<void> {
     if (this.#closed || this.#signal?.aborted) return;
-    await Promise.all([...this.#imCliPublished.keys()].map((provider) => this.#refreshImCli(provider)));
+    const providers = new Set<ProviderCliProvider>([
+      ...this.#imCliPublished.keys(),
+      ...[...this.#current.values()].map((requirement) => requirement.provider),
+    ]);
+    await Promise.all([...providers].map((provider) => this.#refreshPassive(provider)));
   }
 
   async #performClose(): Promise<void> {
@@ -151,12 +165,11 @@ export class ProviderCliReconciler {
    * Return the exact selection already accepted by daemon readiness.
    *
    * An already-accepted selection that still matches the live CLI is admitted
-   * immediately. A never-accepted, already-healthy live CLI joins the in-flight
-   * provider reconcile and is admitted only when path, fingerprint, version, and
-   * generation stay identical across the wait. A provider that was accepted once
-   * and later failed or rotated is not treated as a fresh cold start. Caller
-   * cancellation interrupts inspect, reconcile wait, and publication wait without
-   * cancelling shared work or another waiter.
+   * immediately. A never-accepted, already-healthy live CLI joins in-flight owner
+   * work when present, otherwise confirms read-only if identity stays stable. A
+   * provider that was accepted once and later failed or rotated is not treated as
+   * a fresh cold start and does not start Run-triggered ensure. Caller cancellation
+   * interrupts inspect and shared-work wait without cancelling other waiters.
    */
   async readySelectionForRun(
     provider: ProviderCliProvider,
@@ -186,14 +199,33 @@ export class ProviderCliReconciler {
     // Never-accepted + already-healthy is initial confirmation. An accepted,
     // failed, or rotated selection must not reset to never-initialized.
     const initialConfirmation = accepted === undefined && live !== undefined && !this.#acceptedOnce.has(provider);
+    if (!initialConfirmation || !live) return undefined;
+    const existing = this.#providerRepairJob(provider);
+    if (existing) {
+      const outcome = await this.#awaitReadiness(existing, signal);
+      this.#throwIfReadinessAborted(signal);
+      if (this.#closed || outcome.status !== "ready") return undefined;
+      return this.#admitUnchangedInitialSelection(provider, live, signal);
+    }
+    return this.#confirmInitialSelection(provider, live, signal);
+  }
 
-    await this.#awaitReadiness(this.#publishCurrentProvider(provider, "checking"), signal);
-    const status = await this.#awaitReadiness(this.#reconcileProvider(provider), signal);
+  async #confirmInitialSelection(
+    provider: ProviderCliProvider,
+    live: ProviderCliReadySelection,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliReadySelection | undefined> {
+    const liveAfter = await this.#awaitReadiness(this.#inspectLiveSelection(provider), signal);
     this.#throwIfReadinessAborted(signal);
     if (this.#closed) return undefined;
-    await this.#awaitReadiness(this.#publishCurrentProvider(provider, status), signal);
-    if (!initialConfirmation || !live) return undefined;
-    return this.#admitUnchangedInitialSelection(provider, live, signal);
+    if (!liveAfter || !selectionsMatch(live, liveAfter)) return undefined;
+    const accepted = this.#readySelection.get(provider);
+    if (this.#acceptedOnce.has(provider)) {
+      return accepted && selectionsMatch(accepted, liveAfter) ? { ...liveAfter } : undefined;
+    }
+    this.#readySelection.set(provider, liveAfter);
+    this.#acceptedOnce.add(provider);
+    return { ...liveAfter };
   }
 
   async #admitUnchangedInitialSelection(
@@ -294,28 +326,114 @@ export class ProviderCliReconciler {
 
   async #prewarmProvider(provider: ProviderCliProvider, mode: "ensure" | "inspect"): Promise<ImCliReadinessStatus> {
     if (mode === "inspect") {
-      return this.#refreshImCli(provider);
+      this.#publishImCli(provider, "checking");
+      const inspection = await this.#inspectProvider(provider);
+      const status = inspection?.readiness ?? "unavailable";
+      this.#publishImCli(provider, status);
+      return status;
     }
     this.#publishImCli(provider, "checking");
-    const status = await this.#reconcileProvider(provider, "auto");
-    this.#publishImCli(provider, status);
-    return status;
+    const outcome = await this.#reconcileProvider(provider, "auto");
+    this.#publishImCli(provider, outcome.status);
+    return outcome.status;
   }
 
-  async #refreshImCli(provider: ProviderCliProvider): Promise<ImCliReadinessStatus> {
-    this.#publishImCli(provider, "checking");
-    const status = await this.#inspectImCli(provider);
-    this.#publishImCli(provider, status);
-    return status;
+  async #refreshPassive(provider: ProviderCliProvider): Promise<void> {
+    const published = this.#imCliPublished.has(provider);
+    const targets = [...this.#current.values()]
+      .filter((requirement) => requirement.provider === provider)
+      .map((requirement) => ({
+        integrationId: requirement.integrationId,
+        lastStatus: requirement.lastStatus,
+        requestId: requirement.requestId,
+      }));
+    const repairAtStart = this.#providerRepairJob(provider);
+    const selectionAtStart = this.#readySelection.get(provider);
+    const inspection = await this.#inspectProvider(provider);
+    if (this.#closed || this.#signal?.aborted) return;
+    const readiness: ImCliReadinessStatus = inspection?.readiness ?? "unavailable";
+    if (published && this.#imCliPublished.has(provider)) this.#publishImCli(provider, readiness);
+    if (this.#passiveOverlappedRepair(provider, targets, repairAtStart, selectionAtStart)) return;
+    await this.#publishPassiveInspection(provider, inspection, targets, repairAtStart, selectionAtStart);
   }
 
-  #inspectImCli(provider: ProviderCliProvider): Promise<ImCliReadinessStatus> {
+  async #publishPassiveInspection(
+    provider: ProviderCliProvider,
+    inspection: ProviderCliInspection | undefined,
+    targets: readonly {
+      integrationId: string;
+      lastStatus?: ProviderCliArtifactStatusFrame["status"];
+      requestId: string;
+    }[],
+    repairAtStart: Promise<ProviderCliReconcileOutcome> | undefined,
+    selectionAtStart: ProviderCliReadySelection | undefined,
+  ): Promise<void> {
+    const liveTargets = targets.flatMap((target) => {
+      const current = this.#current.get(target.integrationId);
+      return current?.requestId === target.requestId ? [current] : [];
+    });
+    if (liveTargets.length === 0) return;
+    if (inspection?.readiness === "ready") {
+      const ready = await readySelectionFromInspect(this.#manager.layout, provider, inspection);
+      if (this.#closed || this.#signal?.aborted) return;
+      if (this.#passiveOverlappedRepair(provider, targets, repairAtStart, selectionAtStart)) return;
+      const stillLive = liveTargets.filter(
+        (target) => this.#current.get(target.integrationId)?.requestId === target.requestId,
+      );
+      if (ready) {
+        this.#readySelection.set(provider, ready);
+        this.#acceptedOnce.add(provider);
+      } else this.#readySelection.delete(provider);
+      await Promise.all(
+        stillLive.map((requirement) => this.#publishArtifact(requirement, ready ? "ready" : "unavailable")),
+      );
+      return;
+    }
+    const code = inspection?.diagnostic?.code;
+    const publicReason = publicProviderCliArtifactReason(code);
+    const inspectReason = providerCliArtifactFailureIsManual({ reason: code, stage: "inspect" })
+      ? publicReason
+      : undefined;
+    await Promise.all(
+      liveTargets.map((requirement) => {
+        if (this.#current.get(requirement.integrationId)?.requestId !== requirement.requestId) return Promise.resolve();
+        return this.#publishArtifact(
+          requirement,
+          "unavailable",
+          requirement.lastStatus === "unavailable" ? (requirement.lastReason ?? inspectReason) : inspectReason,
+        );
+      }),
+    );
+  }
+
+  #providerRepairJob(provider: ProviderCliProvider): Promise<ProviderCliReconcileOutcome> | undefined {
+    return this.#providerJobs.get(`${provider}:managed-only`) ?? this.#providerJobs.get(`${provider}:auto`);
+  }
+
+  #passiveOverlappedRepair(
+    provider: ProviderCliProvider,
+    targets: readonly {
+      integrationId: string;
+      lastStatus?: ProviderCliArtifactStatusFrame["status"];
+      requestId: string;
+    }[],
+    repairAtStart: Promise<ProviderCliReconcileOutcome> | undefined,
+    selectionAtStart: ProviderCliReadySelection | undefined,
+  ): boolean {
+    if (repairAtStart || this.#providerRepairJob(provider)) return true;
+    if (this.#readySelection.get(provider) !== selectionAtStart) return true;
+    return targets.some((target) => {
+      const current = this.#current.get(target.integrationId);
+      return current?.requestId === target.requestId && current.lastStatus !== target.lastStatus;
+    });
+  }
+
+  #inspectProvider(provider: ProviderCliProvider): Promise<ProviderCliInspection | undefined> {
     const existing = this.#inspectionJobs.get(provider);
     if (existing) return existing;
     const job = this.#manager
       .inspect(provider)
-      .then((inspection) => inspection.readiness)
-      .catch(() => "unavailable" as const)
+      .catch(() => undefined)
       .finally(() => {
         if (this.#inspectionJobs.get(provider) === job) this.#inspectionJobs.delete(provider);
       });
@@ -361,14 +479,16 @@ export class ProviderCliReconciler {
     };
     this.#current.set(frame.integrationId, tracked);
     await this.#publishArtifact(tracked, "checking");
-    const status = await this.#reconcileProvider(frame.provider);
-    await this.#publishCurrentProvider(frame.provider, status);
+    const outcome = await this.#reconcileProvider(frame.provider);
+    const current = this.#current.get(frame.integrationId);
+    if (!current || current.requestId !== tracked.requestId) return;
+    await this.#publishArtifact(current, outcome.status, outcome.reason);
   }
 
   async #reconcileProvider(
     provider: ProviderCliProvider,
     mode: "auto" | "managed-only" = "managed-only",
-  ): Promise<ProviderCliArtifactStatusFrame["status"]> {
+  ): Promise<ProviderCliReconcileOutcome> {
     const key = `${provider}:${mode}`;
     const existing = this.#providerJobs.get(key);
     if (existing) return existing;
@@ -382,33 +502,40 @@ export class ProviderCliReconciler {
   async #runProvider(
     provider: ProviderCliProvider,
     mode: "auto" | "managed-only",
-  ): Promise<ProviderCliArtifactStatusFrame["status"]> {
+  ): Promise<ProviderCliReconcileOutcome> {
     try {
       let inspection = await this.#manager.inspect(provider);
       if (inspection.readiness !== "ready") {
-        if (inspection.diagnostic && UNREPAIRABLE.has(inspection.diagnostic.code)) return "unavailable";
-        await this.#ensureConverging(provider, mode);
+        if (providerCliArtifactFailureIsManual({ reason: inspection.diagnostic?.code, stage: "inspect" })) {
+          this.#readySelection.delete(provider);
+          return unavailableOutcome(inspection.diagnostic?.code, "inspect");
+        }
+        const ensured = await this.#ensureConverging(provider, mode);
         inspection = await this.#manager.inspect(provider);
+        if (inspection.readiness !== "ready") {
+          this.#readySelection.delete(provider);
+          return unavailableOutcome(ensured.diagnostic?.code ?? inspection.diagnostic?.code, "ensure");
+        }
       }
       if (inspection.readiness === "ready") {
         const ready = await readySelectionFromInspect(this.#manager.layout, provider, inspection);
         if (!ready) {
           this.#readySelection.delete(provider);
-          return "unavailable";
+          return { status: "unavailable" };
         }
         this.#readySelection.set(provider, ready);
         this.#acceptedOnce.add(provider);
-        return "ready";
+        return { status: "ready" };
       }
       this.#readySelection.delete(provider);
-      return "unavailable";
+      return unavailableOutcome(inspection.diagnostic?.code, "ensure");
     } catch (error) {
       logger.debug(
         { code: "provider_reconcile_failed", provider, error: String(error) },
         "Provider CLI reconciliation failed",
       );
       this.#readySelection.delete(provider);
-      return "unavailable";
+      return { status: "unavailable" };
     }
   }
 
@@ -454,14 +581,6 @@ export class ProviderCliReconciler {
       if (signal.aborted) onAbort();
       void wait.then(() => finish(), finish);
     });
-  }
-
-  async #publishCurrentProvider(
-    provider: ProviderCliProvider,
-    status: ProviderCliArtifactStatusFrame["status"],
-  ): Promise<void> {
-    const current = [...this.#current.values()].filter((requirement) => requirement.provider === provider);
-    await Promise.all(current.map((requirement) => this.#publishArtifact(requirement, status)));
   }
 
   async #handleGrant(frame: ProviderCliValidationGrantFrame): Promise<void> {
@@ -581,9 +700,19 @@ export class ProviderCliReconciler {
     this.#current.clear();
   }
 
-  async #publishArtifact(frame: TrackedRequirement, status: ProviderCliArtifactStatusFrame["status"]): Promise<void> {
+  async #publishArtifact(
+    frame: TrackedRequirement,
+    status: ProviderCliArtifactStatusFrame["status"],
+    reason?: ProviderCliArtifactPublicReason,
+  ): Promise<void> {
     const current = this.#current.get(frame.integrationId);
     if (!current || current.requestId !== frame.requestId) return;
+    const publicReason = status === "unavailable" ? reason : undefined;
+    if (current.lastPublishOk !== false && current.lastStatus === status && current.lastReason === publicReason) {
+      return;
+    }
+    const includeReason =
+      publicReason !== undefined && this.#connection.capabilityVersion(RUNTIME_CAPABILITY.providerCliReconcile) === 2;
     const payload: ProviderCliArtifactStatusFrame = {
       type: "provider-cli:artifact:status",
       requestId: frame.requestId,
@@ -592,8 +721,16 @@ export class ProviderCliReconciler {
       integrationId: frame.integrationId,
       credentialGeneration: frame.credentialGeneration,
       status,
+      ...(includeReason ? { reason: publicReason } : {}),
     };
-    await this.#connection.send(payload, { priority: "result" });
+    try {
+      await this.#connection.send(payload, { priority: "result" });
+      current.lastStatus = status;
+      current.lastReason = publicReason;
+      current.lastPublishOk = true;
+    } catch {
+      current.lastPublishOk = false;
+    }
   }
 
   async #publishValidation(
@@ -674,6 +811,15 @@ function selectionsMatch(left: ProviderCliReadySelection, right: ProviderCliRead
     left.path === right.path &&
     left.version === right.version
   );
+}
+
+function unavailableOutcome(code: string | undefined, stage: "inspect" | "ensure"): ProviderCliReconcileOutcome {
+  const publicReason = publicProviderCliArtifactReason(code);
+  if (!publicReason) return { status: "unavailable" };
+  if (stage === "inspect" && !providerCliArtifactFailureIsManual({ reason: code, stage })) {
+    return { status: "unavailable" };
+  }
+  return { status: "unavailable", reason: publicReason };
 }
 
 /**

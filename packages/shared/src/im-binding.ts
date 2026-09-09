@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { ReceiveModeSchema } from "./agent.js";
-import { IntegrationCredentialExecutionReasonSchema, IntegrationCredentialExecutionStatusSchema } from "./computer.js";
+import {
+  IntegrationCredentialExecutionReasonSchema,
+  IntegrationCredentialExecutionStatusSchema,
+  ProviderCliArtifactPublicReasonSchema,
+  ProviderCliPublicFailureReasonSchema,
+} from "./computer.js";
 
 export const ImProviderSchema = z.enum(["feishu", "slack"]);
 
@@ -166,7 +171,7 @@ export const ProviderCliHandoffPhaseSchema = z.enum(["preparing_cli", "checking_
 export const ProviderCliHandoffProgressSchema = z
   .object({
     phase: ProviderCliHandoffPhaseSchema,
-    reason: IntegrationCredentialExecutionReasonSchema.optional(),
+    reason: ProviderCliPublicFailureReasonSchema.optional(),
   })
   .strict();
 
@@ -351,6 +356,7 @@ export const ImBindingDiagnosticsSchema = z
     ready: z.boolean(),
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
     providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
+    providerCliReason: ProviderCliArtifactPublicReasonSchema.optional(),
     credentialExecutionReadiness: IntegrationCredentialExecutionStatusSchema,
     credentialExecutionReason: IntegrationCredentialExecutionReasonSchema.optional(),
     credentialGeneration: z.number().int().min(0),

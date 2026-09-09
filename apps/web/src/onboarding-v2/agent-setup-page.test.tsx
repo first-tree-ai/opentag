@@ -400,6 +400,30 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
+  it("shows the allowlisted Provider CLI reason on the local preparation row", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "unavailable", slack: "ready" },
+    });
+    const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (snapshot.computer.kind !== "bound") throw new Error("expected a bound Computer");
+    const computer = snapshot.computer;
+    const adapter = scriptedAdapter(async () => ({
+      ...snapshot,
+      computer: {
+        ...computer,
+        imCliReadiness: computer.imCliReadiness.map((entry) =>
+          entry.provider === "feishu" ? { ...entry, reason: "unsupported_platform" as const } : entry,
+        ),
+      },
+    }));
+    renderSetup(adapter);
+    await settle();
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("needs-attention");
+    expect(rowDetail("messaging-support")).toContain("operating system cannot run the messaging CLI");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+
   it("shows both missing Provider CLI reports as waiting, not checking", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), imCliReadiness: {} });
     renderSetup(memory.adapter);
@@ -633,6 +657,32 @@ describe("preparation review regressions", () => {
     const messaging = document.querySelector('[data-ui="agent-setup-messaging"]') as HTMLElement;
     expect(messaging.textContent).not.toMatch(/CLI|PATH|install|sign[ -]?in/i);
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
+  });
+
+  it("keeps waiting-handoff GET polls from calling refresh while Check again does", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack" },
+    });
+    const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (snapshot.messaging.kind !== "waiting-handoff") throw new Error("Expected handoff fixture");
+    const adapter = scriptedAdapter(async () => ({
+      ...snapshot,
+      messaging: {
+        ...snapshot.messaging,
+        progress: { phase: "needs_attention", reason: "integrity_failed" },
+      } as AgentSetupSnapshot["messaging"],
+    }));
+    renderSetup(adapter);
+    await settle();
+    expect(document.querySelector('[data-ui="agent-setup-messaging"]')?.textContent).toContain(
+      "The messaging CLI download failed verification",
+    );
+    await advance(POLL_MS * 2);
+    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await settle();
+    expect(adapter.refreshPreparation).toHaveBeenCalledWith(SETUP_AGENT_ID);
   });
 
   it("explains the first Slack event needed to finish the connection check", async () => {

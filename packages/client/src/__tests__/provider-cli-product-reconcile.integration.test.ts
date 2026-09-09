@@ -214,6 +214,9 @@ describe("provider CLI product reconcile", () => {
       selection ?? undefined,
     );
     await expect(reconciler.readySelectionForRun("slack")).resolves.toBeUndefined();
+    expect(ensure).toHaveBeenCalledTimes(1);
+    const repairRequestId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await runtime.emit({ ...requirement, requestId: repairRequestId, credentialGeneration: 3 });
     const recovered = await reconciler.readySelectionForRun("slack");
     expect(recovered?.generation).toBeGreaterThan(1);
     expect(recovered?.version).toBe("4.7.0");

@@ -105,7 +105,13 @@ describe("provider CLI initial readiness", () => {
       executionEffects: "not_started",
     });
     expect(harness.logs.some((log) => log.fields.errorCode === "selection_invalid")).toBe(true);
+    expect(harness.ensure).not.toHaveBeenCalled();
 
+    // Drifted previously-accepted selections stay fail-closed until owner work admits the new identity.
+    harness.runner.start(harness.owner());
+    await harness.runner.settled();
+    expect(harness.modelStarts).toBe(0);
+    await harness.emitRequirement();
     harness.runner.start(harness.owner());
     await harness.runner.settled();
     expect(harness.modelStarts).toBe(1);

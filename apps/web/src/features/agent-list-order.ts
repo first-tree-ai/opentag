@@ -1,12 +1,11 @@
 /**
  * Display order for the Agent list, held stable for as long as the list stays mounted.
  *
- * The list revalidates in the background every 30 seconds, and its status-first sort moves a
- * row the moment an Agent's availability changes. Because the whole row is a link, a row that
- * moves under the pointer opens a different Agent than the one that was pressed. Rows keep the
- * position they were first shown in, and an Agent that changes state turns amber where it
- * already is rather than jumping to the top unobserved. Agents added since the first render
- * join at the end, in the incoming order.
+ * The Server orders Agents by creation time ascending, then ID ascending. Status, activity,
+ * usage, and names do not affect that order. Because the whole row is a link, background
+ * revalidation must also preserve the positions already shown under the viewer's pointer.
+ * Surviving rows keep their relative order, and newly observed Agents join at the end in the
+ * Server's order. Remounting the list starts from the same canonical Server order.
  *
  * The result is stable under reapplication, so re-rendering with an unchanged list is a no-op.
  */

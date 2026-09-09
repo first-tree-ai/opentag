@@ -18,7 +18,7 @@ identity rewrite, and the same version coordinate as the npm package it accompan
 ## Installing
 
 ~~~bash
-curl -fsSL https://storage.googleapis.com/opentag-release/releases/prod/install.sh | sh
+curl -fsSL https://dl.opentag.build/releases/prod/install.sh | sh
 ~~~
 
 The installer resolves the channel's `latest.json`, downloads the tarball for the detected platform, verifies its
@@ -116,8 +116,10 @@ Current version, target, updater state, and the last attempt with its failure re
 <prefix>/<channel>/<version>/<package>-<version>-<platform>.tar.gz
 ~~~
 
-Default coordinates are the `opentag-release` bucket under the `releases` prefix, served from
-`https://storage.googleapis.com/opentag-release/releases`.
+Default coordinates are the `opentag-release` bucket under the `releases` prefix. The bucket is exposed publicly
+through the `dl.opentag.build` custom domain, so the default download base URL is `https://dl.opentag.build/releases`.
+The storage coordinates and the public host are independent settings: the upload path only ever builds `gs://` URIs
+from the bucket and prefix, and the download base URL is never derived from the bucket name.
 
 Everything under a version prefix is immutable and written with a create-only precondition
 (`--if-generation-match=0`) plus a `--content-md5` digest, so Cloud Storage rejects both a silent overwrite and a
@@ -247,7 +249,7 @@ Required repository variables:
 | `OPENTAG_PORTABLE_GCS_BUCKET` | Bucket name (default `opentag-release`) |
 | `OPENTAG_PORTABLE_GCS_PREFIX` | Object prefix before the channel segment (default `releases`) |
 | `OPENTAG_PORTABLE_GCS_PROJECT` | Project used for `gcloud` calls |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Public base URL (default `https://storage.googleapis.com/opentag-release/releases`) |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Public base URL (default `https://dl.opentag.build/releases`) |
 | `OPENTAG_PORTABLE_PLATFORMS` | Optional platform filter for the build |
 
 Publishing uses workload identity federation, so no service-account key is stored in the repository. The service
@@ -261,8 +263,12 @@ elsewhere.
 The workload identity provider must carry an attribute condition that pins it to this repository. Without one, any
 GitHub Actions workflow anywhere can mint a token for the pool and impersonate the release service account.
 
-The bucket must serve the release prefix publicly at the download base URL. Until it does, uploads still succeed but
-the public verification gate fails and the channel pointers are deliberately left untouched.
+The download base URL must serve the release prefix publicly, byte for byte, from the objects the upload just wrote.
+Because that host is a custom domain in front of the bucket rather than the bucket's own endpoint, a failure here can
+come from either side: the bucket's public access, or the domain mapping. The domain must also honor the object
+`Cache-Control` headers the upload sets, since the channel pointers are published as `no-cache` and are re-read
+immediately afterwards. Until all of that holds, uploads still succeed but the public verification gate fails and the
+channel pointers are deliberately left untouched.
 
 ## Operational notes
 

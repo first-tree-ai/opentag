@@ -5,6 +5,7 @@ import {
   resolveSignInDestination,
 } from "@opentag/shared/browser";
 import { type FormEvent, useRef, useState } from "react";
+import { rememberSignInIntent } from "../../analytics/sign-in-intent.js";
 import { ApiError, browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Field, Icon, Input } from "../../ui/design-system.js";
@@ -62,6 +63,9 @@ export function PasswordSignInForm({
       } else {
         await browserApi.signInWithPassword({ email, password });
       }
+      // Recorded rather than reported: the navigation below replaces this document, so the
+      // sign-in is reported by the page it lands on, which is also the page that knows who it is.
+      rememberSignInIntent({ method: "password", registering });
       /*
        * Re-checked here rather than trusted from the query string. This is the one sign-in method that navigates the
        * browser itself instead of handing its destination to a server route, so without this the same `next` the

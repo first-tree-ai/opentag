@@ -215,6 +215,52 @@ async function createDelivery(
 }
 
 describe("AgentService", () => {
+  it("lists Agents by creation time and ID, preserving order through edits and appending new Agents", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const oldest = {
+      id: "33333333-3333-4333-8333-333333333333",
+      name: "zulu",
+      createdAt: new Date("2026-08-20T00:00:00.000Z"),
+    };
+    const tiedFirst = {
+      id: "11111111-1111-4111-8111-111111111111",
+      name: "charlie",
+      createdAt: new Date("2026-08-21T00:00:00.000Z"),
+    };
+    const tiedSecond = {
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "bravo",
+      createdAt: tiedFirst.createdAt,
+    };
+    await unitDatabase.database.insert(agents).values(
+      [tiedSecond, tiedFirst, oldest].map((agent) => ({
+        ...agent,
+        displayName: agent.name,
+        createdByUserId: bootstrap.userId,
+        computerId: computer.id,
+        runtimeProvider: "codex" as const,
+        updatedAt: agent.createdAt,
+      })),
+    );
+    const expectedOrder = [oldest.id, tiedFirst.id, tiedSecond.id];
+    expect((await service.listForAccount(bootstrap.userId)).agents.map((agent) => agent.id)).toEqual(expectedOrder);
+
+    await unitDatabase.database
+      .update(agents)
+      .set({ name: "alpha", displayName: "Renamed Agent", status: "suspended", updatedAt: NOW })
+      .where(eq(agents.id, tiedSecond.id));
+    const freshService = new AgentService(unitDatabase.database, { now: () => NOW });
+    expect((await freshService.listForAccount(bootstrap.userId)).agents.map((agent) => agent.id)).toEqual(
+      expectedOrder,
+    );
+
+    const newest = await createAgent(service, bootstrap.userId, computer.id, "aaa-new-agent");
+    expect((await service.listForAccount(bootstrap.userId)).agents.map((agent) => agent.id)).toEqual([
+      ...expectedOrder,
+      newest.id,
+    ]);
+  });
+
   it("fails loudly when a stored Agent projection is internally inconsistent", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id);

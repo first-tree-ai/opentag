@@ -7,6 +7,7 @@ import {
   ImConversationKindSchema,
   ImMessageOperationSchema,
 } from "./im-message.js";
+import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
 export const TaskStatusSchema = z.enum(["queued", "running", "completed", "failed", "expired", "ended", "idle"]);
 export const TaskSessionKindSchema = z.enum(["channel", "thread"]);
@@ -72,6 +73,8 @@ export const TaskTurnSchema = z
     delivery: z
       .object({
         state: z.enum(["pending", "accepted", "steered", "terminal_rejected", "expired"]),
+        // Older servers omit this; consumers must not infer liveness from acceptance alone.
+        isRunning: z.boolean().optional(),
         attemptCount: z.number().int().nonnegative(),
         acceptedAt: z.string().datetime().nullable(),
         steeredAt: z.string().datetime().nullable(),
@@ -120,6 +123,7 @@ export const TaskTurnSchema = z
             droppedEvents: z.number().int().nonnegative(),
           })
           .strict(),
+        outgoingReplies: TurnOutgoingReplySnapshotSchema.nullable(),
         reportedAt: z.string().datetime(),
       })
       .strict()

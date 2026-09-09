@@ -5,6 +5,7 @@ import {
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -34,7 +35,17 @@ import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
+import {
+  abortError,
+  asError,
+  isAbortError,
+  RuntimeConnectionError,
+  RuntimeProtocolFallbackError,
+  RuntimeSendError,
+} from "./runtime-connection-errors.js";
 import { notifyTarget, protocolRejectionFields, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
+
+export { RuntimeConnectionError, RuntimeSendError, type RuntimeSendErrorCode } from "./runtime-connection-errors.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -68,35 +79,6 @@ export interface RuntimeQueueLimits {
   result: number;
   report: number;
   trace: number;
-}
-
-export type RuntimeSendErrorCode = "aborted" | "deadline" | "frame_too_large" | "overflow" | "unavailable";
-
-export class RuntimeConnectionError extends Error {
-  constructor(
-    message: string,
-    readonly fatal: boolean,
-  ) {
-    super(message);
-    this.name = "RuntimeConnectionError";
-  }
-}
-
-export class RuntimeSendError extends Error {
-  constructor(
-    readonly code: RuntimeSendErrorCode,
-    message: string,
-  ) {
-    super(message);
-    this.name = "RuntimeSendError";
-  }
-}
-
-class RuntimeProtocolFallbackError extends Error {
-  constructor() {
-    super("The Server explicitly requires runtime protocol v1");
-    this.name = "RuntimeProtocolFallbackError";
-  }
 }
 
 interface RuntimeScheduler {
@@ -435,6 +417,19 @@ export class RuntimeConnection {
       return Promise.reject(new RuntimeSendError("unavailable", "The runtime connection is not registered"));
     }
     if (options.signal?.aborted) return Promise.reject(abortError());
+    if (
+      typeof frame === "object" &&
+      frame !== null &&
+      "type" in frame &&
+      frame.type === "turn:report" &&
+      "outgoingReplies" in frame &&
+      frame.outgoingReplies !== undefined &&
+      this.capabilityVersion(RUNTIME_CAPABILITY.turnReport) !== 2
+    ) {
+      return Promise.reject(
+        new RuntimeSendError("capability_unavailable", "Turn reply snapshots require runtime.turnReport v2"),
+      );
+    }
     let serialized: string;
     try {
       serialized = JSON.stringify(this.#outboundFrame(frame));
@@ -1036,18 +1031,6 @@ function withoutConnectionId(value: unknown): unknown {
 function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {
   const parsed = ServerRuntimeBusinessFrameSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
-}
-
-function abortError(): RuntimeSendError {
-  return new RuntimeSendError("aborted", "The runtime operation was aborted");
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof RuntimeSendError && error.code === "aborted";
-}
-
-function asError(error: unknown): Error {
-  return error instanceof Error ? error : new Error("The runtime operation failed");
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

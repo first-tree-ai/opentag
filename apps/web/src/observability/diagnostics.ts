@@ -187,6 +187,13 @@ export function installWindowDiagnosticHandlers(
     if (!(element instanceof HTMLScriptElement) && !(element instanceof HTMLLinkElement)) return;
     const resourceType = element instanceof HTMLScriptElement ? "script" : "link";
     const source = element instanceof HTMLScriptElement ? element.src : element.href;
+    /*
+     * Only this origin's own resources are this application's failures. A third-party resource that
+     * does not load is routinely a content blocker, an extension, or a network policy — a choice
+     * somebody made rather than a defect — and reporting it would turn that choice into an error on
+     * every page load, including in suites that fail a run on any console error at all.
+     */
+    if (!isSameOrigin(source, target)) return;
     reporter.report(
       {
         source: "window",
@@ -205,6 +212,15 @@ export function installWindowDiagnosticHandlers(
     target.removeEventListener("unhandledrejection", onUnhandledRejection);
     target.removeEventListener("error", onResourceError, true);
   };
+}
+
+function isSameOrigin(source: string, target: Window): boolean {
+  if (!source) return false;
+  try {
+    return new URL(source, target.location.href).origin === target.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 function resourcePathWithoutQuery(source: string): string | undefined {

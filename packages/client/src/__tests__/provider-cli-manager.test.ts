@@ -124,8 +124,8 @@ describe("ProviderCliManager ensure", () => {
   });
 
   it("upgrades an older managed selection when no eligible external candidate exists", async () => {
-    const older = await makeManagedCatalog("feishu", "1.0.91");
-    const newer = await makeManagedCatalog("feishu", "1.0.92");
+    const older = await makeManagedCatalog("feishu", "1.0.92");
+    const newer = await makeManagedCatalog("feishu", "1.0.93");
     try {
       const { accountHome, layout } = await makeManager({});
       const oldManager = new ProviderCliManager({
@@ -144,12 +144,12 @@ describe("ProviderCliManager ensure", () => {
       });
       const result = await newManager.ensure("feishu");
       expect(result).toMatchObject({ ok: true, action: "installed-managed" });
-      expect(result.selected?.version).toBe("1.0.92");
+      expect(result.selected?.version).toBe("1.0.93");
       expect(result.candidates).toContainEqual(
-        expect.objectContaining({ version: "1.0.91", disposition: "ignored", reason: "older-managed-version" }),
+        expect.objectContaining({ version: "1.0.92", disposition: "ignored", reason: "older-managed-version" }),
       );
       const selection = await readProviderCliSelection(layout, "feishu");
-      expect(selection?.selection.version).toBe("1.0.92");
+      expect(selection?.selection.version).toBe("1.0.93");
       expect(selection?.generation).toBe(2);
     } finally {
       await older.server.close();
@@ -175,14 +175,35 @@ describe("ProviderCliManager ensure", () => {
     void manager;
   });
 
+  it("rejects legacy 1.0.23 and selects a CLI with the required receipt envelope", async () => {
+    const { accountHome } = await makeManager({});
+    const legacy = join(accountHome, "legacy");
+    const supported = join(accountHome, "supported");
+    await writeFakeCli(legacy, "feishu", { version: "1.0.23" });
+    await writeFakeCli(supported, "feishu", { version: "1.0.92" });
+    const manager = new ProviderCliManager({
+      accountHome,
+      fetcher: loopbackFetcher,
+      env: { PATH: [legacy, supported].join(delimiter) },
+    });
+    const result = await manager.ensure("feishu");
+    expect(result.selected?.path).toBe(canon(join(supported, "lark-cli")));
+    expect(result.candidates).toContainEqual(
+      expect.objectContaining({
+        path: canon(join(legacy, "lark-cli")),
+        disposition: "ignored",
+      }),
+    );
+  });
+
   it("selects the newest version among multiple external candidates and reports the rest", async () => {
     const { accountHome } = await makeManager({});
     const older = join(accountHome, "older");
     const newer = join(accountHome, "newer");
     const oldest = join(accountHome, "oldest");
-    await writeFakeCli(older, "feishu", { version: "1.0.90" });
-    await writeFakeCli(newer, "feishu", { version: "1.0.92" });
-    await writeFakeCli(oldest, "feishu", { version: "1.0.89" });
+    await writeFakeCli(older, "feishu", { version: "1.0.93" });
+    await writeFakeCli(newer, "feishu", { version: "1.0.94" });
+    await writeFakeCli(oldest, "feishu", { version: "1.0.92" });
     const manager = new ProviderCliManager({
       accountHome,
       fetcher: loopbackFetcher,
@@ -190,10 +211,10 @@ describe("ProviderCliManager ensure", () => {
     });
     const result = await manager.ensure("feishu", {});
     expect(result.action).toBe("selected-existing");
-    expect(result.selected?.version).toBe("1.0.92");
+    expect(result.selected?.version).toBe("1.0.94");
     expect(result.selected?.path).toBe(canon(join(newer, "lark-cli")));
     const ignored = result.candidates.filter((candidate) => candidate.disposition === "ignored");
-    expect(ignored.map((candidate) => candidate.version).sort()).toEqual(["1.0.89", "1.0.90"]);
+    expect(ignored.map((candidate) => candidate.version).sort()).toEqual(["1.0.92", "1.0.93"]);
     expect(ignored.every((candidate) => candidate.reason === "older compatible version")).toBe(true);
   });
 
@@ -277,11 +298,11 @@ describe("ProviderCliManager ensure", () => {
   });
 
   it("never falls back to managed install while an eligible external candidate exists", async () => {
-    const { server, catalog } = await makeManagedCatalog("feishu", "1.0.92");
+    const { server, catalog } = await makeManagedCatalog("feishu", "1.0.93");
     try {
       const { accountHome } = await makeManager({});
       const external = join(accountHome, "external");
-      await writeFakeCli(external, "feishu", { version: "1.0.80" }); // older than the catalog version
+      await writeFakeCli(external, "feishu", { version: "1.0.92" }); // older than the catalog version
       const manager = new ProviderCliManager({
         accountHome,
         fetcher: loopbackFetcher,
@@ -290,7 +311,7 @@ describe("ProviderCliManager ensure", () => {
       });
       const result = await manager.ensure("feishu", {});
       expect(result.action).toBe("selected-existing");
-      expect(result.selected?.version).toBe("1.0.80");
+      expect(result.selected?.version).toBe("1.0.92");
       expect(server.requests).toEqual([]); // no download happened
     } finally {
       await server.close();
@@ -323,7 +344,7 @@ describe("ProviderCliManager ensure", () => {
     try {
       const { accountHome, layout } = await makeManager({});
       const external = join(accountHome, "external");
-      await writeFakeCli(external, "feishu", { version: "1.0.90" });
+      await writeFakeCli(external, "feishu", { version: "1.0.92" });
 
       const withExternal = new ProviderCliManager({
         accountHome,
@@ -354,8 +375,8 @@ describe("ProviderCliManager ensure", () => {
     const { accountHome } = await makeManager({});
     const first = join(accountHome, "first");
     const second = join(accountHome, "second");
-    const firstTarget = await writeFakeCli(first, "feishu", { version: "1.0.92" });
-    await writeFakeCli(second, "feishu", { version: "1.0.91" });
+    const firstTarget = await writeFakeCli(first, "feishu", { version: "1.0.94" });
+    await writeFakeCli(second, "feishu", { version: "1.0.93" });
 
     let swaps = 0;
     const manager = new ProviderCliManager({
@@ -368,7 +389,7 @@ describe("ProviderCliManager ensure", () => {
           // Replace the winning file between detection and persistence.
           await writeFile(
             winner.path,
-            fakeCliScript("feishu", { version: "1.0.92", versionOutput: "lark-cli version 9.9.9" }),
+            fakeCliScript("feishu", { version: "1.0.94", versionOutput: "lark-cli version 9.9.9" }),
             {
               mode: 0o755,
             },
@@ -392,14 +413,14 @@ describe("ProviderCliManager ensure", () => {
   it("preserves the prior selection when a managed install fails before publication", async () => {
     const { accountHome, layout } = await makeManager({});
     const external = join(accountHome, "external");
-    await writeFakeCli(external, "feishu", { version: "1.0.90" });
+    await writeFakeCli(external, "feishu", { version: "1.0.92" });
     const externalManager = new ProviderCliManager({ accountHome, fetcher: loopbackFetcher, env: { PATH: external } });
     const selected = await externalManager.ensure("feishu", {});
     expect(selected.action).toBe("selected-existing");
     const before = await readProviderCliSelection(layout, "feishu");
 
     // Remove the external candidate and serve a broken archive.
-    await writeFile(join(external, "lark-cli"), fakeCliScript("feishu", { version: "1.0.90", surfaceExit: 9 }), {
+    await writeFile(join(external, "lark-cli"), fakeCliScript("feishu", { version: "1.0.92", surfaceExit: 9 }), {
       mode: 0o755,
     });
     const routes = new Map<string, Uint8Array | { body: Uint8Array; truncateTo: number } | null>();

@@ -29,6 +29,39 @@ import {
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
 describe("RuntimeDomainOwner", () => {
+  it.each([undefined, 1])(
+    "rejects v2 report content nonfatally on capability %s and accepts a later cap2 report",
+    async (version) => {
+      const fixture = await ownerFixture();
+      try {
+        const request = deliveryRequest();
+        const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+        await waitForDeliveryFrame(fixture.frames, request.requestId);
+        await fixture.owner.handle(acceptedResult(request), fixture.context);
+        await delivery;
+        const report = { ...turnReport(), outgoingReplies: { status: "complete" as const, replies: [] } };
+        report.resultHash = computeTurnResultHash(report);
+        const parsed = fixture.owner.businessOptions().parse(report);
+        expect(parsed).toEqual(report);
+        const context = {
+          ...fixture.context,
+          ...(version ? { negotiatedCapabilities: { [RUNTIME_CAPABILITY.turnReport]: version } } : {}),
+        };
+        await expect(fixture.owner.handle(report, context)).resolves.toMatchObject({
+          type: "turn:report:result",
+          status: "unsupported_capability",
+          resultHash: report.resultHash,
+        });
+        expect(fixture.registry.currentInstanceId(fixture.computerId)).toBe(fixture.instanceId);
+        await expect(
+          fixture.owner.handle(report, { ...context, negotiatedCapabilities: { [RUNTIME_CAPABILITY.turnReport]: 2 } }),
+        ).resolves.toMatchObject({ status: "recorded" });
+      } finally {
+        fixture.owner.close();
+      }
+    },
+  );
+
   it("rejects invalid capacity and timeout configuration", async () => {
     const registry = new ConnectionRegistry();
     const custody = new MemoryRuntimeCustodyStore();

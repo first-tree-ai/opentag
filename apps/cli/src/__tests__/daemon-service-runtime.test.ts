@@ -35,6 +35,7 @@ vi.mock("../core/daemon/ownership.js", async (importOriginal) => {
   return { ...original, acquireDaemonOwner: ownershipMocks.acquireDaemonOwner };
 });
 
+import { CLI_VERSION } from "../build-info.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
 import { runDaemonLifecycle, runDaemonService, runDaemonServiceEntry } from "../core/daemon/runtime.js";
@@ -205,7 +206,7 @@ describe("daemon service runtime", () => {
     await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
 
     expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
-    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.2" });
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: CLI_VERSION });
     expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();

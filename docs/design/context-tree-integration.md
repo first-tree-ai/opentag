@@ -74,10 +74,22 @@ There is deliberately no `inspect` subcommand. `opentag doctor` already owns dia
 the injectable-inspector seam, and two surfaces over one piece of state means every future reason
 code has to be rendered twice.
 
-The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree.json`, mode
+The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree/config.json`, mode
 `0600`, credential-free. The Server is not involved. The three target kinds mirror
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
 reinterpreting it.
+
+**Upgrade requires reconnecting.** Existing `<OPENTAG_HOME>/config/context-tree.json` files are
+ignored, so previously configured installations report unconfigured until reconnected. Run
+`opentag context-tree connect <managed-name>`, `opentag context-tree connect OWNER/REPO`, or
+`opentag context-tree connect --tree-path <path>` using the previous target. Restart the daemon
+and affected Sessions to pick up the Runtime changes, then verify the connection with
+`opentag doctor`. The old configuration and existing tree data remain on disk; there is no
+fallback or automatic migration.
+
+Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
+still applies when reading it, but direct edits bypass command-level target validation. Later
+Provider Runtime starts consume the changed target.
 
 `connect` validates without side effects: `list` for a managed name, `verify` for an exact path.
 It deliberately does not connect a throwaway project directory to test a target, because that
@@ -120,7 +132,7 @@ admission, so work placed there would run per Turn.
 The CLI replaces its connection store atomically but without a cross-process lock, so concurrent
 read-modify-write can lose unrelated records. OpenTag serializes its own invocations behind one
 in-process mutex. Concurrent starts for the same workspace join one in-flight preparation.
-Session start races that work against a 5-second budget: if preparation is still running, the
+Session start races the full pipeline, including shim preparation and configuration reads, against a 5-second budget: if preparation is still running, the
 Session receives `PREPARING` and starts without durable memory while the serialized work continues
 in the background. A completed success is cached per workspace and target. A failure is held in a
 one-minute cooldown, limiting an unreachable target to one attempt per minute per workspace while
@@ -157,11 +169,22 @@ What this costs, stated rather than left implicit:
 
 ### The CLI shim
 
-`<OPENTAG_HOME>/context-tree/bin/context-tree` is a generated `0700` shim that execs the installed
+`<OPENTAG_HOME>/context-tree/bin/context-tree` is a generated `0700` shim that execs the bundled
 CLI with the same Node.js runtime OpenTag itself uses, so a Session cannot resolve a different one
 from the user's shell configuration. That directory is prepended to the Provider `PATH` during
 Client composition, unconditionally — it is a stable OpenTag-owned path, and a directory that does
 not exist yet is inert on `PATH`.
+
+Shim preparation is shared across workspaces and cached after success for the manager's lifetime;
+restart the daemon to refresh it. Failed preparation retries after the one-minute cooldown.
+Configured package and shim failures replace the durable preparation record and use the workspace
+cooldown. Without a target they remain unavailable statuses without creating a preparation record;
+they are distinct from ordinary unconfigured state.
+
+The shim is prepared before checking Computer configuration, so an unconfigured Computer can run
+the bundled command without creating or connecting a tree. Preparation failures retain the existing
+unavailable statuses. Managed instructions identify command availability failures as runtime setup
+problems; a global install is unnecessary.
 
 The package's own `node_modules/.bin/context-tree` is not used for this: npm populates
 `<consumer>/node_modules/.bin` but pnpm's virtual store does not, so the location is not portable
@@ -171,6 +194,13 @@ resolve whatever `node` the Session's `PATH` happens to find.
 It is prepended at composition rather than through per-Session workspace environment because a
 Session-level `PATH` would replace the value the factory composes, including the discovered
 executable directory that lets `codex` and `claude` resolve at all.
+
+Visible Sessions supply their tool directory through workspace `pathPrepend`. Every Provider factory
+prepends it after composing its environment, preserving the Context Tree and executable directories.
+Internal Sessions retain Context Tree without adding visible-Session tools.
+
+Rollout requires reconnecting existing installations and restarting the daemon and affected Sessions
+as described in the upgrade instructions above.
 
 OpenTag's own invocations never rely on the shim: they exec the resolved CLI path directly, so a
 broken or shadowed shim cannot change what OpenTag executes.
@@ -216,6 +246,13 @@ This mutates user configuration, which an earlier revision of this document reje
 a managed `CODEX_HOME`. That option was dropped because it changes provider artifact identity,
 invalidating existing bindings, and forces a visible one-time `codex login` in the managed home.
 Writing one owned, reversible skill directory is the smaller intrusion.
+
+OpenTag creates the Context Tree config leaf — `<OPENTAG_HOME>/config/context-tree/` — before
+granting access, on both platforms. The grant is that leaf directory, which contains exactly one
+file, so it carries no more authority on Linux than the macOS file grant and never touches
+`<OPENTAG_HOME>/config`, where the Computer's identity and machine credential live. If directory
+creation fails, OpenTag logs the failure and starts the provider without that grant, preserving
+workspace, Slack, and tree grants.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather

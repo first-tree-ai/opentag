@@ -38,7 +38,7 @@ export function resolveContextTreeAssets(deps: ContextTreeCommandDeps = {}): Con
 }
 
 export function contextTreeConfigPath(home: string): string {
-  return join(home, "config", "context-tree.json");
+  return join(home, "config", "context-tree", "config.json");
 }
 
 export async function readContextTreeConfig(home: string): Promise<ContextTreeConfig | undefined> {

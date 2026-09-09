@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
   type SessionReconcileRequest,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentAbortRequest,
   AgentInteractionResponse,
@@ -41,12 +41,21 @@ class SessionRuntimeManager extends ProductionSessionRuntimeManager {
 }
 
 const homes: string[] = [];
-afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
+beforeEach(async () => {
+  const home = await mkdtemp(resolve(tmpdir(), "opentag-runtime-env-"));
+  homes.push(home);
+  vi.stubEnv("OPENTAG_HOME", home);
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
+});
 
 describe("SessionRuntimeManager", () => {
-  it("materializes a runtime-managed proof for internal Sessions without exposing IM credentials", async () => {
+  it.each([false, true])("starts internal Sessions with configuration directory failure=%s", async (configFailure) => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
     homes.push(home);
+    if (configFailure) await writeFile(resolve(home, "config"), "blocked");
     const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
@@ -86,7 +95,14 @@ describe("SessionRuntimeManager", () => {
       OPENTAG_HOME: home,
       OPENTAG_SESSION_PROOF_FILE: "/tmp/session-proof.json",
     });
-    expect(factory.created[0]?.workspace.writableRoots).toEqual([factory.created[0]?.workspace.cwd]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([
+      factory.created[0]?.workspace.cwd,
+      ...(configFailure ? [] : [resolve(home, "config/context-tree")]),
+    ]);
+    expect((await stat(resolve(home, "config"))).isDirectory()).toBe(!configFailure);
+    await expect(stat(resolve(home, "config/context-tree", "config.json"))).rejects.toMatchObject({
+      code: configFailure ? "ENOTDIR" : "ENOENT",
+    });
     expect(factory.created[0]?.hostedTools).toBeUndefined();
     expect(factory.created[0]?.systemPrompt).toContain("opentag-dev session send");
     expect(factory.created[0]?.systemPrompt).toContain(
@@ -138,7 +154,11 @@ describe("SessionRuntimeManager", () => {
     await expect(reconciler.reconcile(visible)).resolves.toMatchObject({ status: "ready" });
     await manager.ensureRuntime(visible.sessionId);
     expect(resolved).toEqual([visible.sessionId]);
-    expect(factory.created[0]?.workspace.writableRoots).toEqual([factory.created[0]?.workspace.cwd, slackLeaf]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([
+      factory.created[0]?.workspace.cwd,
+      slackLeaf,
+      resolve(home, "config/context-tree"),
+    ]);
     expect(factory.created[0]?.workspace.writableRoots).not.toContain(parentCredentials);
     expect(factory.created[0]?.workspace.environment).toMatchObject({
       OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
@@ -172,7 +192,10 @@ describe("SessionRuntimeManager", () => {
     ).resolves.toMatchObject({ status: "ready" });
     await internalManager.ensureRuntime(internalRequest.sessionId);
     expect(internalResolved).toEqual([]);
-    expect(internalFactory.created[0]?.workspace.writableRoots).toEqual([internalFactory.created[0]?.workspace.cwd]);
+    expect(internalFactory.created[0]?.workspace.writableRoots).toEqual([
+      internalFactory.created[0]?.workspace.cwd,
+      resolve(home, "config/context-tree"),
+    ]);
     expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("OPENTAG_PROVIDER_ENV_FILE");
 
     const feishuFactory = new FakeFactory();
@@ -193,7 +216,10 @@ describe("SessionRuntimeManager", () => {
       }).reconcile(feishuRequest),
     ).resolves.toMatchObject({ status: "ready" });
     await feishuManager.ensureRuntime(feishuRequest.sessionId);
-    expect(feishuFactory.created[0]?.workspace.writableRoots).toEqual([feishuFactory.created[0]?.workspace.cwd]);
+    expect(feishuFactory.created[0]?.workspace.writableRoots).toEqual([
+      feishuFactory.created[0]?.workspace.cwd,
+      resolve(home, "config/context-tree"),
+    ]);
 
     await manager.close();
     await internalManager.close();
@@ -210,7 +236,6 @@ describe("SessionRuntimeManager", () => {
     const manager = new SessionRuntimeManager({
       bindingStore: store,
       home,
-      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
       providers: await providerRegistry(factory),
       providerCliLaunchPath: (sessionId) => resolve(home, "plans", sessionId),
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
@@ -225,16 +250,13 @@ describe("SessionRuntimeManager", () => {
     await manager.ensureRuntime("session-1");
     const created = factory.created[0];
     if (!created) throw new Error("visible runtime was not created");
-    const path = created.workspace.environment?.PATH ?? "";
-    expect(path.startsWith(`${launchDir}${delimiter}`)).toBe(true);
-    expect(path).toContain("/tmp/ambient-slack");
-    expect(path.indexOf(launchDir)).toBeLessThan(path.indexOf("/tmp/ambient-slack"));
+    expect(created.workspace.pathPrepend).toBe(launchDir);
+    expect(created.workspace.environment).not.toHaveProperty("PATH");
 
     const internalFactory = new FakeFactory();
     const internalManager = new SessionRuntimeManager({
       bindingStore: store,
       home,
-      inheritedPath: `/tmp/ambient-slack${delimiter}/usr/bin`,
       providers: await providerRegistry(internalFactory),
       providerCliLaunchPath: () => launchDir,
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
@@ -254,53 +276,10 @@ describe("SessionRuntimeManager", () => {
     ).resolves.toMatchObject({ status: "ready" });
     await internalManager.ensureRuntime("session-internal");
     expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("PATH");
-
-    const exactFactory = new FakeFactory();
-    const exactManager = new SessionRuntimeManager({
-      bindingStore: store,
-      home,
-      inheritedPath: launchDir,
-      providers: await providerRegistry(exactFactory),
-      providerCliLaunchPath: () => launchDir,
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const exactRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-exact-path" };
-    await expect(
-      new SessionReconciler({
-        installationId: computerId,
-        preparation: exactManager,
-        localPolicy: exactManager,
-      }).reconcile(exactRequest),
-    ).resolves.toMatchObject({ status: "ready" });
-    await exactManager.ensureRuntime(exactRequest.sessionId);
-    expect(exactFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
-
-    const isolatedFactory = new FakeFactory();
-    const isolatedManager = new SessionRuntimeManager({
-      bindingStore: store,
-      home,
-      inheritedPath: "",
-      providers: await providerRegistry(isolatedFactory),
-      providerCliLaunchPath: () => launchDir,
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const isolatedRequest = { ...reconcile(computerId, snapshot(1)), sessionId: "session-isolated-path" };
-    await expect(
-      new SessionReconciler({
-        installationId: computerId,
-        preparation: isolatedManager,
-        localPolicy: isolatedManager,
-      }).reconcile(isolatedRequest),
-    ).resolves.toMatchObject({ status: "ready" });
-    await isolatedManager.ensureRuntime(isolatedRequest.sessionId);
-    expect(isolatedFactory.created[0]?.workspace.environment?.PATH).toBe(launchDir);
+    expect(internalFactory.created[0]?.workspace.pathPrepend).toBeUndefined();
 
     await manager.close();
     await internalManager.close();
-    await exactManager.close();
-    await isolatedManager.close();
   });
 
   it("prepares Context Tree once per Agent workspace and names the tree as a writable root", async () => {
@@ -335,7 +314,7 @@ describe("SessionRuntimeManager", () => {
     const cwd = await workspace.cwd(request.agentId);
     expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
     // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
-    expect(created?.workspace.writableRoots).toEqual([cwd, treePath]);
+    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree"), treePath]);
     expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
     expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
     await manager.close();
@@ -371,7 +350,7 @@ describe("SessionRuntimeManager", () => {
 
     const created = factory.created[0];
     const cwd = await workspace.cwd(request.agentId);
-    expect(created?.workspace.writableRoots).toEqual([cwd]);
+    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree")]);
     expect(created?.systemPrompt).toContain("Context Tree unavailable (DIRTY_TREE)");
     expect(created?.systemPrompt).toContain("Do not assume earlier decisions were recorded");
     await manager.close();
@@ -441,8 +420,8 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created).toHaveLength(2);
     expect(factory.created[0]?.workspace.cwd).toBe(cwd);
     expect(factory.created[1]?.workspace.cwd).toBe(cwd);
-    expect(factory.created[0]?.workspace.writableRoots).toEqual([cwd]);
-    expect(factory.created[1]?.workspace.writableRoots).toEqual([cwd]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree")]);
+    expect(factory.created[1]?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree")]);
     expect(factory.created[0]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
     expect(factory.created[1]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
     expect(factory.created[0]?.systemPrompt).toContain("source-repos/<unique-repo-key>/");
@@ -501,6 +480,11 @@ describe("SessionRuntimeManager", () => {
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
     expect(manager.sessionKind(first.sessionId)).toBe("visible");
     await manager.ensureRuntime("session-1");
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([
+      factory.created[0]?.workspace.cwd,
+      resolve(process.env.OPENTAG_HOME as string, "config/context-tree"),
+    ]);
+    expect((await stat(resolve(process.env.OPENTAG_HOME as string, "config"))).isDirectory()).toBe(true);
     await manager.ensureRuntime("session-1", new AbortController().signal);
     expect(manager.runtime("session-1")).toBe(factory.runtimes[0]);
     expect(factory.created).toHaveLength(1);

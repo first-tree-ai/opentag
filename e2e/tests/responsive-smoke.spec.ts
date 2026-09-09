@@ -85,11 +85,14 @@ test.describe("1440px desktop width", () => {
     expect(frameBox, "desktop content frame layout box").not.toBeNull();
     if (!frameBox) throw new Error("Expected the desktop content frame to have layout dimensions");
     expect(frameBox.width, "desktop content frame width").toBeLessThanOrEqual(1024);
-    const mainBox = await page.getByRole("main").boundingBox();
-    if (!mainBox) throw new Error("Expected the shared main region");
-    expect(frameBox.x + frameBox.width / 2, "content centered within its stable main region").toBeCloseTo(
-      mainBox.x + mainBox.width / 2,
-      -1,
+    const mainCenter = await page.getByRole("main").evaluate((main) => {
+      // Classic scrollbars reserve space inside the border box; overlay scrollbars do not.
+      const bounds = main.getBoundingClientRect();
+      return bounds.x + main.clientLeft + main.clientWidth / 2;
+    });
+    expect(frameBox.x + frameBox.width / 2, "content centered within the available main width").toBeCloseTo(
+      mainCenter,
+      0,
     );
 
     const [headingBox, actionBox] = await Promise.all([heading.boundingBox(), action.boundingBox()]);

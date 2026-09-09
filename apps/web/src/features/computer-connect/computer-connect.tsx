@@ -1,10 +1,13 @@
 import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type QueryClient, QueryClientContext } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { analytics } from "../../analytics/analytics.js";
 import { ANALYTICS_EVENT } from "../../analytics/events.js";
 import { reportComputerConnected } from "../../analytics/milestones.js";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
+import { fetchSharedResource } from "../../query/session-cache.js";
 import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
 import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 
@@ -197,14 +200,44 @@ export function ComputerConnect({ adapter, intent, onConnected }: ComputerConnec
   );
 }
 
-const browserAdapter: ComputerConnectAdapter = {
-  issue: (intent) =>
-    browserApi.issueComputerConnectCode(
-      intent.mode === "repair" ? { mode: "repair", targetComputerId: intent.target.computerId } : { mode: "create" },
-    ),
-  status: (connectCodeId) => browserApi.computerConnectCodeStatus(connectCodeId),
-  computers: () => browserApi.computers(),
-};
+function readComputerConnectStatus(
+  connectCodeId: string,
+  api: ComputerConnectBrowserApi,
+  queryClient?: QueryClient,
+): Promise<ComputerConnectCodeStatus> {
+  if (!queryClient) return api.computerConnectCodeStatus(connectCodeId);
+  return fetchSharedResource(queryClient, {
+    queryKey: queryKeys.computerConnectCode(connectCodeId),
+    queryFn: () => api.computerConnectCodeStatus(connectCodeId),
+    staleTime: 0,
+  });
+}
+
+function readComputerInventory(
+  api: ComputerConnectBrowserApi,
+  queryClient?: QueryClient,
+): Promise<{ readonly computers: readonly AccountComputerSummary[] }> {
+  if (!queryClient) return api.computers();
+  return fetchSharedResource(queryClient, {
+    queryKey: queryKeys.computers(),
+    queryFn: () => api.computers(),
+    staleTime: 0,
+  });
+}
+
+function createBrowserComputerConnectAdapter(
+  api: ComputerConnectBrowserApi = browserApi,
+  queryClient?: QueryClient,
+): ComputerConnectAdapter {
+  return {
+    issue: (intent) =>
+      api.issueComputerConnectCode(
+        intent.mode === "repair" ? { mode: "repair", targetComputerId: intent.target.computerId } : { mode: "create" },
+      ),
+    status: (connectCodeId) => readComputerConnectStatus(connectCodeId, api, queryClient),
+    computers: () => readComputerInventory(api, queryClient),
+  };
+}
 
 type ComputerConnectBrowserApi = Pick<
   typeof browserApi,
@@ -222,6 +255,7 @@ type ComputerConnectBrowserApi = Pick<
 export function createAgentTargetedComputerConnectAdapter(
   agentId: string,
   api: ComputerConnectBrowserApi = browserApi,
+  queryClient?: QueryClient,
 ): ComputerConnectAdapter {
   return {
     issue: (intent) =>
@@ -234,8 +268,8 @@ export function createAgentTargetedComputerConnectAdapter(
             }
           : { mode: "create", targetAgentId: agentId },
       ),
-    status: (connectCodeId) => api.computerConnectCodeStatus(connectCodeId),
-    computers: () => api.computers(),
+    status: (connectCodeId) => readComputerConnectStatus(connectCodeId, api, queryClient),
+    computers: () => readComputerInventory(api, queryClient),
   };
 }
 
@@ -244,16 +278,27 @@ export function createAgentTargetedComputerConnectAdapter(
  * The adapter is intentionally the only varying dependency: production and Review Lab both drive
  * the same state machine, including stale-work retirement and exact repair-target validation.
  */
+function useOptionalQueryClient(): QueryClient | undefined {
+  return useContext(QueryClientContext);
+}
+
 export function ComputerConnectLifecycleRoot({
-  adapter = browserAdapter,
+  adapter,
   children,
   intent,
   onConnected,
 }: ComputerConnectLifecycleProps) {
+  const queryClient = useOptionalQueryClient();
+  const defaultAdapter = useMemo(() => createBrowserComputerConnectAdapter(browserApi, queryClient), [queryClient]);
   const targetComputerId = intent.mode === "repair" ? intent.target.computerId : undefined;
   const attemptKey = `${intent.mode}:${targetComputerId ?? ""}`;
   return (
-    <ComputerConnectAttempt adapter={adapter} key={attemptKey} intent={intent} onConnected={onConnected}>
+    <ComputerConnectAttempt
+      adapter={adapter ?? defaultAdapter}
+      key={attemptKey}
+      intent={intent}
+      onConnected={onConnected}
+    >
       {children}
     </ComputerConnectAttempt>
   );

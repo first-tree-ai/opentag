@@ -68,6 +68,7 @@
   "common_try_again": "Try again",
   "common_unknown": "Unknown",
   "common_update": "Update",
+  "common_update_failed_last_available": "Update failed. Showing last available data.",
   "common_view": "View",
   "common_yes": "Yes"
 }

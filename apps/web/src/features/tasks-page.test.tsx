@@ -699,7 +699,7 @@ describe("Tasks view", () => {
     vi.mocked(browserApi.tasks)
       .mockResolvedValueOnce({ tasks: [task], nextCursor: "retry" })
       .mockRejectedValueOnce(new Error("Agent append failed"));
-    view.rerender(<AgentTasksSection agentId={agentId} />);
+    view.rerender(<AgentTasksSection agentId="55555555-5555-4555-8555-555555555555" />);
     expect(await screen.findByRole("link", { name: task.title })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText("Could not load more Tasks.")).toBeTruthy();

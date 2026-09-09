@@ -1,9 +1,10 @@
-import type { AgentAdminConfig, ListAgentsResponse } from "@opentag/shared/browser";
+import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
+import { evictAgentFromLists } from "../../../query/agent-sync.js";
 import { queryKeys } from "../../../query/keys.js";
 import {
   Banner,
@@ -81,10 +82,9 @@ export function AgentManageSettings({
       // stale data after a transient list failure.
       await queryClient.cancelQueries({ queryKey: queryKeys.agents.listRoot() });
       await queryClient.cancelQueries({ queryKey: queryKeys.agents.all(config.id) });
-      queryClient.setQueriesData<ListAgentsResponse>({ queryKey: queryKeys.agents.listRoot() }, (current) =>
-        current ? { ...current, agents: current.agents.filter((item) => item.id !== config.id) } : current,
-      );
+      evictAgentFromLists(queryClient, config.id);
       queryClient.removeQueries({ queryKey: queryKeys.agents.all(config.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.computers() });
       void navigate({ to: "/agents" });
     } catch {
       setConfirmationError(m.agent_settings_delete_failed());

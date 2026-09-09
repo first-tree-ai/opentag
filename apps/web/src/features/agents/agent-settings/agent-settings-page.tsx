@@ -2,10 +2,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
+import { syncAgentQueries } from "../../../query/agent-sync.js";
 import { queryKeys } from "../../../query/keys.js";
 import { Icon, Loader, Text } from "../../../ui/design-system.js";
 import { NotFoundPage } from "../../not-found.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
+import { useAccount } from "../../session/session-context.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { useAgentDetailView } from "../agent-queries.js";
 import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink } from "../agent-routes.js";
@@ -19,12 +21,13 @@ import { agentSettingsGroups, agentSettingsSections, agentSettingsSummary } from
 import { AgentSettingsPageHeader } from "./settings-layout.js";
 
 export function AgentSettingsPage({ agentId, section }: { agentId: string; section?: string }) {
+  const { me } = useAccount();
   const routeState = useRouterState({ select: (state) => state.location.state });
   const initialAgent = routeState.agent?.id === agentId ? routeState.agent : undefined;
   const queryClient = useQueryClient();
   // Failure exits land here, so the page has to observe recovery on its own; it is where an
   // operator waits while a Computer reconnects or a Provider finishes installing.
-  const state = useAgentDetailView(agentId, { watched: true, initialAgent });
+  const state = useAgentDetailView(agentId, { watched: true, initialAgent, accountId: me.user.id });
   const selected = section as AgentSettingsSection | undefined;
   if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;
   return (
@@ -49,7 +52,7 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
                   agent={agent}
                   section={selected}
                   // A write can change the Agent and its config together, so both are dropped.
-                  onAgentChanged={() => void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all(agentId) })}
+                  onAgentChanged={() => void syncAgentQueries(queryClient, agentId)}
                 />
               </div>
             </div>

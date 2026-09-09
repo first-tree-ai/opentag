@@ -21,7 +21,11 @@ import type {
   StartSlackOAuthResponse,
   UnbindAgentMessagingRequest,
 } from "@opentag/shared/browser";
+import type { QueryClient } from "@tanstack/react-query";
 import { browserApi } from "../api.js";
+import { syncAgentQueries } from "../query/agent-sync.js";
+import { queryKeys } from "../query/keys.js";
+import { fetchSharedResource } from "../query/session-cache.js";
 
 export interface AgentSetupAdapter {
   /** The canonical setup state of one exact Agent — the only read this surface makes. */
@@ -64,9 +68,19 @@ interface AgentSetupBrowserApi {
 }
 
 /** The production adapter: every call is the matching BrowserApi request, nothing more. */
-export function createHttpSetupAdapter(api: AgentSetupBrowserApi = browserApi): AgentSetupAdapter {
+export function createHttpSetupAdapter(
+  api: AgentSetupBrowserApi = browserApi,
+  queryClient?: QueryClient,
+): AgentSetupAdapter {
   return {
-    readSnapshot: (agentId) => api.agentSetup(agentId),
+    readSnapshot: (agentId) =>
+      queryClient
+        ? fetchSharedResource(queryClient, {
+            queryKey: queryKeys.agentSetup(agentId),
+            queryFn: () => api.agentSetup(agentId),
+            staleTime: 0,
+          })
+        : api.agentSetup(agentId),
     refreshPreparation: (agentId) => api.refreshAgentSetup(agentId),
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       await api.createFeishuSetupAttempt(agentId, intent, expectedMessaging);
@@ -84,6 +98,7 @@ export function createHttpSetupAdapter(api: AgentSetupBrowserApi = browserApi): 
     },
     unbindMessaging: async (agentId, provider, bindingId) => {
       await api.unbindAgentMessaging(agentId, { provider, bindingId });
+      if (queryClient) void syncAgentQueries(queryClient, agentId);
     },
   };
 }

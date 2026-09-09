@@ -20,9 +20,10 @@ import type {
   ImProvider,
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAgentSetupStageReport } from "../analytics/milestones.js";
-import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, CancelledRequestError, withDeadline } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
@@ -35,6 +36,7 @@ import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
+import { syncAgentQueries } from "../query/agent-sync.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
@@ -647,7 +649,11 @@ export function AgentSetupPage({
   reviewMode = false,
   slackOAuthError,
 }: AgentSetupPageProps) {
-  const resolvedAdapter = useMemo(() => adapter ?? createHttpSetupAdapter(), [adapter]);
+  const queryClient = useQueryClient();
+  const resolvedAdapter = useMemo(
+    () => adapter ?? createHttpSetupAdapter(browserApi, queryClient),
+    [adapter, queryClient],
+  );
   // Keyed on the exact target: a different Agent's setup is a different task, and remounting is
   // what retires everything the previous one still had in flight.
   return (
@@ -1080,8 +1086,20 @@ function ComputerSetupSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { computer } = snapshot;
-  const serverComputerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
+  const queryClient = useQueryClient();
+  const serverComputerConnectAdapter = useMemo(
+    () => createAgentTargetedComputerConnectAdapter(agentId, browserApi, queryClient),
+    [agentId, queryClient],
+  );
   const computerConnectAdapter = computerAdapter?.connect ?? serverComputerConnectAdapter;
+  const afterBind = () => {
+    if (!computerAdapter) void syncAgentQueries(queryClient, agentId);
+    onChanged();
+  };
+  const afterRepair = () => {
+    if (!computerAdapter) void syncAgentQueries(queryClient, agentId, { computers: true });
+    onChanged();
+  };
   if (computer.kind === "not-bound") {
     return (
       <NotBoundComputerSection
@@ -1089,7 +1107,7 @@ function ComputerSetupSection({
         computerConnectAdapter={computerConnectAdapter}
         inventoryAdapter={computerAdapter?.inventory}
         name={snapshot.agent.displayName}
-        onChanged={onChanged}
+        onChanged={afterBind}
         snapshot={snapshot}
       />
     );
@@ -1117,7 +1135,7 @@ function ComputerSetupSection({
               adapter={computerConnectAdapter}
               agentId={agentId}
               inventoryAdapter={computerAdapter?.inventory}
-              onBound={onChanged}
+              onBound={afterBind}
             />
           ) : null}
         </div>
@@ -1144,7 +1162,7 @@ function ComputerSetupSection({
     <BoundComputerSection
       computer={computer}
       computerConnectAdapter={computerConnectAdapter}
-      onChanged={onChanged}
+      onChanged={afterRepair}
       snapshot={snapshot}
     />
   );

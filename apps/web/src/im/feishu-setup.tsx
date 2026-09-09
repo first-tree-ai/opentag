@@ -1,20 +1,21 @@
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { formatDateTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
+import { queryKeys } from "../query/keys.js";
+import { fetchSharedResource } from "../query/session-cache.js";
 import { Banner, Button, buttonClassName, Dialog, Loader } from "../ui/design-system.js";
 import { messagingProviderLabel } from "./provider-label.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
 /*
- * This stays outside the query cache on purpose, for the same reason the Computer setup beside it
- * does: it drives one authorization to completion rather than reading a resource. Nothing else reads
- * an attempt, so there is no sharing to gain, and the lifecycle it does keep — which error came from
- * starting versus from polling, and which attempt a late response belongs to — is the substance of
- * the flow rather than incidental bookkeeping.
+ * The 1.5s cadence, cancellation and generation fencing stay local. Only the GET is shared by
+ * attempt id so two surfaces watching the same attempt do not double the in-flight read. Setup still
+ * observes the attempt through its snapshot and does not add this GET.
  */
 const POLL_INTERVAL_MS = 1_500;
 export interface FeishuSetupControl {
@@ -70,6 +71,7 @@ function FeishuSetupLifecycle({
   presentation = "inline",
   returnFocusRef,
 }: FeishuSetupProps) {
+  const queryClient = useQueryClient();
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<FeishuSetupError>();
   const [loading, setLoading] = useState(false);
@@ -171,7 +173,11 @@ function FeishuSetupLifecycle({
 
     const poll = async () => {
       try {
-        const next = await browserApi.feishuSetupAttempt(activeAttemptId);
+        const next = await fetchSharedResource(queryClient, {
+          queryKey: queryKeys.feishuSetupAttempt(activeAttemptId),
+          queryFn: () => browserApi.feishuSetupAttempt(activeAttemptId),
+          staleTime: 0,
+        });
         if (!active || lifecycleRef.current !== lifecycle) return;
         attemptRef.current = next;
         setAttempt(next);
@@ -208,7 +214,7 @@ function FeishuSetupLifecycle({
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [activeAttemptId, presentation]);
+  }, [activeAttemptId, presentation, queryClient]);
 
   async function cancelActiveAttempt() {
     const current = attemptRef.current;

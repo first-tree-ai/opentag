@@ -1,7 +1,9 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
 import { ComputerConnect, type ComputerConnectAdapter } from "../computer-connect/computer-connect.js";
 import { platformLabel } from "./agent-presentation.js";
@@ -22,7 +24,7 @@ interface MemoryInventoryState {
 }
 
 function useComputerInventory(inventoryAdapter: AgentComputerInventoryAdapter | undefined) {
-  const computersQuery = useComputersQuery(false, inventoryAdapter === undefined);
+  const computersQuery = useComputersQuery(false, inventoryAdapter === undefined, { refetchOnMount: "always" });
   const [memoryInventory, setMemoryInventory] = useState<MemoryInventoryState>({
     computers: undefined,
     error: false,
@@ -98,6 +100,7 @@ export function AgentComputerChoice({
    */
   onBound: () => void;
 }) {
+  const queryClient = useQueryClient();
   const inventory = useComputerInventory(inventoryAdapter);
   const [binding, setBinding] = useState(false);
   const [error, setError] = useState<string>();
@@ -141,6 +144,9 @@ export function AgentComputerChoice({
          * and asking the surface around this to re-read reports that rather than asserting a choice
          * from an inventory that has since changed.
          */
+        if (!inventoryAdapter) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.computers() });
+        }
         onBound();
       } catch (cause) {
         if (generation.current !== mine) return;
@@ -149,7 +155,7 @@ export function AgentComputerChoice({
         if (generation.current === mine) setBinding(false);
       }
     },
-    [agentId, inventoryAdapter, onBound],
+    [agentId, inventoryAdapter, onBound, queryClient],
   );
 
   // A different Agent answers for itself: the previous one's target and failure are not its result,

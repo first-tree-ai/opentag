@@ -25,6 +25,11 @@ vi.mock("@opentag/client", async (importOriginal) => {
   };
 });
 
+vi.mock("../build-info.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../build-info.js")>();
+  return { ...original, CLI_VERSION: "0.0.2" };
+});
+
 import { runDaemonService, runDaemonServiceEntry } from "../core/daemon/runtime.js";
 
 const directories: string[] = [];

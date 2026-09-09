@@ -3,6 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DaemonServiceReconcileResult } from "../core/daemon/reconcile-service.js";
+
+vi.mock("../build-info.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../build-info.js")>();
+  return { ...original, CLI_VERSION: "0.0.2" };
+});
+
 import { runUpgrade } from "../core/update/manual-upgrade.js";
 import { readUpdaterState, writeUpdaterState } from "../core/update/updater-state.js";
 

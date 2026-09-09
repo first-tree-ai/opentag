@@ -5,11 +5,7 @@ import openAIBlossomWhite from "../assets/openai-blossom-white.svg";
 import slackMark from "../assets/slack.svg";
 
 /**
- * The marks shown beside a runtime or a messaging app. Each is the vendor's own published file,
- * carried in `assets/` with a comment recording where and when it came from. None is redrawn: an
- * imitation of a trademark is both inaccurate and the worse licensing position. Ownership and the
- * conditions each publisher sets are recorded in TRADEMARKS.md at the repository root. Anything we
- * have no redistribution grant for is not carried here at all.
+ * Vendor marks shown beside a runtime or messaging app.
  */
 export type BrandId = "opentag" | "feishu" | "slack" | "claude-code" | "codex";
 

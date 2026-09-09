@@ -1,140 +1,117 @@
 # OpenTag 开发指南
 
-> Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-09-09
+> 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
+> 同步日期：2026-09-09
 
 ## 从源码在本地运行
 
-请在已克隆仓库的根目录运行以下命令。本流程使用仅限回环地址的开发者登录；更多配置见下方章节。
+请准备 macOS 或 Linux、Node.js（使用 [.node-version](./.node-version) 中的版本）、pnpm 10.12.1、
+支持 Compose 的 Docker，以及已登录的 Codex 或 Claude Code CLI。保持 Docker 运行，
+并在已克隆仓库的根目录执行以下命令。
 
 ### 1. 安装 OpenTag
 
-在 macOS 或 Linux 上准备 Node.js 24（24.15.0 或更高的 24.x 版本）、pnpm 10.12.1、支持 Compose 的 Docker，以及已登录的 Codex 或 Claude Code CLI。
-
 ```bash
 ./scripts/dev-install.sh
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
 ```
 
-### 2. 启动本地 Server
+此命令会安装依赖、构建应用，并将开发版 CLI 安装到 `~/.local/bin/opentag-dev`。
 
-等待 PostgreSQL 就绪、生成密钥、启用仅限回环地址的开发者登录，并在启动前台 Server 之前初始化账号：
+### 2. 保存本地配置
+
+首次安装时运行一次以下命令，将配置和生成的密钥保存到 Git 忽略的 `.env.local` 中。
+请保留此文件供以后重启使用；如果已有本地配置，请继续使用原有配置。
 
 ```bash
-docker compose up -d --wait postgres
-export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@127.0.0.1:5432/opentag
-export OPENTAG_JWT_SECRET=$(openssl rand -base64 32)
-export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
-export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export OPENTAG_ENV=dev
-export OPENTAG_HOST=127.0.0.1
-export OPENTAG_PORT=8000
-export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
-export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
-export OPENTAG_DEV_AUTH_EMAIL="$OPENTAG_BOOTSTRAP_EMAIL"
+(umask 077; cat > .env.local <<EOF
+OPENTAG_DATABASE_URL=postgresql://opentag:opentag@127.0.0.1:5432/opentag
+OPENTAG_JWT_SECRET=$(openssl rand -base64 32)
+BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+OPENTAG_ENV=dev
+OPENTAG_HOST=127.0.0.1
+OPENTAG_PORT=8000
+OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
+OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
+OPENTAG_DEV_AUTH_EMAIL=admin@example.com
+EOF
+)
+```
 
+### 3. 启动服务器
+
+加载配置、启动 PostgreSQL，并创建本地账号：
+
+```bash
+set -a
+source .env.local
+set +a
+docker compose up -d --wait postgres
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter @opentag/server start
 ```
 
-### 3. 连接你的 Agent
+保持此终端运行。创建账号只需执行一次；以后启动请按照[停止与重启](#停止与重启)操作。
 
-打开 <http://127.0.0.1:8000>，选择**开发者登录**，按照 **Agents** 设置流程创建 Agent，在第二个终端中先设置下面的 PATH 再运行页面生成的连接命令，最后连接聊天平台。
+### 4. 连接 Agent
+
+打开 <http://127.0.0.1:8000>，选择**开发者登录**。进入 **Agents**，按照设置步骤选择 Codex 或
+Claude Code，然后在第二个终端中运行页面生成的连接命令。
+
+按照聊天设置流程连接 Slack 或飞书，然后给 Agent 发消息。
+Slack 的额外设置步骤见[配置指南](./docs/zh-CN/slack-app-setup.md)。
+
+## 停止与重启
+
+在服务器终端中按 Ctrl+C 停止服务器。再次启动时，在仓库根目录运行：
 
 ```bash
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-# 粘贴并运行 Agents 设置流程生成的连接命令。
+set -a
+source .env.local
+set +a
+docker compose up -d --wait postgres
+pnpm --filter @opentag/server start
 ```
 
-可以选择 Codex 或 Claude Code，搭配飞书 / Lark 或 Slack；按照产品内的聊天设置流程操作，Slack 还需要[额外配置](./docs/zh-CN/slack-app-setup.md)。
+每次打开新的服务器终端都需要加载配置。使用现有数据库时，请继续使用已保存的密钥。
+服务器启动时会自动执行数据库迁移。
 
-## 架构
+Agent 作为独立的后台服务运行。使用以下命令停止或启动它：
 
-```text
-        Slack  ·  飞书 / Lark                浏览器（同源 Web）
-                     │                              │
-                     └──────────────┬───────────────┘
-                                    ▼
-                     ┌──────────────────────────────┐      ┌───────────────┐
-                     │   OpenTag Server (Fastify)   │─────>│  PostgreSQL   │
-                     │   REST · Better Auth · WS    │<─────│               │
-                     └──────────────┬───────────────┘      └───────────────┘
-                                    │  Runtime 协议走 WebSocket
-                                    ▼
-                     ┌──────────────────────────────┐
-                     │   OpenTag daemon             │  你的笔记本或云主机
-                     │   （当前用户的 service）      │  紧挨着你的代码
-                     └──────────────┬───────────────┘
-                                    │  spawn
-                     ┌──────────────┴───────────────┐
-                     │   codex  ·  claude           │  你的 CLI、你的订阅
-                     └──────────────────────────────┘
+```bash
+~/.local/bin/opentag-dev daemon stop
+~/.local/bin/opentag-dev daemon start
 ```
 
-| 层 | 技术栈 |
+运行 `docker compose stop postgres` 可停止 PostgreSQL，数据会保留在 Docker 数据卷中。
+
+## 修改代码
+
+修改代码后，停止服务器，重新构建，并在已加载配置的终端中启动：
+
+```bash
+pnpm build
+pnpm --filter @opentag/server start
+```
+
+修改 CLI 或 Agent 运行时代码后，还需运行 `~/.local/bin/opentag-dev daemon restart`。
+依赖发生变化后，请先运行 `pnpm install` 再构建。
+
+| 目录 | 内容 |
 | --- | --- |
-| Server | Fastify、Better Auth、PostgreSQL migration、Computer WebSocket endpoint |
-| Web | React，由 Server 同源提供 |
-| CLI | Commander；源码 checkout 下为 `opentag-dev`，生产渠道为 `opentag` |
-| Client / daemon | 负责连接 Computer 与执行 Agent Turn 的 TypeScript 运行时 |
-| Shared | 各 workspace 共用的 Zod schema 与 HTTP path 契约 |
+| `apps/web` | Web 界面 |
+| `apps/cli` | 命令行界面 |
+| `packages/server` | API、身份认证和数据库 |
+| `packages/client` | 服务器客户端和本地 Agent 运行时 |
+| `packages/shared` | 共用 schema 和类型 |
 
-协议细节：[Runtime 协议](./docs/zh-CN/runtime-protocol.md)。
+界面翻译请参阅 [Web 国际化](./docs/zh-CN/i18n.md)。
 
-## 前置要求
+## 检查
 
-- Node.js 24.19.0（仓库固定的开发版本；支持范围为 Node.js 22.x（最低 22.22.2）、Node.js 24.x（最低 24.15）或 Node.js 26.x，
-  主力版本为 Node.js 24）
-- Corepack 和 pnpm 10.12.1
-- Docker 及 Compose 支持（仅运行本地 PostgreSQL 服务时需要）
-
-## 初始化
-
-```bash
-corepack enable
-pnpm install
-```
-
-仓库已在 `package.json` 中固定 pnpm 版本，并在 `.node-version` 中固定开发用 Node.js 补丁版本。
-`.npmrc` 设置了 `engine-strict=true`，因此不支持的 Node.js 版本会使依赖安装失败，而不是只显示 engine 警告。
-请勿使用 npm 或 Yarn 更新依赖。
-
-## 本地开发流程
-
-README 介绍托管服务。请按照上方的本地运行流程从源码启动；下方章节介绍开发检查、各项设置步骤和高级配置。
-
-## Git hooks 与 worktree
-
-`pnpm install` 会执行根目录的 `prepare` 脚本，将三个 hook 安装到该 clone 的 hooks 目录：
-
-- `pre-commit` 对暂存文件运行 Biome，应用可安全自动修复的改动并重新暂存结果。
-- `pre-push` 对整个仓库运行 `pnpm exec biome lint .`、`pnpm exec biome format .`、`pnpm check` 和
-  `pnpm typecheck`。这些只读 job 会并行运行。
-- `post-checkout` 负责准备 `git worktree add` 刚创建的 worktree：在新 worktree 中执行 `pnpm install` 并重新安装
-  hooks，使该 worktree 可以直接 commit 和 push。
-
-Git 的 hooks 目录由 clone 及其全部 linked worktree 共享，因此安装一次即可覆盖所有 worktree。`scripts/git-hooks/` 中的
-`post-checkout` 由 `scripts/install-git-hooks.mjs` 安装，而不是交给 lefthook，因为它必须在新 worktree 还没有
-`node_modules` 时就能运行。如果 worktree 由绕过 Git hooks 的工具创建，可手动准备：
-
-```bash
-pnpm worktree:setup
-```
-
-共享配置位于 `lefthook.yml`；个人覆盖配置应放在未纳入版本控制的 `lefthook-local.yml`。在不需要时，这些 hook 可以让开：
-
-| 变量 | 作用 |
-| --- | --- |
-| `LEFTHOOK=0` | 跳过本次命令的 lefthook 检查 |
-| `OPENTAG_SKIP_WORKTREE_BOOTSTRAP=1` | 跳过 worktree 引导 |
-| `OPENTAG_SKIP_GIT_HOOKS=1` | 跳过 `pnpm install` 期间的 hook 安装 |
-| `OPENTAG_HOOKS_LOG_LEVEL=debug` | 打印 hook 脚本的全部判断过程 |
-
-设置 `CI` 变量同样会禁用引导与安装，因此自动化 checkout 不会安装本地 hooks。
-
-## 验证
+提交 pull request 前运行：
 
 ```bash
 pnpm check
@@ -145,422 +122,36 @@ pnpm --filter @opentag/client test:agent-runtime:coverage
 pnpm --filter @opentag/server test:integration
 ```
 
-仅检查 lint 可运行 `pnpm lint`；应用 Biome 格式化可运行 `pnpm format`。
+服务器集成测试需要 Docker。修改覆盖率配置或排查覆盖率缺口时，运行 `pnpm test:coverage`。
+浏览器测试见 [E2E 指南](./e2e/README.md)。
 
-共享 Agent Home 回归测试包含在 Client 离线测试中。构建后可单独运行：
+## Git hooks 与 worktree
 
-```bash
-pnpm --filter @opentag/client exec vitest run src/__tests__/agent-home-context.integration.test.ts --maxWorkers=1
-```
+`pnpm install` 会安装 Git hook，在提交前格式化并检查暂存文件，在推送前检查仓库。
+新建 Git worktree 时会自动安装依赖。如果 worktree 尚未初始化，请在其中运行 `pnpm worktree:setup`。
+分支和 pull request 约定见[贡献指南](./CONTRIBUTING.zh-CN.md)。
 
-测试在临时账户中使用真实本地 Git worktree 和配套 Context Tree CLI，验证共享 Home 持久性、代码修改互不混入，
-以及从任务目录显式指定 Home 后串行进行双向记忆读写。无需 Provider 凭据或网络；不证明模型遵守提示词或 sandbox 隔离。
+## 排查问题
 
-独立的 `Unit Coverage` workflow 会在每周一 03:17 UTC 针对 `main` 运行 `pnpm test:coverage`，也支持手动触发。
-该命令会先构建 workspace，再统计 CLI、Web、Shared、Client 和 Server 的离线单测覆盖率，并将统一报告保留
-14 天。修改根 coverage 配置或调查覆盖率缺口时，应在本地运行该命令。统计会纳入未被测试 import 的生产源码，
-但排除根目录 `scripts/`、Server PostgreSQL integration tests 和 Provider E2E。该统计是用于定位缺口和安排
-优先级的测量基线，不属于 Pull Request 必过检查，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
-统计结果稳定后，才应增加回退阈值。
+- **本地登录失败：** 确认服务器已加载 `.env.local`，且已创建初始账号。
+  开发者登录要求 `OPENTAG_ENV=dev`，主机地址和公开 URL 均为回环地址。
+- **提示“Bootstrap has already been completed”：** 数据库已有账号，请使用上方的重启命令。
+- **Agent 无法连接：** 运行 `~/.local/bin/opentag-dev doctor` 和 `~/.local/bin/opentag-dev daemon status`。
+- **查看后台服务日志：** Linux 上运行 `journalctl --user -u opentag-dev.service`；macOS 上查看 `~/.opentag-dev/logs`。
 
-## Web 国际化
+本地 Agent 配置和文件默认保存在 `~/.opentag-dev` 中。请备份此目录以保留本地工作和会话状态；
+服务器无法恢复这些文件。
 
-Web 消息位于 `apps/web/messages/<area>/{en,zh}.json`，Key 采用 `<area>_<surface>_<slot>`。在产出最终可见字符串的
-area 中，同时添加英文消息和手工编写的简体中文消息。两种语言的 key 集合、占位符和排序必须一致。句子使用
-Paraglide；日期和数字等 locale-aware 格式使用 `src/i18n/format.ts`。添加或修改消息后运行
-`pnpm --filter @opentag/web paraglide`；`typecheck`、`test` 和 Vite 构建也会通过 Turbo 依赖执行代码生成。如果生成
-产物看起来陈旧，删除 `apps/web/src/paraglide/` 后重新运行命令。绝不运行 `inlang machine translate` 或 Sherlock
-extract：数组 path pattern 会把合并后的完整目录重复写入每个 area 文件。
+## 配置与参考资料
 
-`pnpm test:coverage` 会逐个测量 Vitest project，再把各 workspace 的 summary 拼到
-`coverage/unit/coverage-summary.json`，把 detailed Istanbul map 拼到 `coverage/unit/coverage-final.json`。一次合并
-的 Vitest 运行会低估覆盖率，因此这两份聚合不能交给 coverage provider 去做 merge。Pull Request 会另跑
-`Patch Coverage`：它读取这份 detailed map，并在本次新增或改动的可执行 TypeScript 行命中率低于 80% 时失败。
+更多配置见 [.env.example](./.env.example)。将需要的配置添加到 `.env.local`，重新加载后再重启服务器。
 
-Pull Request 必过 CI 仍会运行全部离线单测。Agent Runtime 继续使用
-`packages/client/vitest.agent-runtime.config.ts` 中独立的 100% 门槛，并由
-`pnpm --filter @opentag/client test:agent-runtime:coverage` 执行。
+如需在本地使用 Google 登录，请创建 Google Web OAuth 客户端，将回调 URL 设为
+`http://127.0.0.1:8000/api/v1/auth/callback/google`，并在本地配置中设置 `OPENTAG_GOOGLE_CLIENT_ID`
+和 `OPENTAG_GOOGLE_CLIENT_SECRET`。
 
-Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述必需命令、source/staging CLI tarball 安装、生产容器
-健康检查和受支持的 Node.js 版本。完整验证与发布使用 Node.js 24；兼容 job 会在精确下限 Node.js 22.22.2 和
-最新 Node.js 26 上运行 `pnpm check:node-compat`，完成构建、测试和 CLI tarball 安装。Node.js 23 与 25 已 EOL，
-不在支持范围内。构建后可在本地验证当前 source tarball：
-
-~~~bash
-node scripts/cli-pack-smoke.mjs \
-  --channel source \
-  --name open-tag \
-  --version 0.0.1 \
-  --binary opentag-dev
-~~~
-
-## 运行 Server 与健康检查链路
-
-先启动 PostgreSQL，配置必需的数据库地址与各项 secret，再构建并启动 Server。Server 会在开始监听前执行
-migration。
-
-```bash
-docker compose up -d postgres
-export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
-export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
-export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
-export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-pnpm build
-pnpm --filter @opentag/server start
-```
-
-Server 默认监听 `http://127.0.0.1:8000`。在另一个终端中运行：
-
-```bash
-pnpm --filter open-tag start doctor
-```
-
-可以通过 `--server-url` 或 `OPENTAG_SERVER_URL` 指定其他 Server URL：
-
-```bash
-pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
-```
-
-## 本地 PostgreSQL
-
-本地 PostgreSQL 服务用于 migration 和认证开发：
-
-```bash
-docker compose up -d postgres
-pnpm --filter @opentag/server db:migrate
-docker compose down
-```
-
-服务暴露 `5432` 端口，并使用 `opentag-postgres-data` 命名 volume 保存数据。
-生产 Server 镜像不会内置或启动 PostgreSQL。部署时通过 `OPENTAG_DATABASE_URL` 指向独立管理的 PostgreSQL
-实例；上面的 Compose 服务仅用于本地开发。
-
-初始化空安装时，设置必需的 bootstrap 字段并运行一次性 bootstrap 命令。该命令会先迁移空数据库，再创建首个
-Account 与 Account 登录 code。
-
-```bash
-export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
-export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-pnpm --filter @opentag/server bootstrap:admin
-./scripts/dev-install.sh
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
-```
-
-源码 checkout 属于 `dev` channel。`scripts/dev-install.sh` 会构建完整 workspace，将 channel config 指定的 dev
-binary 链接到 `~/.local/bin/opentag-dev`，执行验证，并在已有 machine credential 时修复 daemon service。首次安装
-没有 machine credential，因此 service 安装会明确延后到 `computer connect`；installer 不消费 connect code，
-职责与发布 installer 保持一致。
-同时应把 `~/.local/bin` 放在 `PATH` 最前，避免 service reconciliation 选中旧的 `opentag-dev` shim。dev
-channel 默认使用 `~/.opentag-dev`；staging 与
-production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `opentag` / `~/.opentag`。显式设置
-`OPENTAG_HOME` 会覆盖 channel 默认值。
-
-Account 登录只保存管理凭据。先从 Web 的 Agents 区域生成 Computer 连接命令，再在执行主机运行；
-`computer connect` 会保存 Computer 范围的 machine credential，并在 Linux/macOS 上安装或重启用户服务。
-可在另一个终端检查服务：
-
-```bash
-opentag-dev computer connect --server http://127.0.0.1:8000 -- <computer-connect-code>
-opentag-dev daemon status
-opentag-dev computer list
-```
-
-daemon 会复用 `${OPENTAG_HOME}/config/computer.json` 中的稳定 physical Computer ID，从
-`${OPENTAG_HOME}/config/computer-credentials.json` 加载唯一的 Computer credential，每次服务启动
-创建新的进程 instance，并为该 Computer 建立一条 Runtime 连接。OpenTag Home 按生命周期组织：
-
-```text
-${OPENTAG_HOME}/
-├── config/
-│   ├── credentials.json
-│   ├── computer-credentials.json
-│   ├── computer.json
-│   └── daemon.env
-├── data/
-│   ├── runtime/
-│   │   ├── workspace-states/<agent-key>.json
-│   │   ├── session-bindings/<agent-key>/<session-key>.json
-│   │   └── effective-snapshots/<agent-key>/<snapshot-key>.json
-│   └── workspaces/<agent-key>/  # 新 Agent 的 cwd 与可写根目录
-├── state/
-│   ├── daemon/owner.json
-│   └── service/
-│       ├── operation.json
-│       ├── target-operation.json  # 仅默认 channel Home
-│       └── <serviceId>
-└── logs/
-```
-
-目录权限为私有 `0700`；credentials、identity、runtime recovery record 与 lease 文件均为私有普通文件
-（`0600`）。各目录和文件只在对应 owner 需要时创建。Account `login` 只创建
-`config/credentials.json`；`computer connect --no-start` 保存 `config/computer-credentials.json` 但不安装 daemon；
-runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
-
-OpenTag 不会在 Agent work area 内维护控制文件。Platform 与 Agent instructions 通过所选 Provider 的原生系统
-提示词接口注入。新 work area 直接以根目录作为 Provider cwd。该 cwd 即 Agent Home：同一 Computer 上该 Agent 的各
-Session 共享一个持久目录。托管 prompt 约定由 Agent 自行管理 `source-repos/<unique-repo-key>/` 裸克隆（仓库身份来自
-用户或任务，而非平台绑定）、用 `worktrees/<unique-task-key>/` 做源码访问与代码工作（并发代码任务各自使用独立
-checkout）、以及仅在需要时创建的 `files/<unique-task-key>/` 非仓库产物。OpenTag 不声明仓库、不自动创建这些目录、
-也不做回收。Context Tree 仍是另行配置的共享树；从任务子目录运行 Context Tree 项目命令时传入该 Home 的
-`--project-path`，不要因为任务 cwd 变化而新建或重连一棵树。
-
-既有 schema v1/v2 本地 Workspace layout 会执行一次兼容
-过渡：继续以 `files/` 为 cwd，而不搬动用户文件；只删除可由旧 state 证明 provenance 的 OpenTag legacy
-instruction file。用户创建或已修改的冲突文件会原样保留并 fail closed。清理前先持久化 transition state，
-因此中断后可幂等重试。过渡完成后，Client 只用 workspace state 保持 layout 与 identity，不再检查或管理
-普通本地 Workspace entry。Schema v3 也作为 downgrade fence：旧 v1/v2 Client 会拒绝它，不会重新解释已升级的
-layout。这里的 `workspace-states` 与 `workspaces` 是持久化本地 runtime 名称，不代表已移除的产品 Workspace 管理概念。
-
-此布局采用 clean break：OpenTag 不会读取、迁移、删除或回退到根目录的 `credentials.json`、
-`computer.json`、`daemon-owner.json`、`runtime/`、`service/`，也不会读取 `data/computer.json`、
-`data/runtime/agents` 或 `~/.opentag-service-targets`。请使用全新 Home，或先移走旧 Home 再重新登录；
-否则旧文件会原样保留，但新版不会使用它们。
-
-### 本地数据丢失与恢复
-
-再次运行 `computer connect` 会轮换 Computer credential 并恢复连接，但不能恢复原有的本地执行连续性。
-Server 可以重新签发 credentials 并重建 effective
-snapshot；Provider Runtime 启动或恢复时会重新注入托管 instructions。重新签发的 credentials 不是原值。如果
-`config/computer.json` 丢失，当前 Client 会创建新的 Computer identity。Server 虽保留旧 Computer 与 placement
-记录，但 Client 不会自动认领旧 identity 或修复旧 binding。
-
-Provider binding、尚未成功上报的 Turn 证据、Agent work-area 文件和本机 `daemon.env` 值仅存在于本地。Session
-binding 丢失会破坏 Provider 精确续接，并可能使已 accepted 但尚未上报的工作需要显式修复。work-area 文件
-只能依赖 Git、外部存储或本机备份，OpenTag Server 无法恢复。Effective snapshot 可重新生成，不属于主要
-备份目标。非空 work area 丢失 workspace state 时会 fail closed，不会静默选择另一 cwd。
-
-daemon/service owner、lease state 与日志只有在 daemon 已停止且没有 service mutation 时才可视为本机可重新
-生成数据；操作仍在运行时删除 owner 或 lease 证据，会破坏单 daemon 和 service 互斥。备份应重点保护
-`config/computer.json`、`config/computer-credentials.json`、本机 `config/daemon.env`、
-`data/runtime/session-bindings`，以及成对保存的
-`data/runtime/workspace-states` 与 `data/workspaces`。
-
-使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留 `config/` 与
-`data/`。v0.1 不支持 Windows daemon 服务。Linux 日志通过
-`journalctl --user -u opentag-dev.service` 查看，macOS 日志位于 `${OPENTAG_HOME}/logs`。可选的
-`${OPENTAG_HOME}/config/daemon.env` 必须是私有普通文件（权限 `0600`），用于补充服务环境且不会覆盖固定
-的服务配置。CLI 使用 `/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为无版本部署探针。
-
-dev 服务定义在 Linux 上位于 `~/.config/systemd/user/opentag-dev.service`，在 macOS 上位于
-`~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于
-`${OPENTAG_HOME}/state/service/opentag-dev`。
-staging 与 production 使用各自的 channel `serviceId`（`opentag-staging` 或 `opentag`）替换后缀。如果登录已
-保存 machine credential 但服务安装失败，修复提示的 manager 问题后运行
-`opentag-dev daemon install`，不需要申请新的 connect code。
-
-Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/operation.json` 只序列化当前 Home 的
-操作；target lease 固定放在当前用户对应 binary channel 的默认 Home，例如
-`~/.opentag-dev/state/service/target-operation.json`。因此多个自定义 `OPENTAG_HOME` 无法并发修改同一个
-`opentag-dev.service`。dev、staging、production 各自使用不同默认 Home 和 service target，target lease 之间
-不会竞争。
-
-## 管理 Agent 配置
-
-产品模型是 **Account → Computer → Agent → IM binding**。Agent 对创建它的 Account 可见，并在创建时绑定到该
-Account 拥有的一台 Computer；Account 只有一台可选 Computer 时会自动选择：
-
-```bash
-pnpm --filter open-tag start agent create \
-  --name code-reviewer \
-  --display-name "Code Reviewer" \
-  --provider codex
-pnpm --filter open-tag start agent list
-```
-
-存在多台 Computer 时使用 `--computer <uuid>`。没有 scope selector：Agent 属于已认证的 Account，由 Server 自行
-解析。Computer 离线时仍可选择，因为 online presence 不是 Agent 配置状态。可以查看或修改可变的展示名称：
-
-```bash
-pnpm --filter open-tag start agent show <agent-id>
-pnpm --filter open-tag start agent update <agent-id> --display-name "Reviewer"
-pnpm --filter open-tag start agent delete <agent-id>
-```
-
-更新使用 revision compare-and-swap，不会自动覆盖并发变更；Computer rebind 不是 update 操作。删除是 Server 端
-软删除，对创建该 Agent 的 Account 幂等。`claude-code` 是允许的配置值，但其 runtime adapter
-以及所有 Session/Turn
-delivery 仍属于后续工作。
-
-这两个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
-bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 code 流程先解析稳定的 user ID，再进入与 provider
-无关的 token 颁发边界。
-
-该边界现在签发的是 Better Auth session，而不是签名的 access/refresh 对：CLI 凭据成为服务端可以撤销的一行记录，
-而不再是只能等它过期的一段签名。兑换响应仍是原来的四个字段，`accessToken` 与 `refreshToken` 携带同一个 session
-token，因此切换前构建的 CLI 无需升级即可继续工作。`OPENTAG_SESSION_TTL_SECONDS` 就是这个凭据的完整有效期，
-默认值取自原 refresh token 的有效期，因为它替代的正是同一件事：客户端可以闲置多久仍保持登录。refresh 采用轮换：
-**先撤销所呈现的凭据**，只有撤销成功的那个调用者才会拿到替代凭据。这个顺序正是它可以安全并发的原因——同一凭据的
-两次 refresh 不会都签发成功，先落地的吊销也不会被撤销动作抹掉——同时意味着中途失败会把客户端登出，而不是让一个
-已被决定终止的凭据继续存活。上次 refresh 之前被复制走的副本会立即失效，而不是继续有效到自身过期。
-
-有一处代价需要明说：凭据一旦泄露，可用时长从原先 15 分钟的 access 窗口变成整个 session 有效期。而当初之所以需要
-这个短窗口，正是因为与之配对的 30 天 refresh token 根本无法吊销；session 则可以随时吊销，这就是这次取舍。
-
-上一版本签发的凭据已不再被接受：兼容桥及其两个 TTL 配置项都已移除。`OPENTAG_JWT_SECRET` 保留，因为它同时用于
-签名 Slack OAuth state，而那不属于 Account 认证。
-
-## 邮箱密码登录
-
-`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` 允许用邮箱地址与密码注册并登录 Account，对应
-`POST /api/v1/auth/email/sign-up` 与 `POST /api/v1/auth/email/sign-in`。默认关闭，因为它是唯一一个默认值就可能向外发放
-Account 的登录方式：其余方式都需要部署方已经授予的东西——Google client、loopback bypass、connect code。一个开关同时
-控制两条路由，因为只接受密码却不签发密码的服务端，没有任何途径把第一个密码交给任何人。
-
-密码长度为 12 到 128 个字符。该边界定义在 `@opentag/shared`，同时用于请求 schema 与 Better Auth 配置，因此库不会在底下
-套用另一套下限，把已通过校验的密码又拒掉。存储的是 Account `credential` identity 行上的哈希，密码本身不落库。
-
-这两条路由只以请求 origin 作为围栏，不要求其他浏览器变更请求都携带的 double-submit CSRF token。未登录的浏览器还没有
-这个 token——它正是由这两个请求签发的——所以强制要求只会让登录变得不可能，而不是更安全。两者的响应都会同时下发 session
-cookie 与新的 double-submit token，这是新登录的浏览器能够执行写操作的前提。
-
-两条路由都使用与其他登录方式相同的落地目标白名单。它定义在 `@opentag/shared` 的 `resolveSignInDestination` 而不是服务端，
-因为这是唯一一个由浏览器自己发起跳转、而非把目标交给服务端路由的登录方式；两份实现迟早会分歧，而更宽松的那一半才是起作用的
-那一半。
-
-登录被拒时，无论是地址不存在还是密码错误，都返回同一个答复，因此该接口无法被用来打探哪些地址存在 Account。这种统一只覆盖
-「被拒绝」这一类：服务端答不上来时报 `SERVICE_UNAVAILABLE`，被停用的 Account 如实报为停用——因为能走到那一步，调用方已经
-持有正确密码。注册无法在保密的同时仍然可操作，因此地址已被占用会以 `AUTH_EMAIL_CONFLICT` 报出，而其他任何拒绝仍是校验失败。
-
-登录尝试按来源地址与邮箱地址分别计数，且计数器是**进程内的**：每个副本各算各的，重启即清零。这足以让单台服务器不值得被
-反复撞，但**不是**部署级别的保证——那需要共享存储或前置网关。计数表有上限并优先淘汰过期项，因为邮箱地址由调用方选择，
-无界的键空间会让调用方消耗的不只是服务端的耐心，还有它的内存。
-
-这些 Account 的 `users.email_verified` 保持 false。产品内没有任何邮件发送能力，因此不存在断言该地址的验证步骤，而记录
-一个从未发生过的验证比不记录更糟。出于同样的原因，也没有找回密码：要做它得先做邮件发送。
-
-这带来一个在开放自助注册之前必须权衡的后果。由于注册不能证明地址归属，任何人都可以用自己并不拥有的地址注册、拿到 session、
-并让 Account 完成 provisioning——而整个过程中 `email_verified` 始终是 false。
-
-接下来会发生什么值得精确陈述，因为最直觉的猜测是错的。Better Auth 的 `accountLinking.requireLocalEmailVerified` 默认为 true，
-且「受信任的 provider」并不能豁免它：该设置管的是 **provider** 是否验证过地址，而不是本地 Account 是否验证过。因此真正的所有者
-之后用 Google 登录会被**拒绝**而非挂接，抢注者与所有者不会共享同一个 Account。
-
-真正的危害是锁死。`users_email_unique` 已经占住了该地址，所以真正的所有者既无法注册它，也无法通过 Google 登录进来，而抢注者
-持有一个为从未验证过的地址完成 provisioning 的 Account。这一行为由集成测试钉住。在「地址归属必须先被证明，密码凭据才能占用它」
-落地之前，只应在所有能访问该服务的人都已受信任的环境中启用 `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED`。
-
-Account email 以小写存储，且一个地址最多对应一个 Account。这由 `users_email_unique` 索引保证，并且不区分大小写，
-使跳过归一化的写入方也无法通过大小写变体绕过。原先负责对地址串行化的 identity resolver 已删除；Better Auth 的
-linking 不会给同一地址的两次并发首登排序，因此这项职责由索引承担。它只能在没有任何会写入未归一化地址的版本仍在
-服务时才创建，因此是在 Better Auth 迁移之后才落地，而不是与之同批。
-
-provider identity 会挂到已持有该地址的 Account 上，而不是新建第二个：Google 是受信任的 provider，因此它已验证的
-地址会关联到既有 Account。bootstrap Account 与本人首次 Google 登录就是这样合成同一个 Account 的。
-
-`users.email_verified` 记录 Account 当前存储的那个地址是否被 provider 断言过。它只会为该地址置位，不会为 provider 返回的
-其他地址置位；登录 code 流程不会设置它。
-
-## Google 登录与 Web App
-
-创建 Google Web OAuth client，并将 callback 配置为
-`http://127.0.0.1:8000/api/v1/auth/callback/google`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
-`OPENTAG_GOOGLE_CLIENT_SECRET`。该路径是 Better Auth 自身的 callback，也是 Server 唯一提供的一个；迁移前的
-`/api/v1/auth/google/callback` 已删除，可从 OAuth client 中移除。Server 会在监听前校验 Google 配置；`staging` 和 `prod` 环境的
-`OPENTAG_PUBLIC_URL` 必须使用 HTTPS。浏览器 session 保存在 Better Auth 自有的 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
-和可读 double-submit CSRF cookie 校验。
-
-若本地 loopback 开发环境没有 Google 凭据，可显式启用开发 bypass，并指定一个已有 bootstrap 用户：
-
-```bash
-export OPENTAG_ENV=dev
-export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
-export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
-```
-
-`OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
-`开发者登录`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户，再通过 Better Auth 签发正常浏览器
-session，因此它与 Google 登录产生的是同一种可吊销 session，登出即可结束它。签入哪个 Account 由配置固定，不取自请求。
-它不会创建 Account 或内部兼容记录，且仍会拒绝 suspended Account；email 不存在或有重复匹配时会 fail closed。
-Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
-
-`OPENTAG_ENV` 是 OpenTag 唯一的环境与发布 channel 选择器。`dev` 对应本地开发行为与 `opentag-dev` binary，
-`staging` 对应 `open-tag-staging` / `opentag-staging`，`prod` 对应 `open-tag` / `opentag`。托管 Node.js 进程的
-`NODE_ENV` 仍可设为 `production`，但它不负责选择 OpenTag package，也不决定产品安全行为。Server 启动时会记录
-解析后的环境、public URL、package 和 binary，且绝不从 hostname 推断环境。
-
-打开 `/` 可使用管理 shell。顶层导航固定为 **Agents / Tasks / Skills / Integrations**，没有 Settings tab。
-Computer 连接与恢复位于 Agents 区域。**Generate connection command** 会签发一个 15 分钟、仅可使用
-一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Account 的 Computers，直到新的
-daemon 握手到达。account menu 只包含 Account 操作。
-
-Session collaboration 仍属于 Agent Runtime，不会引入产品 Workspace、Project 或共享管理容器。Context Tree 可以独立
-保存长期上下文；它不会建立 per-Account ownership，也不改变 Computer 连接、Agent placement 或 IM binding。
-`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
-`openssl rand -base64 32` 生成。
-
-## Agent Setup 端到端检查
-
-`scripts/e2e/onboarding-e2e.mjs` 会在真实 Server、真实 PostgreSQL、真实 Web 构建产物和真实 Computer daemon 上
-跑完整个 `/agents/setup` 流程：浏览器登录、先在表单里创建 Agent、从页面读取连接命令、用 CLI 兑换、运行
-`daemon service-run`、等待协商出的 Provider readiness 投影，然后检查 handoff、Account admission、等待中的 Provider 验证，
-以及后续运行时中断仍停留在正常 Agents 产品流程中的行为。
-
-```bash
-pnpm build
-npm install --no-save playwright-core   # 在 workspace 之外安装，或复用已有安装
-OPENTAG_E2E_PLAYWRIGHT_PATH=/path/to/playwright-core node scripts/e2e/onboarding-e2e.mjs
-```
-
-该检查需要可访问的 PostgreSQL 超级用户地址和 Chromium 可执行文件。它会自行创建并删除数据库、监听独立端口，并把
-截图、Server 与 daemon 日志、记录到的 console 条目写入 artifact 目录。由于每次运行都会删库，它会拒绝任何不是一望即知
-可丢弃的 E2E 标识符的库名，并在 Server 停止后再次删除该库。端口被占用时它会直接拒绝启动，因此绝不会去驱动另一个本地
-Server。daemon 拿到的是显式构造的 Provider 环境，而不是调用者的 shell 环境，因此在任何开发机上 readiness 都一致。
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `OPENTAG_E2E_ADMIN_DATABASE_URL` | `postgresql://opentag:opentag@127.0.0.1:5432/postgres` | 创建 E2E 数据库使用的超级用户地址 |
-| `OPENTAG_E2E_DATABASE` | `opentag_e2e` | E2E 数据库名，每次运行都会删除并重建；必须是包含 `e2e` 的小写标识符 |
-| `OPENTAG_E2E_PORT` | `8123` | 本次运行的 Server 监听端口 |
-| `OPENTAG_E2E_CHROMIUM` | `/opt/pw-browsers/chromium` | Chromium 可执行文件 |
-| `OPENTAG_E2E_PLAYWRIGHT_PATH` | `playwright-core` | `playwright-core` 的模块标识或路径 |
-| `OPENTAG_E2E_ARTIFACTS` | `$TMPDIR/opentag-onboarding-e2e` | 截图与日志输出目录 |
-| `OPENTAG_E2E_PROVIDER_STUB` | `on` | 设为 `off` 时改用 `PATH` 上已安装的 Claude Code CLI，而不是 stub |
-| `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | stub 关闭时守护进程读取的 Claude Code 配置目录 |
-| `OPENTAG_E2E_KEEP_DATABASE` | `off` | 设为 `on` 时运行结束后保留 E2E 数据库，便于排查 |
-
-流程中有两部分无法离线执行。Agent Runtime 和 Feishu CLI readiness 使用 stub 可执行文件，它们满足与 Claude Code 和
-`lark-cli` 相同的 probe 契约，因为 CI 中没有已登录的本地 CLI。Feishu 授权需要访问 `open.feishu.cn`，因此该检查会真实发起一次
-setup attempt 并记录结果，然后把一条已授权的 binding 写入数据库，用于确认 Server 与页面会投影等待中的 handoff；该检查
-不会伪造 canonical Snapshot 进入 `ready` 所需的最终 provider credential-execution observation。
-
-## 环境变量
-
-仅在需要本地覆盖时复制 `.env.example`。当前进程不会自动加载环境文件。
-
-| 变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `OPENTAG_HOST` | `127.0.0.1` | Server 监听地址 |
-| `OPENTAG_PORT` | `8000` | Server 监听端口 |
-| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
-| `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和生成连接命令使用的必需 Server 公共 origin |
-| `OPENTAG_ENV` | `dev` | OpenTag 环境/channel：`dev`、`staging` 或 `prod`；托管值要求 HTTPS |
-| `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
-| `OPENTAG_JWT_SECRET` | 无 | 必需的 Slack OAuth state 签名 secret，至少 32 个字符，且与 `BETTER_AUTH_SECRET` 不同 |
-| `BETTER_AUTH_SECRET` | 无 | 必需的 Better Auth session/cookie 签名 secret，至少 32 个字符 |
-| `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
-| `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
-| `OPENTAG_GOOGLE_CLIENT_SECRET` | 无 | 可选 Google OIDC client secret，必须与 client id 同时配置 |
-| `OPENTAG_SLACK_CLIENT_ID` | 无 | 可选一等 Slack App client id，必须与 secret、signing secret 和 redirect URL 同时配置 |
-| `OPENTAG_SLACK_CLIENT_SECRET` | 无 | 可选一等 Slack App client secret；永不写入日志 |
-| `OPENTAG_SLACK_SIGNING_SECRET` | 无 | 可选一等 Slack App signing secret，用于 Events API HMAC；永不写入日志 |
-| `OPENTAG_SLACK_REDIRECT_URL` | 无 | 可选 public origin，或位于 `OPENTAG_PUBLIC_URL` 上的精确 Slack OAuth callback URL |
-| `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | 显式启用仅限 loopback 的开发登录，必须同时配置 email |
-| `OPENTAG_DEV_AUTH_EMAIL` | 无 | development bypass 选择的已有唯一 bootstrap 用户 |
-| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | 允许使用邮箱地址与密码注册并登录 |
-| `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
-| `OPENTAG_OTEL_ENDPOINT` | 空 | 可选 OTLP/HTTP traces endpoint；参阅 [Server 可观测性](./docs/zh-CN/observability.md) |
-| `OPENTAG_OTEL_HEADERS` | 空 | 逗号分隔 `key=value` 格式的 secret OTLP headers |
-| `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment 标签 |
-| `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `0` 到 `1` 的全局 trace head sample rate |
-| `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session 有效期，浏览器与 CLI 相同 |
-| `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
-
-如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
-
-## 发布
-
-发布只能由 GitHub Actions 和 npm trusted publishing 执行。禁止从维护者机器发布任一 channel，也禁止向仓库
-添加长期 npm token。channel identity、发布 guard、package smoke 和恢复步骤请参阅
-[docs/zh-CN/releasing.md](./docs/zh-CN/releasing.md)。
+- [部署指南](./docs/zh-CN/deploying.md) — 部署配置与运维。
+- [Runtime 协议](./docs/zh-CN/runtime-protocol.md) — 服务器与 Agent 的通信。
+- [Provider CLI](./docs/zh-CN/direct-provider-cli.md) — Codex 和 Claude Code 集成。
+- [可观测性](./docs/zh-CN/observability.md) — 服务器追踪与诊断。
+- [发布指南](./docs/zh-CN/releasing.md) — 通过 GitHub Actions 发布。

@@ -126,8 +126,12 @@ on any of these steps reads high.
   Measurement raises scroll, click, download and form events of the tag's own accord — so the exclusion is enforced at
   the tag with Google's `ga-disable-<id>` flag, kept in step with the route so a direct entry and a later navigation
   are both covered.
-- **No identity after sign-out.** `endSession` clears `user_id`. Signing out is a client-side navigation, so without
-  that the login page and everything after it would still be attributed to the Account that just left.
+- **No identity after a session ends, by either exit.** A session ends in exactly two ways: somebody presses Sign out
+  (`endSession`), or the session lapses and the Server refuses the next `/me` (the 401 branch in `_authenticated.tsx`).
+  Both clear `user_id`, and both are covered by regressions — expiry is the commoner of the two, and it is reached by a
+  reconnect revalidation that only happens outside tests, so its regression restores that behaviour deliberately.
+  Neither a loading state nor a dropped connection clears anything: those are also "no Account", and treating them as
+  a sign-out would discard the identity of a session that is still alive.
 
 ## Required property setting
 

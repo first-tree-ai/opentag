@@ -1,3 +1,4 @@
+import { onlineManager } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analytics } from "../analytics/analytics.js";
@@ -12,6 +13,7 @@ import {
   agentId,
   agentListItem,
   installApi,
+  json,
   openAccountMenu,
   resetWebAppState,
   userId,
@@ -30,6 +32,17 @@ function events(name?: string): { name: string; params: AnalyticsParams }[] {
 
 function identities(): (string | number | boolean | null | undefined)[] {
   return sent
+    .filter((command): command is readonly ["set", AnalyticsParams] => command[0] === "set")
+    .filter((command) => "user_id" in command[1])
+    .map((command) => command[1].user_id);
+}
+
+/** The identity values recorded before the page view for `path`, so ordering can be asserted. */
+function sentUpTo(path: string): (string | number | boolean | null | undefined)[] {
+  const index = sent.findIndex(
+    (command) => command[0] === "event" && command[1] === "page_view" && command[2].page_path === path,
+  );
+  return (index === -1 ? sent : sent.slice(0, index))
     .filter((command): command is readonly ["set", AnalyticsParams] => command[0] === "set")
     .filter((command) => "user_id" in command[1])
     .map((command) => command[1].user_id);
@@ -59,6 +72,9 @@ describe("activation funnel reporting", () => {
   afterEach(() => {
     analytics.disarm();
     vi.restoreAllMocks();
+    // Restored, because a stubbed MODE changes how the query cache behaves for every later test.
+    vi.unstubAllEnvs();
+    onlineManager.setOnline(true);
   });
 
   it("reports the sign-in on the page it lands on, and attaches the Account to what follows", async () => {
@@ -140,6 +156,69 @@ describe("activation funnel reporting", () => {
     // Signing out is a client-side navigation, so without an explicit clear the login page — and
     // every page after it — would still be reported as the Account that just left.
     expect(identities()).toEqual([userId, null]);
+  });
+
+  it("stops attributing anything to the Account when its session lapses, not only when it signs out", async () => {
+    /*
+     * The commoner of the two exits, and the one a sign-out test cannot reach. `createQueryClient`
+     * only sets `refetchOnReconnect` outside tests, so production behaviour is restored here — a
+     * probe that skips this sees nothing and wrongly passes.
+     */
+    vi.stubEnv("MODE", "production");
+    installApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installApi did not install fetch");
+    let sessionValid = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/me" && init?.method === undefined && !sessionValid) {
+        return json({ error: { code: "UNAUTHENTICATED", message: "The session has expired" } }, 401);
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents");
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(identities()).toEqual([userId]);
+
+    sessionValid = false;
+    onlineManager.setOnline(false);
+    onlineManager.setOnline(true);
+    await screen.findByRole("heading", { name: "Sign in to OpenTag" });
+
+    expect(identities()).toEqual([userId, null]);
+    // And the identity is released before the page it redirects to is reported, so the login page
+    // view does not carry the Account that just lost its session.
+    const loginView = pageViewParams().findIndex((params) => params.page_path === "/login");
+    expect(loginView).toBeGreaterThanOrEqual(0);
+    expect(sentUpTo("/login")).toContain(null);
+  });
+
+  it("keeps the identity through a read that has not answered, and through one that failed to reach the Server", async () => {
+    vi.stubEnv("MODE", "production");
+    installApi();
+    const fallback = vi.mocked(fetch).getMockImplementation();
+    if (!fallback) throw new Error("installApi did not install fetch");
+    let reachable = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === "/api/v1/me" && init?.method === undefined && !reachable) {
+        throw new TypeError("Failed to fetch");
+      }
+      return fallback(input, init);
+    });
+    window.history.replaceState({}, "", "/agents");
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Agents" });
+
+    reachable = false;
+    onlineManager.setOnline(false);
+    onlineManager.setOnline(true);
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.length).toBeGreaterThan(0));
+
+    // A dropped connection is also "no Account", and it is not a sign-out. Clearing here would drop
+    // the identity of a session that is still perfectly alive.
+    expect(identities()).toEqual([userId]);
   });
 
   it("records the method both sign-in paths know before they leave the document", async () => {

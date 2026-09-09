@@ -604,12 +604,15 @@ describe("AgentTurnRunner", () => {
     runner.start(liveOwner(delivery()));
     await runner.settled();
     expect(order).toEqual(["credentials", "plan", "runtime", "prompt", "plan-cleanup", "credential-cleanup"]);
-    expect(turnPlan.prepare).toHaveBeenCalledWith({
-      provider: "slack",
-      sessionId: "session-1",
-      runId: "turn-1",
-      configDir: "/tmp/slack-config",
-    });
+    expect(turnPlan.prepare).toHaveBeenCalledWith(
+      {
+        provider: "slack",
+        sessionId: "session-1",
+        runId: "turn-1",
+        configDir: "/tmp/slack-config",
+      },
+      expect.any(AbortSignal),
+    );
 
     const driftedEnsure = vi.fn();
     const drifted = new AgentTurnRunner({

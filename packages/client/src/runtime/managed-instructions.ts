@@ -62,6 +62,7 @@ function renderAgentHome(agentHome?: string): readonly string[] {
     "- `worktrees/<unique-task-key>/` — agent-managed checkouts for source access and code work. Concurrent code tasks each use a distinct worktree (and a distinct branch when editing). Keep later operations for the same task in its own worktree. No two code tasks edit one checkout.",
     "- `files/<unique-task-key>/` — non-repository task artifacts, created only when needed.",
     "",
+    "OpenTag provides the bundled `context-tree` command. If it cannot run, report a runtime setup problem; do not install it globally.",
     'Context Tree stays the separately configured shared tree managed by its matching CLI and skills. When running Context Tree project commands from a task subdirectory, pass `--project-path "<Agent Home>"` to use the connected Home; do not create or reconnect a tree just because the task cwd changed. Follow the matching skill write protocol. Do not invent an independent Git policy for Tree writes.',
     "",
   ];

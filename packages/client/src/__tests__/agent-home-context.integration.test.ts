@@ -63,7 +63,7 @@ describe("shared Agent Home and Context Tree", () => {
     expect(treePath.startsWith(`${fixture.accountHome}/`)).toBe(true);
 
     const layout = resolveOpenTagHomeLayout(openTagHome);
-    await mkdir(layout.config, { recursive: true });
+    await mkdir(layout.contextTreeConfigDir, { recursive: true });
     await writeFile(
       layout.contextTreeConfigFile,
       `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,

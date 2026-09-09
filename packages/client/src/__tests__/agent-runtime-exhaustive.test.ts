@@ -1,4 +1,6 @@
+import { delimiter } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { composeRuntimeEnvironment } from "../agent-runtime/environment.js";
 
 // Real child-process lifecycle cases need headroom under parallel CI load.
 vi.setConfig({ testTimeout: 30_000 });
@@ -793,3 +795,15 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value?: T) => vo
     reject: (error) => rejectValue?.(error),
   };
 }
+
+it("composes workspace overrides before prepending tools and handles absent or already leading paths", () => {
+  expect(composeRuntimeEnvironment({ PATH: "/base", KEEP: "yes" }, { PATH: "/workspace" }, "/tools")).toEqual({
+    PATH: `/tools${delimiter}/workspace`,
+    KEEP: "yes",
+  });
+  expect(composeRuntimeEnvironment({}, undefined, "/tools")).toEqual({ PATH: "/tools" });
+  expect(composeRuntimeEnvironment({ PATH: "/tools" }, undefined, "/tools")).toEqual({ PATH: "/tools" });
+  expect(composeRuntimeEnvironment({ PATH: `/tools${delimiter}/base` }, undefined, "/tools")).toEqual({
+    PATH: `/tools${delimiter}/base`,
+  });
+});

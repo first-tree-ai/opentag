@@ -53,7 +53,7 @@ function capture(): { deps: { stdout: (chunk: string) => void; stderr: (chunk: s
 const listing = (names: readonly string[]) => ({
   payload: { schemaVersion: 1, trees: names.map((name) => ({ name, tree: { kind: "local", path: `/t/${name}` } })) },
 });
-const configFile = (home: string) => join(home, "config", "context-tree.json");
+const configFile = (home: string) => join(home, "config", "context-tree", "config.json");
 const invalid = { findings: [{ code: "MISSING_ROOT" }], ok: false };
 
 describe("opentag context-tree connect", () => {
@@ -75,6 +75,34 @@ describe("opentag context-tree connect", () => {
     });
     expect((await stat(configFile(home))).mode & 0o777).toBe(0o600);
     expect(text()).toContain("team-context-tree");
+  });
+
+  it("requires reconnecting an old-only configuration and reads the new target afterward", async () => {
+    const home = await temporaryDirectory("opentag-ct-upgrade-");
+    const oldFile = join(home, "config", "context-tree.json");
+    const oldConfig = JSON.stringify({ schemaVersion: 1, target: { kind: "managed", name: "old-tree" } });
+    await mkdir(join(home, "config"), { recursive: true });
+    await writeFile(oldFile, oldConfig);
+    const contextTreePackage = await fakeCli({ list: listing(["new-tree"]) });
+
+    await expect(readContextTreeState({ home, contextTreePackage })).resolves.toEqual({
+      configPath: configFile(home),
+      tree: "unknown",
+    });
+    await expect(readFile(configFile(home))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      runContextTreeConnect({ ...capture().deps, home, contextTreePackage, target: "new-tree" }),
+    ).resolves.toEqual({ exitCode: 0 });
+    expect(JSON.parse(await readFile(configFile(home), "utf8"))).toEqual({
+      schemaVersion: 1,
+      target: { kind: "managed", name: "new-tree" },
+    });
+    await expect(readContextTreeState({ home, contextTreePackage })).resolves.toEqual({
+      configPath: configFile(home),
+      target: "new-tree",
+      tree: "valid",
+    });
+    await expect(readFile(oldFile, "utf8")).resolves.toBe(oldConfig);
   });
 
   it("accepts a GitHub target without network work, and says who clones it", async () => {
@@ -159,7 +187,7 @@ describe("readContextTreeState", () => {
   ])("reports %s", async (_label, target, responses, expected) => {
     const home = await temporaryDirectory("opentag-ct-state-");
     if (target !== undefined) {
-      await mkdir(join(home, "config"), { mode: 0o700, recursive: true });
+      await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
       await writeFile(configFile(home), JSON.stringify({ schemaVersion: 1, target }), "utf8");
     }
 
@@ -170,7 +198,7 @@ describe("readContextTreeState", () => {
 
   it("treats unreadable configuration as unknown rather than failing", async () => {
     const home = await temporaryDirectory("opentag-ct-state-bad-");
-    await mkdir(join(home, "config"), { mode: 0o700, recursive: true });
+    await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
     await writeFile(configFile(home), "{ not json", "utf8");
 
     await expect(readContextTreeState({ home, contextTreePackage: await fakeCli({}) })).resolves.toMatchObject({
@@ -178,29 +206,32 @@ describe("readContextTreeState", () => {
     });
   });
 
-  it("reports a recorded unavailable GitHub preparation as invalid", async () => {
-    const home = await temporaryDirectory("opentag-ct-state-preparation-");
-    await mkdir(join(home, "config"), { mode: 0o700, recursive: true });
-    await mkdir(join(home, "state"), { mode: 0o700, recursive: true });
-    await writeFile(
-      configFile(home),
-      JSON.stringify({ schemaVersion: 1, target: { kind: "github", repository: "acme/missing" } }),
-      "utf8",
-    );
-    await writeFile(
-      join(home, "state", "context-tree-preparation.json"),
-      JSON.stringify({
-        schemaVersion: 1,
-        target: "acme/missing",
-        status: "unavailable",
-        reason: "GITHUB_AUTH",
-        at: new Date().toISOString(),
-      }),
-      "utf8",
-    );
+  it.each(["GITHUB_AUTH", "SHIM_UNAVAILABLE", "PACKAGE_MISSING"])(
+    "reports recorded %s preparation instead of not cloned",
+    async (reason) => {
+      const home = await temporaryDirectory("opentag-ct-state-preparation-");
+      await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
+      await mkdir(join(home, "state"), { mode: 0o700, recursive: true });
+      await writeFile(
+        configFile(home),
+        JSON.stringify({ schemaVersion: 1, target: { kind: "github", repository: "acme/missing" } }),
+        "utf8",
+      );
+      await writeFile(
+        join(home, "state", "context-tree-preparation.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          target: "acme/missing",
+          status: "unavailable",
+          reason,
+          at: new Date().toISOString(),
+        }),
+        "utf8",
+      );
 
-    await expect(
-      readContextTreeState({ home, contextTreePackage: await fakeCli({ list: listing([]) }) }),
-    ).resolves.toMatchObject({ target: "acme/missing", tree: "invalid", detail: "GITHUB_AUTH" });
-  });
+      await expect(
+        readContextTreeState({ home, contextTreePackage: await fakeCli({ list: listing([]) }) }),
+      ).resolves.toMatchObject({ target: "acme/missing", tree: "invalid", detail: reason });
+    },
+  );
 });

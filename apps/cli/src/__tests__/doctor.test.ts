@@ -695,9 +695,9 @@ describe("doctor report and exit contract", () => {
   it("never lets a Context Tree fault change the doctor exit code", async () => {
     const home = await createHome();
     const cases = [
-      { configPath: resolve(home, "config", "context-tree.json"), tree: "unknown" as const },
+      { configPath: resolve(home, "config", "context-tree", "config.json"), tree: "unknown" as const },
       {
-        configPath: resolve(home, "config", "context-tree.json"),
+        configPath: resolve(home, "config", "context-tree", "config.json"),
         target: "team-context-tree",
         tree: "invalid" as const,
         detail: "DIRTY_TREE",
@@ -720,7 +720,7 @@ describe("doctor report and exit contract", () => {
     const home = await createHome();
     const result = await runHealthyDoctor(home, {
       inspectContextTreeState: vi.fn().mockResolvedValue({
-        configPath: resolve(home, "config", "context-tree.json"),
+        configPath: resolve(home, "config", "context-tree", "config.json"),
         tree: "unknown" as const,
       }),
     });
@@ -735,7 +735,7 @@ describe("doctor report and exit contract", () => {
     const home = await createHome();
     const result = await runHealthyDoctor(home, {
       inspectContextTreeState: vi.fn().mockResolvedValue({
-        configPath: resolve(home, "config", "context-tree.json"),
+        configPath: resolve(home, "config", "context-tree", "config.json"),
         target: "acme/shared-context",
         tree: "not-cloned" as const,
       }),
@@ -802,7 +802,7 @@ async function runHealthyDoctor(home: string, overrides: Partial<DoctorOptions> 
 
 function configuredContextTree(home: string) {
   return {
-    configPath: resolve(home, "config", "context-tree.json"),
+    configPath: resolve(home, "config", "context-tree", "config.json"),
     target: "team-context-tree",
     tree: "valid" as const,
   };

@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { getRuntimeConfigurationOptions, hashTuple } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
+import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
   classifiedProviderProbeIssue,
@@ -725,6 +726,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly #createClient: (
     cwd: string,
     environment?: Readonly<Record<string, string>>,
+    pathPrepend?: string,
   ) => InteractiveCodexAppServerClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
@@ -740,13 +742,14 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const createDefaultClient = (
       cwd: string,
       workspaceEnvironment?: Readonly<Record<string, string>>,
+      pathPrepend?: string,
       expectedCodexHome = options.process?.expectedCodexHome,
     ) =>
       new CodexAppServerProcess({
         command,
         args: options.process?.args ?? [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
         cwd,
-        env: { ...environment, ...workspaceEnvironment },
+        env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
         expectedCodexHome,
         maxLineBytes: options.process?.maxLineBytes,
         requestTimeoutMs: options.process?.requestTimeoutMs,
@@ -756,7 +759,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const createProbeClient =
       options.createClient ??
       ((cwd: string, probeEnvironment?: Readonly<Record<string, string>>) =>
-        createDefaultClient(cwd, probeEnvironment, probeEnvironment?.CODEX_HOME));
+        createDefaultClient(cwd, probeEnvironment, undefined, probeEnvironment?.CODEX_HOME));
     this.#probeRunner =
       options.probeRunner ??
       (async (signal) => {
@@ -943,7 +946,11 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         "Codex binding hosted tools cannot change during exact resume",
       );
     }
-    const client = this.#createClient(request.workspace.cwd, request.workspace.environment);
+    const client = this.#createClient(
+      request.workspace.cwd,
+      request.workspace.environment,
+      request.workspace.pathPrepend,
+    );
     try {
       if (request.hostedTools && typeof client.setDynamicToolHandler !== "function") {
         throw new AgentRuntimeError(

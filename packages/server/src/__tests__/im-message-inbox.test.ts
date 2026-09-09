@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { type NormalizedInboundImEvent, SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { and, count, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,7 @@ import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImMessageInbox } from "../services/im/index.js";
 import { ImBindingService } from "../services/im-bindings/index.js";
+import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const fixedNow = new Date("2026-08-19T00:00:00.000Z");
@@ -131,6 +133,90 @@ describe("ImMessageInbox overflow scheduling", () => {
     } finally {
       delayed.release();
     }
+  });
+});
+
+describe("Slack file_share adapter to inbox", () => {
+  function slackEnvelope(event: Record<string, unknown>, eventId: string) {
+    return {
+      eventId,
+      appId: "A_UNIT_INBOX",
+      teamId: "T_UNIT_INBOX",
+      botUserId: "U_UNIT_INBOX",
+      botId: "B_UNIT_INBOX",
+      event,
+    };
+  }
+
+  it.each([
+    ["text", "1788958812.272619", "file", "facts.txt"],
+    ["png", "1788958840.759759", "image", "colors.png"],
+  ])("persists a production %s file_share DM and skips a self share", async (variant, messageTs, kind, filename) => {
+    const value = await inboxFixture();
+    const fixture = JSON.parse(
+      readFileSync(new URL(`./fixtures/slack-inbound-file-share-${variant}.json`, import.meta.url), "utf8"),
+    ) as { event: Record<string, unknown> };
+    const [event] = normalizeSlackEnvelope(slackEnvelope(fixture.event, "Ev-unit-file-share"));
+    if (!event) throw new Error("file_share fixture was not normalized");
+    const inbox = new ImMessageInbox(unitDatabase.database);
+    const ingested = await inbox.ingest(value.imBindingId, 1, event);
+    expect(ingested).toMatchObject({ duplicate: false, messageId: expect.any(String) });
+    expect(ingested.deliveryIds).toHaveLength(1);
+    const [message] = await unitDatabase.database.select().from(imMessages);
+    expect(message).toMatchObject({
+      channelId: "D_TEST_DM",
+      externalMessageId: messageTs,
+      authorKind: "human",
+      authorExternalId: "U_TEST_HUMAN",
+    });
+    expect(message?.content.resources).toEqual([
+      expect.objectContaining({ providerResourceKey: "F_TEST_1", kind, filename }),
+    ]);
+
+    const [selfEvent] = normalizeSlackEnvelope(
+      slackEnvelope(
+        {
+          type: "message",
+          subtype: "file_share",
+          channel: "D_TEST_DM",
+          channel_type: "im",
+          user: "U_UNIT_INBOX",
+          text: "",
+          ts: "1788958815.000000",
+          files: [{ id: "F_SELF", name: "bot.png", mimetype: "image/png", size: 4 }],
+        },
+        "Ev-unit-self-file-share",
+      ),
+    );
+    if (!selfEvent) throw new Error("self file_share was not normalized");
+    await expect(inbox.ingest(value.imBindingId, 1, selfEvent)).resolves.toEqual({ duplicate: false, deliveryIds: [] });
+    await expect(unitDatabase.database.select().from(imMessages)).resolves.toHaveLength(1);
+  });
+
+  it("dedups a channel file_share and app_mention for the same attachment message", async () => {
+    const value = await inboxFixture();
+    const shared = {
+      channel: "C_UNIT_INBOX",
+      channel_type: "channel",
+      user: "U_HUMAN",
+      text: "<@U_UNIT_INBOX> please review",
+      ts: "1788958900.100000",
+      event_ts: "1788958900.100000",
+      files: [{ id: "F_CHANNEL", name: "facts.txt", mimetype: "text/plain", size: 149 }],
+    };
+    const [messageEvent] = normalizeSlackEnvelope(
+      slackEnvelope({ type: "message", subtype: "file_share", ...shared }, "Ev-unit-message"),
+    );
+    const [mentionEvent] = normalizeSlackEnvelope(
+      slackEnvelope({ type: "app_mention", ...shared }, "Ev-unit-app-mention"),
+    );
+    if (!messageEvent || !mentionEvent) throw new Error("message/app_mention pair was not normalized");
+    const inbox = new ImMessageInbox(unitDatabase.database);
+    const first = await inbox.ingest(value.imBindingId, 1, messageEvent);
+    const second = await inbox.ingest(value.imBindingId, 1, mentionEvent);
+    expect(first).toMatchObject({ duplicate: false, messageId: expect.any(String) });
+    expect(second).toEqual({ duplicate: true, messageId: first.messageId, deliveryIds: [] });
+    await expect(unitDatabase.database.select().from(imMessages)).resolves.toHaveLength(1);
   });
 });
 

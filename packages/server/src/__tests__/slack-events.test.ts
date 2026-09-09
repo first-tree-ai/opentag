@@ -1,7 +1,9 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
+import { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 
 const now = new Date("2026-08-20T00:00:00.000Z");
 const timestamp = String(Math.floor(now.getTime() / 1000));
@@ -51,7 +53,43 @@ function matchingBotAuthorization() {
   return [{ team_id: installation().teamId, user_id: installation().botUserId, is_bot: true }];
 }
 
-function createServices(overrides: Record<string, unknown> = {}, loggerStream?: Writable) {
+function loadSlackFileShareFixture(name: "slack-inbound-file-share-png.json" | "slack-inbound-file-share-text.json") {
+  return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")) as {
+    event: Record<string, unknown>;
+  };
+}
+
+function capturingLogger() {
+  let logs = "";
+  const loggerStream = new Writable({
+    write(chunk, _encoding, callback) {
+      logs += chunk.toString();
+      callback();
+    },
+  });
+  return {
+    loggerStream,
+    read: () => logs,
+  };
+}
+
+function realSlackAdapter() {
+  const current = installation();
+  return new SlackAdapter({
+    api: { authTest: vi.fn(), fetchResource: vi.fn() } as never,
+    token: current.botAccessToken,
+    appId: current.appId,
+    teamId: current.teamId,
+    botUserId: current.botUserId,
+    botId: current.botId,
+  });
+}
+
+function createServices(
+  overrides: Record<string, unknown> = {},
+  loggerStream: Writable = new Writable({ write: (_chunk, _encoding, callback) => callback() }),
+  options: { realAdapter?: boolean } = {},
+) {
   const current = installation();
   const routed = defaultRoute();
   const imBindings = {
@@ -63,9 +101,11 @@ function createServices(overrides: Record<string, unknown> = {}, loggerStream?: 
     disableSlackInstallationFromProvider: vi.fn().mockResolvedValue(true),
     requireSlackInstallationReauthorization: vi.fn().mockResolvedValue(true),
   };
-  const inbox = { ingest: vi.fn().mockResolvedValue(undefined) };
+  const inbox = {
+    ingest: vi.fn().mockResolvedValue({ duplicate: false, messageId: "msg-1", deliveryIds: ["del-1"] }),
+  };
   const adapter = { normalizeInbound: vi.fn().mockReturnValue([]) };
-  const createAdapter = vi.fn(() => adapter);
+  const createAdapter = vi.fn(() => (options.realAdapter ? realSlackAdapter() : adapter));
   const app = createApp({
     loggerStream,
     slackEvents: {
@@ -286,7 +326,8 @@ describe("Slack Events API ingress", () => {
     ["wrong Team", [{ team_id: "T2", user_id: "U_BOT", is_bot: true }]],
     ["wrong Bot User", [{ team_id: "T1", user_id: "U_OTHER", is_bot: true }]],
   ])("rejects %s authorizations before ordinary event side effects", async (_label, authorizations) => {
-    const { app, imBindings, inbox, createAdapter } = createServices();
+    const captured = capturingLogger();
+    const { app, imBindings, inbox, createAdapter } = createServices({}, captured.loggerStream);
     const response = await app.inject(
       signedRequest({
         type: "event_callback",
@@ -305,10 +346,12 @@ describe("Slack Events API ingress", () => {
     expect(imBindings.requireSlackInstallationReauthorization).not.toHaveBeenCalled();
     expect(createAdapter).not.toHaveBeenCalled();
     expect(inbox.ingest).not.toHaveBeenCalled();
+    expect(captured.read()).toContain('"reason":"identity_mismatch"');
   });
 
   it("acknowledges a stale generation without running event side effects", async () => {
-    const { app, imBindings, inbox, createAdapter } = createServices();
+    const captured = capturingLogger();
+    const { app, imBindings, inbox, createAdapter } = createServices({}, captured.loggerStream);
     imBindings.recordSlackInstallationIdentityClosure.mockResolvedValue(false);
     const response = await app.inject(
       signedRequest({
@@ -328,10 +371,12 @@ describe("Slack Events API ingress", () => {
     expect(imBindings.disableSlackInstallationFromProvider).not.toHaveBeenCalled();
     expect(createAdapter).not.toHaveBeenCalled();
     expect(inbox.ingest).not.toHaveBeenCalled();
+    expect(captured.read()).toContain('"reason":"generation_changed"');
   });
 
   it("acknowledges verified events without delivery when no default Agent route exists", async () => {
-    const { app, imBindings, inbox, createAdapter } = createServices();
+    const captured = capturingLogger();
+    const { app, imBindings, inbox, createAdapter } = createServices({}, captured.loggerStream);
     imBindings.resolveSlackDefaultRoute.mockResolvedValue(undefined);
     const response = await app.inject(
       signedRequest({
@@ -348,6 +393,7 @@ describe("Slack Events API ingress", () => {
     expect(imBindings.resolveSlackDefaultRoute).toHaveBeenCalledWith(installation().installationId);
     expect(createAdapter).not.toHaveBeenCalled();
     expect(inbox.ingest).not.toHaveBeenCalled();
+    expect(captured.read()).toContain('"reason":"no_route"');
   });
 
   it("disables an uninstalled binding and fences Slack token revocation", async () => {
@@ -424,15 +470,18 @@ describe("Slack Events API ingress", () => {
 
     expect(response.statusCode).toBe(200);
     expect(createAdapter).toHaveBeenCalledWith(current);
-    expect(adapter.normalizeInbound).toHaveBeenCalledWith({
-      eventId: "Ev1",
-      appId: current.appId,
-      teamId: current.teamId,
-      botUserId: current.botUserId,
-      botId: current.botId,
-      event: envelope.event,
-      eventTime: envelope.event_time,
-    });
+    expect(adapter.normalizeInbound).toHaveBeenCalledWith(
+      {
+        eventId: "Ev1",
+        appId: current.appId,
+        teamId: current.teamId,
+        botUserId: current.botUserId,
+        botId: current.botId,
+        event: envelope.event,
+        eventTime: envelope.event_time,
+      },
+      expect.any(Function),
+    );
     expect(inbox.ingest.mock.calls).toEqual([
       [defaultRoute().imBindingId, current.generation, events[0], undefined, { provider: "slack" }],
       [defaultRoute().imBindingId, current.generation, events[1], undefined, { provider: "slack" }],
@@ -567,5 +616,199 @@ describe("Slack Events API ingress", () => {
     expect(response.statusCode).toBe(200);
     expect(createAdapter).not.toHaveBeenCalled();
     expect(inbox.ingest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["text", "slack-inbound-file-share-text.json" as const, "file"],
+    ["png", "slack-inbound-file-share-png.json" as const, "image"],
+  ])("ingests a sanitized production %s file_share fixture through Events", async (_label, fixtureName, kind) => {
+    const captured = capturingLogger();
+    const { app, inbox, createAdapter } = createServices({}, captured.loggerStream, { realAdapter: true });
+    const fixture = loadSlackFileShareFixture(fixtureName);
+    const eventId = `Ev-file-share-${_label}`;
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: eventId,
+        event: fixture.event,
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(createAdapter).toHaveBeenCalled();
+    expect(inbox.ingest).toHaveBeenCalledTimes(1);
+    expect(inbox.ingest.mock.calls[0]?.[2]).toMatchObject({
+      conversation: { kind: "dm" },
+      message: {
+        operation: "created",
+        author: { kind: "human", isSelf: false },
+        resources: [{ kind, providerResourceKey: "F_TEST_1" }],
+      },
+    });
+    const logs = captured.read();
+    expect(logs).toContain(`"eventId":"${eventId}"`);
+    expect(logs).toContain("Slack inbound inbox result");
+    expect(logs).toContain('"messageId":"msg-1"');
+    expect(logs).toContain('"del-1"');
+    expect(logs).not.toContain("[synthetic test request]");
+    expect(logs).not.toContain("xoxb-sensitive");
+    expect(logs).not.toContain("signing-sensitive");
+  });
+
+  it("ingests an empty file_share body and logs ignored or invalid input without leaking canaries", async () => {
+    const captured = capturingLogger();
+    const { app, inbox } = createServices({}, captured.loggerStream, { realAdapter: true });
+    const fixture = loadSlackFileShareFixture("slack-inbound-file-share-text.json");
+    const empty = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-empty-file-share",
+        event: { ...fixture.event, text: "" },
+      }),
+    );
+    expect(empty.statusCode).toBe(200);
+    expect(inbox.ingest.mock.calls[0]?.[2]).toMatchObject({
+      message: { content: { fallbackText: "" }, resources: [{ providerResourceKey: "F_TEST_1" }] },
+    });
+
+    const canary = "canary-secret-text";
+    const privateUrl = "https://files.slack.com/private/canary-token";
+    const ignored = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-ignored-subtype",
+        event: {
+          type: "message",
+          subtype: "channel_join",
+          channel: "C1",
+          ts: "1.0",
+          text: canary,
+          files: [{ id: "F1", url_private: privateUrl }],
+        },
+      }),
+    );
+    expect(ignored.statusCode).toBe(200);
+    const malformed = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-malformed",
+        event: { type: "message", channel: "C1", text: canary },
+      }),
+    );
+    expect(malformed.statusCode).toBe(200);
+    expect(inbox.ingest).toHaveBeenCalledTimes(1);
+    const logs = captured.read();
+    expect(logs).toContain('"reason":"unsupported_subtype"');
+    expect(logs).toContain('"reason":"malformed_supported_event"');
+    expect(logs).not.toContain(canary);
+    expect(logs).not.toContain(privateUrl);
+    expect(logs).not.toContain("canary-token");
+  });
+
+  it("does not ingest a signed receipt retry twice and logs self file_share unchanged", async () => {
+    const receipts = {
+      claim: vi
+        .fn()
+        .mockResolvedValueOnce({ accepted: true, duplicate: false, receiptId: "receipt-share" })
+        .mockResolvedValueOnce({
+          accepted: false,
+          duplicate: true,
+          receiptId: "receipt-share",
+          status: "processed",
+        }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn(),
+    };
+    const captured = capturingLogger();
+    const { app, inbox } = createServices({ receipts: receipts as never }, captured.loggerStream, {
+      realAdapter: true,
+    });
+    const fixture = loadSlackFileShareFixture("slack-inbound-file-share-text.json");
+    const envelope = {
+      type: "event_callback",
+      api_app_id: "A1",
+      team_id: "T1",
+      authorizations: matchingBotAuthorization(),
+      event_id: "Ev-receipt-retry",
+      event: fixture.event,
+    };
+    expect((await app.inject(signedRequest(envelope))).statusCode).toBe(200);
+    await vi.waitFor(() => expect(inbox.ingest).toHaveBeenCalledTimes(1));
+    expect((await app.inject(signedRequest(envelope))).statusCode).toBe(200);
+    expect(inbox.ingest).toHaveBeenCalledTimes(1);
+    expect(captured.read()).toContain('"reason":"duplicate_receipt"');
+
+    const selfCaptured = capturingLogger();
+    const selfServices = createServices({}, selfCaptured.loggerStream, { realAdapter: true });
+    const selfResponse = await selfServices.app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-self-file-share",
+        event: {
+          type: "message",
+          subtype: "file_share",
+          channel: "D1",
+          channel_type: "im",
+          user: installation().botUserId,
+          text: "",
+          ts: "2.0",
+          files: [{ id: "F_SELF", name: "bot.png", mimetype: "image/png", size: 4 }],
+        },
+      }),
+    );
+    expect(selfResponse.statusCode).toBe(200);
+    expect(selfServices.inbox.ingest.mock.calls[0]?.[2]).toMatchObject({
+      message: { author: { externalId: installation().botUserId, isSelf: true } },
+    });
+  });
+
+  it("observes background processing and receipt persistence failures without leaking error strings", async () => {
+    const captured = capturingLogger();
+    const receipts = {
+      claim: vi.fn().mockResolvedValue({ accepted: true, duplicate: false, receiptId: "receipt-fail" }),
+      markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockRejectedValue(new Error("password=super-secret-db-url")),
+    };
+    const { app, inbox } = createServices({ receipts: receipts as never }, captured.loggerStream, {
+      realAdapter: true,
+    });
+    inbox.ingest.mockRejectedValue(new Error("provider processing failed https://files.slack.com/private/x"));
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-down",
+        event: loadSlackFileShareFixture("slack-inbound-file-share-text.json").event,
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(() => expect(receipts.markFailed).toHaveBeenCalled());
+    expect(inbox.ingest).toHaveBeenCalledTimes(1);
+    const logs = captured.read();
+    expect(logs).toContain("Slack inbound processing failed");
+    expect(logs).toContain('"reason":"processing_failed"');
+    expect(logs).toContain('"stage":"inbox"');
+    expect(logs).toContain("Slack inbound receipt persistence failed");
+    expect(logs).toContain('"reason":"receipt_persist_failed"');
+    expect(logs).not.toContain("provider processing failed");
+    expect(logs).not.toContain("https://files.slack.com/private/x");
+    expect(logs).not.toContain("password=super-secret-db-url");
+    expect(logs).not.toContain("xoxb-sensitive");
   });
 });

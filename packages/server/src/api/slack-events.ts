@@ -1,5 +1,6 @@
 import { AGENT_SLACK_EVENTS_TEMPLATE, SLACK_EVENTS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { createServiceLoggerPort } from "../observability/service-logger.js";
 import type { ImMessageInbox } from "../services/im/index.js";
 import type { ImBindingService, SlackInstallationIngress } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
@@ -20,7 +21,7 @@ interface SlackEnvelopeBase {
 class SlackEventProcessingError extends Error {
   readonly code = "SLACK_EVENT_PROCESSING_FAILED";
 
-  constructor() {
+  constructor(readonly stage: "normalize" | "inbox") {
     super("SLACK_EVENT_PROCESSING_FAILED");
     this.name = "SlackEventProcessingError";
   }
@@ -52,7 +53,17 @@ export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
   now?: () => Date;
 }
 
+function slackEventLogContext(installation: SlackInstallationIngress, envelope: SlackEnvelopeBase) {
+  return {
+    provider: "slack",
+    eventId: envelope.event_id?.slice(0, 128),
+    installationId: installation.installationId,
+    generation: installation.generation,
+  };
+}
+
 export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEventsRouteOptions): void {
+  const logger = createServiceLoggerPort(() => app.log, "slack-events");
   app.removeContentTypeParser("application/json");
   app.addContentTypeParser(
     "application/json",
@@ -110,36 +121,71 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
         authorization.team_id === installation.teamId &&
         authorization.user_id === installation.botUserId,
     );
-    if (!identityClosed) return reply.code(401).send({ error: "binding_mismatch" });
+    const logContext = slackEventLogContext(installation, envelope);
+    if (!identityClosed) {
+      logger.info(
+        { ...logContext, stage: "authorize", outcome: "ignored", reason: "identity_mismatch" },
+        "Slack inbound ignored",
+      );
+      return reply.code(401).send({ error: "binding_mismatch" });
+    }
     if (
       !(await options.imBindings.recordSlackInstallationIdentityClosure(
         installation.installationId,
         installation.generation,
       ))
     ) {
+      logger.info(
+        { ...logContext, stage: "authorize", outcome: "ignored", reason: "generation_changed" },
+        "Slack inbound ignored",
+      );
       return reply.code(200).send({ ok: true });
     }
     const routed = await options.imBindings.resolveSlackDefaultRoute(installation.installationId);
-    if (!routed) return reply.code(200).send({ ok: true });
+    if (!routed) {
+      logger.info({ ...logContext, stage: "route", outcome: "ignored", reason: "no_route" }, "Slack inbound ignored");
+      return reply.code(200).send({ ok: true });
+    }
 
+    let stage: "normalize" | "inbox" = "normalize";
     try {
       const adapter = options.createAdapter(installation);
-      const events = adapter.normalizeInbound({
-        eventId: envelope.event_id,
-        appId: installation.appId,
-        teamId: installation.teamId,
-        botUserId: installation.botUserId,
-        botId: installation.botId,
-        event: envelope.event,
-        eventTime: envelope.event_time,
-      });
+      const events = adapter.normalizeInbound(
+        {
+          eventId: envelope.event_id,
+          appId: installation.appId,
+          teamId: installation.teamId,
+          botUserId: installation.botUserId,
+          botId: installation.botId,
+          event: envelope.event,
+          eventTime: envelope.event_time,
+        },
+        (reason) => {
+          const invalid = reason === "malformed_supported_event";
+          logger[invalid ? "warn" : "info"](
+            { ...logContext, stage, outcome: invalid ? "invalid" : "ignored", reason },
+            "Slack inbound rejected",
+          );
+        },
+      );
+      stage = "inbox";
       for (const event of events) {
-        await options.inbox.ingest(routed.imBindingId, installation.generation, event, undefined, {
+        const result = await options.inbox.ingest(routed.imBindingId, installation.generation, event, undefined, {
           provider: "slack",
         });
+        logger.info(
+          {
+            ...logContext,
+            stage,
+            messageId: result?.messageId,
+            deliveryIds: result?.deliveryIds,
+            duplicate: result?.duplicate,
+          },
+          "Slack inbound inbox result",
+        );
       }
     } catch {
-      throw new SlackEventProcessingError();
+      throw new SlackEventProcessingError(stage);
     }
     return reply.code(200).send({ ok: true });
   };
@@ -157,21 +203,46 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       credentialGeneration: installation.generation,
       eventId: envelope.event_id,
     });
-    if (!claim.accepted || !claim.receiptId) return reply.code(200).send({ ok: true });
+    const logContext = { ...slackEventLogContext(installation, envelope), receiptId: claim.receiptId };
+    if (!claim.accepted || !claim.receiptId) {
+      logger.info(
+        { ...logContext, stage: "receipt", outcome: "ignored", reason: "duplicate_receipt" },
+        "Slack inbound ignored",
+      );
+      return reply.code(200).send({ ok: true });
+    }
     // A real reply object cannot be used after the HTTP request is acknowledged. The work function
     // only uses it to construct status responses, so this sink keeps those responses off the wire.
     const backgroundReply = {
       code: () => backgroundReply,
       send: () => backgroundReply,
     } as unknown as FastifyReply;
+    let stage = "process";
     void processEnvelope(installation, envelope, backgroundReply)
-      .then(() => options.receipts?.markProcessed(claim.receiptId as string))
+      .then(() => {
+        stage = "receipt";
+        return options.receipts?.markProcessed(claim.receiptId as string);
+      })
       .catch(async (error: unknown) => {
         const code =
           error && typeof error === "object" && "code" in error && typeof error.code === "string"
             ? error.code
             : "SLACK_EVENT_PROCESSING_FAILED";
-        await options.receipts?.markFailed(claim.receiptId as string, code).catch(() => undefined);
+        logger.error(
+          {
+            ...logContext,
+            stage: error instanceof SlackEventProcessingError ? error.stage : stage,
+            outcome: "failed",
+            reason: "processing_failed",
+          },
+          "Slack inbound processing failed",
+        );
+        await options.receipts?.markFailed(claim.receiptId as string, code).catch(() => {
+          logger.error(
+            { ...logContext, stage: "receipt", outcome: "failed", reason: "receipt_persist_failed" },
+            "Slack inbound receipt persistence failed",
+          );
+        });
       });
     return reply.code(200).send({ ok: true });
   };

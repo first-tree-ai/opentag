@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
@@ -6,6 +7,23 @@ import { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 import { normalizeSlackEnvelope, SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import { DefaultSlackApiClient, SLACK_WEB_CLIENT_OPTIONS } from "../services/im-bindings/slack/default-api-client.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
+
+function loadSlackFileShareFixture(name: "slack-inbound-file-share-png.json" | "slack-inbound-file-share-text.json") {
+  return JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")) as {
+    event: Record<string, unknown>;
+  };
+}
+
+function slackEnvelope(event: Record<string, unknown>, eventId = "Ev-file-share") {
+  return {
+    eventId,
+    appId: "A1",
+    teamId: "T1",
+    botUserId: "U_BOT",
+    botId: "B_BOT",
+    event,
+  };
+}
 
 describe("Slack installed-binding adapter", () => {
   it("derives installation identity and granted scopes from Slack instead of browser input", async () => {
@@ -524,6 +542,68 @@ describe("Slack installed-binding adapter", () => {
       event: { type: "message", channel: "C1", ts: "3", text: large },
     });
     expect(bounded?.message.content).toMatchObject({ truncated: true });
+  });
+
+  it("normalizes sanitized production file_share fixtures, empty bodies, and self authors", () => {
+    const textFixture = loadSlackFileShareFixture("slack-inbound-file-share-text.json");
+    const [textEvent] = normalizeSlackEnvelope(slackEnvelope(textFixture.event, "Ev-text"));
+    expect(textEvent).toMatchObject({
+      conversation: { externalId: "D_TEST_DM", kind: "dm" },
+      message: {
+        operation: "created",
+        externalId: "1788958812.272619",
+        author: { externalId: "U_TEST_HUMAN", kind: "human", isSelf: false },
+        content: { fallbackText: "[synthetic test request]" },
+        resources: [{ providerResourceKey: "F_TEST_1", kind: "file", filename: "facts.txt", mediaType: "text/plain" }],
+      },
+    });
+
+    const pngFixture = loadSlackFileShareFixture("slack-inbound-file-share-png.json");
+    const [pngEvent] = normalizeSlackEnvelope(slackEnvelope(pngFixture.event, "Ev-png"));
+    expect(pngEvent).toMatchObject({
+      conversation: { kind: "dm" },
+      message: {
+        author: { kind: "human", isSelf: false },
+        resources: [{ providerResourceKey: "F_TEST_1", kind: "image", filename: "colors.png", mediaType: "image/png" }],
+      },
+    });
+
+    const [emptyBody] = normalizeSlackEnvelope(
+      slackEnvelope({ ...textFixture.event, text: "", ts: "1788958813.000000", event_ts: "1788958813.000000" }),
+    );
+    expect(emptyBody).toMatchObject({
+      message: {
+        operation: "created",
+        content: { fallbackText: "" },
+        resources: [{ providerResourceKey: "F_TEST_1", kind: "file" }],
+      },
+    });
+
+    const [selfShare] = normalizeSlackEnvelope(
+      slackEnvelope({
+        type: "message",
+        subtype: "file_share",
+        channel: "D_TEST_DM",
+        channel_type: "im",
+        user: "U_BOT",
+        text: "",
+        ts: "1788958814.000000",
+        files: [{ id: "F_SELF", name: "bot.png", mimetype: "image/png", size: 12 }],
+      }),
+    );
+    expect(selfShare).toMatchObject({
+      message: { author: { externalId: "U_BOT", kind: "human", isSelf: true }, resources: [{ kind: "image" }] },
+    });
+  });
+
+  it.each([
+    [{ type: "message", subtype: "channel_join", channel: "C1", ts: "1.0" }, "unsupported_subtype"],
+    [{ type: "message", channel: "C1" }, "malformed_supported_event"],
+    [{ type: "reaction_added", reaction: "thumbsup" }, "unsupported_event_type"],
+  ])("reports why a rejected event produces no message: %s", (event, reason) => {
+    const onRejected = vi.fn();
+    expect(normalizeSlackEnvelope(slackEnvelope({ ...event, text: "canary-secret-text" }), onRejected)).toEqual([]);
+    expect(onRejected).toHaveBeenCalledExactlyOnceWith(reason);
   });
 
   it("registers the raw-body route without breaking adjacent JSON parsing", async () => {

@@ -313,6 +313,7 @@ describe("AgentSetupPage stages", () => {
     expect(footer?.contains(continueButton)).toBe(true);
     expect(screen.getByRole("status").textContent).toBe("Complete the action above, then check again.");
     expect(continueButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.queryByText("Checking Messaging support automatically. No action needed…")).toBeNull();
   });
 
   it("shows a real checking observation as checking and nothing else animates", async () => {
@@ -622,6 +623,7 @@ describe("preparation review regressions", () => {
       imCliReadiness: { feishu: "checking", slack: "ready" },
     });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
     renderSetup(memory.adapter);
     await settle();
     expect(readinessRow("runtime").getAttribute("data-status")).toBe("install-required");
@@ -629,9 +631,17 @@ describe("preparation review regressions", () => {
     memory.controls.setImCliReadiness("feishu", "ready");
     await advance(POLL_MS);
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("ready");
-    const settledReads = reads.mock.calls.length;
-    await advance(POLL_MS * 40);
-    expect(reads).toHaveBeenCalledTimes(settledReads);
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("install-required");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    const afterCliReady = reads.mock.calls.length;
+    await advance(POLL_MS * 3 + 10);
+    expect(reads.mock.calls.length).toBeGreaterThan(afterCliReady);
+    await advance(BOUNDED_POLL_WINDOW_MS);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
+    await advance(POLL_MS * 4);
+    expect(reads.mock.calls.length).toBe(stopped);
+    expect(refreshes).not.toHaveBeenCalled();
     expect(document.querySelector('[data-ui="agent-setup-messaging"]')).toBeNull();
   });
 
@@ -1470,35 +1480,131 @@ describe("AgentSetupPage preparation rows across stages", () => {
 });
 
 describe("AgentSetupPage preparation polling", () => {
-  it("never polls a settled Provider CLI install failure", async () => {
+  it("follows the real first-connect heartbeats: waiting, install at 30s, ready after t60", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
-      imCliReadiness: { feishu: "install", slack: "ready" },
+      runtimeMissing: true,
+      imCliReadiness: {},
     });
     const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
+    renderSetup(memory.adapter);
+    await settle();
+    const t0 = Date.now();
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("waiting");
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("waiting");
+    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    await advance(30_000 - (Date.now() - t0));
+    memory.controls.setRuntimeStatus("ready");
+    memory.controls.setImCliReadiness("feishu", "ready");
+    memory.controls.setImCliReadiness("slack", "install");
+    await advance(POLL_MS + 10);
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("ready");
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
+    expect(rowTitle("messaging-support")).toContain("Installation required");
+    expect(screen.queryByText("Checking Messaging support automatically. No action needed…")).toBeNull();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    expect(refreshes).not.toHaveBeenCalled();
+
+    await advance(60_000 - (Date.now() - t0));
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    const readsAtT60 = reads.mock.calls.length;
+    expect(readsAtT60).toBeGreaterThan(1);
+
+    await advance(4_000);
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
+    expect(reads.mock.calls.length).toBeGreaterThan(readsAtT60);
+    expect(refreshes).not.toHaveBeenCalled();
+
+    memory.controls.setImCliReadiness("slack", "ready");
+    await advance(POLL_MS + 10);
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
+    expect(refreshes).not.toHaveBeenCalled();
+  });
+
+  it("converges a slow install that becomes ready near the end of the window", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      imCliReadiness: { feishu: "ready", slack: "install" },
+    });
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
+    renderSetup(memory.adapter);
+    await settle();
+    expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    await advance(BOUNDED_POLL_WINDOW_MS - POLL_MS * 2);
+    memory.controls.setImCliReadiness("slack", "ready");
+    await advance(POLL_MS + 10);
+    await settle();
+
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    expect(refreshes).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Runtime install", { runtimeStatus: "install" as const }],
+    ["Runtime sign-in", { runtimeStatus: "sign-in" as const }],
+    ["Runtime unavailable", { runtimeStatus: "unavailable" as const }],
+    ["IM CLI install", { imCliReadiness: { feishu: "install" as const, slack: "ready" as const } }],
+    ["IM CLI unavailable", { imCliReadiness: { feishu: "unavailable" as const, slack: "ready" as const } }],
+  ] as const)("stops persistent %s within the bound and then offers Check again", async (_label, seed) => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), ...seed });
+    const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
     renderSetup(memory.adapter);
     await settle();
     expect(reads).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(refreshes).not.toHaveBeenCalled();
 
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeGreaterThan(1);
+    expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
     await advance(POLL_MS * 4);
-    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(stopped);
+    expect(refreshes).not.toHaveBeenCalled();
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
 
-    // The explicit Check again is still the way a manual-action failure moves forward.
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
     await settle();
-    expect(reads).toHaveBeenCalledTimes(2);
+    expect(refreshes).toHaveBeenCalledWith(SETUP_AGENT_ID);
+    expect(reads.mock.calls.length).toBe(stopped + 1);
+    await advance(POLL_MS + 10);
+    expect(reads.mock.calls.length).toBe(stopped + 2);
   });
 
-  it("never polls a settled Runtime install or sign-in failure", async () => {
-    for (const runtimeStatus of ["install", "sign-in"] as const) {
-      const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus });
-      const reads = vi.spyOn(memory.adapter, "readSnapshot");
-      renderSetup(memory.adapter);
-      await settle();
-      expect(reads).toHaveBeenCalledTimes(1);
-      await advance(POLL_MS * 4);
-      expect(reads).toHaveBeenCalledTimes(1);
+  it("does not reset the bounded window when blocked local-prep states change", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeMissing: true });
+    const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
+    renderSetup(memory.adapter);
+    await settle();
+    const startedAt = Date.now();
+
+    for (const status of ["checking", "install", "sign-in", "unavailable", "checking"] as const) {
+      await advance(POLL_MS + 10);
+      memory.controls.setRuntimeStatus(status);
     }
+    await advance(BOUNDED_POLL_WINDOW_MS - (Date.now() - startedAt) + 10);
+    const stopped = reads.mock.calls.length;
+    expect(stopped).toBeGreaterThan(1);
+    expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
+    await advance(BOUNDED_POLL_WINDOW_MS / 2);
+    expect(reads.mock.calls.length).toBe(stopped);
+    expect(refreshes).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
   it("polls a checking Runtime report inside the finite budget and then stops", async () => {
@@ -1519,7 +1625,7 @@ describe("AgentSetupPage preparation polling", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
-  it("clears an exhausted checking message when an outstanding poll finds a manual action", async () => {
+  it("keeps an exhausted window exhausted when a late read changes checking to install", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "checking" });
     const modelRead = memory.adapter.readSnapshot;
     const finalRead = deferred<AgentSetupSnapshot>();
@@ -1540,8 +1646,11 @@ describe("AgentSetupPage preparation polling", () => {
     finalRead.resolve(await modelRead(SETUP_AGENT_ID));
     await settle();
 
-    expect(screen.getByRole("status").textContent).toBe("Complete the action above, then check again.");
-    expect(screen.queryByText("Automatic checking paused. Check again to retry.")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("install-required");
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    await advance(POLL_MS * 4);
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
   });
 
   it("polls while one blocking required CLI is transitional, even beside a settled row", async () => {
@@ -1562,6 +1671,71 @@ describe("AgentSetupPage preparation polling", () => {
     expect(stopped).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
     await advance(POLL_MS * 4);
     expect(reads.mock.calls.length).toBe(stopped);
+  });
+
+  it("preserves the install-window deadline and fences a late stale reply", async () => {
+    const installing = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "install" });
+    const ready = createMemorySetupAdapter({ agent: setupAgent() });
+    const hung = deferred<AgentSetupSnapshot>();
+    let calls = 0;
+    const adapter = scriptedAdapter(async (agentId) => {
+      calls += 1;
+      if (calls === 1) return installing.adapter.readSnapshot(agentId);
+      if (calls === 2) return hung.promise;
+      return ready.adapter.readSnapshot(agentId);
+    });
+    renderSetup(adapter);
+    await settle();
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("install-required");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    await advance(POLL_MS + 10);
+    expect(calls).toBe(2);
+    await advance(AGENT_SETUP_READ_TIMEOUT_MS);
+    await settle();
+    await advance(POLL_MS + 10);
+    await settle();
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    expect(adapter.refreshPreparation).not.toHaveBeenCalled();
+
+    hung.resolve(await installing.adapter.readSnapshot(SETUP_AGENT_ID));
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    expect(readinessRow("runtime").getAttribute("data-status")).toBe("ready");
+  });
+
+  it("reads current ready on re-entry and opens a fresh window when still blocked", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "install" });
+    const reads = vi.spyOn(memory.adapter, "readSnapshot");
+    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
+    const blocked = renderSetup(memory.adapter);
+    await settle();
+    await advance(BOUNDED_POLL_WINDOW_MS + 10);
+    const exhausted = reads.mock.calls.length;
+    expect(exhausted).toBeGreaterThan(1);
+    expect(exhausted).toBeLessThanOrEqual(1 + BOUNDED_POLL_ATTEMPTS);
+    expect(screen.getByRole("status").textContent).toBe("Automatic checking paused. Check again to retry.");
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    blocked.unmount();
+
+    const blockedAgain = renderSetup(memory.adapter);
+    await settle();
+    const remounted = reads.mock.calls.length;
+    expect(remounted).toBe(exhausted + 1);
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    await advance(POLL_MS + 10);
+    expect(reads.mock.calls.length).toBe(remounted + 1);
+    blockedAgain.unmount();
+
+    memory.controls.setRuntimeStatus("ready");
+    renderSetup(memory.adapter);
+    await settle();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(false);
+    const readyReads = reads.mock.calls.length;
+    await advance(POLL_MS * 4);
+    expect(reads.mock.calls.length).toBe(readyReads);
+    expect(refreshes).not.toHaveBeenCalled();
   });
 });
 

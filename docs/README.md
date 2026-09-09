@@ -26,6 +26,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 - [Release guide](./releasing.md)
 - [Portable release guide](./portable-release.md)
 - [Internationalization](./i18n.md)
+- [Web App analytics](./web-analytics.md)
 
 ## Design references
 

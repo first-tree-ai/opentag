@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useRouter } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
+import { analytics } from "../analytics/analytics.js";
+import { useAccountIdentityReport } from "../analytics/milestones.js";
 import { ApiError, browserApi } from "../api.js";
 import { Redirect } from "../features/navigation/redirect.js";
 import { AsyncState, toResourceState } from "../features/resource/resource-state.js";
@@ -32,6 +34,16 @@ function AuthenticatedAccountGate() {
   const queryClient = useQueryClient();
   const state = toResourceState(useQuery({ queryKey: queryKeys.me(), queryFn: () => browserApi.me() }));
   /**
+   * The Server refusing this read is the session ending. It is computed once and used both to
+   * release the analytics identity and to redirect, so the two can never come to disagree about
+   * whether the Account is gone — a refusal is not the same as a read that has not answered yet.
+   */
+  const sessionLost = state.kind === "error" && state.error instanceof ApiError && state.error.status === 401;
+  // The one place every signed-in surface passes through, however it was reached — a form that
+  // navigated the browser, an identity provider's redirect, or a session that was already there —
+  // and the one place both of its exits are visible.
+  useAccountIdentityReport({ userId: state.kind === "ready" ? state.value.user.id : undefined, sessionLost });
+  /**
    * Which session the Account on screen belongs to. Clearing the cache ends the session for every
    * read the cache started, but not for `refreshMe`, which the cache never started — so the session
    * is counted, and a refresh that outlives its own discards its answer instead of writing the
@@ -40,6 +52,10 @@ function AuthenticatedAccountGate() {
   const session = useRef(0);
   const endSession = useCallback(() => {
     session.current += 1;
+    // The analytics identity is Account-derived state like any other read under this session, and
+    // signing out is a client-side navigation — without this the login page that follows, and every
+    // page after it, would still be reported as the Account that just left.
+    analytics.identify(null);
     queryClient.clear();
   }, [queryClient]);
   /**
@@ -57,7 +73,7 @@ function AuthenticatedAccountGate() {
     if (session.current === startedIn) queryClient.setQueryData(queryKeys.me(), next);
     return next;
   }, [queryClient]);
-  if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
+  if (sessionLost) {
     return <Redirect replace search={{ next: requested }} to="/login" />;
   }
   return (

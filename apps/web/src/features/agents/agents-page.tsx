@@ -36,7 +36,7 @@ export function AgentsPage() {
           </Link>
         </div>
       }
-      title={m.agents_title()}
+      title={m.shell_all_agents()}
     >
       {oauthError ? <Banner variant="error" role="alert" description={slackConfigurationMessage(oauthError)} /> : null}
       <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>

@@ -223,7 +223,7 @@ test("sign-in rejects bad credentials and accepts the configured admin", async (
     const signInPage = await context.newPage();
     await signInPage.goto("/api/v1/auth/dev/callback?next=/agents", { waitUntil: "networkidle" });
     await expect(signInPage).toHaveURL(`${baseURL}/agents`);
-    await expect(signInPage.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
+    await expect(signInPage.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
   } finally {
     await context.close();
   }
@@ -244,7 +244,7 @@ test("Agent settings persist a change across reload", async ({ page }) => {
 test("Agent navigation reaches every visible Agent-owned destination", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   const destinations = [
-    { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
+    { name: "Overview", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
     { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
@@ -252,7 +252,7 @@ test("Agent navigation reaches every visible Agent-owned destination", async ({ 
     await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
     await page
       .getByRole("navigation", { name: "Agent", exact: true })
-      .getByRole("button", { name: destination.name })
+      .getByRole("link", { name: destination.name })
       .click();
     await expect(page).toHaveURL(new RegExp(`${destination.path.replace("/", "\\/")}\\/?$`));
     await expect(page.getByRole("heading", { name: destination.heading, exact: true })).toBeVisible();
@@ -262,6 +262,130 @@ test("Agent navigation reaches every visible Agent-owned destination", async ({ 
   await page.getByRole("menuitem", { name: "Account" }).click();
   await expect(page).toHaveURL(/\/account\/?$/);
   await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+});
+
+test("Workspace and Agent navigation retain the content frame through both transitions", async ({ page }) => {
+  await page.goto("/agents", { waitUntil: "networkidle" });
+  const frame = page.locator('[data-ui="content-page-frame"]');
+  const before = await frame.boundingBox();
+  if (!before) throw new Error("Expected the Workspace content frame");
+  await expect(page.getByRole("link", { name: "All Agents", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "56px");
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/workspace-dock.png") });
+
+  const sampleFrame = () =>
+    page.evaluate(async () => {
+      const values: Array<{ x: number; y: number; width: number }> = [];
+      const started = performance.now();
+      while (performance.now() - started < 500) {
+        const bounds = document.querySelector('[data-ui="content-page-frame"]')?.getBoundingClientRect();
+        if (bounds) values.push({ x: bounds.x, y: bounds.y, width: bounds.width });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      return values;
+    });
+  const [entry] = await Promise.all([
+    sampleFrame(),
+    page.getByRole("link", { name: "Open E2E Agent Updated", exact: true }).click(),
+  ]);
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "240px");
+  const overview = page.getByRole("navigation", { name: "Agent", exact: true }).getByRole("link", { name: "Overview" });
+  await expect(overview).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: "All Agents", exact: true })).not.toHaveAttribute("aria-current", "page");
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/agent-navigation.png") });
+  const [exit] = await Promise.all([
+    sampleFrame(),
+    page.getByRole("link", { name: "All Agents", exact: true }).click(),
+  ]);
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "56px");
+  for (const bounds of [...entry, ...exit]) {
+    expect(bounds.x).toBeCloseTo(before.x, 1);
+    expect(bounds.y).toBeCloseTo(before.y, 1);
+    expect(bounds.width).toBeCloseTo(before.width, 1);
+  }
+  await expectAccessible(page);
+});
+
+test("global return, local return, history, and dirty settings keep their own destinations", async ({ page }) => {
+  for (const section of [
+    "tasks",
+    `tasks/${taskId}`,
+    "usage",
+    "settings",
+    "settings/identity",
+    "settings/messaging",
+    "settings/computer",
+    "settings/instructions",
+    "settings/execution",
+    "settings/manage",
+  ]) {
+    await page.goto(`/agents/${agentId}/${section}`, { waitUntil: "networkidle" });
+    const home = page.getByRole("link", { name: "All Agents", exact: true });
+    await expect(home).toBeVisible();
+    await home.click();
+    await expect(page).toHaveURL(/\/agents\/?$/);
+    await expect(page.locator('[data-scope="workspace"]')).toBeVisible();
+  }
+  await page.goto(`/agents/${agentId}/settings/identity`, { waitUntil: "networkidle" });
+  await page.getByLabel("Display name", { exact: true }).fill("Unsaved navigation check");
+  await page.getByRole("link", { name: "All Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/settings/identity$`));
+  await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("Unsaved navigation check");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "240px");
+  await page.getByRole("link", { name: "All Agents", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page).toHaveURL(/\/agents\/?$/);
+  await page.goBack();
+  await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("E2E Agent Updated");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "240px");
+
+  await page.goto(`/agents/${agentId}/tasks`, { waitUntil: "networkidle" });
+  const search = page.getByRole("searchbox", { name: "Search Tasks" });
+  await search.fill("seeded");
+  await page.getByRole("link", { name: "Review the seeded E2E task", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Back to Tasks", exact: true })
+    .getByRole("link", { name: "Tasks", exact: true })
+    .click();
+  await expect(search).toHaveValue("seeded");
+  await page.getByRole("button", { name: "Account menu", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Computers", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
+  await page.getByRole("menuitem", { name: "Account", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "56px");
+});
+
+test("mobile global return remains visible and reduced motion does not animate navigation geometry", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+  const main = page.getByRole("main");
+  const before = await main.boundingBox();
+  await page.getByRole("button", { name: "Open Agent navigation", exact: true }).click();
+  const drawer = page.getByRole("navigation", { name: "Agent navigation", exact: true });
+  await expect(drawer.getByRole("link", { name: "Overview", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Open Agent navigation", exact: true })).toBeFocused();
+  await page.getByRole("link", { name: "All Agents", exact: true }).click();
+  await expect(page).toHaveURL(/\/agents\/?$/);
+  const after = await main.boundingBox();
+  expect(after?.x).toBe(before?.x);
+  expect(after?.width).toBe(before?.width);
+  expect(after?.y).toBe(before?.y);
+  await expectNoPageOverflow(page);
+  await expectAccessible(page);
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/workspace-mobile.png") });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("link", { name: "Open E2E Agent Updated", exact: true }).click();
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("transition-duration", "0s");
+  await page.getByRole("link", { name: "All Agents", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("link", { name: "Open E2E Agent Updated", exact: true })).toBeFocused();
 });
 
 test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", async ({ page }) => {
@@ -402,8 +526,8 @@ test("the screenshot pass captures every primary page and writes a contact sheet
   await mkdir(screenshots, { recursive: true });
   const pages: Array<{ file: string; route: string; heading: string }> = [
     { file: "login", route: "/login", heading: "Sign in to OpenTag" },
-    { file: "home", route: "/", heading: "Agents" },
-    { file: "agents", route: "/agents", heading: "Agents" },
+    { file: "home", route: "/", heading: "All Agents" },
+    { file: "agents", route: "/agents", heading: "All Agents" },
     { file: "agents-setup-create", route: "/agents/setup?action=create", heading: AGENT_SETUP_CREATE_HEADING },
     { file: "agents-computers", route: "/agents/computers", heading: "Computers" },
     { file: "agents-agentId", route: `/agents/${agentId}`, heading: "E2E Agent Updated" },

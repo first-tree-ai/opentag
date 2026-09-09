@@ -26,7 +26,7 @@ test.describe("anonymous access", () => {
 
 test("the authenticated Agents entrypoint exposes an accessible keyboard action", async ({ page }) => {
   await page.goto("/agents", { waitUntil: "networkidle" });
-  await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
   const newAgent = page.getByRole("link", { name: "New Agent", exact: true });
   await expect(newAgent).toBeVisible();
   await newAgent.focus();

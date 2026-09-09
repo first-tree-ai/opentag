@@ -38,8 +38,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Current work" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Messaging" })).toBeNull();
     expect(screen.queryByLabelText("More Agent actions")).toBeNull();
-    const agentNavigation = screen.getByRole("navigation", { name: "Agent" });
-    expect(within(agentNavigation).getByRole("button", { name: "Home" }).getAttribute("aria-current")).toBe("page");
+    const agentNavigation = await screen.findByRole("navigation", { name: "Agent" });
+    expect(within(agentNavigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
     expect(within(agentNavigation).queryByText("Settings")).toBeNull();
     expect(screen.queryByText("Runtime")).toBeNull();
   });
@@ -130,8 +130,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
     expect(agentReads).toBe(1);
-    const agentNavigation = screen.getByRole("navigation", { name: "Agent" });
-    expect(within(agentNavigation).getByRole("button", { name: "Usage" }).getAttribute("aria-current")).toBe("page");
+    const agentNavigation = await screen.findByRole("navigation", { name: "Agent" });
+    expect(within(agentNavigation).getByRole("link", { name: "Usage" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("keeps Agent context visible while opening Settings", async () => {
@@ -154,7 +154,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
-    expect(screen.queryByRole("navigation", { name: "Account Agents" })).toBeNull();
+    expect(screen.getByRole("link", { name: "All Agents" }).getAttribute("href")).toBe("/agents");
     await waitFor(() => expect(agentReads).toBe(2));
     expect(screen.queryByLabelText("Loading current server state")).toBeNull();
     await act(async () => releaseAgentRead());

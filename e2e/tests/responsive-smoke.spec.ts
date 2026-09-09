@@ -27,7 +27,7 @@ test.describe("390px primary mobile width", () => {
 
   test("keeps the primary action and touch creation route inside the viewport", async ({ page }) => {
     await page.goto("/agents", { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
     const trigger = page.getByRole("link", { name: "New Agent", exact: true });
     await expectWithinViewport(trigger);
     await expectNoPageOverflow(page);
@@ -45,7 +45,7 @@ test.describe("390px primary mobile width", () => {
 test.describe("768px layout transition width", () => {
   test.use({ viewport: { width: 768, height: 900 } });
 
-  test("keeps Account settings readable in the wide row composition", async ({ page }) => {
+  test("keeps Account settings readable beside the reserved navigation track", async ({ page }) => {
     await page.goto("/account", { waitUntil: "networkidle" });
     await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
     await expectNoPageOverflow(page);
@@ -57,7 +57,10 @@ test.describe("768px layout transition width", () => {
     expect(copyBox, "settings copy layout box").not.toBeNull();
     expect(controlBox, "settings control layout box").not.toBeNull();
     if (!copyBox || !controlBox) throw new Error("Expected Account settings to have layout dimensions");
-    expect(controlBox.x, "settings control column").toBeGreaterThan(copyBox.x + copyBox.width);
+    expect(controlBox.y, "settings controls follow their labels at this content width").toBeGreaterThan(
+      copyBox.y + copyBox.height,
+    );
+    expect(controlBox.width, "settings controls retain a readable width").toBeGreaterThan(280);
 
     const displayName = page.getByLabel("Display name", { exact: true });
     await displayName.focus();
@@ -71,7 +74,7 @@ test.describe("1440px desktop width", () => {
 
   test("centers the bounded content frame and preserves the page hierarchy", async ({ page }) => {
     await page.goto("/agents", { waitUntil: "networkidle" });
-    const heading = page.getByRole("heading", { name: "Agents", exact: true });
+    const heading = page.getByRole("heading", { name: "All Agents", exact: true });
     const action = page.getByRole("link", { name: "New Agent", exact: true });
     await expect(heading).toBeVisible();
     await expect(action).toBeVisible();
@@ -82,7 +85,12 @@ test.describe("1440px desktop width", () => {
     expect(frameBox, "desktop content frame layout box").not.toBeNull();
     if (!frameBox) throw new Error("Expected the desktop content frame to have layout dimensions");
     expect(frameBox.width, "desktop content frame width").toBeLessThanOrEqual(1024);
-    expect(frameBox.x + frameBox.width / 2, "desktop content frame center").toBeCloseTo(720, 0);
+    const mainBox = await page.getByRole("main").boundingBox();
+    if (!mainBox) throw new Error("Expected the shared main region");
+    expect(frameBox.x + frameBox.width / 2, "content centered within its stable main region").toBeCloseTo(
+      mainBox.x + mainBox.width / 2,
+      -1,
+    );
 
     const [headingBox, actionBox] = await Promise.all([heading.boundingBox(), action.boundingBox()]);
     if (!headingBox || !actionBox) throw new Error("Expected the page header to have layout dimensions");

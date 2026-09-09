@@ -12,7 +12,7 @@ const AppLink = forwardRef<HTMLAnchorElement, LinkComponentProps>(function AppLi
   }
   // Kumo's contract is a runtime href string, while `to` is a union of the generated route paths.
   // This adapter is the one place the two meet, so the widening stays contained here.
-  return <RouterLink {...props} ref={ref} to={(href ?? "#") as never} />;
+  return <RouterLink {...props} activeOptions={{ exact: true }} ref={ref} to={(href ?? "#") as never} />;
 });
 
 /**

@@ -31,6 +31,7 @@ import {
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
+import { useRememberedState } from "./shell/shell-memory.js";
 import { TaskMessageBody } from "./task-message-body.js";
 
 type TaskFilter = "all" | TaskStatus;
@@ -46,9 +47,10 @@ const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
 };
 
 export function TasksPage({ agentId, showExamples = false }: { agentId?: string; showExamples?: boolean } = {}) {
-  const [query, setQuery] = useState("");
+  const filterKey = taskFilterKey(agentId);
+  const [query, setQuery] = useRememberedState(`${filterKey}:query`, "");
   const [selectedAgentId, setSelectedAgentId] = useState("all");
-  const [status, setStatus] = useState<TaskFilter>("all");
+  const [status, setStatus] = useRememberedState<TaskFilter>(`${filterKey}:status`, "all");
   /*
    * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
    * stays retryable — the behavior the hand-rolled append kept its own error state for.
@@ -918,4 +920,8 @@ async function loadDevelopmentTaskData() {
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(m.tasks_request_failed());
+}
+
+function taskFilterKey(agentId: string | undefined) {
+  return `tasks:${agentId ?? "examples"}`;
 }

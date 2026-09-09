@@ -350,7 +350,7 @@ describe("ContextTreeManager", () => {
         { status: "unavailable", reason: "PREPARING" },
         { status: "unavailable", reason: "PREPARING" },
       ]);
-      expect(writes).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(writes).toHaveBeenCalledTimes(1));
       release();
       await vi.waitFor(async () => {
         await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });

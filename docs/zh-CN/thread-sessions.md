@@ -24,4 +24,4 @@ Slack 使用 `thread_ts` 同时作为稳定 thread key 和根消息标识。飞�
 
 新物化 Thread Session 的首次 direct delivery 会包含有界且可验证的入站上下文：若存在可靠根消息标识，则先包含可见根消息，再包含同一 thread 的历史消息。当前消息不会在 history 中重复，sibling thread 也不会混入。Ambient 物化本身不会附加 direct bootstrap history，也不会建立 direct 连续性。
 
-Channel 与 Thread Session 始终是两个不同的 Runtime scope。OpenTag 不复制 Channel Runtime transcript，不观察 Bot 出站消息，也不依赖 provider CLI 发送结果建立连续性。需要更多原生历史时，Agent 可以直接使用官方 provider CLI 查询。
+Channel 与 Thread Session 始终是两个不同的 Runtime scope。OpenTag 不复制 Channel Runtime transcript，也不依赖 provider CLI 发送结果来建立 Session 连续性。有界的 Lark 发送回执可以出现在来源 Task 上，但不会建立跨 Session 连续性。需要更多原生历史时，Agent 可以直接使用官方 provider CLI 查询。

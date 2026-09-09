@@ -565,6 +565,19 @@ export class RuntimeDomainOwner {
       if (frame.type === "im:credential") return this.#rejectCredentialGrant(frame, context, "placement_stale");
       return undefined;
     }
+    if (
+      frame.type === "turn:report" &&
+      frame.outgoingReplies !== undefined &&
+      context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.turnReport] !== 2
+    ) {
+      return {
+        type: "turn:report:result",
+        requestId: frame.requestId,
+        turnId: frame.turnId,
+        status: "unsupported_capability",
+        resultHash: frame.resultHash,
+      };
+    }
     if (frame.type === "session:reconcile:result") {
       await this.#completeRequest("reconcile", frame.requestId, frame, context);
       return undefined;

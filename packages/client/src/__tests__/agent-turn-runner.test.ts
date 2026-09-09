@@ -17,7 +17,9 @@ import {
 } from "../runtime/agent-turn-runner.js";
 import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
+import type { ProviderCliOutgoingReplyCollectResult } from "../runtime/provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanError } from "../runtime/provider-cli/turn-plan.js";
+import type { ProviderCliTurnPlanPrepareInput } from "../runtime/provider-cli/turn-plan-manager.js";
 import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
@@ -820,7 +822,242 @@ describe("AgentTurnRunner", () => {
     resolveReporting();
     await runner.settled();
   });
+
+  it("retains the negotiated report contract across a mid-Turn disconnect", async () => {
+    const h = outgoingHarness();
+    h.prompt.mockImplementationOnce(async () => {
+      h.capabilityVersion.mockReturnValue(undefined);
+      return { runId: "turn-1", status: "completed", output: [] };
+    });
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.create.mock.calls[0]?.[0]?.outgoingReplies?.replies[0]?.messageId).toBe("om_sent");
+    expect(h.capabilityVersion).toHaveBeenCalledTimes(1);
+    expect(h.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ captureOutgoingReplies: true }),
+      expect.any(AbortSignal),
+    );
+    expect(h.markReporting).toHaveBeenCalledBefore(h.cleanup);
+  });
+
+  it.each(["create", "markReporting"] as const)("keeps receipt evidence when %s fails", async (stage) => {
+    const h = outgoingHarness();
+    if (stage === "create")
+      h.create.mockImplementationOnce(() => {
+        throw new Error("invalid report");
+      });
+    else h.markReporting.mockRejectedValueOnce(new Error("disk full"));
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.collect).toHaveBeenCalledOnce();
+    expect(h.cleanup).not.toHaveBeenCalled();
+    expect(h.submit).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2])("contains capture failures without losing a failed Turn report (v%s)", async (version) => {
+    const h = outgoingHarness();
+    h.capabilityVersion.mockReturnValue(version);
+    h.collect.mockRejectedValueOnce(new Error("private provider body must not be logged"));
+    h.cleanup.mockRejectedValueOnce(new Error("cleanup failed"));
+    h.prompt.mockResolvedValueOnce({
+      runId: "turn-1",
+      status: "failed",
+      output: [],
+      error: { code: "provider_error", message: "failed" },
+    });
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.create.mock.calls[0]?.[0]).toMatchObject({ outcome: "failed", errorReason: "provider_failed" });
+    expect(h.create.mock.calls[0]?.[0]?.outgoingReplies).toEqual(
+      version === 2 ? { status: "unavailable", replies: [] } : undefined,
+    );
+    expect(h.submit).toHaveBeenCalledOnce();
+    expect(JSON.stringify(h.logs)).not.toContain("private provider body");
+    const prepared = h.prepare.mock.calls[0]?.[0] as ProviderCliTurnPlanPrepareInput | undefined;
+    expect(prepared?.captureOutgoingReplies).toBe(version === 2 ? true : undefined);
+  });
+
+  it("keeps successfully sent replies even when the provider then fails", async () => {
+    const h = outgoingHarness();
+    h.prompt.mockRejectedValueOnce(new Error("provider stopped after send"));
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.create.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "unknown",
+      outgoingReplies: { replies: [expect.objectContaining({ messageId: "om_sent" })] },
+    });
+  });
+
+  it("labels a malformed collected snapshot unavailable", async () => {
+    const h = outgoingHarness();
+    h.collect.mockResolvedValueOnce({
+      status: "complete",
+      receipts: null,
+    } as unknown as ProviderCliOutgoingReplyCollectResult);
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.create.mock.calls[0]?.[0]?.outgoingReplies).toEqual({ status: "unavailable", replies: [] });
+  });
+
+  it("does not attach Lark messages to a mismatched provider scope", async () => {
+    const h = outgoingHarness();
+    h.request.content.providerRef = providerRef("1710000000.000001");
+    h.runner.start(liveOwner(h.request));
+    await h.runner.settled();
+    expect(h.create.mock.calls[0]?.[0]?.outgoingReplies?.replies).toEqual([]);
+  });
+
+  it("attaches captured Lark receipts and omits them without the v2 capability", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "c".repeat(64),
+    }));
+    const collect = vi.fn(async () => ({
+      status: "complete" as const,
+      receipts: [
+        {
+          schemaVersion: 1 as const,
+          recordedAt: "2026-09-08T08:00:00.000Z",
+          sequenceHint: 1,
+          kind: "send" as const,
+          messageId: "om_sent",
+          chatId: "oc_1",
+          contentStatus: "available" as const,
+          content: { msgType: "text" as const, text: "actual reply" },
+        },
+      ],
+    }));
+    const cleanup = vi.fn(async () => undefined);
+    const capabilityVersion = vi.fn(() => 2);
+    const request = delivery();
+    request.content.providerRef = {
+      provider: "feishu",
+      teamBrand: "lark",
+      appId: "cli_1",
+      botOpenId: "ou_bot",
+      chatId: "oc_1",
+      messageId: "om_root",
+    };
+    const environment = {
+      prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined), capabilityVersion },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        sessionKind: () => "visible",
+        ensureRuntime: async () => ({
+          prompt: async () => ({ runId: "turn-1", status: "completed", output: [{ type: "text", text: "" }] }),
+        }),
+        cwd: () => "/workspace",
+        observe: () => () => undefined,
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: environment,
+      turnPlan: {
+        prepare: vi.fn(async () => undefined),
+        cleanup: vi.fn(async () => undefined),
+      },
+      outgoingReplies: { collect, cleanup },
+    });
+    runner.start(liveOwner(request));
+    await runner.settled();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outgoingReplies: expect.objectContaining({
+          status: "complete",
+          replies: [
+            expect.objectContaining({
+              messageId: "om_sent",
+              content: expect.objectContaining({ text: "actual reply" }),
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(create.mock.calls[0]?.[0]?.finalText).toBeUndefined();
+    expect(cleanup).toHaveBeenCalledWith({ sessionId: "session-1", runId: "turn-1" });
+
+    create.mockClear();
+    collect.mockClear();
+    cleanup.mockClear();
+    capabilityVersion.mockReturnValue(1);
+    runner.start(liveOwner({ ...request, deliveryId: "delivery-legacy" }));
+    await runner.settled();
+    expect(create.mock.calls[0]?.[0]?.outgoingReplies).toBeUndefined();
+    expect(cleanup).toHaveBeenCalled();
+  });
 });
+
+function outgoingHarness() {
+  const request = delivery();
+  request.content.providerRef = {
+    provider: "feishu",
+    teamBrand: "lark",
+    appId: "cli_1",
+    botOpenId: "ou_bot",
+    chatId: "oc_1",
+    messageId: "om_root",
+    chatType: "p2p",
+  };
+  const collect = vi.fn(
+    async (): Promise<ProviderCliOutgoingReplyCollectResult> => ({
+      status: "complete",
+      receipts: [
+        {
+          schemaVersion: 1,
+          recordedAt: "2026-09-08T08:00:00.000Z",
+          sequenceHint: 1,
+          kind: "send",
+          messageId: "om_sent",
+          chatId: "oc_1",
+          contentStatus: "available",
+          content: { msgType: "text", text: "Actual reply" },
+        },
+      ],
+    }),
+  );
+  const cleanup = vi.fn(async () => undefined);
+  const markReporting = vi.fn(async () => undefined);
+  const submit = vi.fn(async () => undefined);
+  const create = vi.fn((input: Parameters<TurnReportOwner["create"]>[0]) => ({
+    ...input,
+    type: "turn:report" as const,
+    requestId: randomUUID(),
+    resultHash: "c".repeat(64),
+  }));
+  const capabilityVersion = vi.fn((): number | undefined => 2);
+  const prepare = vi.fn(async (_input: ProviderCliTurnPlanPrepareInput, _signal?: AbortSignal) => undefined);
+  const prompt = vi.fn(async (): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }));
+  const logs: RecordedLog[] = [];
+  const runner = new AgentTurnRunner({
+    bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+    connection: { send: vi.fn(async () => undefined), capabilityVersion },
+    custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+    reportOwner: { create, submit } as unknown as TurnReportOwner,
+    runtimeManager: {
+      sessionKind: () => "visible",
+      ensureRuntime: async () => ({ prompt }),
+      cwd: () => "/workspace",
+      observe: () => () => undefined,
+    } as unknown as SessionRuntimeManager,
+    credentialEnvironment: {
+      prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
+      cleanup: vi.fn(async () => undefined),
+    },
+    turnPlan: { prepare, cleanup: vi.fn(async () => undefined) },
+    outgoingReplies: { collect, cleanup },
+    logger: recordingLogger(logs),
+  });
+  return { runner, request, collect, cleanup, markReporting, submit, create, capabilityVersion, prepare, prompt, logs };
+}
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {
   return {

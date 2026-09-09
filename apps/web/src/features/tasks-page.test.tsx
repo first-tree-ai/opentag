@@ -60,6 +60,7 @@ const detail = {
         errorReason: null,
         usage: { inputTokens: 100, cachedInputTokens: null, outputTokens: 50 },
         traceSummary: { lastSequence: 4, droppedEvents: 0 },
+        outgoingReplies: null,
         reportedAt: "2026-08-27T02:00:00.000Z",
       },
     },
@@ -743,7 +744,14 @@ describe("Tasks view", () => {
     const pending = {
       ...root,
       deliveryId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      delivery: { ...root.delivery, state: "accepted" as const, attemptCount: 2, reason: null, lastErrorCode: null },
+      delivery: {
+        ...root.delivery,
+        state: "accepted" as const,
+        isRunning: true,
+        attemptCount: 2,
+        reason: null,
+        lastErrorCode: null,
+      },
       message: {
         ...root.message,
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -799,7 +807,184 @@ describe("Tasks view", () => {
     expect(within(activity).queryByText(/attempts/)).toBeNull();
     expect(screen.queryByText(/Internal collaboration/)).toBeNull();
     expect(screen.queryByText("Please verify the deployment state.")).toBeNull();
+    expect(within(activity).queryByText("Execution summary")).toBeNull();
   });
+
+  it.each([false, undefined])(
+    "does not infer running from accepted when effective liveness is %s",
+    async (isRunning) => {
+      const root = detail.turns[0];
+      if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+      vi.spyOn(browserApi, "task").mockResolvedValue({
+        ...detail,
+        task: { ...task, status: "expired" },
+        turns: [{ ...root, delivery: { ...root.delivery, isRunning }, report: null }],
+      });
+      await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+      const activity = await screen.findByRole("region", { name: "Activity" });
+      expect(within(activity).getByText("No execution report is available.")).toBeTruthy();
+      expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+      expect(within(activity).queryByText("In progress")).toBeNull();
+    },
+  );
+
+  it("keeps Slack execution summaries without a permanent unsupported reply-history notice", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      task: { ...task, source: { ...task.source, provider: "slack" } },
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Execution summary")).toBeTruthy();
+    expect(within(activity).queryByText("Reply data is unavailable.")).toBeNull();
+    expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
+  });
+
+  it("renders captured Lark replies separately from an execution summary", async () => {
+    const root = detail.turns[0];
+    if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [
+        {
+          ...root,
+          report: {
+            ...root.report,
+            finalText: "The runtime finished and the provider reply was sent separately.",
+            outgoingReplies: {
+              status: "complete",
+              replies: [
+                {
+                  provider: "feishu",
+                  teamBrand: "lark",
+                  messageId: "om_sent",
+                  chatId: "oc_debug_channel",
+                  content: { msgType: "text", text: "Hello from Lark" },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
+    expect(within(activity).getByText("Execution summary")).toBeTruthy();
+    expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+  });
+
+  it("does not invent a reply from finalText and keeps completed empty from rendering as running", async () => {
+    const root = detail.turns[0];
+    if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [
+        {
+          ...root,
+          report: {
+            ...root.report,
+            finalText: null,
+            outgoingReplies: { status: "complete", replies: [] },
+          },
+        },
+      ],
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("No sent replies recorded.")).toBeTruthy();
+    expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+    expect(within(activity).queryByText("Sent reply")).toBeNull();
+  });
+
+  it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
+    const root = detail.turns[0];
+    if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      turns: [
+        {
+          ...root,
+          report: {
+            ...root.report,
+            outcome: "failed",
+            finalText: null,
+            errorReason: "provider_failed",
+            outgoingReplies: {
+              status: "complete",
+              replies: [
+                {
+                  provider: "feishu",
+                  teamBrand: "lark",
+                  messageId: "om_sent",
+                  chatId: "oc_debug_channel",
+                  content: { msgType: "image", imageKey: "img_1", filename: "photo.png" },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Sent reply")).toBeTruthy();
+    expect(within(activity).getByText(/photo.png/)).toBeTruthy();
+    expect(within(activity).getByText("Provider failed")).toBeTruthy();
+  });
+
+  it.each([null, "", "Actual reply", "A different runtime summary"])(
+    "keeps the actual empty-final reply independent of summary %j",
+    async (finalText) => {
+      const data: TaskDetail = structuredClone(detail);
+      const report = data.turns[0]?.report;
+      if (!report) throw new Error("Expected report fixture");
+      report.finalText = finalText;
+      report.outgoingReplies = {
+        status: "complete",
+        replies: [
+          {
+            provider: "feishu",
+            teamBrand: "lark",
+            messageId: "om_actual",
+            chatId: "oc_debug_channel",
+            content: { msgType: "text", text: "Actual reply" },
+          },
+        ],
+      };
+      vi.spyOn(browserApi, "task").mockResolvedValue(data);
+      const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
+        path: `/tasks/${sessionId}`,
+      });
+      await screen.findByText("Sent reply");
+      expect(container.querySelector('[data-ui="task-sent-replies"]')?.textContent).toContain("Actual reply");
+      expect(container.querySelector('[data-ui="task-execution-summary"]')?.textContent ?? "").toBe(
+        finalText ? `Execution summary${finalText}` : "",
+      );
+      expect(screen.queryByText("Work is in progress.")).toBeNull();
+    },
+  );
+
+  it.each(["incomplete", "unavailable", "legacy"] as const)(
+    "never claims no send when zero replies mean %s",
+    async (status) => {
+      const data: TaskDetail = structuredClone(detail);
+      const report = data.turns[0]?.report;
+      if (!report) throw new Error("Expected report fixture");
+      report.outgoingReplies = status === "legacy" ? null : { status, replies: [] };
+      vi.spyOn(browserApi, "task").mockResolvedValue(data);
+      await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+      await screen.findByText(
+        status === "incomplete"
+          ? "Reply history is incomplete. Some messages or content could not be included."
+          : "Reply data is unavailable.",
+      );
+      expect(screen.queryByText("No sent replies recorded.")).toBeNull();
+      expect(screen.queryByText("Work is in progress.")).toBeNull();
+      expect(screen.getByText("Execution summary")).toBeTruthy();
+    },
+  );
 
   // The provider identifier is the Server's vocabulary, not a name anybody chose for a reader. These
   // two surfaces used to print it straight, which reads as the lowercase `feishu` today and would

@@ -69,6 +69,7 @@ interface TaskTurnRow extends Record<string, unknown> {
   deliveryId: string;
   attention: "direct" | "ambient";
   deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired";
+  isRunning: boolean;
   attemptCount: number;
   acceptedAt: Date | string | null;
   steeredAt: Date | string | null;
@@ -218,6 +219,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
     attention: row.attention,
     delivery: {
       state: row.deliveryState,
+      isRunning: row.isRunning,
       attemptCount: row.attemptCount,
       acceptedAt: row.acceptedAt ? toIso(row.acceptedAt) : null,
       steeredAt: row.steeredAt ? toIso(row.steeredAt) : null,
@@ -255,6 +257,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
                 }
               : null,
             traceSummary: report.traceSummary,
+            outgoingReplies: report.outgoingReplies ?? null,
             reportedAt: toIso(row.reportedAt),
           }
         : null,
@@ -697,6 +700,7 @@ export class TaskService {
         e.id as "deliveryId",
         d.attention,
         d.state as "deliveryState",
+        e.is_running as "isRunning",
         d.attempt_count::int as "attemptCount",
         d.accepted_at as "acceptedAt",
         d.steered_at as "steeredAt",

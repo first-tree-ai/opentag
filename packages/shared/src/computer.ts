@@ -48,19 +48,14 @@ export const PROVIDER_CLI_PUBLIC_FAILURE_REASONS = [
   ...PROVIDER_CLI_ARTIFACT_PUBLIC_REASONS,
 ] as const;
 export const ProviderCliPublicFailureReasonSchema = z.enum(PROVIDER_CLI_PUBLIC_FAILURE_REASONS);
-export const PROVIDER_CLI_PUBLIC_NEXT_ACTIONS = [
-  "retry",
-  "repair_cli",
-  "use_supported_computer",
-  "fix_permissions",
-  "retry_verified_download",
-  "install_supported_version",
-] as const;
-export const ProviderCliPublicNextActionSchema = z.enum(PROVIDER_CLI_PUBLIC_NEXT_ACTIONS);
 export type ProviderCliArtifactPublicReason = z.infer<typeof ProviderCliArtifactPublicReasonSchema>;
 export type ProviderCliPublicFailureReason = z.infer<typeof ProviderCliPublicFailureReasonSchema>;
-export type ProviderCliPublicNextAction = z.infer<typeof ProviderCliPublicNextActionSchema>;
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
+export const PROVIDER_CLI_REASON_V2_HEADER = "x-opentag-provider-cli-reason";
+
+export function requestsProviderCliReasonV2(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === "2";
+}
 
 const PROVIDER_CLI_ALWAYS_MANUAL_ARTIFACT_REASONS = new Set<string>([
   "unsupported_platform",
@@ -94,33 +89,16 @@ export function providerCliArtifactFailureIsManual(input: {
   return input.reason === "version_incompatible" && input.stage === "ensure";
 }
 
-function providerCliHumanNextAction(reason: ProviderCliArtifactPublicReason | undefined): ProviderCliPublicNextAction {
-  switch (reason) {
-    case "unsupported_platform":
-      return "use_supported_computer";
-    case "global_bin_unavailable":
-      return "fix_permissions";
-    case "integrity_failed":
-      return "retry_verified_download";
-    case "version_incompatible":
-      return "install_supported_version";
-    default:
-      return "repair_cli";
-  }
-}
-
 /** Shared Client/Server/Web/Agent classification for one Provider CLI artifact failure. */
 export function classifyProviderCliArtifactFailure(input: { reason?: string; stage: "inspect" | "ensure" }): {
   publicReason?: ProviderCliArtifactPublicReason;
   manual: boolean;
-  nextAction?: ProviderCliPublicNextAction;
 } {
   const publicReason = publicProviderCliArtifactReason(input.reason);
   const manual = providerCliArtifactFailureIsManual({ reason: input.reason, stage: input.stage });
   return {
     ...(publicReason ? { publicReason } : {}),
     manual,
-    nextAction: manual ? providerCliHumanNextAction(publicReason) : "repair_cli",
   };
 }
 

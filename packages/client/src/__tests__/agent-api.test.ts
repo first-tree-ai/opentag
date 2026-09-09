@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PROVIDER_CLI_REASON_V2_HEADER, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../api.js";
 
@@ -449,5 +450,55 @@ describe("OpenTagApi Agent methods", () => {
       ]),
     ).toEqual([[`/api/v1/agents/${agentId}/im-binding/slack/oauth/start`, "POST"]]);
     expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
+  });
+
+  it("opts Computer list and binding diagnostics into Provider CLI reason v2", async () => {
+    const computers = {
+      computers: [
+        {
+          computerId,
+          displayName: "Laptop",
+          platform: "linux",
+          connectionStatus: "online",
+          connectedAt: "2026-08-19T00:00:00.000Z",
+          lastSeenAt: "2026-08-19T00:00:00.000Z",
+          observedAt: "2026-08-19T00:00:00.000Z",
+          createdAt: "2026-08-18T00:00:00.000Z",
+          agentIds: [agentId],
+        },
+      ],
+    };
+    const diagnostics = {
+      imBindingId: randomUUID(),
+      provider: "feishu",
+      ready: false,
+      agentRuntimeReadiness: "ready",
+      providerCliReadiness: "unavailable",
+      providerCliReason: "unsupported_platform",
+      credentialExecutionReadiness: "unconfirmed",
+      credentialGeneration: 1,
+      credentialStatus: "valid",
+      requiredCapabilities: [],
+      grantedCapabilities: [],
+      missingCapabilities: [],
+      reauthorizationRequired: false,
+      slackAppId: null,
+      slackIdentityClosure: null,
+      connection: null,
+      lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
+      lastErrorCode: null,
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(computers))
+      .mockResolvedValueOnce(jsonResponse(diagnostics));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+    await api.listAccountComputers("access-token");
+    await api.getImBindingDiagnostics("access-token", diagnostics.imBindingId);
+    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(PROVIDER_READINESS_V1_HEADER)).toBe("1");
+    expect(new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
+    expect(new Headers(fetchImpl.mock.calls[1]?.[1]?.headers).get(PROVIDER_CLI_REASON_V2_HEADER)).toBe("2");
   });
 });

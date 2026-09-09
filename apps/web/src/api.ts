@@ -68,6 +68,7 @@ import {
   ListTasksResponseSchema,
   type MeResponse,
   MeResponseSchema,
+  PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   type RebindAgentComputerRequest,
   type StartSlackOAuthRequest,
@@ -245,7 +246,10 @@ export class BrowserApi {
    */
   agentSetup(agentId: string): Promise<AgentSetupSnapshot> {
     return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
-      this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema, { signal }),
+      this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema, {
+        signal,
+        headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+      }),
     );
   }
 
@@ -320,7 +324,9 @@ export class BrowserApi {
   }
 
   imBindingHandoff(agentId: string): Promise<ImBindingHandoffStatus | undefined> {
-    return this.requestOptional(agentImBindingHandoffPath(agentId), ImBindingHandoffStatusSchema);
+    return this.requestOptional(agentImBindingHandoffPath(agentId), ImBindingHandoffStatusSchema, {
+      headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+    });
   }
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {
@@ -367,7 +373,9 @@ export class BrowserApi {
   }
 
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
-    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema);
+    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
+      headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+    });
   }
 
   disableImBinding(imBindingId: string): Promise<void> {
@@ -379,7 +387,7 @@ export class BrowserApi {
 
   computers(): Promise<ListAccountComputersResponse> {
     return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
     });
   }
 
@@ -496,8 +504,12 @@ export class BrowserApi {
     return this.parseResponse(path, schema, body);
   }
 
-  private async requestOptional<T>(path: string, schema: RuntimeSchema<T>): Promise<T | undefined> {
-    const response = await this.fetchWithRefresh(path);
+  private async requestOptional<T>(
+    path: string,
+    schema: RuntimeSchema<T>,
+    init: RequestInit = {},
+  ): Promise<T | undefined> {
+    const response = await this.fetchWithRefresh(path, init);
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);

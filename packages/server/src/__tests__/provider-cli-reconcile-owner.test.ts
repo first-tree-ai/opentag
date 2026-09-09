@@ -22,7 +22,7 @@ function socket(): WebSocket & { send: ReturnType<typeof vi.fn> } {
 
 async function registered(
   registry: ConnectionRegistry,
-  options: { capabilities?: boolean; prewarm?: boolean; computerId?: string } = {},
+  options: { capabilities?: boolean; prewarm?: boolean; computerId?: string; reconcileVersion?: 1 | 2 } = {},
 ) {
   const computerId = options.computerId ?? randomUUID();
   const instanceId = randomUUID();
@@ -40,7 +40,7 @@ async function registered(
         options.capabilities === false
           ? {}
           : {
-              [RUNTIME_CAPABILITY.providerCliReconcile]: 1,
+              [RUNTIME_CAPABILITY.providerCliReconcile]: options.reconcileVersion ?? 1,
               ...(options.prewarm === false ? {} : { [RUNTIME_CAPABILITY.providerCliPrewarm]: 1 }),
             },
     },
@@ -1577,7 +1577,7 @@ describe("ProviderCliReconcileOwner", () => {
       ]),
       issueIntegrationCliValidationGrant: vi.fn(),
     });
-    const connection = await registered(registry);
+    const connection = await registered(registry, { reconcileVersion: 2 });
     await owner.onComputerRegistered(connection);
     const requirement = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
     connection.socket.send.mockClear();
@@ -1781,7 +1781,7 @@ describe("ProviderCliReconcileOwner", () => {
       })),
     };
     const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 0 });
-    const connection = await registered(registry);
+    const connection = await registered(registry, { reconcileVersion: 2 });
     await owner.onComputerRegistered(connection);
     const requirement = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
     await owner.businessOptions().handle(
@@ -2286,5 +2286,729 @@ describe("ProviderCliReconcileOwner", () => {
       contextOf(connection),
     );
     expect(bindings.issueIntegrationCliValidationGrant).toHaveBeenCalledTimes(grantsBefore);
+  });
+
+  it("does not let a delayed cancel overwrite a newer generation or extra readiness read", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    let generation = 1;
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        {
+          agentId,
+          integrationId,
+          provider: "slack" as const,
+          credentialGeneration: generation,
+          expectedIdentity: identity,
+        },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 2, random: () => 0.5 });
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    const first = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    let releaseCancel: (() => void) | undefined;
+    let seenCancels = 0;
+    let cancelStarted!: () => void;
+    const firstCancel = new Promise<void>((resolve) => {
+      cancelStarted = resolve;
+    });
+    connection.socket.send.mockImplementation((data: string, cb?: (error?: Error) => void) => {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "provider-cli:cancel") {
+        seenCancels += 1;
+        if (seenCancels === 1) {
+          cancelStarted();
+          void new Promise<void>((resolve) => {
+            releaseCancel = resolve;
+          }).then(() => cb?.());
+          return;
+        }
+      }
+      cb?.();
+    });
+    vi.useFakeTimers();
+    try {
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:artifact:status",
+          requestId: first.requestId,
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 1,
+          status: "unavailable",
+        },
+        contextOf(connection),
+      );
+      vi.advanceTimersByTime(1000);
+      await firstCancel;
+      generation = 2;
+      const firstRead = owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
+      const secondRead = owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
+      await Promise.resolve();
+      releaseCancel?.();
+      await Promise.all([firstRead, secondRead]);
+      const requirements = connection.socket.send.mock.calls
+        .map(
+          ([data]) => JSON.parse(data as string) as { type: string; credentialGeneration?: number; requestId: string },
+        )
+        .filter((frame) => frame.type === "provider-cli:requirement");
+      expect(requirements.at(-1)?.credentialGeneration).toBe(2);
+      expect(requirements.filter((frame) => frame.credentialGeneration === 2)).toHaveLength(1);
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:artifact:status",
+          requestId: requirements.at(-1)?.requestId ?? "",
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 2,
+          status: "ready",
+        },
+        contextOf(connection),
+      );
+      expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation).toMatchObject({
+        status: "ready",
+        credentialGeneration: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not resurrect a retired Computer after a delayed cancel during placement", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const previous = await registered(registry);
+    const next = await registered(registry);
+    let activeComputerId = previous.computerId;
+    const requirement = {
+      agentId,
+      integrationId,
+      provider: "slack" as const,
+      credentialGeneration: 1,
+      expectedIdentity: identity,
+    };
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async (computerId: string) =>
+        computerId === activeComputerId ? [requirement] : [],
+      ),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 2, random: () => 0.5 });
+    await owner.onComputerRegistered(previous);
+    const first = JSON.parse(previous.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    let releaseCancel: (() => void) | undefined;
+    let cancelStarted!: () => void;
+    const firstCancel = new Promise<void>((resolve) => {
+      cancelStarted = resolve;
+    });
+    let seenCancels = 0;
+    previous.socket.send.mockImplementation((data: string, cb?: (error?: Error) => void) => {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "provider-cli:cancel") {
+        seenCancels += 1;
+        if (seenCancels === 1) {
+          cancelStarted();
+          void new Promise<void>((resolve) => {
+            releaseCancel = resolve;
+          }).then(() => cb?.());
+          return;
+        }
+      }
+      cb?.();
+    });
+    vi.useFakeTimers();
+    try {
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:artifact:status",
+          requestId: first.requestId,
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 1,
+          status: "unavailable",
+        },
+        contextOf(previous),
+      );
+      vi.advanceTimersByTime(1000);
+      await firstCancel;
+      activeComputerId = next.computerId;
+      const moved = owner.onAgentPlacementChanged({
+        agentId,
+        previousComputerId: previous.computerId,
+        computerId: next.computerId,
+        runtimeProvider: "codex",
+      });
+      await Promise.resolve();
+      releaseCancel?.();
+      await moved;
+      expect(
+        previous.socket.send.mock.calls.filter(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toHaveLength(1);
+      expect(
+        next.socket.send.mock.calls.some(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toBe(true);
+      previous.socket.send.mockClear();
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:artifact:status",
+          requestId: first.requestId,
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 1,
+          status: "ready",
+        },
+        contextOf(previous),
+      );
+      expect(registry.providerCliArtifactReadiness(previous.computerId)[0]?.observation.status).not.toBe("ready");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles generic unavailable when a zero-retry requirement send fails", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => [
+          { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+        ]),
+        issueIntegrationCliValidationGrant: vi.fn(),
+      },
+      { maxRetries: 0 },
+    );
+    const connection = await registered(registry);
+    connection.socket.send.mockImplementation((data: string, cb?: (error?: Error) => void) => {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "provider-cli:requirement") {
+        cb?.(new Error("socket closed"));
+        return;
+      }
+      cb?.();
+    });
+    await owner.onComputerRegistered(connection);
+    expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation).toMatchObject({
+      status: "unavailable",
+    });
+    expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation.reason).toBeUndefined();
+    connection.socket.send.mockClear();
+    await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
+    expect(
+      connection.socket.send.mock.calls.filter(
+        (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("settles generic unavailable when the final retry send fails", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => [
+          { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+        ]),
+        issueIntegrationCliValidationGrant: vi.fn(),
+      },
+      { maxRetries: 1, random: () => 0.5 },
+    );
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    const first = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:artifact:status",
+        requestId: first.requestId,
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 1,
+        status: "unavailable",
+      },
+      contextOf(connection),
+    );
+    connection.socket.send.mockImplementation((data: string, cb?: (error?: Error) => void) => {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "provider-cli:requirement") {
+        cb?.(new Error("socket closed"));
+        return;
+      }
+      cb?.();
+    });
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation).toMatchObject({
+        status: "unavailable",
+      });
+      expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation.reason).toBeUndefined();
+      connection.socket.send.mockClear();
+      await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
+      expect(
+        connection.socket.send.mock.calls.filter(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("charges one artifact retry for replayed transient unavailable on the same request", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => [
+          { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+        ]),
+        issueIntegrationCliValidationGrant: vi.fn(),
+      },
+      { maxRetries: 2, random: () => 0.5 },
+    );
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    const first = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    const unavailable = {
+      type: "provider-cli:artifact:status" as const,
+      requestId: first.requestId,
+      provider: "slack" as const,
+      agentId,
+      integrationId,
+      credentialGeneration: 1,
+      status: "unavailable" as const,
+    };
+    vi.useFakeTimers();
+    try {
+      await owner.businessOptions().handle(unavailable, contextOf(connection));
+      await owner.businessOptions().handle(unavailable, contextOf(connection));
+      await owner.businessOptions().handle(unavailable, contextOf(connection));
+      connection.socket.send.mockClear();
+      await vi.advanceTimersByTimeAsync(1000);
+      const firstRetry = connection.socket.send.mock.calls
+        .map(([data]) => JSON.parse(data as string) as { type: string; requestId: string })
+        .find((frame) => frame.type === "provider-cli:requirement");
+      expect(firstRetry).toBeDefined();
+      await owner
+        .businessOptions()
+        .handle({ ...unavailable, requestId: firstRetry?.requestId ?? first.requestId }, contextOf(connection));
+      connection.socket.send.mockClear();
+      await vi.advanceTimersByTimeAsync(2000);
+      const secondRetry = connection.socket.send.mock.calls
+        .map(([data]) => JSON.parse(data as string) as { type: string; requestId: string })
+        .find((frame) => frame.type === "provider-cli:requirement");
+      expect(secondRetry).toBeDefined();
+      await owner
+        .businessOptions()
+        .handle({ ...unavailable, requestId: secondRetry?.requestId ?? first.requestId }, contextOf(connection));
+      connection.socket.send.mockClear();
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(
+        connection.socket.send.mock.calls.filter(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores artifact.reason on reconcile v1 and keeps a generic bounded episode", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const owner = new ProviderCliReconcileOwner(
+      registry,
+      {
+        listActiveProviderCliRequirements: vi.fn(async () => [
+          { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+        ]),
+        issueIntegrationCliValidationGrant: vi.fn(),
+      },
+      { maxRetries: 1, random: () => 0.5 },
+    );
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    const first = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    connection.socket.send.mockClear();
+    vi.useFakeTimers();
+    try {
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:artifact:status",
+          requestId: first.requestId,
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 1,
+          status: "unavailable",
+          reason: "unsupported_platform",
+        },
+        contextOf(connection),
+      );
+      expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation.reason).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(
+        connection.socket.send.mock.calls.some(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a late binding snapshot roll credential generation backwards", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    let generation = 1;
+    const load = async () => [
+      {
+        agentId,
+        integrationId,
+        provider: "slack" as const,
+        credentialGeneration: generation,
+        expectedIdentity: identity,
+      },
+    ];
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => load()),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 0 });
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    let release: (() => void) | undefined;
+    let held = false;
+    bindings.listActiveProviderCliRequirements = vi.fn(async () => {
+      const snapshot = await load();
+      if (!held) {
+        held = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return snapshot;
+    });
+    const stale = owner.onActiveBindingChanged({ agentId, computerId: connection.computerId });
+    await vi.waitFor(() => {
+      expect(release).toBeDefined();
+    });
+    generation = 2;
+    const fresh = owner.onActiveBindingChanged({ agentId, computerId: connection.computerId });
+    await Promise.resolve();
+    release?.();
+    await Promise.all([stale, fresh]);
+    const requirements = connection.socket.send.mock.calls
+      .map(([data]) => JSON.parse(data as string) as { type: string; credentialGeneration?: number; requestId: string })
+      .filter((frame) => frame.type === "provider-cli:requirement");
+    expect(requirements.at(-1)?.credentialGeneration).toBe(2);
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:artifact:status",
+        requestId: requirements.at(-1)?.requestId ?? "",
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 2,
+        status: "ready",
+      },
+      contextOf(connection),
+    );
+    expect(registry.providerCliArtifactReadiness(connection.computerId)[0]?.observation).toMatchObject({
+      status: "ready",
+      credentialGeneration: 2,
+    });
+  });
+
+  it("does not let a passive GET cancel a concurrent explicit retry", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const load = async () => [
+      { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+    ];
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => load()),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 0 });
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    const first = JSON.parse(connection.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:artifact:status",
+        requestId: first.requestId,
+        provider: "slack",
+        agentId,
+        integrationId,
+        credentialGeneration: 1,
+        status: "unavailable",
+      },
+      contextOf(connection),
+    );
+    let release: (() => void) | undefined;
+    let held = false;
+    bindings.listActiveProviderCliRequirements = vi.fn(async () => {
+      const snapshot = await load();
+      if (!held) {
+        held = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return snapshot;
+    });
+    const retry = owner.prepareComputer({
+      agentId,
+      computerId: connection.computerId,
+      runtimeProvider: "codex",
+    });
+    await vi.waitFor(() => {
+      expect(release).toBeDefined();
+    });
+    await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
+    release?.();
+    await expect(retry).resolves.toBeUndefined();
+    expect(
+      connection.socket.send.mock.calls.filter(
+        (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("does not let an identical binding notification suppress failure recovery for the current send", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 1, random: () => 0 });
+    const connection = await registered(registry);
+    let rejectSend: (() => void) | undefined;
+    connection.socket.send.mockImplementation((data: string, cb?: (error?: Error) => void) => {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "provider-cli:requirement" && !rejectSend) {
+        rejectSend = () => cb?.(new Error("delayed first send failure"));
+        return;
+      }
+      cb?.();
+    });
+    const first = owner.onComputerRegistered(connection);
+    await vi.waitFor(() => {
+      expect(rejectSend).toBeDefined();
+    });
+    const same = owner.onActiveBindingChanged({ agentId, computerId: connection.computerId });
+    await Promise.resolve();
+    rejectSend?.();
+    await Promise.all([first, same]);
+    await vi.waitFor(
+      () => {
+        expect(
+          connection.socket.send.mock.calls.filter(
+            (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+          ),
+        ).toHaveLength(2);
+      },
+      { timeout: 2_000 },
+    );
+  });
+
+  it("does not let a queued binding dispatch survive placement invalidation", async () => {
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID();
+    const integrationId = randomUUID();
+    const previous = await registered(registry);
+    const next = await registered(registry);
+    let generation = 1;
+    let activeComputerId = previous.computerId;
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async (computerId: string) =>
+        computerId === activeComputerId
+          ? [
+              {
+                agentId,
+                integrationId,
+                provider: "slack" as const,
+                credentialGeneration: generation,
+                expectedIdentity: identity,
+              },
+            ]
+          : [],
+      ),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 1, random: () => 0.5 });
+    await owner.onComputerRegistered(previous);
+    const first = JSON.parse(previous.socket.send.mock.calls[0]?.[0] as string) as { requestId: string };
+    let releaseCancel: (() => void) | undefined;
+    let cancelStarted!: () => void;
+    const firstCancel = new Promise<void>((resolve) => {
+      cancelStarted = resolve;
+    });
+    let seenCancels = 0;
+    previous.socket.send.mockImplementation((data: string, cb?: (error?: Error) => void) => {
+      const frame = JSON.parse(data) as { type: string };
+      if (frame.type === "provider-cli:cancel") {
+        seenCancels += 1;
+        if (seenCancels === 1) {
+          cancelStarted();
+          void new Promise<void>((resolve) => {
+            releaseCancel = resolve;
+          }).then(() => cb?.());
+          return;
+        }
+      }
+      cb?.();
+    });
+    vi.useFakeTimers();
+    try {
+      await owner.businessOptions().handle(
+        {
+          type: "provider-cli:artifact:status",
+          requestId: first.requestId,
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 1,
+          status: "unavailable",
+        },
+        contextOf(previous),
+      );
+      vi.advanceTimersByTime(1000);
+      await firstCancel;
+      generation = 2;
+      const queued = owner.onActiveBindingChanged({ agentId, computerId: previous.computerId });
+      await Promise.resolve();
+      activeComputerId = next.computerId;
+      const moved = owner.onAgentPlacementChanged({
+        agentId,
+        previousComputerId: previous.computerId,
+        computerId: next.computerId,
+        runtimeProvider: "codex",
+      });
+      await Promise.resolve();
+      releaseCancel?.();
+      await Promise.all([queued, moved]);
+      expect(
+        previous.socket.send.mock.calls.filter(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toHaveLength(1);
+      expect(
+        next.socket.send.mock.calls.filter(
+          (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let one Agent's stale binding snapshot retire another Agent on the same Computer", async () => {
+    const registry = new ConnectionRegistry();
+    const first = { agentId: randomUUID(), integrationId: randomUUID() };
+    const second = { agentId: randomUUID(), integrationId: randomUUID() };
+    const requirements = [
+      {
+        agentId: first.agentId,
+        integrationId: first.integrationId,
+        provider: "slack" as const,
+        credentialGeneration: 1,
+        expectedIdentity: identity,
+      },
+    ];
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => [...requirements]),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis: vi.fn(async () => false),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { maxRetries: 0 });
+    const connection = await registered(registry);
+    await owner.onComputerRegistered(connection);
+    let release: (() => void) | undefined;
+    let held = false;
+    bindings.listActiveProviderCliRequirements = vi.fn(async () => {
+      const snapshot = [...requirements];
+      if (!held) {
+        held = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return snapshot;
+    });
+    const stale = owner.onActiveBindingChanged({ agentId: first.agentId, computerId: connection.computerId });
+    await vi.waitFor(() => {
+      expect(release).toBeDefined();
+    });
+    requirements.push({
+      agentId: second.agentId,
+      integrationId: second.integrationId,
+      provider: "slack",
+      credentialGeneration: 1,
+      expectedIdentity: identity,
+    });
+    await owner.onActiveBindingChanged({ agentId: second.agentId, computerId: connection.computerId });
+    const before = connection.socket.send.mock.calls.filter(
+      (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+    ).length;
+    release?.();
+    await stale;
+    expect(
+      connection.socket.send.mock.calls.filter(
+        (call) => (JSON.parse(call[0] as string) as { type: string }).type === "provider-cli:requirement",
+      ),
+    ).toHaveLength(before);
+    const secondRequirement = connection.socket.send.mock.calls
+      .map(([data]) => JSON.parse(data as string) as { type: string; agentId?: string; requestId: string })
+      .filter((frame) => frame.type === "provider-cli:requirement" && frame.agentId === second.agentId)
+      .at(-1);
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:artifact:status",
+        requestId: secondRequirement?.requestId ?? "",
+        provider: "slack",
+        agentId: second.agentId,
+        integrationId: second.integrationId,
+        credentialGeneration: 1,
+        status: "ready",
+      },
+      contextOf(connection),
+    );
+    expect(
+      registry
+        .providerCliArtifactReadiness(connection.computerId)
+        .some(({ observation }) => observation.agentId === second.agentId && observation.status === "ready"),
+    ).toBe(true);
   });
 });

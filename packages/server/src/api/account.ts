@@ -36,6 +36,10 @@ import {
 } from "../services/computers/index.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
+import {
+  projectListAccountComputersResponseForHttp,
+  requestIncludesProviderCliReasonV2,
+} from "./provider-cli-reason.js";
 import { parseRequest } from "./request-validation.js";
 
 const TaskListQuerySchema = z
@@ -157,11 +161,15 @@ export function registerAccountRoutes(
 
     app.get(HTTP_PATHS.accountComputers, { preHandler }, async (request, reply) => {
       const account = accountId(request);
+      const listed = await computerService.listAccountComputers(
+        account,
+        request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
+      );
       return reply
         .code(200)
         .send(
           ListAccountComputersResponseSchema.parse(
-            await computerService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
+            projectListAccountComputersResponseForHttp(listed, requestIncludesProviderCliReasonV2(request)),
           ),
         );
     });

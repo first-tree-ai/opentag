@@ -19,6 +19,7 @@ import {
   type ProviderCliValidationResultReason,
   type ProviderCliValidationRetryReason,
   providerCliArtifactFailureIsManual,
+  publicProviderCliArtifactReason,
   RUNTIME_CAPABILITY,
   RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION,
   RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS,
@@ -142,6 +143,10 @@ export class ProviderCliReconcileOwner {
   readonly #inflightPrepare = new Map<string, Promise<void>>();
   readonly #preparations = new Map<string, CurrentPreparation>();
   readonly #requests = new Map<string, CurrentRequest>();
+  readonly #requestGates = new Map<string, Promise<void>>();
+  readonly #agentReconcileSeq = new Map<string, number>();
+  readonly #observedGeneration = new Map<string, number>();
+  readonly #transitionEpoch = new Map<string, number>();
   #closed = false;
 
   constructor(
@@ -195,9 +200,11 @@ export class ProviderCliReconcileOwner {
 
   async onComputerRegistered(input: { computerId: string; installationId: string; instanceId: string }): Promise<void> {
     if (this.#closed) return;
+    const agentSeq = new Map(this.#agentReconcileSeq);
     await this.#resetComputer(input.computerId);
     await this.#dispatchSetupPrewarm(input, "inspect");
     const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
+    if (!this.#connectionMatches(input.computerId, input.instanceId, input.installationId)) return;
     if (
       !this.#registry.supportsCapability(input.computerId, input.instanceId, RUNTIME_CAPABILITY.providerCliReconcile)
     ) {
@@ -220,6 +227,7 @@ export class ProviderCliReconcileOwner {
       return;
     }
     for (const requirement of requirements) {
+      if (!this.#agentReconcileUnchanged(input.computerId, requirement.agentId, agentSeq)) continue;
       await this.#dispatchRequirement(input.computerId, input.installationId, input.instanceId, requirement);
     }
   }
@@ -299,14 +307,25 @@ export class ProviderCliReconcileOwner {
 
   async onActiveBindingChanged(input: { agentId: string; computerId: string }): Promise<void> {
     if (this.#closed) return;
+    const seq = this.#beginAgentReconcile(input.computerId, input.agentId);
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     if (!instanceId) return;
     const installationId = this.#registry.installationId(input.computerId);
     if (!installationId) return;
     const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
-    const activeIds = new Set(requirements.map((requirement) => requirement.integrationId));
+    if (!this.#isAgentReconcileCurrent(input.computerId, input.agentId, seq)) return;
+    if (!this.#connectionMatches(input.computerId, instanceId, installationId)) return;
+    const activeIds = new Set(
+      requirements
+        .filter((requirement) => requirement.agentId === input.agentId)
+        .map((requirement) => requirement.integrationId),
+    );
     for (const [key, current] of [...this.#requests]) {
-      if (current.computerId === input.computerId && !activeIds.has(current.integrationId)) {
+      if (
+        current.computerId === input.computerId &&
+        current.agentId === input.agentId &&
+        !activeIds.has(current.integrationId)
+      ) {
         await this.#retireRequest(key);
       }
     }
@@ -385,6 +404,7 @@ export class ProviderCliReconcileOwner {
   }): Promise<void> {
     if (this.#closed) return;
     if (input.previousComputerId && input.previousComputerId !== input.computerId) {
+      this.#beginAgentReconcile(input.previousComputerId, input.agentId);
       await this.#retireAgentOnComputer(input.agentId, input.previousComputerId);
     }
     if (!input.computerId) return;
@@ -441,13 +461,75 @@ export class ProviderCliReconcileOwner {
     options: { force?: boolean; resetBudget?: boolean; retry?: boolean } = {},
   ): Promise<void> {
     const key = requestKey(computerId, requirement.integrationId);
+    const transition = this.#transitionOf(key);
+    const seq = this.#currentAgentReconcile(computerId, requirement.agentId);
+    await this.#withRequestGate(key, () =>
+      this.#dispatchRequirementLocked(
+        key,
+        computerId,
+        installationId,
+        instanceId,
+        requirement,
+        options,
+        transition,
+        seq,
+      ),
+    );
+  }
+
+  async #dispatchRequirementLocked(
+    key: string,
+    computerId: string,
+    installationId: string,
+    instanceId: string,
+    requirement: ProviderCliRequirementSnapshot,
+    options: { force?: boolean; resetBudget?: boolean; retry?: boolean },
+    transition: number,
+    seq: number,
+  ): Promise<void> {
+    if (!this.#dispatchMayProceed(key, computerId, installationId, instanceId, requirement.agentId, transition, seq)) {
+      return;
+    }
+    const observed = this.#observedGeneration.get(key) ?? 0;
+    if (requirement.credentialGeneration < observed) return;
     const existing = this.#requests.get(key);
     const sameEpisode = this.#sameEpisode(existing, instanceId, requirement);
+    if (options.retry && !sameEpisode) return;
     if (this.#shouldSkipDispatch(computerId, existing, sameEpisode, options)) return;
-    const prior = sameEpisode && existing && !options.resetBudget ? existing : undefined;
-    await this.#retireRequest(key);
-    const requestId = randomUUID();
-    this.#requests.set(key, {
+    if (!this.#dispatchMayProceed(key, computerId, installationId, instanceId, requirement.agentId, transition, seq)) {
+      return;
+    }
+    const current = this.#installRequest(
+      key,
+      existing,
+      sameEpisode && existing && !options.resetBudget ? existing : undefined,
+      computerId,
+      installationId,
+      instanceId,
+      requirement,
+    );
+    if (existing && existing.requestId !== current.requestId) {
+      await this.#sendCancel(existing);
+      if (!this.#dispatchStillOwns(key, current, transition)) return;
+    }
+    await this.#sendFreshRequirement(key, current, transition);
+  }
+
+  #installRequest(
+    key: string,
+    existing: CurrentRequest | undefined,
+    prior: CurrentRequest | undefined,
+    computerId: string,
+    installationId: string,
+    instanceId: string,
+    requirement: ProviderCliRequirementSnapshot,
+  ): CurrentRequest {
+    if (existing?.retryTimer) {
+      clearTimeout(existing.retryTimer);
+      existing.retryTimer = undefined;
+      existing.artifactRetryPending = false;
+    }
+    const current: CurrentRequest = {
       agentId: requirement.agentId,
       artifactRepairStopped: prior?.artifactRepairStopped ?? false,
       artifactRetryAttempt: prior?.artifactRetryAttempt ?? 0,
@@ -462,31 +544,41 @@ export class ProviderCliReconcileOwner {
       installationId,
       integrationId: requirement.integrationId,
       provider: requirement.provider,
-      requestId,
+      requestId: randomUUID(),
       snapshot: requirement,
-    });
+    };
+    this.#requests.set(key, current);
+    this.#observedGeneration.set(
+      key,
+      Math.max(this.#observedGeneration.get(key) ?? 0, requirement.credentialGeneration),
+    );
+    return current;
+  }
+
+  async #sendFreshRequirement(key: string, current: CurrentRequest, transition: number): Promise<void> {
+    if (!this.#dispatchStillOwns(key, current, transition)) return;
     this.#registry.setProviderCliArtifactObservation(
-      computerId,
-      instanceId,
+      current.computerId,
+      current.instanceId,
       {
-        agentId: requirement.agentId,
-        integrationId: requirement.integrationId,
-        provider: requirement.provider,
-        credentialGeneration: requirement.credentialGeneration,
-        requestId,
+        agentId: current.agentId,
+        integrationId: current.integrationId,
+        provider: current.provider,
+        credentialGeneration: current.credentialGeneration,
+        requestId: current.requestId,
         status: "checking",
       },
       this.#now(),
     );
     this.#registry.setProviderCliCredentialObservation(
-      computerId,
-      instanceId,
+      current.computerId,
+      current.instanceId,
       {
-        agentId: requirement.agentId,
-        integrationId: requirement.integrationId,
-        provider: requirement.provider,
-        credentialGeneration: requirement.credentialGeneration,
-        requestId,
+        agentId: current.agentId,
+        integrationId: current.integrationId,
+        provider: current.provider,
+        credentialGeneration: current.credentialGeneration,
+        requestId: current.requestId,
         status: "unconfirmed",
       },
       this.#now(),
@@ -494,18 +586,44 @@ export class ProviderCliReconcileOwner {
     const frame: ProviderCliRequirementFrame = {
       type: "provider-cli:requirement",
       operation: RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION,
-      requestId,
-      provider: requirement.provider,
-      agentId: requirement.agentId,
-      integrationId: requirement.integrationId,
-      credentialGeneration: requirement.credentialGeneration,
-      expectedIdentity: requirement.expectedIdentity,
+      requestId: current.requestId,
+      provider: current.provider,
+      agentId: current.agentId,
+      integrationId: current.integrationId,
+      credentialGeneration: current.credentialGeneration,
+      expectedIdentity: current.expectedIdentity,
     };
     try {
-      await this.#registry.send(computerId, instanceId, frame);
+      await this.#registry.send(current.computerId, current.instanceId, frame);
     } catch {
-      this.#scheduleArtifactRetry(this.#requests.get(key));
+      if (this.#dispatchStillOwns(key, current, transition)) this.#scheduleArtifactRetry(current);
     }
+  }
+
+  #dispatchMayProceed(
+    key: string,
+    computerId: string,
+    installationId: string,
+    instanceId: string,
+    agentId: string,
+    transition: number,
+    seq: number,
+  ): boolean {
+    return (
+      !this.#closed &&
+      this.#transitionOf(key) === transition &&
+      this.#isAgentReconcileCurrent(computerId, agentId, seq) &&
+      this.#connectionMatches(computerId, instanceId, installationId)
+    );
+  }
+
+  #dispatchStillOwns(key: string, current: CurrentRequest, transition: number): boolean {
+    return (
+      !this.#closed &&
+      this.#requests.get(key) === current &&
+      this.#transitionOf(key) === transition &&
+      this.#connectionMatches(current.computerId, current.instanceId, current.installationId)
+    );
   }
 
   #sameEpisode(
@@ -560,11 +678,12 @@ export class ProviderCliReconcileOwner {
     ) {
       return false;
     }
+    const seq = this.#beginAgentReconcile(input.computerId, input.agentId);
     const requirements = (await this.#bindings.listActiveProviderCliRequirements(input.computerId)).filter(
       (requirement) => requirement.agentId === input.agentId,
     );
-    if (this.#registry.currentInstanceId(input.computerId) !== input.instanceId) return false;
-    if (this.#registry.installationId(input.computerId) !== input.installationId) return false;
+    if (!this.#isAgentReconcileCurrent(input.computerId, input.agentId, seq)) return false;
+    if (!this.#connectionMatches(input.computerId, input.instanceId, input.installationId)) return false;
     if (requirements.length === 0) return false;
     for (const requirement of requirements) {
       await this.#dispatchRequirement(input.computerId, input.installationId, input.instanceId, requirement, {
@@ -594,7 +713,15 @@ export class ProviderCliReconcileOwner {
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
     if (!this.#acceptsArtifact(current, frame, context)) return undefined;
-    const reason = frame.status === "unavailable" ? frame.reason : undefined;
+    const reason =
+      frame.status === "unavailable" &&
+      this.#registry.capabilityVersion(
+        context.computerId,
+        context.instanceId,
+        RUNTIME_CAPABILITY.providerCliReconcile,
+      ) === 2
+        ? publicProviderCliArtifactReason(frame.reason)
+        : undefined;
     this.#registry.setProviderCliArtifactObservation(
       context.computerId,
       context.instanceId,
@@ -674,7 +801,6 @@ export class ProviderCliReconcileOwner {
   ): Promise<undefined> {
     if (!this.#acceptsGrantResult(current, frame, context)) return undefined;
     if (frame.status === "retrying") return this.#handleRetryingValidation(current, frame, context);
-    if (frame.status === "ready" && !this.#artifactIsReady(current)) return undefined;
     this.#registry.setProviderCliCredentialObservation(
       context.computerId,
       context.instanceId,
@@ -930,13 +1056,12 @@ export class ProviderCliReconcileOwner {
   #scheduleArtifactRetry(current: CurrentRequest | undefined): void {
     if (!current) return;
     if (current.artifactRepairStopped) return;
+    if (current.artifactRetryPending) return;
     if (current.artifactRetryAttempt >= this.#maxRetries) {
-      current.artifactRepairStopped = true;
-      current.artifactRetryPending = false;
+      this.#settleTerminalArtifact(current);
       return;
     }
     current.artifactRetryAttempt += 1;
-    current.artifactRetryPending = true;
     this.#armTimer(
       current,
       () => {
@@ -952,6 +1077,49 @@ export class ProviderCliReconcileOwner {
       },
       this.#jitteredDelay(1000 * 2 ** (current.artifactRetryAttempt - 1)),
     );
+    current.artifactRetryPending = true;
+  }
+
+  #settleTerminalArtifact(current: CurrentRequest): void {
+    current.artifactRepairStopped = true;
+    current.artifactRetryPending = false;
+    if (current.retryTimer) {
+      clearTimeout(current.retryTimer);
+      current.retryTimer = undefined;
+    }
+    this.#registry.setProviderCliArtifactObservation(
+      current.computerId,
+      current.instanceId,
+      {
+        agentId: current.agentId,
+        integrationId: current.integrationId,
+        provider: current.provider,
+        credentialGeneration: current.credentialGeneration,
+        requestId: current.requestId,
+        status: "unavailable",
+      },
+      this.#now(),
+    );
+  }
+
+  async #withRequestGate(key: string, work: () => Promise<void>): Promise<void> {
+    const previous = this.#requestGates.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const next = previous.then(
+      () => held,
+      () => held,
+    );
+    this.#requestGates.set(key, next);
+    try {
+      await previous.catch(() => undefined);
+      await work();
+    } finally {
+      release();
+      if (this.#requestGates.get(key) === next) this.#requestGates.delete(key);
+    }
   }
 
   #jitteredDelay(baseMs: number): number {
@@ -959,7 +1127,10 @@ export class ProviderCliReconcileOwner {
   }
 
   #armTimer(current: CurrentRequest, callback: () => void, delayMs: number): void {
-    if (current.retryTimer) clearTimeout(current.retryTimer);
+    if (current.retryTimer) {
+      clearTimeout(current.retryTimer);
+      current.artifactRetryPending = false;
+    }
     const key = requestKey(current.computerId, current.integrationId);
     current.retryTimer = setTimeout(() => {
       current.retryTimer = undefined;
@@ -1020,6 +1191,7 @@ export class ProviderCliReconcileOwner {
 
   async #refreshActiveReadiness(input: { agentId: string; computerId: string }): Promise<void> {
     if (this.#closed) return;
+    const seq = this.#currentAgentReconcile(input.computerId, input.agentId);
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     if (!instanceId) return;
     const installationId = this.#registry.installationId(input.computerId);
@@ -1028,6 +1200,8 @@ export class ProviderCliReconcileOwner {
     const requirements = (await this.#bindings.listActiveProviderCliRequirements(input.computerId)).filter(
       (requirement) => requirement.agentId === input.agentId,
     );
+    if (!this.#isAgentReconcileCurrent(input.computerId, input.agentId, seq)) return;
+    if (!this.#connectionMatches(input.computerId, instanceId, installationId)) return;
     if (requirements.length === 0) {
       await this.#retireAgentOnComputer(input.agentId, input.computerId);
       return;
@@ -1146,9 +1320,62 @@ export class ProviderCliReconcileOwner {
 
   async #retireRequest(key: string): Promise<void> {
     const current = this.#requests.get(key);
-    if (current?.retryTimer) clearTimeout(current.retryTimer);
-    this.#requests.delete(key);
-    if (current) await this.#sendCancel(current);
+    this.#bumpTransition(key);
+    if (current) this.#dropRequest(current);
+    if (!current) return;
+    await this.#withRequestGate(key, async () => {
+      await this.#sendCancel(current);
+    });
+  }
+
+  #dropRequest(current: CurrentRequest): void {
+    if (current.retryTimer) {
+      clearTimeout(current.retryTimer);
+      current.retryTimer = undefined;
+    }
+    current.artifactRetryPending = false;
+    const key = requestKey(current.computerId, current.integrationId);
+    if (this.#requests.get(key) === current) this.#requests.delete(key);
+  }
+
+  #bumpTransition(key: string): void {
+    this.#transitionEpoch.set(key, this.#transitionOf(key) + 1);
+  }
+
+  #transitionOf(key: string): number {
+    return this.#transitionEpoch.get(key) ?? 0;
+  }
+
+  #agentReconcileKey(computerId: string, agentId: string): string {
+    return `${computerId}:${agentId}`;
+  }
+
+  #beginAgentReconcile(computerId: string, agentId: string): number {
+    const key = this.#agentReconcileKey(computerId, agentId);
+    const next = (this.#agentReconcileSeq.get(key) ?? 0) + 1;
+    this.#agentReconcileSeq.set(key, next);
+    return next;
+  }
+
+  #currentAgentReconcile(computerId: string, agentId: string): number {
+    return this.#agentReconcileSeq.get(this.#agentReconcileKey(computerId, agentId)) ?? 0;
+  }
+
+  #isAgentReconcileCurrent(computerId: string, agentId: string, seq: number): boolean {
+    return !this.#closed && this.#currentAgentReconcile(computerId, agentId) === seq;
+  }
+
+  #agentReconcileUnchanged(computerId: string, agentId: string, snapshot: ReadonlyMap<string, number>): boolean {
+    const key = this.#agentReconcileKey(computerId, agentId);
+    return (this.#agentReconcileSeq.get(key) ?? 0) === (snapshot.get(key) ?? 0);
+  }
+
+  #connectionMatches(computerId: string, instanceId: string, installationId: string): boolean {
+    return (
+      !this.#closed &&
+      this.#registry.currentInstanceId(computerId) === instanceId &&
+      this.#registry.installationId(computerId) === installationId
+    );
   }
 
   async #sendCancel(current: CurrentRequest): Promise<void> {

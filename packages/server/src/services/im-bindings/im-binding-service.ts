@@ -299,11 +299,8 @@ function credentialExecutionReasonProjection(
 
 function providerCliDiagnosticProjection(
   readiness: ImBindingReadiness,
-): Partial<Pick<ImBindingDiagnostics, "providerCliReason" | "providerCliNextAction">> {
-  return {
-    ...(readiness.providerCliReason ? { providerCliReason: readiness.providerCliReason } : {}),
-    ...(readiness.providerCliNextAction ? { providerCliNextAction: readiness.providerCliNextAction } : {}),
-  };
+): Partial<Pick<ImBindingDiagnostics, "providerCliReason">> {
+  return readiness.providerCliReason ? { providerCliReason: readiness.providerCliReason } : {};
 }
 
 function feishuOutboxProjection(

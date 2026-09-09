@@ -18,14 +18,14 @@ OpenTag-managed artifact and validates the exact CLI with the real bound credent
 replaces an external installation or foreign shim. Automatic install/repair and credential validation are bounded: the
 Server keeps the terminal observation on the same connection, readiness GETs never refill the budget, and a replacement
 request or grant id cannot start a new episode. Manual failures such as `unsupported_platform`, `global_bin_unavailable`,
-`integrity_failed`, and a final ensure `version_incompatible` settle immediately and carry a concrete next action
-(`use_supported_computer`, `fix_permissions`, `retry_verified_download`, `install_supported_version`). An inspection `version_incompatible` may
-still be repaired with a supported managed artifact. Periodic Client inspection stays read-only, keeps the visible
-failure, and can recover after a real local repair without ensure. Explicit Check again / `refreshPreparation` opens one
-new bounded recovery (duplicate clicks coalesce per Agent). Reconnect, credential generation change, and an actual
-Computer placement change may start a new episode; a repeated identical placement notification must not. Public reasons
-are allowlisted and negotiated with reconcile capability v2; older peers keep exact v1 frames and a generic stable
-diagnostic after a bounded unknown episode.
+`integrity_failed`, and a final ensure `version_incompatible` settle immediately. Web and Agent diagnostics map those
+allowlisted reasons to the next step. An inspection `version_incompatible` may still be repaired with a supported
+managed artifact. Periodic Client inspection stays read-only, keeps the visible failure, and can recover after a real
+local repair without ensure. Explicit Check again / `refreshPreparation` opens one new bounded recovery (duplicate
+clicks coalesce per Agent). Reconnect, credential generation change, and an actual Computer placement change may start a
+new episode; a repeated identical placement notification must not. Public reasons are allowlisted and negotiated with
+reconcile capability v2; older peers keep exact v1 frames and a generic stable diagnostic after a bounded unknown
+episode. HTTP responses keep the pre-#490 shape unless the caller opts in with `x-opentag-provider-cli-reason: 2`.
 
 `opentag doctor` and the portable installer only report static account-global installation state. They do not install,
 repair, validate credentials, or infer login/subscription state.

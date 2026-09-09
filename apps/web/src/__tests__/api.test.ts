@@ -331,6 +331,7 @@ describe("BrowserApi", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       if (String(input) === "/api/v1/computers") {
         expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
+        expect(new Headers(init?.headers).get("x-opentag-provider-cli-reason")).toBe("2");
         return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -581,6 +582,7 @@ describe("BrowserApi", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(`/api/v1/agents/${agentId}/setup`);
       expect(init?.method ?? "GET").toBe("GET");
+      expect(new Headers(init?.headers).get("x-opentag-provider-cli-reason")).toBe("2");
       return jsonResponse(snapshot);
     });
     await expect(new BrowserApi(fetchImpl).agentSetup(agentId)).resolves.toEqual(snapshot);

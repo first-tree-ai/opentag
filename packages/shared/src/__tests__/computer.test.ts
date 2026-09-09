@@ -17,6 +17,7 @@ import {
   LocalPreparationComponentSchema,
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
+  requestsProviderCliReasonV2,
   withComputerRuntimeProviderSupport,
 } from "../computer.js";
 import { compareSemVer } from "../semver.js";
@@ -571,31 +572,25 @@ describe("computer contracts", () => {
     expect(classifyProviderCliArtifactFailure({ reason: "version_incompatible", stage: "inspect" })).toEqual({
       publicReason: "version_incompatible",
       manual: false,
-      nextAction: "repair_cli",
     });
     expect(classifyProviderCliArtifactFailure({ reason: "version_incompatible", stage: "ensure" })).toEqual({
       publicReason: "version_incompatible",
       manual: true,
-      nextAction: "install_supported_version",
     });
     expect(classifyProviderCliArtifactFailure({ reason: "unsupported_platform", stage: "inspect" })).toEqual({
       publicReason: "unsupported_platform",
       manual: true,
-      nextAction: "use_supported_computer",
     });
     expect(classifyProviderCliArtifactFailure({ reason: "global_bin_unavailable", stage: "ensure" })).toEqual({
       publicReason: "global_bin_unavailable",
       manual: true,
-      nextAction: "fix_permissions",
     });
     expect(classifyProviderCliArtifactFailure({ reason: "integrity_failed", stage: "ensure" })).toEqual({
       publicReason: "integrity_failed",
       manual: true,
-      nextAction: "retry_verified_download",
     });
     expect(classifyProviderCliArtifactFailure({ reason: "not_installed", stage: "inspect" })).toEqual({
       manual: false,
-      nextAction: "repair_cli",
     });
     expect(
       ComputerImCliReadinessSchema.parse({
@@ -613,5 +608,11 @@ describe("computer contracts", () => {
         reason: "/tmp/slack",
       }),
     ).toThrow();
+    expect(requestsProviderCliReasonV2("2")).toBe(true);
+    expect(requestsProviderCliReasonV2(["2"])).toBe(true);
+    expect(requestsProviderCliReasonV2(undefined)).toBe(false);
+    expect(requestsProviderCliReasonV2("1")).toBe(false);
+    expect(requestsProviderCliReasonV2("3")).toBe(false);
+    expect(requestsProviderCliReasonV2("v2")).toBe(false);
   });
 });

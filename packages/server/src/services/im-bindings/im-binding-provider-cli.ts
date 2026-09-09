@@ -8,7 +8,6 @@ import type {
   ProviderCliArtifactPublicReason,
   ProviderCliExpectedIdentity,
   ProviderCliHandoffProgress,
-  ProviderCliPublicNextAction,
   ProviderCliValidationGrantFrame,
   ProviderReadinessStatus,
 } from "@opentag/shared";
@@ -42,7 +41,6 @@ export interface ImBindingReadiness {
   agentRuntimeReadiness: ProviderReadinessStatus;
   providerCliReadiness: ImCliReadinessStatus;
   providerCliReason?: ProviderCliArtifactPublicReason;
-  providerCliNextAction?: ProviderCliPublicNextAction;
   credentialExecutionReadiness: IntegrationCredentialExecutionStatus;
   credentialExecutionReason?: IntegrationCredentialExecutionReason;
   reauthorizationRequired: boolean;
@@ -145,16 +143,13 @@ function normalizeArtifactReadiness(value: ImCliReadinessStatus | ArtifactReadin
   return typeof value === "string" ? { status: value } : value;
 }
 
-function artifactHandoff(artifact: ArtifactReadiness): Pick<ProviderCliHandoffProgress, "reason" | "nextAction"> {
+function artifactHandoff(artifact: ArtifactReadiness): Pick<ProviderCliHandoffProgress, "reason"> {
   if (artifact.status !== "unavailable") return {};
   const classified = classifyProviderCliArtifactFailure({
     reason: artifact.reason,
     stage: "ensure",
   });
-  return {
-    ...(classified.publicReason ? { reason: classified.publicReason } : {}),
-    ...(classified.nextAction ? { nextAction: classified.nextAction } : {}),
-  };
+  return classified.publicReason ? { reason: classified.publicReason } : {};
 }
 
 function providerCliProgress(
@@ -165,9 +160,6 @@ function providerCliProgress(
     return {
       phase: "needs_attention",
       ...(credential.reason ? { reason: credential.reason } : {}),
-      ...(credential.reason === "provider_unreachable" || credential.reason === "rate_limited"
-        ? { nextAction: "retry" as const }
-        : {}),
     };
   }
   if (artifact.status !== "ready") {
@@ -371,7 +363,6 @@ export class ImBindingProviderCli {
       agentRuntimeReadiness: runtime,
       providerCliReadiness: artifact.status,
       ...(classified?.publicReason ? { providerCliReason: classified.publicReason } : {}),
-      ...(classified?.nextAction ? { providerCliNextAction: classified.nextAction } : {}),
       credentialExecutionReadiness: credential.status,
       ...(credential.reason ? { credentialExecutionReason: credential.reason } : {}),
       reauthorizationRequired: needsReauthorization,

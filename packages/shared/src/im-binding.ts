@@ -5,7 +5,6 @@ import {
   IntegrationCredentialExecutionStatusSchema,
   ProviderCliArtifactPublicReasonSchema,
   ProviderCliPublicFailureReasonSchema,
-  ProviderCliPublicNextActionSchema,
 } from "./computer.js";
 
 export const ImProviderSchema = z.enum(["feishu", "slack"]);
@@ -173,7 +172,6 @@ export const ProviderCliHandoffProgressSchema = z
   .object({
     phase: ProviderCliHandoffPhaseSchema,
     reason: ProviderCliPublicFailureReasonSchema.optional(),
-    nextAction: ProviderCliPublicNextActionSchema.optional(),
   })
   .strict();
 
@@ -359,7 +357,6 @@ export const ImBindingDiagnosticsSchema = z
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
     providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
     providerCliReason: ProviderCliArtifactPublicReasonSchema.optional(),
-    providerCliNextAction: ProviderCliPublicNextActionSchema.optional(),
     credentialExecutionReadiness: IntegrationCredentialExecutionStatusSchema,
     credentialExecutionReason: IntegrationCredentialExecutionReasonSchema.optional(),
     credentialGeneration: z.number().int().min(0),

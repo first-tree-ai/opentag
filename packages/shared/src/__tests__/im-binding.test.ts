@@ -436,11 +436,9 @@ describe("IM binding contracts", () => {
         ...diagnostics,
         providerCliReadiness: "unavailable",
         providerCliReason: "unsupported_platform",
-        providerCliNextAction: "use_supported_computer",
       }),
     ).toMatchObject({
       providerCliReason: "unsupported_platform",
-      providerCliNextAction: "use_supported_computer",
     });
     expect(
       ImBindingHandoffStatusSchema.parse({
@@ -449,11 +447,10 @@ describe("IM binding contracts", () => {
         providerCli: {
           phase: "needs_attention",
           reason: "version_incompatible",
-          nextAction: "install_supported_version",
         },
       }),
     ).toMatchObject({
-      providerCli: { nextAction: "install_supported_version", reason: "version_incompatible" },
+      providerCli: { reason: "version_incompatible" },
     });
   });
 });

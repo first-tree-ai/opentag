@@ -87,7 +87,6 @@ export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string 
     `agentRuntimeReadiness\t${value.agentRuntimeReadiness}`,
     `providerCliReadiness\t${value.providerCliReadiness}`,
     `providerCliReason\t${value.providerCliReason ?? "-"}`,
-    `providerCliNextAction\t${value.providerCliNextAction ?? "-"}`,
     `credentialExecutionReadiness\t${value.credentialExecutionReadiness}`,
     `credentialExecutionReason\t${value.credentialExecutionReason ?? "-"}`,
     `connection\t${value.connection ? `${value.connection.state} (observed ${value.connection.observedAt})` : "not applicable"}`,

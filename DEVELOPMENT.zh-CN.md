@@ -1,7 +1,54 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-09-07
+> Last synced with: 2026-09-09
+
+## 从源码在本地运行
+
+请在已克隆仓库的根目录运行以下命令。本流程使用仅限回环地址的开发者登录；更多配置见下方章节。
+
+### 1. 安装 OpenTag
+
+在 macOS 或 Linux 上准备 Node.js 24（24.15.0 或更高的 24.x 版本）、pnpm 10.12.1、支持 Compose 的 Docker，以及已登录的 Codex 或 Claude Code CLI。
+
+```bash
+./scripts/dev-install.sh
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+```
+
+### 2. 启动本地 Server
+
+等待 PostgreSQL 就绪、生成密钥、启用仅限回环地址的开发者登录，并在启动前台 Server 之前初始化账号：
+
+```bash
+docker compose up -d --wait postgres
+export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@127.0.0.1:5432/opentag
+export OPENTAG_JWT_SECRET=$(openssl rand -base64 32)
+export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_ENV=dev
+export OPENTAG_HOST=127.0.0.1
+export OPENTAG_PORT=8000
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
+export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
+export OPENTAG_DEV_AUTH_EMAIL="$OPENTAG_BOOTSTRAP_EMAIL"
+
+pnpm --filter @opentag/server bootstrap:admin
+pnpm --filter @opentag/server start
+```
+
+### 3. 连接你的 Agent
+
+打开 <http://127.0.0.1:8000>，选择**开发者登录**，按照 **Agents** 设置流程创建 Agent，在第二个终端中先设置下面的 PATH 再运行页面生成的连接命令，最后连接聊天平台。
+
+```bash
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+# 粘贴并运行 Agents 设置流程生成的连接命令。
+```
+
+可以选择 Codex 或 Claude Code，搭配飞书 / Lark 或 Slack；按照产品内的聊天设置流程操作，Slack 还需要[额外配置](./docs/zh-CN/slack-app-setup.md)。
 
 ## 架构
 
@@ -30,7 +77,7 @@
 | --- | --- |
 | Server | Fastify、Better Auth、PostgreSQL migration、Computer WebSocket endpoint |
 | Web | React，由 Server 同源提供 |
-| CLI | Commander；源码 checkout 下为 `opentag-dev`，安装渠道上线后为 `opentag` |
+| CLI | Commander；源码 checkout 下为 `opentag-dev`，生产渠道为 `opentag` |
 | Client / daemon | 负责连接 Computer 与执行 Agent Turn 的 TypeScript 运行时 |
 | Shared | 各 workspace 共用的 Zod schema 与 HTTP path 契约 |
 
@@ -56,14 +103,7 @@ pnpm install
 
 ## 本地开发流程
 
-README 只保留产品概览和 Docker Compose 依赖示例；仓库相关的开发流程集中在本指南：
-
-1. 启动本地 PostgreSQL 服务，并运行 Server 健康检查链路。
-2. Bootstrap Account，安装开发 CLI，并兑换 Account 登录 code。
-3. 连接 Computer，启动 daemon，并创建 Agent 配置。
-4. 需要使用 Web App 时，配置 Google 登录或 loopback development bypass。
-
-下面各章节包含每一步所需的命令和环境变量详情。
+README 介绍托管服务。请按照上方的本地运行流程从源码启动；下方章节介绍开发检查、各项设置步骤和高级配置。
 
 ## Git hooks 与 worktree
 

@@ -18,6 +18,7 @@
   "tasks_details": "Task details",
   "tasks_development_examples": "Showing local example Tasks because this Agent has no Task history yet.",
   "tasks_direct_message": "Direct message",
+  "tasks_execution_report_unavailable": "No execution report is available.",
   "tasks_execution_summary": "Execution summary",
   "tasks_failure_client_shutdown": "Computer shut down",
   "tasks_failure_configuration_conflict": "Configuration conflict",

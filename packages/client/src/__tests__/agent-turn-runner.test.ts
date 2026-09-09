@@ -19,6 +19,7 @@ import { ImCredentialEnvironmentError } from "../runtime/im-credential-environme
 import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
 import type { ProviderCliOutgoingReplyCollectResult } from "../runtime/provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanError } from "../runtime/provider-cli/turn-plan.js";
+import type { ProviderCliTurnPlanPrepareInput } from "../runtime/provider-cli/turn-plan-manager.js";
 import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
@@ -605,12 +606,15 @@ describe("AgentTurnRunner", () => {
     runner.start(liveOwner(delivery()));
     await runner.settled();
     expect(order).toEqual(["credentials", "plan", "runtime", "prompt", "plan-cleanup", "credential-cleanup"]);
-    expect(turnPlan.prepare).toHaveBeenCalledWith({
-      provider: "slack",
-      sessionId: "session-1",
-      runId: "turn-1",
-      configDir: "/tmp/slack-config",
-    });
+    expect(turnPlan.prepare).toHaveBeenCalledWith(
+      {
+        provider: "slack",
+        sessionId: "session-1",
+        runId: "turn-1",
+        configDir: "/tmp/slack-config",
+      },
+      expect.any(AbortSignal),
+    );
 
     const driftedEnsure = vi.fn();
     const drifted = new AgentTurnRunner({
@@ -829,6 +833,10 @@ describe("AgentTurnRunner", () => {
     await h.runner.settled();
     expect(h.create.mock.calls[0]?.[0]?.outgoingReplies?.replies[0]?.messageId).toBe("om_sent");
     expect(h.capabilityVersion).toHaveBeenCalledTimes(1);
+    expect(h.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ captureOutgoingReplies: true }),
+      expect.any(AbortSignal),
+    );
     expect(h.markReporting).toHaveBeenCalledBefore(h.cleanup);
   });
 
@@ -865,6 +873,8 @@ describe("AgentTurnRunner", () => {
     );
     expect(h.submit).toHaveBeenCalledOnce();
     expect(JSON.stringify(h.logs)).not.toContain("private provider body");
+    const prepared = h.prepare.mock.calls[0]?.[0] as ProviderCliTurnPlanPrepareInput | undefined;
+    expect(prepared?.captureOutgoingReplies).toBe(version === 2 ? true : undefined);
   });
 
   it("keeps successfully sent replies even when the provider then fails", async () => {
@@ -1024,6 +1034,7 @@ function outgoingHarness() {
     resultHash: "c".repeat(64),
   }));
   const capabilityVersion = vi.fn((): number | undefined => 2);
+  const prepare = vi.fn(async (_input: ProviderCliTurnPlanPrepareInput, _signal?: AbortSignal) => undefined);
   const prompt = vi.fn(async (): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }));
   const logs: RecordedLog[] = [];
   const runner = new AgentTurnRunner({
@@ -1041,11 +1052,11 @@ function outgoingHarness() {
       prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
       cleanup: vi.fn(async () => undefined),
     },
-    turnPlan: { prepare: vi.fn(async () => undefined), cleanup: vi.fn(async () => undefined) },
+    turnPlan: { prepare, cleanup: vi.fn(async () => undefined) },
     outgoingReplies: { collect, cleanup },
     logger: recordingLogger(logs),
   });
-  return { runner, request, collect, cleanup, markReporting, submit, create, capabilityVersion, prompt, logs };
+  return { runner, request, collect, cleanup, markReporting, submit, create, capabilityVersion, prepare, prompt, logs };
 }
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {

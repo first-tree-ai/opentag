@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
   computeTurnResultHash,
+  RUNTIME_CAPABILITY,
   type TurnReportHashInput,
   type TurnReportRequest,
   TurnReportRequestSchema,
   type TurnReportResult,
   TurnReportResultSchema,
 } from "@opentag/shared";
-import type { RuntimeConnection, RuntimeConnectionState } from "./runtime-connection.js";
+import { type RuntimeConnection, type RuntimeConnectionState, RuntimeSendError } from "./runtime-connection.js";
 import {
   DEFAULT_RUNTIME_RETRY_POLICY,
   type DurableFailure,
@@ -24,7 +25,8 @@ import {
 } from "./runtime-durability.js";
 
 export interface TurnReportOwnerOptions {
-  connection: Pick<RuntimeConnection, "send" | "state" | "subscribeState">;
+  connection: Pick<RuntimeConnection, "send" | "state" | "subscribeState"> &
+    Partial<Pick<RuntimeConnection, "capabilityVersion">>;
   id?: () => string;
   maxPending?: number;
   metrics?: RuntimeDurabilityMetrics;
@@ -48,6 +50,7 @@ export type TurnReportRearmClaim = Pick<
 >;
 
 interface PendingReport {
+  capabilityRejected: boolean;
   confirm?: () => Promise<void> | void;
   confirming: boolean;
   settling: boolean;
@@ -194,6 +197,7 @@ export class TurnReportOwner {
     });
     const record = stored?.status === "dead-letter" ? resetDeadLetterRecord(stored, this.#now()) : stored;
     const pending: PendingReport = {
+      capabilityRejected: false,
       report,
       confirm,
       confirming: false,
@@ -234,6 +238,11 @@ export class TurnReportOwner {
     const pending = this.#pending.get(result.turnId);
     if (!pending) return false;
     if (result.requestId !== pending.report.requestId || result.resultHash !== pending.report.resultHash) return false;
+    if (result.status === "unsupported_capability") {
+      pending.capabilityRejected = true;
+      this.#clearRetry(pending);
+      return true;
+    }
     if (result.status === "conflict" || result.status === "stale_generation") {
       return this.#handleTerminalResult(pending, result.status);
     }
@@ -333,6 +342,7 @@ export class TurnReportOwner {
       this.#readyPromise.then(() => {
         for (const pending of this.#pending.values()) {
           this.#clearRetry(pending);
+          pending.capabilityRejected = false;
           if (pending.sending) pending.resendRequested = true;
           else this.#send(pending);
         }
@@ -342,12 +352,22 @@ export class TurnReportOwner {
 
   #send(pending: PendingReport): void {
     if (!this.#canWrite(pending) || !this.#canStartRunning(pending) || pending.sending || pending.serverStatus) return;
+    if (!this.#canSendReport(pending)) return;
     this.#clearRetry(pending);
     pending.sending = true;
     void this.#track(
       this.#transition(pending, "running", { nextAttemptAt: undefined })
-        .then((transitioned) => transitioned && this.#connection.send(pending.report, { priority: "report" }))
-        .catch((error) => this.#handleFailure(pending, "transport", error))
+        .then((transitioned) => {
+          if (transitioned && this.#canSendReport(pending))
+            return this.#connection.send(pending.report, { priority: "report" });
+        })
+        .catch((error) => {
+          if (error instanceof RuntimeSendError && error.code === "capability_unavailable") {
+            pending.capabilityRejected = true;
+            return;
+          }
+          return this.#handleFailure(pending, "transport", error);
+        })
         .finally(() => {
           pending.sending = false;
           if (pending.resendRequested && this.#isCurrent(pending) && this.#connection.state === "registered") {
@@ -363,11 +383,13 @@ export class TurnReportOwner {
 
   #scheduleRetry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): void {
     if (this.#retryTimers.has(record.key) || this.#stopped || pending.serverStatus || pending.settling) return;
+    if (!this.#canSendReport(pending)) return;
     const delay =
       record.nextAttemptAt === undefined ? this.#retryDelayMs : Math.max(0, record.nextAttemptAt - this.#now());
     const timer = this.#scheduler.schedule(delay, () => {
       this.#retryTimers.delete(record.key);
       if (this.#connection.state !== "registered") return;
+      if (!this.#canSendReport(pending)) return;
       const current = this.#records.get(record.key);
       if (!current || current.status === "succeeded" || pending.serverStatus || !this.#canWrite(pending)) return;
       if (current.status === "retryable") {
@@ -427,6 +449,7 @@ export class TurnReportOwner {
       rejectPromise = reject;
     });
     const pending: PendingReport = {
+      capabilityRejected: false,
       report: record.payload,
       confirm: undefined,
       confirming: false,
@@ -525,6 +548,14 @@ export class TurnReportOwner {
   #canStartRunning(pending: PendingReport): boolean {
     const record = this.#records.get(pending.report.turnId) ?? pending.record;
     return record.status !== "succeeded" && record.status !== "dead-letter";
+  }
+
+  #canSendReport(pending: PendingReport): boolean {
+    return (
+      !pending.capabilityRejected &&
+      (pending.report.outgoingReplies === undefined ||
+        this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) === 2)
+    );
   }
 
   #detach(pending: PendingReport): boolean {

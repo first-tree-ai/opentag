@@ -491,7 +491,34 @@ describe("TaskService", () => {
     );
     expect(statuses.get(orphaned.id)).toBe("completed");
     expect(statuses.get(stale.id)).toBe("expired");
+    const oldDetail = await late.get(bootstrap.userId, orphaned.id, { limit: 50 });
+    expect(oldDetail.turns.find((turn) => turn.message.id === orphaned.id)?.delivery).toMatchObject({
+      state: "accepted",
+      isRunning: false,
+    });
+    const expiredDetail = await late.get(bootstrap.userId, stale.id, { limit: 50 });
+    expect(expiredDetail.turns[0]?.delivery).toMatchObject({ state: "accepted", isRunning: false });
   });
+
+  it.each([false, true])(
+    "projects effective running state for an unreported Turn with ended Session %s",
+    async (ended) => {
+      const { binding, bootstrap, service } = await fixture();
+      const session = await createSession(binding.id, {
+        channelId: DM,
+        conversationKind: "dm",
+        endedAt: ended ? minutes(-1) : null,
+      });
+      const message = await createMessage(binding.id, { channelId: DM });
+      await createDelivery(session.id, message.id, { at: minutes(-2) });
+      const detail = await service.get(bootstrap.userId, message.id, { limit: 50 });
+      expect(detail.task.status).toBe(ended ? "ended" : "running");
+      expect(detail.turns[0]).toMatchObject({
+        delivery: { state: "accepted", isRunning: !ended },
+        report: null,
+      });
+    },
+  );
 
   it("resolves manual over generated over derived titles through the topic's thread Session", async () => {
     const { binding, bootstrap, service } = await fixture();

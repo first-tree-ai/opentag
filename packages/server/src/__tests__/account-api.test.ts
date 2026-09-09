@@ -173,7 +173,7 @@ function appWith(
     computerService: service.computerService as unknown as ComputerService,
     accountSetupService: service.accountSetupService as unknown as AccountSetupService,
     computerConnectCode: {
-      downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+      downloadBaseUrl: "https://dl.opentag.build/releases",
       environment: "dev",
       publicUrl: "https://opentag.example",
     },

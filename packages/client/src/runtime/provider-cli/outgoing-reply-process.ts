@@ -1,5 +1,68 @@
 import { spawn } from "node:child_process";
 
+export async function spawnInheritedProcess(options: {
+  readonly file: string;
+  readonly args: readonly string[];
+  readonly env: NodeJS.ProcessEnv;
+}): Promise<number> {
+  return new Promise((resolveExit, reject) => {
+    const child = spawn(options.file, [...options.args], {
+      env: options.env,
+      shell: false,
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    const forward = (signal: NodeJS.Signals): void => {
+      if (child.killed || child.exitCode !== null) return;
+      child.kill(signal);
+    };
+    const onSigterm = (): void => forward("SIGTERM");
+    const onSigint = (): void => forward("SIGINT");
+    process.on("SIGTERM", onSigterm);
+    process.on("SIGINT", onSigint);
+    const stopListening = (): void => {
+      process.off("SIGTERM", onSigterm);
+      process.off("SIGINT", onSigint);
+    };
+    child.once("error", (error) => {
+      stopListening();
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      stopListening();
+      if (code !== null) {
+        resolveExit(code);
+        return;
+      }
+      if (signal === "SIGTERM") {
+        resolveExit(143);
+        return;
+      }
+      if (signal === "SIGINT") {
+        resolveExit(130);
+        return;
+      }
+      resolveExit(1);
+    });
+  });
+}
+
+export async function flushStdout(): Promise<void> {
+  const stdout = process.stdout;
+  if (!stdout.writable || stdout.destroyed) return;
+  if (typeof stdout.writableLength === "number" && stdout.writableLength === 0 && !stdout.writableNeedDrain) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const finish = (): void => resolve();
+    stdout.once("drain", finish);
+    if (stdout.write(Buffer.alloc(0))) {
+      stdout.off("drain", finish);
+      resolve();
+    }
+  });
+}
+
 export async function spawnCapturedProcess(options: {
   readonly file: string;
   readonly args: readonly string[];

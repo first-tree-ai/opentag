@@ -62,7 +62,7 @@ export interface AgentTurnRunnerOptions {
   readonly credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
   readonly turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
-    prepare(input: ProviderCliTurnPlanPrepareInput): Promise<unknown>;
+    prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
   };
   readonly outgoingReplies?: AgentTurnOutgoingReplyCollector;
 }
@@ -246,10 +246,12 @@ export class AgentTurnRunner {
           provider: credentials.provider,
           sessionId: owner.request.sessionId,
           runId: owner.turnId,
+          ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
           ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
         };
-        await this.#turnPlan.prepare(turnPlanInput);
+        await this.#turnPlan.prepare(turnPlanInput, signal);
       }
+      signal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
       turn.runtime = runtime;
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
@@ -386,6 +388,13 @@ export class AgentTurnRunner {
     if (turnPlanInput?.provider !== "feishu" || !this.#outgoingReplies) return;
     await this.#outgoingReplies.cleanup({ sessionId: turnPlanInput.sessionId, runId }).catch(() => undefined);
   }
+}
+
+function outgoingReplyCapturePlan(
+  provider: ProviderCliTurnPlanPrepareInput["provider"],
+  includeInReport: boolean,
+): Pick<ProviderCliTurnPlanPrepareInput, "captureOutgoingReplies"> {
+  return provider === "feishu" && includeInReport ? { captureOutgoingReplies: true } : {};
 }
 
 export function buildAgentInput(

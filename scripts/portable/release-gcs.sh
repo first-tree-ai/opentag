@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-DEFAULT_DOWNLOAD_BASE_URL="https://storage.googleapis.com/opentag-release/releases"
+DEFAULT_DOWNLOAD_BASE_URL="https://dl.opentag.build/releases"
 
 CHANNEL=""
 VERSION=""

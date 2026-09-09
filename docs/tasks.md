@@ -47,6 +47,11 @@ The status is the topic's latest execution situation, read by precedence:
    deliveries), or `expired` (a delivery that expired unprocessed, or an unreported Turn whose
    deadline has passed).
 
+Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
+shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
+An unreported inactive Turn, including data from older servers that omit the field, shows that no
+execution report is available.
+
 ## Titles
 
 A Task is titled from its root message through the same derivation the list always used: routing
@@ -74,6 +79,11 @@ messages are those exchanged by the topic's own Sessions and its internal Sessio
   are not read receipts. Partial capture is labelled independently of the number of replies; content
   truncation and native post/card details remain visible. Replies become available with the terminal
   report and are not backfilled from old runtime transcripts.
+- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks retain their execution
+  summaries without a permanent notice about a capture feature they do not support.
+- Reply snapshots require `runtime.turnReport` v2 on the current connection. A report created on v2
+  remains durable during a v1 reconnect and resumes unchanged after v2 is negotiated again. A v2
+  server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.
 - A crashed Turn on a group's channel Session stays `running` until that Session accepts another
   delivery or the delivery deadline passes.
 - The list is computed per request from the Account's stored messages. Rollups decide the page

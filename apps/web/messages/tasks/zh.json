@@ -18,6 +18,7 @@
   "tasks_details": "任务详情",
   "tasks_development_examples": "此 Agent 暂无任务记录，当前展示本地示例任务。",
   "tasks_direct_message": "直接消息",
+  "tasks_execution_report_unavailable": "暂无执行报告。",
   "tasks_execution_summary": "执行摘要",
   "tasks_failure_client_shutdown": "Computer 已关闭",
   "tasks_failure_configuration_conflict": "配置冲突",

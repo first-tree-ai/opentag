@@ -85,6 +85,7 @@ type ProviderCliTurnPlanShared = {
   readonly homeNamespace: string;
   readonly sessionId: string;
   readonly runId: string;
+  readonly captureOutgoingReplies?: boolean;
 };
 
 type ProviderCliTurnPlanSelection =
@@ -259,8 +260,9 @@ type ParsedTurnPlanIdentity = {
 
 function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
   const configDir = assertProviderCliSlackConfigDir(record.configDir);
+  assertSlackCaptureOutgoingReplies(record);
   if (record.selectionKind === "managed") {
-    if (!hasExactKeys(record, MANAGED_SLACK_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+    if (!hasPlanKeys(record, MANAGED_SLACK_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
     }
     return {
@@ -273,7 +275,7 @@ function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnP
     };
   }
   if (record.selectionKind === "external") {
-    if (!hasExactKeys(record, EXTERNAL_SLACK_PLAN_KEYS)) {
+    if (!hasPlanKeys(record, EXTERNAL_SLACK_PLAN_KEYS)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
     }
     return { ...shared, provider: "slack", command: "slack", selectionKind: "external", configDir };
@@ -282,8 +284,9 @@ function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnP
 }
 
 function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
+  const captureOutgoingReplies = parseCaptureOutgoingReplies(record);
   if (record.selectionKind === "managed") {
-    if (!hasExactKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+    if (!hasPlanKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
     }
     return {
@@ -292,13 +295,20 @@ function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurn
       command: "lark-cli",
       selectionKind: "managed",
       artifactId: record.artifactId,
+      ...(captureOutgoingReplies ? { captureOutgoingReplies: true } : {}),
     };
   }
   if (record.selectionKind === "external") {
-    if (!hasExactKeys(record, EXTERNAL_PLAN_KEYS)) {
+    if (!hasPlanKeys(record, EXTERNAL_PLAN_KEYS)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
     }
-    return { ...shared, provider: "feishu", command: "lark-cli", selectionKind: "external" };
+    return {
+      ...shared,
+      provider: "feishu",
+      command: "lark-cli",
+      selectionKind: "external",
+      ...(captureOutgoingReplies ? { captureOutgoingReplies: true } : {}),
+    };
   }
   throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
 }
@@ -535,4 +545,27 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   const actual = Object.keys(value);
   if (actual.length !== keys.length) return false;
   return keys.every((key) => Object.hasOwn(value, key));
+}
+
+function hasPlanKeys(value: Record<string, unknown>, requiredKeys: readonly string[]): boolean {
+  return hasExactKeys(value, requiredKeys) || hasExactKeys(value, [...requiredKeys, "captureOutgoingReplies"]);
+}
+
+function parseCaptureOutgoingReplies(record: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(record, "captureOutgoingReplies")) return false;
+  if (typeof record.captureOutgoingReplies !== "boolean") {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn captureOutgoingReplies must be a boolean");
+  }
+  return record.captureOutgoingReplies;
+}
+
+function assertSlackCaptureOutgoingReplies(record: Record<string, unknown>): void {
+  if (!Object.hasOwn(record, "captureOutgoingReplies")) return;
+  if (record.captureOutgoingReplies !== false) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Slack Provider CLI Turn plans do not capture outgoing replies");
+  }
+}
+
+export function planCapturesOutgoingReplies(plan: ProviderCliTurnPlan): boolean {
+  return plan.provider === "feishu" && plan.captureOutgoingReplies === true;
 }

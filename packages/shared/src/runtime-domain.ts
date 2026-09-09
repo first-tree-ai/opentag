@@ -742,7 +742,7 @@ export const TurnReportResultSchema = z
     type: z.literal("turn:report:result"),
     requestId: RuntimeRequestIdSchema,
     turnId: RuntimeOpaqueIdSchema,
-    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation"]),
+    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation", "unsupported_capability"]),
     resultHash: RuntimeSha256Schema,
   })
   .strict();

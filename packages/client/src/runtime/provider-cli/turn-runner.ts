@@ -8,10 +8,12 @@ import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliC
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
 import {
   captureFeishuOutgoingReply,
+  classifyLarkOutgoingMutation,
   PROVIDER_CLI_OUTGOING_REPLY_STDOUT_CAPTURE_MAX_BYTES,
   spawnCapturedProcess,
   withOutgoingReplyInflight,
 } from "./outgoing-reply-capture.js";
+import { flushStdout, spawnInheritedProcess } from "./outgoing-reply-process.js";
 import { markOutgoingReplyCaptureStatus } from "./outgoing-reply-store.js";
 import {
   assertPlanWithinRoot,
@@ -22,6 +24,7 @@ import {
   managedArtifactDigest,
   type ProviderCliTurnPlan,
   ProviderCliTurnPlanError,
+  planCapturesOutgoingReplies,
   readProviderCliTurnPlan,
 } from "./turn-plan.js";
 import type { ProviderCliProvider } from "./types.js";
@@ -49,7 +52,6 @@ export interface ExecuteProviderCliTurnPlanOptions {
     args: readonly string[],
     options: { env: NodeJS.ProcessEnv },
   ) => Promise<number>;
-  readonly expectedSenderIds?: readonly string[];
 }
 
 export function parseProviderCliTurnRunnerArgv(argv: readonly string[]): ProviderCliTurnRunnerArgv {
@@ -134,11 +136,19 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
   if (options.spawnTarget) {
     return options.spawnTarget(plan.targetPath, args, { env });
   }
+  if (!planCapturesOutgoingReplies(plan) || !classifyLarkOutgoingMutation(options.argv)) {
+    return spawnInheritedProcess({ file: plan.targetPath, args, env }).catch((error: unknown) => {
+      throw new ProviderCliTurnPlanError(
+        "runner_failed",
+        error instanceof Error ? error.message : "Provider CLI Turn runner failed",
+      );
+    });
+  }
   return withOutgoingReplyInflight({
     plansRoot,
     planPath: options.planPath,
     runId: plan.runId,
-    enabled: plan.provider === "feishu",
+    enabled: true,
     run: async () => {
       const spawned = await spawnCapturedProcess({
         file: plan.targetPath,
@@ -152,28 +162,25 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
           error instanceof Error ? error.message : "Provider CLI Turn runner failed",
         );
       });
-      if (plan.provider === "feishu") {
-        await captureFeishuOutgoingReply({
-          plan,
-          planPath: options.planPath,
+      await captureFeishuOutgoingReply({
+        plan,
+        planPath: options.planPath,
+        plansRoot,
+        userArgv: options.argv,
+        spawnArgs: args,
+        env,
+        code: spawned.code,
+        stdout: spawned.stdout,
+        stdoutTruncated: spawned.truncated,
+      }).catch(() => {
+        logger.debug({ code: "outgoing_reply_capture_failed" }, "Outgoing reply capture failed");
+        return markOutgoingReplyCaptureStatus({
           plansRoot,
-          userArgv: options.argv,
-          spawnArgs: args,
-          env,
-          code: spawned.code,
-          stdout: spawned.stdout,
-          stdoutTruncated: spawned.truncated,
-          ...(options.expectedSenderIds ? { expectedSenderIds: options.expectedSenderIds } : {}),
-        }).catch(() => {
-          logger.debug({ code: "outgoing_reply_capture_failed" }, "Outgoing reply capture failed");
-          return markOutgoingReplyCaptureStatus({
-            plansRoot,
-            sessionDir: dirname(options.planPath),
-            runId: plan.runId,
-            status: "incomplete",
-          });
+          sessionDir: dirname(options.planPath),
+          runId: plan.runId,
+          status: "incomplete",
         });
-      }
+      });
       return spawned.code;
     },
   });
@@ -349,7 +356,13 @@ function mapTargetError(error: unknown): ProviderCliTurnPlanError {
 
 if (isProviderCliTurnRunnerMain(import.meta.url)) {
   void runProviderCliTurnRunner(process.argv.slice(2)).then(
-    (code) => process.exit(code),
-    () => process.exit(1),
+    async (code) => {
+      process.exitCode = code;
+      await flushStdout();
+    },
+    async () => {
+      process.exitCode = 1;
+      await flushStdout();
+    },
   );
 }

@@ -73,6 +73,8 @@ export const TaskTurnSchema = z
     delivery: z
       .object({
         state: z.enum(["pending", "accepted", "steered", "terminal_rejected", "expired"]),
+        // Older servers omit this; consumers must not infer liveness from acceptance alone.
+        isRunning: z.boolean().optional(),
         attemptCount: z.number().int().nonnegative(),
         acceptedAt: z.string().datetime().nullable(),
         steeredAt: z.string().datetime().nullable(),

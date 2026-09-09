@@ -37,8 +37,8 @@ export type LarkOutgoingMutationKind = "send" | "reply";
 export type OutgoingReplyCaptureOutcome = "ignored" | "recorded" | "incomplete";
 
 export function classifyLarkOutgoingMutation(argv: readonly string[]): LarkOutgoingMutationKind | undefined {
-  if (argv.some((argument) => argument === "--dry-run" || argument.startsWith("--dry-run="))) return undefined;
-  const positional = positionalArgv(argv);
+  const { positional, dryRun } = positionalArgv(argv);
+  if (dryRun) return undefined;
   if (positional[0] === "api") return classifyRawApiMutation(positional);
   return classifyImCommandMutation(positional[0] === "im" ? positional.slice(1) : positional);
 }
@@ -70,7 +70,6 @@ export async function captureFeishuOutgoingReply(options: {
   readonly code: number;
   readonly stdout: Buffer;
   readonly stdoutTruncated?: boolean;
-  readonly expectedSenderIds?: readonly string[];
 }): Promise<OutgoingReplyCaptureOutcome> {
   if (options.plan.provider !== "feishu") return "ignored";
   const kind = classifyLarkOutgoingMutation(options.userArgv);
@@ -95,7 +94,7 @@ export async function captureFeishuOutgoingReply(options: {
     contentStatus: receipt.content ? receipt.contentStatus : ("unavailable" as const),
   };
   try {
-    await persistOutgoingReplyReceipt(kind, applySenderPolicy(base, options.expectedSenderIds), options);
+    await persistOutgoingReplyReceipt(kind, applySenderPolicy(base), options);
   } catch {
     logger.debug({ code: "outgoing_reply_receipt_write_failed" }, "Outgoing reply receipt write failed");
     await markIncomplete(options);
@@ -104,7 +103,7 @@ export async function captureFeishuOutgoingReply(options: {
   if (receipt.content) return "recorded";
   const enriched = await enrichReceiptFromQuery(base, options);
   try {
-    await persistOutgoingReplyReceipt(kind, applySenderPolicy(enriched, options.expectedSenderIds), options);
+    await persistOutgoingReplyReceipt(kind, applySenderPolicy(enriched), options);
   } catch {
     logger.debug({ code: "outgoing_reply_receipt_enrich_failed" }, "Outgoing reply receipt enrich failed");
     await markIncomplete(options);
@@ -153,15 +152,9 @@ async function enrichReceiptFromQuery(
 
 function applySenderPolicy(
   receipt: ExtractedMessage & { sequenceHint: number; recordedAt: string },
-  expectedSenderIds: readonly string[] | undefined,
 ): ExtractedMessage & { sequenceHint: number; recordedAt: string } {
   if (receipt.senderType && receipt.senderType !== "app") {
     return { ...receipt, content: undefined, contentStatus: "unavailable" };
-  }
-  if (expectedSenderIds && expectedSenderIds.length > 0) {
-    if (!receipt.senderId || !expectedSenderIds.includes(receipt.senderId)) {
-      return { ...receipt, content: undefined, contentStatus: "unavailable" };
-    }
   }
   return receipt;
 }
@@ -230,11 +223,11 @@ function inspectLarkCliEnvelope(
 ): { kind: "success"; data: unknown } | { kind: "rejected" } | { kind: "malformed" } {
   const parsed = parseJsonValue(typeof stdout === "string" ? stdout : stdout.toString("utf8"));
   if (!isRecord(parsed)) return { kind: "malformed" };
-  if (parsed.ok !== true) return { kind: "rejected" };
   if (parsed.dry_run === true) return { kind: "rejected" };
-  if (parsed.identity !== undefined && parsed.identity !== "bot") return { kind: "rejected" };
-  if (parsed.identity !== "bot") return { kind: "rejected" };
-  return { kind: "success", data: parsed.data };
+  if (typeof parsed.identity === "string" && parsed.identity !== "bot") return { kind: "rejected" };
+  if (parsed.ok === false) return { kind: "rejected" };
+  if (parsed.ok === true && parsed.identity === "bot") return { kind: "success", data: parsed.data };
+  return { kind: "malformed" };
 }
 
 export function parseLarkCliSuccessEnvelope(
@@ -379,11 +372,14 @@ function managedArgPrefix(spawnArgs: readonly string[], userArgv: readonly strin
   return [];
 }
 
-function positionalArgv(argv: readonly string[]): string[] {
+function positionalArgv(argv: readonly string[]): { positional: string[]; dryRun: boolean } {
   const positional: string[] = [];
+  let dryRun = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === undefined) continue;
+    if (argument === "--dry-run") dryRun = true;
+    if (argument.startsWith("--dry-run=")) dryRun = !["false", "0", "f"].includes(argument.slice(10).toLowerCase());
     const skipped = skipArgvFlag(argument, index);
     if (skipped === "stop") {
       positional.push(...argv.slice(index + 1));
@@ -395,7 +391,7 @@ function positionalArgv(argv: readonly string[]): string[] {
     }
     positional.push(argument);
   }
-  return positional;
+  return { positional, dryRun };
 }
 
 function skipArgvFlag(argument: string, index: number): number | "stop" | undefined {

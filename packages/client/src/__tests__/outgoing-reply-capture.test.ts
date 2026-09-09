@@ -65,6 +65,10 @@ describe("classifyLarkOutgoingMutation", () => {
     expect(classifyLarkOutgoingMutation(["api", "POST", "/open-apis/im/v1/messages"])).toBe("send");
     expect(classifyLarkOutgoingMutation(["api", "POST", "/open-apis/im/v1/messages/om_1/reply"])).toBe("reply");
     expect(classifyLarkOutgoingMutation(["im", "+messages-send", "--dry-run"])).toBeUndefined();
+    expect(classifyLarkOutgoingMutation(["im", "+messages-send", "--dry-run=false"])).toBe("send");
+    expect(classifyLarkOutgoingMutation(["im", "+messages-send", "--text", "--dry-run"])).toBe("send");
+    expect(classifyLarkOutgoingMutation(["im", "+messages-send", "--dry-run", "--dry-run=0"])).toBe("send");
+    expect(classifyLarkOutgoingMutation(["im", "+messages-send", "--dry-run=true"])).toBeUndefined();
     expect(classifyLarkOutgoingMutation(["api", "GET", "/open-apis/im/v1/messages/om_1"])).toBeUndefined();
     expect(classifyLarkOutgoingMutation(["im", "messages", "list"])).toBeUndefined();
     expect(classifyLarkOutgoingMutation(["im", "+messages-mget"])).toBeUndefined();
@@ -105,7 +109,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     const code = await executeProviderCliTurnPlan({
       planPath: prepared.planPath,
       provider: "feishu",
@@ -161,7 +170,12 @@ describe("Provider CLI outgoing reply capture", () => {
       const { accountHome, layout, manager } = await trackedHarness();
       const target = await installTurnTarget(join(accountHome, "bin"));
       await writeExternalTurnSelection(layout, "feishu", target);
-      const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+      const prepared = await manager.prepare({
+        provider: "feishu",
+        captureOutgoingReplies: true,
+        sessionId: "s-1",
+        runId: "run-1",
+      });
       await executeProviderCliTurnPlan({
         planPath: prepared.planPath,
         provider: "feishu",
@@ -189,7 +203,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     const code = await executeProviderCliTurnPlan({
       planPath: prepared.planPath,
       provider: "feishu",
@@ -218,7 +237,12 @@ describe("Provider CLI outgoing reply capture", () => {
       const { accountHome, layout, manager } = await trackedHarness();
       const target = await installTurnTarget(join(accountHome, "bin"));
       await writeExternalTurnSelection(layout, "feishu", target);
-      const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+      const prepared = await manager.prepare({
+        provider: "feishu",
+        captureOutgoingReplies: true,
+        sessionId: "s-1",
+        runId: "run-1",
+      });
       const code = await executeProviderCliTurnPlan({
         planPath: prepared.planPath,
         provider: "feishu",
@@ -244,11 +268,16 @@ describe("Provider CLI outgoing reply capture", () => {
     }
   });
 
-  it("does not treat another app sender as the bound bot", async () => {
+  it("does not treat a user sender as the bound bot", async () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     await executeProviderCliTurnPlan({
       planPath: prepared.planPath,
       provider: "feishu",
@@ -258,9 +287,8 @@ describe("Provider CLI outgoing reply capture", () => {
         ...process.env,
         OPENTAG_TEST_TARGET_MODE: "lark-cli",
         OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
-        OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope({ sender: { id: "ou_other_app", sender_type: "app" } }),
+        OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope({ sender: { id: "ou_user", sender_type: "user" } }),
       },
-      expectedSenderIds: ["ou_bot"],
       plansRoot: layout.plans,
     });
     const collected = await collectOutgoingReplyReceipts({
@@ -277,7 +305,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const first = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const first = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     const one = executeProviderCliTurnPlan({
       planPath: first.planPath,
       provider: "feishu",
@@ -328,7 +361,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const first = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const first = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     const late = executeProviderCliTurnPlan({
       planPath: first.planPath,
       provider: "feishu",
@@ -357,7 +395,12 @@ describe("Provider CLI outgoing reply capture", () => {
       )
       .toBe(true);
     await manager.cleanup({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
-    const second = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-2" });
+    const second = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-2",
+    });
     await executeProviderCliTurnPlan({
       planPath: second.planPath,
       provider: "feishu",
@@ -393,7 +436,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     await executeProviderCliTurnPlan({
       planPath: prepared.planPath,
       provider: "feishu",
@@ -425,7 +473,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     await executeProviderCliTurnPlan({
       planPath: prepared.planPath,
       provider: "feishu",
@@ -458,7 +511,12 @@ describe("Provider CLI outgoing reply capture", () => {
     const { accountHome, layout, manager } = await trackedHarness();
     const target = await installTurnTarget(join(accountHome, "bin"));
     await writeExternalTurnSelection(layout, "feishu", target);
-    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
     await executeProviderCliTurnPlan({
       planPath: prepared.planPath,
       provider: "feishu",
@@ -485,6 +543,103 @@ describe("Provider CLI outgoing reply capture", () => {
       runId: "run-1",
       waitMs: 0,
     });
+    expect(collected.receipts).toEqual([]);
+  });
+
+  it("marks classified successful-send stdout without the 1.0.92 envelope as incomplete", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    const legacy = JSON.stringify({ message_id: "om_legacy", chat_id: "oc_chat", create_time: "1000" });
+    const missingIdentity = JSON.stringify({
+      ok: true,
+      data: { message_id: "om_noid", chat_id: "oc_chat", create_time: "1000" },
+    });
+    for (const envelope of [legacy, missingIdentity]) {
+      await executeProviderCliTurnPlan({
+        planPath: prepared.planPath,
+        provider: "feishu",
+        runId: "run-1",
+        argv: ["im", "+messages-send", "--text", "hi"],
+        env: { ...process.env, OPENTAG_TEST_TARGET_MODE: "lark-cli", OPENTAG_TEST_LARK_ENVELOPE: envelope },
+        plansRoot: layout.plans,
+      });
+    }
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: prepared.sessionDir,
+      runId: "run-1",
+      waitMs: 0,
+    });
+    expect(collected.status).toBe("incomplete");
+    expect(collected.receipts).toEqual([]);
+  });
+
+  it("ignores known-failed envelopes instead of marking capture incomplete", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({
+      provider: "feishu",
+      captureOutgoingReplies: true,
+      sessionId: "s-1",
+      runId: "run-1",
+    });
+    await executeProviderCliTurnPlan({
+      planPath: prepared.planPath,
+      provider: "feishu",
+      runId: "run-1",
+      argv: ["im", "+messages-send", "--text", "hi"],
+      env: {
+        ...process.env,
+        OPENTAG_TEST_TARGET_MODE: "lark-cli",
+        OPENTAG_TEST_LARK_ENVELOPE: JSON.stringify({ ok: false, identity: "bot", msg: "denied" }),
+      },
+      plansRoot: layout.plans,
+    });
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: prepared.sessionDir,
+      runId: "run-1",
+      waitMs: 0,
+    });
+    expect(collected.status).toBe("complete");
+    expect(collected.receipts).toEqual([]);
+  });
+
+  it("does not persist receipts unless captureOutgoingReplies is true", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const prepared = await manager.prepare({ provider: "feishu", sessionId: "s-1", runId: "run-1" });
+    expect(prepared.plan.captureOutgoingReplies).toBeUndefined();
+    const code = await executeProviderCliTurnPlan({
+      planPath: prepared.planPath,
+      provider: "feishu",
+      runId: "run-1",
+      argv: ["im", "+messages-send", "--text", "hi"],
+      env: {
+        ...process.env,
+        OPENTAG_TEST_TARGET_MODE: "lark-cli",
+        OPENTAG_TEST_LARK_ENVELOPE: sendEnvelope(),
+        OPENTAG_TEST_LARK_GET_ENVELOPE: getEnvelope(),
+      },
+      plansRoot: layout.plans,
+    });
+    expect(code).toBe(0);
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: prepared.sessionDir,
+      runId: "run-1",
+      waitMs: 0,
+    });
+    expect(collected.status).toBe("complete");
     expect(collected.receipts).toEqual([]);
   });
 });

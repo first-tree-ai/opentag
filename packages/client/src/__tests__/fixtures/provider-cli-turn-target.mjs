@@ -12,6 +12,18 @@ if (mode === "sleep") {
   process.on("SIGTERM", () => finish("SIGTERM"));
   process.on("SIGINT", () => finish("SIGINT"));
   setInterval(() => undefined, 60_000);
+} else if (mode === "large-stdout") {
+  const bytes = Number(process.env.OPENTAG_TEST_TARGET_BYTES ?? String(5 * 1024 * 1024));
+  const chunk = Buffer.alloc(64 * 1024, 0x61);
+  let remaining = Number.isFinite(bytes) && bytes > 0 ? bytes : 5 * 1024 * 1024;
+  while (remaining > 0) {
+    const next = remaining > chunk.length ? chunk : chunk.subarray(0, remaining);
+    if (!process.stdout.write(next)) {
+      await new Promise((resolve) => process.stdout.once("drain", resolve));
+    }
+    remaining -= next.length;
+  }
+  process.exit(0);
 } else if (mode === "lark-cli") {
   const argv = process.argv.slice(2);
   const messagePath = argv.find((argument) => argument.includes("/open-apis/im/v1/messages/"));

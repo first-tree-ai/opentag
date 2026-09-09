@@ -136,6 +136,68 @@ async function fixture() {
 }
 
 describe("Task topic queries", () => {
+  it.each(["running", "expired", "ended", "superseded"] as const)(
+    "projects %s liveness consistently into Task detail",
+    async (state) => {
+      const value = await fixture();
+      try {
+        await value.database
+          .update(imMessageDeliveries)
+          .set({ reportedAt: null, turnReport: null, resultHash: null })
+          .where(eq(imMessageDeliveries.id, value.deliveryId));
+        if (state === "ended") {
+          await value.database
+            .update(sessions)
+            .set({ endedAt: new Date("2026-08-27T01:03:00.000Z") })
+            .where(eq(sessions.id, value.session.id));
+        }
+        if (state === "superseded") {
+          const [message] = await value.database
+            .insert(imMessages)
+            .values({
+              imBindingId: value.binding.id,
+              providerEventId: "event-later",
+              channelId: "oc_debug",
+              externalMessageId: "om_later",
+              providerRevisionKey: "1",
+              operation: "created",
+              direction: "inbound",
+              authorKind: "human",
+              authorExternalId: "ou_debug",
+              content: value.message.content,
+              providerContext: value.message.providerContext,
+              occurredAt: new Date("2026-08-27T01:03:00.000Z"),
+            })
+            .returning();
+          if (!message) throw new Error("Expected later message");
+          await value.database.insert(imMessageDeliveries).values({
+            messageId: message.id,
+            sessionId: value.session.id,
+            attention: "direct",
+            state: "accepted",
+            placementGeneration: 1,
+            inputHash: "b".repeat(64),
+            turnId: "turn-later",
+            reportOwnerInstanceId: crypto.randomUUID(),
+            acceptedAt: new Date("2026-08-27T01:03:00.000Z"),
+            expiresAt: new Date("2026-08-28T01:00:00.000Z"),
+          });
+        }
+        const now = new Date(state === "expired" ? "2026-08-28T01:00:00.000Z" : "2026-08-27T01:04:00.000Z");
+        const service = new TaskService(value.database, { now: () => now });
+        const detail = await service.get(value.bootstrap.userId, value.message.id, { limit: 50 });
+        expect(detail.task.status).toBe(state === "superseded" ? "running" : state);
+        expect(detail.turns.find((turn) => turn.deliveryId === value.deliveryId)).toMatchObject({
+          delivery: { state: "accepted", isRunning: state === "running" },
+          report: null,
+        });
+        if (state === "superseded") expect(detail.turns[0]?.delivery.isRunning).toBe(true);
+      } finally {
+        await value.sql.end();
+      }
+    },
+  );
+
   it("round-trips actual replies through JSONB with empty finalText and a stable report hash", async () => {
     const value = await fixture();
     try {

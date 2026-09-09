@@ -526,7 +526,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                       outcome: humanizeEnum(report.outcome),
                       time: formatDateTime(report.reportedAt),
                     })
-                  : deliveryStateLabel(turn.delivery.state)}
+                  : deliveryStateLabel(turn.delivery)}
             </small>
           </header>
           <section
@@ -539,7 +539,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                 {m.tasks_included_in_active_work()}
               </p>
             ) : (
-              <TaskAgentReplyBody turn={turn} />
+              <TaskAgentReplyBody task={task} turn={turn} />
             )}
           </section>
         </div>
@@ -548,12 +548,12 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   );
 }
 
-function TaskAgentReplyBody({ turn }: { turn: TaskTurn }) {
+function TaskAgentReplyBody({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   const report = turn.report;
-  if (!report) return <TaskUnreportedBody state={turn.delivery.state} />;
+  if (!report) return <TaskUnreportedBody delivery={turn.delivery} />;
   return (
     <div className="grid gap-4">
-      <TaskCapturedReplies report={report} />
+      {task.source.provider === "feishu" ? <TaskCapturedReplies report={report} /> : null}
       {report.finalText ? (
         <TaskExecutionSummary text={report.finalText} truncated={report.outgoingReplies?.runtimeSummaryTruncated} />
       ) : report.outgoingReplies?.runtimeSummaryTruncated ? (
@@ -564,12 +564,15 @@ function TaskAgentReplyBody({ turn }: { turn: TaskTurn }) {
   );
 }
 
-function TaskUnreportedBody({ state }: { state: TaskTurn["delivery"]["state"] }) {
+function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
+  const running = delivery.isRunning === true;
   return (
-    <p className="text-sm text-kumo-subtle" data-state={state === "accepted" ? "progress" : "attention"}>
-      {state === "accepted"
+    <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
+      {running
         ? m.tasks_work_in_progress()
-        : m.tasks_message_state({ state: deliveryStateLabel(state).toLocaleLowerCase() })}
+        : delivery.state === "accepted"
+          ? m.tasks_execution_report_unavailable()
+          : m.tasks_message_state({ state: deliveryStateLabel(delivery).toLocaleLowerCase() })}
     </p>
   );
 }
@@ -870,8 +873,8 @@ function attentionLabel(value: TaskTurn["attention"]): string {
   return humanizeEnum(value);
 }
 
-function deliveryStateLabel(value: TaskTurn["delivery"]["state"]): string {
-  return value === "accepted" ? m.tasks_in_progress() : humanizeEnum(value);
+function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
+  return delivery.isRunning === true ? m.tasks_in_progress() : humanizeEnum(delivery.state);
 }
 
 /*

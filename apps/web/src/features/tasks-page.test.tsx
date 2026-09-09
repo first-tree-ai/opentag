@@ -744,7 +744,14 @@ describe("Tasks view", () => {
     const pending = {
       ...root,
       deliveryId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      delivery: { ...root.delivery, state: "accepted" as const, attemptCount: 2, reason: null, lastErrorCode: null },
+      delivery: {
+        ...root.delivery,
+        state: "accepted" as const,
+        isRunning: true,
+        attemptCount: 2,
+        reason: null,
+        lastErrorCode: null,
+      },
       message: {
         ...root.message,
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -801,6 +808,36 @@ describe("Tasks view", () => {
     expect(screen.queryByText(/Internal collaboration/)).toBeNull();
     expect(screen.queryByText("Please verify the deployment state.")).toBeNull();
     expect(within(activity).queryByText("Execution summary")).toBeNull();
+  });
+
+  it.each([false, undefined])(
+    "does not infer running from accepted when effective liveness is %s",
+    async (isRunning) => {
+      const root = detail.turns[0];
+      if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+      vi.spyOn(browserApi, "task").mockResolvedValue({
+        ...detail,
+        task: { ...task, status: "expired" },
+        turns: [{ ...root, delivery: { ...root.delivery, isRunning }, report: null }],
+      });
+      await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+      const activity = await screen.findByRole("region", { name: "Activity" });
+      expect(within(activity).getByText("No execution report is available.")).toBeTruthy();
+      expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+      expect(within(activity).queryByText("In progress")).toBeNull();
+    },
+  );
+
+  it("keeps Slack execution summaries without a permanent unsupported reply-history notice", async () => {
+    vi.spyOn(browserApi, "task").mockResolvedValue({
+      ...detail,
+      task: { ...task, source: { ...task.source, provider: "slack" } },
+    });
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const activity = await screen.findByRole("region", { name: "Activity" });
+    expect(within(activity).getByText("Execution summary")).toBeTruthy();
+    expect(within(activity).queryByText("Reply data is unavailable.")).toBeNull();
+    expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
   });
 
   it("renders captured Lark replies separately from an execution summary", async () => {

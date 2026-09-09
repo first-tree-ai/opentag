@@ -143,8 +143,8 @@ export async function collectOutgoingReplyReceipts(options: {
 }): Promise<ProviderCliOutgoingReplyCollectResult> {
   const sessionStatus = await outgoingReplySessionStatus(options.plansRoot, options.sessionDir, options.runId);
   if (sessionStatus !== "ready") return { status: sessionStatus, receipts: [] };
-  const marked = await readCaptureStatusFile(captureStatusPath(options.sessionDir, options.runId));
   const inflight = await waitForOutgoingReplyInflight(options);
+  const marked = await readCaptureStatusFile(captureStatusPath(options.sessionDir, options.runId));
   const collected = await readOutgoingReplyReceipts(
     options.plansRoot,
     providerCliOutgoingReplyReceiptsDir(options.sessionDir, options.runId),
@@ -218,7 +218,8 @@ async function runHasOutgoingReplyEvidence(plansRoot: string, runDir: string): P
     join(runDir, "outgoing-replies"),
     PROVIDER_CLI_OUTGOING_REPLY_MAX_DIRECTORY_ENTRIES,
   );
-  if (listed === "missing" || listed === "unavailable") return false;
+  if (listed === "missing") return false;
+  if (listed === "unavailable") return true;
   return listed.some((name) => name.endsWith(".json"));
 }
 
@@ -312,6 +313,7 @@ function compareOutgoingReplyReceipts(
   const leftKey = receiptOrderKey(left);
   const rightKey = receiptOrderKey(right);
   if (leftKey !== rightKey) return leftKey - rightKey;
+  if (left.sequenceHint !== right.sequenceHint) return left.sequenceHint - right.sequenceHint;
   return left.messageId.localeCompare(right.messageId);
 }
 
@@ -331,7 +333,7 @@ function parseProviderCreateTime(value: string | undefined): number | undefined 
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-async function listPrivateFiles(
+export async function listPrivateFiles(
   plansRoot: string,
   directory: string,
   maxEntries: number,
@@ -412,7 +414,7 @@ function worseCaptureStatus(
   return rank[next] >= rank[existing] ? next : existing;
 }
 
-async function assertPrivateAncestry(root: string, target: string): Promise<void> {
+export async function assertPrivateAncestry(root: string, target: string): Promise<void> {
   const rootPath = resolve(root);
   const targetPath = resolve(target);
   assertPlanWithinRoot(rootPath, targetPath);

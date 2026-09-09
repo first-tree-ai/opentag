@@ -6,13 +6,15 @@
 
 __你的模型、你的机器、你的 AI 同事__
 
-[![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/first-tree-ai/opentag?style=flat)](https://github.com/first-tree-ai/opentag/stargazers)
+---
 
 [官网](https://opentag.build/zh?utm_source=github&utm_medium=readme&utm_campaign=opentag-site) · [快速开始](#快速开始) · [文档](./docs/zh-CN/README.md) · [贡献指南](./CONTRIBUTING.zh-CN.md) · [安全策略](./SECURITY.zh-CN.md)
 
 **[English](./README.md) | 简体中文**
+
+[![CI](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml/badge.svg)](https://github.com/first-tree-ai/opentag/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/first-tree-ai/opentag?style=flat)](https://github.com/first-tree-ai/opentag/stargazers)
 
 </div>
 
@@ -36,20 +38,20 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 
 请准备一台 Mac 或 Linux 电脑、Codex 或 Claude Code Agent，并安装 Slack 或飞书。
 
-### 1. 创建账号
+**1. 创建账号**
 
 打开 [app.opentag.build](https://app.opentag.build) 并登录。
 
-### 2. 创建 Agent
+**2. 创建 Agent**
 
 进入 **Agents**，按照步骤选择 Agent 和聊天平台。
 
-### 3. 连接电脑
+**3. 连接电脑**
 
 复制设置过程中显示的连接命令。在你希望 Agent 工作的电脑上，打开终端应用，粘贴命令并按回车。
 按照提示完成连接，并在需要时登录 Codex 或 Claude。Agent 工作期间，请保持这台电脑开机。
 
-### 4. 开始聊天
+**4. 开始聊天**
 
 完成剩余设置，将 OpenTag 添加到 Slack 或飞书，然后在频道或私信中给 Agent 发消息。
 Slack 的额外设置步骤见[配置指南](./docs/zh-CN/slack-app-setup.md)。

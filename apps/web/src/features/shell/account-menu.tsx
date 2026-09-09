@@ -49,7 +49,7 @@ export function AccountMenu({
         data-compact={placement === "dock" ? "true" : undefined}
         icon={
           <span className="flex w-8 shrink-0 items-center justify-center" aria-hidden="true">
-            <span className="grid size-6 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
+            <span className="app-account-avatar grid size-6 place-items-center rounded-full bg-kumo-tint text-xs font-medium">
               {initials(me.user.displayName)}
             </span>
           </span>

@@ -270,7 +270,27 @@ test("Workspace and Agent navigation retain the content frame through both trans
   const before = await frame.boundingBox();
   if (!before) throw new Error("Expected the Workspace content frame");
   await expect(page.getByRole("link", { name: "All Agents", exact: true })).toHaveAttribute("aria-current", "page");
-  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "56px");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("height", "128px");
+  const dock = await page.locator(".app-navigation-surface").boundingBox();
+  if (!dock) throw new Error("Expected the Workspace dock");
+  expect(dock.y + dock.height / 2).toBeCloseTo((page.viewportSize()?.height ?? 0) / 2, 1);
+  for (const control of [
+    page.getByRole("link", { name: "All Agents", exact: true }),
+    page.getByRole("button", { name: "Account menu", exact: true }),
+  ]) {
+    const bounds = await control.boundingBox();
+    if (!bounds) throw new Error("Expected a Workspace navigation control");
+    expect(bounds.width).toBe(48);
+    expect(bounds.height).toBe(48);
+    expect(bounds.x + bounds.width / 2).toBeCloseTo(dock.x + dock.width / 2, 1);
+    expect(bounds.y).toBeGreaterThanOrEqual(dock.y + 8);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(dock.y + dock.height - 8);
+  }
+  const avatar = await page.locator(".app-account-avatar").boundingBox();
+  if (!avatar) throw new Error("Expected the Workspace account avatar");
+  expect(avatar.width).toBe(28);
+  expect(avatar.x + avatar.width / 2).toBeCloseTo(dock.x + dock.width / 2, 1);
   await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/workspace-dock.png") });
 
   const sampleFrame = () =>
@@ -297,7 +317,7 @@ test("Workspace and Agent navigation retain the content frame through both trans
     sampleFrame(),
     page.getByRole("link", { name: "All Agents", exact: true }).click(),
   ]);
-  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "56px");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");
   for (const bounds of [...entry, ...exit]) {
     expect(bounds.x).toBeCloseTo(before.x, 1);
     expect(bounds.y).toBeCloseTo(before.y, 1);
@@ -354,7 +374,7 @@ test("global return, local return, history, and dirty settings keep their own de
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
   await page.getByRole("menuitem", { name: "Account", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
-  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "56px");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");
 });
 
 test("mobile global return remains visible and reduced motion does not animate navigation geometry", async ({

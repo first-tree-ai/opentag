@@ -23,4 +23,4 @@ Slack uses `thread_ts` as both the stable thread key and root message identifier
 
 The first direct delivery to a newly materialized Thread Session includes bounded, verifiable inbound context: the visible root message when a reliable root identifier exists, followed by prior messages from the same thread. The current message is excluded from history, and sibling threads are not included. Ambient materialization does not by itself add direct bootstrap history or establish direct continuity.
 
-Channel and Thread Sessions remain distinct Runtime scopes. OpenTag does not copy the Channel Runtime transcript, observe Bot outbound messages, or depend on provider CLI send results to create continuity. The Agent can query additional native history with the official provider CLI when needed.
+Channel and Thread Sessions remain distinct Runtime scopes. OpenTag does not copy the Channel Runtime transcript or depend on provider CLI send results to create Session continuity. Bounded Lark send receipts may appear on the originating Task; they do not create cross-Session continuity. The Agent can query additional native history with the official provider CLI when needed.

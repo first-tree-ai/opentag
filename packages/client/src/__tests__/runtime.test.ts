@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import {
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -12,6 +13,8 @@ import {
   RUNTIME_PROTOCOL_V2,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeCapabilityOffers,
+  type ServerWelcomeFrame,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
@@ -24,6 +27,42 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
 
 describe("RuntimeConnection", () => {
+  it.each([1, 2])(
+    "checks the current negotiated report version %s before queueing a reply snapshot",
+    async (version) => {
+      const socket = new ControlledWebSocket();
+      const connection = controlledConnection(socket, { trace: 2 });
+      const running = connection.run();
+      const serverWelcome = {
+        ...welcome(1_000, 2_000),
+        supportedCapabilities: {
+          ...RUNTIME_SERVER_CAPABILITY_OFFERS,
+          [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: version },
+        },
+      };
+      await registerControlled(connection, socket, serverWelcome);
+      expect(connection.capabilityVersion(RUNTIME_CAPABILITY.turnReport)).toBe(version);
+      const report = {
+        type: "turn:report",
+        requestId: randomUUID(),
+        outgoingReplies: { status: "complete", replies: [] },
+      };
+      if (version === 1) {
+        await expect(connection.send(report, { priority: "report" })).rejects.toMatchObject({
+          code: "capability_unavailable",
+        });
+        expect(socket.frame("turn:report")).toBeUndefined();
+      } else {
+        await connection.send(report, { priority: "report" });
+        expect(socket.frame("turn:report")).toMatchObject(report);
+      }
+      await connection.send({ type: "turn:report", requestId: randomUUID(), outgoingReplies: undefined });
+      expect(connection.state).toBe("registered");
+      connection.stop();
+      await running;
+    },
+  );
+
   it("validates queue limits, readiness leases, capability expiry, and registration waiters", async () => {
     const baseOptions = {
       arch: "x64",
@@ -1375,7 +1414,7 @@ function welcome(
   heartbeatIntervalMs = 10,
   heartbeatTimeoutMs = 1_000,
   protocolVersion: typeof RUNTIME_PROTOCOL_V1 | typeof RUNTIME_PROTOCOL_V2 = RUNTIME_PROTOCOL_V2,
-) {
+): ServerWelcomeFrame {
   if (protocolVersion === RUNTIME_PROTOCOL_V1) {
     return {
       type: "server:welcome",
@@ -1383,7 +1422,7 @@ function welcome(
       capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
       heartbeatIntervalMs,
       heartbeatTimeoutMs,
-    } as const;
+    };
   }
   return {
     type: "server:welcome",
@@ -1393,7 +1432,7 @@ function welcome(
     requiredClientCapabilities: [],
     heartbeatIntervalMs,
     heartbeatTimeoutMs,
-  } as const;
+  };
 }
 
 function completeAuth(
@@ -1418,7 +1457,10 @@ function completeAuth(
   );
 }
 
-function registrationResult(frame: Record<string, unknown>): Record<string, unknown> {
+function registrationResult(
+  frame: Record<string, unknown>,
+  offers: RuntimeCapabilityOffers = RUNTIME_SERVER_CAPABILITY_OFFERS,
+): Record<string, unknown> {
   if (frame.protocolVersion !== RUNTIME_PROTOCOL_V2) {
     return { type: "computer:register:result", requestId: frame.requestId, ok: true };
   }
@@ -1428,10 +1470,7 @@ function registrationResult(frame: Record<string, unknown>): Record<string, unkn
     ok: true,
     protocolVersion: RUNTIME_PROTOCOL_V2,
     connectionId: randomUUID(),
-    negotiatedCapabilities: negotiateRuntimeCapabilities(
-      RUNTIME_CLIENT_CAPABILITY_OFFERS,
-      RUNTIME_SERVER_CAPABILITY_OFFERS,
-    ),
+    negotiatedCapabilities: negotiateRuntimeCapabilities(RUNTIME_CLIENT_CAPABILITY_OFFERS, offers),
   };
 }
 
@@ -1525,7 +1564,7 @@ class ManualScheduler {
 async function registerControlled(
   connection: RuntimeConnection,
   socket: ControlledWebSocket,
-  serverWelcome: ReturnType<typeof welcome> = welcome(1_000, 2_000),
+  serverWelcome: ServerWelcomeFrame = welcome(1_000, 2_000),
 ): Promise<string> {
   await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
   socket.open();
@@ -1541,7 +1580,10 @@ async function registerControlled(
   socket.receive(serverWelcome);
   await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());
   const register = socket.frame("computer:register");
-  const result = registrationResult(register ?? {});
+  const result = registrationResult(
+    register ?? {},
+    "supportedCapabilities" in serverWelcome ? serverWelcome.supportedCapabilities : undefined,
+  );
   socket.receive(result);
   await connection.whenRegistered();
   return String(result.connectionId);

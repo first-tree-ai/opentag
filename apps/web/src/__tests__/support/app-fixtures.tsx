@@ -562,6 +562,7 @@ export function installApi(
               errorReason: null,
               usage: null,
               traceSummary: { lastSequence: 2, droppedEvents: 0 },
+              outgoingReplies: null,
               reportedAt: "2026-08-20T00:02:00.000Z",
             },
           },

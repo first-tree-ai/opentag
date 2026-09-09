@@ -141,6 +141,7 @@ function reportFor(index: number, task: TaskSummary, finalText: string | null): 
     errorReason: completed ? null : "The onboarding checklist requires additional access.",
     usage: { inputTokens: 8_240, cachedInputTokens: 1_120, outputTokens: 1_480 },
     traceSummary: { lastSequence: 18, droppedEvents: 0 },
+    outgoingReplies: null,
     reportedAt: task.lastActivityAt,
   };
 }

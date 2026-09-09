@@ -337,6 +337,7 @@ export {
 } from "./runtime/provider-cli/turn-launcher.js";
 export {
   deriveProviderCliHomeNamespace,
+  deriveProviderCliRunKey,
   deriveProviderCliSessionKey,
   MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES,
   MAX_PROVIDER_CLI_TURN_PLAN_BYTES,

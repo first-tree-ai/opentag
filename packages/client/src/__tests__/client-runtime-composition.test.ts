@@ -31,6 +31,11 @@ import {
   resolvedCodexFactory,
 } from "../runtime/client-runtime-composition.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
+import {
+  collectOutgoingReplyReceipts,
+  writeOutgoingReplyReceipt,
+} from "../runtime/provider-cli/outgoing-reply-store.js";
+import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-manager.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
@@ -45,6 +50,78 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("hands managed Lark receipts into durable reporting before cleaning the run", async () => {
+    const home = await temporaryDirectory("opentag-client-outgoing-composition-");
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+    });
+    const capability = vi.spyOn(connection, "capabilityVersion").mockReturnValue(2);
+    const credentials = vi
+      .spyOn(runtime.credentialEnvironment, "prepare")
+      .mockResolvedValue({ path: resolve(home, "provider-env.sh"), provider: "feishu" });
+    let receiptLocation: { plansRoot: string; sessionDir: string; runId: string } | undefined;
+    const prepare = vi.spyOn(ProviderCliTurnPlanManager.prototype, "prepare").mockImplementation(async function (
+      this: ProviderCliTurnPlanManager,
+      input,
+    ) {
+      receiptLocation = {
+        plansRoot: this.layout.plans,
+        sessionDir: this.sessionDir(input.sessionId),
+        runId: input.runId,
+      };
+      await writeOutgoingReplyReceipt({
+        ...receiptLocation,
+        receipt: {
+          recordedAt: "2026-09-08T08:00:00.000Z",
+          sequenceHint: 1,
+          kind: "send",
+          messageId: "om_sent",
+          chatId: "oc_chat",
+          contentStatus: "available",
+          content: { msgType: "text", text: "Actual managed reply" },
+        },
+      });
+      return {} as Awaited<ReturnType<ProviderCliTurnPlanManager["prepare"]>>;
+    });
+    const submit = vi.spyOn(runtime.reportOwner, "submit").mockResolvedValue(undefined);
+    try {
+      expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject(
+        { status: "ready" },
+      );
+      const request = delivery(snapshot());
+      request.content.providerRef = {
+        provider: "feishu",
+        teamBrand: "lark",
+        appId: "cli_fixture",
+        botOpenId: "ou_fixture",
+        chatId: "oc_chat",
+        messageId: "om_root",
+        chatType: "p2p",
+      };
+      const accepted = await runtime.custody.accept(request);
+      expect(accepted.result).toMatchObject({ status: "accepted" });
+      await accepted.onAcceptedSent?.();
+      await runtime.runner.settled();
+      const binding = await runtime.bindingStore.read("agent-1", "session-1");
+      expect(prepare).toHaveBeenCalled();
+      expect(binding?.unresolvedTurn?.report).toMatchObject({ outgoingReplies: { status: "complete" } });
+      expect(binding?.unresolvedTurn?.report?.outgoingReplies?.replies[0]?.content.text).toBe("Actual managed reply");
+      expect(submit).toHaveBeenCalledOnce();
+      if (!receiptLocation) throw new Error("Expected receipt storage location");
+      expect((await collectOutgoingReplyReceipts(receiptLocation)).receipts).toEqual([]);
+    } finally {
+      runtime.stop();
+      capability.mockRestore();
+      credentials.mockRestore();
+      prepare.mockRestore();
+      submit.mockRestore();
+    }
+  });
+
   it("selects the Server durability adapter only when explicitly configured", async () => {
     const home = await temporaryDirectory("opentag-client-server-durability-");
     const api = {

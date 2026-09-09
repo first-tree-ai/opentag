@@ -431,4 +431,43 @@ describe("private Turn launcher subprocess", () => {
     await signalRun("SIGTERM", "got SIGTERM");
     await signalRun("SIGINT", "got SIGINT");
   }, 15_000);
+
+  it.each([true, false])(
+    "drains multi-MiB stdout to a slow consumer with capture=%s",
+    async (captureOutgoingReplies) => {
+      const { accountHome, layout, manager } = await trackedHarness();
+      const target = await installTurnTarget(join(accountHome, "bin"));
+      await writeExternalTurnSelection(layout, "feishu", target);
+      const prepared = await manager.prepare({
+        provider: "feishu",
+        sessionId: "s-1",
+        runId: "run-1",
+        captureOutgoingReplies,
+      });
+      const bytes = 3 * 1024 * 1024;
+      const child = spawn(prepared.launcherPath, ["im", "+messages-send", "--text", "test"], {
+        env: {
+          ...process.env,
+          OPENTAG_TEST_TARGET_MODE: "large-stdout",
+          OPENTAG_TEST_TARGET_BYTES: String(bytes),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let received = 0;
+      child.stdout.pause();
+      const resume = setTimeout(() => child.stdout.resume(), 80);
+      child.stdout.on("data", (chunk: Buffer) => {
+        received += chunk.length;
+        child.stdout.pause();
+        setTimeout(() => child.stdout.resume(), 5);
+      });
+      const code = await new Promise<number>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (value) => resolve(value ?? 1));
+      });
+      clearTimeout(resume);
+      expect(code).toBe(0);
+      expect(received).toBe(bytes);
+    },
+  );
 });

@@ -12,6 +12,8 @@ import {
 } from "../../storage/durable-file.js";
 import { type ProviderCliAccountLayout, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
+import { recoverSessionOutgoingReplyEvidence } from "./outgoing-reply-store.js";
+import { sweepAbandonedOutgoingReplyRuns } from "./outgoing-reply-sweep.js";
 import {
   type ProviderCliSelectionRecord,
   providerCliSelectionTargetPath,
@@ -28,6 +30,7 @@ import {
   managedArtifactDigest,
   type ProviderCliTurnPlan,
   ProviderCliTurnPlanError,
+  planCapturesOutgoingReplies,
   providerCliPlanHomeDir,
   providerCliPlanSessionDir,
   providerCliTurnLauncherPath,
@@ -61,6 +64,7 @@ export interface ProviderCliTurnPlanPrepareInput {
   readonly runId: string;
   /** Absolute Slack config leaf supplied by the trusted caller; Feishu must omit this. */
   readonly configDir?: string;
+  readonly captureOutgoingReplies?: boolean;
 }
 
 export interface ProviderCliPreparedTurnPlan {
@@ -125,6 +129,7 @@ export class ProviderCliTurnPlanManager {
     const sessionDir = providerCliPlanSessionDir(this.#layout, this.#homeNamespace, sessionKey);
     assertPlanWithinRoot(this.#layout.plans, sessionDir);
     await ensurePrivateDirectory(this.#layout.root, sessionDir);
+    assertCaptureOutgoingRepliesInput(input);
     return await this.#withSessionLock(sessionDir, () =>
       this.#prepareLocked(input, sessionId, runId, sessionDir, signal),
     );
@@ -193,6 +198,12 @@ export class ProviderCliTurnPlanManager {
       if (!isProviderCliSessionKey(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
       const sessionDir = join(homeDir, entry.name);
       assertPlanWithinRoot(homeDir, sessionDir);
+      await sweepAbandonedOutgoingReplyRuns({ plansRoot: this.#layout.plans, sessionDir });
+      const keptReceipts = await recoverSessionOutgoingReplyEvidence({
+        plansRoot: this.#layout.plans,
+        sessionDir,
+      });
+      if (keptReceipts) continue;
       await rm(sessionDir, { recursive: true, force: true });
     }
   }
@@ -220,6 +231,11 @@ export class ProviderCliTurnPlanManager {
   ): Promise<ProviderCliPreparedTurnPlan> {
     signal?.throwIfAborted();
     const existing = await this.#readExistingPlan(sessionDir);
+    await sweepAbandonedOutgoingReplyRuns({
+      plansRoot: this.#layout.plans,
+      sessionDir,
+      activeRunId: existing?.runId ?? runId,
+    });
     if (existing) return this.#reuseExistingPlan(input, sessionId, runId, sessionDir, existing);
     return this.#publishNewPlan(input, sessionId, runId, sessionDir, signal);
   }
@@ -235,7 +251,11 @@ export class ProviderCliTurnPlanManager {
     if (existing.sessionId !== sessionId) {
       throw new ProviderCliTurnPlanError("session_mismatch", "Provider CLI Turn plan session does not match");
     }
-    if (existing.runId !== runId || existing.provider !== input.provider) {
+    if (
+      existing.runId !== runId ||
+      existing.provider !== input.provider ||
+      planCapturesOutgoingReplies(existing) !== requestedCaptureOutgoingReplies(input)
+    ) {
       throw new ProviderCliTurnPlanError(
         "active_run_conflict",
         "The Session already has a different active Provider CLI Turn Run",
@@ -360,6 +380,7 @@ export class ProviderCliTurnPlanManager {
       homeNamespace: this.#homeNamespace,
       sessionId,
       runId,
+      ...(requestedCaptureOutgoingReplies(input) ? { captureOutgoingReplies: true as const } : {}),
     };
     if (input.provider === "slack") {
       const configDir = assertProviderCliTurnPlanConfigDir("slack", input.configDir);
@@ -507,5 +528,18 @@ function mapPrepareTargetError(error: unknown): ProviderCliTurnPlanError {
     error instanceof Error ? error.message : "Provider CLI selection target is invalid",
   );
 }
+
+function assertCaptureOutgoingRepliesInput(input: ProviderCliTurnPlanPrepareInput): void {
+  if (input.captureOutgoingReplies === undefined) return;
+  if (typeof input.captureOutgoingReplies !== "boolean") {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn captureOutgoingReplies must be a boolean");
+  }
+  if (input.provider === "slack" && input.captureOutgoingReplies) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Slack Provider CLI Turn plans do not capture outgoing replies");
+  }
+}
+
+const requestedCaptureOutgoingReplies = (input: ProviderCliTurnPlanPrepareInput): boolean =>
+  input.provider === "feishu" && input.captureOutgoingReplies === true;
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

@@ -155,7 +155,7 @@ Then query traces for the incident time window:
 1. Filter `feishu.connection.connect`, `feishu.connection.transition`, and `feishu.connection.error` by `opentag.im.binding.id`. Confirm that a current replica connected and did not enter a reconnect or credential failure loop.
 2. Search for `im.inbound.process` with the same binding. Its presence proves the OpenTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
 3. When persistence succeeded, follow `opentag.im.message.id` and `opentag.im.delivery.id` into `im.delivery.dispatch`, `runtime.reconcile`, `runtime.delivery`, and `runtime.report`.
-4. If the Agent ran but no reply appeared, inspect the Agent trace and the provider CLI result. OpenTag does not receive or trace provider outbound writes.
+4. If the Agent ran but no reply appeared, inspect the Agent trace, the provider CLI result, and the Turn report's captured Lark outgoing-reply snapshot when present. OpenTag does not trace provider outbound writes; Task history may include bounded send receipts, which are not read receipts.
 
 No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
 

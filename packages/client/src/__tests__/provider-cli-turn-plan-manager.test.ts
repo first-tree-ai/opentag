@@ -1,8 +1,9 @@
-import { chmod, lstat, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deriveProviderCliHomeNamespace,
+  deriveProviderCliRunKey,
   deriveProviderCliSessionKey,
   MAX_PROVIDER_CLI_TURN_PLAN_BYTES,
   ProviderCliTurnPlanError,
@@ -12,6 +13,10 @@ import {
   resolveProviderCliAccountLayout,
   writeProviderCliSelection,
 } from "../index.js";
+import {
+  collectOutgoingReplyReceipts,
+  writeOutgoingReplyReceipt,
+} from "../runtime/provider-cli/outgoing-reply-store.js";
 import * as turnPlanStorage from "../runtime/provider-cli/turn-plan.js";
 import { makeTempDir } from "./fixtures/provider-cli.js";
 import {
@@ -69,6 +74,35 @@ describe("ProviderCliTurnPlanManager prepare", () => {
     expect(launcher.startsWith("#!/bin/sh\n# opentag-provider-cli-turn-launcher: v1 provider=feishu\n")).toBe(true);
     expect(launcher).toContain(providerCliTurnRunnerInvocation()[0]);
     expect(launcher).not.toContain("# opentag-provider-cli-launcher: v1");
+    expect(prepared.plan.captureOutgoingReplies).toBeUndefined();
+  });
+
+  it("opts in to Feishu outgoing reply capture and rejects Slack capture", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const captured = await manager.prepare({
+      provider: "feishu",
+      sessionId: "s-cap",
+      runId: "run-cap",
+      captureOutgoingReplies: true,
+    });
+    expect(captured.plan.captureOutgoingReplies).toBe(true);
+    await expect(manager.prepare({ provider: "feishu", sessionId: "s-cap", runId: "run-cap" })).rejects.toMatchObject({
+      code: "active_run_conflict",
+    });
+    const slackTarget = await installTurnTarget(join(accountHome, "bin-slack"), "slack");
+    await writeExternalTurnSelection(layout, "slack", slackTarget, "4.7.0");
+    const configDir = await makePrivateSlackConfigDir(accountHome);
+    await expect(
+      manager.prepare({
+        provider: "slack",
+        sessionId: "s-slack",
+        runId: "run-slack",
+        configDir,
+        captureOutgoingReplies: true,
+      }),
+    ).rejects.toMatchObject({ code: "plan_invalid" });
   });
 
   it("publishes a managed plan with artifact identity", async () => {
@@ -489,6 +523,138 @@ describe("ProviderCliTurnPlanManager isolation and cleanup", () => {
     expect(foreign.homeNamespace).not.toBe(local.homeNamespace);
   });
 
+  it("crash recovery preserves outgoing receipt evidence and still drops the plan", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const local = await manager.prepare({ provider: "feishu", sessionId: "s-keep", runId: "run-keep" });
+    await writeOutgoingReplyReceipt({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-keep",
+      receipt: {
+        recordedAt: "2026-09-08T08:00:00.000Z",
+        sequenceHint: 1,
+        kind: "send",
+        messageId: "om_kept",
+        chatId: "oc_chat",
+        contentStatus: "unavailable",
+        content: { msgType: "unknown", unavailable: "content_read_failed" },
+      },
+    });
+    await manager.recover();
+    await expect(stat(local.planPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(local.sessionDir)).isDirectory()).toBe(true);
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-keep",
+      waitMs: 0,
+    });
+    expect(collected.receipts.map((receipt) => receipt.messageId)).toEqual(["om_kept"]);
+  });
+
+  it("treats a missing nested outgoing-replies directory as absent evidence", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const local = await manager.prepare({ provider: "feishu", sessionId: "s-empty", runId: "run-empty" });
+    await mkdir(join(local.sessionDir, "runs", deriveProviderCliRunKey("run-empty")), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await manager.recover();
+    await expect(stat(local.sessionDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves an uninspectable nested outgoing-replies directory", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const local = await manager.prepare({ provider: "feishu", sessionId: "s-lock", runId: "run-lock" });
+    const nested = join(local.sessionDir, "runs", deriveProviderCliRunKey("run-lock"), "outgoing-replies");
+    await mkdir(nested, { recursive: true, mode: 0o700 });
+    await chmod(nested, 0o000);
+    try {
+      await manager.recover();
+      await expect(stat(local.planPath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await stat(local.sessionDir)).isDirectory()).toBe(true);
+    } finally {
+      await chmod(nested, 0o700).catch(() => undefined);
+    }
+  });
+
+  it("sweeps inspectable abandoned receipt runs during recovery", async () => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const local = await manager.prepare({ provider: "feishu", sessionId: "s-old", runId: "run-old" });
+    await writeOutgoingReplyReceipt({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-old",
+      receipt: {
+        recordedAt: "2026-09-01T08:00:00.000Z",
+        sequenceHint: 1,
+        kind: "send",
+        messageId: "om_old",
+        chatId: "oc_chat",
+        contentStatus: "unavailable",
+        content: { msgType: "unknown", unavailable: "content_read_failed" },
+      },
+    });
+    const aged = Date.now() / 1000 - 8 * 24 * 60 * 60;
+    const runDir = join(local.sessionDir, "runs", deriveProviderCliRunKey("run-old"));
+    await utimes(runDir, aged, aged);
+    await utimes(join(runDir, "outgoing-replies"), aged, aged);
+    const { readdir } = await import("node:fs/promises");
+    for (const name of await readdir(join(runDir, "outgoing-replies"))) {
+      await utimes(join(runDir, "outgoing-replies", name), aged, aged);
+    }
+    await manager.recover();
+    await expect(stat(local.sessionDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([false, true])("sweeps abandoned runs while preserving an existing active plan=%s", async (active) => {
+    const { accountHome, layout, manager } = await trackedHarness();
+    const target = await installTurnTarget(join(accountHome, "bin"));
+    await writeExternalTurnSelection(layout, "feishu", target);
+    const local = await manager.prepare({ provider: "feishu", sessionId: "s-next", runId: "run-old" });
+    await writeOutgoingReplyReceipt({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-old",
+      receipt: {
+        recordedAt: "2026-09-01T08:00:00.000Z",
+        sequenceHint: 1,
+        kind: "send",
+        messageId: "om_old",
+        chatId: "oc_chat",
+        contentStatus: "unavailable",
+        content: { msgType: "unknown", unavailable: "content_read_failed" },
+      },
+    });
+    if (!active) await manager.cleanup({ provider: "feishu", sessionId: "s-next", runId: "run-old" });
+    const aged = Date.now() / 1000 - 8 * 24 * 60 * 60;
+    const runDir = join(local.sessionDir, "runs", deriveProviderCliRunKey("run-old"));
+    await utimes(runDir, aged, aged);
+    await utimes(join(runDir, "outgoing-replies"), aged, aged);
+    const { readdir } = await import("node:fs/promises");
+    for (const name of await readdir(join(runDir, "outgoing-replies"))) {
+      await utimes(join(runDir, "outgoing-replies", name), aged, aged);
+    }
+    const preparing = manager.prepare({ provider: "feishu", sessionId: "s-next", runId: "run-new" });
+    if (active) await expect(preparing).rejects.toMatchObject({ code: "active_run_conflict" });
+    else await preparing;
+    const collected = await collectOutgoingReplyReceipts({
+      plansRoot: layout.plans,
+      sessionDir: local.sessionDir,
+      runId: "run-old",
+      waitMs: 0,
+    });
+    expect(collected.receipts).toHaveLength(active ? 1 : 0);
+  });
+
   it("crash recovery refuses a symlinked plans root", async () => {
     const { layout, manager } = await trackedHarness();
     const outside = await makeTempDir("opentag-turn-plan-outside-");
@@ -560,6 +726,15 @@ describe("Provider CLI Turn plan schema", () => {
       runId: "run-1",
     };
     expect(parseProviderCliTurnPlan(feishuExternal).provider).toBe("feishu");
+    expect(parseProviderCliTurnPlan({ ...feishuExternal, captureOutgoingReplies: true }).captureOutgoingReplies).toBe(
+      true,
+    );
+    expect(
+      parseProviderCliTurnPlan({ ...feishuExternal, captureOutgoingReplies: false }).captureOutgoingReplies,
+    ).toBeUndefined();
+    expect(() => parseProviderCliTurnPlan({ ...feishuExternal, captureOutgoingReplies: "yes" })).toThrow(
+      ProviderCliTurnPlanError,
+    );
     expect(() => parseProviderCliTurnPlan({ ...feishuExternal, configDir })).toThrow(ProviderCliTurnPlanError);
     expect(() => parseProviderCliTurnPlan({ ...feishuExternal, extra: true })).toThrow(ProviderCliTurnPlanError);
 
@@ -571,6 +746,12 @@ describe("Provider CLI Turn plan schema", () => {
       configDir,
     };
     expect(parseProviderCliTurnPlan(slackExternal)).toMatchObject({ provider: "slack", configDir });
+    expect(
+      parseProviderCliTurnPlan({ ...slackExternal, captureOutgoingReplies: false }).captureOutgoingReplies,
+    ).toBeUndefined();
+    expect(() => parseProviderCliTurnPlan({ ...slackExternal, captureOutgoingReplies: true })).toThrow(
+      ProviderCliTurnPlanError,
+    );
     const slackWithoutConfig = { ...feishuExternal, provider: "slack" as const, command: "slack" as const };
     expect(() => parseProviderCliTurnPlan(slackWithoutConfig)).toThrow(ProviderCliTurnPlanError);
     expect(() => parseProviderCliTurnPlan({ ...slackExternal, extra: true })).toThrow(ProviderCliTurnPlanError);

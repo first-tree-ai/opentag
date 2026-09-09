@@ -7,7 +7,7 @@ import type {
   TurnReportRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import { type RuntimeConnectionState, RuntimeSendError } from "../runtime/runtime-connection.js";
 import {
   type DurableFailure,
   type DurableWorkRecord,
@@ -72,6 +72,134 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
+  it("retains the immutable v2 report through a cap1 reconnect and sends it on cap2", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const connection = new FakeConnection("registered");
+    const scheduled: Array<() => void> = [];
+    const owner = new TurnReportOwner({
+      connection,
+      persistence: store,
+      scheduler: {
+        schedule: (_delay, task) => {
+          scheduled.push(task);
+          return { cancel() {} };
+        },
+      },
+    });
+    const report = owner.create(reportInput({ outgoingReplies: { status: "complete", replies: [] } }));
+    const confirm = vi.fn();
+    const pending = owner.submit(report, confirm);
+    await owner.settled();
+    expect(connection.sent.map((entry) => entry.frame)).toEqual([report]);
+    const attempts = owner.getState(report.turnId)?.attempts;
+    connection.setState("stopped");
+    connection.turnReportVersion = 1;
+    connection.setState("registered");
+    await owner.settled();
+    for (const task of scheduled.splice(0)) task();
+    await owner.settled();
+    expect(connection.sent).toHaveLength(1);
+    expect(confirm).not.toHaveBeenCalled();
+    expect((await store.list<TurnReportRequest>("turn-report"))[0]?.payload).toEqual(report);
+    expect(owner.getState(report.turnId)?.attempts).toBe(attempts);
+    connection.setState("stopped");
+    connection.turnReportVersion = 2;
+    connection.setState("registered");
+    await owner.settled();
+    expect(connection.sent.map((entry) => entry.frame)).toEqual([report, report]);
+    await owner.handleResult({
+      type: "turn:report:result",
+      requestId: report.requestId,
+      turnId: report.turnId,
+      resultHash: report.resultHash,
+      status: "recorded",
+    });
+    await pending;
+    expect(confirm).toHaveBeenCalledOnce();
+    owner.stop();
+  });
+
+  it("preserves a v2 report without sending after restart on a connection with no capability surface", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const seed = new TurnReportOwner({ connection: new FakeConnection("stopped") });
+    const report = seed.create(reportInput({ outgoingReplies: { status: "incomplete", replies: [] } }));
+    await store.write(reportRecord(report, "running"));
+    const send = vi.fn(async () => undefined);
+    const owner = new TurnReportOwner({
+      persistence: store,
+      now: () => 10_000,
+      connection: {
+        state: "registered",
+        send,
+        subscribeState: (listener) => {
+          listener("registered");
+          return () => undefined;
+        },
+      },
+    });
+    await owner.settled();
+    expect(send).not.toHaveBeenCalled();
+    expect(owner.get(report.turnId)?.report).toEqual(report);
+    owner.stop();
+    seed.stop();
+  });
+
+  it("rechecks capability after a durable state write and tolerates a transport capability race", async () => {
+    for (const transportRace of [false, true]) {
+      const connection = new FakeConnection(
+        "registered",
+        transportRace ? new RuntimeSendError("capability_unavailable", "downgraded") : false,
+      );
+      const store = new MemoryRuntimeDurabilityStore();
+      const onFailure = vi.fn();
+      const owner = new TurnReportOwner({
+        connection,
+        onFailure,
+        persistence: {
+          list: store.list.bind(store),
+          write: async (record) => {
+            await store.write(record);
+            if (record.status === "running" && !transportRace) connection.turnReportVersion = 1;
+          },
+        },
+      });
+      const report = owner.create(reportInput({ outgoingReplies: { status: "complete", replies: [] } }));
+      const pending = owner.submit(report, vi.fn());
+      await owner.settled();
+      expect(connection.sent).toHaveLength(transportRace ? 1 : 0);
+      expect(onFailure).not.toHaveBeenCalled();
+      expect(owner.getState(report.turnId)?.payload).toEqual(report);
+      owner.stop();
+      await expect(pending).rejects.toThrow("stopped");
+    }
+  });
+
+  it("keeps a capability-rejected report pending until a later registration", async () => {
+    const connection = new FakeConnection("registered");
+    const owner = new TurnReportOwner({ connection });
+    const report = owner.create(reportInput({ outgoingReplies: { status: "complete", replies: [] } }));
+    const confirm = vi.fn();
+    const pending = owner.submit(report, confirm);
+    await owner.settled();
+    expect(
+      await owner.handleResult({
+        type: "turn:report:result",
+        requestId: report.requestId,
+        turnId: report.turnId,
+        resultHash: report.resultHash,
+        status: "unsupported_capability",
+      }),
+    ).toBe(true);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(owner.pendingCount).toBe(1);
+    connection.setState("stopped");
+    connection.setState("registered");
+    await owner.settled();
+    expect(connection.sent).toHaveLength(2);
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+  });
+
   it("waits for an in-flight durable write before shutdown settles", async () => {
     let releaseWrite!: () => void;
     const writeGate = new Promise<void>((resolveWrite) => {
@@ -461,6 +589,10 @@ describe("TurnReportOwner", () => {
 });
 
 class FakeConnection {
+  turnReportVersion: number | undefined = 2;
+  capabilityVersion(): number | undefined {
+    return this.turnReportVersion;
+  }
   readonly sent: Array<{ frame: unknown; options?: { priority?: string } }> = [];
   readonly #listeners = new Set<(state: RuntimeConnectionState) => void>();
   readonly #rejectSends: boolean | Error | unknown;

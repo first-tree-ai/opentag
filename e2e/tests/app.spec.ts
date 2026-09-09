@@ -372,6 +372,7 @@ test("global return, local return, history, and dirty settings keep their own de
   await page.getByRole("button", { name: "Account menu", exact: true }).click();
   await expect(page.getByRole("menuitem", { name: "Computers", exact: true })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
+  await expectAccessible(page);
   await page.getByRole("menuitem", { name: "Account", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
   await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");

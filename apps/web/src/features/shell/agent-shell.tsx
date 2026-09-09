@@ -1,8 +1,9 @@
 import { Link, useRouter } from "@tanstack/react-router";
+import { useRef, useState } from "react";
 import { initials } from "../../i18n/format.js";
 import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
-import { DropdownMenu, Icon, type IconName, Sidebar } from "../../ui/design-system.js";
+import { DropdownMenu, Icon, Sidebar } from "../../ui/design-system.js";
 import type { AgentListItem } from "../agents/agent-model.js";
 import { useAgentListView } from "../agents/agent-queries.js";
 import {
@@ -13,6 +14,7 @@ import {
   agentUsageLink,
 } from "../agents/agent-routes.js";
 import { useAccount } from "../session/session-context.js";
+import { MenuItemIcon } from "./menu-item-icon.js";
 
 export default function AgentNavigation({ agentId, pathname }: { agentId: string; pathname: string }) {
   const { me } = useAccount();
@@ -95,11 +97,14 @@ function AgentSwitcher({
   pathname: string;
   agentId: string;
 }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger
         render={
           <Sidebar.MenuButton
+            ref={triggerRef}
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
@@ -123,8 +128,10 @@ function AgentSwitcher({
       />
       <DropdownMenu.Content
         align="start"
-        aria-label={m.shell_switch_agent()}
-        className="min-w-(--anchor-width)"
+        className="app-agent-menu w-(--anchor-width) max-w-[calc(100vw-1.5rem)]"
+        container={triggerRef.current?.closest<HTMLElement>("aside, nav, header, main")}
+        positionMethod="fixed"
+        style={{ zIndex: 50 }}
         side="bottom"
       >
         {agents.map((candidate) => (
@@ -185,12 +192,4 @@ export function isAgentSectionActive(
 function isAgentHome(pathname: string, agentId: string): boolean {
   const root = `/agents/${agentId}`;
   return pathname === root || pathname === `${root}/`;
-}
-
-function MenuItemIcon({ name }: { name: IconName }) {
-  return (
-    <span className="mr-2 grid size-6 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
-      <Icon name={name} />
-    </span>
-  );
 }

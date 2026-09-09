@@ -1,6 +1,7 @@
 # Staging onboarding reset
 
-[English](../staging-onboarding-reset.md)
+> Canonical source: [staging-onboarding-reset.md](../staging-onboarding-reset.md)
+> Last synced with: 2026-09-09
 
 onboarding 是为从未跑过它的 Account 写的，因此一个 staging Account 天然只能免费走一遍。staging onboarding reset 提供了回头路，
 而且有两种力度：`mode: "reboard"` 重新打开 onboarding 但什么都不删，`mode: "all"` 则把**已认证的那个 Account** 恢复到真实的
@@ -17,7 +18,7 @@ Computer connection、Agent、runtime readiness 和 IM binding 会立即推进�
 
 ## 在哪里点它
 
-`/internal` 是仅 staging 可用的内部工具索引页，两种 reset 都以按钮的形式放在上面，各自带一次确认。入口在账号菜单里的
+`/internal` 是 staging 和显式开启的本地开发环境可用的内部工具索引页，两种 reset 都以按钮的形式放在上面，各自带一次确认。入口在账号菜单里的
 **Internal tools**——它只在 Server 应答「本部署提供这些工具」时才渲染，production 看到的还是它一直以来的那个菜单。
 
 本文余下部分描述的是这个页面发出的请求，供你想手动调用时参考。有一点两种方式都适用：两种 reset 都会把 Account 恢复成
@@ -36,12 +37,16 @@ Computer，而每一次飞书授权都会在测试租户中创建属于自己的
 
 ## 配置
 
-无需配置。任何以 `OPENTAG_ENV=staging` 运行的部署都提供 reset，其他环境一律拒绝。
+Staging 在 `OPENTAG_ENV=staging` 时默认提供工具。本地验收可通过 `OPENTAG_ENV=dev` 和
+`OPENTAG_DEV_INTERNAL_TOOLS_ENABLED=true` 显式开启，同时要求 `OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 的主机名均为
+回环地址。在托管环境或非回环监听地址／公共 URL 下开启此开关会被 Server 拒绝。Production 始终不提供工具。
+
+本地开关使用与 staging 相同的真实操作和 Account 范围，不是视觉模拟。
 
 Server 强制执行的规则：
 
 - 每个请求都必须完成认证；
-- staging 之外的任何部署，响应都与路径不存在完全一致，且环境会在每个请求上重新确认，而不是信任路由注册这一事实；
+- 未提供工具的部署，响应都与路径不存在完全一致，且可用性会在每个请求上重新确认，而不是信任路由注册这一事实；
 - reset 始终作用于已认证 Account，不接受客户端选择的 Account；
 - reset 只选择该 Account 创建的 Agent 与该 Account 拥有的 Computer，并在清除 setup 完成状态前验证没有活跃事实残留；
 - reset 需要常规的浏览器 CSRF 保护。

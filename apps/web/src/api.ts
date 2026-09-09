@@ -405,9 +405,8 @@ export class BrowserApi {
   }
 
   /**
-   * Whether this deployment offers the staging internal tools. Outside staging the interface is
-   * absent rather than closed, and everything behind it is open to any authenticated Account where
-   * it is present, so reachability is the whole answer.
+   * Whether this deployment offers Internal Tools: staging or an opted-in local preview. Everything
+   * behind it is open to any authenticated Account where present, so reachability is the whole answer.
    */
   async internalToolsOffered(): Promise<boolean> {
     const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);
@@ -417,7 +416,7 @@ export class BrowserApi {
   }
 
   /**
-   * Reads the staging-wide navigation preview. A deployment without Internal Tools has no endpoint,
+   * Reads the Server-wide navigation preview. A deployment without Internal Tools has no endpoint,
    * which is the same product answer as both previews being hidden.
    */
   async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
@@ -438,7 +437,7 @@ export class BrowserApi {
   }
 
   /**
-   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * Undoes setup for the authenticated test-environment Account; it accepts no client-selected Account.
    * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
    */
   resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {

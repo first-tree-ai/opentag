@@ -159,6 +159,7 @@ async function main() {
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
       OPENTAG_ENCRYPTION_KEY: encryptionKey,
       OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
+      OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: "true",
       OPENTAG_DEV_AUTH_EMAIL: devEmail,
       OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: "true",
       OPENTAG_OTEL_ENDPOINT: "",

@@ -18,7 +18,7 @@ real Agent Setup presentation against the #437 in-memory Adapter and needs neith
 
 ## Where to click it
 
-`/internal` is the staging-only internal tools index, and both resets are on it as buttons with a confirmation step.
+`/internal` is the internal tools index for staging and opted-in local development, and both resets are on it as buttons with a confirmation step.
 Reach it from **Internal tools** in the account menu, which is rendered only where the Server answers that the
 deployment offers the tools at all — production shows the menu it has always shown.
 
@@ -41,12 +41,17 @@ tenant, so repeated runs accumulate applications there. Clear them out by hand f
 
 ## Configuration
 
-None. The reset is offered on any deployment running with `OPENTAG_ENV=staging`, and refused everywhere else.
+Staging offers the tools by default with `OPENTAG_ENV=staging`. Local acceptance can explicitly opt in with
+`OPENTAG_ENV=dev` and `OPENTAG_DEV_INTERNAL_TOOLS_ENABLED=true`, provided both `OPENTAG_HOST` and the hostname in
+`OPENTAG_PUBLIC_URL` are loopback addresses. The Server rejects an opt-in on a hosted environment or a non-loopback
+listener/public URL. Production never offers the tools.
+
+The local opt-in uses the same real operations and Account scope as staging; it is not a visual mock.
 
 Rules the Server enforces:
 
 - every request must be authenticated;
-- any deployment outside staging answers like a path that does not exist, and the environment is re-confirmed on each
+- deployments without the tools answer like a path that does not exist, and eligibility is re-confirmed on each
   request rather than trusted from route registration;
 - reset always targets the authenticated Account and accepts no client-selected Account;
 - reset selects Agents created by that Account and Computers owned by that Account, then verifies that no active fact

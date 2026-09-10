@@ -72,28 +72,28 @@ describe("AgentComputerSettings repair disclosure", () => {
       <AgentComputerSettings agent={agent(COMPUTER_ID, "action_required")} onAgentChanged={vi.fn()} />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(1);
 
     view.rerender(<AgentComputerSettings agent={agent(COMPUTER_ID, "unconfirmed")} onAgentChanged={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: /repair command/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /install command/i })).toBeNull();
 
     view.rerender(<AgentComputerSettings agent={agent(COMPUTER_ID, "action_required")} onAgentChanged={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Generate a repair command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate an install command" })).toBeTruthy();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(2);
 
     view.rerender(
       <AgentComputerSettings agent={agent(OTHER_COMPUTER_ID, "action_required")} onAgentChanged={vi.fn()} />,
     );
-    expect(screen.getByRole("button", { name: "Generate a repair command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate an install command" })).toBeTruthy();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledTimes(2);
 
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
     expect(browserApi.issueComputerConnectCode).toHaveBeenLastCalledWith({
       mode: "repair",

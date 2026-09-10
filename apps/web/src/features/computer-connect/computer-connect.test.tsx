@@ -122,10 +122,13 @@ describe("ComputerConnect", () => {
       />,
     );
     expect(issue).not.toHaveBeenCalled();
-    const repairAction = screen.getByRole("button", { name: "Generate a repair command" });
+    const repairAction = screen.getByRole("button", { name: "Generate an install command" });
     expect(repairAction.closest(".ots-command__body")).toBeTruthy();
     expect(screen.getByText("Need to reinstall?")).toBeTruthy();
-    expect(screen.getByText(/Start OpenTag on Ada's Mac/)).toBeTruthy();
+    // Idle is the one state with no command and no countdown, so it renders no lead row. The
+    // failed and expired states still introduce a command that is not there to paste; that is
+    // older than this change and left alone rather than half-fixed here.
+    expect(screen.queryByText(/Start OpenTag on Ada's Mac/)).toBeNull();
     fireEvent.click(repairAction);
     await flushAsync();
 
@@ -150,7 +153,7 @@ describe("ComputerConnect", () => {
         intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
     fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
     await flushAsync();
@@ -222,7 +225,7 @@ describe("ComputerConnect", () => {
         intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
 
     // Reconnecting a Computer the Account already had is not somebody reaching step 3 again.
@@ -247,7 +250,7 @@ describe("ComputerConnect", () => {
         onConnected={onConnected}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
 
     expect(computers).not.toHaveBeenCalled();

@@ -92,7 +92,6 @@
   "agent_settings_reasoning_minimal": "Minimal",
   "agent_settings_reasoning_saved_value": "{value} (saved value)",
   "agent_settings_reasoning_xhigh": "XHigh",
-  "agent_settings_reconnecting_description": "Reconnecting restores this Computer for every Agent that runs on it.",
   "agent_settings_resources_title": "Resources",
   "agent_settings_resume_button": "Resume Agent",
   "agent_settings_resume_failed": "Couldn’t resume this Agent. Try again.",

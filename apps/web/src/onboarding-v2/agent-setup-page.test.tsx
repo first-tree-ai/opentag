@@ -249,6 +249,14 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
     expect(reads).toHaveBeenCalledTimes(1);
 
+    /*
+     * The remedy for a Computer that is only switched off, stated here and nowhere else in this
+     * step. The Settings panel carries the same instruction in its own recovery sentence, so a
+     * sentence deleted from the shared connect surface as "duplicated" is only duplicated there;
+     * here its absence leaves a reader whose OpenTag is not running with nothing but a reinstall.
+     */
+    expect(screen.getByText("Start OpenTag on Review Mac; this page will continue when it reconnects.")).toBeTruthy();
+
     // An offline Computer is expected to come back without the page being touched, so it is polled.
     const readsBeforePoll = reads.mock.calls.length;
     await advance(POLL_MS + 10);
@@ -272,7 +280,7 @@ describe("AgentSetupPage stages", () => {
     renderSetup(memory.adapter);
     await settle();
 
-    const repairAction = screen.getByRole("button", { name: "Generate a repair command" });
+    const repairAction = screen.getByRole("button", { name: "Generate an install command" });
     expect(repairAction.closest(".ots-command__body")).toBeTruthy();
     expect(screen.getByText("Need to reinstall?")).toBeTruthy();
     fireEvent.click(repairAction);

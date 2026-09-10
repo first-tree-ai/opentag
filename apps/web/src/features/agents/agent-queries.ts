@@ -9,7 +9,14 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import { liveResourceQueryOptions } from "../../query/live.js";
-import { terminalResourceObservedAt } from "../../query/session-cache.js";
+import {
+  observedAfter,
+  type ResourceObservation,
+  refusalOutranks,
+  resourceSuccessObservation,
+  type TerminalResourceObservation,
+  terminalResourceObservation,
+} from "../../query/session-cache.js";
 import type { LoadState } from "../resource/resource-state.js";
 import {
   isConfirmedQuerySuccess,
@@ -197,13 +204,20 @@ export function useAgentDetailView(
   const watch = watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime };
   const listQuery = useAgentListQuery(accountId ?? "", Boolean(accountId));
   const listed = listQuery.data?.agents.find((agent) => agent.id === agentId);
-  const listStamp = listQuery.isSuccess ? listQuery.dataUpdatedAt : 0;
   const detailKey = queryKeys.agents.detail(agentId);
-  const cachedDetail = queryClient.getQueryState(detailKey);
-  const detailSuccessAt = cachedDetail?.data !== undefined ? cachedDetail.dataUpdatedAt : 0;
-  const detailRefusalAt = terminalResourceObservedAt(queryClient, detailKey);
+  /*
+   * Observation order — never the wall clock — arbitrates between the shared list row and the
+   * per-Agent read: two answers that settle in the same millisecond, or under a clock that moved
+   * backwards, still order by which the cache observed later.
+   */
+  const listSuccess = resourceSuccessObservation(queryClient, queryKeys.agents.list(accountId ?? ""));
+  const detailSuccess = resourceSuccessObservation(queryClient, detailKey);
+  const detailRefusal = terminalResourceObservation(queryClient, detailKey);
   const listedUsable = Boolean(
-    listed && isConfirmedQuerySuccess(listQuery) && listStamp >= detailRefusalAt && listStamp >= detailSuccessAt,
+    listed &&
+      isConfirmedQuerySuccess(listQuery) &&
+      !refusalOutranks(detailRefusal, listSuccess) &&
+      !observedAfter(detailSuccess, listSuccess),
   );
   const listSettled = !accountId || listQuery.isFetched;
   const agentQuery = useQuery({
@@ -235,15 +249,15 @@ export function useAgentDetailView(
     computers: computersConfirmed ? computersQuery.data?.computers : undefined,
     computersConfirmed,
     detailError,
-    detailRefusalAt,
-    detailSuccessAt,
+    detailRefusal,
+    detailSuccess,
     evidenceSettling,
     handoff: handoffConfirmed ? (handoffQuery.data ?? undefined) : undefined,
     handoffConfirmed,
     initialAgent,
     listError,
     listSettled,
-    listStamp,
+    listSuccess,
     listed,
     listedUsable,
   });
@@ -262,15 +276,15 @@ function detailDisplayError(
 
 function isNewerDetailRefusal(
   detailError: Error | null,
-  detailRefusalAt: number,
-  listStamp: number,
-  detailSuccessAt: number,
+  detailRefusal: TerminalResourceObservation | undefined,
+  listSuccess: ResourceObservation | undefined,
+  detailSuccess: ResourceObservation | undefined,
 ): detailError is Error {
   return Boolean(
     detailError &&
       isTerminalResourceError(detailError) &&
-      detailRefusalAt > listStamp &&
-      detailRefusalAt > detailSuccessAt,
+      refusalOutranks(detailRefusal, listSuccess) &&
+      refusalOutranks(detailRefusal, detailSuccess),
   );
 }
 
@@ -316,15 +330,15 @@ function presentAgentDetailView({
   computers,
   computersConfirmed,
   detailError,
-  detailRefusalAt,
-  detailSuccessAt,
+  detailRefusal,
+  detailSuccess,
   evidenceSettling,
   handoff,
   handoffConfirmed,
   initialAgent,
   listError,
   listSettled,
-  listStamp,
+  listSuccess,
   listed,
   listedUsable,
 }: {
@@ -335,19 +349,19 @@ function presentAgentDetailView({
   computers?: readonly AccountComputerSummary[];
   computersConfirmed: boolean;
   detailError: Error | null;
-  detailRefusalAt: number;
-  detailSuccessAt: number;
+  detailRefusal?: TerminalResourceObservation;
+  detailSuccess?: ResourceObservation;
   evidenceSettling: boolean;
   handoff?: ImBindingHandoffStatus;
   handoffConfirmed: boolean;
   initialAgent?: AgentDetailView;
   listError: Error | null;
   listSettled: boolean;
-  listStamp: number;
+  listSuccess?: ResourceObservation;
   listed?: AgentListApiItem;
   listedUsable: boolean;
 }): LoadState<AgentDetailView> {
-  if (isNewerDetailRefusal(detailError, detailRefusalAt, listStamp, detailSuccessAt)) {
+  if (isNewerDetailRefusal(detailError, detailRefusal, listSuccess, detailSuccess)) {
     return { kind: "error", error: detailError };
   }
   if (!listSettled || evidenceSettling || (!listedUsable && !agentFetched && !listed)) {

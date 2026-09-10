@@ -13,7 +13,14 @@ import { formatCompactNumber, formatDay, formatNumber, formatPercent } from "../
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import { liveResourceQueryOptions } from "../query/live.js";
-import { terminalResourceObservedAt } from "../query/session-cache.js";
+import {
+  observedAfter,
+  type ResourceObservation,
+  refusalOutranks,
+  resourceSuccessObservation,
+  type TerminalResourceObservation,
+  terminalResourceObservation,
+} from "../query/session-cache.js";
 import {
   Banner,
   ChartPalette,
@@ -160,29 +167,40 @@ function useAgentUsage(
   const queryClient = useQueryClient();
   const usageKey = queryKeys.agents.usage(agentId, windowDays);
   const canUseListSummary = Boolean(compact && windowDays === AGENT_USAGE_WINDOW_DAYS && accountId);
+  const listKey = queryKeys.agents.list(accountId ?? "");
   const listQuery = useAgentListQuery(accountId ?? "", canUseListSummary);
   const listed = listQuery.data?.agents.find((agent) => agent.id === agentId);
+  /*
+   * The summary is the last list answer the Server gave, held apart from the refresh state: a
+   * transient re-read failure adds a notice but must not pull totals the reader is already
+   * looking at. Only a terminal refusal of the list itself withdraws them, and the summary is
+   * never written into the full-usage cache.
+   */
+  const listRefused = terminalResourceObservation(queryClient, listKey) !== undefined;
   const listSummary =
-    canUseListSummary && listed && isConfirmedQuerySuccess(listQuery)
+    canUseListSummary && listed && !listRefused
       ? ({
           windowDays: AGENT_USAGE_WINDOW_DAYS,
           tasks: listed.usage.tasks,
           tokens: listed.usage.tokens,
         } satisfies UsageTotals)
       : undefined;
+  // A degraded list source asks the full read to stand in behind the retained summary.
+  const listRefreshFailed = Boolean(canUseListSummary && listed && !isConfirmedQuerySuccess(listQuery));
   const waitingForList = canUseListSummary && !listQuery.isFetched;
-  const cachedUsage = queryClient.getQueryState<AgentUsageDetail>(usageKey);
-  const usageSuccessAt = cachedUsage?.data !== undefined ? cachedUsage.dataUpdatedAt : 0;
-  const usageRefusalAt = terminalResourceObservedAt(queryClient, usageKey);
-  const listStamp = listQuery.isSuccess ? listQuery.dataUpdatedAt : 0;
-  const usageAuthoritative = usageSuccessAt > listStamp || usageRefusalAt > listStamp;
-  // Keyed by Agent and window. The home 30-day totals reuse the list summary when that read is the
-  // newest authorized source; a newer full read or refusal wins. A summary is never written into the
-  // detail cache.
+  const usageSuccess = resourceSuccessObservation(queryClient, usageKey);
+  const usageRefusal = terminalResourceObservation(queryClient, usageKey);
+  const listSuccess = resourceSuccessObservation(queryClient, listKey);
+  /*
+   * Keyed by Agent and window. The home 30-day totals reuse the list summary when that read is
+   * the newest authorized source; a newer full read or refusal wins. Observation order — never
+   * the wall clock — decides which read is newer, so same-millisecond answers still order.
+   */
+  const usageAuthoritative = observedAfter(usageSuccess, listSuccess) || refusalOutranks(usageRefusal, listSuccess);
   const query = useQuery({
     queryKey: usageKey,
     queryFn: () => browserApi.agentUsage(agentId, windowDays),
-    enabled: !waitingForList && (!listSummary || usageAuthoritative),
+    enabled: !waitingForList && (!listSummary || usageAuthoritative || listRefreshFailed),
     ...liveResourceQueryOptions,
   });
   const persistedError = usePersistedSettledError(usageKey, {
@@ -198,13 +216,13 @@ function useAgentUsage(
     retry,
     state: presentUsageState({
       detail: query.data,
-      detailUpdatedAt: query.dataUpdatedAt,
       listError: listQuery.isError ? usageError(listQuery.error) : undefined,
+      listSuccess,
       listSummary,
-      listUpdatedAt: listQuery.dataUpdatedAt,
-      persistedAt: usageRefusalAt,
       persistedError,
       queryError: query.isError ? usageError(query.error) : undefined,
+      usageRefusal,
+      usageSuccess,
     }),
   };
 }
@@ -225,33 +243,36 @@ function fallbackUsageState(detail: AgentUsageDetail | undefined, error: Error |
 
 function presentUsageState({
   detail,
-  detailUpdatedAt,
   listError,
+  listSuccess,
   listSummary,
-  listUpdatedAt,
-  persistedAt,
   persistedError,
   queryError,
+  usageRefusal,
+  usageSuccess,
 }: {
   detail?: AgentUsageDetail;
-  detailUpdatedAt: number;
   listError?: Error;
+  listSuccess?: ResourceObservation;
   listSummary?: UsageTotals;
-  listUpdatedAt: number;
-  persistedAt: number;
   persistedError: Error | null;
   queryError?: Error;
+  usageRefusal?: TerminalResourceObservation;
+  usageSuccess?: ResourceObservation;
 }): UsageState {
-  const refusalAt = persistedError && isTerminalResourceError(persistedError) ? persistedAt : 0;
-  const usageSuccessAt = detail ? detailUpdatedAt : 0;
-  const listAt = listSummary ? listUpdatedAt : 0;
-  if (refusalAt > listAt && refusalAt > usageSuccessAt) {
-    return { kind: "error", error: persistedError ?? queryError ?? new Error(m.usage_error_fallback()) };
+  // A terminal refusal stands until a read the Server answered settles strictly after it. A manual
+  // write, or an older answer that shares the refusal's millisecond, must not resurrect the data
+  // the refusal withdrew.
+  if (refusalOutranks(usageRefusal, listSuccess) && refusalOutranks(usageRefusal, usageSuccess)) {
+    return {
+      kind: "error",
+      error: usageRefusal?.error ?? persistedError ?? queryError ?? new Error(m.usage_error_fallback()),
+    };
   }
-  if (detail && usageSuccessAt >= listAt && usageSuccessAt >= refusalAt) {
+  if (detail && !observedAfter(listSuccess, usageSuccess) && !refusalOutranks(usageRefusal, usageSuccess)) {
     return readyUsage(detail, detail, usageRefreshError(persistedError ?? queryError));
   }
-  if (listSummary && listAt >= refusalAt) {
+  if (listSummary && !refusalOutranks(usageRefusal, listSuccess)) {
     return readyUsage(listSummary, undefined, usageRefreshError(listError));
   }
   return fallbackUsageState(detail, persistedError ?? queryError);

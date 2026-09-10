@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
 import { AgentUsageOverview, AgentUsageTab } from "../features/agent-usage.js";
-import { useAgentListView, useComputersQuery } from "../features/agents/agent-queries.js";
+import { useAgentDetailView, useAgentListView, useComputersQuery } from "../features/agents/agent-queries.js";
 import { AgentTasksSection, TaskDetailPage, TasksPage } from "../features/tasks-page.js";
 import { syncAgentQueries } from "./agent-sync.js";
 import { createQueryClient } from "./client.js";
@@ -147,6 +147,32 @@ function EnrichedListProbe() {
   const state = useAgentListView(accountId);
   return <span data-testid="summary">{state.kind}</span>;
 }
+
+function DetailStateProbe() {
+  const state = useAgentDetailView(agentId, { watched: true, accountId });
+  return <output data-testid="detail-state">{state.kind}</output>;
+}
+
+function DetailNameProbe() {
+  const state = useAgentDetailView(agentId, { watched: true, accountId });
+  return <output data-testid="detail-name">{state.kind === "ready" ? state.value.displayName : state.kind}</output>;
+}
+
+/** Evidence reads the detail view waits on before it can present anything. */
+function stubDetailEvidence() {
+  vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+  vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+  vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+}
+
+/** A read that never settles, guarding against fetches the scenario must not make. */
+function neverResolves<T>(): Promise<T> {
+  return new Promise<T>(() => undefined);
+}
+
+const summaryListResult = {
+  agents: [{ ...agentDetail, usage: { windowDays: 30 as const, tasks: 7, failed: 0, tokens: 100_000 } }],
+};
 
 afterEach(() => {
   vi.useRealTimers();
@@ -550,6 +576,273 @@ describe("task and usage live revalidation", () => {
       </>,
     );
     await waitFor(() => expect(screen.queryByText(completedTask.title)).toBeNull());
+  });
+});
+
+describe("home usage summary resilience", () => {
+  it("keeps the displayed totals with a refresh notice when the list refresh fails and the fallback is pending", async () => {
+    vi.spyOn(browserApi, "agents")
+      .mockResolvedValueOnce(summaryListResult)
+      .mockRejectedValue(new ApiError(503, "List temporarily unavailable"));
+    const usageRead = vi.spyOn(browserApi, "agentUsage").mockImplementation(() => neverResolves<AgentUsageDetail>());
+    await renderInRouter(
+      <>
+        <AgentUsageOverview accountId={accountId} agentId={agentId} />
+        <CaptureClient />
+      </>,
+    );
+    expect(await screen.findByText("100K")).toBeTruthy();
+    expect(usageRead).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await currentClient.refetchQueries({ queryKey: queryKeys.agents.list(accountId) });
+    });
+
+    // The full read stands in behind the retained summary: the totals and the notice stay while it is pending.
+    await waitFor(() => expect(usageRead).toHaveBeenCalledTimes(1));
+    expect(
+      currentClient.getQueryData<typeof summaryListResult>(queryKeys.agents.list(accountId))?.agents[0]?.usage.tokens,
+    ).toBe(100_000);
+    expect(screen.queryByText("100K")).not.toBeNull();
+    expect(screen.queryByText("Update failed. Showing last available data.")).not.toBeNull();
+  });
+
+  it("keeps the displayed totals when the list refresh and the fallback read both fail transiently", async () => {
+    vi.spyOn(browserApi, "agents")
+      .mockResolvedValueOnce(summaryListResult)
+      .mockRejectedValue(new ApiError(503, "List temporarily unavailable"));
+    const usageRead = vi
+      .spyOn(browserApi, "agentUsage")
+      .mockRejectedValue(new ApiError(503, "Usage temporarily unavailable"));
+    await renderInRouter(
+      <>
+        <AgentUsageOverview accountId={accountId} agentId={agentId} />
+        <CaptureClient />
+      </>,
+    );
+    expect(await screen.findByText("100K")).toBeTruthy();
+
+    await act(async () => {
+      await currentClient.refetchQueries({ queryKey: queryKeys.agents.list(accountId) });
+    });
+
+    await waitFor(() => expect(usageRead).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(currentClient.getQueryState(queryKeys.agents.usage(agentId, 30))?.status).toBe("error"));
+    expect(screen.queryByText("100K")).not.toBeNull();
+    expect(screen.queryByText("Update failed. Showing last available data.")).not.toBeNull();
+  });
+
+  it("withdraws the totals when the list answer turns terminal and lets the full read decide", async () => {
+    vi.spyOn(browserApi, "agents")
+      .mockResolvedValueOnce(summaryListResult)
+      .mockRejectedValue(new ApiError(403, "List access removed"));
+    const usageRead = vi.spyOn(browserApi, "agentUsage").mockImplementation(() => neverResolves<AgentUsageDetail>());
+    await renderInRouter(
+      <>
+        <AgentUsageOverview accountId={accountId} agentId={agentId} />
+        <CaptureClient />
+      </>,
+    );
+    expect(await screen.findByText("100K")).toBeTruthy();
+
+    await act(async () => {
+      await currentClient.refetchQueries({ queryKey: queryKeys.agents.list(accountId) });
+    });
+
+    // A terminal refusal of the list itself is not a transient loss of contact: the summary is
+    // withdrawn and the fallback full read owns what happens next.
+    await waitFor(() => expect(usageRead).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("100K")).toBeNull();
+  });
+});
+
+describe("observation order arbitrates success against refusal", () => {
+  it("a same-millisecond usage refusal withdraws the data it answered", async () => {
+    const realNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(realNow);
+    const view = await renderInRouter(<CaptureClient />);
+    const key = queryKeys.agents.usage(agentId, 30);
+    await currentClient.fetchQuery({ queryKey: key, queryFn: async () => usage });
+    await currentClient
+      .fetchQuery({
+        queryKey: key,
+        queryFn: async () => {
+          throw new ApiError(403, "Usage access removed");
+        },
+      })
+      .catch(() => undefined);
+    vi.spyOn(browserApi, "agentUsage").mockRejectedValue(new ApiError(503, "Still unavailable"));
+    view.rerender(
+      <>
+        <CaptureClient />
+        <AgentUsageOverview agentId={agentId} />
+      </>,
+    );
+    expect(await screen.findByText("Usage access removed")).toBeTruthy();
+    expect(screen.queryByText("428K")).toBeNull();
+  });
+
+  it("a same-millisecond Agent refusal outranks the list row observed before it", async () => {
+    const realNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(realNow);
+    const view = await renderInRouter(<CaptureClient />);
+    await currentClient.fetchQuery({
+      queryKey: queryKeys.agents.list(accountId),
+      queryFn: async () => summaryListResult,
+    });
+    await currentClient
+      .fetchQuery({
+        queryKey: queryKeys.agents.detail(agentId),
+        queryFn: async () => {
+          throw new ApiError(403, "Agent access removed");
+        },
+      })
+      .catch(() => undefined);
+    vi.spyOn(browserApi, "agents").mockResolvedValue(summaryListResult);
+    vi.spyOn(browserApi, "agent").mockRejectedValue(new ApiError(503, "Still unavailable"));
+    stubDetailEvidence();
+    view.rerender(
+      <>
+        <CaptureClient />
+        <DetailStateProbe />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("detail-state").textContent).not.toBe("loading"));
+    expect(screen.getByTestId("detail-state").textContent).toBe("error");
+  });
+
+  it.each([
+    { source: "list" as const, delta: 0 },
+    { source: "detail" as const, delta: 0 },
+    { source: "list" as const, delta: -1_000 },
+    { source: "detail" as const, delta: -1_000 },
+  ])(
+    "a genuinely later Agent read recovers the refusal in observation order (source=$source, clock delta=$delta)",
+    async ({ source, delta }) => {
+      const realNow = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(realNow);
+      const view = await renderInRouter(<CaptureClient />);
+      const listKey = queryKeys.agents.list(accountId);
+      const detailKey = queryKeys.agents.detail(agentId);
+      await currentClient.fetchQuery({ queryKey: listKey, queryFn: async () => summaryListResult });
+      await currentClient
+        .fetchQuery({
+          queryKey: detailKey,
+          queryFn: async () => {
+            throw new ApiError(403, "Denied");
+          },
+        })
+        .catch(() => undefined);
+      // The recovery read may share the refusal's millisecond or carry an earlier wall-clock time;
+      // being observed later is what makes it authoritative. After a backwards clock move the
+      // cached row looks fresh to staleTime, so the recovery read is forced explicitly.
+      clock.mockReturnValue(realNow + delta);
+      const recovered = { ...agentDetail, displayName: "Recovered" };
+      if (source === "list") {
+        await currentClient.invalidateQueries({ queryKey: listKey, refetchType: "none" });
+        await currentClient.fetchQuery({
+          queryKey: listKey,
+          queryFn: async () => ({ agents: [{ ...recovered, usage: summaryListResult.agents[0]?.usage }] }),
+          staleTime: 0,
+        });
+      } else {
+        await currentClient.fetchQuery({ queryKey: detailKey, queryFn: async () => recovered, staleTime: 0 });
+      }
+      vi.spyOn(browserApi, "agents").mockImplementation(() => neverResolves());
+      vi.spyOn(browserApi, "agent").mockImplementation(() => neverResolves());
+      stubDetailEvidence();
+      view.rerender(
+        <>
+          <CaptureClient />
+          <DetailNameProbe />
+        </>,
+      );
+      await waitFor(() => expect(screen.getByTestId("detail-name").textContent).toBe("Recovered"));
+    },
+  );
+
+  it.each([
+    { source: "list" as const, delta: 0 },
+    { source: "detail" as const, delta: 0 },
+    { source: "list" as const, delta: -1_000 },
+    { source: "detail" as const, delta: -1_000 },
+  ])(
+    "a genuinely later usage answer recovers the refusal in observation order (source=$source, clock delta=$delta)",
+    async ({ source, delta }) => {
+      const realNow = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(realNow);
+      const view = await renderInRouter(<CaptureClient />);
+      const listKey = queryKeys.agents.list(accountId);
+      const usageKey = queryKeys.agents.usage(agentId, 30);
+      await currentClient.fetchQuery({ queryKey: listKey, queryFn: async () => summaryListResult });
+      await currentClient
+        .fetchQuery({
+          queryKey: usageKey,
+          queryFn: async () => {
+            throw new ApiError(403, "Denied");
+          },
+        })
+        .catch(() => undefined);
+      clock.mockReturnValue(realNow + delta);
+      const recoveredAgent = summaryListResult.agents[0];
+      if (!recoveredAgent) throw new Error("Expected the fixture Agent");
+      const recoveredSummary = {
+        agents: [{ ...recoveredAgent, usage: { windowDays: 30 as const, tasks: 7, failed: 0, tokens: 777_000 } }],
+      };
+      if (source === "list") {
+        await currentClient.invalidateQueries({ queryKey: listKey, refetchType: "none" });
+        await currentClient.fetchQuery({ queryKey: listKey, queryFn: async () => recoveredSummary, staleTime: 0 });
+      } else {
+        await currentClient.fetchQuery({ queryKey: usageKey, queryFn: async () => usage, staleTime: 0 });
+      }
+      vi.spyOn(browserApi, "agents").mockImplementation(() => neverResolves());
+      vi.spyOn(browserApi, "agentUsage").mockImplementation(() => neverResolves());
+      view.rerender(
+        <>
+          <CaptureClient />
+          <AgentUsageOverview accountId={accountId} agentId={agentId} />
+        </>,
+      );
+      expect(await screen.findByText(source === "list" ? "777K" : "428K")).toBeTruthy();
+    },
+  );
+
+  it.each(["agent", "usage"] as const)("a manual list write cannot resurrect a refused %s", async (resource) => {
+    const realNow = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(realNow);
+    const view = await renderInRouter(<CaptureClient />);
+    const listKey = queryKeys.agents.list(accountId);
+    const detailKey = resource === "agent" ? queryKeys.agents.detail(agentId) : queryKeys.agents.usage(agentId, 30);
+    await currentClient.fetchQuery({ queryKey: listKey, queryFn: async () => summaryListResult });
+    clock.mockReturnValue(realNow + 1);
+    await currentClient
+      .fetchQuery({
+        queryKey: detailKey,
+        queryFn: async () => {
+          throw new ApiError(403, "Denied");
+        },
+      })
+      .catch(() => undefined);
+    // A write the Server never answered keeps its payload's claimed time but no observation order:
+    // it cannot promote the cached list over the refusal, whatever the wall clock says.
+    clock.mockReturnValue(realNow + 2);
+    currentClient.setQueryData(listKey, { ...summaryListResult });
+    vi.spyOn(browserApi, "agents").mockImplementation(() => neverResolves());
+    vi.spyOn(browserApi, "agent").mockImplementation(() => neverResolves());
+    vi.spyOn(browserApi, "agentUsage").mockImplementation(() => neverResolves());
+    stubDetailEvidence();
+    view.rerender(
+      <>
+        <CaptureClient />
+        {resource === "agent" ? <DetailStateProbe /> : <AgentUsageOverview accountId={accountId} agentId={agentId} />}
+      </>,
+    );
+    if (resource === "agent") {
+      await waitFor(() => expect(screen.getByTestId("detail-state").textContent).toBe("error"));
+    } else {
+      expect(await screen.findByText("Denied")).toBeTruthy();
+      expect(screen.queryByText("100K")).toBeNull();
+    }
   });
 });
 

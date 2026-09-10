@@ -37,6 +37,7 @@ import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/p
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
+import { queryKeys } from "../query/keys.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
@@ -670,6 +671,7 @@ export function AgentSetupPage({
       refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
+      syncAgentCachesOnReady={adapter === undefined}
     />
   );
 }
@@ -686,7 +688,17 @@ function AgentSetupPageContent({
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
-}: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
+  syncAgentCachesOnReady = false,
+}: Omit<AgentSetupPageProps, "adapter"> & {
+  readonly adapter: AgentSetupAdapter;
+  /**
+   * Whether observing a completed messaging binding synchronizes the shared Agent caches. Only
+   * the production adapter does; Lab and in-memory adapters keep their isolation from the real
+   * QueryClient.
+   */
+  readonly syncAgentCachesOnReady?: boolean;
+}) {
+  const queryClient = useQueryClient();
   const controller = useAgentSetup(agentId, adapter, onExternalNavigation);
   const previousRefreshSignal = useRef(refreshSignal);
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
@@ -696,6 +708,29 @@ function AgentSetupPageContent({
   // The stages between a connected Computer and a usable Agent, which is where a reader who never
   // holds a conversation actually stops. Reported per stage, not per re-read.
   useAgentSetupStageReport(agentId, snapshot?.stage);
+
+  /*
+   * A completed authorization/handoff changes the Agent's messaging evidence, so the shared
+   * Agent, binding, and handoff caches synchronize exactly once per completion: when a ready
+   * binding is first observed under a binding identity and credential generation this mounted
+   * page has not synced yet. That covers the already-ready first snapshot on return from OAuth,
+   * a completion the poll observes, and a reauthorization that completes between two reads
+   * without the transitional state ever being shown — while repeated snapshots of the same
+   * completion (the 2s beat, focus returns) never sync twice. Syncing at the completion
+   * boundary, rather than on navigation away, is what lets a reader who returns home inside the
+   * 30s freshness window re-read instead of trusting the binding cached before Setup. The Setup
+   * snapshot read itself is not one of the synced keys.
+   */
+  const syncedCompletion = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!syncAgentCachesOnReady) return;
+    const messaging = snapshot?.messaging;
+    if (messaging?.kind !== "ready") return;
+    const completion = `${messaging.provider}:${messaging.bindingId}:${messaging.credentialGeneration}`;
+    if (syncedCompletion.current === completion) return;
+    syncedCompletion.current = completion;
+    void syncAgentQueries(queryClient, agentId);
+  }, [syncAgentCachesOnReady, snapshot, queryClient, agentId]);
 
   useEffect(() => {
     if (previousRefreshSignal.current === refreshSignal) return;
@@ -1092,14 +1127,26 @@ function ComputerSetupSection({
     [agentId, queryClient],
   );
   const computerConnectAdapter = computerAdapter?.connect ?? serverComputerConnectAdapter;
-  const afterBind = () => {
-    if (!computerAdapter) void syncAgentQueries(queryClient, agentId);
-    onChanged();
+  /*
+   * A bind or repair moves the Computer state a snapshot GET begun before it may still be
+   * answering through the shared cache. Retire that in-flight read at the completion boundary, so
+   * the controller's next read starts after the write — the same operation boundary the messaging
+   * writes get from the adapter itself — then sync the shared caches as before. Lab adapters keep
+   * their own transport and their own isolation, so none of this touches them.
+   */
+  const afterComputerCompletion = (computers: boolean) => {
+    if (computerAdapter) {
+      onChanged();
+      return;
+    }
+    void (async () => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.agentSetup(agentId) });
+      void syncAgentQueries(queryClient, agentId, { computers });
+      onChanged();
+    })();
   };
-  const afterRepair = () => {
-    if (!computerAdapter) void syncAgentQueries(queryClient, agentId, { computers: true });
-    onChanged();
-  };
+  const afterBind = () => afterComputerCompletion(false);
+  const afterRepair = () => afterComputerCompletion(true);
   if (computer.kind === "not-bound") {
     return (
       <NotBoundComputerSection

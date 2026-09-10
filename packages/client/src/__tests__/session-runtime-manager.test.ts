@@ -29,6 +29,7 @@ import { SessionReconciler } from "../runtime/session-reconciler.js";
 import {
   SessionRuntimeManager as ProductionSessionRuntimeManager,
   type SessionRuntimeManagerOptions,
+  SessionRuntimeNotPreparedError,
 } from "../runtime/session-runtime-manager.js";
 
 class SessionRuntimeManager extends ProductionSessionRuntimeManager {
@@ -85,7 +86,8 @@ describe("SessionRuntimeManager", () => {
       sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
     };
 
-    expect(manager.requiresSessionPreparation(request)).toBe(false);
+    // Without a managed runtime entry the Session always requires preparation.
+    expect(manager.requiresSessionPreparation(request)).toBe(true);
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
     expect(manager.sessionKind(request.sessionId)).toBe("internal");
     await manager.ensureRuntime(request.sessionId);
@@ -476,7 +478,7 @@ describe("SessionRuntimeManager", () => {
     });
     const first = reconcile(computerId, snapshot(1));
 
-    expect(() => manager.sessionKind(first.sessionId)).toThrow("has not been prepared");
+    expect(() => manager.sessionKind(first.sessionId)).toThrow(SessionRuntimeNotPreparedError);
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
     expect(manager.sessionKind(first.sessionId)).toBe("visible");
     await manager.ensureRuntime("session-1");
@@ -569,8 +571,11 @@ describe("SessionRuntimeManager", () => {
       "configuration_unsupported",
     );
     expect(() => registered.runtime("missing")).toThrow("not ready");
-    await expect(registered.ensureRuntime("missing")).rejects.toThrow("not been prepared");
-    expect(() => registered.cwd("missing")).toThrow("not been prepared");
+    const unprepared = await registered.ensureRuntime("missing").catch((error: unknown) => error);
+    expect(unprepared).toBeInstanceOf(SessionRuntimeNotPreparedError);
+    expect((unprepared as SessionRuntimeNotPreparedError).code).toBe("session_runtime_not_prepared");
+    expect((unprepared as Error).message).toBe("The Session Agent Runtime has not been prepared");
+    expect(() => registered.cwd("missing")).toThrow(SessionRuntimeNotPreparedError);
     expect(() => registered.observe("missing", () => undefined)).toThrow("not ready");
     const stopSession = vi.fn(async () => undefined);
     const cleanupProviderEnvironment = vi.fn(async () => undefined);
@@ -584,6 +589,25 @@ describe("SessionRuntimeManager", () => {
     await expect(stoppable.stopSession("missing", 1)).resolves.toBeUndefined();
     expect(stopSession).toHaveBeenCalledWith("missing", 1);
     expect(cleanupProviderEnvironment).toHaveBeenCalledWith("missing");
+  });
+
+  it("fails an unprepared Session before any provider readiness probe or factory call", async () => {
+    const ensureProviderReady = vi.fn(async () => undefined);
+    const factory = new FakeFactory();
+    const manager = new ProductionSessionRuntimeManager({
+      bindingStore: {} as SessionBindingStore,
+      ensureProviderReady,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace: {} as AgentWorkspaceManager,
+    });
+
+    await expect(manager.ensureRuntime("missing")).rejects.toThrow(SessionRuntimeNotPreparedError);
+    expect(() => manager.sessionKind("missing")).toThrow(SessionRuntimeNotPreparedError);
+    expect(() => manager.cwd("missing")).toThrow(SessionRuntimeNotPreparedError);
+    expect(ensureProviderReady).not.toHaveBeenCalled();
+    expect(factory.created).toHaveLength(0);
+    expect(factory.resumed).toHaveLength(0);
   });
 
   it("closes a runtime that cannot produce a durable binding", async () => {

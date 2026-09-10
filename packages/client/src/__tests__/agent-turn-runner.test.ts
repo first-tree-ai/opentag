@@ -21,7 +21,11 @@ import type { ProviderCliOutgoingReplyCollectResult } from "../runtime/provider-
 import { ProviderCliTurnPlanError } from "../runtime/provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "../runtime/provider-cli/turn-plan-manager.js";
 import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session-binding-store.js";
-import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
+import {
+  ClientRuntimeProviderStartError,
+  type SessionRuntimeManager,
+  SessionRuntimeNotPreparedError,
+} from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -273,6 +277,16 @@ describe("AgentTurnRunner", () => {
       outcome: "failed",
       executionEffects: "not_started",
       errorReason: "provider_start_failed",
+    });
+    expect(completionForError(new SessionRuntimeNotPreparedError(), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "provider_start_failed",
+    });
+    expect(completionForError(new Error("The Session Agent Runtime has not been prepared"), undefined)).toEqual({
+      outcome: "unknown",
+      executionEffects: "may_have_occurred",
+      errorReason: "turn_state_unknown",
     });
     expect(new AgentRuntimeProviderUnavailableError("claude-code", { ready: false, issues: [] }).message).toContain(
       "not ready",
@@ -544,6 +558,76 @@ describe("AgentTurnRunner", () => {
       }),
     );
   });
+
+  it.each(["sessionKind", "ensureRuntime"] as const)(
+    "reports an unprepared Session Runtime from %s as a typed pre-execution failure",
+    async (guard) => {
+      const logs: RecordedLog[] = [];
+      const privateDetail = "private-runtime-detail-that-must-not-be-logged";
+      const unprepared = new SessionRuntimeNotPreparedError();
+      unprepared.message = privateDetail;
+      unprepared.cause = new Error(privateDetail);
+      const ensureRuntime = vi.fn(async () => {
+        throw unprepared;
+      });
+      const turnPlan = {
+        prepare: vi.fn(async () => undefined),
+        cleanup: vi.fn(async () => undefined),
+      };
+      const create = vi.fn((input) => ({
+        ...input,
+        type: "turn:report",
+        requestId: randomUUID(),
+        resultHash: "e".repeat(64),
+      }));
+      const submit = vi.fn(async () => undefined);
+      const environment = credentialEnvironment();
+      const runner = new AgentTurnRunner({
+        bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+        connection: { send: vi.fn(async () => undefined) },
+        custody: {
+          markReporting: vi.fn(async () => undefined),
+          recordResult: vi.fn(),
+        } as unknown as TurnCustodyOwner,
+        logger: recordingLogger(logs),
+        reportOwner: { create, submit } as unknown as TurnReportOwner,
+        runtimeManager: {
+          sessionKind: () => {
+            throw unprepared;
+          },
+          ensureRuntime,
+        } as unknown as SessionRuntimeManager,
+        credentialEnvironment: environment,
+        ...(guard === "sessionKind" ? { turnPlan } : {}),
+      });
+
+      runner.start(liveOwner(delivery()));
+      await runner.settled();
+
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "failed",
+          executionEffects: "not_started",
+          errorReason: "provider_start_failed",
+        }),
+      );
+      expect(submit).toHaveBeenCalledOnce();
+      expect(turnPlan.prepare).not.toHaveBeenCalled();
+      if (guard === "sessionKind") expect(ensureRuntime).not.toHaveBeenCalled();
+      const failure = logs.find((entry) => entry.message === "Turn failed");
+      expect(failure).toMatchObject({
+        level: "warn",
+        fields: {
+          errorCode: "session_runtime_not_prepared",
+          errorReason: "provider_start_failed",
+          outcome: "failed",
+        },
+      });
+      // Only the allowlisted code is logged: no arbitrary error text, paths, or cause content.
+      expect(failure?.fields).not.toHaveProperty("error");
+      expect(JSON.stringify(logs)).not.toContain(privateDetail);
+    },
+  );
 
   it("prepares a visible Turn plan before Agent Runtime and refuses drifted selections without starting it", async () => {
     const order: string[] = [];

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
+import { ImBindingServiceError } from "../services/im-bindings/index.js";
 
 const accountId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const computerId = "59ea83c3-0452-4fdb-a81b-e8037e91cd1b";
@@ -41,7 +42,11 @@ function resourceUrl(overrides: Partial<Parameters<typeof runtimeImResourcePath>
   });
 }
 
-function createResourceApp(resource: Record<string, unknown>, verifyMachineToken?: ReturnType<typeof vi.fn>) {
+function createResourceApp(
+  resource: Record<string, unknown>,
+  verifyMachineToken?: ReturnType<typeof vi.fn>,
+  loggerStream?: { write(chunk: string): void },
+) {
   const resources = { open: vi.fn().mockResolvedValue(resource) };
   const machineAuth = {
     verifyMachineToken:
@@ -53,6 +58,7 @@ function createResourceApp(resource: Record<string, unknown>, verifyMachineToken
       }),
   };
   const app = createApp({
+    loggerStream,
     authService: authService(),
     machineAuthService: machineAuth as never,
     imResourceService: resources as never,
@@ -103,6 +109,29 @@ describe("IM resource HTTP API", () => {
       imMessageId,
       2,
     );
+  });
+
+  it("correlates an attachment read failure with the message through existing HTTP logs", async () => {
+    const chunks: string[] = [];
+    const { app, resources } = createResourceApp({}, undefined, {
+      write: (chunk) => {
+        chunks.push(chunk);
+      },
+    });
+    resources.open.mockRejectedValue(
+      new ImBindingServiceError("VALIDATION_ERROR", 413, "The IM resource exceeds the size limit"),
+    );
+
+    const response = await app.inject({ method: "GET", url: resourceUrl(), headers: authorization });
+
+    expect(response.statusCode).toBe(413);
+    expect(resources.open).toHaveBeenCalledTimes(1);
+    const logs = chunks.join("");
+    expect(logs).toContain(imMessageId);
+    expect(logs).toContain(response.headers["x-request-id"]);
+    expect(logs).toContain('"code":"VALIDATION_ERROR"');
+    expect(logs).toContain('"statusCode":413');
+    expect(logs).not.toContain("Bearer access");
   });
 
   it("falls back to a safe media type and omits absent optional metadata", async () => {

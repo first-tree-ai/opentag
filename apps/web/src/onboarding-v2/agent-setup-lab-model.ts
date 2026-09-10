@@ -24,12 +24,39 @@ export const LAB_SCENARIOS = [
   "runtime-setup",
   "runtime-sign-in",
   "messaging-support-setup",
+  "preparation-ready",
   "messaging-setup",
   "messaging-handoff",
   "messaging-recovery",
   "everything-ready",
 ] as const;
 export type LabScenario = (typeof LAB_SCENARIOS)[number];
+
+export const LAB_PREVIEW_PAGES = ["destination", "agent", "computer", "checks", "messaging", "complete"] as const;
+export type LabPreviewPage = (typeof LAB_PREVIEW_PAGES)[number];
+
+const LAB_SCENARIO_PREVIEW_PAGE: Record<LabScenario, LabPreviewPage> = {
+  "full-new-computer": "destination",
+  "full-existing-computer": "destination",
+  "agent-creation": "agent",
+  "computer-connection": "computer",
+  "computer-reconnect": "computer",
+  "computer-rebind": "computer",
+  "runtime-waiting": "checks",
+  "runtime-checking": "checks",
+  "runtime-setup": "checks",
+  "runtime-sign-in": "checks",
+  "messaging-support-setup": "checks",
+  "preparation-ready": "checks",
+  "messaging-setup": "messaging",
+  "messaging-handoff": "messaging",
+  "messaging-recovery": "messaging",
+  "everything-ready": "complete",
+};
+
+export function labPreviewPageFor(scenario: LabScenario): LabPreviewPage {
+  return LAB_SCENARIO_PREVIEW_PAGE[scenario];
+}
 
 export const LAB_AUTOMATIONS = ["manual", "auto"] as const;
 export type LabAutomation = (typeof LAB_AUTOMATIONS)[number];
@@ -155,6 +182,15 @@ const LAB_SCENARIO_PRESETS: Record<LabScenario, LabScenarioPreset> = {
   "messaging-support-setup": {
     computer: "bound",
     imCliReadiness: { feishu: "unavailable", slack: "ready" },
+    inventory: "one-online",
+    messaging: "not-configured",
+    messagingProvider: "feishu",
+    runtime: "codex",
+    runtimeStatus: "ready",
+  },
+  "preparation-ready": {
+    computer: "bound",
+    imCliReadiness: READY_IM_CLIS,
     inventory: "one-online",
     messaging: "not-configured",
     messagingProvider: "feishu",

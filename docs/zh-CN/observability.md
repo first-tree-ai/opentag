@@ -111,6 +111,28 @@ Receipt 行是运行证据，应保留 30 天。定时数据库维护任务可�
 ID、external message ID 和 `duplicate=true`，绝不记录 token 或消息内容。重复事件会被确认，不会再次写入
 inbox、启动 Session、创建 Task 或追加上下文。
 
+## IM 历史与 delivery 保留
+
+IM delivery worker 默认每 5 秒运行一次有界 expiry 任务；retention 使用独立的有界任务，默认每 60 秒运行一次，
+因为 90 天的保留窗口不需要与 expiry 使用相同频率。保留期限分别按 message 的 `occurred_at`、delivery 的
+`expires_at` 以及 provider receipt 的 `received_at` 计算。
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | expiry 任务间隔 |
+| `OPENTAG_IM_DELIVERY_RETENTION_INTERVAL_MS` | `60000` | retention 任务间隔 |
+| `OPENTAG_IM_DELIVERY_EXPIRY_BATCH_SIZE` | `100` | 每次最多标记为 `expired` 的 pending delivery 数量 |
+| `OPENTAG_IM_DELIVERY_RETENTION_BATCH_SIZE` | `100` | 每张历史表每次最多删除的行数 |
+| `OPENTAG_IM_MESSAGES_RETENTION_MS` | 90 天 | `im_messages` 保留期限 |
+| `OPENTAG_IM_MESSAGE_DELIVERIES_RETENTION_MS` | 90 天 | `im_message_deliveries` 保留期限 |
+| `OPENTAG_SLACK_WEBHOOK_RECEIPTS_RETENTION_MS` | 30 天 | Slack receipt 保留期限 |
+| `OPENTAG_FEISHU_INBOUND_RECEIPTS_RETENTION_MS` | 30 天 | 飞书 receipt 保留期限 |
+
+维护任务不会删除属于活跃 Session 的 delivery、仍被其他 delivery 作为 steer target 引用的 delivery，或仍在
+进行中的（`processing`）receipt。只会删除终态 delivery（`expired`、`terminal_rejected`、已报告的
+`accepted` 或已完成的 `steered`），并且只有在没有 delivery 引用时才删除 message。若部署需要不同的审计
+期限，请通过环境变量显式设置 retention window 与 batch size；毫秒数和行数都必须是正整数。
+
 ## 排查飞书 Bot 无响应
 
 先查看当前状态：
@@ -124,7 +146,7 @@ opentag agent im diagnose <agent-id>
 1. 按 `opentag.im.binding.id` 查询 `feishu.connection.connect`、`feishu.connection.transition` 和 `feishu.connection.error`，确认当前 replica 已连接，且没有持续重连或凭据失败。
 2. 用同一 binding 查询 `im.inbound.process`。存在该 span 才能证明 OpenTag SDK callback 被调用；error code 可区分 admission、normalization、fencing 和 persistence 失败。
 3. persistence 成功后，使用 `opentag.im.message.id` 和 `opentag.im.delivery.id` 串联 `im.delivery.dispatch`、`runtime.reconcile`、`runtime.delivery` 和 `runtime.report`。
-4. 若 Agent 已运行但 provider 中没有回复，检查 Agent trace 与 provider CLI 结果；OpenTag 不接收或追踪 provider 出站写入。
+4. 若 Agent 已运行但 provider 中没有回复，检查 Agent trace、provider CLI 结果，以及 Turn report 中（若存在）捕获的 Lark 出站回执快照。OpenTag 不追踪 provider 出站写入；Task 历史可以包含有界发送回执，这不是已读回执。
 
 没有 `im.inbound.process` 只表示 OpenTag 在已采样时间窗口内没有观测到 provider callback，不能证明飞书已经投递 event。需要结合 `connection`、`lastInboundAt`、`providerCliReadiness`、已授权 scopes 和飞书事件订阅状态判断。
 

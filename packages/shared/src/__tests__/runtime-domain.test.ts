@@ -15,6 +15,7 @@ import {
   EffectiveRuntimeSnapshotSchema,
   ImMessageDeliveryResultSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
+  RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES,
   RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
@@ -25,6 +26,9 @@ import {
   SessionMessageDeliveryResultSchema,
   SessionReconcileRequestSchema,
   SessionReconcileResultSchema,
+  type TurnOutgoingReplySnapshot,
+  TurnOutgoingReplySnapshotSchema,
+  type TurnReportHashInput,
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "../index.js";
@@ -315,6 +319,103 @@ describe("runtime domain contract", () => {
       "f0526b059b61ae051ea15a8a45b28f6ea2f8a7296fbb4421611cbb5e0d58c487",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
+    const withReplies = turnReport({
+      outgoingReplies: {
+        status: "complete",
+        replies: [],
+      },
+    });
+    expect(withReplies.resultHash).not.toBe(turnReport().resultHash);
+    expect(TurnReportRequestSchema.parse(withReplies)).toEqual(withReplies);
+    expect(TurnReportRequestSchema.parse(turnReport()).outgoingReplies).toBeUndefined();
+  });
+
+  it("distinguishes a complete zero-send snapshot from absent legacy outgoing replies", () => {
+    const empty = TurnOutgoingReplySnapshotSchema.parse({ status: "complete", replies: [] });
+    const unavailable = TurnOutgoingReplySnapshotSchema.parse({
+      status: "unavailable",
+      replies: [],
+    });
+    expect(empty).toEqual({ status: "complete", replies: [] });
+    expect(unavailable.status).toBe("unavailable");
+    expect(() =>
+      TurnOutgoingReplySnapshotSchema.parse({
+        status: "complete",
+        replies: [],
+        extra: true,
+      }),
+    ).toThrow();
+  });
+
+  it("keeps outgoing hashes stable across JSONB key order but detects changed messages", () => {
+    const outgoingReplies: TurnOutgoingReplySnapshot = {
+      status: "complete",
+      replies: [
+        {
+          provider: "feishu",
+          teamBrand: "lark",
+          messageId: "om_1",
+          chatId: "oc_1",
+          content: {
+            msgType: "post",
+            post: {
+              title: "Title",
+              content: [
+                [
+                  { tag: "text", text: "First" },
+                  { tag: "text", text: "Second" },
+                ],
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const report = turnReport({ outgoingReplies });
+    const reordered = JSON.parse(
+      JSON.stringify(report, (_key, value: unknown) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+        return Object.fromEntries(Object.entries(value).reverse());
+      }),
+    );
+    expect(TurnReportRequestSchema.parse(reordered).resultHash).toBe(report.resultHash);
+    expect(computeTurnResultHash(reordered)).toBe(report.resultHash);
+    reordered.outgoingReplies.replies[0].content.post.content[0].reverse();
+    expect(computeTurnResultHash(reordered)).not.toBe(report.resultHash);
+    expect(() => TurnReportRequestSchema.parse(reordered)).toThrow();
+  });
+
+  it("bounds the outgoing-reply snapshot and keeps a receipts-only report hashable", () => {
+    const oversized = {
+      status: "complete" as const,
+      replies: [
+        {
+          provider: "feishu" as const,
+          teamBrand: "lark" as const,
+          messageId: "om_1",
+          chatId: "oc_1",
+          content: {
+            msgType: "text" as const,
+            text: "x".repeat(RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES),
+          },
+        },
+      ],
+    };
+    expect(() => TurnOutgoingReplySnapshotSchema.parse(oversized)).toThrow();
+    const snapshot: TurnOutgoingReplySnapshot = {
+      status: "complete",
+      replies: [
+        {
+          provider: "feishu",
+          teamBrand: "lark",
+          messageId: "om_1",
+          chatId: "oc_1",
+          content: { msgType: "text", text: "hello\nworld 你好" },
+        },
+      ],
+    };
+    const report = turnReport({ outgoingReplies: snapshot, finalText: undefined });
+    expect(TurnReportRequestSchema.parse(report)).toEqual(report);
   });
 
   it("hashes the reconcile payload from its complete identity tuple", () => {
@@ -555,18 +656,21 @@ function directDelivery(runtime: EffectiveRuntimeSnapshot) {
   };
 }
 
-function turnReport(): TurnReportRequest {
-  const body = {
+function turnReport(overrides: Partial<TurnReportHashInput> = {}): TurnReportRequest {
+  const { finalText, outgoingReplies, ...rest } = overrides;
+  const body: TurnReportHashInput = {
     deliveryId: "delivery-1",
     turnId: "turn-1",
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
-    outcome: "completed" as const,
-    executionEffects: "completed" as const,
-    finalText: "done ✓",
+    outcome: "completed",
+    executionEffects: "completed",
     usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4 },
     traceSummary: { lastSequence: 5, droppedEvents: 1 },
+    ...rest,
+    ...(finalText === undefined && "finalText" in overrides ? {} : { finalText: finalText ?? "done ✓" }),
+    ...(outgoingReplies !== undefined ? { outgoingReplies } : {}),
   };
   return {
     type: "turn:report",

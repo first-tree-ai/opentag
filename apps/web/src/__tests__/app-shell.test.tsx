@@ -1,7 +1,15 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
+import {
+  agentId,
+  agentListItem,
+  installApi,
+  resetWebAppState,
+  secondAgentId,
+  secondAgentListItem,
+  taskSessionId,
+} from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
@@ -10,7 +18,7 @@ describe("OpenTag Web App Shell", () => {
   it("keeps the Account Agents page local and opens Agent navigation only after selection", async () => {
     installApi();
     render(<App />);
-    const pageHeading = await screen.findByRole("heading", { level: 1, name: "Agents" });
+    const pageHeading = await screen.findByRole("heading", { level: 1, name: "All Agents" });
     expect(pageHeading.classList.contains("text-xl")).toBe(true);
     expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
@@ -18,11 +26,10 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
-    const brandLink = screen.getByRole("link", { name: "OpenTag" });
-    expect(brandLink.getAttribute("href")).toBe("/agents");
-    const brandLogo = brandLink.querySelector("img");
-    expect(brandLogo?.getAttribute("alt")).toBe("");
-    expect(brandLogo?.classList.contains("size-6")).toBe(true);
+    const homeLink = screen.getByRole("link", { name: "All Agents" });
+    expect(homeLink.getAttribute("href")).toBe("/agents");
+    expect(homeLink.getAttribute("aria-current")).toBe("page");
+    expect(homeLink.getAttribute("data-compact")).toBe("true");
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByText("Example")).toBeNull();
@@ -53,13 +60,17 @@ describe("OpenTag Web App Shell", () => {
     expect(rowState).toBeNull();
     expect(within(agentRow as HTMLElement).getByText("Messaging not connected")).toBeTruthy();
     expect(within(agentRow as HTMLElement).queryByText("Cannot receive new work")).toBeNull();
-    // The row reports the failure and nothing else; opening the Agent is its only follow-up.
+    /*
+     * This Agent never finished setup, so the row names the page that finishes it. It does not name
+     * the missing dependency: which one is outstanding is the setup page's business, and an Agent
+     * that is short of two of them would otherwise need two links to say one thing.
+     */
     expect(within(agentRow as HTMLElement).queryByRole("link", { name: "Connect messaging" })).toBeNull();
     expect(
       within(agentRow as HTMLElement)
         .getAllByRole("link")
         .map((item) => item.getAttribute("href")),
-    ).toEqual([`/agents/${agentId}`]);
+    ).toEqual([`/agents/setup?agentId=${agentId}`, `/agents/${agentId}`]);
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-status"] [data-state]')).toBeTruthy();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
@@ -67,22 +78,17 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "OpenTag" })).toBeNull();
     const accountAgentsNavigation = screen.getByRole("navigation", { name: "Account Agents" });
-    const backToAgents = within(accountAgentsNavigation).getByRole("link", { name: "Agents" });
+    const backToAgents = within(accountAgentsNavigation).getByRole("link", { name: "All Agents" });
     expect(backToAgents.getAttribute("href")).toBe("/agents");
-    const mobileAgentHome = document.querySelector('[data-ui="agent-mobile-home"]');
-    expect(mobileAgentHome?.textContent).toContain("Reviewer");
-    expect(mobileAgentHome?.getAttribute("href")).toBe(`/agents/${agentId}`);
-    const switcher = screen.getByRole("button", { name: "Switch Agent, current Agent Reviewer" });
+    const switcher = await screen.findByRole("button", { name: "Switch Agent, current Agent Reviewer" });
     expect(switcher.closest('[data-sidebar="header"]')).toBeTruthy();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Agent" });
-    expect(workspaceNavigation.closest('[data-sidebar="content"]')?.className).toContain(
-      "md:[&_[data-sidebar=viewport]]:pt-0",
-    );
+    expect(workspaceNavigation.closest('[data-sidebar="content"]')).toBeTruthy();
     expect(
       within(workspaceNavigation)
-        .getAllByRole("button")
+        .getAllByRole("link")
         .map((item) => item.textContent),
-    ).toEqual(["Home", "Tasks", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
     expect(navigationIcons).toHaveLength(3);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
@@ -95,7 +101,7 @@ describe("OpenTag Web App Shell", () => {
     expect(agentNavigation.getAttribute("data-collapsible")).toBeNull();
     expect(agentNavigation.getAttribute("data-state")).toBe("expanded");
     fireEvent.click(backToAgents);
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
     expect(screen.queryByRole("complementary", { name: "Agent navigation" })).toBeNull();
   });
 
@@ -132,11 +138,11 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() =>
       expect(
         within(workspaceNavigation)
-          .getAllByRole("button")
+          .getAllByRole("link")
           .map((item) => item.textContent),
-      ).toEqual(["Home", "Tasks", "Skills", "Usage"]),
+      ).toEqual(["Overview", "Tasks", "Skills", "Usage"]),
     );
-    expect(within(workspaceNavigation).queryByRole("button", { name: "Integrations" })).toBeNull();
+    expect(within(workspaceNavigation).queryByRole("link", { name: "Integrations" })).toBeNull();
   });
 
   it("shows elapsed time without exposing conversation content for a working Agent", async () => {
@@ -193,7 +199,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("opens the Agent from the row itself rather than from a trailing affordance", async () => {
-    installApi();
+    installApi({ bound: true, handoffReady: true });
     render(<App />);
 
     // The row itself is the target: one link covers the card and carries its accessible name, while
@@ -204,10 +210,93 @@ describe("OpenTag Web App Shell", () => {
     const row = open.closest('[data-ui="agent-row"]');
     expect(row).toBeTruthy();
     expect((row as HTMLElement).querySelector('[data-ui="agent-row-action"]')).toBeNull();
-    /*
-     * Even a card reporting a broken dependency carries no second link. Where the repair lives
-     * depends on which dependency failed, so the row link is the whole answer: open the Agent.
-     */
     expect(within(row as HTMLElement).getAllByRole("link")).toEqual([open]);
   });
+
+  it("sends an Agent that never finished setup back to the page that finishes it", async () => {
+    installApi();
+    render(<App />);
+
+    const row = (await screen.findByRole("link", { name: "Open Reviewer" })).closest('[data-ui="agent-row"]');
+    const resume = within(row as HTMLElement).getByRole("link", { name: "Continue setup" });
+    expect(resume.getAttribute("href")).toBe(`/agents/setup?agentId=${agentId}`);
+    /*
+     * Above the overlay link that covers the whole card, which is painted last. A link the pointer
+     * can see and never reach is worse than no link at all.
+     */
+    expect(resume.className).toContain("z-10");
+    expect(resume.closest('[data-ui="agent-row-status"]')).toBeTruthy();
+  });
+});
+
+describe("Workspace and Agent navigation boundaries", () => {
+  beforeEach(resetWebAppState);
+
+  it.each([
+    "",
+    "/tasks",
+    `/tasks/${taskSessionId}`,
+    "/usage",
+    "/settings",
+    "/settings/identity",
+    "/settings/messaging",
+    "/settings/computer",
+    "/settings/instructions",
+    "/settings/execution",
+    "/settings/manage",
+  ])("offers a direct global exit from Agent page %s without remounting the main frame", async (section) => {
+    installApi({ bound: true, handoffReady: true });
+    window.history.replaceState({}, "", `/agents/${agentId}${section}`);
+    render(<App />);
+    const navigation = await screen.findByRole("navigation", { name: "Agent" });
+    const home = screen.getByRole("link", { name: "All Agents" });
+    expect(home.getAttribute("aria-current")).not.toBe("page");
+    if (section.startsWith("/settings")) {
+      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).not.toBe("page");
+    }
+    const frame = document.querySelector('[data-ui="content-page-frame"]');
+    fireEvent.click(home);
+    await screen.findByRole("heading", { name: "All Agents" });
+    expect(document.querySelector('[data-ui="content-page-frame"]')).toBe(frame);
+    expect(screen.getByRole("link", { name: "All Agents" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.queryByRole("navigation", { name: "Agent" })).toBeNull();
+  });
+
+  it("keeps the Agent shell and edited form until global navigation is allowed", async () => {
+    installApi({ bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/identity`);
+    render(<App />);
+    const name = await screen.findByRole("textbox", { name: "Display name" });
+    fireEvent.change(name, { target: { value: "Unsaved reviewer" } });
+    fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
+    await screen.findByRole("dialog", { name: "Discard unsaved changes?" });
+    expect(document.querySelector('[data-scope="agent"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+    expect(window.location.pathname).toBe(`/agents/${agentId}/settings/identity`);
+    expect((name as HTMLInputElement).value).toBe("Unsaved reviewer");
+    fireEvent.click(screen.getByRole("link", { name: "All Agents" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Discard" }));
+    await screen.findByRole("heading", { name: "All Agents" });
+  });
+});
+
+it("switches Agents within Tasks without sharing their search state", async () => {
+  resetWebAppState();
+  installApi({ agentList: [agentListItem, secondAgentListItem] });
+  window.history.replaceState({}, "", `/agents/${agentId}/tasks`);
+  render(<App />);
+  const search = await screen.findByRole("searchbox", { name: "Search Tasks" });
+  fireEvent.change(search, { target: { value: "deployment" } });
+  const sidebar = document.querySelector('[data-sidebar="sidebar"]');
+  fireEvent.click(await screen.findByRole("button", { name: "Switch Agent, current Agent Reviewer" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Helper" }));
+  await waitFor(() => expect(window.location.pathname).toBe(`/agents/${secondAgentId}/tasks`));
+  expect((screen.getByRole("searchbox", { name: "Search Tasks" }) as HTMLInputElement).value).toBe("");
+  expect(document.querySelector('[data-sidebar="sidebar"]')).toBe(sidebar);
+  fireEvent.change(screen.getByRole("searchbox", { name: "Search Tasks" }), { target: { value: "helper" } });
+  fireEvent.click(await screen.findByRole("button", { name: "Switch Agent, current Agent Helper" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Reviewer" }));
+  await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/tasks`));
+  expect((screen.getByRole("searchbox", { name: "Search Tasks" }) as HTMLInputElement).value).toBe("deployment");
 });

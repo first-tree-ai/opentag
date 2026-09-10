@@ -31,7 +31,9 @@ import {
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import { isTerminalResourceError } from "./resource/resource-state.js";
+import { useRememberedState } from "./shell/shell-memory.js";
 import { TaskMessageBody } from "./task-message-body.js";
+import { TaskOutgoingReplies } from "./task-outgoing-replies.js";
 
 type TaskFilter = "all" | TaskStatus;
 
@@ -46,9 +48,10 @@ const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
 };
 
 export function TasksPage({ agentId, showExamples = false }: { agentId?: string; showExamples?: boolean } = {}) {
-  const [query, setQuery] = useState("");
+  const filterKey = taskFilterKey(agentId);
+  const [query, setQuery] = useRememberedState(`${filterKey}:query`, "");
   const [selectedAgentId, setSelectedAgentId] = useState("all");
-  const [status, setStatus] = useState<TaskFilter>("all");
+  const [status, setStatus] = useRememberedState<TaskFilter>(`${filterKey}:status`, "all");
   /*
    * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
    * stays retryable — the behavior the hand-rolled append kept its own error state for.
@@ -525,7 +528,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                       outcome: humanizeEnum(report.outcome),
                       time: formatDateTime(report.reportedAt),
                     })
-                  : deliveryStateLabel(turn.delivery.state)}
+                  : deliveryStateLabel(turn.delivery)}
             </small>
           </header>
           <section
@@ -537,23 +540,73 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
               <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
                 {m.tasks_included_in_active_work()}
               </p>
-            ) : report?.finalText ? (
-              <TaskMessageBody format="markdown" text={report.finalText} />
-            ) : report?.errorReason ? (
-              <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p>
             ) : (
-              <p
-                className="text-sm text-kumo-subtle"
-                data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
-              >
-                {turn.delivery.state === "accepted"
-                  ? m.tasks_work_in_progress()
-                  : m.tasks_message_state({ state: deliveryStateLabel(turn.delivery.state).toLocaleLowerCase() })}
-              </p>
+              <TaskAgentReplyBody task={task} turn={turn} />
             )}
           </section>
         </div>
       </article>
+    </section>
+  );
+}
+
+function TaskAgentReplyBody({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
+  const report = turn.report;
+  if (!report) return <TaskUnreportedBody delivery={turn.delivery} />;
+  return (
+    <div className="grid gap-4">
+      {task.source.provider === "feishu" ? <TaskCapturedReplies report={report} /> : null}
+      {report.finalText ? (
+        <TaskExecutionSummary text={report.finalText} truncated={report.outgoingReplies?.runtimeSummaryTruncated} />
+      ) : report.outgoingReplies?.runtimeSummaryTruncated ? (
+        <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
+      ) : null}
+      {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
+    </div>
+  );
+}
+
+function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
+  const running = delivery.isRunning === true;
+  return (
+    <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
+      {running
+        ? m.tasks_work_in_progress()
+        : delivery.state === "accepted"
+          ? m.tasks_execution_report_unavailable()
+          : m.tasks_message_state({ state: deliveryStateLabel(delivery).toLocaleLowerCase() })}
+    </p>
+  );
+}
+
+function TaskCapturedReplies({ report }: { report: NonNullable<TaskTurn["report"]> }) {
+  const snapshot = report.outgoingReplies;
+  if (!snapshot || snapshot.status === "unavailable") {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
+        {m.tasks_reply_data_unavailable()}
+      </p>
+    );
+  }
+  if (snapshot.replies.length > 0 || snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0) {
+    return <TaskOutgoingReplies snapshot={snapshot} />;
+  }
+  if (snapshot.status === "complete") {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-no-reply">
+        {m.tasks_no_reply_sent()}
+      </p>
+    );
+  }
+  return null;
+}
+
+function TaskExecutionSummary({ text, truncated }: { text: string; truncated?: boolean }) {
+  return (
+    <section className="grid gap-2" data-ui="task-execution-summary" aria-label={m.tasks_execution_summary()}>
+      <strong className="text-sm">{m.tasks_execution_summary()}</strong>
+      <TaskMessageBody format="markdown" text={text} />
+      {truncated ? <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p> : null}
     </section>
   );
 }
@@ -822,8 +875,8 @@ function attentionLabel(value: TaskTurn["attention"]): string {
   return humanizeEnum(value);
 }
 
-function deliveryStateLabel(value: TaskTurn["delivery"]["state"]): string {
-  return value === "accepted" ? m.tasks_in_progress() : humanizeEnum(value);
+function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
+  return delivery.isRunning === true ? m.tasks_in_progress() : humanizeEnum(delivery.state);
 }
 
 /*
@@ -918,4 +971,8 @@ async function loadDevelopmentTaskData() {
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(m.tasks_request_failed());
+}
+
+function taskFilterKey(agentId: string | undefined) {
+  return `tasks:${agentId ?? "examples"}`;
 }

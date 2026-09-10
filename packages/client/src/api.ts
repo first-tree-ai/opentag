@@ -52,6 +52,7 @@ import {
   ListAgentsResponseSchema,
   type MeResponse,
   MeResponseSchema,
+  PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   type RebindAgentComputerRequest,
   type RefreshTokenResponse,
@@ -262,7 +263,11 @@ export class OpenTagApi {
       HTTP_PATHS.accountComputers,
       ListAccountComputersResponseSchema,
       {
-        headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          [PROVIDER_READINESS_V1_HEADER]: "1",
+          [PROVIDER_CLI_REASON_V2_HEADER]: "2",
+        },
       },
       options,
     );
@@ -511,7 +516,7 @@ export class OpenTagApi {
       imBindingDiagnosticsPath(imBindingId),
       ImBindingDiagnosticsSchema,
       {
-        headers: { authorization: `Bearer ${accessToken}` },
+        headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
       },
       options,
     );
@@ -549,18 +554,25 @@ export class OpenTagApi {
     return response;
   }
 
-  listRuntimeDurableWork(
+  async listRuntimeDurableWork(
     machineToken: string,
     kind: RuntimeDurableWorkKind,
     options?: RequestOptions,
   ): Promise<RuntimeDurableWorkRecord[]> {
-    const query = new URLSearchParams({ kind });
-    return this.#request(
-      `${HTTP_PATHS.runtimeDurableWork}?${query.toString()}`,
-      RuntimeDurableWorkListResponseSchema,
-      { headers: { authorization: `Bearer ${machineToken}` } },
-      options,
-    ).then((response) => response.items);
+    const records: RuntimeDurableWorkRecord[] = [];
+    let cursor: string | undefined;
+    do {
+      const query = new URLSearchParams({ kind, ...(cursor ? { cursor } : {}) });
+      const response = await this.#request(
+        `${HTTP_PATHS.runtimeDurableWork}?${query.toString()}`,
+        RuntimeDurableWorkListResponseSchema,
+        { headers: { authorization: `Bearer ${machineToken}` } },
+        options,
+      );
+      records.push(...response.items);
+      cursor = response.nextCursor;
+    } while (cursor);
+    return records;
   }
 
   writeRuntimeDurableWork(

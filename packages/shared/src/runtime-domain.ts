@@ -5,6 +5,7 @@ import {
   IM_CLI_PROVIDERS,
   ImCliProviderSchema,
   ImCliReadinessStatusSchema,
+  ProviderCliArtifactPublicReasonSchema,
   ProviderCliValidationResultReasonSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
@@ -18,6 +19,7 @@ import {
   runtimeUtf8Length as utf8Length,
 } from "./runtime-config.js";
 import { RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION, RuntimeRequestIdSchema } from "./runtime-protocol.js";
+import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
 export {
   AGENT_SLUG_MAX_LENGTH,
@@ -33,6 +35,22 @@ export {
   RuntimeReasoningEffortSchema,
   renderPlatformInstructions,
 } from "./runtime-config.js";
+export {
+  RUNTIME_OUTGOING_REPLY_MAX_COUNT,
+  RUNTIME_OUTGOING_REPLY_RAW_MAX_BYTES,
+  RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES,
+  RUNTIME_OUTGOING_REPLY_TEXT_MAX_BYTES,
+  type TurnOutgoingReply,
+  type TurnOutgoingReplyContent,
+  TurnOutgoingReplyContentSchema,
+  type TurnOutgoingReplyMsgType,
+  TurnOutgoingReplyMsgTypeSchema,
+  TurnOutgoingReplySchema,
+  type TurnOutgoingReplySnapshot,
+  TurnOutgoingReplySnapshotSchema,
+  type TurnOutgoingReplyUnavailableReason,
+  TurnOutgoingReplyUnavailableReasonSchema,
+} from "./turn-outgoing-reply.js";
 
 export const RUNTIME_DIRECT_TEXT_MAX_BYTES = 16 * 1024;
 export const RUNTIME_FINAL_TEXT_MAX_BYTES = 48 * 1024;
@@ -90,7 +108,10 @@ export const RuntimeDurableWorkRecordSchema = z
   })
   .strict();
 export const RuntimeDurableWorkListResponseSchema = z
-  .object({ items: z.array(RuntimeDurableWorkRecordSchema).max(1024) })
+  .object({
+    items: z.array(RuntimeDurableWorkRecordSchema).max(1024),
+    nextCursor: z.string().min(1).max(1024).optional(),
+  })
   .strict();
 
 export const RuntimeRevisionSchema = z
@@ -701,6 +722,7 @@ export const TurnReportRequestSchema = z
         droppedEvents: RuntimeSequenceSchema,
       })
       .strict(),
+    outgoingReplies: TurnOutgoingReplySnapshotSchema.optional(),
     resultHash: RuntimeSha256Schema,
   })
   .strict()
@@ -721,7 +743,7 @@ export const TurnReportResultSchema = z
     type: z.literal("turn:report:result"),
     requestId: RuntimeRequestIdSchema,
     turnId: RuntimeOpaqueIdSchema,
-    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation"]),
+    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation", "unsupported_capability"]),
     resultHash: RuntimeSha256Schema,
   })
   .strict();
@@ -905,8 +927,18 @@ export const ProviderCliArtifactStatusFrameSchema = z
     type: z.literal("provider-cli:artifact:status"),
     ...providerCliFenceShape,
     status: z.enum(["checking", "ready", "unavailable"]),
+    reason: ProviderCliArtifactPublicReasonSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status !== "unavailable" && frame.reason !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "An artifact reason is only valid on unavailable",
+      });
+    }
+  });
 
 const IntegrationCliValidationGrantMaterialSchema = z.discriminatedUnion("provider", [
   z
@@ -1210,7 +1242,7 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
 export type TurnReportHashInput = Omit<TurnReportRequest, "resultHash" | "type" | "requestId">;
 
 export function computeTurnResultHash(input: TurnReportHashInput): string {
-  return hashTuple([
+  const tuple: unknown[] = [
     input.deliveryId,
     input.turnId,
     input.sessionId,
@@ -1222,7 +1254,23 @@ export function computeTurnResultHash(input: TurnReportHashInput): string {
     input.errorReason ?? null,
     [input.usage?.inputTokens ?? null, input.usage?.cachedInputTokens ?? null, input.usage?.outputTokens ?? null],
     [input.traceSummary.lastSequence, input.traceSummary.droppedEvents],
-  ]);
+  ];
+  if (input.outgoingReplies !== undefined) {
+    // JSONB and durable replay can reorder object keys, including native post
+    // bodies. Message/paragraph order remains significant; object key order does not.
+    tuple.push(
+      JSON.stringify(input.outgoingReplies, (_key, value: unknown) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+        const record = value as Record<string, unknown>;
+        return Object.fromEntries(
+          Object.keys(record)
+            .sort()
+            .map((key) => [key, record[key]]),
+        );
+      }),
+    );
+  }
+  return hashTuple(tuple);
 }
 
 export function hashTuple(tuple: readonly unknown[]): string {

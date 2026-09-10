@@ -445,13 +445,23 @@ describe("Server startup", () => {
 
     const imCliReadiness = (
       state.imBindingOptions as {
-        imCliReadiness(agentId: string, provider: "feishu" | "slack"): Promise<string>;
+        imCliReadiness(agentId: string, provider: "feishu" | "slack"): Promise<unknown>;
       }
     ).imCliReadiness;
     state.registryImCliReadiness.mockReturnValue([
       { observation: { agentId: "agent-1", provider: "feishu", status: "ready" }, observedAt: Date.now() },
     ]);
-    await expect(imCliReadiness("agent-1", "feishu")).resolves.toBe("ready");
+    await expect(imCliReadiness("agent-1", "feishu")).resolves.toEqual({ status: "ready" });
+    state.registryImCliReadiness.mockReturnValue([
+      {
+        observation: { agentId: "agent-1", provider: "feishu", status: "unavailable", reason: "integrity_failed" },
+        observedAt: Date.now(),
+      },
+    ]);
+    await expect(imCliReadiness("agent-1", "feishu")).resolves.toEqual({
+      status: "unavailable",
+      reason: "integrity_failed",
+    });
     state.registryImCliReadiness.mockReturnValue([]);
     await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("checking");
     state.imBindingGetAgentComputerId.mockResolvedValueOnce(undefined);

@@ -14,8 +14,17 @@ daemon 会独立检查并上报两套 CLI 状态，不会与前台安装争用�
 
 有效的 Feishu/Lark 或 Slack binding 产生对应依赖后，daemon 只可修复该 binding 所需的
 OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证同一个精确 CLI；不得替换
-外部安装或非 OpenTag shim。`opentag doctor` 与 portable installer 只报告 account-global
-静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
+外部安装或非 OpenTag shim。自动安装/修复与凭证校验都有预算：Server 在同一条连接上保留终态观察，
+普通 readiness GET 不会重置计数，替换 request/grant id 也不能开启新一轮恢复。`unsupported_platform`、
+`global_bin_unavailable`、`integrity_failed` 以及最终 ensure 的 `version_incompatible` 会立即结束自动重试；Web 与 Agent
+诊断按这些允许列表原因给出下一步。检查阶段的 `version_incompatible` 仍可用受支持的 managed artifact 修复。Client
+周期性检查保持只读，保留可见失败，并在本机真实修复后无需 ensure 即可恢复。明确的「再检查」/`refreshPreparation`
+为该 Agent 打开一轮新的有界恢复（重复点击会合并）。重连、凭证 generation 变化、以及真正的 Computer 迁移可以开启新一轮；
+重复的相同 placement 通知不得重置预算。公开原因走允许列表，并通过 reconcile capability v2 协商；旧对端仍发送精确 v1 帧，
+未知失败只允许有界一轮，随后给出稳定的通用诊断。HTTP 响应默认保持 #490 之前的字段形状，只有请求带上
+`x-opentag-provider-cli-reason: 2` 才返回允许列表原因。
+
+`opentag doctor` 与 portable installer 只报告 account-global 静态安装状态，不安装、不修复、不验证凭证，也不推断登录或订阅状态。
 
 每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
 `0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方
@@ -31,7 +40,17 @@ thread scope。这个 context 是默认交付目标，不会缩小下文所述 B
 `lark-cli` 传递富文本或多行正文。发送前还必须检查：如果预期为多行的正文没有真实换行，却包含多个字面量
 `\n`，则拒绝发送。该检查不会一律改写所有 `\n`，因为代码和正文可能确实需要讨论这个 token。
 
-卡片、Blocks、文件、thread、贴纸和 Reaction 都保留 provider 原生格式。OpenTag 不转换这些内容，也不接收出站正文、provider message ID 或发送结果。因此 OpenTag 不提供出站投递状态、审计、幂等、防过时回复或会话级出站目标限制。
+卡片、Blocks、文件、thread、贴纸和 Reaction 都保留 provider 原生格式。OpenTag 不转换它们，也不提供消息发送、回复、Reaction 或上传 API。直接执行 Provider CLI 仍是 Agent 唯一的出站路径，并保留该权限。
+
+作为 Task 回复历史的有界捕获例外，Turn runner 会记录官方 CLI 中成功的 Lark `+messages-send` / `+messages-reply` 变更（以及受支持的 native/raw API 等价命令）。Feishu Turn plan 需显式 `captureOutgoingReplies: true` 才会捕获（用于需要写入 Turn report 的路径）；可见 inbox 等 prepare 省略该字段，因此即便 launcher 发送成功也不会落盘回执。Slack plan 不得开启捕获。支持的官方 lark-cli 范围为 `>=1.0.92 <2.0.0`，提供所需的 `ok`/`identity` envelope 和 raw API JSON 输出。选择阶段拒绝更旧的外部版本。已分类且成功退出的 send/reply 若缺少或无法识别该 envelope，仍记为 incomplete，而不是“完成且零发送”。捕获还要求成功退出、provider message ID 和 chat ID。shortcut 的发送/回复回执不含正文，因此在有效发送之后，runner 可以用同一个已验证的 target 与环境对该消息做有界只读 raw `GET`。若这次读取失败（包括缺少读权限），发送本身仍然成功；OpenTag 保留回执并把正文标为不可用。它不会用 argv Markdown 或模型输出顶替正文，不会对已成功的发送自动重试，也不会把发送回执当成“对方已读”。
+
+捕获的回执是按现有 Home/Session/Run plan 身份隔离的私有 per-run 文件，在构造 Turn report 之前收集；仅在字段存在时纳入 hash，使旧报告保持原来的 hash；未协商 Turn report v2 的旧 Server 不会收到该字段。不会把 Slack 当成 Lark 收集。大小受现有 64 KiB runtime frame 与 48 KiB `finalText`（JSON 转义前）约束；只带回执的报告必须能放入 frame，预算不足时优先保留出站正文，而不是可选的 runtime summary。
+
+捕获是观察机制，只覆盖通过受管官方 CLI launcher 执行且能够识别的消息变更。其他进程、SDK 调用、Reaction、编辑和历史发送不会补录。快照随 Turn 终态报告提供，每份最多 16 条回复，单个文本或 raw 字段最多 8 KiB，总计最多 32 KiB；截断和省略会明确标记。私聊按 chat 匹配，群聊及话题还需匹配 root/thread 证据。正文来自 provider，不能从命令参数重建。
+
+报告协议版本在 Turn 开始时固定，断线不会静默丢弃快照。只有 Turn 报告持久化后才删除回执文件；启动恢复会使执行 plan 失效，但保留尚未进入报告的回执证据。恢复以及下一次 Session prepare 还会清扫可检查且超过 7 天的遗弃 Run 目录。当前活动 Run 和存在 inflight writer 的 Run 受到保护。缺失的嵌套回执目录视为无证据；不安全的文件、未知条目或无法检查的目录都会保留证据。若进程在报告持久化前崩溃，现有恢复流程无法自动重建原始 Task 范围；恢复后的 Turn 仍表示结果不确定、回复记录不可用，不能声称没有发送。报告持久化后，现有重放流程会保留回复，并通过规范化 JSON 哈希兼容断线重连及 JSONB 存储。
+
+OpenTag 仍然没有出站投递状态、幂等、防过时回复，或超出“把回执关联到来源 Task 会话”之外的会话级出站目标限制。
 
 `direct` 与 `ambient` 使用相同的凭证生命周期。`direct` 表示人明确对当前 Agent/Session 说话；`ambient` 表示 Agent 旁听到消息，默认避免重复或打扰式介入，但仍可自主回复、Reaction、主动发送或不行动。
 

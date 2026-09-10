@@ -119,6 +119,29 @@ Duplicate outcomes are redacted and stable: the `feishu.inbound.deduplicated` sp
 provider event ID when available, external message ID, and `duplicate=true`, but never tokens or message
 content. A duplicate is acknowledged without a second inbox write, Session run, Task, or context entry.
 
+## IM history and delivery retention
+
+The IM delivery worker runs a bounded expiry pass every 5 seconds by default. Retention runs in its own bounded pass
+every 60 seconds by default because its 90-day window does not need the expiry cadence. Retention is based on
+`occurred_at` for messages, `expires_at` for deliveries, and `received_at` for provider receipts.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENTAG_IM_DELIVERY_JANITOR_INTERVAL_MS` | `5000` | Expiry pass interval |
+| `OPENTAG_IM_DELIVERY_RETENTION_INTERVAL_MS` | `60000` | Retention pass interval |
+| `OPENTAG_IM_DELIVERY_EXPIRY_BATCH_SIZE` | `100` | Maximum pending deliveries marked `expired` per pass |
+| `OPENTAG_IM_DELIVERY_RETENTION_BATCH_SIZE` | `100` | Maximum rows removed from each history table per pass |
+| `OPENTAG_IM_MESSAGES_RETENTION_MS` | 90 days | `im_messages` retention window |
+| `OPENTAG_IM_MESSAGE_DELIVERIES_RETENTION_MS` | 90 days | `im_message_deliveries` retention window |
+| `OPENTAG_SLACK_WEBHOOK_RECEIPTS_RETENTION_MS` | 30 days | Slack receipt retention window |
+| `OPENTAG_FEISHU_INBOUND_RECEIPTS_RETENTION_MS` | 30 days | Feishu receipt retention window |
+
+The janitor never removes a delivery belonging to a live Session, a delivery still referenced as a steer target, or
+an in-flight (`processing`) receipt. It removes only terminal delivery rows (`expired`, `terminal_rejected`, reported
+`accepted`, or completed `steered` rows), and removes a message only after no delivery references it. Set explicit
+windows and batch sizes through the environment when the deployment needs a different audit period; values must be
+positive integers in milliseconds or rows.
+
 ## Troubleshooting a silent Feishu Bot
 
 Start with current state:
@@ -132,7 +155,7 @@ Then query traces for the incident time window:
 1. Filter `feishu.connection.connect`, `feishu.connection.transition`, and `feishu.connection.error` by `opentag.im.binding.id`. Confirm that a current replica connected and did not enter a reconnect or credential failure loop.
 2. Search for `im.inbound.process` with the same binding. Its presence proves the OpenTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
 3. When persistence succeeded, follow `opentag.im.message.id` and `opentag.im.delivery.id` into `im.delivery.dispatch`, `runtime.reconcile`, `runtime.delivery`, and `runtime.report`.
-4. If the Agent ran but no reply appeared, inspect the Agent trace and the provider CLI result. OpenTag does not receive or trace provider outbound writes.
+4. If the Agent ran but no reply appeared, inspect the Agent trace, the provider CLI result, and the Turn report's captured Lark outgoing-reply snapshot when present. OpenTag does not trace provider outbound writes; Task history may include bounded send receipts, which are not read receipts.
 
 No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
 

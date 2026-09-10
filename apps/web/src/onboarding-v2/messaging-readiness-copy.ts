@@ -12,7 +12,12 @@ export function providerCliWaitingCopy(progress: ProviderCliHandoffProgress): st
   if (progress.reason === "identity_mismatch") return m.onboarding_v2_messaging_cli_identity_mismatch();
   if (progress.reason === "scope_missing") return m.onboarding_v2_messaging_cli_scope_missing();
   if (progress.reason === "provider_unreachable") return m.onboarding_v2_messaging_cli_provider_unreachable();
-  return m.onboarding_v2_messaging_cli_rate_limited();
+  if (progress.reason === "rate_limited") return m.onboarding_v2_messaging_cli_rate_limited();
+  if (progress.reason === "unsupported_platform") return m.onboarding_v2_messaging_cli_unsupported_platform();
+  if (progress.reason === "global_bin_unavailable") return m.onboarding_v2_messaging_cli_global_bin_unavailable();
+  if (progress.reason === "integrity_failed") return m.onboarding_v2_messaging_cli_integrity_failed();
+  if (progress.reason === "version_incompatible") return m.onboarding_v2_messaging_cli_version_incompatible();
+  return m.onboarding_v2_messaging_cli_unavailable();
 }
 
 export function messagingCliMissingCopy(provider: ImProvider): string {

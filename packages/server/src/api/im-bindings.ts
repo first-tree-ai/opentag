@@ -21,6 +21,11 @@ import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plu
 import type { UserAuthService } from "../services/auth/index.js";
 import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
+import {
+  projectImBindingDiagnosticsForHttp,
+  projectImBindingHandoffStatusForHttp,
+  requestIncludesProviderCliReasonV2,
+} from "./provider-cli-reason.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
@@ -51,7 +56,15 @@ export function registerImBindingRoutes(
   app.get(AGENT_IM_BINDING_HANDOFF_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const handoff = await imBindings.getHandoffForAgent(authenticatedUserId(request), agentId);
-    return handoff ? reply.code(200).send(ImBindingHandoffStatusSchema.parse(handoff)) : reply.code(204).send();
+    return handoff
+      ? reply
+          .code(200)
+          .send(
+            ImBindingHandoffStatusSchema.parse(
+              projectImBindingHandoffStatusForHttp(handoff, requestIncludesProviderCliReasonV2(request)),
+            ),
+          )
+      : reply.code(204).send();
   });
 
   app.get(AGENT_IM_BINDING_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {
@@ -105,6 +118,13 @@ export function registerImBindingRoutes(
     const { imBindingId } = parseRequest(ImBindingParamsSchema, request.params);
     return reply
       .code(200)
-      .send(ImBindingDiagnosticsSchema.parse(await imBindings.diagnostics(authenticatedUserId(request), imBindingId)));
+      .send(
+        ImBindingDiagnosticsSchema.parse(
+          projectImBindingDiagnosticsForHttp(
+            await imBindings.diagnostics(authenticatedUserId(request), imBindingId),
+            requestIncludesProviderCliReasonV2(request),
+          ),
+        ),
+      );
   });
 }

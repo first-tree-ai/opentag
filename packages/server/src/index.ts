@@ -94,11 +94,24 @@ export {
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
 export {
+  DEFAULT_RUNTIME_DURABLE_WORK_PAGE_SIZE,
+  DEFAULT_RUNTIME_DURABLE_WORK_PAYLOAD_BYTES_LIMIT,
+  DEFAULT_RUNTIME_DURABLE_WORK_RECORD_LIMIT,
   DEFAULT_RUNTIME_DURABLE_WORK_RETENTION_MS,
+  DEFAULT_RUNTIME_DURABLE_WORK_SINGLE_PAYLOAD_BYTES_LIMIT,
   DEFAULT_RUNTIME_DURABLE_WORK_TERMINAL_LIMIT,
   PostgresRuntimeDurableWorkStore,
+  RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS,
+  RUNTIME_DURABLE_WORK_MAX_PAGE_SIZE,
   RuntimeDurableWorkConflictError,
+  RuntimeDurableWorkCursorError,
+  type RuntimeDurableWorkListOptions,
+  type RuntimeDurableWorkListPage,
+  RuntimeDurableWorkPayloadTooLargeError,
+  RuntimeDurableWorkQuotaExceededError,
+  RuntimeDurableWorkStaleWriteError,
   type RuntimeDurableWorkStoreOptions,
+  RuntimeDurableWorkTransitionError,
 } from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
@@ -111,7 +124,7 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 
-class StagingInternalNavigationVisibilityService {
+class InternalNavigationVisibilityService {
   #value: InternalNavigationVisibility = { integrations: false, skills: false };
 
   read(): InternalNavigationVisibility {
@@ -244,15 +257,18 @@ export async function startServer(): Promise<void> {
         if (!computerId) return "unavailable";
         refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliArtifactReadiness(computerId);
-        return (
-          observations.find(
-            ({ observation }) =>
-              observation.agentId === agentId &&
-              observation.provider === provider &&
-              observation.integrationId === integrationId &&
-              observation.credentialGeneration === credentialGeneration,
-          )?.observation.status ?? "checking"
-        );
+        const observation = observations.find(
+          ({ observation }) =>
+            observation.agentId === agentId &&
+            observation.provider === provider &&
+            observation.integrationId === integrationId &&
+            observation.credentialGeneration === credentialGeneration,
+        )?.observation;
+        if (!observation) return "checking";
+        return {
+          status: observation.status,
+          ...(observation.reason ? { reason: observation.reason } : {}),
+        };
       },
       credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
@@ -274,7 +290,7 @@ export async function startServer(): Promise<void> {
       logger: serviceLogger("im-binding"),
     });
     const accountSetupService = new AccountSetupService(database);
-    const imMessageInbox = new ImMessageInbox(database);
+    const imMessageInbox = new ImMessageInbox(database, { logger: serviceLogger("im-inbox") });
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
     });
@@ -376,15 +392,16 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
     });
-    const setupResetService = config.stagingSetupReset
+    const setupResetService = config.internalTools
       ? new OnboardingResetService({
+          allowLocalPreview: config.environment === "dev",
           agents: agentService,
           database,
           environment: config.environment,
           registry,
         })
       : undefined;
-    const internalNavigationService = new StagingInternalNavigationVisibilityService();
+    const internalNavigationService = new InternalNavigationVisibilityService();
     app = createApp({
       loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },

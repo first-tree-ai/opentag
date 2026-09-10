@@ -2,6 +2,7 @@ import { type LinkComponentProps, LinkProvider, TooltipProvider } from "@cloudfl
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Link as RouterLink, RouterProvider } from "@tanstack/react-router";
 import { forwardRef, useEffect, useState } from "react";
+import { installRouteAnalytics } from "./analytics/route-analytics.js";
 import { AppErrorBoundary } from "./features/error-boundary.js";
 import { createQueryClient } from "./query/client.js";
 import { type AppRouter, createAppRouter } from "./router.js";
@@ -12,7 +13,7 @@ const AppLink = forwardRef<HTMLAnchorElement, LinkComponentProps>(function AppLi
   }
   // Kumo's contract is a runtime href string, while `to` is a union of the generated route paths.
   // This adapter is the one place the two meet, so the widening stays contained here.
-  return <RouterLink {...props} ref={ref} to={(href ?? "#") as never} />;
+  return <RouterLink {...props} activeOptions={{ exact: true }} ref={ref} to={(href ?? "#") as never} />;
 });
 
 /**
@@ -33,6 +34,9 @@ export function App({ router }: { router?: AppRouter } = {}) {
     if (!owned) return;
     return () => instance.history.destroy();
   }, [instance, owned]);
+  // Page views follow the router rather than the document, which loads once. Subscribing here
+  // rather than inside the router factory keeps the subscription tied to the mount that owns it.
+  useEffect(() => installRouteAnalytics(instance), [instance]);
   return (
     // The boundary sits outside the providers because a provider that fails to render is exactly the
     // failure a route-level boundary cannot catch.

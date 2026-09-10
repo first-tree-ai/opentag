@@ -23,10 +23,15 @@ describe("Web App static serving", () => {
       const spa = await app.inject({ method: "GET", url: "/agents/example/runtime" });
       expect(spa.statusCode).toBe(200);
       expect(spa.body).toContain("OpenTag");
-      expect(spa.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
-      expect(spa.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
-      expect(spa.headers["content-security-policy"]).toContain("img-src 'self' data: https://platform.slack-edge.com");
-      expect(spa.headers["content-security-policy"]).toContain("style-src 'self' 'unsafe-inline'");
+      const policy = String(spa.headers["content-security-policy"]);
+      expect(policy).toContain("frame-ancestors 'none'");
+      expect(policy).toContain("style-src 'self' 'unsafe-inline'");
+      expect(policy).toContain("img-src 'self' data: https://platform.slack-edge.com");
+      // The analytics tag is a host allowance and nothing more: inline script stays refused, so the
+      // published gtag.js snippet cannot run and the Web App queues from its own bundle instead.
+      expect(policy).toContain("script-src 'self' https://www.googletagmanager.com");
+      expect(policy).not.toContain("'unsafe-inline' https://www.googletagmanager.com");
+      expect(policy).toContain("https://*.google-analytics.com");
       expect(spa.headers["cache-control"]).toBe("no-store");
 
       const asset = await app.inject({ method: "GET", url: "/assets/app.js" });

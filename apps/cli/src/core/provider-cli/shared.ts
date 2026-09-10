@@ -7,6 +7,7 @@ import {
   type ProviderCliProvider,
   resolveAccountHome,
 } from "@opentag/client";
+import { providerCliArtifactFailureIsManual } from "@opentag/shared";
 import { channelConfig } from "../channel/config.js";
 
 /**
@@ -46,16 +47,9 @@ export function providerCliRepairCommand(provider: ProviderCliProvider | "all"):
   return `"$HOME/.local/bin/${channelConfig.binName}" provider-cli ensure --provider ${flag}`;
 }
 
-const PROVIDER_CLI_MANUAL_REASONS = new Set([
-  "global_bin_unavailable",
-  "integrity_failed",
-  "unsupported_platform",
-  "version_incompatible",
-]);
-
 /** False when repeating ensure cannot change the local fact without a user or release change. */
-export function providerCliCanAutoRepair(reason: string): boolean {
-  return !PROVIDER_CLI_MANUAL_REASONS.has(reason);
+export function providerCliCanAutoRepair(reason: string, stage: "inspect" | "ensure" = "ensure"): boolean {
+  return !providerCliArtifactFailureIsManual({ reason, stage });
 }
 
 /**

@@ -30,6 +30,14 @@ describe("Kumo semantic adapter", () => {
     expect(screen.getByRole("button", { name: "Disconnect" }).className).toContain("text-kumo-danger");
   });
 
+  it("centers button content by default while preserving explicit alignment", () => {
+    expect(buttonClassName({ className: "min-w-28" }).split(" ")).toContain("justify-center");
+
+    const leftAligned = buttonClassName({ className: "w-full justify-start" }).split(" ");
+    expect(leftAligned).toContain("justify-start");
+    expect(leftAligned).not.toContain("justify-center");
+  });
+
   it("overrides Kumo's lightened emphasis mix with accessible button surfaces", () => {
     render(
       <>

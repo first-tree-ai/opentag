@@ -20,8 +20,9 @@ import type {
   ImProvider,
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError } from "../api.js";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useAgentSetupStageReport } from "../analytics/milestones.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
@@ -41,38 +42,59 @@ import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import "./onboarding-v2.css";
-import { preparationIsTransitional, preparationReadinessRows } from "./preparation-readiness.js";
-import { ReadinessList } from "./readiness-list.js";
+import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
+import { CheckLine } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
 import { CardCopy, DoneStep, StepRail } from "./steps.js";
 
 /** The snapshot doubles as the observation channel while the outside world is expected to move it. */
-const SETUP_POLL_MS = 2_000;
+export const SETUP_POLL_MS = 2_000;
 /** How many times to report readiness before the reader is offered an explicit retry. */
 const READY_REPORT_ATTEMPTS = 3;
 /**
- * The finite budget for automatic local-preparation polls (a required IM CLI still waiting or
- * checking behind the gate, a Runtime report missing or still checking): 30 polls at 2s is
- * roughly a one-minute observation window. Exhaustion stops the timer; an explicit Check again
- * restarts a fresh window. The budget never resets on an unchanged snapshot, and
- * Messaging/offline observation keeps its unbounded beat.
+ * The finite attempt cap for automatic local-preparation polls. Connected blocking snapshots
+ * (`needs-runtime` or `needs-provider-clis`) share one 90s / 45-attempt read window, including
+ * install, sign-in, and unavailable. Two default daemon heartbeats (30s) plus delivery margin must
+ * fit inside the bound — the page must not depend on a late request after expiry. The snapshot has
+ * no provenance that can tell a stale first install report from a lasting manual-action failure, so
+ * GET observation continues until ready or the bound is exhausted. An explicit Check again or a new
+ * mount restarts a fresh window. Changes among checking, waiting, install, sign-in, and unavailable
+ * never reset the same window. Messaging/offline observation keeps its unbounded beat.
  */
-const BOUNDED_POLL_ATTEMPTS = 30;
+export const BOUNDED_POLL_ATTEMPTS = 45;
+/** Three default heartbeat periods at the 2s GET cadence, so a hung or slow read cannot stretch automatic checking. */
+export const BOUNDED_POLL_WINDOW_MS = 90_000;
+
+function boundedWindowRemaining(startedAt: { current: number | undefined }): number {
+  const started = startedAt.current ?? Date.now();
+  startedAt.current = started;
+  return BOUNDED_POLL_WINDOW_MS - (Date.now() - started);
+}
 
 /**
  * Arms one automatic-read observation window. The window is single-flight across effect
  * restarts: an automatic read an earlier window started is awaited before a new one begins, and
- * a manual refresh deliberately supersedes its reply through the request lifecycle instead.
+ * a manual refresh, focus recovery, timeout, or unmount retires it. Bounded observation expires
+ * in elapsed time even while a read is still outstanding.
  */
 function armAutomaticPollWindow(
   pollClass: Exclude<SetupPollClass, undefined>,
   budget: { current: number },
+  windowStartedAt: { current: number | undefined },
   inFlight: { current: Promise<boolean> | undefined },
   read: () => Promise<boolean>,
+  onExhausted?: () => void,
 ): () => void {
   let cancelled = false;
   let timer: number | undefined;
+  let expiryTimer: number | undefined;
+  const exhaustAttempts = (): boolean => pollClass === "bounded" && budget.current <= 0;
   const poll = async (): Promise<void> => {
+    if (cancelled) return;
+    if (exhaustAttempts()) {
+      onExhausted?.();
+      return;
+    }
     let turn = inFlight.current;
     if (turn === undefined) {
       if (pollClass === "bounded") budget.current -= 1;
@@ -82,13 +104,34 @@ function armAutomaticPollWindow(
     await turn;
     if (inFlight.current === turn) inFlight.current = undefined;
     if (cancelled) return;
-    if (pollClass === "bounded" && budget.current <= 0) return;
+    if (exhaustAttempts()) {
+      onExhausted?.();
+      return;
+    }
     timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
   };
+  if (exhaustAttempts() || (pollClass === "bounded" && boundedWindowRemaining(windowStartedAt) <= 0)) {
+    onExhausted?.();
+    return () => {
+      cancelled = true;
+    };
+  }
+  if (pollClass === "bounded") {
+    expiryTimer = window.setTimeout(
+      () => {
+        if (cancelled) return;
+        cancelled = true;
+        window.clearTimeout(timer);
+        onExhausted?.();
+      },
+      Math.max(0, boundedWindowRemaining(windowStartedAt)),
+    );
+  }
   timer = window.setTimeout(() => void poll(), SETUP_POLL_MS);
   return () => {
     cancelled = true;
     window.clearTimeout(timer);
+    window.clearTimeout(expiryTimer);
   };
 }
 
@@ -97,8 +140,9 @@ const SECTION_HEADER = "flex flex-col gap-1";
 const HINT = "text-sm text-kumo-subtle m-0";
 const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
-  "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
-const IDENTITY_ROW = "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3";
+  "otv2-choice flex w-full items-center justify-start gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
+
+export type AgentSetupPreviewView = "checks" | "complete" | "computer" | "messaging";
 
 export interface AgentSetupPageProps {
   /** The exact Agent this surface sets up. Never an index, a name, or a guess. */
@@ -114,6 +158,10 @@ export interface AgentSetupPageProps {
   readonly refreshSignal?: number;
   /** Review Lab intercepts Provider URLs so a simulated OAuth round trip stays inside the Lab. */
   readonly onExternalNavigation?: (url: string) => void;
+  /** Lets the Review Lab open a later screen directly without changing the production default. */
+  readonly previewInitialView?: AgentSetupPreviewView;
+  /** Reports the screen the production surface is actually showing to its Review Lab controls. */
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
   readonly onOpenAgent?: () => void;
   /** Told once the snapshot's stage is `ready`, so the route can mark setup complete. */
@@ -134,24 +182,25 @@ type SetupPollClass = "bounded" | "unbounded" | undefined;
 
 /**
  * How a snapshot the outside world is still moving should be watched. Messaging authorizing,
- * waiting-handoff, and an offline Computer keep the existing unbounded beat. Local preparation
- * polls inside a finite budget only while a leg is genuinely transitional: a required IM CLI
- * whose report is missing or still checking, or a Runtime report missing or still
- * checking. A settled manual-action failure (install, sign-in, unavailable) never polls on its
- * own — nothing on this page can install, sign in, or repair a CLI. Check again or returning
- * to this page retrieves a fresh snapshot after an operator acts.
+ * waiting-handoff, and an offline Computer keep the existing unbounded beat. Connected local
+ * preparation (`needs-runtime` or `needs-provider-clis`) always uses the finite read window —
+ * GET only, never `refreshPreparation` and never an automatic install. The rows stay truthful
+ * while that window is open; genuine waiting/checking copy is a separate visual decision.
  */
 function snapshotPollClass(snapshot: AgentSetupSnapshot): SetupPollClass {
   if (snapshot.messaging.kind === "authorizing" || snapshot.messaging.kind === "waiting-handoff") return "unbounded";
   if (snapshot.computer.kind === "bound" && snapshot.computer.connectionStatus === "offline") return "unbounded";
-  if (
-    (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") &&
-    preparationIsTransitional(snapshot)
-  )
-    return "bounded";
+  if (snapshot.stage === "needs-runtime" || snapshot.stage === "needs-provider-clis") return "bounded";
   if (snapshot.runtime.kind === "waiting") return "bounded";
   if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return "bounded";
   return undefined;
+}
+
+/** Footer spinner and "checking automatically" copy follow a real waiting/checking observation. */
+function preparationShowsAutomaticChecking(snapshot: AgentSetupSnapshot): boolean {
+  if (snapshot.runtime.kind === "waiting") return true;
+  if (snapshot.runtime.kind === "observed" && snapshot.runtime.status === "checking") return true;
+  return preparationIsTransitional(snapshot);
 }
 
 /** A snapshot the outside world is still moving: read it again on a beat until it settles. */
@@ -160,6 +209,7 @@ export function setupSnapshotIsTransitional(snapshot: AgentSetupSnapshot): boole
 }
 
 function setupReadError(cause: unknown): string {
+  if (cause instanceof CancelledRequestError) return m.onboarding_v2_setup_load_failed();
   return cause instanceof Error && cause.message ? cause.message : m.onboarding_v2_setup_load_failed();
 }
 
@@ -326,13 +376,16 @@ function useSnapshotReader(
   const read = useCallback(async (): Promise<boolean> => {
     const ticket = lifecycle.next();
     try {
-      const snapshot = await adapter.readSnapshot(agentId);
+      const snapshot = await withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, () => adapter.readSnapshot(agentId));
       if (!lifecycle.isCurrent(ticket)) return false;
       setRefreshError(undefined);
       setPhase({ kind: "ready", snapshot });
       return true;
     } catch (cause) {
       if (!lifecycle.isCurrent(ticket)) return false;
+      // A timed-out automatic re-read must settle so polling and focus can continue; the last-good
+      // snapshot stays until a later read or the bounded window offers Check again.
+      if (cause instanceof CancelledRequestError && phaseRef.current.kind === "ready") return false;
       failRead(cause);
       return false;
     }
@@ -355,11 +408,11 @@ function useSetupActions(
   onExternalNavigation?: AgentSetupPageProps["onExternalNavigation"],
 ): {
   actionError: string | undefined;
-  busyKey: AgentSetupAction["kind"] | undefined;
+  busyKey: AgentSetupAction | undefined;
   act: (action: AgentSetupAction) => Promise<boolean>;
 } {
   const [actionError, setActionError] = useState<string>();
-  const [busyKey, setBusyKey] = useState<AgentSetupAction["kind"]>();
+  const [busyKey, setBusyKey] = useState<AgentSetupAction>();
   const busyRef = useRef(false);
   const actionRun = useRef(0);
 
@@ -375,7 +428,7 @@ function useSetupActions(
     async (action: AgentSetupAction): Promise<boolean> => {
       if (busyRef.current) return false;
       busyRef.current = true;
-      setBusyKey(action.kind);
+      setBusyKey(action);
       setActionError(undefined);
       // A poll started before the write could commit the state the write just made obsolete; the
       // hold keeps the on-screen snapshot frozen until the post-action read lifts it.
@@ -420,14 +473,16 @@ interface AgentSetupController {
   readonly refreshError: string | undefined;
   /** The last action's failure, in words that name what was being attempted. */
   readonly actionError: string | undefined;
-  /** Which action kind is in flight, so every action control can refuse a second submission. */
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  /** The in-flight action identity, so loading can name the selected control while every action stays disabled. */
+  readonly busyKey: AgentSetupAction | undefined;
   /** Runs one snapshot-listed action to completion and re-reads. Resolves false when it failed. */
   readonly act: (action: AgentSetupAction) => Promise<boolean>;
   /** A silent re-read, for surfaces that finished their own work (a bind, a repair). */
   readonly reload: () => void;
   /** An explicit Check again restarts the finite local-preparation observation window. */
   readonly resetPollBudget: () => void;
+  /** The automatic local-preparation window ended without reaching a settled state. */
+  readonly pollExhausted: boolean;
 }
 
 function useAgentSetup(
@@ -442,24 +497,46 @@ function useAgentSetup(
   const snapshot = reader.phase.kind === "ready" ? reader.phase.snapshot : undefined;
   const pollClass = snapshot === undefined ? undefined : snapshotPollClass(snapshot);
   const pollBudget = useRef(BOUNDED_POLL_ATTEMPTS);
+  const pollWindowStartedAt = useRef<number | undefined>(undefined);
   /**
-   * The one automatic read the mounted controller allows at a time. A manual refresh deliberately
-   * supersedes a pending automatic read through the request lifecycle, but a new poll effect must
-   * never start a second automatic read while an earlier one is still in flight.
+   * The one automatic read the mounted controller allows at a time. Timeout, unmount, Check again,
+   * and focus recovery retire it so a hung adapter cannot own the window indefinitely. A new poll
+   * effect never starts a second automatic read while an earlier one is still in flight.
    */
   const autoPollInFlight = useRef<Promise<boolean> | undefined>(undefined);
+  const [pollExhausted, setPollExhausted] = useState(false);
   // A stateful restart signal: an explicit Check again must reopen a bounded observation window
   // even when the busyKey updates around the refresh are collapsed into one render.
   const [pollRestartKey, setPollRestartKey] = useState(0);
-  /** An explicit Check again opens a fresh bounded observation window. */
+  /** An explicit Check again or return to the page opens a fresh bounded observation window. */
   const resetPollBudget = useCallback(() => {
     pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    pollWindowStartedAt.current = Date.now();
+    autoPollInFlight.current = undefined;
+    setPollExhausted(false);
     setPollRestartKey((value) => value + 1);
+  }, []);
+  // Exhaustion describes the bounded window that consumed its budget. Checking, waiting, install,
+  // sign-in, and unavailable share that class, so a late shift among them must not clear the
+  // paused retry. Leaving bounded observation (ready, messaging, offline) deserves a fresh window.
+  // Effect restarts of the same class keep the elapsed start so they cannot silently extend it.
+  useEffect(() => {
+    if (pollClass === "bounded") return;
+    pollBudget.current = BOUNDED_POLL_ATTEMPTS;
+    pollWindowStartedAt.current = undefined;
+    setPollExhausted(false);
+  }, [pollClass]);
+  useEffect(() => {
+    return () => {
+      autoPollInFlight.current = undefined;
+    };
   }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: pollRestartKey explicitly restarts the observation window.
   useEffect(() => {
     if (pollClass === undefined || actions.busyKey !== undefined) return;
-    return armAutomaticPollWindow(pollClass, pollBudget, autoPollInFlight, reader.read);
+    return armAutomaticPollWindow(pollClass, pollBudget, pollWindowStartedAt, autoPollInFlight, reader.read, () =>
+      setPollExhausted(true),
+    );
   }, [pollClass, actions.busyKey, pollRestartKey, reader.read]);
 
   /*
@@ -467,9 +544,10 @@ function useAgentSetup(
    * daemon reconnect, a Runtime report, a handoff) may have moved it while the reader was away.
    * The refresh rides the same request lifecycle as every other read — a reply superseded by a
    * newer read or by an action is discarded, a transient failure over a good snapshot keeps the
-   * last-good snapshot on screen, and the automatic poll window never overlaps itself — and it
-   * is skipped while an action is in flight and when no snapshot is on screen yet (loading,
-   * load-failed, and unavailable keep their own manual flows).
+   * last-good snapshot on screen — and it is skipped while an action is in flight and when no
+   * snapshot is on screen yet (loading, load-failed, and unavailable keep their own manual flows).
+   * A hung automatic read is retired rather than queued behind: focus burst coalescing still
+   * collapses to one recovery read.
    */
   useEffect(() => {
     if (actions.busyKey !== undefined || reader.phase.kind !== "ready") return;
@@ -478,15 +556,11 @@ function useAgentSetup(
     const refreshOnReturn = (): void => {
       if (document.visibilityState !== "visible" || returnRead !== undefined) return;
       resetPollBudget();
-      const pending = autoPollInFlight.current;
-      // A return queues one fresh read behind an existing poll, never another concurrent one.
-      const turn =
-        pending === undefined
-          ? reader.read()
-          : pending.then(() => (cancelled || document.visibilityState !== "visible" ? false : reader.read()));
+      const turn = reader.read();
       returnRead = turn;
       autoPollInFlight.current = turn;
       void turn.then(() => {
+        if (cancelled) return;
         if (returnRead === turn) returnRead = undefined;
         if (autoPollInFlight.current === turn) autoPollInFlight.current = undefined;
       });
@@ -503,7 +577,13 @@ function useAgentSetup(
   }, [actions.busyKey, reader.phase.kind, reader.read, resetPollBudget]);
 
   const reload = useCallback(() => void reader.read(), [reader.read]);
-  return { ...reader, ...actions, reload, resetPollBudget };
+  return {
+    ...reader,
+    ...actions,
+    pollExhausted: pollClass === "bounded" && pollExhausted,
+    reload,
+    resetPollBudget,
+  };
 }
 
 type ReadyReport = { readonly onFinish: () => void; readonly state: "failed" | "pending" | "ready" } | undefined;
@@ -560,7 +640,9 @@ export function AgentSetupPage({
   computerAdapter,
   onExternalNavigation,
   onOpenAgent,
+  onPreviewViewChange,
   onReady,
+  previewInitialView,
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
@@ -576,7 +658,9 @@ export function AgentSetupPage({
       key={agentId}
       onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
+      onPreviewViewChange={onPreviewViewChange}
       onReady={onReady}
+      previewInitialView={previewInitialView}
       refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
@@ -590,7 +674,9 @@ function AgentSetupPageContent({
   computerAdapter,
   onExternalNavigation,
   onOpenAgent,
+  onPreviewViewChange,
   onReady,
+  previewInitialView,
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
@@ -601,6 +687,9 @@ function AgentSetupPageContent({
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
   const ready = snapshot?.stage === "ready";
+  // The stages between a connected Computer and a usable Agent, which is where a reader who never
+  // holds a conversation actually stops. Reported per stage, not per re-read.
+  useAgentSetupStageReport(agentId, snapshot?.stage);
 
   useEffect(() => {
     if (previousRefreshSignal.current === refreshSignal) return;
@@ -619,12 +708,14 @@ function AgentSetupPageContent({
         ) : null}
       </header>
       <main className="otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 p-6">
-        {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
         <SetupPhaseView
           agentId={agentId}
           computerAdapter={computerAdapter}
           controller={controller}
+          oauthError={oauthError}
           onOpenAgent={onOpenAgent}
+          onPreviewViewChange={onPreviewViewChange}
+          previewInitialView={previewInitialView}
           report={report}
         />
       </main>
@@ -636,13 +727,19 @@ function SetupPhaseView({
   agentId,
   computerAdapter,
   controller,
+  oauthError,
   onOpenAgent,
+  onPreviewViewChange,
+  previewInitialView,
   report,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
+  readonly oauthError?: string;
   readonly onOpenAgent?: () => void;
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
+  readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
 }) {
   const { phase } = controller;
@@ -683,15 +780,18 @@ function SetupPhaseView({
       agentId={agentId}
       computerAdapter={computerAdapter}
       controller={controller}
+      oauthError={oauthError}
       onOpenAgent={onOpenAgent}
+      onPreviewViewChange={onPreviewViewChange}
+      previewInitialView={previewInitialView}
       report={report}
       snapshot={phase.snapshot}
     />
   );
 }
 
-function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
-  const computerComplete = stage === "needs-messaging" || stage === "ready";
+function setupSteps(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): FlowState["steps"] {
+  const computerComplete = !awaitingPreparationContinue && (stage === "needs-messaging" || stage === "ready");
   const messagingComplete = stage === "ready";
   return [
     { id: "agent", status: "complete" },
@@ -700,30 +800,93 @@ function setupSteps(stage: AgentSetupSnapshot["stage"]): FlowState["steps"] {
   ];
 }
 
+function messagingHasStarted(snapshot: AgentSetupSnapshot): boolean {
+  return snapshot.stage === "needs-messaging" && snapshot.messaging.kind !== "not-configured";
+}
+
+function isAwaitingPreparationContinue(snapshot: AgentSetupSnapshot, preparationAccepted: boolean): boolean {
+  return snapshot.stage === "needs-messaging" && snapshot.messaging.kind === "not-configured" && !preparationAccepted;
+}
+
+function shouldShowPreparation(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): boolean {
+  return (
+    stage === "needs-computer" ||
+    stage === "needs-runtime" ||
+    stage === "needs-provider-clis" ||
+    awaitingPreparationContinue
+  );
+}
+
+function shouldShowSetupTitle(stage: AgentSetupSnapshot["stage"], awaitingPreparationContinue: boolean): boolean {
+  return stage === "ready" || (stage === "needs-messaging" && !awaitingPreparationContinue);
+}
+
 function AgentSetupSnapshotView({
   agentId,
   computerAdapter,
   controller,
+  oauthError,
   onOpenAgent,
+  onPreviewViewChange,
+  previewInitialView,
   report,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
   readonly controller: AgentSetupController;
+  readonly oauthError?: string;
   readonly onOpenAgent?: () => void;
+  readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
+  readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
+  const [preparationAccepted, setPreparationAccepted] = useState(
+    () => previewInitialView === "messaging" || messagingHasStarted(snapshot) || oauthError !== undefined,
+  );
+  const focusMessagingAfterContinue = useRef(false);
+  const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
+  const awaitingPreparationContinue = isAwaitingPreparationContinue(snapshot, preparationAccepted);
+  const showingPreparation = shouldShowPreparation(stage, awaitingPreparationContinue);
   const observationFailed = snapshot.blockers.some((blocker) => blocker.code === "resource-observation-failed");
-  const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
+  const computerObservationFailed = snapshot.computer.kind === "observation-failed";
+  const refreshAction = setupRefreshAction(snapshot, controller);
+
+  useEffect(() => {
+    const view: AgentSetupPreviewView =
+      stage === "needs-computer"
+        ? "computer"
+        : showingPreparation
+          ? "checks"
+          : stage === "needs-messaging"
+            ? "messaging"
+            : "complete";
+    onPreviewViewChange?.(view);
+  }, [onPreviewViewChange, showingPreparation, stage]);
+
+  useEffect(() => {
+    if (stage !== "needs-messaging" && preparationAccepted) setPreparationAccepted(false);
+  }, [preparationAccepted, stage]);
+
+  useEffect(() => {
+    if (!focusMessagingAfterContinue.current || !preparationAccepted || stage !== "needs-messaging") return;
+    messagingHeadingRef.current?.focus();
+    focusMessagingAfterContinue.current = false;
+  }, [preparationAccepted, stage]);
+
+  const continueToMessaging = () => {
+    focusMessagingAfterContinue.current = true;
+    setPreparationAccepted(true);
+  };
+
   return (
     <>
-      <StepRail steps={setupSteps(stage)} />
-      {stage === "needs-messaging" || stage === "ready" ? (
+      <StepRail steps={setupSteps(stage, awaitingPreparationContinue)} />
+      {shouldShowSetupTitle(stage, awaitingPreparationContinue) ? (
         <header className={SECTION_HEADER}>
-          <Text as="h1" size="lg" variant="heading">
+          <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
             {m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}
           </Text>
         </header>
@@ -735,10 +898,23 @@ function AgentSetupSnapshotView({
       <LocalPreparationSections
         agentId={agentId}
         computerAdapter={computerAdapter}
+        computerRefreshAction={computerObservationFailed ? refreshAction : undefined}
         onChanged={controller.reload}
+        showCompletedPreparation={awaitingPreparationContinue}
         snapshot={snapshot}
       />
-      {stage === "needs-messaging" ? <MessagingSetupSection controller={controller} snapshot={snapshot} /> : null}
+      <SetupStageNavigation
+        computerObservationFailed={computerObservationFailed}
+        controller={controller}
+        onContinue={continueToMessaging}
+        ready={awaitingPreparationContinue}
+        refreshAction={refreshAction}
+        showingPreparation={showingPreparation}
+        snapshot={snapshot}
+      />
+      {stage === "needs-messaging" && !awaitingPreparationContinue ? (
+        <MessagingSetupSection controller={controller} oauthError={oauthError} snapshot={snapshot} />
+      ) : null}
       {stage === "ready" ? (
         <div data-ui="agent-setup-ready">
           <DoneStep
@@ -749,34 +925,126 @@ function AgentSetupSnapshotView({
           />
         </div>
       ) : null}
-      {canRefresh && stage !== "ready" ? (
-        <div className="flex">
-          <Button
-            disabled={controller.busyKey !== undefined}
-            loading={controller.busyKey === "refresh"}
-            onClick={() => {
-              controller.resetPollBudget();
-              void controller.act({ kind: "refresh" });
-            }}
-            variant="secondary"
-          >
-            {m.onboarding_v2_setup_refresh()}
-          </Button>
-        </div>
-      ) : null}
     </>
+  );
+}
+
+function setupRefreshAction(snapshot: AgentSetupSnapshot, controller: AgentSetupController): ReactNode {
+  const canRefresh = snapshot.actions.some((action) => action.kind === "refresh");
+  return canRefresh && snapshot.stage !== "ready" ? <SetupRefreshButton controller={controller} /> : undefined;
+}
+
+function SetupStageNavigation({
+  computerObservationFailed,
+  controller,
+  onContinue,
+  ready,
+  refreshAction,
+  showingPreparation,
+  snapshot,
+}: {
+  readonly computerObservationFailed: boolean;
+  readonly controller: AgentSetupController;
+  readonly onContinue: () => void;
+  readonly ready: boolean;
+  readonly refreshAction?: ReactNode;
+  readonly showingPreparation: boolean;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
+  if (!showingPreparation) return computerObservationFailed ? null : refreshAction;
+  const pollClass = snapshotPollClass(snapshot);
+  const observingAutomatically = pollClass === "bounded" && !controller.pollExhausted;
+  const genuineChecking = preparationShowsAutomaticChecking(snapshot);
+  // Hide Check again only while a real waiting/checking observation is in flight. Settled
+  // install/sign-in/unavailable rows keep the immediate retry while background GETs continue.
+  const preparationRefreshAction =
+    !computerObservationFailed && !(observingAutomatically && genuineChecking) ? refreshAction : undefined;
+  return (
+    <PreparationNavigation
+      checking={observingAutomatically && genuineChecking}
+      onContinue={onContinue}
+      pollExhausted={controller.pollExhausted}
+      ready={ready}
+      refreshAction={preparationRefreshAction}
+      snapshot={snapshot}
+    />
+  );
+}
+
+function PreparationNavigation({
+  checking,
+  onContinue,
+  pollExhausted,
+  ready,
+  refreshAction,
+  snapshot,
+}: {
+  readonly checking: boolean;
+  readonly onContinue: () => void;
+  readonly pollExhausted: boolean;
+  readonly ready: boolean;
+  readonly refreshAction?: ReactNode;
+  readonly snapshot: AgentSetupSnapshot;
+}) {
+  const hintId = useId();
+  const rows = preparationSummaryRows(snapshot);
+  const checkingItem =
+    rows.runtime.status === "checking" || rows.runtime.status === "waiting" ? rows.runtime.label : rows.messaging.label;
+  const hint = ready
+    ? m.onboarding_v2_prep_continue_ready()
+    : checking
+      ? m.onboarding_v2_prep_checking_automatically({ item: checkingItem })
+      : pollExhausted
+        ? m.onboarding_v2_prep_checking_paused()
+        : refreshAction
+          ? m.onboarding_v2_prep_complete_action()
+          : m.onboarding_v2_prep_continue_waiting();
+  return (
+    <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
+      <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0" id={hintId} role="status">
+        {checking ? <span aria-hidden="true" className="otv2-inline-spinner" /> : null}
+        {hint}
+      </p>
+      <div className="otv2-step-footer__actions">
+        {refreshAction}
+        <Button aria-describedby={hintId} className="otv2-step-footer__action" disabled={!ready} onClick={onContinue}>
+          {m.onboarding_v2_nav_next()}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SetupRefreshButton({ controller }: { readonly controller: AgentSetupController }) {
+  return (
+    <Button
+      className="otv2-step-footer__secondary-action"
+      disabled={controller.busyKey !== undefined}
+      loading={controller.busyKey?.kind === "refresh"}
+      onClick={() => {
+        controller.resetPollBudget();
+        void controller.act({ kind: "refresh" });
+      }}
+      variant="secondary"
+    >
+      {m.onboarding_v2_setup_refresh()}
+    </Button>
   );
 }
 
 function LocalPreparationSections({
   agentId,
   computerAdapter,
+  computerRefreshAction,
   onChanged,
+  showCompletedPreparation,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly computerRefreshAction?: ReactNode;
   readonly onChanged: () => void;
+  readonly showCompletedPreparation: boolean;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
@@ -786,11 +1054,12 @@ function LocalPreparationSections({
         <ComputerSetupSection
           agentId={agentId}
           computerAdapter={computerAdapter}
+          refreshAction={computerRefreshAction}
           onChanged={onChanged}
           snapshot={snapshot}
         />
       ) : null}
-      {stage === "needs-runtime" || stage === "needs-provider-clis" ? (
+      {stage === "needs-runtime" || stage === "needs-provider-clis" || showCompletedPreparation ? (
         <PreparationSummarySection snapshot={snapshot} />
       ) : null}
     </>
@@ -800,11 +1069,13 @@ function LocalPreparationSections({
 function ComputerSetupSection({
   agentId,
   computerAdapter,
+  refreshAction,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
+  readonly refreshAction?: ReactNode;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -826,41 +1097,46 @@ function ComputerSetupSection({
   if (computer.kind === "requires-rebind") {
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
-      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+      <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
         <ComputerStepHeader name={snapshot.agent.displayName} />
-        <ComputerSummary
-          metadata={platformLabel(computer.platform)}
-          status={m.onboarding_v2_connect_no_computer_status()}
-          title={computer.displayName}
-          tone="neutral"
-        />
-        <p className={HINT}>
-          {m.onboarding_v2_setup_computer_rebind({
-            computerName: computer.displayName,
-            name: snapshot.agent.displayName,
-          })}
-        </p>
-        {canBind ? (
-          <AgentComputerChoice
-            adapter={computerConnectAdapter}
-            agentId={agentId}
-            inventoryAdapter={computerAdapter?.inventory}
-            onBound={onChanged}
+        <div className="otv2-computer-step__body">
+          <ComputerSummary
+            metadata={platformLabel(computer.platform)}
+            status={m.onboarding_v2_connect_no_computer_status()}
+            title={computer.displayName}
+            tone="neutral"
           />
-        ) : null}
+          <p className={HINT}>
+            {m.onboarding_v2_setup_computer_rebind({
+              computerName: computer.displayName,
+              name: snapshot.agent.displayName,
+            })}
+          </p>
+          {canBind ? (
+            <AgentComputerChoice
+              adapter={computerConnectAdapter}
+              agentId={agentId}
+              inventoryAdapter={computerAdapter?.inventory}
+              onBound={onChanged}
+            />
+          ) : null}
+        </div>
       </section>
     );
   }
   if (computer.kind === "observation-failed") {
     return (
-      <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+      <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
         <ComputerStepHeader name={snapshot.agent.displayName} />
-        <ComputerSummary
-          metadata={platformLabel(computer.platform)}
-          status={m.onboarding_v2_connect_unconfirmed()}
-          title={computer.displayName}
-          tone="warning"
-        />
+        <div className="otv2-computer-step__body">
+          <ComputerSummary
+            metadata={platformLabel(computer.platform)}
+            status={m.onboarding_v2_connect_unconfirmed()}
+            title={computer.displayName}
+            tone="warning"
+          />
+          {refreshAction}
+        </div>
       </section>
     );
   }
@@ -941,25 +1217,27 @@ function NotBoundComputerSection({
 }) {
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
   return (
-    <section className={SECTION} data-state="not-bound" data-ui="agent-setup-computer">
+    <section className="otv2-computer-step flex flex-col" data-state="not-bound" data-ui="agent-setup-computer">
       <ComputerStepHeader name={name} />
-      <ComputerSummary
-        status={m.onboarding_v2_connect_no_computer_status()}
-        title={m.onboarding_v2_connect_no_computer_title()}
-        tone="neutral"
-      />
-      {/*
-       * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
-       * does it — including the choice when the Account genuinely has one to make.
-       */}
-      {canBind ? (
-        <AgentComputerChoice
-          adapter={computerConnectAdapter}
-          agentId={agentId}
-          inventoryAdapter={inventoryAdapter}
-          onBound={onChanged}
+      <div className="otv2-computer-step__body">
+        <ComputerSummary
+          status={m.onboarding_v2_connect_no_computer_status()}
+          title={m.onboarding_v2_connect_no_computer_title()}
+          tone="neutral"
         />
-      ) : null}
+        {/*
+         * Giving an Agent a Computer is the same work here as in its Settings, so the same surface
+         * does it — including the choice when the Account genuinely has one to make.
+         */}
+        {canBind ? (
+          <AgentComputerChoice
+            adapter={computerConnectAdapter}
+            agentId={agentId}
+            inventoryAdapter={inventoryAdapter}
+            onBound={onChanged}
+          />
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -981,30 +1259,32 @@ function BoundComputerSection({
   );
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
-    <section className={SECTION} data-state={computer.kind} data-ui="agent-setup-computer">
+    <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
       <ComputerStepHeader name={snapshot.agent.displayName} />
-      <ComputerSummary
-        metadata={platformLabel(computer.platform)}
-        status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
-        title={computer.displayName}
-        tone={offline ? "warning" : "success"}
-      />
-      {repair ? (
-        <ComputerConnect
-          adapter={computerConnectAdapter}
-          intent={{
-            mode: "repair",
-            target: { computerId: repair.computerId, displayName: computer.displayName },
-          }}
-          onConnected={onChanged}
+      <div className="otv2-computer-step__body">
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+          title={computer.displayName}
+          tone={offline ? "warning" : "success"}
         />
-      ) : null}
+        {repair ? (
+          <ComputerConnect
+            adapter={computerConnectAdapter}
+            intent={{
+              mode: "repair",
+              target: { computerId: repair.computerId, displayName: computer.displayName },
+            }}
+            onConnected={onChanged}
+          />
+        ) : null}
+      </div>
     </section>
   );
 }
 
 function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
-  const rows = useMemo(() => preparationReadinessRows(snapshot), [snapshot]);
+  const rows = useMemo(() => preparationSummaryRows(snapshot), [snapshot]);
   const { computer } = snapshot;
   if (computer.kind === "not-bound") return null;
   return (
@@ -1016,7 +1296,16 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
         <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
       <div className="otv2-preparation__checks">
-        <ReadinessList label={m.onboarding_v2_prep_title()} rows={rows} />
+        <ComputerSummary
+          metadata={platformLabel(computer.platform)}
+          status={m.onboarding_v2_connect_online()}
+          title={computer.displayName}
+          tone="success"
+        />
+        <ol aria-label={m.onboarding_v2_prep_title()} className="otv2-readiness" data-ui="readiness-list">
+          <CheckLine check={rows.runtime} component="runtime" position={1} />
+          <CheckLine check={rows.messaging} component="messaging-support" position={2} />
+        </ol>
       </div>
     </section>
   );
@@ -1024,19 +1313,24 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
 
 function MessagingSetupSection({
   controller,
+  oauthError,
   snapshot,
 }: {
   readonly controller: AgentSetupController;
+  readonly oauthError?: string;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { messaging } = snapshot;
+  const title =
+    messaging.kind === "blocked" ? m.onboarding_v2_messaging_recovery_title() : m.onboarding_v2_messaging_title();
   return (
     <section className={SECTION} data-state={messaging.kind} data-ui="agent-setup-messaging">
       <header className={SECTION_HEADER}>
         <Text as="h2" variant="heading">
-          {m.onboarding_v2_messaging_title()}
+          {title}
         </Text>
       </header>
+      {oauthError ? <Banner variant="error" role="alert" description={oauthError} /> : null}
       {messaging.kind === "not-configured" ? (
         <MessagingStartChoice busyKey={controller.busyKey} onStart={controller.act} snapshot={snapshot} />
       ) : null}
@@ -1070,7 +1364,7 @@ function MessagingStartChoice({
   onStart,
   snapshot,
 }: {
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  readonly busyKey: AgentSetupAction | undefined;
   readonly onStart: (action: AgentSetupAction) => Promise<boolean>;
   readonly snapshot: AgentSetupSnapshot;
 }) {
@@ -1087,7 +1381,7 @@ function MessagingStartChoice({
             <Button
               className={CARD}
               disabled={busyKey !== undefined}
-              loading={busyKey === "start-messaging"}
+              loading={busyKey?.kind === "start-messaging" && busyKey.provider === action.provider}
               onClick={() => void onStart(action)}
               variant="ghost"
             >
@@ -1118,7 +1412,7 @@ function FeishuAuthorizing({
   onAct,
   snapshot,
 }: {
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  readonly busyKey: AgentSetupAction | undefined;
   readonly messaging: Extract<AgentSetupSnapshot["messaging"], { kind: "authorizing"; provider: "feishu" }>;
   readonly onAct: (action: AgentSetupAction) => Promise<boolean>;
   readonly snapshot: AgentSetupSnapshot;
@@ -1142,7 +1436,7 @@ function FeishuAuthorizing({
         <div>
           <Button
             disabled={busyKey !== undefined}
-            loading={busyKey === "cancel-messaging-attempt"}
+            loading={busyKey?.kind === "cancel-messaging-attempt"}
             onClick={() => void onAct(cancel)}
             variant="ghost"
           >
@@ -1217,7 +1511,7 @@ function MessagingHandoff({
         </p>
       ) : null}
       {unbind ? (
-        <div>
+        <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
           <Button
             disabled={controller.busyKey !== undefined}
             onClick={() => setUnbindAsked(true)}
@@ -1303,17 +1597,13 @@ function BlockedMessaging({
   );
   const busy = controller.busyKey !== undefined;
   return (
-    <>
-      <div className={IDENTITY_ROW} data-ui="agent-setup-messaging-identity">
+    <div className="otv2-messaging-recovery" data-ui="agent-setup-messaging-recovery">
+      <div className="otv2-messaging-recovery__identity" data-ui="agent-setup-messaging-identity">
         <ProviderIcon className="size-6" provider={messaging.provider} />
         <strong className="min-w-0 text-base font-semibold text-kumo-strong">
           {providerTitle(messaging.provider)}
         </strong>
-        <StatusIndicator
-          className="justify-self-end"
-          label={m.onboarding_v2_setup_messaging_needs_attention()}
-          tone="warning"
-        />
+        <StatusIndicator label={m.onboarding_v2_setup_messaging_needs_attention()} tone="warning" />
       </div>
       <p className={HINT}>{blockedMessagingCopy(messaging)}</p>
       {switchBlocker ? (
@@ -1324,27 +1614,31 @@ function BlockedMessaging({
           })}
         </p>
       ) : null}
-      <div className="flex flex-wrap gap-3">
-        {reauthorize ? (
-          <Button
-            disabled={busy}
-            loading={controller.busyKey === "reauthorize-messaging"}
-            onClick={() => void controller.act(reauthorize)}
-          >
-            {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
-          </Button>
-        ) : null}
-        {replace ? (
-          <Button
-            disabled={busy}
-            loading={controller.busyKey === "replace-messaging"}
-            onClick={() => void controller.act(replace)}
-            variant="secondary"
-          >
-            {m.im_change_bot()}
-          </Button>
-        ) : null}
-        {unbind ? (
+      {reauthorize || replace ? (
+        <div className="otv2-messaging-recovery__actions" data-ui="agent-setup-messaging-recovery-actions">
+          {reauthorize ? (
+            <Button
+              disabled={busy}
+              loading={controller.busyKey?.kind === "reauthorize-messaging"}
+              onClick={() => void controller.act(reauthorize)}
+            >
+              {messaging.code === "reauthorization-required" ? m.im_update_permissions() : m.im_reconnect()}
+            </Button>
+          ) : null}
+          {replace ? (
+            <Button
+              disabled={busy}
+              loading={controller.busyKey?.kind === "replace-messaging"}
+              onClick={() => void controller.act(replace)}
+              variant="secondary"
+            >
+              {m.im_change_bot()}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {unbind ? (
+        <div className="otv2-destructive-action" data-ui="agent-setup-messaging-destructive-action">
           <Button
             disabled={busy}
             onClick={() => setUnbindAsked(true)}
@@ -1353,8 +1647,8 @@ function BlockedMessaging({
           >
             {m.im_disconnect({ providerName: providerTitle(unbind.provider) })}
           </Button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       {controller.actionError && !unbindAsked ? (
         <Banner variant="error" role="alert" description={controller.actionError} />
       ) : null}
@@ -1368,7 +1662,7 @@ function BlockedMessaging({
           returnFocusRef={unbindButtonRef}
         />
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -1386,14 +1680,14 @@ function UnbindMessagingDialog({
   returnFocusRef,
 }: {
   readonly action: Extract<AgentSetupAction, { kind: "unbind-messaging" }>;
-  readonly busyKey: AgentSetupAction["kind"] | undefined;
+  readonly busyKey: AgentSetupAction | undefined;
   readonly error: string | undefined;
   readonly onAct: (action: AgentSetupAction) => Promise<boolean>;
   readonly onClose: () => void;
   readonly returnFocusRef: React.RefObject<HTMLButtonElement | null>;
 }) {
   const providerName = providerTitle(action.provider);
-  const busy = busyKey === "unbind-messaging";
+  const busy = busyKey?.kind === "unbind-messaging";
   return (
     <Dialog
       busy={busy}

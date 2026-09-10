@@ -48,12 +48,12 @@ async function validateTarget(
 ): Promise<{ message: string } | undefined> {
   if (target.kind === "github") return undefined;
   if (target.kind === "path") {
-    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", target.path]);
+    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", target.path, "--json"]);
     return failureCode === undefined
       ? undefined
       : { message: `${target.path} is not a usable Context Tree (${failureCode}).` };
   }
-  const { payload, failureCode } = await runContextTreeCli(assets, ["list"]);
+  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"]);
   if (failureCode !== undefined) return { message: `Could not list managed Context Trees (${failureCode}).` };
   const trees = (payload as { trees?: readonly { name?: unknown }[] }).trees ?? [];
   return trees.some((entry) => entry.name === target.name)

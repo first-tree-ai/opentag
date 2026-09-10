@@ -1,0 +1,1 @@
+CREATE INDEX "im_message_deliveries_overflow_idx" ON "im_message_deliveries" USING btree ("session_id","attention","state","reason","message_id");

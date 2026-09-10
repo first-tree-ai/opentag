@@ -29,7 +29,9 @@ export class ImResourceService {
   constructor(
     database: DatabaseClient,
     resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>,
-    policy: ExternalCallPolicy = new ExternalCallPolicy(),
+    policy: ExternalCallPolicy = new ExternalCallPolicy({
+      allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
+    }),
   ) {
     this.#database = database;
     this.#resolveAdapter = resolveAdapter;

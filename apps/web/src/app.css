@@ -117,3 +117,294 @@ body {
     scroll-behavior: auto;
   }
 }
+
+/* Both scopes allocate the same column. The empty surface can change bounds without
+ * reflowing the content, while navigation controls retain their natural text size. */
+.app-workspace-shell {
+  --navigation-duration: 220ms;
+  --navigation-easing: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.app-workspace-shell[data-scope="agent"] {
+  --navigation-duration: 260ms;
+}
+
+.app-home-link {
+  display: flex;
+  min-width: 0;
+  min-height: 2.75rem;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--text-color-kumo-strong);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.app-home-link:hover {
+  background: var(--color-kumo-fill-hover);
+}
+
+.app-home-link[aria-current="page"] {
+  background: var(--brand-soft);
+}
+
+.app-home-link:focus-visible,
+.app-account-trigger:focus-visible {
+  outline: 2px solid var(--color-kumo-focus);
+  outline-offset: -2px;
+}
+
+.app-global-navigation {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 0.375rem;
+}
+
+.app-global-navigation > :first-child {
+  flex: 1;
+}
+
+.app-agent-navigation {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.app-account-navigation {
+  position: relative;
+  border-top: 0;
+  background: transparent;
+}
+
+.app-account-trigger:hover,
+.app-account-trigger[aria-expanded="true"] {
+  background: var(--color-kumo-fill-hover);
+}
+
+.app-account-trigger[aria-expanded="true"] .app-account-avatar {
+  background: var(--color-kumo-base);
+  box-shadow: 0 0 0 1px var(--color-kumo-line);
+}
+
+.app-account-menu {
+  min-width: max(11rem, var(--anchor-width));
+}
+
+.app-account-menu,
+.app-agent-menu {
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 0.75rem;
+  padding: 0.375rem;
+  box-shadow:
+    0 4px 16px color-mix(in srgb, var(--fg) 8%, transparent),
+    0 1px 3px color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.app-account-menu [role="menuitem"],
+.app-agent-menu [role="menuitem"] {
+  min-height: 2.25rem;
+  border-radius: 0.5rem;
+  padding: 0.375rem;
+}
+
+.app-account-menu [role="menuitem"][data-highlighted],
+.app-agent-menu [role="menuitem"][data-highlighted]:not([aria-current="true"]) {
+  background: var(--color-kumo-fill-hover);
+}
+
+.app-account-menu [role="separator"],
+.app-agent-menu [role="separator"] {
+  margin: 0.375rem;
+}
+
+@media (min-width: 48rem) {
+  .app-main {
+    margin-left: 0.5rem;
+  }
+
+  .app-navigation[data-sidebar="sidebar"] {
+    width: 15rem;
+    height: calc(100% - 1.5rem);
+    margin: 0.75rem 0 0.75rem 0.75rem;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+
+  .app-navigation .app-navigation-container {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .app-navigation-surface {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 15rem;
+    height: 100%;
+    border: 1px solid color-mix(in srgb, var(--color-kumo-line) 70%, transparent);
+    border-radius: 1rem;
+    background: var(--color-kumo-elevated);
+    box-shadow: 0 2px 6px color-mix(in srgb, var(--fg) 2%, transparent);
+    transition:
+      top var(--navigation-duration) var(--navigation-easing),
+      left var(--navigation-duration) var(--navigation-easing),
+      width var(--navigation-duration) var(--navigation-easing),
+      height var(--navigation-duration) var(--navigation-easing),
+      border-radius var(--navigation-duration) var(--navigation-easing),
+      border-color var(--navigation-duration) var(--navigation-easing),
+      background-color var(--navigation-duration) var(--navigation-easing),
+      box-shadow var(--navigation-duration) var(--navigation-easing);
+  }
+
+  .app-global-navigation,
+  .app-account-navigation {
+    position: absolute;
+    left: 0.375rem;
+    width: 14.25rem;
+    height: 2.75rem;
+    padding: 0;
+    transition:
+      top var(--navigation-duration) var(--navigation-easing),
+      width var(--navigation-duration) var(--navigation-easing),
+      left var(--navigation-duration) var(--navigation-easing);
+  }
+
+  .app-global-navigation {
+    top: 0.375rem;
+  }
+
+  .app-account-navigation {
+    top: calc(100% - 3.125rem);
+  }
+
+  .app-account-trigger {
+    min-height: 2.75rem;
+    padding-inline: 0.75rem;
+  }
+
+  .app-agent-navigation {
+    position: absolute;
+    inset: 3.875rem 0 3.875rem;
+    opacity: 1;
+    transition: opacity 150ms ease-out 90ms;
+  }
+
+  .app-nav-label {
+    opacity: 1;
+    transition: opacity 150ms ease-out 90ms;
+  }
+
+  .app-workspace-shell[data-scope="workspace"] .app-navigation-surface {
+    top: calc(50% - 4rem);
+    left: 0.75rem;
+    width: 4rem;
+    height: 8rem;
+    border-color: var(--color-kumo-line);
+    border-radius: 1.25rem;
+    background: var(--color-kumo-base);
+    box-shadow: none;
+  }
+
+  .app-workspace-shell[data-scope="workspace"] .app-global-navigation,
+  .app-workspace-shell[data-scope="workspace"] .app-account-navigation {
+    left: 1.25rem;
+    width: 3rem;
+    height: 3rem;
+  }
+
+  .app-workspace-shell[data-scope="workspace"] .app-global-navigation {
+    top: calc(50% - 3.5rem);
+  }
+
+  .app-workspace-shell[data-scope="workspace"] .app-account-navigation {
+    top: calc(50% + 0.5rem);
+  }
+
+  .app-workspace-shell[data-scope="workspace"] .app-agent-navigation {
+    opacity: 0;
+    visibility: hidden;
+    transition:
+      opacity 80ms ease-out,
+      visibility 0s 80ms;
+  }
+
+  .app-workspace-shell[data-scope="workspace"] .app-nav-label {
+    opacity: 0;
+    width: 0;
+    flex: 0;
+    overflow: hidden;
+    transition: opacity 80ms ease-out;
+  }
+
+  .app-home-link[data-compact="true"],
+  .app-account-trigger[data-compact="true"] {
+    min-height: 3rem;
+    border-radius: 0.75rem;
+    padding-inline: 0.5rem;
+  }
+
+  .app-home-link[data-compact="true"] {
+    justify-content: center;
+    gap: 0;
+  }
+
+  .app-home-link[data-compact="true"] .app-home-icon > svg {
+    width: 1.375rem;
+    height: 1.375rem;
+  }
+
+  .app-account-trigger[data-compact="true"] > div {
+    gap: 0;
+    translate: none;
+  }
+
+  .app-account-trigger[data-compact="true"] .app-account-icon {
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .app-account-trigger[data-compact="true"] .app-account-avatar {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+}
+
+@media (max-width: 47.999rem) {
+  .app-account-menu [role="menuitem"],
+  .app-agent-menu [role="menuitem"] {
+    min-height: 2.75rem;
+  }
+
+  .app-mobile-header .app-account-trigger {
+    min-height: 2.75rem;
+    padding: 0.375rem;
+  }
+
+  .app-navigation[data-mobile="true"] {
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .app-navigation-surface {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-navigation-surface,
+  .app-global-navigation,
+  .app-account-navigation,
+  .app-agent-navigation,
+  .app-nav-label {
+    transition: none;
+  }
+}

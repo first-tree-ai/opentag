@@ -23,7 +23,7 @@ const HINT = "text-sm text-kumo-subtle m-0";
 const CHOICES = "flex flex-col gap-3 m-0 p-0 list-none";
 const CHOICE_GRID = "otv2-choices--grid grid gap-3 m-0 p-0 list-none";
 const CARD =
-  "otv2-choice flex w-full items-center gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
+  "otv2-choice flex w-full items-center justify-start gap-4 rounded-xl bg-kumo-base p-4 ring ring-kumo-line cursor-pointer";
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
@@ -59,14 +59,16 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
 
 function StepNav({
   back,
-  disabled = false,
+  backDisabled = false,
   label = m.onboarding_v2_nav_next(),
+  nextDisabled = false,
   onNext,
   submit = false,
 }: {
   back?: () => void;
-  disabled?: boolean;
+  backDisabled?: boolean;
   label?: string;
+  nextDisabled?: boolean;
   onNext?: () => void;
   submit?: boolean;
 }) {
@@ -74,14 +76,14 @@ function StepNav({
     <div className="flex items-center justify-between gap-3" data-ui="onboarding-v2-nav">
       <div data-ui="onboarding-v2-nav-back">
         {back ? (
-          <Button onClick={back} variant="ghost">
+          <Button disabled={backDisabled} onClick={back} variant="ghost">
             <Icon name="arrow-left" />
             <span>{m.onboarding_v2_nav_back()}</span>
           </Button>
         ) : null}
       </div>
       <div data-ui="onboarding-v2-nav-next">
-        <Button disabled={disabled} onClick={onNext} type={submit ? "submit" : "button"}>
+        <Button disabled={nextDisabled} onClick={onNext} type={submit ? "submit" : "button"}>
           {label}
         </Button>
       </div>
@@ -174,7 +176,7 @@ export function DestinationStep({
           );
         })}
       </ul>
-      <StepNav disabled={!draft.destination} onNext={onSubmit} />
+      <StepNav nextDisabled={!draft.destination} onNext={onSubmit} />
     </section>
   );
 }
@@ -310,7 +312,13 @@ export function AgentStep({
       <form className="flex flex-col gap-6" onSubmit={submit}>
         <AgentNameField draft={draft} onBlur={() => setTouched(true)} onChange={onChange} showError={touched} />
         <RuntimePicker draft={draft} onChange={onChange} />
-        <StepNav back={onBack} disabled={submitting || draft.runtime === undefined} label={submitLabel} submit />
+        <StepNav
+          back={onBack}
+          backDisabled={submitting}
+          label={submitLabel}
+          nextDisabled={submitting || draft.runtime === undefined}
+          submit
+        />
       </form>
     </section>
   );
@@ -327,6 +335,7 @@ export function DoneStep({
   name: string;
   provider?: ImProvider;
 }) {
+  const providerMention = provider === "slack" ? "OpenTag" : name;
   return (
     <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
       <span
@@ -342,7 +351,10 @@ export function DoneStep({
         <p className="text-kumo-subtle m-0">
           {provider
             ? spaceScriptBoundary(
-                m.onboarding_v2_done_description({ name, provider: messagingProviderLabel(provider) }),
+                m.onboarding_v2_done_description({
+                  mention: providerMention,
+                  provider: messagingProviderLabel(provider),
+                }),
               )
             : m.onboarding_v2_done_description_any_app({ name })}
         </p>

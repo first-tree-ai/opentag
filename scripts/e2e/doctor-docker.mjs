@@ -152,7 +152,9 @@ async function main() {
     "--env",
     "POSTGRES_PASSWORD=opentag",
     "--health-cmd",
-    "pg_isready -U opentag -d opentag",
+    // Probe over TCP: the image's temporary initialization server listens on the Unix socket only,
+    // so a socket probe reports ready before the real server exists.
+    "pg_isready -h 127.0.0.1 -U opentag -d opentag",
     "--health-interval",
     "1s",
     "--health-timeout",

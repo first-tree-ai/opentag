@@ -606,8 +606,11 @@ export function buildComputerConnectCommand(options: {
    * download leaves behind, so `curl … | sh &&` would run whatever Client is already on disk and
    * report a download failure as an unrelated CLI usage error. Landing the installer in a file
    * first keeps every step in one `&&` chain, so the command stops at the step that actually broke.
+   * Some execution tools reject the entire submitted command if it contains explicit deletion.
+   * Leave this public installer in the OS temporary directory for independent cleanup, so deletion
+   * neither blocks setup at preflight nor becomes a prerequisite of connect or replaces its status.
    */
-  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" && rm -f "$opentag_installer" && ${connect}`;
+  return `opentag_installer="$(mktemp)" && curl -fsSL ${shellArg(installerUrl)} -o "$opentag_installer" && sh "$opentag_installer" && ${connect}`;
 }
 
 function shellArg(value: string): string {

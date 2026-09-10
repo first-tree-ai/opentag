@@ -1,7 +1,7 @@
 # 任务
 
 > Canonical source: [tasks.md](../tasks.md)
-> Last synced with: 2026-09-03
+> Last synced with: 2026-09-09
 
 任务（Task）是账户拥有者对"有人在飞书或 Slack 里让 Agent 做的一件事"的只读视图。它是对已存储的入站
 `ImMessage` 记录及其 `im_message_deliveries` 的投影；消息投递、Session 物化和 Agent Runtime 都不因它而
@@ -39,6 +39,10 @@ channel Session 里的 `ambient` 旁听副本，以及因消息出现更新修�
 4. 否则取最新执行的结果：`completed`、`failed`（含被拒绝的投递）或 `expired`（未处理即过期的投递，
    或超过截止仍未报告的 Turn）。
 
+详情中每条 Turn 的 `delivery.isRunning` 与列表使用同一个有效运行条件。Web 仅在该值为 true 时显示进行中，
+不会从持久化的 `accepted` 推断仍在运行。已经不活跃且没有报告的 Turn，以及旧服务器未提供该字段的数据，
+显示“暂无执行报告”。
+
 ## 标题
 
 Task 的标题来自根消息，沿用列表一直使用的推导方式：去掉路由语法、去掉被 @ 的 Bot、限制长度，截断处以省略号标记。
@@ -55,9 +59,13 @@ Session 与这些内部 Session 之间交换的消息。
 
 ## 边界
 
-- 出站消息不被观测，所以 Task 无法说明 Agent 是否回复了；它记录的是被要求做什么以及每个 Turn 如何
-  结束。
+- Task 回复历史在 Turn report 带有快照时，使用该 Turn 捕获到的成功 Lark 出站回执。`finalText` 只是
+  执行摘要，不能代替已发送回复。完整捕获中没有记录到发送、或旧报告没有快照时，显示准确的空状态或不可用，而
+  不是“进行中”。不会把 Slack 当成 Lark 收集。发送回执不是已读回执。无论保留下多少条回复，部分捕获都会独立标记；截断提示及原生富文本、卡片详情可查看。回复随终态报告提供，不会从旧 Runtime 对话中补录。
 - 群聊 channel Session 上崩溃的 Turn 会保持 `running`，直到该 Session 接受另一条投递或投递截止时间
   到期。
+- Lark 回复不可用提示仅出现在飞书/Lark Task 中；Slack Task 保留执行摘要，不长期显示不受支持的捕获提示。
+- 回复快照要求当前连接协商 `runtime.turnReport` v2。在 v2 下生成的报告遇到 v1 重连时保持持久化，
+  重新协商 v2 后原样重放。v2 服务器对未协商的快照返回非致命的 `unsupported_capability` 报告结果。
 - 列表按请求从账户已存储的消息计算。汇总先决定分页，再由当页的行解析标题与 Session；非常大的账户
   之后可能需要话题键上的索引。

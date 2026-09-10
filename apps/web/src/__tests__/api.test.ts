@@ -7,7 +7,7 @@ import {
   type TaskSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
-import { ApiError, BrowserApi } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -36,6 +36,27 @@ function setDocumentCookie(value: string): void {
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function hangingJsonResponse(status = 200): Response {
+  return new Response(new ReadableStream(), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+const SETUP_AGENT_ID = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+
+async function expectAgentSetupDeadline(fetchImpl: typeof fetch): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    const pending = new BrowserApi(fetchImpl).agentSetup(SETUP_AGENT_ID);
+    const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError", code: "cancelled" });
+    await vi.advanceTimersByTimeAsync(AGENT_SETUP_READ_TIMEOUT_MS);
+    await assertion;
+  } finally {
+    vi.useRealTimers();
+  }
 }
 
 describe("BrowserApi", () => {
@@ -310,6 +331,7 @@ describe("BrowserApi", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       if (String(input) === "/api/v1/computers") {
         expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
+        expect(new Headers(init?.headers).get("x-opentag-provider-cli-reason")).toBe("2");
         return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -560,6 +582,7 @@ describe("BrowserApi", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(String(input)).toBe(`/api/v1/agents/${agentId}/setup`);
       expect(init?.method ?? "GET").toBe("GET");
+      expect(new Headers(init?.headers).get("x-opentag-provider-cli-reason")).toBe("2");
       return jsonResponse(snapshot);
     });
     await expect(new BrowserApi(fetchImpl).agentSetup(agentId)).resolves.toEqual(snapshot);
@@ -571,6 +594,21 @@ describe("BrowserApi", () => {
       routeTemplate: "/api/v1/agents/:id/setup",
       message: "The server returned an invalid response",
     });
+  });
+
+  it("times out agentSetup when fetch never settles, even if abort is ignored", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise(() => undefined));
+    await expectAgentSetupDeadline(fetchImpl);
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("times out agentSetup when the success body never settles", async () => {
+    await expectAgentSetupDeadline(vi.fn<typeof fetch>(async () => hangingJsonResponse()));
+  });
+
+  it("times out agentSetup when a non-OK diagnostic body never settles", async () => {
+    await expectAgentSetupDeadline(vi.fn<typeof fetch>(async () => hangingJsonResponse(500)));
   });
 
   it("records schema issue paths and codes without response detail", async () => {

@@ -1,17 +1,9 @@
-import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
-import { type CSSProperties, type ReactNode, useSyncExternalStore } from "react";
+import { Link, useRouter } from "@tanstack/react-router";
+import { useRef, useState } from "react";
 import { initials } from "../../i18n/format.js";
 import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
-import {
-  DropdownMenu,
-  Icon,
-  type IconName,
-  Sidebar,
-  SidebarProvider,
-  SidebarTrigger,
-  useSidebar,
-} from "../../ui/design-system.js";
+import { DropdownMenu, Icon, Sidebar } from "../../ui/design-system.js";
 import type { AgentListItem } from "../agents/agent-model.js";
 import { useAgentListView } from "../agents/agent-queries.js";
 import {
@@ -22,230 +14,108 @@ import {
   agentUsageLink,
 } from "../agents/agent-routes.js";
 import { useAccount } from "../session/session-context.js";
-import { AgentReturnEntry } from "./agent-return-entry.js";
-import { ShellMain } from "./shell-main.js";
+import { MenuItemIcon } from "./menu-item-icon.js";
 
-const AGENT_SIDEBAR_MOBILE_QUERY = "(max-width: 767px)";
-const AGENT_SIDEBAR_WIDTH = "15rem";
-
-export default function AgentShell({
-  agentId,
-  renderAccountMenu,
-}: {
-  agentId: string;
-  renderAccountMenu: (onNavigate: () => void) => ReactNode;
-}) {
-  const isMobileAgentShell = useIsMobileAgentShell();
-
-  return (
-    <SidebarProvider
-      className="h-full min-h-0 overflow-hidden bg-kumo-canvas"
-      collapsible={isMobileAgentShell ? "icon" : "none"}
-      defaultOpen
-      style={{ "--sidebar-width": AGENT_SIDEBAR_WIDTH } as CSSProperties}
-      variant="floating"
-    >
-      <AgentShellContent agentId={agentId} renderAccountMenu={renderAccountMenu} />
-    </SidebarProvider>
-  );
-}
-
-function AgentShellContent({
-  agentId,
-  renderAccountMenu,
-}: {
-  agentId: string;
-  renderAccountMenu: (onNavigate: () => void) => ReactNode;
-}) {
+export default function AgentNavigation({ agentId, pathname }: { agentId: string; pathname: string }) {
   const { me } = useAccount();
-  const pathname = useRouterState({ select: (state) => state.location.pathname });
-  const navigate = useNavigate();
-  const { setOpenMobile } = useSidebar();
-  const agentsState = useAgentListView(me.user.id);
-  const agents = agentsState.kind === "ready" ? agentsState.value.agents : [];
+  const router = useRouter();
+  const state = useAgentListView(me.user.id);
+  const agents = state.kind === "ready" ? state.value.agents : [];
   const agent = agents.find((candidate) => candidate.id === agentId);
-  const internalNavigation = useInternalNavigationVisibility();
-
-  function closeMobile() {
-    setOpenMobile(false);
-  }
-
-  function openAgent(targetAgentId: string) {
-    closeMobile();
-    if (pathname.includes("/tasks")) {
-      void navigate(agentTasksLink(targetAgentId));
-      return;
-    }
-    if (pathname.includes("/skills")) {
-      void navigate(agentSkillsLink(targetAgentId));
-      return;
-    }
-    if (pathname.includes("/integrations")) {
-      void navigate(agentIntegrationsLink(targetAgentId));
-      return;
-    }
-    if (pathname.includes("/usage")) {
-      void navigate(agentUsageLink(targetAgentId));
-      return;
-    }
-    void navigate(agentDetailLink(targetAgentId));
-  }
-
-  function openAllAgents() {
-    closeMobile();
-    void navigate({ to: "/agents" });
-  }
-
-  function openNewAgent() {
-    closeMobile();
-    void navigate({ search: { action: "create" }, to: "/agents/setup" });
-  }
-
+  const internal = useInternalNavigationVisibility();
+  const items = [
+    { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
+    { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
+    ...(internal.skills
+      ? ([{ section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) }] as const)
+      : []),
+    ...(internal.integrations
+      ? ([
+          {
+            section: "integrations",
+            icon: "integrations",
+            label: m.shell_integrations(),
+            link: agentIntegrationsLink(agentId),
+          },
+        ] as const)
+      : []),
+    { section: "usage", icon: "usage", label: m.shell_usage(), link: agentUsageLink(agentId) },
+  ] as const;
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas" data-ui="agent-shell">
-      <Sidebar
-        aria-label={m.shell_agent_navigation()}
-        className="bg-kumo-base md:m-3 md:mr-0 md:h-[calc(100%-1.5rem)] md:rounded-xl md:shadow-xs"
-        contentClassName="bg-kumo-base md:rounded-xl"
-        fullScreenOnMobile
-      >
-        <Sidebar.Header className="h-16 border-b-0 px-3">
-          <Sidebar.Menu className="min-w-0 flex-1">
-            <Sidebar.MenuItem>
-              <AgentSwitcher
-                agent={agent}
-                agents={agents}
-                onAllAgents={openAllAgents}
-                onNewAgent={openNewAgent}
-                onOpenAgent={openAgent}
-              />
-            </Sidebar.MenuItem>
-          </Sidebar.Menu>
-          <Sidebar.Close className="sm:hidden" />
-        </Sidebar.Header>
-        <Sidebar.Content className="md:[&_[data-sidebar=viewport]]:pt-0">
-          <nav aria-label={m.shell_agent()}>
-            <Sidebar.Group className="pt-1">
-              <Sidebar.Menu className="gap-1">
-                <AgentNavItem
-                  active={isAgentSectionActive(pathname, agentId, "home")}
-                  icon="home"
-                  label={m.shell_home()}
-                  onClick={() => {
-                    closeMobile();
-                    void navigate(agentDetailLink(agentId));
-                  }}
-                />
-                <AgentNavItem
-                  active={isAgentSectionActive(pathname, agentId, "tasks")}
-                  icon="instructions"
-                  label={m.shell_tasks()}
-                  onClick={() => {
-                    closeMobile();
-                    void navigate(agentTasksLink(agentId));
-                  }}
-                />
-                {internalNavigation.skills ? (
-                  <AgentNavItem
-                    active={isAgentSectionActive(pathname, agentId, "skills")}
-                    icon="shield"
-                    label={m.shell_skills()}
-                    onClick={() => {
-                      closeMobile();
-                      void navigate(agentSkillsLink(agentId));
-                    }}
-                  />
-                ) : null}
-                {internalNavigation.integrations ? (
-                  <AgentNavItem
-                    active={isAgentSectionActive(pathname, agentId, "integrations")}
-                    icon="integrations"
-                    label={m.shell_integrations()}
-                    onClick={() => {
-                      closeMobile();
-                      void navigate(agentIntegrationsLink(agentId));
-                    }}
-                  />
-                ) : null}
-                <AgentNavItem
-                  active={isAgentSectionActive(pathname, agentId, "usage")}
-                  icon="usage"
-                  label={m.shell_usage()}
-                  onClick={() => {
-                    closeMobile();
-                    void navigate(agentUsageLink(agentId));
-                  }}
-                />
-              </Sidebar.Menu>
-            </Sidebar.Group>
-          </nav>
-        </Sidebar.Content>
-        <Sidebar.Footer className="h-14 px-3">
-          <Sidebar.Menu className="min-w-0 flex-1">
-            <Sidebar.MenuItem>{renderAccountMenu(closeMobile)}</Sidebar.MenuItem>
-          </Sidebar.Menu>
-        </Sidebar.Footer>
-      </Sidebar>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2" data-ui="app-main">
-        <header className="app-mobile-header shrink-0 items-center justify-between border-b border-kumo-line bg-kumo-base px-4 py-3">
-          <Link
-            className="inline-flex min-w-0 items-center gap-2 rounded-sm font-semibold text-kumo-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand"
-            data-ui="agent-mobile-home"
-            {...agentDetailLink(agentId)}
-          >
-            <Icon className="shrink-0" name="home" />
-            <span className="truncate">{agent?.displayName ?? m.shell_agent()}</span>
-          </Link>
-          <SidebarTrigger aria-label={m.shell_open_agent_navigation()} title={m.shell_open_agent_navigation()} />
-        </header>
-        <ShellMain>
-          {isAgentHome(pathname, agentId) ? <AgentReturnEntry /> : null}
-          <Outlet />
-        </ShellMain>
-      </div>
-    </div>
+    <>
+      <Sidebar.Header className="h-16 border-b-0 px-1.5">
+        <Sidebar.Menu className="min-w-0 flex-1">
+          <Sidebar.MenuItem>
+            <AgentSwitcher agent={agent} agents={agents} pathname={pathname} agentId={agentId} />
+          </Sidebar.MenuItem>
+        </Sidebar.Menu>
+      </Sidebar.Header>
+      <Sidebar.Content className="[&_[data-sidebar=viewport]]:px-1.5 [&_[data-sidebar=viewport]]:pt-0">
+        <nav aria-label={m.shell_agent()}>
+          <Sidebar.Group className="pt-1">
+            <Sidebar.Menu className="gap-1">
+              {items.map((item) => {
+                const active = isAgentSectionActive(pathname, agentId, item.section);
+                return (
+                  <Sidebar.MenuButton
+                    key={item.section}
+                    active={active}
+                    aria-current={active ? "page" : undefined}
+                    className="min-h-11 rounded-lg px-3 font-normal data-[active]:bg-(--brand-soft) data-[active]:font-medium focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
+                    href={router.buildLocation(item.link).href}
+                    icon={
+                      <span className="grid size-6 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
+                        <Icon className="size-4" name={item.icon} />
+                      </span>
+                    }
+                  >
+                    {item.label}
+                  </Sidebar.MenuButton>
+                );
+              })}
+            </Sidebar.Menu>
+          </Sidebar.Group>
+        </nav>
+      </Sidebar.Content>
+    </>
   );
 }
 
-function useIsMobileAgentShell(): boolean {
-  return useSyncExternalStore(subscribeToAgentShellViewport, isMobileAgentShellViewport, () => false);
-}
-
-function subscribeToAgentShellViewport(onChange: () => void): () => void {
-  const mediaQuery = window.matchMedia(AGENT_SIDEBAR_MOBILE_QUERY);
-  mediaQuery.addEventListener("change", onChange);
-  return () => mediaQuery.removeEventListener("change", onChange);
-}
-
-function isMobileAgentShellViewport(): boolean {
-  return window.matchMedia(AGENT_SIDEBAR_MOBILE_QUERY).matches;
+/** Preserve the reader's section across Agents, but never a Task or Settings detail. */
+function agentSwitchLink(pathname: string, agentId: string) {
+  if (pathname.includes("/tasks")) return agentTasksLink(agentId);
+  if (pathname.includes("/skills")) return agentSkillsLink(agentId);
+  if (pathname.includes("/integrations")) return agentIntegrationsLink(agentId);
+  if (pathname.includes("/usage")) return agentUsageLink(agentId);
+  return agentDetailLink(agentId);
 }
 
 function AgentSwitcher({
   agent,
   agents,
-  onAllAgents,
-  onNewAgent,
-  onOpenAgent,
+  pathname,
+  agentId,
 }: {
   agent?: AgentListItem;
   agents: AgentListItem[];
-  onAllAgents: () => void;
-  onNewAgent: () => void;
-  onOpenAgent: (agentId: string) => void;
+  pathname: string;
+  agentId: string;
 }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger
         render={
           <Sidebar.MenuButton
+            ref={triggerRef}
             aria-label={
               agent ? m.shell_switch_agent_current({ currentAgent: agent.displayName }) : m.shell_switch_agent()
             }
-            className="min-h-11 rounded-lg px-2 hover:bg-kumo-fill-hover"
+            className="min-h-11 rounded-lg px-3 hover:bg-kumo-fill-hover focus-visible:ring-2 focus-visible:ring-kumo-focus [&>div]:translate-none"
             icon={
               <span
-                className="grid size-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-sm font-semibold group-data-[state=collapsed]/sidebar:size-4 group-data-[state=collapsed]/sidebar:text-xs"
+                className="grid size-6 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-semibold"
                 aria-hidden="true"
               >
                 {agent ? initials(agent.displayName) : "A"}
@@ -262,12 +132,15 @@ function AgentSwitcher({
       />
       <DropdownMenu.Content
         align="start"
-        aria-label={m.shell_switch_agent()}
-        className="min-w-(--anchor-width)"
+        className="app-agent-menu w-(--anchor-width) max-w-[calc(100vw-1.5rem)]"
+        container={triggerRef.current?.closest<HTMLElement>("aside, nav, header, main")}
+        positionMethod="fixed"
+        style={{ zIndex: 50 }}
         side="bottom"
       >
         {agents.map((candidate) => (
-          <DropdownMenu.Item
+          <DropdownMenu.LinkItem
+            closeOnClick
             icon={
               <span
                 className="mr-2 grid size-6 shrink-0 place-items-center rounded-full bg-kumo-tint text-xs font-semibold"
@@ -277,49 +150,36 @@ function AgentSwitcher({
               </span>
             }
             key={candidate.id}
-            onClick={() => onOpenAgent(candidate.id)}
-            selected={candidate.id === agent?.id}
+            render={
+              <Link
+                {...(candidate.id === agentId ? { to: pathname } : agentSwitchLink(pathname, candidate.id))}
+                onClick={candidate.id === agentId ? (event) => event.preventDefault() : undefined}
+              />
+            }
+            aria-current={candidate.id === agentId ? "true" : undefined}
+            className={candidate.id === agentId ? "bg-(--brand-soft)" : undefined}
           >
             <span className="min-w-0 flex-1 truncate">{candidate.displayName}</span>
-          </DropdownMenu.Item>
+            {candidate.id === agentId && <Icon name="check" />}
+          </DropdownMenu.LinkItem>
         ))}
         <DropdownMenu.Separator />
-        <DropdownMenu.Item icon={<MenuItemIcon name="arrow-left" />} onClick={onAllAgents}>
+        <DropdownMenu.LinkItem
+          closeOnClick
+          icon={<MenuItemIcon name="arrow-left" />}
+          render={<Link to="/agents" activeOptions={{ exact: true }} />}
+        >
           {m.shell_all_agents()}
-        </DropdownMenu.Item>
-        <DropdownMenu.Item icon={<MenuItemIcon name="plus" />} onClick={onNewAgent}>
+        </DropdownMenu.LinkItem>
+        <DropdownMenu.LinkItem
+          closeOnClick
+          icon={<MenuItemIcon name="plus" />}
+          render={<Link to="/agents/setup" search={{ action: "create" }} />}
+        >
           {m.shell_new_agent()}
-        </DropdownMenu.Item>
+        </DropdownMenu.LinkItem>
       </DropdownMenu.Content>
     </DropdownMenu>
-  );
-}
-
-function AgentNavItem({
-  active,
-  icon,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  icon: IconName;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <Sidebar.MenuButton
-      active={active}
-      aria-current={active ? "page" : undefined}
-      className="min-h-10 rounded-lg px-3 data-[active]:bg-(--brand-soft)"
-      icon={
-        <span className="grid size-7 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
-          <Icon className="size-4.5" name={icon} />
-        </span>
-      }
-      onClick={onClick}
-    >
-      <span className={active ? "font-semibold text-kumo-strong" : undefined}>{label}</span>
-    </Sidebar.MenuButton>
   );
 }
 
@@ -336,12 +196,4 @@ export function isAgentSectionActive(
 function isAgentHome(pathname: string, agentId: string): boolean {
   const root = `/agents/${agentId}`;
   return pathname === root || pathname === `${root}/`;
-}
-
-function MenuItemIcon({ name }: { name: IconName }) {
-  return (
-    <span className="mr-2 grid size-6 shrink-0 place-items-center text-kumo-subtle" aria-hidden="true">
-      <Icon name={name} />
-    </span>
-  );
 }

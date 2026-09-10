@@ -37,11 +37,11 @@ import { agentDetailLink, agentSettingsLink, agentSettingsSectionLink, agentUsag
 import { agentSettingsSummary } from "./agents/agent-settings/sections.js";
 
 describe("Agent list order", () => {
-  it("takes the incoming priority order on the first render", () => {
+  it("takes the Server's creation order on the first render", () => {
     expect(orderAgentIds(["c", "a", "b"], [])).toEqual(["c", "a", "b"]);
   });
 
-  it("keeps the shown order when a status change would resort the list", () => {
+  it("keeps the shown order if background revalidation changes the incoming order", () => {
     expect(orderAgentIds(["c", "a", "b"], ["a", "b", "c"])).toEqual(["a", "b", "c"]);
   });
 
@@ -385,7 +385,6 @@ describe("Agent availability model and presentation", () => {
     expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
       detail: undefined,
       label: "Ready for new work",
-      priority: 3,
       tone: "success",
     });
     expect(
@@ -397,7 +396,6 @@ describe("Agent availability model and presentation", () => {
     ).toEqual({
       detail: "Working now · started 8m ago",
       label: "Ready for new work",
-      priority: 3,
       tone: "success",
     });
     expect(agentCardStatus({ ...base, evidenceConfirmed: false } as never)).toMatchObject({
@@ -409,28 +407,28 @@ describe("Agent availability model and presentation", () => {
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "not_connected" },
       } as never),
-    ).toEqual({ label: "Messaging not connected", priority: 2, tone: "neutral" });
+    ).toEqual({ label: "Messaging not connected", tone: "neutral" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "action_required", reason: "runtime_unavailable" },
       } as never),
-    ).toMatchObject({ label: "Codex unavailable", priority: 0, tone: "warning" });
+    ).toMatchObject({ label: "Codex unavailable", tone: "warning" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "action_required", reason: "im_error" },
       } as never),
-    ).toEqual({ label: "Messaging connection failed", priority: 0, tone: "warning" });
+    ).toEqual({ label: "Messaging connection failed", tone: "warning" });
     expect(
       agentCardStatus({
         ...base,
         evidenceConfirmed: true,
         availability: { ...base.availability, state: "setting_up", reason: "im_provisioning" },
       } as never),
-    ).toMatchObject({ label: "Setting up messaging", priority: 2, tone: "info" });
+    ).toMatchObject({ label: "Setting up messaging", tone: "info" });
     expect(titleCase("runtime_unavailable")).toBe("Runtime Unavailable");
     expect(platformLabel("darwin")).toBe("macOS");
     expect(platformLabel("win32")).toBe("Windows");

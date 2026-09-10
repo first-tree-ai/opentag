@@ -353,7 +353,9 @@ jobs:
             --env POSTGRES_PASSWORD=opentag \
             postgres:17-alpine
           for _ in $(seq 1 30); do
-            if docker exec opentag-postgres-ci pg_isready --username opentag --dbname opentag; then
+            # Probe over TCP: the image's temporary initialization server listens on the Unix socket
+            # only, so a socket probe reports ready before the real server exists.
+            if docker exec opentag-postgres-ci pg_isready --host 127.0.0.1 --username opentag --dbname opentag; then
               exit 0
             fi
             sleep 1

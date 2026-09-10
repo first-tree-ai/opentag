@@ -94,6 +94,55 @@ describe("ExternalCallPolicy", () => {
     await expect(policy.fetch("https://api.example.test/file")).resolves.toMatchObject({ status: 200 });
   });
 
+  it("denies every host when the allowlist is empty", async () => {
+    const transport = vi.fn();
+    const policy = new ExternalCallPolicy({ transport });
+    await expect(policy.fetch("https://example.test/resource")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it("rejects private, loopback, and encoded IP literal hosts", async () => {
+    const policy = new ExternalCallPolicy({
+      allowedHosts: ["127.0.0.1", "10.0.0.1", "::1"],
+      transport: vi.fn(),
+    });
+    for (const url of ["https://127.0.0.1/resource", "https://10.0.0.1/resource", "https://[::1]/resource"]) {
+      await expect(policy.fetch(url)).rejects.toMatchObject({ code: "IM_PROVIDER_HOST_NOT_ALLOWED" });
+    }
+    await expect(policy.fetch("https://%31%32%37.0.0.1/resource")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+  });
+
+  it("rejects non-default ports and IDN lookalike hosts", async () => {
+    const policy = new ExternalCallPolicy({ allowedHosts: ["api.example.test", "paypal.com"], transport: vi.fn() });
+    await expect(policy.fetch("https://api.example.test:444/resource")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+    await expect(policy.fetch("https://%61pi.example.test/resource")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+    await expect(policy.fetch("https://раураl.com/resource")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+  });
+
+  it("allows loopback HTTP only with the explicit test option", async () => {
+    const transport = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const policy = new ExternalCallPolicy({ allowedHosts: ["127.0.0.1"], transport });
+    await expect(policy.fetch("http://127.0.0.1/resource")).rejects.toMatchObject({
+      code: "IM_PROVIDER_HOST_NOT_ALLOWED",
+    });
+    const testPolicy = new ExternalCallPolicy({
+      allowedHosts: ["127.0.0.1"],
+      allowHttpLoopbackForTests: true,
+      transport,
+    });
+    await expect(testPolicy.fetch("http://127.0.0.1/resource")).resolves.toMatchObject({ status: 200 });
+  });
+
   it("combines request cancellation with the policy signal", async () => {
     const controller = new AbortController();
     const policy = new ExternalCallPolicy({ maxAttempts: 1 });
@@ -174,6 +223,45 @@ describe("ExternalCallPolicy", () => {
     await first;
   });
 
+  it("rejects immediately when the waiter queue reaches its depth limit", async () => {
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const metrics: Array<{ type: string; queueDepth?: number; queueRejections?: number; errorCode?: string }> = [];
+    const policy = new ExternalCallPolicy({
+      maxConcurrency: 1,
+      maxQueueDepth: 1,
+      maxAttempts: 1,
+      onMetric: (metric) => metrics.push(metric),
+    });
+    const first = policy.run("queue.first", async () => firstGate);
+    const second = policy.run("queue.second", async () => secondGate);
+    await vi.waitFor(() =>
+      expect(metrics).toEqual(expect.arrayContaining([expect.objectContaining({ queueDepth: 1 })])),
+    );
+
+    const startedAt = Date.now();
+    const overflow = policy.run("queue.overflow", async () => "unexpected", { timeoutMs: 1_000 });
+    await expect(overflow).rejects.toMatchObject({
+      code: "IM_PROVIDER_OVERLOADED",
+      category: "availability",
+      retryability: "retryable",
+    });
+    expect(Date.now() - startedAt).toBeLessThan(100);
+    expect(metrics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ queueRejections: 1, errorCode: "IM_PROVIDER_OVERLOADED" })]),
+    );
+
+    releaseFirst();
+    releaseSecond();
+    await Promise.all([first, second]);
+  });
+
   it("rejects an already-cancelled call before queueing it", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -225,6 +313,71 @@ describe("ExternalCallPolicy", () => {
     await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
     release();
     await first;
+  });
+
+  it("holds a permit until a timed-out action settles", async () => {
+    let settleAction!: () => void;
+    let actionSettled = false;
+    const actionGate = new Promise<void>((resolve) => {
+      settleAction = () => {
+        actionSettled = true;
+        resolve();
+      };
+    });
+    const policy = new ExternalCallPolicy({
+      maxConcurrency: 1,
+      maxAttempts: 1,
+      defaultTimeoutMs: 10,
+      abandonmentWindowMs: 1_000,
+    });
+    const timedOut = policy.run("deadline.holds", async () => actionGate, { timeoutMs: 10 });
+    await expect(timedOut).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+    expect(actionSettled).toBe(false);
+
+    let queuedSettled = false;
+    const queued = policy.run("deadline.queued", async () => "released", { timeoutMs: 100 });
+    queued.then(() => {
+      queuedSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(queuedSettled).toBe(false);
+
+    settleAction();
+    await expect(queued).resolves.toBe("released");
+    expect(actionSettled).toBe(true);
+  });
+
+  it("releases a permit after the bounded abandonment window", async () => {
+    const metrics: Array<{ type: string; operation: string }> = [];
+    const policy = new ExternalCallPolicy({
+      maxConcurrency: 1,
+      maxAttempts: 1,
+      defaultTimeoutMs: 10,
+      abandonmentWindowMs: 10,
+      onMetric: (metric) => metrics.push(metric),
+    });
+    const abandoned = policy.run("abandoned", async () => new Promise<void>(() => undefined));
+    await expect(abandoned).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+
+    await expect(policy.run("after-abandonment", async () => "released", { timeoutMs: 100 })).resolves.toBe("released");
+    expect(metrics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "abandoned", operation: "abandoned" })]),
+    );
+  });
+
+  it("does not retry a timed-out action while its provider call is still pending", async () => {
+    let dispatches = 0;
+    const policy = new ExternalCallPolicy({
+      defaultTimeoutMs: 10,
+      abandonmentWindowMs: 10,
+    });
+    const call = policy.run("no-overlap", async () => {
+      dispatches += 1;
+      return new Promise<void>(() => undefined);
+    });
+
+    await expect(call).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+    expect(dispatches).toBe(1);
   });
 
   it("backs off and transitions the circuit", async () => {

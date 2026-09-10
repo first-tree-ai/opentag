@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import { useFirstConversationReport } from "../../analytics/milestones.js";
 import { orderAgentIds } from "../../features/agent-list-order.js";
 import { formatCompactNumber, initials } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
@@ -11,7 +12,7 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import type { AgentListItem } from "./agent-model.js";
-import { agentCardStatus } from "./agent-presentation.js";
+import { agentCardStatus, agentSetupContinuation } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
 import { agentDetailLink } from "./agent-routes.js";
 
@@ -21,6 +22,10 @@ export function AgentsPage() {
     () => new URLSearchParams(window.location.search).get("slack_oauth_error") ?? undefined,
   );
   const state = useAgentListView(me.user.id);
+  // The Agent list is the only surface that both re-reads on an interval and carries a Task count,
+  // so it is where this application can notice that a conversation has happened in the messaging
+  // app. It notices late, and only for a reader who came back; see the hook for what that costs.
+  useFirstConversationReport(state.kind === "ready" ? state.value.agents : undefined);
   useEffect(() => {
     if (!oauthError) return;
     const url = new URL(window.location.href);
@@ -36,7 +41,7 @@ export function AgentsPage() {
           </Link>
         </div>
       }
-      title={m.agents_title()}
+      title={m.shell_all_agents()}
     >
       {oauthError ? <Banner variant="error" role="alert" description={slackConfigurationMessage(oauthError)} /> : null}
       <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
@@ -51,17 +56,14 @@ export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentList({ agents }: { agents: AgentListItem[] }) {
   const shownOrder = useRef<readonly string[]>([]);
-  const byPriority = [...agents].sort(
-    (left, right) => agentCardStatus(left).priority - agentCardStatus(right).priority,
-  );
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   /*
    * Written during render on purpose. `orderAgentIds` is stable under reapplication, so a
    * repeated render of the same list produces the same order; deferring it to an effect would
-   * show one frame of the resorted list before restoring the order the viewer is pointing at.
+   * show one frame of a changed order before restoring the order the viewer is pointing at.
    */
   const order = orderAgentIds(
-    byPriority.map((agent) => agent.id),
+    agents.map((agent) => agent.id),
     shownOrder.current,
   );
   shownOrder.current = order;
@@ -81,6 +83,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentRow({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
+  const continueSetup = agentSetupContinuation(agent);
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
@@ -112,6 +115,20 @@ export function AgentRow({ agent }: { agent: AgentListItem }) {
           <p className="text-sm text-kumo-subtle" data-ui="agent-row-state">
             {status.detail}
           </p>
+        ) : null}
+        {/*
+          Lifted above the card's own overlay link, which covers everything and is painted last.
+          Without it this would be a link the pointer can see and never reach.
+        */}
+        {continueSetup ? (
+          <Link
+            className="relative z-10 inline-flex w-fit items-center gap-1 text-sm text-kumo-link"
+            data-ui="agent-row-continue-setup"
+            {...continueSetup.link}
+          >
+            {continueSetup.label}
+            <Icon className="size-3.5" name="chevron-right" />
+          </Link>
         ) : null}
       </div>
       <AgentUsageSummary agent={agent} />

@@ -495,10 +495,18 @@ describe("Feishu adapter", () => {
         },
       },
     });
+    const signal = new AbortController().signal;
     await expect(
-      http.fetchResource({ messageExternalId: "om_1", providerResourceKey: "file_1", kind: "file" }),
+      http.fetchResource({ messageExternalId: "om_1", providerResourceKey: "file_1", kind: "file" }, signal),
     ).resolves.toMatchObject({ stream: expect.any(Readable) });
     expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledWith(
+      {
+        path: { message_id: "om_1", file_key: "file_1" },
+        params: { type: "file" },
+      },
+      { signal },
+    );
 
     await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
     await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_other" })).resolves.toBe("Other");

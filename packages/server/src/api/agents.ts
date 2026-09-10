@@ -24,6 +24,7 @@ import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
+import { projectAgentSetupSnapshotForHttp, requestIncludesProviderCliReasonV2 } from "./provider-cli-reason.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
@@ -135,7 +136,10 @@ export function registerAgentRoutes(
     app.get(AGENT_SETUP_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const snapshot = AgentSetupSnapshotSchema.parse(
-        await agentSetup.getSetupById(authenticatedUserId(request), agentId),
+        projectAgentSetupSnapshotForHttp(
+          await agentSetup.getSetupById(authenticatedUserId(request), agentId),
+          requestIncludesProviderCliReasonV2(request),
+        ),
       );
       reply.header("Cache-Control", "no-store");
       return reply.code(200).send(snapshot);

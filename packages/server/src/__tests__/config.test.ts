@@ -30,19 +30,18 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
-  it("offers the setup reset on the staging environment alone, and takes no setting for it", () => {
+  it("offers Internal Tools on staging and keeps other environments closed by default", () => {
     expect(
       parseServerConfig({
         ...required,
         OPENTAG_ENV: "staging",
         OPENTAG_PUBLIC_URL: "https://staging.example.com",
-      }).stagingSetupReset,
+      }).internalTools,
     ).toBe(true);
 
-    expect(parseServerConfig(required).stagingSetupReset).toBe(false);
+    expect(parseServerConfig(required).internalTools).toBe(false);
     expect(
-      parseServerConfig({ ...required, OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" })
-        .stagingSetupReset,
+      parseServerConfig({ ...required, OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" }).internalTools,
     ).toBe(false);
 
     // The reset took one setting before it became reflexive. A deployment that still carries it
@@ -53,7 +52,7 @@ describe("parseServerConfig", () => {
         OPENTAG_ENV: "staging",
         OPENTAG_PUBLIC_URL: "https://staging.example.com",
         OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
-      }).stagingSetupReset,
+      }).internalTools,
     ).toBe(true);
   });
 
@@ -73,6 +72,23 @@ describe("parseServerConfig", () => {
     expect(parseServerConfig(required).devAuth).toBeUndefined();
   });
 
+  it("offers Internal Tools only after an explicit loopback development opt-in", () => {
+    const localPreview = { ...required, OPENTAG_ENV: "dev", OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: "true" };
+    expect(parseServerConfig(localPreview).internalTools).toBe(true);
+    expect(parseServerConfig({ ...localPreview, OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: "false" }).internalTools).toBe(
+      false,
+    );
+    for (const override of [
+      { OPENTAG_ENV: undefined },
+      { OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" },
+      { OPENTAG_ENV: "staging", OPENTAG_PUBLIC_URL: "https://staging.example.com" },
+      { OPENTAG_HOST: "0.0.0.0" },
+      { OPENTAG_PUBLIC_URL: "http://example.com" },
+    ]) {
+      expect(() => parseServerConfig({ ...localPreview, ...override })).toThrow();
+    }
+  });
+
   it("accepts the configured server log level and rejects unknown levels", () => {
     expect(parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "debug" }).logLevel).toBe("debug");
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
@@ -80,7 +96,7 @@ describe("parseServerConfig", () => {
 
   it("defaults the channel target coordinates to the public release endpoint", () => {
     expect(parseServerConfig(required).channelTarget).toEqual({
-      downloadBaseUrl: "https://storage.googleapis.com/opentag-release/releases",
+      downloadBaseUrl: "https://dl.opentag.build/releases",
       pollIntervalMs: 300_000,
     });
     expect(

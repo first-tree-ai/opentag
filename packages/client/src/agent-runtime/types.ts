@@ -127,6 +127,8 @@ export interface AgentRunResult {
 }
 
 export interface AgentRuntimeWorkspace {
+  /** Directory prepended after the Provider and workspace environments are composed. */
+  readonly pathPrepend?: string;
   readonly cwd: string;
   readonly environment?: Readonly<Record<string, string>>;
   readonly writableRoots?: readonly string[];

@@ -51,6 +51,8 @@ import {
   Copy,
   Cpu,
   DotsThreeVertical,
+  Eye,
+  EyeSlash,
   Gear,
   House,
   type IconWeight,
@@ -62,6 +64,7 @@ import {
   PlugsConnected,
   Plus,
   Shield,
+  SquaresFour,
   User,
   Wrench,
   X,
@@ -168,6 +171,7 @@ export function buttonClassName({
 } = {}): string {
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
+    "justify-center",
     variant === "primary" &&
       "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
     variant === "danger" &&
@@ -391,7 +395,10 @@ export type IconName =
   | "chevron-up"
   | "close"
   | "copy"
+  | "eye"
+  | "eye-slash"
   | "instructions"
+  | "overview"
   | "home"
   | "integrations"
   | "laptop"
@@ -414,8 +421,11 @@ const icons: Record<IconName, PhosphorIcon> = {
   "chevron-up": CaretUp,
   close: X,
   copy: Copy,
+  eye: Eye,
+  "eye-slash": EyeSlash,
   instructions: List,
   home: House,
+  overview: SquaresFour,
   integrations: PlugsConnected,
   laptop: Laptop,
   message: ChatCircle,

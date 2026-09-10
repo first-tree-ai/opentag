@@ -19,6 +19,7 @@ export const MAX_PROVIDER_CLI_TURN_IDENTITY_BYTES = 4096;
 
 const HOME_NAMESPACE_PATTERN = /^h-[0-9a-f]{40}$/;
 const SESSION_KEY_PATTERN = /^s-[0-9a-f]{40}$/;
+const RUN_KEY_PATTERN = /^r-[0-9a-f]{40}$/;
 const FINGERPRINT_PATTERN = /^v1:[0-9a-f]{64}$/;
 const logger = createLogger("runtime-provider-cli-turn-plan");
 
@@ -84,6 +85,7 @@ type ProviderCliTurnPlanShared = {
   readonly homeNamespace: string;
   readonly sessionId: string;
   readonly runId: string;
+  readonly captureOutgoingReplies?: boolean;
 };
 
 type ProviderCliTurnPlanSelection =
@@ -136,6 +138,16 @@ export function isProviderCliSessionKey(value: string): boolean {
   return SESSION_KEY_PATTERN.test(value);
 }
 
+/** Irreversible Run directory key; caller-supplied IDs never become path segments. */
+export function deriveProviderCliRunKey(runId: string): string {
+  assertIdentity("runId", runId);
+  return irreversibleKey("run", runId);
+}
+
+export function isProviderCliRunKey(value: string): boolean {
+  return RUN_KEY_PATTERN.test(value);
+}
+
 export function providerCliPlanHomeDir(layout: ProviderCliAccountLayout, homeNamespace: string): string {
   assertSafeKey(homeNamespace, HOME_NAMESPACE_PATTERN, "home namespace");
   return join(layout.plans, homeNamespace);
@@ -152,6 +164,18 @@ export function providerCliPlanSessionDir(
 
 export function providerCliTurnPlanPath(sessionDir: string): string {
   return join(sessionDir, "plan.json");
+}
+
+export function providerCliOutgoingReplyRunDir(sessionDir: string, runId: string): string {
+  return join(sessionDir, "runs", deriveProviderCliRunKey(runId));
+}
+
+export function providerCliOutgoingReplyReceiptsDir(sessionDir: string, runId: string): string {
+  return join(providerCliOutgoingReplyRunDir(sessionDir, runId), "outgoing-replies");
+}
+
+export function providerCliOutgoingReplyInflightDir(sessionDir: string, runId: string): string {
+  return join(providerCliOutgoingReplyRunDir(sessionDir, runId), "inflight");
 }
 
 export function providerCliTurnLauncherPath(sessionDir: string, command: ProviderCliTurnPlanCommand): string {
@@ -236,8 +260,9 @@ type ParsedTurnPlanIdentity = {
 
 function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
   const configDir = assertProviderCliSlackConfigDir(record.configDir);
+  assertSlackCaptureOutgoingReplies(record);
   if (record.selectionKind === "managed") {
-    if (!hasExactKeys(record, MANAGED_SLACK_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+    if (!hasPlanKeys(record, MANAGED_SLACK_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
     }
     return {
@@ -250,7 +275,7 @@ function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnP
     };
   }
   if (record.selectionKind === "external") {
-    if (!hasExactKeys(record, EXTERNAL_SLACK_PLAN_KEYS)) {
+    if (!hasPlanKeys(record, EXTERNAL_SLACK_PLAN_KEYS)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
     }
     return { ...shared, provider: "slack", command: "slack", selectionKind: "external", configDir };
@@ -259,8 +284,9 @@ function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnP
 }
 
 function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
+  const captureOutgoingReplies = parseCaptureOutgoingReplies(record);
   if (record.selectionKind === "managed") {
-    if (!hasExactKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+    if (!hasPlanKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
     }
     return {
@@ -269,13 +295,20 @@ function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurn
       command: "lark-cli",
       selectionKind: "managed",
       artifactId: record.artifactId,
+      ...(captureOutgoingReplies ? { captureOutgoingReplies: true } : {}),
     };
   }
   if (record.selectionKind === "external") {
-    if (!hasExactKeys(record, EXTERNAL_PLAN_KEYS)) {
+    if (!hasPlanKeys(record, EXTERNAL_PLAN_KEYS)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
     }
-    return { ...shared, provider: "feishu", command: "lark-cli", selectionKind: "external" };
+    return {
+      ...shared,
+      provider: "feishu",
+      command: "lark-cli",
+      selectionKind: "external",
+      ...(captureOutgoingReplies ? { captureOutgoingReplies: true } : {}),
+    };
   }
   throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
 }
@@ -485,7 +518,7 @@ export function managedArtifactDigest(artifactId: string): string | undefined {
   return digest && digest.length > 0 ? digest : undefined;
 }
 
-function irreversibleKey(kind: "home" | "session", value: string): string {
+function irreversibleKey(kind: "home" | "session" | "run", value: string): string {
   const digest = createHash("sha256").update(`${kind}\0${value}`, "utf8").digest("hex");
   return `${kind[0]}-${digest.slice(0, 40)}`;
 }
@@ -512,4 +545,27 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
   const actual = Object.keys(value);
   if (actual.length !== keys.length) return false;
   return keys.every((key) => Object.hasOwn(value, key));
+}
+
+function hasPlanKeys(value: Record<string, unknown>, requiredKeys: readonly string[]): boolean {
+  return hasExactKeys(value, requiredKeys) || hasExactKeys(value, [...requiredKeys, "captureOutgoingReplies"]);
+}
+
+function parseCaptureOutgoingReplies(record: Record<string, unknown>): boolean {
+  if (!Object.hasOwn(record, "captureOutgoingReplies")) return false;
+  if (typeof record.captureOutgoingReplies !== "boolean") {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn captureOutgoingReplies must be a boolean");
+  }
+  return record.captureOutgoingReplies;
+}
+
+function assertSlackCaptureOutgoingReplies(record: Record<string, unknown>): void {
+  if (!Object.hasOwn(record, "captureOutgoingReplies")) return;
+  if (record.captureOutgoingReplies !== false) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Slack Provider CLI Turn plans do not capture outgoing replies");
+  }
+}
+
+export function planCapturesOutgoingReplies(plan: ProviderCliTurnPlan): boolean {
+  return plan.provider === "feishu" && plan.captureOutgoingReplies === true;
 }

@@ -48,7 +48,7 @@ import {
   AgentRuntimeProviderRegistry,
   AgentRuntimeProviderUnavailableError,
 } from "./agent-runtime-provider-registry.js";
-import { AgentTurnRunner } from "./agent-turn-runner.js";
+import { type AgentTurnOutgoingReplyCollector, AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager } from "./context-tree.js";
@@ -57,6 +57,7 @@ import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
+import { cleanupOutgoingReplyRun, collectOutgoingReplyReceipts } from "./provider-cli/outgoing-reply-store.js";
 import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
 import { ProviderCliTurnPlanManager } from "./provider-cli/turn-plan-manager.js";
 import { resolveProviderCliTurnRunnerInvocation } from "./provider-cli/turn-runner.js";
@@ -623,7 +624,6 @@ export async function createClientRuntime(
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
     providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
-    inheritedPath: sourceEnvironment.PATH,
     slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
     workspace,
@@ -684,6 +684,7 @@ export async function createClientRuntime(
     runtimeManager,
     credentialEnvironment,
     turnPlan: providerCliTurnPlans,
+    outgoingReplies: createOutgoingReplyCollector(providerCliTurnPlans),
   });
   const availabilityTester = new AgentRuntimeAvailabilityTester({
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
@@ -1055,5 +1056,24 @@ export function createClientRuntimeHandlers(
     prepareReconcileResult: (request, result) => recovery.prepare(request, result),
     onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),
     onReconciled: (request, result) => recovery.afterReconciled(request, result),
+  };
+}
+
+function createOutgoingReplyCollector(
+  turnPlans: Pick<ProviderCliTurnPlanManager, "layout" | "sessionDir">,
+): AgentTurnOutgoingReplyCollector {
+  return {
+    collect: ({ sessionId, runId }) =>
+      collectOutgoingReplyReceipts({
+        plansRoot: turnPlans.layout.plans,
+        sessionDir: turnPlans.sessionDir(sessionId),
+        runId,
+      }),
+    cleanup: ({ sessionId, runId }) =>
+      cleanupOutgoingReplyRun({
+        plansRoot: turnPlans.layout.plans,
+        sessionDir: turnPlans.sessionDir(sessionId),
+        runId,
+      }),
   };
 }

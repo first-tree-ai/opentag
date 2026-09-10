@@ -79,4 +79,19 @@ describe("web diagnostics", () => {
     expect(JSON.stringify(error.mock.calls)).not.toContain("opaque-query");
     remove();
   });
+
+  it("leaves a third-party resource failure unreported", () => {
+    const error = vi.fn();
+    const remove = installWindowDiagnosticHandlers(window, new DiagnosticReporter({ error }));
+
+    const script = document.createElement("script");
+    script.src = "https://www.googletagmanager.com/gtag/js?id=G-EXAMPLE";
+    document.body.append(script);
+    script.dispatchEvent(new ErrorEvent("error"));
+
+    // A blocked analytics tag is somebody's content blocker, not this application failing, and a
+    // console error here fails every end-to-end test.
+    expect(error).not.toHaveBeenCalled();
+    remove();
+  });
 });

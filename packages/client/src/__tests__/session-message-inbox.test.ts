@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { lstat, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { InputRejectReason, SessionMessageDeliveryRequest, SessionReconcileRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { executeProviderCliTurnPlan } from "../index.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import { collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
 import {
   type DurableFailure,
   type DurableWorkRecord,
@@ -12,6 +16,11 @@ import {
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
+import {
+  installTurnTarget,
+  makeTurnPlanHarness,
+  writeExternalTurnSelection,
+} from "./fixtures/provider-cli-turn-plan.js";
 
 describe("SessionMessageInbox", () => {
   it("rejects new messages while quiesced but drains messages accepted before the pause", async () => {
@@ -301,7 +310,7 @@ describe("SessionMessageInbox", () => {
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", status: "retryable" }),
       "Session message retry state could not be persisted",
     );
-    expect(inbox.getState(first.messageId)?.status).toBe("retryable");
+    expect(inbox.getState(first.messageId)?.status).toBe("running");
     inbox.stop();
 
     const remembered = new SessionMessageInbox({
@@ -867,6 +876,7 @@ describe("SessionMessageInbox", () => {
     expect(order).toEqual(["prepare", "plan", "runtime", "prompt", "plan-cleanup", "cleanup"]);
     expect(turnPlan.prepare).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "feishu", runId: expect.stringMatching(/^session-message-/) }),
+      expect.any(AbortSignal),
     );
     visible.stop();
 
@@ -886,6 +896,184 @@ describe("SessionMessageInbox", () => {
     await internal.settled();
     expect(internalPlan.prepare).not.toHaveBeenCalled();
     internal.stop();
+  });
+
+  it("does not capture outgoing replies on the visible inbox prepare path", async () => {
+    const harness = await makeTurnPlanHarness();
+    try {
+      const target = await installTurnTarget(join(harness.accountHome, "bin"));
+      await writeExternalTurnSelection(harness.layout, "feishu", target);
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const runtime = {
+        waitForIdle: vi.fn(async () => undefined),
+        prompt: vi.fn(async (request: { runId: string }) => {
+          const code = await executeProviderCliTurnPlan({
+            planPath: join(harness.manager.sessionDir(targetSessionId), "plan.json"),
+            provider: "feishu",
+            runId: request.runId,
+            argv: ["im", "+messages-send", "--text", "hi"],
+            env: {
+              ...process.env,
+              OPENTAG_TEST_TARGET_MODE: "lark-cli",
+              OPENTAG_TEST_LARK_ENVELOPE: JSON.stringify({
+                ok: true,
+                identity: "bot",
+                data: { message_id: "om_inbox", chat_id: "oc_chat", create_time: "1000" },
+              }),
+            },
+            plansRoot: harness.layout.plans,
+          });
+          expect(code).toBe(0);
+          return { runId: request.runId, status: "completed", output: [] };
+        }),
+      };
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: {
+          prepare: vi.fn(async () => ({
+            path: "/tmp/provider-env.sh",
+            provider: "feishu" as const,
+            outboxContext: {
+              provider: "feishu" as const,
+              sessionKind: "channel" as const,
+              chatId: "oc-visible",
+            },
+          })),
+          cleanup: vi.fn(async () => undefined),
+        },
+        imCredentialGrantVersion: () => 2,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => runtime as never),
+          sessionKind: vi.fn(() => "visible" as const),
+        },
+        turnPlan: harness.manager,
+      });
+      expect((await inbox.accept(delivery({ targetSessionId, agentId }))).status).toBe("accepted");
+      await inbox.settled();
+      inbox.stop();
+      const collected = await collectOutgoingReplyReceipts({
+        plansRoot: harness.layout.plans,
+        sessionDir: harness.manager.sessionDir(targetSessionId),
+        runId: runtime.prompt.mock.calls[0]?.[0]?.runId ?? "missing",
+        waitMs: 0,
+      });
+      expect(collected.receipts).toEqual([]);
+      await expect(lstat(join(harness.manager.sessionDir(targetSessionId), "runs"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(harness.accountHome, { recursive: true, force: true });
+      await rm(harness.openTagHome, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds visible plan preparation with the Run timeout and does not start the model", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return {
+          cancel() {
+            fireTimeout = () => undefined;
+          },
+        };
+      },
+    };
+    const turnPlan = {
+      prepare: vi.fn((_input: unknown, signal?: AbortSignal) => {
+        return new Promise((_resolve, reject) => {
+          const onAbort = () => {
+            reject(signal?.reason ?? new Error("aborted"));
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
+      }),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const ensureRuntime = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: ensureRuntime as never,
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      timeoutScheduler,
+      turnPlan,
+    });
+    expect((await inbox.accept(delivery())).status).toBe("accepted");
+    await vi.waitFor(() => expect(turnPlan.prepare).toHaveBeenCalledOnce());
+    expect(turnPlan.prepare).toHaveBeenCalledWith(expect.any(Object), expect.any(AbortSignal));
+    fireTimeout();
+    await inbox.settled();
+    expect(ensureRuntime).not.toHaveBeenCalled();
+    expect(turnPlan.cleanup).not.toHaveBeenCalled();
+    inbox.stop();
+  });
+
+  it("does not start the model when the Run signal aborts after plan prepare", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return {
+          cancel() {
+            fireTimeout = () => undefined;
+          },
+        };
+      },
+    };
+    const turnPlan = {
+      prepare: vi.fn(async () => {
+        fireTimeout();
+        return { sessionDir: "/tmp/plans" };
+      }),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const ensureRuntime = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext: {
+            provider: "feishu" as const,
+            sessionKind: "channel" as const,
+            chatId: "oc-visible",
+          },
+        })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: ensureRuntime as never,
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      timeoutScheduler,
+      turnPlan,
+    });
+    expect((await inbox.accept(delivery())).status).toBe("accepted");
+    await inbox.settled();
+    expect(turnPlan.prepare).toHaveBeenCalledOnce();
+    expect(ensureRuntime).not.toHaveBeenCalled();
+    inbox.stop();
   });
 
   it("rejects a visible callback before ACK under grant v1 and accepts the same message after v2 is restored", async () => {

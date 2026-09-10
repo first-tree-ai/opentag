@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import { flushStdout } from "../../runtime/provider-cli/outgoing-reply-process.js";
 import { runProviderCliTurnRunner } from "../../runtime/provider-cli/turn-runner.js";
 
 const argv = process.argv.slice(2);
@@ -14,6 +15,12 @@ if (!planPath) {
 // accepts this derivation; its standalone runner uses the OS-account-global root.
 const plansRoot = dirname(dirname(dirname(planPath)));
 void runProviderCliTurnRunner(argv, { plansRoot }).then(
-  (code) => process.exit(code),
-  () => process.exit(1),
+  async (code) => {
+    process.exitCode = code;
+    await flushStdout();
+  },
+  async () => {
+    process.exitCode = 1;
+    await flushStdout();
+  },
 );

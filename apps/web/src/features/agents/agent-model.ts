@@ -50,6 +50,12 @@ export type AgentListItem = AgentListApiItem & {
   evidenceConfirmed: boolean;
 };
 
+/** List rows already carry identity, lifecycle and activity; usage is list-only and is dropped. */
+export function agentDetailFromListItem(item: AgentListApiItem): AgentDetail {
+  const { usage: _usage, ...detail } = item;
+  return detail;
+}
+
 export type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind: "unconfirmed" };
 
 export type AgentDetailView = AgentDetail & {

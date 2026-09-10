@@ -21,7 +21,11 @@ import type {
   StartSlackOAuthResponse,
   UnbindAgentMessagingRequest,
 } from "@opentag/shared/browser";
+import type { QueryClient } from "@tanstack/react-query";
 import { browserApi } from "../api.js";
+import { syncAgentQueries } from "../query/agent-sync.js";
+import { queryKeys } from "../query/keys.js";
+import { fetchSharedResource } from "../query/session-cache.js";
 
 export interface AgentSetupAdapter {
   /** The canonical setup state of one exact Agent — the only read this surface makes. */
@@ -64,26 +68,75 @@ interface AgentSetupBrowserApi {
 }
 
 /** The production adapter: every call is the matching BrowserApi request, nothing more. */
-export function createHttpSetupAdapter(api: AgentSetupBrowserApi = browserApi): AgentSetupAdapter {
+export function createHttpSetupAdapter(
+  api: AgentSetupBrowserApi = browserApi,
+  queryClient?: QueryClient,
+): AgentSetupAdapter {
+  /*
+   * A write moves the resource an earlier snapshot described, so a snapshot GET begun before the
+   * write must not answer the read that follows it: the shared cache would otherwise hand the
+   * post-write read the pre-write request's promise. Retiring in-flight snapshot reads at the
+   * operation boundary makes the controller's next read a request that starts after the write,
+   * whether the write succeeded or the reader still needs the state the failure left behind.
+   * Reads begun within the same operation still share one in-flight GET, and nothing here
+   * invalidates — the page decides when the next read happens.
+   */
+  const retireSnapshotReads = async (agentId?: string): Promise<void> => {
+    if (!queryClient) return;
+    await queryClient.cancelQueries({
+      queryKey: agentId === undefined ? queryKeys.agentSetupRoot() : queryKeys.agentSetup(agentId),
+    });
+  };
   return {
-    readSnapshot: (agentId) => api.agentSetup(agentId),
-    refreshPreparation: (agentId) => api.refreshAgentSetup(agentId),
+    readSnapshot: (agentId) =>
+      queryClient
+        ? fetchSharedResource(queryClient, {
+            queryKey: queryKeys.agentSetup(agentId),
+            queryFn: () => api.agentSetup(agentId),
+            staleTime: 0,
+          })
+        : api.agentSetup(agentId),
+    refreshPreparation: async (agentId) => {
+      try {
+        await api.refreshAgentSetup(agentId);
+      } finally {
+        await retireSnapshotReads(agentId);
+      }
+    },
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
-      await api.createFeishuSetupAttempt(agentId, intent, expectedMessaging);
+      try {
+        await api.createFeishuSetupAttempt(agentId, intent, expectedMessaging);
+      } finally {
+        await retireSnapshotReads(agentId);
+      }
     },
     cancelFeishuAttempt: async (attemptId) => {
-      await api.cancelFeishuSetupAttempt(attemptId);
+      try {
+        await api.cancelFeishuSetupAttempt(attemptId);
+      } finally {
+        // Attempts are keyed globally, so this seam never names an Agent; retire any setup read.
+        await retireSnapshotReads();
+      }
     },
     startSlackInstall: async (agentId, intent, expectedMessaging) => {
-      const started = await api.startSlackOAuth(agentId, {
-        intent,
-        returnSurface: "agent-setup",
-        expectedMessaging,
-      });
-      return started.authorizationUrl;
+      try {
+        const started = await api.startSlackOAuth(agentId, {
+          intent,
+          returnSurface: "agent-setup",
+          expectedMessaging,
+        });
+        return started.authorizationUrl;
+      } finally {
+        await retireSnapshotReads(agentId);
+      }
     },
     unbindMessaging: async (agentId, provider, bindingId) => {
-      await api.unbindAgentMessaging(agentId, { provider, bindingId });
+      try {
+        await api.unbindAgentMessaging(agentId, { provider, bindingId });
+      } finally {
+        await retireSnapshotReads(agentId);
+      }
+      if (queryClient) void syncAgentQueries(queryClient, agentId);
     },
   };
 }

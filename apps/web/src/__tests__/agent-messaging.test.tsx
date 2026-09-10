@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
-import { agentId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
+import { agentId, computerId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
 import { withLocaleAsync } from "./support/with-locale.js";
 
 describe("OpenTag Web App Shell", () => {
@@ -195,20 +195,31 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "No messaging channel" })).toBeNull();
   });
 
-  it("does not overlap focus refreshes while an Agent read is still pending", async () => {
-    let agentReads = 0;
+  it("does not overlap focus refreshes while a Computer read is still pending", async () => {
+    let computerReads = 0;
     let computerStatus: "online" | "offline" = "online";
-    let releaseAgentRead = () => {};
-    const pendingAgentRead = new Promise<void>((resolve) => {
-      releaseAgentRead = resolve;
+    let releaseComputerRead = () => {};
+    const pendingComputerRead = new Promise<void>((resolve) => {
+      releaseComputerRead = resolve;
     });
     installApi({
-      agentRead: () => {
-        agentReads += 1;
-        return agentReads === 1 ? undefined : pendingAgentRead;
-      },
       bound: true,
       computerStatus: () => computerStatus,
+      computers: async () => {
+        computerReads += 1;
+        if (computerReads > 1) await pendingComputerRead;
+        return [
+          {
+            id: computerId,
+            displayName: "Ada's Mac",
+            platform: "darwin",
+            connectionStatus: computerStatus,
+            providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+            connectedAt: "2026-08-20T00:00:00.000Z",
+            lastSeenAt: "2026-08-20T00:00:00.000Z",
+          },
+        ];
+      },
     });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
@@ -217,22 +228,26 @@ describe("OpenTag Web App Shell", () => {
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
     fireEvent(window, new Event("focus"));
-    await waitFor(() => expect(agentReads).toBe(2));
-    expect(agentReads).toBe(2);
+    await waitFor(() => expect(computerReads).toBe(2));
+    expect(computerReads).toBe(2);
 
-    releaseAgentRead();
+    releaseComputerRead();
     expect(await screen.findByText("Offline")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open computer setup" })).toBeTruthy();
   });
 
   it("invalidates a stale Agent detail after a background not-found response", async () => {
-    let agentReadStatus: number | undefined;
-    installApi({ agentReadStatus: () => agentReadStatus, bound: true });
+    let gone = false;
+    installApi({
+      agentListStatus: () => (gone ? 404 : undefined),
+      agentReadStatus: () => (gone ? 404 : undefined),
+      bound: true,
+    });
     window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
     expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
 
-    agentReadStatus = 404;
+    gone = true;
     fireEvent(window, new Event("focus"));
     expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
     expect(within(screen.getByRole("main")).queryByText("Ready")).toBeNull();
@@ -281,7 +296,7 @@ describe("OpenTag Web App Shell", () => {
         vi
           .mocked(fetch)
           .mock.calls.filter(
-            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && (init?.method ?? "GET") === "GET",
+            ([input, init]) => String(input) === "/api/v1/agents" && (init?.method ?? "GET") === "GET",
           ),
       ).toHaveLength(2),
     );

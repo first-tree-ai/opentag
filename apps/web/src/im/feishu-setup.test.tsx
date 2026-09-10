@@ -1,7 +1,9 @@
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
+import { createQueryClient } from "../query/client.js";
 import { FeishuSetup } from "./feishu-setup.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -30,23 +32,25 @@ function Harness({
   presentation?: "dialog" | "inline";
 }) {
   return (
-    <FeishuSetup agentId={agentId} onSuccess={onSuccess} presentation={presentation}>
-      {(setup) => (
-        <>
-          <button type="button" onClick={() => void setup.start("create")}>
-            Create
-          </button>
-          <button type="button" onClick={() => void setup.start("reauthorize")}>
-            Reauthorize
-          </button>
-          <button type="button" onClick={() => void setup.start("replace")}>
-            Replace
-          </button>
-          {setup.loading ? <span>Loading setup</span> : null}
-          {setup.feedback}
-        </>
-      )}
-    </FeishuSetup>
+    <QueryClientProvider client={createQueryClient()}>
+      <FeishuSetup agentId={agentId} onSuccess={onSuccess} presentation={presentation}>
+        {(setup) => (
+          <>
+            <button type="button" onClick={() => void setup.start("create")}>
+              Create
+            </button>
+            <button type="button" onClick={() => void setup.start("reauthorize")}>
+              Reauthorize
+            </button>
+            <button type="button" onClick={() => void setup.start("replace")}>
+              Replace
+            </button>
+            {setup.loading ? <span>Loading setup</span> : null}
+            {setup.feedback}
+          </>
+        )}
+      </FeishuSetup>
+    </QueryClientProvider>
   );
 }
 

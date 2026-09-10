@@ -1,12 +1,81 @@
+import type { QueryKey } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
-import { Loader } from "../../ui/design-system.js";
+import { terminalResourceError } from "../../query/session-cache.js";
+import { Banner, Button, Loader } from "../../ui/design-system.js";
 
 export type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
 export function isTerminalResourceError(error: Error): boolean {
   return error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
+}
+
+/** A paused or offline observer is not a fresh confirmation of the value it still holds. */
+export function isConfirmedQuerySuccess(query: { isSuccess: boolean; fetchStatus: string }): boolean {
+  return query.isSuccess && query.fetchStatus !== "paused";
+}
+
+/** The part of a query this remembers. Taking a plain object keeps the reads it accepts explicit. */
+export interface SettlingQuery {
+  error: Error | null;
+  isError: boolean;
+  isSuccess: boolean;
+}
+
+/**
+ * The last answer the Server actually gave, held on the QueryClient so remounts, in-flight refreshes,
+ * and later transient failures cannot resurrect a 401/403/404/410. Only a later successful read
+ * retires it. Transient failures are not stored here: they describe the attempt, not the resource.
+ */
+export function usePersistedSettledError(queryKey: QueryKey, query: SettlingQuery): Error | null {
+  const queryClient = useQueryClient();
+  const held = terminalResourceError(queryClient, queryKey);
+  if (held) return held;
+  if (query.isSuccess) return null;
+  return query.isError ? (query.error ?? new Error(m.common_request_failed())) : null;
+}
+
+export function ResourceRefreshNotice({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  return (
+    <Banner
+      action={<Banner.Action onClick={onRetry}>{m.common_try_again()}</Banner.Action>}
+      data-ui="resource-refresh-failed"
+      description={error.message}
+      role="status"
+      title={m.common_update_failed_last_available()}
+      variant="alert"
+    />
+  );
+}
+
+export function liveRefreshErrors(
+  query: SettlingQuery & { data?: unknown; isFetchNextPageError?: boolean },
+  persistedError: Error | null,
+): { terminalError: Error | null; refreshError: Error | null; loadMoreError: Error | null } {
+  const terminalError = persistedError && isTerminalResourceError(persistedError) ? persistedError : null;
+  const current = query.error ?? persistedError;
+  const loadMoreError = query.isFetchNextPageError && !terminalError ? current : null;
+  const refreshError =
+    !terminalError && query.data !== undefined && query.isError && !query.isFetchNextPageError ? current : null;
+  return { terminalError, refreshError, loadMoreError };
+}
+
+export function ResourceRefreshStatus({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  return (
+    <p
+      className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle"
+      data-ui="resource-refresh-failed"
+      role="status"
+    >
+      <span>{m.common_update_failed_last_available()}</span>
+      <Button size="compact" type="button" variant="secondary" onClick={onRetry}>
+        {m.common_try_again()}
+      </Button>
+      <span className="text-kumo-danger">{error.message}</span>
+    </p>
+  );
 }
 
 export function AsyncState<T>({

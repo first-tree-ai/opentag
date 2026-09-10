@@ -68,6 +68,7 @@
   "common_try_again": "再试一次",
   "common_unknown": "未知",
   "common_update": "更新",
+  "common_update_failed_last_available": "更新失败，正在显示上次可用的数据。",
   "common_view": "查看",
   "common_yes": "是"
 }

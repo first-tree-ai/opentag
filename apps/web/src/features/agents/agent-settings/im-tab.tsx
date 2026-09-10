@@ -1,5 +1,4 @@
 import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type Ref, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { spaceScriptBoundary } from "../../../i18n/format.js";
@@ -7,19 +6,18 @@ import { FeishuSetup } from "../../../im/feishu-setup.js";
 import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import * as m from "../../../paraglide/messages.js";
-import { queryKeys } from "../../../query/keys.js";
 import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
 import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { messagingConnectionLabel, messagingConnectionTone } from "../agent-presentation.js";
+import { useImBindingQuery } from "../agent-queries.js";
 
 type Confirmation =
   | { bindingId: string; kind: "disable_binding"; provider: ImBindingSummary["provider"] }
   | { kind: "every_message" };
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
   const [successMessage, setSuccessMessage] = useState<string>();
   const [confirmation, setConfirmation] = useState<Confirmation>();
@@ -32,13 +30,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   const activeFeishuTriggerRef = useRef<HTMLElement | null>(null);
   const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
   const triggerRulesHeadingRef = useRef<HTMLHeadingElement>(null);
-  const reload = () => void queryClient.invalidateQueries({ queryKey: queryKeys.agents.imBinding(agent.id) });
-  const state = toResourceState(
-    useQuery({
-      queryKey: queryKeys.agents.imBinding(agent.id),
-      queryFn: () => browserApi.imBinding(agent.id).then((binding) => binding ?? null),
-    }),
-  );
+  const state = toResourceState(useImBindingQuery(agent.id));
 
   useEffect(() => {
     if (confirmation || !restoreFocusTarget) return;
@@ -57,7 +49,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setConfirmationError(undefined);
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
-      reload();
       setRestoreFocusTarget("trigger_rules");
       setConfirmation(undefined);
       onAgentChanged();
@@ -78,7 +69,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       setSuccessMessage(undefined);
       setConfirmationError(undefined);
       await browserApi.disableImBinding(bindingId);
-      reload();
       setRestoreFocusTarget("messaging");
       setConfirmation(undefined);
       onAgentChanged();
@@ -110,7 +100,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         returnFocusRef={activeFeishuTriggerRef}
         onSuccess={() => {
           setSuccessMessage(m.im_feishu_connected({ provider: messagingProviderLabel("feishu") }));
-          reload();
           onAgentChanged();
         }}
       >
@@ -118,7 +107,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
           <SlackConfiguration
             agentId={agent.id}
             onSuccess={() => {
-              reload();
               onAgentChanged();
             }}
           >

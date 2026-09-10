@@ -1,11 +1,19 @@
 import type { AccountComputerSummary as Computer, ComputerConnectCodeStatus } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { StrictMode } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render as renderPlain, screen } from "@testing-library/react";
+import { type ReactNode, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analytics } from "../../analytics/analytics.js";
 import type { GtagCommand } from "../../analytics/gtag.js";
 import { browserApi } from "../../api.js";
+import { createQueryClient } from "../../query/client.js";
 import { ComputerConnect } from "./computer-connect.js";
+
+function render(ui: ReactNode) {
+  const client = createQueryClient();
+  const view = renderPlain(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return Object.assign(view, { disposeQueryClient: () => client.clear() });
+}
 
 const NOW = "2026-08-20T00:00:00.000Z";
 const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
@@ -506,12 +514,16 @@ describe("ComputerConnect", () => {
 
     const view = render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
+    const statusCalls = vi.mocked(browserApi.computerConnectCodeStatus).mock.calls.length;
     view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(vi.mocked(browserApi.computerConnectCodeStatus).mock.calls.length).toBe(statusCalls);
     poll.resolve(redeemed());
     await flushAsync();
-
     expect(computers).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    view.disposeQueryClient();
   });
 
   it("ignores a late issuance response after unmount", async () => {
@@ -522,8 +534,7 @@ describe("ComputerConnect", () => {
     view.unmount();
     issued.resolve({ connectCodeId: CONNECT_CODE_ID, bootstrapCommand: COMMAND, expiresIn: 900, issuedAt: NOW });
     await flushAsync();
-
     expect(browserApi.computerConnectCodeStatus).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    view.disposeQueryClient();
   });
 });

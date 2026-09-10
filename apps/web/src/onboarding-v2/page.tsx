@@ -1,4 +1,5 @@
 import type { CreateAgentRequest } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { analytics } from "../analytics/analytics.js";
@@ -6,6 +7,7 @@ import { ANALYTICS_EVENT, activationStep } from "../analytics/events.js";
 import { ApiError, browserApi } from "../api.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
+import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
 import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
@@ -184,6 +186,7 @@ function AgentCreatePage({
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
+  const queryClient = useQueryClient();
   const [draft, setDraft] = useState<AgentDraft>(() => {
     const initial = emptyDraft(existingAgentNames);
     return creationPreviewInitialView === "agent" ? { ...initial, destination: "local" } : initial;
@@ -244,6 +247,7 @@ function AgentCreatePage({
       try {
         const created = creationPreview ? await creationPreview(request) : await browserApi.createAgent(request);
         report.created(request.runtimeProvider);
+        if (!creationPreview) void syncAgentQueries(queryClient, created.id);
         await Promise.resolve(onAgentAvailable?.(created.id));
       } catch (cause) {
         report.refused(cause);
@@ -254,7 +258,7 @@ function AgentCreatePage({
         setSubmitting(false);
       }
     },
-    [creationPreview, onAgentAvailable],
+    [creationPreview, onAgentAvailable, queryClient],
   );
 
   return (

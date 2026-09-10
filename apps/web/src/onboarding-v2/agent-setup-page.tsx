@@ -20,9 +20,10 @@ import type {
   ImProvider,
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAgentSetupStageReport } from "../analytics/milestones.js";
-import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, CancelledRequestError, withDeadline } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
 import {
@@ -35,6 +36,8 @@ import { formatDateTime, spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderAlternateBrand, messagingProviderLabel } from "../im/provider-label.js";
 import { slackConfigurationMessage } from "../im/slack-configuration.js";
 import * as m from "../paraglide/messages.js";
+import { syncAgentQueries } from "../query/agent-sync.js";
+import { queryKeys } from "../query/keys.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
@@ -647,7 +650,11 @@ export function AgentSetupPage({
   reviewMode = false,
   slackOAuthError,
 }: AgentSetupPageProps) {
-  const resolvedAdapter = useMemo(() => adapter ?? createHttpSetupAdapter(), [adapter]);
+  const queryClient = useQueryClient();
+  const resolvedAdapter = useMemo(
+    () => adapter ?? createHttpSetupAdapter(browserApi, queryClient),
+    [adapter, queryClient],
+  );
   // Keyed on the exact target: a different Agent's setup is a different task, and remounting is
   // what retires everything the previous one still had in flight.
   return (
@@ -664,6 +671,7 @@ export function AgentSetupPage({
       refreshSignal={refreshSignal}
       reviewMode={reviewMode}
       slackOAuthError={slackOAuthError}
+      syncAgentCachesOnReady={adapter === undefined}
     />
   );
 }
@@ -680,7 +688,17 @@ function AgentSetupPageContent({
   refreshSignal,
   reviewMode = false,
   slackOAuthError,
-}: Omit<AgentSetupPageProps, "adapter"> & { readonly adapter: AgentSetupAdapter }) {
+  syncAgentCachesOnReady = false,
+}: Omit<AgentSetupPageProps, "adapter"> & {
+  readonly adapter: AgentSetupAdapter;
+  /**
+   * Whether observing a completed messaging binding synchronizes the shared Agent caches. Only
+   * the production adapter does; Lab and in-memory adapters keep their isolation from the real
+   * QueryClient.
+   */
+  readonly syncAgentCachesOnReady?: boolean;
+}) {
+  const queryClient = useQueryClient();
   const controller = useAgentSetup(agentId, adapter, onExternalNavigation);
   const previousRefreshSignal = useRef(refreshSignal);
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
@@ -690,6 +708,29 @@ function AgentSetupPageContent({
   // The stages between a connected Computer and a usable Agent, which is where a reader who never
   // holds a conversation actually stops. Reported per stage, not per re-read.
   useAgentSetupStageReport(agentId, snapshot?.stage);
+
+  /*
+   * A completed authorization/handoff changes the Agent's messaging evidence, so the shared
+   * Agent, binding, and handoff caches synchronize exactly once per completion: when a ready
+   * binding is first observed under a binding identity and credential generation this mounted
+   * page has not synced yet. That covers the already-ready first snapshot on return from OAuth,
+   * a completion the poll observes, and a reauthorization that completes between two reads
+   * without the transitional state ever being shown — while repeated snapshots of the same
+   * completion (the 2s beat, focus returns) never sync twice. Syncing at the completion
+   * boundary, rather than on navigation away, is what lets a reader who returns home inside the
+   * 30s freshness window re-read instead of trusting the binding cached before Setup. The Setup
+   * snapshot read itself is not one of the synced keys.
+   */
+  const syncedCompletion = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!syncAgentCachesOnReady) return;
+    const messaging = snapshot?.messaging;
+    if (messaging?.kind !== "ready") return;
+    const completion = `${messaging.provider}:${messaging.bindingId}:${messaging.credentialGeneration}`;
+    if (syncedCompletion.current === completion) return;
+    syncedCompletion.current = completion;
+    void syncAgentQueries(queryClient, agentId);
+  }, [syncAgentCachesOnReady, snapshot, queryClient, agentId]);
 
   useEffect(() => {
     if (previousRefreshSignal.current === refreshSignal) return;
@@ -1080,8 +1121,32 @@ function ComputerSetupSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { computer } = snapshot;
-  const serverComputerConnectAdapter = useMemo(() => createAgentTargetedComputerConnectAdapter(agentId), [agentId]);
+  const queryClient = useQueryClient();
+  const serverComputerConnectAdapter = useMemo(
+    () => createAgentTargetedComputerConnectAdapter(agentId, browserApi, queryClient),
+    [agentId, queryClient],
+  );
   const computerConnectAdapter = computerAdapter?.connect ?? serverComputerConnectAdapter;
+  /*
+   * A bind or repair moves the Computer state a snapshot GET begun before it may still be
+   * answering through the shared cache. Retire that in-flight read at the completion boundary, so
+   * the controller's next read starts after the write — the same operation boundary the messaging
+   * writes get from the adapter itself — then sync the shared caches as before. Lab adapters keep
+   * their own transport and their own isolation, so none of this touches them.
+   */
+  const afterComputerCompletion = (computers: boolean) => {
+    if (computerAdapter) {
+      onChanged();
+      return;
+    }
+    void (async () => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.agentSetup(agentId) });
+      void syncAgentQueries(queryClient, agentId, { computers });
+      onChanged();
+    })();
+  };
+  const afterBind = () => afterComputerCompletion(false);
+  const afterRepair = () => afterComputerCompletion(true);
   if (computer.kind === "not-bound") {
     return (
       <NotBoundComputerSection
@@ -1089,7 +1154,7 @@ function ComputerSetupSection({
         computerConnectAdapter={computerConnectAdapter}
         inventoryAdapter={computerAdapter?.inventory}
         name={snapshot.agent.displayName}
-        onChanged={onChanged}
+        onChanged={afterBind}
         snapshot={snapshot}
       />
     );
@@ -1117,7 +1182,7 @@ function ComputerSetupSection({
               adapter={computerConnectAdapter}
               agentId={agentId}
               inventoryAdapter={computerAdapter?.inventory}
-              onBound={onChanged}
+              onBound={afterBind}
             />
           ) : null}
         </div>
@@ -1144,7 +1209,7 @@ function ComputerSetupSection({
     <BoundComputerSection
       computer={computer}
       computerConnectAdapter={computerConnectAdapter}
-      onChanged={onChanged}
+      onChanged={afterRepair}
       snapshot={snapshot}
     />
   );

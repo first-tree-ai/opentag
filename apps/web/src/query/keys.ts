@@ -14,6 +14,10 @@ export const queryKeys = {
   internalNavigationVisibility: () => ["internalNavigationVisibility"] as const,
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
+  computerConnectCode: (connectCodeId: string) => ["computerConnectCodes", connectCodeId] as const,
+  agentSetup: (agentId: string) => ["agentSetup", agentId] as const,
+  /** Every Setup snapshot read, for a write that must retire whichever one is still in flight. */
+  agentSetupRoot: () => ["agentSetup"] as const,
 
   agents: {
     listRoot: () => ["agents", "list"] as const,

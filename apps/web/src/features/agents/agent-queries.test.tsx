@@ -1,11 +1,13 @@
 import type { AccountComputerSummary, AgentDetail } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { ApiError, browserApi } from "../../api.js";
+import { queryKeys } from "../../query/keys.js";
 import type { AgentDetailView } from "./agent-model.js";
 import { projectAgentAvailability } from "./agent-model.js";
-import { useAgentDetailView, useAgentListView } from "./agent-queries.js";
+import { useAgentDetailView, useAgentIdentityList, useAgentListView } from "./agent-queries.js";
 
 const accountId = "0b9c8d7e-6f50-4a1b-8c2d-3e4f50617283";
 const agentId = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
@@ -72,6 +74,11 @@ function DetailProbe({ initialAgent }: { initialAgent?: AgentDetailView }) {
   );
 }
 
+const agentListItem = {
+  ...agentDetail,
+  usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
+};
+
 function ListProbe() {
   const state = useAgentListView(accountId);
   return (
@@ -86,6 +93,29 @@ function ListProbe() {
       </span>
     </div>
   );
+}
+
+function IdentityProbe() {
+  const state = useAgentIdentityList(accountId);
+  return <span data-testid="identity">{state.kind}</span>;
+}
+
+function DetailWithAccountProbe() {
+  const state = useAgentDetailView(agentId, { watched: true, accountId });
+  return (
+    <div>
+      <span data-testid="kind">{state.kind}</span>
+      <span data-testid="value">
+        {state.kind === "ready" ? state.value.displayName : state.kind === "error" ? state.error.message : ""}
+      </span>
+    </div>
+  );
+}
+
+let capturedClient: ReturnType<typeof useQueryClient>;
+function CaptureClient() {
+  capturedClient = useQueryClient();
+  return null;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -218,4 +248,100 @@ describe("Agent views read from the cache", () => {
       expect(screen.getByTestId("value").textContent).toBe(`Agents refused (${status})`);
     },
   );
+
+  it("lets the name-only switcher read the Agent list without Computer or messaging evidence", async () => {
+    const list = vi.spyOn(browserApi, "agents").mockResolvedValue({
+      agents: [
+        agentListItem,
+        { ...agentListItem, id: "22222222-2222-4222-8222-222222222222" },
+        { ...agentListItem, id: "33333333-3333-4333-8333-333333333333" },
+      ],
+    });
+    const computers = vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+    const binding = vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
+    const handoff = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+
+    await renderInRouter(<IdentityProbe />);
+    await waitFor(() => expect(screen.getByTestId("identity").textContent).toBe("ready"));
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(computers).not.toHaveBeenCalled();
+    expect(binding).not.toHaveBeenCalled();
+    expect(handoff).not.toHaveBeenCalled();
+  });
+
+  it("reuses a successful list row for the selected Agent instead of GET /agents/:id", async () => {
+    stubEvidence();
+    const list = vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentListItem] });
+    const detail = vi.spyOn(browserApi, "agent");
+
+    await renderInRouter(<DetailWithAccountProbe />);
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("ready"));
+    expect(screen.getByTestId("value").textContent).toBe("Reviewer");
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(detail).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a list refusal as this Agent's authorization and recovers by id", async () => {
+    stubEvidence();
+    vi.spyOn(browserApi, "agents").mockRejectedValue(new ApiError(403, "Agents refused"));
+    const detail = vi.spyOn(browserApi, "agent").mockResolvedValue(agentDetail);
+
+    await renderInRouter(<DetailWithAccountProbe />);
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("ready"));
+    expect(screen.getByTestId("value").textContent).toBe("Reviewer");
+    expect(detail).toHaveBeenCalledWith(agentId);
+  });
+
+  it("does not let an older list row overrule a newer per-Agent refusal", async () => {
+    stubEvidence();
+    const listResult = { agents: [agentListItem] };
+    vi.spyOn(browserApi, "agents").mockResolvedValue(listResult);
+    vi.spyOn(browserApi, "agent").mockRejectedValue(new ApiError(403, "Agent access removed"));
+    const view = await renderInRouter(<CaptureClient />);
+    capturedClient.setQueryData(queryKeys.agents.list(accountId), listResult, { updatedAt: Date.now() - 1_000 });
+    await capturedClient
+      .fetchQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) })
+      .catch(() => undefined);
+    view.rerender(
+      <>
+        <CaptureClient />
+        <DetailWithAccountProbe />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("error"));
+    expect(screen.getByTestId("value").textContent).toBe("Agent access removed");
+  });
+
+  it("keeps a newer per-Agent refusal across a transient failure and remount until authorized recovery", async () => {
+    stubEvidence();
+    const listResult = { agents: [agentListItem] };
+    vi.spyOn(browserApi, "agents").mockResolvedValue(listResult);
+    const detail = vi
+      .spyOn(browserApi, "agent")
+      .mockRejectedValueOnce(new ApiError(403, "Agent access removed"))
+      .mockRejectedValueOnce(new ApiError(503, "Temporary outage"))
+      .mockResolvedValue(agentDetail);
+    const view = await renderInRouter(<CaptureClient />);
+    capturedClient.setQueryData(queryKeys.agents.list(accountId), listResult, { updatedAt: Date.now() - 1_000 });
+    await capturedClient
+      .fetchQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) })
+      .catch(() => undefined);
+    await capturedClient
+      .fetchQuery({ queryKey: queryKeys.agents.detail(agentId), queryFn: () => browserApi.agent(agentId) })
+      .catch(() => undefined);
+    view.rerender(
+      <>
+        <CaptureClient />
+        <DetailWithAccountProbe />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("error"));
+    expect(screen.getByTestId("value").textContent).toBe("Agent access removed");
+    await act(async () => {
+      await capturedClient.refetchQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    });
+    await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("ready"));
+    expect(screen.getByTestId("value").textContent).toBe("Reviewer");
+    expect(detail).toHaveBeenCalled();
+  });
 });

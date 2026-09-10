@@ -4,7 +4,7 @@ import {
   type AgentUsageDetail,
   type AgentUsageWindowDays,
 } from "@opentag/shared/browser";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type ComponentProps, lazy, Suspense, useCallback, useState } from "react";
 import { browserApi } from "../api.js";
@@ -12,6 +12,15 @@ import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { formatCompactNumber, formatDay, formatNumber, formatPercent } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
+import { liveResourceQueryOptions } from "../query/live.js";
+import {
+  observedAfter,
+  type ResourceObservation,
+  refusalOutranks,
+  resourceSuccessObservation,
+  type TerminalResourceObservation,
+  terminalResourceObservation,
+} from "../query/session-cache.js";
 import {
   Banner,
   ChartPalette,
@@ -25,7 +34,13 @@ import {
   Text,
   TimeseriesChart,
 } from "../ui/design-system.js";
-import { isTerminalResourceError } from "./resource/resource-state.js";
+import { useAgentListQuery } from "./agents/agent-queries.js";
+import {
+  isConfirmedQuerySuccess,
+  isTerminalResourceError,
+  ResourceRefreshNotice,
+  usePersistedSettledError,
+} from "./resource/resource-state.js";
 
 const LazyTimeseriesChart = lazy(async () => {
   const { echarts } = await import("./agent-usage-echarts.js");
@@ -36,10 +51,21 @@ const LazyTimeseriesChart = lazy(async () => {
   };
 });
 
+type UsageTotals = {
+  readonly windowDays: AgentUsageWindowDays;
+  readonly tasks: number;
+  readonly tokens: number;
+};
+
 type UsageState =
   | { readonly kind: "loading" }
   | { readonly kind: "error"; readonly error: Error }
-  | { readonly kind: "ready"; readonly value: AgentUsageDetail };
+  | {
+      readonly kind: "ready";
+      readonly value: UsageTotals;
+      readonly detail?: AgentUsageDetail;
+      readonly refreshError?: Error;
+    };
 
 /** The Agent home answers "how much has this Agent used recently", so it offers the shortest windows. */
 const AGENT_HOME_USAGE_WINDOW_OPTIONS = [1, 7, AGENT_USAGE_WINDOW_DAYS] as const;
@@ -60,9 +86,9 @@ export function usageXAxisTickLabel(value: number, endedAt: string, windowDays: 
   return distanceFromEnd >= 0 && distanceFromEnd < endLabelBuffer ? "" : formatDay(timestamp);
 }
 
-export function AgentUsageOverview({ agentId }: { agentId: string }) {
+export function AgentUsageOverview({ accountId, agentId }: { accountId?: string; agentId: string }) {
   const [windowDays, setWindowDays] = useState<AgentUsageWindowDays>(AGENT_USAGE_WINDOW_DAYS);
-  const { retry, state } = useAgentUsage(agentId, windowDays);
+  const { retry, state } = useAgentUsage(agentId, windowDays, { accountId, compact: true });
   return (
     <LayerCard
       render={<section />}
@@ -136,24 +162,120 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
 function useAgentUsage(
   agentId: string,
   windowDays: AgentUsageWindowDays,
+  { accountId, compact = false }: { accountId?: string; compact?: boolean } = {},
 ): { readonly retry: () => void; readonly state: UsageState } {
-  // Keyed by Agent and window, so the overview on an Agent's page and the tab on its usage page ask
-  // for the same 30 days once between them rather than each on its own.
+  const queryClient = useQueryClient();
+  const usageKey = queryKeys.agents.usage(agentId, windowDays);
+  const canUseListSummary = Boolean(compact && windowDays === AGENT_USAGE_WINDOW_DAYS && accountId);
+  const listKey = queryKeys.agents.list(accountId ?? "");
+  const listQuery = useAgentListQuery(accountId ?? "", canUseListSummary);
+  const listed = listQuery.data?.agents.find((agent) => agent.id === agentId);
+  /*
+   * The summary is the last list answer the Server gave, held apart from the refresh state: a
+   * transient re-read failure adds a notice but must not pull totals the reader is already
+   * looking at. Only a terminal refusal of the list itself withdraws them, and the summary is
+   * never written into the full-usage cache.
+   */
+  const listRefused = terminalResourceObservation(queryClient, listKey) !== undefined;
+  const listSummary =
+    canUseListSummary && listed && !listRefused
+      ? ({
+          windowDays: AGENT_USAGE_WINDOW_DAYS,
+          tasks: listed.usage.tasks,
+          tokens: listed.usage.tokens,
+        } satisfies UsageTotals)
+      : undefined;
+  // A degraded list source asks the full read to stand in behind the retained summary.
+  const listRefreshFailed = Boolean(canUseListSummary && listed && !isConfirmedQuerySuccess(listQuery));
+  const waitingForList = canUseListSummary && !listQuery.isFetched;
+  const usageSuccess = resourceSuccessObservation(queryClient, usageKey);
+  const usageRefusal = terminalResourceObservation(queryClient, usageKey);
+  const listSuccess = resourceSuccessObservation(queryClient, listKey);
+  /*
+   * Keyed by Agent and window. The home 30-day totals reuse the list summary when that read is
+   * the newest authorized source; a newer full read or refusal wins. Observation order — never
+   * the wall clock — decides which read is newer, so same-millisecond answers still order.
+   */
+  const usageAuthoritative = observedAfter(usageSuccess, listSuccess) || refusalOutranks(usageRefusal, listSuccess);
   const query = useQuery({
-    queryKey: queryKeys.agents.usage(agentId, windowDays),
+    queryKey: usageKey,
     queryFn: () => browserApi.agentUsage(agentId, windowDays),
+    enabled: !waitingForList && (!listSummary || usageAuthoritative || listRefreshFailed),
+    ...liveResourceQueryOptions,
   });
-  const retry = useCallback(() => void query.refetch(), [query]);
-  const error = query.isError ? usageError(query.error) : undefined;
-  const state: UsageState =
-    error && (!query.data || isTerminalResourceError(error))
-      ? { kind: "error", error }
-      : query.data
-        ? { kind: "ready", value: query.data }
-        : error
-          ? { kind: "error", error }
-          : { kind: "loading" };
-  return { retry, state };
+  const persistedError = usePersistedSettledError(usageKey, {
+    error: query.error ? usageError(query.error) : null,
+    isError: query.isError,
+    isSuccess: query.isSuccess,
+  });
+  const retry = useCallback(() => {
+    if (usageAuthoritative || !listSummary) void query.refetch();
+    else void listQuery.refetch();
+  }, [listQuery, listSummary, query, usageAuthoritative]);
+  return {
+    retry,
+    state: presentUsageState({
+      detail: query.data,
+      listError: listQuery.isError ? usageError(listQuery.error) : undefined,
+      listSuccess,
+      listSummary,
+      persistedError,
+      queryError: query.isError ? usageError(query.error) : undefined,
+      usageRefusal,
+      usageSuccess,
+    }),
+  };
+}
+
+function usageRefreshError(error: Error | null | undefined): Error | undefined {
+  return error && !isTerminalResourceError(error) ? error : undefined;
+}
+
+function readyUsage(value: UsageTotals, detail?: AgentUsageDetail, refreshError?: Error): UsageState {
+  return { kind: "ready", value, detail, refreshError };
+}
+
+function fallbackUsageState(detail: AgentUsageDetail | undefined, error: Error | null | undefined): UsageState {
+  if (error && (!detail || isTerminalResourceError(error))) return { kind: "error", error };
+  if (detail) return readyUsage(detail, detail, usageRefreshError(error));
+  return error ? { kind: "error", error } : { kind: "loading" };
+}
+
+function presentUsageState({
+  detail,
+  listError,
+  listSuccess,
+  listSummary,
+  persistedError,
+  queryError,
+  usageRefusal,
+  usageSuccess,
+}: {
+  detail?: AgentUsageDetail;
+  listError?: Error;
+  listSuccess?: ResourceObservation;
+  listSummary?: UsageTotals;
+  persistedError: Error | null;
+  queryError?: Error;
+  usageRefusal?: TerminalResourceObservation;
+  usageSuccess?: ResourceObservation;
+}): UsageState {
+  // A terminal refusal stands until a read the Server answered settles strictly after it. A manual
+  // write, or an older answer that shares the refusal's millisecond, must not resurrect the data
+  // the refusal withdrew.
+  if (refusalOutranks(usageRefusal, listSuccess) && refusalOutranks(usageRefusal, usageSuccess)) {
+    return {
+      kind: "error",
+      error: usageRefusal?.error ?? persistedError ?? queryError ?? new Error(m.usage_error_fallback()),
+    };
+  }
+  if (detail && !observedAfter(listSuccess, usageSuccess) && !refusalOutranks(usageRefusal, usageSuccess)) {
+    return readyUsage(detail, detail, usageRefreshError(persistedError ?? queryError));
+  }
+  if (listSummary && !refusalOutranks(usageRefusal, listSuccess)) {
+    return readyUsage(listSummary, undefined, usageRefreshError(listError));
+  }
+  return fallbackUsageState(detail, persistedError ?? queryError);
 }
 
 function usageError(cause: unknown): Error {
@@ -195,7 +317,18 @@ function UsageSummaryState({
       />
     );
   }
-  return compact ? <UsageMetrics usage={state.value} compact /> : <AgentUsageDetailContent usage={state.value} />;
+  return (
+    <>
+      {state.refreshError ? <ResourceRefreshNotice error={state.refreshError} onRetry={onRetry} /> : null}
+      {compact ? (
+        <UsageMetrics usage={state.value} compact />
+      ) : state.detail ? (
+        <AgentUsageDetailContent usage={state.detail} />
+      ) : (
+        <UsageMetrics usage={state.value} />
+      )}
+    </>
+  );
 }
 
 function UsageLoading() {
@@ -230,7 +363,7 @@ function UsageMetricSkeleton() {
   );
 }
 
-function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: AgentUsageDetail }) {
+function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: UsageTotals }) {
   return (
     <dl
       className="grid grid-cols-2 divide-x divide-kumo-line"

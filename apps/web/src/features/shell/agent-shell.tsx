@@ -4,8 +4,7 @@ import { initials } from "../../i18n/format.js";
 import { useInternalNavigationVisibility } from "../../internal/navigation-visibility.js";
 import * as m from "../../paraglide/messages.js";
 import { DropdownMenu, Icon, Sidebar } from "../../ui/design-system.js";
-import type { AgentListItem } from "../agents/agent-model.js";
-import { useAgentListView } from "../agents/agent-queries.js";
+import { useAgentIdentityList } from "../agents/agent-queries.js";
 import {
   agentDetailLink,
   agentIntegrationsLink,
@@ -19,7 +18,7 @@ import { MenuItemIcon } from "./menu-item-icon.js";
 export default function AgentNavigation({ agentId, pathname }: { agentId: string; pathname: string }) {
   const { me } = useAccount();
   const router = useRouter();
-  const state = useAgentListView(me.user.id);
+  const state = useAgentIdentityList(me.user.id);
   const agents = state.kind === "ready" ? state.value.agents : [];
   const agent = agents.find((candidate) => candidate.id === agentId);
   const internal = useInternalNavigationVisibility();
@@ -96,8 +95,8 @@ function AgentSwitcher({
   pathname,
   agentId,
 }: {
-  agent?: AgentListItem;
-  agents: AgentListItem[];
+  agent?: { id: string; displayName: string };
+  agents: readonly { id: string; displayName: string }[];
   pathname: string;
   agentId: string;
 }) {

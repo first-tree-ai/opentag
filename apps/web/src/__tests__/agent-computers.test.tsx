@@ -139,6 +139,12 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Ada's Mac" })).toBeTruthy();
     expect(screen.getByText("Not ready")).toBeTruthy();
     expect(screen.getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
+    /*
+     * The machine is reachable and heartbeating here -- only its Provider is not ready -- so it has
+     * no staleness to report. The badge row carries last seen now, and "Not ready · Last seen just
+     * now" on one line asks the reader to believe both at once.
+     */
+    expect(screen.queryByText(/Last seen/)).toBeNull();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {

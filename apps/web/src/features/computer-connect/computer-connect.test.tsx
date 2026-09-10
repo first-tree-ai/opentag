@@ -125,7 +125,9 @@ describe("ComputerConnect", () => {
     const repairAction = screen.getByRole("button", { name: "Generate an install command" });
     expect(repairAction.closest(".ots-command__body")).toBeTruthy();
     expect(screen.getByText("Need to reinstall?")).toBeTruthy();
-    // Nothing introduces a command that has not been issued; the lead only speaks once one exists.
+    // Idle is the one state with no command and no countdown, so it renders no lead row. The
+    // failed and expired states still introduce a command that is not there to paste; that is
+    // older than this change and left alone rather than half-fixed here.
     expect(screen.queryByText(/Start OpenTag on Ada's Mac/)).toBeNull();
     fireEvent.click(repairAction);
     await flushAsync();

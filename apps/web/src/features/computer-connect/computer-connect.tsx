@@ -404,7 +404,9 @@ function ComputerConnectPresentation({
     ? m.computer_connect_repair_command_comment({ computerName: targetName })
     : m.computer_connect_create_command_comment();
   // Idle repair has no command to introduce yet, and the surface already asks whether one is
-  // wanted. The row stays so the block does not jump once the command and its countdown arrive.
+  // wanted. Only idle is narrowed here: `issue-failed` and `expired` still say "paste this
+  // command" over a block that has none to paste, which predates this change and needs its own
+  // copy decision rather than a guard widened in passing.
   const intro =
     state.kind === "idle"
       ? undefined

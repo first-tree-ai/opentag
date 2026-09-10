@@ -1269,14 +1269,22 @@ function BoundComputerSection({
           tone={offline ? "warning" : "success"}
         />
         {repair ? (
-          <ComputerConnect
-            adapter={computerConnectAdapter}
-            intent={{
-              mode: "repair",
-              target: { computerId: repair.computerId, displayName: computer.displayName },
-            }}
-            onConnected={onChanged}
-          />
+          <>
+            {/* The remedy for a Computer that is merely switched off, which this step states
+                nowhere else: the reinstall escape hatch inside the command surface answers a
+                different problem, and the step footer only says to check again afterwards. The
+                Settings panel says the equivalent in its own recovery sentence, so the shared
+                surface leaves the sentence to whichever caller still needs it. */}
+            <p className={HINT}>{m.computer_connect_repair_intro({ computerName: computer.displayName })}</p>
+            <ComputerConnect
+              adapter={computerConnectAdapter}
+              intent={{
+                mode: "repair",
+                target: { computerId: repair.computerId, displayName: computer.displayName },
+              }}
+              onConnected={onChanged}
+            />
+          </>
         ) : null}
       </div>
     </section>

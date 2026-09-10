@@ -56,8 +56,13 @@ function computerStatusLine(agent: AgentDetailView): {
         ? m.agent_settings_computer_not_ready()
         : m.agent_settings_computer_offline()
       : m.agent_settings_computer_unconfirmed();
-  // Last seen answers "how stale is Offline", so a Computer that is online now has nothing to add.
-  const staleFor = ready ? null : computerState.lastConfirmedAt;
+  /*
+   * Last seen dates the machine's connection, so it is gated on the machine alone -- not on the
+   * composite `ready`, which also demands a working Provider. A reachable Computer whose Provider
+   * is missing is heartbeating right now, and pairing "Not ready" with "Last seen just now" on one
+   * row asks the reader to believe both at once. That row is where this panel now puts them.
+   */
+  const staleFor = computerState.state === "ready" ? null : computerState.lastConfirmedAt;
   return {
     lastSeen: staleFor
       ? m.agent_settings_last_seen({ date: formatDateTime(staleFor), relative: formatRelativeTime(staleFor) })

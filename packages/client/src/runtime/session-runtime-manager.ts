@@ -46,6 +46,19 @@ export class ClientRuntimeProviderStartError extends Error {
   }
 }
 
+/**
+ * The manager has no prepared runtime entry for a Session. The fixed code identifies this
+ * local readiness failure in logs without including paths, credentials, or cause content.
+ */
+export class SessionRuntimeNotPreparedError extends Error {
+  readonly code = "session_runtime_not_prepared" as const;
+
+  constructor() {
+    super("The Session Agent Runtime has not been prepared");
+    this.name = "SessionRuntimeNotPreparedError";
+  }
+}
+
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
@@ -126,7 +139,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   requiresSessionPreparation(request: SessionReconcileRequest): boolean {
     const current = this.#sessions.get(request.sessionId);
-    if (!current) return false;
+    // A missing entry always requires preparation: report recovery can leave the Reconciler
+    // holding a ready Session whose runtime entry this manager never recorded.
+    if (!current) return true;
     return current.proofId !== request.sessionCliProof?.proofId;
   }
 
@@ -209,7 +224,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   async ensureRuntime(sessionId: string, signal?: AbortSignal): Promise<AgentRuntime> {
     this.#assertOpen();
     const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    if (!managed) throw new SessionRuntimeNotPreparedError();
     await this.#ensureProviderReady(managed.providerId, signal);
     this.#assertOpen();
     if (managed.runtime && managed.runtime.state.phase !== "closed") return managed.runtime;
@@ -230,7 +245,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   sessionKind(sessionId: string): "visible" | "internal" {
     const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    if (!managed) throw new SessionRuntimeNotPreparedError();
     return managed.sessionKind;
   }
 
@@ -389,7 +404,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   cwd(sessionId: string): string {
     this.#assertOpen();
     const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    if (!managed) throw new SessionRuntimeNotPreparedError();
     return managed.cwd;
   }
 

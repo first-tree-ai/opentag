@@ -34,7 +34,11 @@ import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-m
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
-import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "./session-runtime-manager.js";
+import {
+  ClientRuntimeProviderStartError,
+  type SessionRuntimeManager,
+  SessionRuntimeNotPreparedError,
+} from "./session-runtime-manager.js";
 import { TurnTraceBuffer } from "./trace-buffer.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
@@ -510,6 +514,9 @@ function errorFieldsForLog(error: unknown): { errorCode?: string } {
   if (error instanceof ImCredentialEnvironmentError || error instanceof ProviderCliTurnPlanError) {
     return { errorCode: error.code };
   }
+  if (error instanceof SessionRuntimeNotPreparedError) {
+    return { errorCode: error.code };
+  }
   return {};
 }
 
@@ -533,6 +540,10 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
     };
   }
   if (error instanceof ClientRuntimeProviderStartError) {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" };
+  }
+  if (error instanceof SessionRuntimeNotPreparedError) {
+    // The runner accesses Session metadata and ensures its runtime before dispatching the prompt.
     return { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" };
   }
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };

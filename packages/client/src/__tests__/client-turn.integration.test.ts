@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type {
-  DirectImMessageDeliveryRequest,
-  EffectiveRuntimeSnapshot,
-  SessionReconcileRequest,
-  TurnReportRequest,
+import {
+  computeDirectInputHash,
+  computeTurnResultHash,
+  type DirectImMessageDeliveryRequest,
+  type EffectiveRuntimeSnapshot,
+  type SessionReconcileRequest,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeFactory } from "../agent-runtime/types.js";
@@ -249,6 +251,132 @@ describe("Agent Runtime Client Turn vertical", () => {
     await fixture.record(report);
     await fixture.runtimeManager.close();
   });
+
+  it.each(["accepted", "starting", "running", "reporting"] as const)(
+    "reprepares the missing Session Runtime after a replayed %s Turn report",
+    async (phase) => {
+      const fixture = await recoveryFixture(phase);
+
+      // Cold start: the durable unresolved Turn fences the Session for report recovery.
+      const coldRequest = fixture.reconcile();
+      const cold = await fixture.reconciler.reconcile(coldRequest);
+      expect(cold).toMatchObject({
+        status: "recovery_required",
+        reason: "unresolved_turn",
+        turn: { deliveryId: "delivery-1", turnId: "turn-1" },
+      });
+      expect(fixture.prepareSpy).toHaveBeenCalledTimes(1);
+
+      const prepared = await fixture.recovery.prepare(coldRequest, cold);
+      expect(prepared.retainedReports).toHaveLength(1);
+      if (phase !== "reporting") {
+        expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toMatchObject({
+          phase: "reporting",
+          report: fixture.expectedRecoveryReport,
+        });
+      }
+      fixture.recovery.afterReconciled(coldRequest, prepared);
+      await vi.waitFor(() => expect(fixture.connection.reports()).toHaveLength(1));
+      const replayed = fixture.connection.reports()[0];
+      expect(replayed).toMatchObject({
+        deliveryId: "delivery-1",
+        turnId: "turn-1",
+        ...fixture.expectedRecoveryReport,
+      });
+      if (!replayed) throw new Error("Expected a replayed Turn Report");
+
+      // While the replayed report awaits its ACK the fence holds: repeated reconciles keep
+      // demanding recovery, new deliveries are rejected, and no provider is ever started.
+      await expect(fixture.reconciler.reconcile(fixture.reconcile())).resolves.toMatchObject({
+        status: "recovery_required",
+        turn: { deliveryId: "delivery-1", turnId: "turn-1" },
+      });
+      const held = delivery(fixture.runtime, "delivery-2", "held behind the fence");
+      expect(fixture.reconciler.checkDelivery(held)).toBe("session_recovery_required");
+      await expect(fixture.custody.accept(held)).resolves.toMatchObject({
+        result: { status: "rejected", reason: "session_recovery_required" },
+      });
+      expect(fixture.clients).toHaveLength(0);
+      expect(fixture.providerReadyCalls()).toBe(0);
+
+      // The ACK records the replayed report and lifts the recovery fence.
+      await fixture.reportOwner.handleResult({
+        type: "turn:report:result",
+        requestId: replayed.requestId,
+        turnId: replayed.turnId,
+        status: "recorded",
+        resultHash: replayed.resultHash,
+      });
+      await vi.waitFor(() => expect(fixture.reconciler.protectedWorkSnapshot().recoveries).toHaveLength(0));
+      expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toBeUndefined();
+
+      // An unchanged reconcile must re-prepare the missing runtime entry without starting the provider.
+      await expect(fixture.reconciler.reconcile(fixture.reconcile())).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.prepareSpy).toHaveBeenCalledTimes(2);
+      expect(fixture.runtimeManager.requiresSessionPreparation(fixture.reconcile())).toBe(false);
+      expect(fixture.clients).toHaveLength(0);
+
+      // Repeated unchanged reconciles stay ready without redundant preparation.
+      await expect(fixture.reconciler.reconcile(fixture.reconcile())).resolves.toMatchObject({ status: "ready" });
+      expect(fixture.prepareSpy).toHaveBeenCalledTimes(2);
+
+      // The next Turn resumes the retained provider thread and runs to completion.
+      const decision = await fixture.custody.accept(delivery(fixture.runtime, "delivery-3", "after recovery"));
+      expect(decision.result).toMatchObject({ status: "accepted" });
+      await decision.onAcceptedSent?.();
+      await vi.waitFor(() => expect(fixture.connection.reports().length).toBeGreaterThan(1));
+      const report = fixture.connection.reports()[1];
+      expect(report).toMatchObject({
+        deliveryId: "delivery-3",
+        outcome: "completed",
+        executionEffects: "completed",
+        finalText: "answer-1",
+      });
+      expect(fixture.clients).toHaveLength(1);
+      expect(fixture.clients[0]?.threadId).toBe("retained-thread-before-restart");
+      expect(fixture.clients[0]?.methods).toContain("thread/resume");
+      expect(fixture.clients[0]?.methods).not.toContain("thread/start");
+      if (!report) throw new Error("Expected the post-recovery Turn Report");
+      await fixture.reportOwner.handleResult({
+        type: "turn:report:result",
+        requestId: report.requestId,
+        turnId: report.turnId,
+        status: "recorded",
+        resultHash: report.resultHash,
+      });
+      await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+      const recorded = await fixture.store.read("agent-1", "session-1");
+      expect(recorded?.unresolvedTurn).toBeUndefined();
+      expect(recorded?.runtimeBinding).toEqual(fixture.retainedBinding);
+      expect(recorded?.recentRecordedInputs.at(-1)?.report).toEqual(report);
+      await expect(fixture.reconciler.reconcile(fixture.reconcile())).resolves.toMatchObject({ status: "ready" });
+      await fixture.runtimeManager.ensureRuntime("session-1");
+      expect(fixture.prepareSpy).toHaveBeenCalledTimes(2);
+      expect(fixture.clients).toHaveLength(1);
+      await fixture.runtimeManager.close();
+    },
+  );
+
+  it("keeps a healthy Session Runtime ready without redundant preparation or provider rebuild", async () => {
+    const fixture = await runtimeFixture();
+    await fixture.runtimeManager.ensureRuntime("session-1");
+    const prepareSpy = vi.spyOn(fixture.runtimeManager, "prepareSession");
+
+    await expect(
+      fixture.reconciler.reconcile({ ...fixture.reconcileRequest, requestId: randomUUID() }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await expect(
+      fixture.reconciler.reconcile({ ...fixture.reconcileRequest, requestId: randomUUID() }),
+    ).resolves.toMatchObject({ status: "ready" });
+
+    expect(prepareSpy).not.toHaveBeenCalled();
+    expect(fixture.runtimeManager.requiresSessionPreparation(fixture.reconcileRequest)).toBe(false);
+    await fixture.runtimeManager.ensureRuntime("session-1");
+    expect(fixture.clients).toHaveLength(1);
+    expect(fixture.clients[0]?.methods).toContain("thread/start");
+    expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
+    await fixture.runtimeManager.close();
+  });
 });
 
 async function runtimeFixture(
@@ -270,15 +398,7 @@ async function runtimeFixture(
   const logs: RecordedLog[] = [];
   const factory: AgentRuntimeFactory =
     provider === "codex"
-      ? new CodexAgentRuntimeFactory({
-          clientVersion: "0.0.1",
-          createClient: (cwd) => {
-            const client = new ScriptedTurnClient(cwd, terminalGate);
-            clients.push(client);
-            return client;
-          },
-          probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
-        })
+      ? codexFactory(clients, terminalGate)
       : new ClaudeCodeAgentRuntimeFactory({
           createSessionId: () => "11111111-1111-4111-8111-111111111111",
           createProcess: (_cwd, args) => {
@@ -298,6 +418,7 @@ async function runtimeFixture(
         });
   const providers = await providerRegistry(factory);
   const runtimeManager = new SessionRuntimeManager({
+    home,
     bindingStore: store,
     ensureProviderReady: (providerId, signal) => providers.ensureReady(providerId, signal),
     providers,
@@ -387,6 +508,179 @@ async function runtimeFixture(
   };
 }
 
+function codexFactory(
+  clients: ScriptedTurnClient[],
+  terminalGate: Promise<void>,
+  newThreadId = "thread-1",
+): AgentRuntimeFactory {
+  return new CodexAgentRuntimeFactory({
+    clientVersion: "0.0.1",
+    createClient: (cwd) => {
+      const client = new ScriptedTurnClient(cwd, terminalGate, newThreadId);
+      clients.push(client);
+      return client;
+    },
+    probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
+  });
+}
+
+/**
+ * Two daemon lifetimes over one durable home: the first prepares the Session and persists a
+ * provider thread binding, then survives only as durable state; the second rebuilds every
+ * in-memory component the way a cold start does, with the interrupted Turn still unresolved.
+ */
+async function recoveryFixture(phase: "accepted" | "starting" | "running" | "reporting") {
+  const home = await mkdtemp(resolve(tmpdir(), "opentag-runtime-recovery-"));
+  directories.push(home);
+  const computerId = randomUUID();
+  const runtime = snapshot(1, "codex");
+  const reconcile = (): SessionReconcileRequest => ({
+    type: "session:reconcile",
+    requestId: randomUUID(),
+    installationId: computerId,
+    sessionId: "session-1",
+    agentId: "agent-1",
+    placementGeneration: 1,
+    desired: "ready",
+    runtime,
+  });
+
+  // Previous daemon lifetime: prepare the Session and persist the provider thread binding.
+  const seedStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+  const seedWorkspace = new AgentWorkspaceManager({ home, bindingStore: seedStore });
+  const seedClients: ScriptedTurnClient[] = [];
+  const seedProviders = await providerRegistry(
+    codexFactory(seedClients, Promise.resolve(), "retained-thread-before-restart"),
+  );
+  const seedManager = new SessionRuntimeManager({
+    home,
+    bindingStore: seedStore,
+    ensureProviderReady: (providerId, signal) => seedProviders.ensureReady(providerId, signal),
+    providers: seedProviders,
+    providerEnvironmentPath: () => "/tmp/provider-env.sh",
+    workspace: seedWorkspace,
+  });
+  const seedReconciler = new SessionReconciler({
+    installationId: computerId,
+    preparation: seedManager,
+    localPolicy: seedManager,
+  });
+  await seedReconciler.reconcile(reconcile());
+  await seedManager.ensureRuntime("session-1");
+  await seedManager.close();
+  expect(seedClients[0]?.threadId).toBe("retained-thread-before-restart");
+  const retainedBinding = (await seedStore.read("agent-1", "session-1"))?.runtimeBinding;
+  expect(retainedBinding).toBeDefined();
+
+  // The interrupted Turn survives only as durable custody in the Session binding.
+  const interrupted = delivery(runtime, "delivery-1", "interrupted");
+  await seedStore.recordAccepted(interrupted, computeDirectInputHash(interrupted), "turn-1");
+  if (phase !== "accepted") await seedStore.updateUnresolved("agent-1", "session-1", "turn-1", "starting");
+  if (phase === "running" || phase === "reporting") {
+    await seedStore.updateUnresolved("agent-1", "session-1", "turn-1", "running");
+  }
+  if (phase === "reporting") {
+    const reportInput = {
+      deliveryId: "delivery-1",
+      turnId: "turn-1",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 1,
+      outcome: "completed" as const,
+      executionEffects: "completed" as const,
+      finalText: "interrupted answer",
+      traceSummary: { lastSequence: 0, droppedEvents: 0 },
+    };
+    const report: TurnReportRequest = {
+      type: "turn:report",
+      requestId: randomUUID(),
+      ...reportInput,
+      resultHash: computeTurnResultHash(reportInput),
+    };
+    await seedStore.updateUnresolved("agent-1", "session-1", "turn-1", "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+  }
+  const expectedRecoveryReport =
+    phase === "accepted"
+      ? { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" }
+      : phase === "reporting"
+        ? { outcome: "completed", executionEffects: "completed", finalText: "interrupted answer" }
+        : { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
+
+  // Restart: every in-memory component is rebuilt over the same durable home.
+  const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+  const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+  const connection = new FakeConnection();
+  const reportOwner = new TurnReportOwner({ connection });
+  const clients: ScriptedTurnClient[] = [];
+  const providers = await providerRegistry(codexFactory(clients, Promise.resolve()));
+  let providerReadyCalls = 0;
+  const runtimeManager = new SessionRuntimeManager({
+    home,
+    bindingStore: store,
+    ensureProviderReady: (providerId, signal) => {
+      providerReadyCalls += 1;
+      return providers.ensureReady(providerId, signal);
+    },
+    providers,
+    providerEnvironmentPath: () => "/tmp/provider-env.sh",
+    workspace,
+  });
+  const reconciler = new SessionReconciler({
+    installationId: computerId,
+    preparation: runtimeManager,
+    localPolicy: runtimeManager,
+  });
+  const logs: RecordedLog[] = [];
+  let runner: AgentTurnRunner;
+  const custody = new TurnCustodyOwner({
+    bindingStore: store,
+    reconciler,
+    id: (() => {
+      let next = 1;
+      return () => {
+        next += 1;
+        return `turn-${next}`;
+      };
+    })(),
+    start: (owner) => runner.start(owner),
+  });
+  runner = new AgentTurnRunner({
+    bindingStore: store,
+    connection,
+    custody,
+    reportOwner,
+    runtimeManager,
+    credentialEnvironment: {
+      prepare: async () => ({ path: "/tmp/provider-env.sh", provider: "slack" }),
+      cleanup: async () => undefined,
+    },
+    logger: recordingLogger(logs),
+  });
+  const recovery = new MvpTurnReportRecovery({ bindingStore: store, reconciler, reportOwner });
+  const prepareSpy = vi.spyOn(runtimeManager, "prepareSession");
+  return {
+    clients,
+    connection,
+    custody,
+    expectedRecoveryReport,
+    retainedBinding,
+    logs,
+    prepareSpy,
+    providerReadyCalls: () => providerReadyCalls,
+    reconcile,
+    reconciler,
+    recovery,
+    reportOwner,
+    runner,
+    runtime,
+    runtimeManager,
+    store,
+  };
+}
+
 async function providerRegistry(factory: AgentRuntimeFactory): Promise<AgentRuntimeProviderRegistry> {
   const providers = new AgentRuntimeProviderRegistry([
     {
@@ -438,6 +732,7 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
   readonly cwd: string;
   readonly methods: string[] = [];
   readonly #terminalGate: Promise<void>;
+  readonly #newThreadId: string;
   #listener?: (message: CodexAppServerMessage) => void;
   #turn = 0;
   closed = false;
@@ -445,9 +740,10 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
   threadId?: string;
   developerInstructions?: string;
 
-  constructor(cwd: string, terminalGate: Promise<void>) {
+  constructor(cwd: string, terminalGate: Promise<void>, newThreadId: string) {
     this.cwd = cwd;
     this.#terminalGate = terminalGate;
+    this.#newThreadId = newThreadId;
   }
 
   async initialize(): Promise<void> {
@@ -458,7 +754,7 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
     this.methods.push(method);
     if (method === "thread/start" || method === "thread/resume") {
       const input = params as { cwd: string; developerInstructions: string; threadId?: string };
-      this.threadId = input.threadId ?? "thread-1";
+      this.threadId = input.threadId ?? this.#newThreadId;
       this.developerInstructions = input.developerInstructions;
       return {
         thread: { id: this.threadId, ephemeral: false },

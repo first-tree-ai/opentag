@@ -223,7 +223,7 @@ describe("ComputerConnect", () => {
         intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
 
     // Reconnecting a Computer the Account already had is not somebody reaching step 3 again.

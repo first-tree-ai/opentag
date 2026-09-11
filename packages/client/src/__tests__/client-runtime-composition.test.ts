@@ -2111,6 +2111,7 @@ describe("createClientRuntime skill sync", () => {
       expect(await readFile(resolve(cwd, ".skills", "alpha", "SKILL.md"), "utf8")).toBe("# alpha");
     });
     expect(await readlink(resolve(cwd, ".claude", "skills", "alpha"))).toBe("../../.skills/alpha");
+    expect(await readlink(resolve(cwd, ".agents", "skills", "alpha"))).toBe("../../.skills/alpha");
     await vi.waitFor(async () => {
       expect(
         JSON.parse(await readFile(runtime.workspace.paths("agent-1").workspaceState, "utf8")) as Record<

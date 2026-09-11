@@ -161,6 +161,8 @@ describe("SkillSyncManager", () => {
     expect((await lstat(join(home, ".skills", "alpha", "scripts", "run.sh"))).mode & 0o111).not.toBe(0);
     expect(await listProjection(home)).toEqual(["alpha", "beta"]);
     expect(await readlink(join(home, ".claude", "skills", "alpha"))).toBe("../../.skills/alpha");
+    expect(await readlink(join(home, ".agents", "skills", "alpha"))).toBe("../../.skills/alpha");
+    expect((await readdir(join(home, ".agents", "skills"))).sort()).toEqual(["alpha", "beta"]);
     const local = await readLocalSkillsManifest(home);
     expect(local).toMatchObject({
       schemaVersion: 1,
@@ -231,6 +233,7 @@ describe("SkillSyncManager", () => {
     expect(await listSkills(home)).toEqual(["alpha"]);
     expect(await readdir(join(home, ".skills"))).toEqual([".opentag-skills.json", "alpha"]);
     expect(await listProjection(home)).toEqual(["alpha"]);
+    expect(await readdir(join(home, ".agents", "skills"))).toEqual(["alpha"]);
 
     server.assignments.set("agent-1", []);
     await expect(sync.reconcile("agent-1")).resolves.toEqual({ status: "synced", digest: EMPTY_AGENT_SKILLS_DIGEST });

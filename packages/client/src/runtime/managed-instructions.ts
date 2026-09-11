@@ -63,7 +63,7 @@ function renderAgentHome(cliCommand: string, agentHome?: string): readonly strin
     "- `files/<unique-task-key>/` — non-repository task artifacts, created only when needed.",
     "",
     "`.skills/` is managed by OpenTag: it mirrors the skills assigned to this Agent and is replaced on every sync, so do not edit it directly.",
-    `To publish a new or changed skill, run \`${cliCommand} skill push <dir>\` (inside a Session add \`--session <Current Session>\`); it is assigned to this Agent and synced back here. Claude Code sees the same skills under \`.claude/skills/\`.`,
+    `To publish a new or changed skill, run \`${cliCommand} skill push <dir>\` (inside a Session add \`--session <Current Session>\`); it is assigned to this Agent and synced back here. The same skills are projected to \`.claude/skills/\` (Claude Code) and \`.agents/skills/\` (Codex).`,
     "",
     "OpenTag provides the bundled `context-tree` command. If it cannot run, report a runtime setup problem; do not install it globally.",
     'Context Tree stays the separately configured shared tree managed by its matching CLI and skills. When running Context Tree project commands from a task subdirectory, pass `--project-path "<Agent Home>"` to use the connected Home; do not create or reconnect a tree just because the task cwd changed. Follow the matching skill write protocol. Do not invent an independent Git policy for Tree writes.',

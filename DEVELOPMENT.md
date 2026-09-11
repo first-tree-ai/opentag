@@ -117,15 +117,16 @@ The daemon mirrors the skills assigned to each Agent into that Agent's Home:
 | --- | --- |
 | `<Agent Home>/.skills/<name>/` | The skill's files, exactly as the server's manifest lists them |
 | `<Agent Home>/.skills/.opentag-skills.json` | Local sync record (`0600`): the agent digest, per-skill digests and manifests, `syncedAt`, and `lastError` |
-| `<Agent Home>/.claude/skills/<name>` | Relative symlink to `../../.skills/<name>` so Claude Code discovers the skill |
+| `<Agent Home>/.claude/skills/<name>` | Relative symlink to `../../.skills/<name>` so Claude Code (`--setting-sources project`) discovers the skill |
+| `<Agent Home>/.agents/skills/<name>` | Relative symlink to `../../.skills/<name>` so Codex discovers the skill from its repo-scoped root (the thread cwd is the Agent Home) |
 | `data/runtime/workspace-states/a-<hash>.json` | Workspace layout state; schema version 4 adds the latest sync outcome |
 
 `.skills/` is fully managed: a sync installs what the server assigns, removes what it no longer lists, and
-never touches other entries under `.claude/skills/` (such as `context-tree-*`). Sync runs when a workspace is
-prepared, when the server pushes a `skills:changed` frame, and every ten minutes as a safety net; failures are
-recorded in `lastError` and retried with exponential backoff (one minute up to thirty minutes) without blocking
-Session start. Codex reads skills from the Computer-wide `$CODEX_HOME/skills`, which is shared by every Agent,
-so per-Agent projection for Codex is not performed yet.
+never touches other entries under `.claude/skills/` or `.agents/skills/` (such as `context-tree-*`). Sync runs when
+a workspace is prepared, when the server pushes a `skills:changed` frame, and every ten minutes as a safety net;
+failures are recorded in `lastError` and retried with exponential backoff (one minute up to thirty minutes) without
+blocking Session start. Skills stay per Agent: nothing is written to the Computer-wide `$CODEX_HOME/skills`, which
+Codex treats as a deprecated user-scoped location.
 
 Manage the library from the CLI:
 

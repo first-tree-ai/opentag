@@ -60,7 +60,8 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).toContain("do not edit it directly");
     expect(prompt).toContain("`opentag-dev skill push <dir>`");
     expect(prompt).toContain("`--session <Current Session>`");
-    expect(prompt).toContain("`.claude/skills/`");
+    expect(prompt).toContain("`.claude/skills/` (Claude Code)");
+    expect(prompt).toContain("`.agents/skills/` (Codex)");
   });
 
   it("still describes Agent Home conventions when the concrete path is omitted", () => {

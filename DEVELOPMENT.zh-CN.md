@@ -117,14 +117,15 @@ daemon 会把分配给每个 Agent 的 skill 镜像到该 Agent 的 Home 目录�
 | --- | --- |
 | `<Agent Home>/.skills/<name>/` | skill 的文件，与服务器 manifest 完全一致 |
 | `<Agent Home>/.skills/.opentag-skills.json` | 本地同步记录（`0600`）：agent digest、每个 skill 的 digest 与 manifest、`syncedAt` 和 `lastError` |
-| `<Agent Home>/.claude/skills/<name>` | 指向 `../../.skills/<name>` 的相对符号链接，供 Claude Code 发现 skill |
+| `<Agent Home>/.claude/skills/<name>` | 指向 `../../.skills/<name>` 的相对符号链接，供 Claude Code（`--setting-sources project`）发现 skill |
+| `<Agent Home>/.agents/skills/<name>` | 指向 `../../.skills/<name>` 的相对符号链接，供 Codex 从其仓库级 skill 根目录发现 skill（thread cwd 即 Agent Home） |
 | `data/runtime/workspace-states/a-<hash>.json` | workspace 布局状态；schema 版本 4 增加了最近一次同步结果 |
 
 `.skills/` 完全由 daemon 托管：同步会安装服务器分配的 skill、删除服务器不再列出的 skill，且绝不触碰
-`.claude/skills/` 下的其他条目（例如 `context-tree-*`）。同步在 workspace 准备完成、服务器推送 `skills:changed`
-帧以及每十分钟一次的兜底扫描时运行；失败会记录到 `lastError` 并按指数退避（1 分钟到 30 分钟）重试，不会阻塞
-Session 启动。Codex 从整机共享的 `$CODEX_HOME/skills` 读取 skill，所有 Agent 共用该目录，因此暂不为 Codex 做
-按 Agent 的投影。
+`.claude/skills/` 或 `.agents/skills/` 下的其他条目（例如 `context-tree-*`）。同步在 workspace 准备完成、服务器推送
+`skills:changed` 帧以及每十分钟一次的兜底扫描时运行；失败会记录到 `lastError` 并按指数退避（1 分钟到 30 分钟）重试，
+不会阻塞 Session 启动。skill 始终按 Agent 隔离：绝不写入整机共享的 `$CODEX_HOME/skills`（Codex 已将其视为过时的用户级
+位置）。
 
 通过 CLI 管理 skill 库：
 

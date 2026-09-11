@@ -508,9 +508,14 @@ export {
 } from "./runtime/skills/skill-manifest-store.js";
 export {
   CLAUDE_SKILLS_DIRECTORY,
+  CODEX_SKILLS_DIRECTORY,
   claudeSkillsProjectionRoot,
+  codexSkillsProjectionRoot,
   projectSkills,
+  SKILL_PROJECTION_TARGETS,
   type SkillProjectionResult,
+  type SkillProjectionTarget,
+  skillsProjectionRoot,
 } from "./runtime/skills/skill-projection.js";
 export {
   SKILL_SYNC_INITIAL_RETRY_DELAY_MS,

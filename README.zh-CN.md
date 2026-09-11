@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://opentag.build/assets/opentag-logo.png" alt="OpenTag" width="72">
+<img src="docs/assets/opentag-logo.png" alt="OpenTag" width="72">
 
 # OpenTag
 

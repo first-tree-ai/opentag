@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { CreateBucketCommand } from "@aws-sdk/client-s3";
 import { skillArchivePath } from "@opentag/shared";
 import { MinioContainer, type StartedMinioContainer } from "@testcontainers/minio";
@@ -103,8 +103,8 @@ describe("skill storage against MinIO", () => {
 
   it("streams a near-limit archive through the HTTP route byte for byte", async () => {
     const { database, userId, service } = await fixture();
-    const payload = new Uint8Array(4 * 1024 * 1024);
-    for (let index = 0; index < payload.length; index += 1) payload[index] = (index * 2654435761) >>> 24;
+    // Random bytes do not deflate, so the archive stays close to the 5 MiB route limit.
+    const payload = new Uint8Array(randomBytes(4 * 1024 * 1024));
     const upload = validSkillZip("large", { "data/blob.bin": payload });
     expect(upload.byteLength).toBeGreaterThan(3 * 1024 * 1024);
     const { skill } = await service.upsertFromArchive(userId, upload, {

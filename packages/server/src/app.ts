@@ -23,6 +23,7 @@ import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes 
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
+import { registerWebsiteSessionRoutes } from "./api/website-session.js";
 
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
@@ -459,6 +460,7 @@ export function createApp(options: CreateAppOptions = {}) {
         : {}),
     };
     registerAuthRoutes(app, authService);
+    registerWebsiteSessionRoutes(app, authService, authOptions);
     registerMeRoutes(app, authService, {
       ...(options.connectCode
         ? {

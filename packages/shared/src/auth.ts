@@ -53,6 +53,9 @@ export const MeResponseSchema = z
   })
   .strict();
 
+/** Minimal session presence for the public website; never includes Account identity or credentials. */
+export const BrowserSessionStatusResponseSchema = z.object({ authenticated: z.boolean() }).strict();
+
 /**
  * Password bounds, shared so one number governs both sides of the check.
  *

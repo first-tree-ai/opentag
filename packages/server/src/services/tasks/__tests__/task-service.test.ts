@@ -35,7 +35,7 @@ function minutes(offset: number): Date {
   return new Date(BASE_TIME.getTime() + offset * 60_000);
 }
 
-async function fixture() {
+async function fixture(options: { now?: () => Date } = {}) {
   const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
     displayName: "Task User",
     email: "task@example.com",
@@ -69,7 +69,7 @@ async function fixture() {
     .returning();
   if (!binding) throw new Error("Binding fixture was not created");
   // Deliveries in these fixtures expire a week after BASE_TIME; pin the clock so that never passes.
-  const service = new TaskService(unitDatabase.database, { now: () => BASE_TIME });
+  const service = new TaskService(unitDatabase.database, { now: options.now ?? (() => BASE_TIME) });
   return { agent, binding, bootstrap, service };
 }
 
@@ -1029,6 +1029,35 @@ describe("TaskService", () => {
       id: dmRequest.id,
       status: "cancelled",
     });
+  });
+
+  it("reads cancelled after withdrawing a follow-up queued behind a Turn that finished later", async () => {
+    // The user cancels at minute 6, after the first Turn finished; the Server's clock is the cancel instant.
+    const { binding, bootstrap, service } = await fixture({ now: () => minutes(6) });
+    const channel = await createSession(binding.id, { channelId: GROUP });
+
+    // The root request arrives, then the user queues a follow-up while it is still running.
+    const root = await createMessage(binding.id, { externalMessageId: "om_root", occurredAt: minutes(0) });
+    const followUp = await createMessage(binding.id, { threadKey: "om_root", occurredAt: minutes(2) });
+    const queued = await createDelivery(channel.id, followUp.id, { state: "pending" });
+    // The first Turn only finishes at minute 5, after the follow-up was already queued.
+    await createDelivery(channel.id, root.id, { at: minutes(5), reported: true });
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("queued");
+
+    const cancelled = await service.cancel(bootstrap.userId, root.id);
+    expect(await deliveryRow(queued.id)).toMatchObject({
+      state: "expired",
+      reason: "cancelled",
+      expiresAt: minutes(6),
+    });
+    // The withdrawal is the topic's latest activity, so the finished Turn does not outrank it.
+    expect(cancelled).toMatchObject({ status: "cancelled", lastActivityAt: minutes(6).toISOString() });
+    const list = await service.list(bootstrap.userId, { limit: 10 });
+    expect(list.tasks.map((task) => task.status)).toEqual(["cancelled"]);
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("cancelled");
+
+    // Idempotent: the second cancel is the same no-op success as for any cancelled Task.
+    await expect(service.cancel(bootstrap.userId, root.id)).resolves.toMatchObject({ status: "cancelled" });
   });
 
   it("refuses to cancel a Task that has started or finished, and leaves a running Task's queue alone", async () => {

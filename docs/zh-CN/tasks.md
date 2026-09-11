@@ -54,13 +54,17 @@ Task 的标题来自根消息，沿用列表一直使用的推导方式：去掉
 ## 取消排队中的 Task
 
 `POST /api/v1/sessions/:id/cancel` 撤回仍处于 `queued` 状态的 Task。id 可以是 Task id，也可以是它的某条
-Session。话题内所有尚未被 worker 认领的待处理投递都会被置为过期并标注 `cancelled` 原因；投递 worker 只认领
-pending 行，且只在过期行仍带有派发关联时才会恢复它，因此被撤回的投递之后不会再被拾起。响应返回刷新后的
-Task 摘要，在其后没有其他执行时状态为 `cancelled`。
+Session。话题内所有尚未被 worker 认领的待处理投递都会被置为过期并标注 `cancelled` 原因，其 `expiresAt`
+设为取消的那一刻；投递 worker 只认领 pending 行，且只在过期行仍带有派发关联时才会恢复它，因此被撤回的投递
+之后不会再被拾起。取消时刻就是被撤回投递的活动时间，也因此是话题的最新活动：响应返回刷新后的 Task 摘要，
+状态为 `cancelled`——即使话题中更早的某个 Turn 在被撤回的消息到达之后才结束也是如此——并且在话题里有更晚的
+Turn 运行之前一直保持 `cancelled`。
 
 只有排队中的 Task 才能取消。`running` 或已结束的 Task 返回 `409 TASK_NOT_QUEUED`；排队中的 Task 若其唯一的
-待处理投递此刻正被 worker 派发，也会得到同样的答复——Runtime 可能已经在运行它。Web 会把这个答复理解为
-"已不在排队中"，刷新 Task 而不是报告失败。对已经 `cancelled` 的 Task 再次取消是无操作的成功，重复请求无害。
+待处理投递此刻正被 worker 派发，也会得到同样的答复——Runtime 可能已经在运行它。Web 收到这个答复时刷新 Task
+而不是报告失败，并根据刷新结果区分两种情况：已经离开队列的 Task 提示"已不在排队中"；仍为 `queued` 的 Task
+（其消息正在投递给 Agent）提示未能取消，并保留取消按钮。对已经 `cancelled` 的 Task 再次取消是无操作的成功，
+重复请求无害。
 
 ## 内部 Session 与协作消息
 

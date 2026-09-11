@@ -157,7 +157,10 @@ function encodeCursor(at: Date | string, id: string): string {
  * running only while its deadline has not passed, its Session is alive, and no later Turn ran in
  * that Session; a Session runs one Turn at a time, so a later acceptance proves the earlier one
  * ended without a report. A delivery the Account withdrew from the queue is stored as expired with
- * the cancelled reason, and reads as `cancelled` rather than as a deadline that passed.
+ * the cancelled reason, and reads as `cancelled` rather than as a deadline that passed. The
+ * withdrawal is an execution event of its own: the row's `expires_at` holds the cancel instant and
+ * counts as its activity, so a Turn that finished after the withdrawn message arrived, but before
+ * the cancel, does not outrank it.
  */
 function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.endedAt) return "ended";
@@ -453,7 +456,11 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
           tm.occurred_at,
           coalesce(d.accepted_at, tm.occurred_at),
           coalesce(d.steered_at, tm.occurred_at),
-          coalesce(case when d.state = 'steered' then root.reported_at else d.reported_at end, tm.occurred_at)
+          coalesce(case when d.state = 'steered' then root.reported_at else d.reported_at end, tm.occurred_at),
+          coalesce(
+            case when d.state = 'expired' and d.reason = ${TASK_CANCELLED_DELIVERY_REASON} then d.expires_at end,
+            tm.occurred_at
+          )
         ) as activity_at
       from im_message_deliveries d
       inner join topic_messages tm on tm.id = d.message_id
@@ -721,6 +728,12 @@ export class TaskService {
    * sees the claim marker; an update that wins the lock leaves nothing `pending` for the claim to
    * find. A claim whose lease lapsed belongs to a worker that is gone, and is withdrawn like an
    * unclaimed row — exactly as any worker may take such a row again.
+   *
+   * The withdrawn row expires at the cancel instant rather than at its original deadline: that
+   * is when it left the queue, and the instant the topic's status derivation orders it by, so the
+   * cancel outranks every Turn that finished before it. Retention counts from the same column,
+   * so a withdrawn row is kept for the retention window after the cancel, as a lapsed one is kept
+   * after its deadline.
    */
   async #withdrawQueuedDeliveries(accountId: string, scope: TopicScope): Promise<number> {
     const now = this.#now();
@@ -730,7 +743,7 @@ export class TaskService {
         select e.id from executions e where e.state = 'pending'
       )
       update im_message_deliveries as delivery
-      set state = 'expired', reason = ${TASK_CANCELLED_DELIVERY_REASON}
+      set state = 'expired', reason = ${TASK_CANCELLED_DELIVERY_REASON}, expires_at = ${now.toISOString()}::timestamptz
       from queued
       where delivery.id = queued.id
         and delivery.state = 'pending'

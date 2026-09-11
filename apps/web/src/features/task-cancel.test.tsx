@@ -109,6 +109,29 @@ describe("Cancelling a queued Task", () => {
     expect(screen.queryByRole("button", { name: "Cancel queued Task" })).toBeNull();
   });
 
+  it("says the cancel did not happen when the queued message is already being delivered", async () => {
+    // The Task stays queued: the worker holds its only pending delivery, which the Server left alone.
+    vi.spyOn(browserApi, "task").mockResolvedValue(
+      detailFor(queuedTask, { attemptCount: 1, lastErrorCode: "IM_DELIVERY_CLAIM_0123456789ABCDEF" }),
+    );
+    vi.spyOn(browserApi, "cancelTask").mockRejectedValue(
+      new ApiError(409, "The Task's queued message is already being delivered", "TASK_NOT_QUEUED"),
+    );
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const dialog = await openConfirmation();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel Task" }));
+
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "This Task could not be cancelled: its queued message is already being delivered to the Agent.",
+    );
+    expect(screen.queryByText(/no longer queued/)).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    const details = screen.getByLabelText("Task details");
+    expect(within(details).getByText("Queued")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel queued Task" })).toBeTruthy();
+  });
+
   it("keeps the confirmation open with the failure and lets the reader keep the Task queued", async () => {
     vi.spyOn(browserApi, "task").mockResolvedValue(detailFor(queuedTask));
     const cancel = vi

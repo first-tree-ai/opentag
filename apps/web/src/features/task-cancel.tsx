@@ -10,7 +10,10 @@ import { Banner, Button, Dialog } from "../ui/design-system.js";
  * Withdraws a Task that is still waiting in the queue. Only a `queued` Task offers the control:
  * once work has started there is nothing queued to act on. The Server says so with a 409 when the
  * Task started between the read and the click, and that answer refreshes the Task rather than
- * reporting a failure — the reader learns the true state, which is what they were after.
+ * reporting a failure — the reader learns the true state, which is what they were after. The same
+ * 409 also answers a Task whose queued message a worker is delivering at that moment; that Task
+ * still reads as queued after the refresh, so the notice says the cancel did not happen rather
+ * than that the Task left the queue.
  *
  * The control stays mounted whatever the status, so the outcome it announces survives the
  * status change that removes its button.
@@ -44,6 +47,18 @@ export function TaskCancelControl({
     void queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all() });
   }
 
+  /**
+   * The Server refused because there was nothing it could withdraw. Which of its two reasons
+   * applies shows in the refreshed Task: one that left the queue reads as whatever it became,
+   * while one whose queued message is on its way to the Agent still reads as queued.
+   */
+  async function settleRefused() {
+    close();
+    await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all() });
+    const refreshed = queryClient.getQueryData<InfiniteData<TaskDetail>>(detailKey)?.pages[0]?.task.status;
+    setNotice(refreshed === "queued" ? m.tasks_cancel_in_flight() : m.tasks_cancel_not_queued());
+  }
+
   async function cancel() {
     setBusy(true);
     setDialogError(undefined);
@@ -57,7 +72,7 @@ export function TaskCancelControl({
       );
       settle(m.tasks_cancelled_notice());
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) settle(m.tasks_cancel_not_queued());
+      if (error instanceof ApiError && error.status === 409) await settleRefused();
       else setDialogError(error instanceof ApiError ? error.message : m.tasks_cancel_failed());
     } finally {
       setBusy(false);

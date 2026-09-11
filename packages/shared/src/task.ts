@@ -77,7 +77,10 @@ export const ListTasksResponseSchema = z
 
 export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
-/** The Task after its queued deliveries were withdrawn; its status reads `cancelled` once nothing else ran. */
+/**
+ * The Task after its queued deliveries were withdrawn. The withdrawal is the topic's latest
+ * activity, so the status reads `cancelled` until a later Turn runs in the topic.
+ */
 export const TaskCancelResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
 export const TaskTurnSchema = z

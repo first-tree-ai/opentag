@@ -195,7 +195,7 @@ async function withReleaseServer(run) {
 
 // The release server runs in this process, so the installer must be spawned asynchronously: a
 // synchronous child would block the event loop and deadlock against its own download.
-function runInstaller({ root, baseUrl, args = [] }) {
+function runInstaller({ root, baseUrl, args = [], env = {} }) {
   return new Promise((complete, reject) => {
     const child = spawn(
       "sh",
@@ -206,6 +206,7 @@ function runInstaller({ root, baseUrl, args = [] }) {
           HOME: join(root, "home"),
           OPENTAG_PORTABLE_CHANNEL: channel,
           OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: baseUrl,
+          ...env,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -228,6 +229,15 @@ function runInstaller({ root, baseUrl, args = [] }) {
 function tarballRequests(requests, version) {
   return requests.filter((url) => url.includes(`/${version}/`) && url.endsWith(".tar.gz")).length;
 }
+
+const STEP_LINE = /\[\d\/6\]/;
+
+// Escape codes are a TTY-only affordance: piped output stays grep-able byte for byte.
+function assertNoEscapeCodes(text) {
+  assert.ok(!text.includes("\u001b["), `output must not contain ANSI escape codes:\n${text}`);
+}
+// The banner subtitle is the only banner line that is plain prose; the art itself is not grep-friendly.
+const BANNER = /OpenTag portable installer {2}- {2}channel:/;
 
 test("portable installer activates a release and short-circuits when it is already current", {
   skip: platform === null,
@@ -253,6 +263,13 @@ test("portable installer activates a release and short-circuits when it is alrea
     assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
     assert.match(second.stdout, /already installed and up to date; skipping download/);
     assert.match(second.stdout, /--force to reinstall/);
+    // The short-circuit closes step 2 and gets its own footer headline; it must not claim a fresh install.
+    assert.match(second.stdout, /Resolved OpenTag 0\.0\.2-staging\.1\.1 already current\n/);
+    assert.match(second.stdout, /OK\s+OpenTag is already up to date\./);
+    assert.doesNotMatch(second.stdout, /OK\s+OpenTag is ready\./);
+    assert.doesNotMatch(second.stdout, /installed at/);
+    assert.match(second.stdout, /Command: /);
+    assert.doesNotMatch(second.stdout, /\[[3-6]\/6\]/, "an up-to-date install must not report the skipped steps");
     assert.doesNotMatch(second.stdout, /provider-cli inspect invoked/);
     assert.doesNotMatch(second.stdout, /provider-cli ensure invoked/);
     assert.equal(
@@ -405,5 +422,76 @@ test("portable installer rejects a payload that fails its published checksum", {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /checksum mismatch for portable payload/);
     assert.ok(!existsSync(join(root, "bin", binName)), "a rejected payload must not publish a shim");
+
+    assert.match(result.stderr, /Installation failed at step 4\/6/);
+    assert.match(result.stderr, /Nothing was activated; any existing install is unchanged\./);
+    assert.ok(result.stderr.includes("Re-run with --help for options."));
+    assert.doesNotMatch(result.stderr, /shim was rewritten/);
+    // The open "[4/6] Verifying checksum ..." line is closed on stdout, not by a blank line on stderr,
+    // so `install.sh > install.log` ends with a terminated line and stderr starts with the error.
+    assert.match(result.stdout, /\[4\/6\] Verifying checksum \.\.\.\n$/);
+    assert.doesNotMatch(result.stdout, /\[5\/6\]/);
+    assert.ok(result.stderr.startsWith("opentag portable installer: "), JSON.stringify(result.stderr));
+    assert.doesNotMatch(result.stderr, /\n\n/);
+    assertNoEscapeCodes(result.stdout);
+    assertNoEscapeCodes(result.stderr);
+  });
+});
+
+test("portable installer reports every step and a plain-text footer when its output is piped", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+
+    const result = await runInstaller({ baseUrl, root });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    for (const step of [1, 2, 3, 4, 5, 6]) {
+      assert.ok(result.stdout.includes(`[${step}/6] `), `stdout must report step ${step}/6:\n${result.stdout}`);
+    }
+    assert.match(result.stdout, /\[1\/6\] Detecting platform \.\.\. [a-z]+-(x64|arm64)\n/);
+    assert.match(result.stdout, /\[4\/6\] Verifying checksum \.\.\. ok\n/);
+    assert.match(result.stdout, /\[6\/6\] Activating 0\.0\.2-staging\.1\.1 .* ok\n/);
+    assert.match(result.stdout, /OK\s+OpenTag is ready\./);
+    assert.match(result.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(result.stdout, /Command: /);
+
+    assertNoEscapeCodes(result.stdout);
+    assertNoEscapeCodes(result.stderr);
+    assert.doesNotMatch(result.stdout, BANNER, "the banner is only drawn on a terminal");
+    assert.equal(result.stderr, "");
+  });
+});
+
+test("portable installer --quiet only prints the result lines", { skip: platform === null }, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+
+    const quiet = await runInstaller({ args: ["--quiet"], baseUrl, root });
+    assert.equal(quiet.status, 0, `${quiet.stdout}\n${quiet.stderr}`);
+    assert.doesNotMatch(quiet.stdout, STEP_LINE);
+    assert.doesNotMatch(quiet.stdout, BANNER);
+    assert.doesNotMatch(quiet.stdout, /OK\s+OpenTag/);
+    assert.doesNotMatch(quiet.stdout, /Resolved OpenTag/);
+    assert.match(quiet.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(quiet.stdout, /Command: /);
+    assert.equal(quiet.stderr, "");
+
+    // OPENTAG_QUIET honours any non-empty value, like NO_COLOR does; --force so the run prints a result.
+    const viaEnv = await runInstaller({ args: ["--force"], baseUrl, env: { OPENTAG_QUIET: "yes" }, root });
+    assert.equal(viaEnv.status, 0, `${viaEnv.stdout}\n${viaEnv.stderr}`);
+    assert.doesNotMatch(viaEnv.stdout, STEP_LINE);
+    assert.doesNotMatch(viaEnv.stdout, /OK\s+OpenTag/);
+    assert.match(viaEnv.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.match(viaEnv.stdout, /Command: /);
+
+    // The quiet short-circuit keeps its verbatim result lines and nothing else from the progress output.
+    const upToDate = await runInstaller({ args: ["-q"], baseUrl, root });
+    assert.equal(upToDate.status, 0, `${upToDate.stdout}\n${upToDate.stderr}`);
+    assert.doesNotMatch(upToDate.stdout, STEP_LINE);
+    assert.doesNotMatch(upToDate.stdout, /already current|OK\s+OpenTag/);
+    assert.match(upToDate.stdout, /already installed and up to date; skipping download\./);
+    assert.match(upToDate.stdout, /Run this installer with --force to reinstall the same version\./);
+    assert.match(upToDate.stdout, /Command: /);
   });
 });

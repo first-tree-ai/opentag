@@ -53,6 +53,7 @@ export const HTTP_PATHS = {
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
+  authBrowserSessionStatus: `${API_V1_PREFIX}/auth/browser/session-status`,
   authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
   /*
    * Below `/auth/email/` rather than Better Auth's own `/sign-in/email`, so these stay OpenTag routes that call into

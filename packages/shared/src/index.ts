@@ -75,6 +75,7 @@ export {
   AuthIdentityProviderSchema,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  BrowserSessionStatusResponseSchema,
   type ConnectCodeExchangeRequest,
   ConnectCodeExchangeRequestSchema,
   type ConnectCodeExchangeResponse,

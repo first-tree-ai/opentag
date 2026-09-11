@@ -1,6 +1,7 @@
 import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
 import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "react";
 import { createDiagnosticEnvelope, normalizeError as normalizeDiagnosticError } from "../observability/diagnostics.js";
+import { forwardErrorReport } from "../observability/error-reporting.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
 import { OpenTagLogo } from "../ui/opentag-logo.js";
@@ -144,6 +145,11 @@ export function reportBoundaryError(boundary: BoundaryName, error: unknown, erro
     },
     componentStack: errorInfo?.componentStack ? redactErrorMessage(errorInfo.componentStack) : undefined,
     diagnostic,
+  });
+  forwardErrorReport({
+    code: normalized.code,
+    message: redactErrorMessage(normalized.error.message),
+    ...(normalized.error.stack ? { stack: redactErrorMessage(normalized.error.stack) } : {}),
   });
 }
 

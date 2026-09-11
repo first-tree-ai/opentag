@@ -282,6 +282,14 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_OTEL_ENDPOINT: "https://user:pass@example.com" })).toThrow();
   });
 
+  it("reads the optional Google Cloud project for error reporting and treats blank as unset", () => {
+    expect(parseServerConfig(required).observability.errorReporting).toEqual({});
+    expect(parseServerConfig({ ...required, GOOGLE_CLOUD_PROJECT: "  " }).observability.errorReporting).toEqual({});
+    expect(
+      parseServerConfig({ ...required, GOOGLE_CLOUD_PROJECT: " opentag-staging " }).observability.errorReporting,
+    ).toEqual({ projectId: "opentag-staging" });
+  });
+
   it("allows migration commands to parse only their database dependency", () => {
     expect(parseDatabaseConfig({ OPENTAG_DATABASE_URL: required.OPENTAG_DATABASE_URL })).toMatchObject({
       databaseUrl: required.OPENTAG_DATABASE_URL,

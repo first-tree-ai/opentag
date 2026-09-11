@@ -3,6 +3,7 @@ export * from "./agent.js";
 export * from "./agent-setup.js";
 export * from "./auth.js";
 export * from "./computer.js";
+export * from "./error-report.js";
 export * from "./errors.js";
 export * from "./health.js";
 export * from "./http-paths.js";

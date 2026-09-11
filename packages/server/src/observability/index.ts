@@ -9,6 +9,12 @@ export {
 } from "./background-failure-supervisor.js";
 export { type DeliveryClaim, traceDeliveryClaim } from "./delivery-tracing.js";
 export { createServerDiagnosticReporter } from "./diagnostics.js";
+export {
+  createErrorReporter,
+  type ErrorReporter,
+  type ErrorReporterOptions,
+  type ErrorReportingClient,
+} from "./error-reporting.js";
 export { type FeishuInboundFailureCode, traceFeishuInbound } from "./feishu-tracing.js";
 export {
   initTelemetry,

@@ -98,6 +98,7 @@ server container.
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
+| `GOOGLE_CLOUD_PROJECT` | Optional; forwards relayed Web App and CLI errors to Google Cloud Error Reporting, see [Client error reporting](./error-reporting.md) |
 
 The two optional variables control how the Server learns the exact channel latest target it advertises to connected
 Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL and keeps

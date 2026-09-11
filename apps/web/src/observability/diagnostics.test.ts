@@ -6,10 +6,49 @@ import {
   normalizeError,
   routeTemplate,
 } from "./diagnostics.js";
+import { setErrorReportSink } from "./error-reporting.js";
 
 describe("web diagnostics", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    setErrorReportSink(undefined);
+  });
+
+  it("relays error-level diagnostics to the installed sink with redacted text", () => {
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const reporter = new DiagnosticReporter({ warn: () => undefined, error: () => undefined });
+
+    reporter.report({ source: "api", code: "SERVICE_UNAVAILABLE", routeTemplate: "/api/v1/agents" });
+    reporter.report(
+      {
+        source: "window",
+        code: "unhandled_rejection",
+        routeTemplate: "window",
+        error: {
+          name: "Error",
+          message: "Authorization: Bearer opaque-token",
+          stack: "Error: token=opaque-stack\n    at run (app.js:1:1)",
+        },
+      },
+      "error",
+    );
+    reporter.report(
+      { source: "window", code: "resource_load_failed", routeTemplate: "window", resourcePath: "/assets/chunk.js" },
+      "error",
+    );
+
+    expect(sink).toHaveBeenCalledTimes(2);
+    expect(sink).toHaveBeenCalledWith({
+      code: "unhandled_rejection",
+      message: "Authorization: [REDACTED]",
+      stack: expect.stringContaining("at run (app.js:1:1)"),
+    });
+    expect(sink).toHaveBeenCalledWith({
+      code: "resource_load_failed",
+      message: "resource_load_failed: /assets/chunk.js",
+    });
+    expect(JSON.stringify(sink.mock.calls)).not.toContain("opaque");
   });
 
   it("uses route templates and cools down duplicate error codes", () => {

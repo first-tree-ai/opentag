@@ -5,6 +5,7 @@ import { act, fireEvent, screen, within } from "@testing-library/react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
+import { setErrorReportSink } from "../observability/error-reporting.js";
 import { createAppRouter } from "../router.js";
 import { Route } from "../routes/__root.js";
 import {
@@ -25,6 +26,28 @@ function ExplodingChild(): never {
 describe("application error boundaries", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    setErrorReportSink(undefined);
+  });
+
+  it("relays a boundary failure to the installed sink without credential-shaped values", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const error = new Error('Authorization: Bearer root-bearer-secret; "token": "json-token-secret"');
+    error.stack = "Error: password: 'quoted-password-secret'\n    at render (app.js:1:1)";
+
+    reportBoundaryError("route", error, { componentStack: "\n    at Page" });
+
+    expect(sink).toHaveBeenCalledTimes(1);
+    const relayed = JSON.stringify(sink.mock.calls[0]);
+    expect(sink.mock.calls[0]?.[0]).toMatchObject({
+      code: "unhandled_error",
+      message: expect.stringContaining("Authorization: Bearer [REDACTED]"),
+    });
+    expect(relayed).toContain("at render (app.js:1:1)");
+    expect(relayed).not.toContain("root-bearer-secret");
+    expect(relayed).not.toContain("json-token-secret");
+    expect(relayed).not.toContain("quoted-password-secret");
   });
 
   it("keeps root and custom boundary diagnostics free of credential-shaped values", () => {

@@ -11,14 +11,25 @@ import {
   presentCommand,
   toCommandError,
 } from "../core/command/policy.js";
+import {
+  installCliProcessErrorReporting,
+  reportCliError,
+  resolveCommandPath,
+  shouldReportCommandError,
+} from "../core/diagnostics/error-reporting.js";
 import { createProgram } from "./program.js";
 
 const json = process.argv.includes("--json");
+let command: string | undefined;
 try {
+  const program = createProgram({ json });
+  // The command path only, never its arguments: those are the user's and may carry secrets.
+  command = resolveCommandPath(program, process.argv.slice(2));
   const environment = resolveChannelEnvironment(process.env);
   const home = resolveOpenTagHome(environment);
   configureClientLoggerForService(resolveOpenTagHomeLayout(home).logs);
-  await createProgram({ json }).parseAsync(process.argv);
+  installCliProcessErrorReporting({ command });
+  await program.parseAsync(process.argv);
 } catch (error) {
   // Commander usage errors (unknown options, missing required options or arguments) are
   // input-validation failures: they exit 2, and a --json caller receives the same failure
@@ -40,5 +51,7 @@ try {
       exitCode: commandExitCode(commandError),
     };
     process.exitCode = presentCommand(result, { json });
+    // After the failure is presented, so reporting can only ever delay the exit, never the answer.
+    if (shouldReportCommandError(commandError)) await reportCliError(error, { command });
   }
 }

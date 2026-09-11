@@ -1,4 +1,5 @@
 import { redactSensitive } from "@opentag/shared/browser";
+import { forwardErrorReport } from "./error-reporting.js";
 
 export type DiagnosticSource = "api" | "ui" | "window";
 export type DiagnosticLevel = "warn" | "error";
@@ -127,6 +128,7 @@ export function createDiagnosticEnvelope(input: DiagnosticEnvelope): DiagnosticE
     const error = { ...(flat.error as Record<string, unknown>) };
     if (typeof error.message === "string") error.message = redactErrorMessage(error.message);
     if (typeof error.name === "string") error.name = redactErrorMessage(error.name);
+    if (typeof error.stack === "string") error.stack = redactErrorMessage(error.stack);
     flat.error = error;
   }
   return redactSensitive(flat) as DiagnosticEnvelope;
@@ -156,12 +158,22 @@ export class DiagnosticReporter {
     this.lastReportedAt.set(key, now);
     const logger = level === "error" ? this.errorLogger : this.warnLogger;
     logger("[OpenTag] Diagnostic", safe);
+    // Only the error level is relayed: a warning is a handled or degraded path, not a defect.
+    if (level === "error") forwardErrorReport({ code: safe.code, ...diagnosticErrorText(safe) });
     return true;
   }
 
   clear(): void {
     this.lastReportedAt.clear();
   }
+}
+
+/** The already-redacted message and stack of an envelope, or a description built from its stable fields. */
+function diagnosticErrorText(safe: DiagnosticEnvelope): { message: string; stack?: string } {
+  const error = safe.error as { message?: unknown; stack?: unknown } | undefined;
+  const stack = typeof error?.stack === "string" && error.stack ? { stack: error.stack } : {};
+  if (typeof error?.message === "string" && error.message) return { message: error.message, ...stack };
+  return { message: typeof safe.resourcePath === "string" ? `${safe.code}: ${safe.resourcePath}` : safe.code };
 }
 
 /** Register global listeners for failures that React root handlers cannot observe. */
@@ -176,7 +188,7 @@ export function installWindowDiagnosticHandlers(
         source: "window",
         code: normalized.code,
         routeTemplate: "window",
-        error: { name: normalized.error.name, message: normalized.error.message },
+        error: { name: normalized.error.name, message: normalized.error.message, stack: normalized.error.stack },
       },
       "error",
     );

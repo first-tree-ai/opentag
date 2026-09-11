@@ -91,6 +91,7 @@ service，不会配置 CapRover 的 server container。
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
+| `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |
 
 这两个可选变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询下载
 base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继续广播最后一次已知的目标。dev channel 从不广播

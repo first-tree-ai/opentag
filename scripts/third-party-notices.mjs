@@ -9,6 +9,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const noticePath = resolve(projectRoot, "apps/cli/THIRD_PARTY_NOTICES");
 const bundledPackages = [
   { name: "commander", consumerManifest: "apps/cli/package.json" },
+  { name: "fflate", consumerManifest: "packages/client/package.json" },
   {
     name: "pino",
     consumerManifest: "packages/client/package.json",

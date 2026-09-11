@@ -98,10 +98,20 @@ server container.
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
+| `OPENTAG_SKILL_STORAGE_S3_BUCKET` | Optional; the S3-compatible bucket for skill archives. Without it the skill routes answer `503 SKILL_STORAGE_UNAVAILABLE` |
+| `OPENTAG_SKILL_STORAGE_S3_ENDPOINT` | With the bucket; `https://storage.googleapis.com` for Google Cloud Storage, empty for AWS. HTTPS is required in hosted environments |
+| `OPENTAG_SKILL_STORAGE_S3_REGION` | Optional; defaults to `auto` |
+| `OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID` / `OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY` | With the bucket; for GCS, the service account's HMAC key |
+| `OPENTAG_SKILL_STORAGE_S3_PREFIX` | Optional; defaults to `skills/` |
+| `OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE` | Optional; defaults to `true` |
 
-The two optional variables control how the Server learns the exact channel latest target it advertises to connected
-Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL and keeps
-advertising the last known target through any outage. The dev channel never advertises a target.
+The two channel target variables control how the Server learns the exact channel latest target it advertises to
+connected Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL
+and keeps advertising the last known target through any outage. The dev channel never advertises a target.
+
+The skill storage variables are optional as a group and point the Server at the bucket that holds uploaded skill
+archives; see [Skills distribution](./design/skills-distribution.md) for the bucket setup and the Google Cloud Storage
+interoperability notes. Use a separate bucket per environment.
 
 Enable HTTPS and force HTTPS on the App before setting `OPENTAG_PUBLIC_URL`; the server refuses to start in a hosted
 environment whose public URL is not HTTPS. Staging secrets must not be shared with any other environment.

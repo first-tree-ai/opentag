@@ -162,6 +162,13 @@ export const EffectiveRuntimeSnapshotSchema = z
       })
       .strict()
       .optional(),
+    // Digest of the skill set assigned to the agent. Optional so snapshots persisted before skills existed still parse.
+    skills: z
+      .object({
+        digest: RuntimeSha256Schema,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -1048,6 +1055,29 @@ export const ProviderCliValidationResultFrameSchema = z
     }
   });
 
+export const RUNTIME_SKILLS_CHANGED_MAX_AGENTS = 100;
+
+/**
+ * Sent only to Clients that negotiated `runtime.skillsSync`. Lists the agents whose assigned skill set changed together
+ * with each agent's new digest; the Client syncs only the agents named here.
+ */
+export const SkillsChangedFrameSchema = z
+  .object({
+    type: z.literal("skills:changed"),
+    agents: z
+      .array(
+        z
+          .object({
+            agentId: RuntimeOpaqueIdSchema,
+            digest: RuntimeSha256Schema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(RUNTIME_SKILLS_CHANGED_MAX_AGENTS),
+  })
+  .strict();
+
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
@@ -1061,6 +1091,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
   ProviderCliCancelFrameSchema,
+  SkillsChangedFrameSchema,
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
@@ -1118,6 +1149,7 @@ export type ProviderCliArtifactStatusFrame = z.infer<typeof ProviderCliArtifactS
 export type ProviderCliCancelFrame = z.infer<typeof ProviderCliCancelFrameSchema>;
 export type ProviderCliValidationGrantFrame = z.infer<typeof ProviderCliValidationGrantFrameSchema>;
 export type ProviderCliValidationResultFrame = z.infer<typeof ProviderCliValidationResultFrameSchema>;
+export type SkillsChangedFrame = z.infer<typeof SkillsChangedFrameSchema>;
 export type ServerRuntimeBusinessFrame = z.infer<typeof ServerRuntimeBusinessFrameSchema>;
 export type ClientRuntimeBusinessFrame = z.infer<typeof ClientRuntimeBusinessFrameSchema>;
 
@@ -1150,6 +1182,8 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,
+    // Appended only when present so snapshots without skills keep their historical hashes.
+    ...(snapshot.skills ? [snapshot.skills.digest] : []),
   ]);
   const sessionConfigHash = hashTuple([
     1,

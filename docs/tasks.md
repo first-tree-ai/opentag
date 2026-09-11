@@ -66,21 +66,27 @@ that nobody replied to has no such Session and returns `404`.
 ## Cancelling a queued Task
 
 `POST /api/v1/sessions/:id/cancel` withdraws a Task that is still `queued`. The id may be the Task
-id or one of its Sessions. Every pending delivery of the topic that no worker has claimed is
-expired with reason `cancelled`, its `expiresAt` set to the instant of the cancel; the delivery
-worker claims only pending rows and recovers expired ones only while they carry a dispatch
-correlation, so a withdrawn delivery is never picked up later. The cancel instant is the withdrawn
-delivery's activity, and so the topic's latest activity: the response carries the refreshed Task
-summary with status `cancelled`, even when an earlier Turn of the topic finished after the
-withdrawn message arrived, and the status stays `cancelled` until a later Turn runs in the topic.
+id or one of its Sessions. The withdrawal is all or nothing: every pending delivery of the topic is
+expired with reason `cancelled`, its `expiresAt` set to the instant of the cancel, or none of them
+is touched. The delivery worker claims only pending rows and recovers expired ones only while they
+carry a dispatch correlation, so a withdrawn delivery is never picked up later. The cancel instant
+is the withdrawn delivery's activity, and so the topic's latest activity: the response carries the
+refreshed Task summary with status `cancelled`, even when an earlier Turn of the topic finished
+after the withdrawn message arrived, and the status stays `cancelled` until a later Turn runs in
+the topic. A `200` therefore always means that every queued delivery of the topic was withdrawn
+and the Task reads `cancelled`; a topic with a running Turn, or with a delivery a worker is
+dispatching, answers `409` and nothing of it is withdrawn.
 
 Only a queued Task cancels. A Task that is `running`, or that already finished, answers `409
-TASK_NOT_QUEUED`, and so does a queued Task whose only pending delivery a worker is dispatching at
-that moment — the Runtime may already be running it. The Web refreshes the Task on that answer
-instead of reporting a failure, and tells the two apart by what the refresh shows: a Task that left
-the queue is announced as "no longer queued", while one still `queued` — its message on its way to
-the Agent — is announced as not cancelled, and keeps its cancel control. Cancelling a Task that is
-already `cancelled` is a no-op success, so repeating the request is harmless.
+TASK_NOT_QUEUED`, and so does a queued Task any of whose pending deliveries a worker is dispatching
+at that moment — the Runtime may already be running it, and the rest of the queue is left in place
+with it rather than withdrawn around it. The pending rows are locked for the check and the update,
+so a worker that starts on one of them while the cancel is under way makes the whole cancel a `409`
+too. The Web refreshes the Task on that answer instead of reporting a failure, and tells the two
+apart by what the refresh shows: a Task that left the queue is announced as "no longer queued",
+while one still `queued` — its message on its way to the Agent — is announced as not cancelled, and
+keeps its cancel control. A success is announced from the returned status the same way. Cancelling
+a Task that is already `cancelled` is a no-op success, so repeating the request is harmless.
 
 ## Internal Sessions and collaboration messages
 

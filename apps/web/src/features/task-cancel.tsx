@@ -13,11 +13,23 @@ import { Banner, Button, Dialog } from "../ui/design-system.js";
  * reporting a failure — the reader learns the true state, which is what they were after. The same
  * 409 also answers a Task whose queued message a worker is delivering at that moment; that Task
  * still reads as queued after the refresh, so the notice says the cancel did not happen rather
- * than that the Task left the queue.
+ * than that the Task left the queue. A success is announced from the status the Server returned
+ * for the same reason: only a Task that now reads `cancelled` was cancelled.
  *
  * The control stays mounted whatever the status, so the outcome it announces survives the
  * status change that removes its button.
  */
+/**
+ * What the Task's status, as the Server last reported it, means for the cancel the reader asked
+ * for: `cancelled` is the cancel itself; `queued` means the queued message is on its way to the
+ * Agent and nothing was withdrawn; anything else means the Task left the queue on its own.
+ */
+function noticeFor(status: TaskSummary["status"] | undefined): string {
+  if (status === "cancelled") return m.tasks_cancelled_notice();
+  if (status === "queued") return m.tasks_cancel_in_flight();
+  return m.tasks_cancel_not_queued();
+}
+
 export function TaskCancelControl({
   detailKey,
   enabled = true,
@@ -55,8 +67,7 @@ export function TaskCancelControl({
   async function settleRefused() {
     close();
     await queryClient.invalidateQueries({ queryKey: queryKeys.tasks.all() });
-    const refreshed = queryClient.getQueryData<InfiniteData<TaskDetail>>(detailKey)?.pages[0]?.task.status;
-    setNotice(refreshed === "queued" ? m.tasks_cancel_in_flight() : m.tasks_cancel_not_queued());
+    setNotice(noticeFor(queryClient.getQueryData<InfiniteData<TaskDetail>>(detailKey)?.pages[0]?.task.status));
   }
 
   async function cancel() {
@@ -70,7 +81,7 @@ export function TaskCancelControl({
           ? { ...data, pages: data.pages.map((page, index) => (index === 0 ? { ...page, task: cancelled } : page)) }
           : data,
       );
-      settle(m.tasks_cancelled_notice());
+      settle(noticeFor(cancelled.status));
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) await settleRefused();
       else setDialogError(error instanceof ApiError ? error.message : m.tasks_cancel_failed());

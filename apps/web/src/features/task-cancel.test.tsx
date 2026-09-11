@@ -109,6 +109,24 @@ describe("Cancelling a queued Task", () => {
     expect(screen.queryByRole("button", { name: "Cancel queued Task" })).toBeNull();
   });
 
+  it("does not announce a cancel the Server's answer says still reads as queued", async () => {
+    // A Server that withdrew part of the queue and answered 200 with the rest still pending.
+    vi.spyOn(browserApi, "task").mockResolvedValue(detailFor(queuedTask));
+    vi.spyOn(browserApi, "cancelTask").mockResolvedValue({ ...queuedTask, status: "queued" });
+
+    await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
+    const dialog = await openConfirmation();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel Task" }));
+
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "This Task could not be cancelled: its queued message is already being delivered to the Agent.",
+    );
+    expect(screen.queryByText("The Task was cancelled.")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(within(screen.getByLabelText("Task details")).getByText("Queued")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel queued Task" })).toBeTruthy();
+  });
+
   it("says the cancel did not happen when the queued message is already being delivered", async () => {
     // The Task stays queued: the worker holds its only pending delivery, which the Server left alone.
     vi.spyOn(browserApi, "task").mockResolvedValue(

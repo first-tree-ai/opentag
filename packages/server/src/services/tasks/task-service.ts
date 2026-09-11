@@ -11,7 +11,7 @@ import { TASK_CANCELLED_DELIVERY_REASON, TaskTitleSchema } from "@opentag/shared
 import { and, asc, eq, inArray, isNull, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
-import { sessionMessages, sessions } from "../../db/schema/index.js";
+import { imMessageDeliveries, sessionMessages, sessions } from "../../db/schema/index.js";
 import { DISPATCH_CLAIM_PREFIX } from "../../runtime/im-delivery-claim.js";
 import { AuthServiceError } from "../auth/index.js";
 import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
@@ -499,6 +499,20 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
   `;
 }
 
+/**
+ * How a withdrawal ended: the topic's pending deliveries were all expired; a Turn is running, or a
+ * pending row stopped being pending under the lock; a worker is dispatching one of them; or
+ * nothing was pending any more.
+ */
+type WithdrawalOutcome = "withdrawn" | "running" | "in_flight" | "nothing";
+
+interface LockedDeliveryRow extends Record<string, unknown> {
+  id: string;
+  state: string;
+  inFlight: boolean;
+  topicRunning: boolean;
+}
+
 function taskNotFound(): AuthServiceError {
   return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
 }
@@ -623,16 +637,18 @@ export class TaskService {
 
   /**
    * Withdraw a queued Task before any of it runs. The id may be the Task's own id or one of its
-   * Sessions. Every pending delivery of the topic that no worker holds is expired with the
-   * cancelled reason, which keeps it out of the delivery worker's reach for good: the worker
-   * claims only `pending` rows, and recovers expired ones only while they carry a dispatch
-   * correlation, which a never-dispatched row does not have.
+   * Sessions. The withdrawal is all or nothing: every pending delivery of the topic is expired
+   * with the cancelled reason, which keeps it out of the delivery worker's reach for good (the
+   * worker claims only `pending` rows, and recovers expired ones only while they carry a dispatch
+   * correlation, which a never-dispatched row does not have), or none of them is touched.
    *
    * Only a `queued` Task cancels. A Task that has started, or that already finished, is refused
    * with 409 so the caller re-reads its state instead; a Task that is already `cancelled` is a
    * no-op success, so a repeated cancel is harmless. A delivery a worker is dispatching right
-   * now — one carrying a live claim lease — is left alone, because the Runtime may already be
-   * running it; when that is all the Task had queued, the answer is the same 409.
+   * now — one carrying a live claim lease or a dispatch correlation — cannot be withdrawn,
+   * because the Runtime may already be running it; while the topic has one, nothing of it is
+   * withdrawn and the answer is the same 409, so a success always leaves the Task `cancelled`
+   * rather than partly queued.
    */
   async cancel(accountId: string, id: string): Promise<TaskSummary> {
     const scope = (await this.#scopeOfMessage(accountId, id)) ?? (await this.#scopeOfSession(accountId, id));
@@ -642,10 +658,14 @@ export class TaskService {
     const status = taskStatus(before);
     if (status === "cancelled") return toSummary(before);
     if (status !== "queued") throw taskNotQueued(`The Task is ${status}, not queued`);
-    const withdrawn = await this.#withdrawQueuedDeliveries(accountId, scope);
-    if (withdrawn === 0) throw taskNotQueued("The Task's queued message is already being delivered");
+    const outcome = await this.#withdrawQueuedDeliveries(accountId, scope);
+    if (outcome === "running") throw taskNotQueued("The Task is running, not queued");
+    if (outcome === "in_flight") throw taskNotQueued("The Task's queued message is already being delivered");
     const [after] = await this.#summaryRows(accountId, { scope, limit: 1 });
     if (!after) throw taskNotFound();
+    // Nothing left to withdraw: another cancel got there first, or the queue drained some other way.
+    if (outcome === "nothing" && taskStatus(after) !== "cancelled")
+      throw taskNotQueued(`The Task is ${taskStatus(after)}, not queued`);
     return toSummary(after);
   }
 
@@ -723,11 +743,15 @@ export class TaskService {
   }
 
   /**
-   * Expire the topic's pending deliveries that no worker is dispatching, and count them. The
-   * worker's claim takes a row lock, so an update that waits behind a claim re-reads the row and
-   * sees the claim marker; an update that wins the lock leaves nothing `pending` for the claim to
-   * find. A claim whose lease lapsed belongs to a worker that is gone, and is withdrawn like an
-   * unclaimed row — exactly as any worker may take such a row again.
+   * Expire every pending delivery of the topic, or none. The transaction first locks the
+   * topic's pending rows: the worker's claim steps around locked rows (`for update skip
+   * locked`), and its acceptance of a row it already claimed waits behind the lock, so what the
+   * locked read shows is what the update acts on. A lock that waited behind a worker's write
+   * returns the row as the worker left it, so a claim taken in the meantime, or a row that is no
+   * longer pending, is seen and refuses the whole withdrawal. A claim whose lease lapsed belongs
+   * to a worker that is gone, and is withdrawn like an unclaimed row — exactly as any worker may
+   * take such a row again. A topic with a running Turn is never withdrawn either, however the
+   * summary read before the transaction looked.
    *
    * The withdrawn row expires at the cancel instant rather than at its original deadline: that
    * is when it left the queue, and the instant the topic's status derivation orders it by, so the
@@ -735,27 +759,43 @@ export class TaskService {
    * so a withdrawn row is kept for the retention window after the cancel, as a lapsed one is kept
    * after its deadline.
    */
-  async #withdrawQueuedDeliveries(accountId: string, scope: TopicScope): Promise<number> {
+  async #withdrawQueuedDeliveries(accountId: string, scope: TopicScope): Promise<WithdrawalOutcome> {
     const now = this.#now();
-    const rows = await this.database.execute<{ id: string } & Record<string, unknown>>(sql`
-      with ${topicCtes({ accountId, scope, now })},
-      queued as (
-        select e.id from executions e where e.state = 'pending'
-      )
-      update im_message_deliveries as delivery
-      set state = 'expired', reason = ${TASK_CANCELLED_DELIVERY_REASON}, expires_at = ${now.toISOString()}::timestamptz
-      from queued
-      where delivery.id = queued.id
-        and delivery.state = 'pending'
-        and delivery.dispatch_request_id is null
-        and (
-          delivery.last_error_code is null
-          or delivery.last_error_code not like ${`${DISPATCH_CLAIM_PREFIX}%`}
-          or delivery.next_attempt_at <= ${now.toISOString()}::timestamptz
+    return this.database.transaction(async (transaction) => {
+      const locked = await transaction.execute<LockedDeliveryRow>(sql`
+        with ${topicCtes({ accountId, scope, now })}
+        select
+          d.id,
+          d.state,
+          (
+            d.dispatch_request_id is not null
+            or (
+              d.last_error_code like ${`${DISPATCH_CLAIM_PREFIX}%`}
+              and d.next_attempt_at > ${now.toISOString()}::timestamptz
+            )
+          ) as "inFlight",
+          exists (select 1 from executions e where e.is_running) as "topicRunning"
+        from im_message_deliveries d
+        where d.id in (select e.id from executions e where e.state = 'pending')
+        for update of d
+      `);
+      const rows = [...locked];
+      if (rows.length === 0) return "nothing";
+      if (rows.some((row) => row.topicRunning || row.state !== "pending")) return "running";
+      if (rows.some((row) => row.inFlight)) return "in_flight";
+      const withdrawn = await transaction
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: TASK_CANCELLED_DELIVERY_REASON, expiresAt: now })
+        .where(
+          inArray(
+            imMessageDeliveries.id,
+            rows.map((row) => row.id),
+          ),
         )
-      returning delivery.id
-    `);
-    return [...rows].length;
+        .returning({ id: imMessageDeliveries.id });
+      if (withdrawn.length !== rows.length) throw new Error("A locked queued delivery was not withdrawn");
+      return "withdrawn";
+    });
   }
 
   /** The Session a topic reads its manual and generated title from, if it has one. */

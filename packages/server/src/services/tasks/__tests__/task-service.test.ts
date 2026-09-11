@@ -1088,6 +1088,34 @@ describe("TaskService", () => {
     expect((await service.get(bootstrap.userId, queued.id, { limit: 1 })).task.status).toBe("queued");
   });
 
+  it("withdraws nothing when one of two pending deliveries is being dispatched", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+
+    const root = await createMessage(binding.id, { externalMessageId: "om_root", occurredAt: minutes(0) });
+    const inFlight = await createDelivery(channel.id, root.id, { state: "pending" });
+    await claimDelivery(inFlight.id, new Date(BASE_TIME.getTime() + 10_000));
+    const followUp = await createMessage(binding.id, { threadKey: "om_root", occurredAt: minutes(2) });
+    const queuedBehind = await createDelivery(channel.id, followUp.id, { state: "pending" });
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("queued");
+
+    // All or nothing: the follow-up could be withdrawn, but the root is on its way to the Runtime,
+    // so neither is, and the Task never reads as cancelled while part of it is still queued.
+    await expect(service.cancel(bootstrap.userId, root.id)).rejects.toMatchObject({
+      code: "TASK_NOT_QUEUED",
+      statusCode: 409,
+    });
+    expect(await deliveryRow(inFlight.id)).toMatchObject({ state: "pending", reason: null });
+    expect(await deliveryRow(queuedBehind.id)).toMatchObject({ state: "pending", reason: null });
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("queued");
+
+    // Once the worker's lease lapses without an acceptance, both rows are withdrawn together.
+    await claimDelivery(inFlight.id, new Date(BASE_TIME.getTime() - 1_000));
+    await expect(service.cancel(bootstrap.userId, root.id)).resolves.toMatchObject({ status: "cancelled" });
+    expect(await deliveryRow(inFlight.id)).toMatchObject({ state: "expired", reason: "cancelled" });
+    expect(await deliveryRow(queuedBehind.id)).toMatchObject({ state: "expired", reason: "cancelled" });
+  });
+
   it("leaves a delivery a worker is dispatching alone and takes back one whose claim lapsed", async () => {
     const { binding, bootstrap, service } = await fixture();
     const channel = await createSession(binding.id, { channelId: GROUP });

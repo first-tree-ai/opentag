@@ -94,5 +94,8 @@ export function slackConfigurationMessage(code: string): string {
   }
   if (code === "SLACK_UPSTREAM_UNAVAILABLE")
     return m.im_slack_unavailable({ provider: messagingProviderLabel("slack") });
+  if (code === "SLACK_APP_TEAM_ALREADY_BOUND") {
+    return m.im_slack_workspace_already_connected({ provider: messagingProviderLabel("slack") });
+  }
   return m.im_slack_authorization_failed({ provider: messagingProviderLabel("slack") });
 }

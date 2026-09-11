@@ -15,7 +15,7 @@ const AppLink = forwardRef<HTMLAnchorElement, LinkComponentProps>(function AppLi
   if (href?.startsWith("http://") || href?.startsWith("https://")) {
     return <a {...props} href={href} ref={ref} />;
   }
-  return <RouterLink {...props} ref={ref} to={(href ?? "#") as never} />;
+  return <RouterLink {...props} activeOptions={{ exact: true }} ref={ref} to={(href ?? "#") as never} />;
 });
 
 // The subject is published through context rather than captured by the root route, so a rerender

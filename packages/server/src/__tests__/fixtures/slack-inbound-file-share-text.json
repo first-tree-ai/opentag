@@ -1,0 +1,25 @@
+{
+  "note": "Sanitized production Events API message/file_share shape. Identifiers are anonymous test values.",
+  "event": {
+    "type": "message",
+    "subtype": "file_share",
+    "channel": "D_TEST_DM",
+    "channel_type": "im",
+    "user": "U_TEST_HUMAN",
+    "text": "[synthetic test request]",
+    "ts": "1788958812.272619",
+    "event_ts": "1788958812.272619",
+    "files": [
+      {
+        "id": "F_TEST_1",
+        "name": "facts.txt",
+        "mimetype": "text/plain",
+        "size": 149,
+        "mode": "snippet",
+        "file_access": "visible"
+      }
+    ],
+    "upload": false,
+    "display_as_bot": false
+  }
+}

@@ -112,11 +112,28 @@ function boundedText(value: string): { text: string; truncated: boolean } {
   return { text: new TextDecoder().decode(encoded.subarray(0, 24 * 1024)), truncated: true };
 }
 
-export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
+type SlackNormalizationRejection = "malformed_supported_event" | "unsupported_event_type" | "unsupported_subtype";
+type OnSlackNormalizationRejected = (reason: SlackNormalizationRejection) => void;
+
+function invalidSlackEventReason(event: unknown): SlackNormalizationRejection {
+  const type = event && typeof event === "object" && "type" in event ? event.type : undefined;
+  return type === "message" || type === "app_mention" ? "malformed_supported_event" : "unsupported_event_type";
+}
+
+export function normalizeSlackEnvelope(
+  envelope: VerifiedSlackEnvelope,
+  onRejected?: OnSlackNormalizationRejected,
+): NormalizedInboundImEvent[] {
   const parsed = SlackMessageEventSchema.safeParse(envelope.event);
-  if (!parsed.success) return [];
+  if (!parsed.success) {
+    onRejected?.(invalidSlackEventReason(envelope.event));
+    return [];
+  }
   const event = parsed.data;
-  if (event.subtype && !["message_changed", "message_deleted", "bot_message"].includes(event.subtype)) return [];
+  if (event.subtype && !["message_changed", "message_deleted", "bot_message", "file_share"].includes(event.subtype)) {
+    onRejected?.("unsupported_subtype");
+    return [];
+  }
   const operation =
     event.subtype === "message_deleted" ? "deleted" : event.subtype === "message_changed" ? "edited" : "created";
   const nested = operation === "edited" ? event.message : operation === "deleted" ? event.previous_message : undefined;
@@ -222,8 +239,11 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
     return { externalAppId: this.#appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
   }
 
-  normalizeInbound(input: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
-    return normalizeSlackEnvelope(input);
+  normalizeInbound(
+    input: VerifiedSlackEnvelope,
+    onRejected?: OnSlackNormalizationRejected,
+  ): NormalizedInboundImEvent[] {
+    return normalizeSlackEnvelope(input, onRejected);
   }
 
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {

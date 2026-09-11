@@ -132,6 +132,7 @@
   "defaultProviderCliFetcher",
   "defaultRuntimeRetryScheduler",
   "deriveProviderCliHomeNamespace",
+  "deriveProviderCliRunKey",
   "deriveProviderCliSessionKey",
   "deriveProviderCliValidationRequestKey",
   "deriveRuntimeKey",

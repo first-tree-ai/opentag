@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow, expectWithinViewport } from "./browser-contract.js";
 import { expect, test } from "./fixtures.js";
+import { usageVisualFixtures } from "./usage-visual-fixtures.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -18,12 +19,17 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   const cloudComputer = page.getByRole("button", { name: /^Cloud computer Coming soon / });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Back" })).toHaveCount(0);
   await rm(join(repositoryRoot, "e2e/screenshots"), { recursive: true, force: true });
   await mkdir(join(repositoryRoot, "e2e/screenshots"), { recursive: true });
   await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/agent-setup.png"), fullPage: true });
 
   await page.getByRole("button", { name: /^Local computer / }).click();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
   await page.getByRole("button", { name: "Continue" }).click();
+  await expect(page.getByRole("button", { name: "Back" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   const mark = page.locator('[data-brand="codex"]');
   const lightMark = mark.locator(".otv2-codex-mark--light");
   const darkMark = mark.locator(".otv2-codex-mark--dark");
@@ -47,7 +53,7 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
 
   await expectContainedDimensions();
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
+  await expect(page.locator("html")).toHaveAttribute("data-opentag-mode", "light");
   await expect(lightMark).toHaveCSS("display", "block");
   await expect(darkMark).toHaveCSS("display", "none");
   await page.setViewportSize({ width: 390, height: 844 });
@@ -56,20 +62,70 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
 
 test("Agent Setup Lab exposes recoverable core states through its real controls", async ({ page }) => {
   await page.goto("/internal/agent-setup", { waitUntil: "networkidle" });
-  await page.getByRole("button", { name: "Journey · New computer · Agent creation" }).click();
+  const openLab = page.getByRole("button", { name: "Mock control" });
+  await openLab.click();
   const closeLab = page.getByRole("button", { name: "Close", exact: true });
   await expect(closeLab).toBeVisible();
+  const screen = page.getByRole("combobox", { name: "Screen", exact: true });
+  await expect(screen).toContainText("Choose location");
+  await expect(page.getByRole("button", { name: "First Agent" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("region", { name: "Current state" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Visual edge cases" })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
 
-  const scenario = page.getByRole("combobox", { name: "Start from" });
+  await screen.click();
+  await page.getByRole("option", { name: "Connect computer" }).click();
+  await closeLab.click();
+  await expect(page.getByRole("heading", { name: "Connect your computer" })).toBeVisible();
+  const step2Navigation = page.locator('[data-ui="onboarding-v2-step-2-nav"]');
+  const step2Continue = step2Navigation.getByRole("button", { name: "Continue" });
+  await expect(step2Navigation).toContainText("You can continue when this computer is ready.");
+  await expect(step2Continue).toBeDisabled();
+  const computerStep = page.locator('[data-ui="agent-setup-computer"]');
+  const computerHeader = computerStep.locator(":scope > header");
+  const computerBody = computerStep.locator(":scope > .otv2-computer-step__body");
+  const connectComputerSummary = computerBody.locator(':scope > [data-ui="agent-setup-computer-summary"]');
+  const connectAction = computerBody.locator(":scope > :nth-child(2)");
+  await expect(connectComputerSummary).toHaveCSS("height", "48px");
+  await expect(connectComputerSummary).toHaveCSS("border-top-width", "0px");
+  await expect(connectComputerSummary).toHaveCSS("border-bottom-width", "0px");
+  const [computerHeaderBox, connectSummaryBox, connectActionBox] = await Promise.all([
+    computerHeader.boundingBox(),
+    connectComputerSummary.boundingBox(),
+    connectAction.boundingBox(),
+  ]);
+  expect(computerHeaderBox).not.toBeNull();
+  expect(connectSummaryBox).not.toBeNull();
+  expect(connectActionBox).not.toBeNull();
+  if (!computerHeaderBox || !connectSummaryBox || !connectActionBox) {
+    throw new Error("Connect computer layout did not produce boxes");
+  }
+  expect(Math.round(connectSummaryBox.y - (computerHeaderBox.y + computerHeaderBox.height))).toBe(16);
+  expect(Math.round(connectActionBox.y - (connectSummaryBox.y + connectSummaryBox.height))).toBe(16);
+  const [step2NavigationBox, step2ContinueBox] = await Promise.all([
+    step2Navigation.boundingBox(),
+    step2Continue.boundingBox(),
+  ]);
+  expect(step2NavigationBox).not.toBeNull();
+  expect(step2ContinueBox).not.toBeNull();
+  if (!step2NavigationBox || !step2ContinueBox) throw new Error("Step 2 navigation did not produce layout boxes");
+  expect(Math.round(step2ContinueBox.width)).toBe(Math.round(step2NavigationBox.width));
+  await expectWithinViewport(connectComputerSummary);
+  await expectNoPageOverflow(page);
+
+  await openLab.click();
+  await expect(closeLab).toBeVisible();
+  await screen.click();
+  await page.getByRole("option", { name: "Verify environment" }).click();
+  const scenario = page.getByRole("combobox", { name: "Screen state", exact: true });
   await scenario.click();
-  await page.getByRole("option", { name: "Preparation · Runtime report missing" }).click();
+  await page.getByRole("option", { name: "Runtime report missing" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
   const preparation = page.locator('[data-ui="agent-setup-preparation"]');
   const preparationHeader = preparation.locator(":scope > header");
   const computerSummary = preparation.locator('[data-ui="agent-setup-computer-summary"]');
-  const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness--compact');
+  const readiness = page.locator('[data-ui="readiness-list"].otv2-readiness');
   const readinessRows = readiness.locator(":scope > li");
   await expect(computerSummary).toHaveCSS("height", "40px");
   const [headerBox, computerBox, readinessBox] = await Promise.all([
@@ -89,18 +145,28 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
     "No recent report from Review Mac. Finish setup there, then check again.",
   );
   await expect(readinessRows.nth(1)).toContainText("Messaging support");
+  await expect(step2Continue).toBeDisabled();
   await expectWithinViewport(readinessRows.nth(0));
   await expectWithinViewport(readinessRows.nth(1));
   await expectNoPageOverflow(page);
 
-  await page.getByRole("button", { name: /^Preparation · Runtime report missing ·/ }).click();
-  await expect(page.getByRole("region", { name: "Flow progress" })).toContainText("Finish readiness check");
+  await openLab.click();
+  await page.getByRole("button", { name: "Fine-tune state" }).click();
+  await expect(page.getByRole("region", { name: "Simulated flow" })).toContainText("Finish readiness check");
   await page.getByRole("button", { name: "Finish readiness check" }).click();
+  await closeLab.click();
+  await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  await expect(step2Navigation).toContainText("This computer is ready. Continue to connect messaging.");
+  await expect(step2Continue).toBeEnabled();
+  await step2Continue.click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
 
-  await scenario.click();
-  await page.getByRole("option", { name: "Complete · Everything ready" }).click();
-  await page.getByRole("button", { name: "Fine-tune state" }).click();
+  await openLab.click();
+  await screen.click();
+  await page.getByRole("option", { name: "Ready" }).click();
+  await expect(screen).toContainText("Ready");
+  const fineTune = page.getByRole("button", { name: "Fine-tune state" });
+  await expect(fineTune).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Take computer offline" }).click();
   await expect(page.getByText("1 changed", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Reconnect computer" }).click();
@@ -157,7 +223,7 @@ test("sign-in rejects bad credentials and accepts the configured admin", async (
     const signInPage = await context.newPage();
     await signInPage.goto("/api/v1/auth/dev/callback?next=/agents", { waitUntil: "networkidle" });
     await expect(signInPage).toHaveURL(`${baseURL}/agents`);
-    await expect(signInPage.getByRole("heading", { name: "Agents", exact: true })).toBeVisible();
+    await expect(signInPage.getByRole("heading", { name: "All Agents", exact: true })).toBeVisible();
   } finally {
     await context.close();
   }
@@ -175,20 +241,18 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
 });
 
-test("Agent navigation reaches every Agent-owned destination", async ({ page }) => {
+test("Agent navigation reaches every visible Agent-owned destination", async ({ page }) => {
   expect(agentId).toMatch(/^[0-9a-f-]{36}$/);
   const destinations = [
-    { name: "Home", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
+    { name: "Overview", heading: "E2E Agent Updated", path: `/agents/${agentId}` },
     { name: "Tasks", heading: "Tasks", path: `/agents/${agentId}/tasks` },
-    { name: "Skills", heading: "Skills", path: `/agents/${agentId}/skills` },
-    { name: "Integrations", heading: "Integrations", path: `/agents/${agentId}/integrations` },
     { name: "Usage", heading: "Usage", path: `/agents/${agentId}/usage` },
   ];
   for (const destination of destinations) {
     await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
     await page
       .getByRole("navigation", { name: "Agent", exact: true })
-      .getByRole("button", { name: destination.name })
+      .getByRole("link", { name: destination.name })
       .click();
     await expect(page).toHaveURL(new RegExp(`${destination.path.replace("/", "\\/")}\\/?$`));
     await expect(page.getByRole("heading", { name: destination.heading, exact: true })).toBeVisible();
@@ -198,6 +262,151 @@ test("Agent navigation reaches every Agent-owned destination", async ({ page }) 
   await page.getByRole("menuitem", { name: "Account" }).click();
   await expect(page).toHaveURL(/\/account\/?$/);
   await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+});
+
+test("Workspace and Agent navigation retain the content frame through both transitions", async ({ page }) => {
+  await page.goto("/agents", { waitUntil: "networkidle" });
+  const frame = page.locator('[data-ui="content-page-frame"]');
+  const before = await frame.boundingBox();
+  if (!before) throw new Error("Expected the Workspace content frame");
+  await expect(page.getByRole("link", { name: "All Agents", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("height", "128px");
+  const dock = await page.locator(".app-navigation-surface").boundingBox();
+  if (!dock) throw new Error("Expected the Workspace dock");
+  expect(dock.y + dock.height / 2).toBeCloseTo((page.viewportSize()?.height ?? 0) / 2, 1);
+  for (const control of [
+    page.getByRole("link", { name: "All Agents", exact: true }),
+    page.getByRole("button", { name: "Account menu", exact: true }),
+  ]) {
+    const bounds = await control.boundingBox();
+    if (!bounds) throw new Error("Expected a Workspace navigation control");
+    expect(bounds.width).toBe(48);
+    expect(bounds.height).toBe(48);
+    expect(bounds.x + bounds.width / 2).toBeCloseTo(dock.x + dock.width / 2, 1);
+    expect(bounds.y).toBeGreaterThanOrEqual(dock.y + 8);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(dock.y + dock.height - 8);
+  }
+  const avatar = await page.locator(".app-account-avatar").boundingBox();
+  if (!avatar) throw new Error("Expected the Workspace account avatar");
+  expect(avatar.width).toBe(28);
+  expect(avatar.x + avatar.width / 2).toBeCloseTo(dock.x + dock.width / 2, 1);
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/workspace-dock.png") });
+
+  const sampleFrame = () =>
+    page.evaluate(async () => {
+      const values: Array<{ x: number; y: number; width: number }> = [];
+      const started = performance.now();
+      while (performance.now() - started < 500) {
+        const bounds = document.querySelector('[data-ui="content-page-frame"]')?.getBoundingClientRect();
+        if (bounds) values.push({ x: bounds.x, y: bounds.y, width: bounds.width });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      return values;
+    });
+  const [entry] = await Promise.all([
+    sampleFrame(),
+    page.getByRole("link", { name: "Open E2E Agent Updated", exact: true }).click(),
+  ]);
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "240px");
+  const overview = page.getByRole("navigation", { name: "Agent", exact: true }).getByRole("link", { name: "Overview" });
+  await expect(overview).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("link", { name: "All Agents", exact: true })).not.toHaveAttribute("aria-current", "page");
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/agent-navigation.png") });
+  const [exit] = await Promise.all([
+    sampleFrame(),
+    page.getByRole("link", { name: "All Agents", exact: true }).click(),
+  ]);
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");
+  for (const bounds of [...entry, ...exit]) {
+    expect(bounds.x).toBeCloseTo(before.x, 1);
+    expect(bounds.y).toBeCloseTo(before.y, 1);
+    expect(bounds.width).toBeCloseTo(before.width, 1);
+  }
+  await expectAccessible(page);
+});
+
+test("global return, local return, history, and dirty settings keep their own destinations", async ({ page }) => {
+  for (const section of [
+    "tasks",
+    `tasks/${taskId}`,
+    "usage",
+    "settings",
+    "settings/identity",
+    "settings/messaging",
+    "settings/computer",
+    "settings/instructions",
+    "settings/execution",
+    "settings/manage",
+  ]) {
+    await page.goto(`/agents/${agentId}/${section}`, { waitUntil: "networkidle" });
+    const home = page.getByRole("link", { name: "All Agents", exact: true });
+    await expect(home).toBeVisible();
+    await home.click();
+    await expect(page).toHaveURL(/\/agents\/?$/);
+    await expect(page.locator('[data-scope="workspace"]')).toBeVisible();
+  }
+  await page.goto(`/agents/${agentId}/settings/identity`, { waitUntil: "networkidle" });
+  await page.getByLabel("Display name", { exact: true }).fill("Unsaved navigation check");
+  await page.getByRole("link", { name: "All Agents", exact: true }).click();
+  await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/settings/identity$`));
+  await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("Unsaved navigation check");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "240px");
+  await page.getByRole("link", { name: "All Agents", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page).toHaveURL(/\/agents\/?$/);
+  await page.goBack();
+  await expect(page.getByLabel("Display name", { exact: true })).toHaveValue("E2E Agent Updated");
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "240px");
+
+  await page.goto(`/agents/${agentId}/tasks`, { waitUntil: "networkidle" });
+  const search = page.getByRole("searchbox", { name: "Search Tasks" });
+  await search.fill("seeded");
+  await page.getByRole("link", { name: "Review the seeded E2E task", exact: true }).click();
+  await page
+    .getByRole("navigation", { name: "Back to Tasks", exact: true })
+    .getByRole("link", { name: "Tasks", exact: true })
+    .click();
+  await expect(search).toHaveValue("seeded");
+  await page.getByRole("button", { name: "Account menu", exact: true }).click();
+  await expect(page.getByRole("menuitem", { name: "Computers", exact: true })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Sign out", exact: true })).toBeVisible();
+  await expectAccessible(page);
+  await page.getByRole("menuitem", { name: "Account", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Account", exact: true })).toBeVisible();
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("width", "64px");
+});
+
+test("mobile global return remains visible and reduced motion does not animate navigation geometry", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
+  const main = page.getByRole("main");
+  const before = await main.boundingBox();
+  await page.getByRole("button", { name: "Open Agent navigation", exact: true }).click();
+  const drawer = page.getByRole("navigation", { name: "Agent navigation", exact: true });
+  await expect(drawer.getByRole("link", { name: "Overview", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: "Open Agent navigation", exact: true })).toBeFocused();
+  await page.getByRole("link", { name: "All Agents", exact: true }).click();
+  await expect(page).toHaveURL(/\/agents\/?$/);
+  const after = await main.boundingBox();
+  expect(after?.x).toBe(before?.x);
+  expect(after?.width).toBe(before?.width);
+  expect(after?.y).toBe(before?.y);
+  await expectNoPageOverflow(page);
+  await expectAccessible(page);
+  await page.screenshot({ path: join(repositoryRoot, "e2e/screenshots/workspace-mobile.png") });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("link", { name: "Open E2E Agent Updated", exact: true }).click();
+  await expect(page.locator(".app-navigation-surface")).toHaveCSS("transition-duration", "0s");
+  await page.getByRole("link", { name: "All Agents", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("link", { name: "Open E2E Agent Updated", exact: true })).toBeFocused();
 });
 
 test("Agent home, Tasks, and Skills stay usable in a narrow Agent workspace", async ({ page }) => {
@@ -292,6 +501,13 @@ test("Agents and Usage keep their compact composition when their own containers 
 
   await page.setViewportSize({ width: 1100, height: 900 });
 
+  const usageFixture = usageVisualFixtures.find((fixture) => fixture.name === "steady-volume");
+  if (!usageFixture) throw new Error("Missing steady-volume Usage fixture");
+  const { name: _fixtureName, ...usageResponse } = usageFixture;
+  const usageApi = `**/api/v1/agents/${agentId}/usage?**`;
+  await page.route(usageApi, async (route) => {
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(usageResponse) });
+  });
   await page.goto(`/agents/${agentId}/usage`, { waitUntil: "networkidle" });
   const usageAnalysisCards = page.locator('[data-ui="usage-analysis"] > section');
   await expect(usageAnalysisCards).toHaveCount(2);
@@ -301,6 +517,7 @@ test("Agents and Usage keep their compact composition when their own containers 
   ]);
   if (!trendCard || !breakdownCard) throw new Error("Usage analysis cards did not produce layout boxes");
   expect(trendCard.y).toBeCloseTo(breakdownCard.y, 1);
+  await page.unroute(usageApi);
 });
 
 test("an unauthenticated protected visit redirects to login", async ({ browser }) => {
@@ -312,7 +529,7 @@ test("an unauthenticated protected visit redirects to login", async ({ browser }
   try {
     await page.goto("/agents", { waitUntil: "networkidle" });
     await expect(page).toHaveURL(/\/login\?next=%2Fagents$/);
-    await expect(page.getByRole("heading", { name: "Welcome back" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to OpenTag" })).toBeVisible();
   } finally {
     await context.close();
   }
@@ -329,9 +546,9 @@ test("the screenshot pass captures every primary page and writes a contact sheet
   const screenshots = join(repositoryRoot, "e2e/screenshots");
   await mkdir(screenshots, { recursive: true });
   const pages: Array<{ file: string; route: string; heading: string }> = [
-    { file: "login", route: "/login", heading: "Welcome back" },
-    { file: "home", route: "/", heading: "Agents" },
-    { file: "agents", route: "/agents", heading: "Agents" },
+    { file: "login", route: "/login", heading: "Sign in to OpenTag" },
+    { file: "home", route: "/", heading: "All Agents" },
+    { file: "agents", route: "/agents", heading: "All Agents" },
     { file: "agents-setup-create", route: "/agents/setup?action=create", heading: AGENT_SETUP_CREATE_HEADING },
     { file: "agents-computers", route: "/agents/computers", heading: "Computers" },
     { file: "agents-agentId", route: `/agents/${agentId}`, heading: "E2E Agent Updated" },

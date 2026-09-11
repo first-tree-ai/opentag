@@ -73,6 +73,7 @@ export const imMessages = pgTable(
       table.externalMessageId,
       table.occurredAt,
     ),
+    index("im_messages_retention_idx").on(table.occurredAt, table.id),
   ],
 );
 
@@ -112,8 +113,25 @@ export const imMessageDeliveries = pgTable(
   (table) => [
     uniqueIndex("im_message_deliveries_message_session_unique").on(table.messageId, table.sessionId),
     index("im_message_deliveries_session_id_idx").on(table.sessionId),
+    index("im_message_deliveries_overflow_idx").on(
+      table.sessionId,
+      table.attention,
+      table.state,
+      table.reason,
+      table.messageId,
+    ),
     index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
+    index("im_message_deliveries_expiry_idx")
+      .on(table.expiresAt, table.id)
+      .where(sql`${table.state} = 'pending' and ${table.reason} is null`),
+    index("im_message_deliveries_retention_idx")
+      .on(table.expiresAt, table.id)
+      .where(
+        sql`(${table.state} in ('expired', 'terminal_rejected')
+          or (${table.state} = 'accepted' and ${table.reportedAt} is not null)
+          or (${table.state} = 'steered' and ${table.steeredAt} is not null))`,
+      ),
     uniqueIndex("im_message_deliveries_dispatch_request_unique")
       .on(table.dispatchRequestId)
       .where(sql`${table.dispatchRequestId} is not null`),

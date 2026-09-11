@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
@@ -922,3 +922,31 @@ interface PackageManifest {
   readonly optionalDependencies?: Record<string, string>;
   readonly peerDependencies?: Record<string, string>;
 }
+
+it.each(["visible", "internal"])(
+  "preserves bundled Context Tree in the actual %s process environment",
+  async (kind) => {
+    const paths: Array<string | undefined> = [];
+    const basePath = `/opentag/context-tree/bin${delimiter}/provider/bin${delimiter}/usr/bin`;
+    const runtime = await new PiAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      process: {
+        env: { PATH: basePath },
+        spawnProcess: (_command, _args, options) => {
+          paths.push(options.env?.PATH);
+          return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
+        },
+      },
+    }).create({
+      ...request(() => undefined),
+      workspace: {
+        cwd: process.cwd(),
+        environment: { OPENTAG_HOME: "/opentag" },
+        ...(kind === "visible" ? { pathPrepend: "/session/tools" } : {}),
+      },
+    });
+    await runtime.prompt({ runId: "path-check", input: input("hello") });
+    await runtime.close();
+    expect(paths).toEqual([kind === "visible" ? `/session/tools${delimiter}${basePath}` : basePath]);
+  },
+);

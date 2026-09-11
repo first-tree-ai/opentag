@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, json, memberUserId, resetWebAppState } from "./support/app-fixtures.js";
@@ -38,8 +38,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Current work" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Messaging" })).toBeNull();
     expect(screen.queryByLabelText("More Agent actions")).toBeNull();
-    const agentNavigation = screen.getByRole("navigation", { name: "Agent" });
-    expect(within(agentNavigation).getByRole("button", { name: "Home" }).getAttribute("aria-current")).toBe("page");
+    const agentNavigation = await screen.findByRole("navigation", { name: "Agent" });
+    expect(within(agentNavigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
     expect(within(agentNavigation).queryByText("Settings")).toBeNull();
     expect(screen.queryByText("Runtime")).toBeNull();
   });
@@ -56,7 +56,7 @@ describe("OpenTag Web App Shell", () => {
     expect(setupLinks[0]?.getAttribute("href")).toBe(`/agents/setup?agentId=${agentId}`);
 
     fireEvent.click(setupLinks[0] as HTMLElement);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to agent" }));
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
   });
@@ -129,21 +129,16 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "View Usage" }));
 
     expect(await screen.findByRole("heading", { level: 1, name: "Usage" })).toBeTruthy();
-    expect(agentReads).toBe(1);
-    const agentNavigation = screen.getByRole("navigation", { name: "Agent" });
-    expect(within(agentNavigation).getByRole("button", { name: "Usage" }).getAttribute("aria-current")).toBe("page");
+    expect(agentReads).toBe(0);
+    const agentNavigation = await screen.findByRole("navigation", { name: "Agent" });
+    expect(within(agentNavigation).getByRole("link", { name: "Usage" }).getAttribute("aria-current")).toBe("page");
   });
 
   it("keeps Agent context visible while opening Settings", async () => {
     let agentReads = 0;
-    let releaseAgentRead = () => {};
-    const pendingAgentRead = new Promise<void>((resolve) => {
-      releaseAgentRead = resolve;
-    });
     installApi({
       agentRead: () => {
         agentReads += 1;
-        return agentReads === 1 ? undefined : pendingAgentRead;
       },
       bound: true,
     });
@@ -154,19 +149,16 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
-    expect(screen.queryByRole("navigation", { name: "Account Agents" })).toBeNull();
-    await waitFor(() => expect(agentReads).toBe(2));
+    expect(screen.getByRole("link", { name: "All Agents" }).getAttribute("href")).toBe("/agents");
+    expect(agentReads).toBe(0);
     expect(screen.queryByLabelText("Loading current server state")).toBeNull();
-    await act(async () => releaseAgentRead());
   });
 
   it.each([403, 404])("replaces a cached Agent with a terminal detail response (%d)", async (status) => {
-    let agentReads = 0;
+    let gone = false;
     installApi({
-      agentRead: () => {
-        agentReads += 1;
-      },
-      agentReadStatus: () => (agentReads > 1 ? status : undefined),
+      agentListStatus: () => (gone ? status : undefined),
+      agentReadStatus: () => (gone ? status : undefined),
       bound: true,
     });
     window.history.replaceState({}, "", `/agents/${agentId}`);
@@ -175,7 +167,8 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
-    await waitFor(() => expect(agentReads).toBe(2));
+    gone = true;
+    fireEvent(window, new Event("focus"));
     expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
     expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
   });

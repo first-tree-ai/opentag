@@ -5,6 +5,7 @@ import {
   type ImCliReadinessStatus,
   type IntegrationCredentialExecutionReason,
   type IntegrationCredentialExecutionStatus,
+  type ProviderCliArtifactPublicReason,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -38,6 +39,7 @@ export interface ProviderCliArtifactObservation {
   observedAt: number;
   provider: ImCliProvider;
   credentialGeneration: number;
+  reason?: ProviderCliArtifactPublicReason;
   requestId: string;
   status: Exclude<ImCliReadinessStatus, "install">;
 }

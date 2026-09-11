@@ -1,4 +1,4 @@
-import { delimiter } from "node:path";
+import { mkdir } from "node:fs/promises";
 import type {
   EffectiveRuntimeSnapshot,
   InputRejectReason,
@@ -7,6 +7,7 @@ import type {
 } from "@opentag/shared";
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
@@ -45,6 +46,19 @@ export class ClientRuntimeProviderStartError extends Error {
   }
 }
 
+/**
+ * The manager has no prepared runtime entry for a Session. The fixed code identifies this
+ * local readiness failure in logs without including paths, credentials, or cause content.
+ */
+export class SessionRuntimeNotPreparedError extends Error {
+  readonly code = "session_runtime_not_prepared" as const;
+
+  constructor() {
+    super("The Session Agent Runtime has not been prepared");
+    this.name = "SessionRuntimeNotPreparedError";
+  }
+}
+
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
   readonly cliCommand?: string;
@@ -62,8 +76,6 @@ export interface SessionRuntimeManagerOptions {
   readonly slackConfigWritableRoot?: (sessionId: string) => string | undefined;
   /** Absolute Session launch-bin directory prepended to the Agent Runtime PATH. Visible only. */
   readonly providerCliLaunchPath?: (sessionId: string) => string | undefined;
-  /** Inherited PATH after the launch bin. Tests may override; production uses process.env.PATH. */
-  readonly inheritedPath?: string;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -74,12 +86,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
-  readonly #home: string;
+  readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
-  readonly #inheritedPath: string | undefined;
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -95,11 +106,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (options.contextTree) this.#contextTree = options.contextTree;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
-    this.#home = options.home ?? "";
+    this.#home = options.home;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
-    this.#inheritedPath = options.inheritedPath ?? process.env.PATH;
     this.#proofManager =
       options.proofManager ??
       ({
@@ -129,7 +139,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   requiresSessionPreparation(request: SessionReconcileRequest): boolean {
     const current = this.#sessions.get(request.sessionId);
-    if (!current) return false;
+    // A missing entry always requires preparation: report recovery can leave the Reconciler
+    // holding a ready Session whose runtime entry this manager never recorded.
+    if (!current) return true;
     return current.proofId !== request.sessionCliProof?.proofId;
   }
 
@@ -212,7 +224,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   async ensureRuntime(sessionId: string, signal?: AbortSignal): Promise<AgentRuntime> {
     this.#assertOpen();
     const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    if (!managed) throw new SessionRuntimeNotPreparedError();
     await this.#ensureProviderReady(managed.providerId, signal);
     this.#assertOpen();
     if (managed.runtime && managed.runtime.state.phase !== "closed") return managed.runtime;
@@ -233,7 +245,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   sessionKind(sessionId: string): "visible" | "internal" {
     const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    if (!managed) throw new SessionRuntimeNotPreparedError();
     return managed.sessionKind;
   }
 
@@ -263,6 +275,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // caches per workspace, revalidates that entry against the Computer's recorded target, and
     // never throws, so a failure only changes what the prompt reports.
     const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
+    const homeLayout = resolveOpenTagHomeLayout(this.#home);
+    const configurationRoots = await prepareConfigurationRoots(homeLayout);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -271,17 +285,18 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         ...(managed.creatorSessionId ? { creatorSessionId: managed.creatorSessionId } : {}),
         cliCommand: this.#cliCommand,
         sessionCliAvailable: Boolean(managed.proofPath),
+        agentHome: managed.cwd,
         ...contextTree.promptContext,
       }),
       workspace: {
         cwd: managed.cwd,
+        ...visibleProviderCliPath(managed, this.#providerCliLaunchPath),
         environment: {
           ...(this.#home ? { OPENTAG_HOME: this.#home } : {}),
           ...(managed.proofPath ? { OPENTAG_SESSION_PROOF_FILE: managed.proofPath } : {}),
           ...(managed.sessionKind === "visible"
             ? {
                 OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId),
-                ...visibleProviderCliPath(managed.binding.sessionId, this.#providerCliLaunchPath, this.#inheritedPath),
               }
             : {}),
         },
@@ -292,6 +307,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             managed.binding.sessionId,
             this.#slackConfigWritableRoot,
           ),
+          ...configurationRoots,
           ...contextTree.writableRoots,
         ],
       },
@@ -388,7 +404,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   cwd(sessionId: string): string {
     this.#assertOpen();
     const managed = this.#sessions.get(sessionId);
-    if (!managed) throw new Error("The Session Agent Runtime has not been prepared");
+    if (!managed) throw new SessionRuntimeNotPreparedError();
     return managed.cwd;
   }
 
@@ -450,21 +466,6 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   }
 }
 
-function visibleProviderCliPath(
-  sessionId: string,
-  resolveLaunchPath: ((sessionId: string) => string | undefined) | undefined,
-  inheritedPath: string | undefined,
-  pathDelimiter = delimiter,
-): { PATH: string } | Record<string, never> {
-  const launchPath = resolveLaunchPath?.(sessionId);
-  if (!launchPath) return {};
-  if (!inheritedPath) return { PATH: launchPath };
-  if (inheritedPath === launchPath || inheritedPath.startsWith(`${launchPath}${pathDelimiter}`)) {
-    return { PATH: inheritedPath };
-  }
-  return { PATH: `${launchPath}${pathDelimiter}${inheritedPath}` };
-}
-
 /**
  * Resolve Context Tree for one Agent Workspace into the two things a Provider Runtime needs.
  *
@@ -511,5 +512,25 @@ async function waitForStart(start: Promise<AgentRuntime>, signal?: AbortSignal):
     return runtime;
   } finally {
     signal.removeEventListener("abort", onAbort);
+  }
+}
+
+function visibleProviderCliPath(
+  managed: ManagedSessionRuntime,
+  resolveLaunchPath: ((sessionId: string) => string | undefined) | undefined,
+): { pathPrepend?: string } {
+  return managed.sessionKind === "visible" ? { pathPrepend: resolveLaunchPath?.(managed.binding.sessionId) } : {};
+}
+
+async function prepareConfigurationRoots(layout: ReturnType<typeof resolveOpenTagHomeLayout>): Promise<string[]> {
+  try {
+    await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
+    return [layout.contextTreeConfigDir];
+  } catch (error) {
+    logger.warn(
+      { code: (error as NodeJS.ErrnoException).code },
+      "Context Tree configuration directory could not be created",
+    );
+    return [];
   }
 }

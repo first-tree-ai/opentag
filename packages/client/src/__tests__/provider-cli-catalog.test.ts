@@ -17,6 +17,7 @@ describe("PROVIDER_CLI_CATALOG", () => {
   it("covers feishu and slack with the documented probe contracts", () => {
     const feishu = requireProviderCliCatalogEntry("feishu");
     expect(feishu.command).toBe("lark-cli");
+    expect(feishu.compatibility).toBe(">=1.0.92 <2.0.0");
     expect(feishu.probes.versionArgs).toEqual(["--version"]);
     expect(feishu.probes.surfaceArgs).toEqual(["im", "--help"]);
     const slack = requireProviderCliCatalogEntry("slack");

@@ -20,6 +20,8 @@ import {
   ListTasksResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
   TASK_BY_ID_TEMPLATE,
+  TASK_CANCEL_TEMPLATE,
+  TaskCancelResponseSchema,
   TaskDetailSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
@@ -36,6 +38,10 @@ import {
 } from "../services/computers/index.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
+import {
+  projectListAccountComputersResponseForHttp,
+  requestIncludesProviderCliReasonV2,
+} from "./provider-cli-reason.js";
 import { parseRequest } from "./request-validation.js";
 
 const TaskListQuerySchema = z
@@ -63,13 +69,13 @@ export interface AccountRoutesOptions {
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
   /**
-   * Undoing setup so onboarding can be walked again. Staging decides whether it exists at all: the
+   * Undoing setup so onboarding can be walked again. The environment decides whether it exists: the
    * routes are registered only where the service is supplied, and each one re-checks `enabled`
    * before doing anything, so a deployment that has the routes but not the feature answers exactly
    * like one that never registered them.
    */
   setupResetService?: AccountSetupResetService;
-  /** Process-wide staging preview state; absent everywhere the internal tools are absent. */
+  /** Process-wide preview state; absent everywhere the internal tools are absent. */
   internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
@@ -77,7 +83,7 @@ export interface AccountRoutesOptions {
 
 /** The two ways to undo setup. Both act on the authenticated Account and never a chosen one. */
 export interface AccountSetupResetService {
-  /** Whether this deployment offers the reset at all; false outside staging. */
+  /** Whether this deployment offers the reset; production always refuses it. */
   readonly enabled: boolean;
   reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;
@@ -150,6 +156,19 @@ export function registerAccountRoutes(
       const response = TaskDetailSchema.parse(await taskService.get(accountId(request), sessionId, query));
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
+
+    /*
+     * Withdraws a Task that is still waiting in the queue. The service refuses anything that is not
+     * queued with 409, so a caller whose Task started in the meantime learns to re-read it rather
+     * than believing it stopped something.
+     */
+    app.post(TASK_CANCEL_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const response = TaskCancelResponseSchema.parse({
+        task: await taskService.cancel(accountId(request), sessionId),
+      });
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
   }
 
   if (options.computerService) {
@@ -157,11 +176,15 @@ export function registerAccountRoutes(
 
     app.get(HTTP_PATHS.accountComputers, { preHandler }, async (request, reply) => {
       const account = accountId(request);
+      const listed = await computerService.listAccountComputers(
+        account,
+        request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
+      );
       return reply
         .code(200)
         .send(
           ListAccountComputersResponseSchema.parse(
-            await computerService.listAccountComputers(account, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
+            projectListAccountComputersResponseForHttp(listed, requestIncludesProviderCliReasonV2(request)),
           ),
         );
     });
@@ -227,9 +250,9 @@ export function registerAccountRoutes(
      * what makes this safe to offer to every signed-in tester rather than to administrators.
      */
     /*
-     * Reachability is the whole answer a client needs: outside staging the reset is absent rather
-     * than closed, so a deployment that does not offer it is indistinguishable from one that never
-     * had it. A caller asks this before offering the operations, rather than discovering the answer
+     * Reachability is the whole answer a client needs: without Internal tools the reset is absent
+     * rather than closed, so a deployment that does not offer it is indistinguishable from one that
+     * never had it. A caller asks this before offering the operations, rather than discovering the answer
      * by attempting one.
      */
     app.get(HTTP_PATHS.accountSetupReset, { preHandler }, async (_request, reply) => {

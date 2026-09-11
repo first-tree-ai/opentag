@@ -65,6 +65,7 @@
   "im_slack_connected": "{provider} connected.",
   "im_slack_permissions_missing": "{provider} permissions are incomplete. Update permissions and try again.",
   "im_slack_unavailable": "{provider} is unavailable right now. Check the connection and try again.",
+  "im_slack_workspace_already_connected": "This {provider} workspace is already connected to another Agent. Disconnect it from that Agent, or choose a different workspace.",
   "im_status_unavailable": "Messaging status is temporarily unavailable",
   "im_update_permissions": "Update permissions"
 }

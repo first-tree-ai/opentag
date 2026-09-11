@@ -1,15 +1,22 @@
 import type { CreateAgentRequest } from "@opentag/shared/browser";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { analytics } from "../analytics/analytics.js";
+import { ANALYTICS_EVENT, activationStep } from "../analytics/events.js";
 import { ApiError, browserApi } from "../api.js";
 import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
+import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
-import { AgentSetupPage, type AgentSetupPageProps } from "./agent-setup-page.js";
+import { OpenTagLogo } from "../ui/opentag-logo.js";
+import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
+
+export type CreationPreviewView = "agent" | "destination";
 
 const CREATE_STEPS: FlowState["steps"] = [
   { id: "agent", status: "current" },
@@ -56,6 +63,45 @@ async function refusedNameHolder(
   return (await agentHoldingName(name)) ?? "unnamed";
 }
 
+interface CreationReport {
+  readonly created: (runtimeProvider: string) => void;
+  readonly refused: (cause: unknown) => void;
+}
+
+/** A preview creates no Agent, so it has nothing to report about one. */
+const SILENT_CREATION_REPORT: CreationReport = { created: () => undefined, refused: () => undefined };
+
+/**
+ * What one creation attempt reports.
+ *
+ * The refusal is worth as much as the success: a name that is already taken is somebody recovering,
+ * and any other failure is somebody stopped. Neither carries the name itself, which the reader
+ * chose and which is theirs.
+ */
+function creationReport(preview: unknown): CreationReport {
+  if (preview) return SILENT_CREATION_REPORT;
+  /*
+   * One attempt reports one outcome. What follows a created Agent — canonicalizing the route to it —
+   * runs inside the same `try`, so a navigation that fails would otherwise be reported as a creation
+   * that failed, against an Agent the Server had already made.
+   */
+  let created = false;
+  return {
+    created: (runtimeProvider) => {
+      created = true;
+      analytics.track(ANALYTICS_EVENT.agentCreated, {
+        runtime_provider: runtimeProvider,
+        ...activationStep("agent_created"),
+      });
+    },
+    refused: (cause) => {
+      if (created) return;
+      const nameConflict = cause instanceof ApiError && cause.code === "AGENT_NAME_CONFLICT";
+      analytics.track(ANALYTICS_EVENT.agentCreateFailed, { reason: nameConflict ? "name_conflict" : "error" });
+    },
+  };
+}
+
 /**
  * The one Agent creation/setup surface. Creation is deliberately only the short pre-Agent form;
  * as soon as the Server returns an id, the exact-Agent Issue 437 surface owns every remaining step.
@@ -64,27 +110,37 @@ export function AgentSetupSurface({
   agentId,
   computerAdapter,
   creationPreview,
+  creationPreviewInitialView,
+  existingAgentNames,
+  onCreationPreviewViewChange,
   onBackToAgents,
   onAgentAvailable,
   onExternalNavigation,
   onOpenAgent,
   onReady,
+  onSetupPreviewViewChange,
   refreshSignal,
   reviewMode = false,
   setupAdapter,
+  setupPreviewInitialView,
   slackOAuthError,
 }: {
   agentId?: string;
   computerAdapter?: AgentSetupPageProps["computerAdapter"];
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
+  creationPreviewInitialView?: CreationPreviewView;
+  existingAgentNames?: readonly string[];
+  onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onBackToAgents?: () => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onExternalNavigation?: (url: string) => void;
   onOpenAgent?: () => void;
   onReady?: (agentId: string) => Promise<void> | void;
+  onSetupPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   refreshSignal?: number;
   reviewMode?: boolean;
   setupAdapter?: AgentSetupAdapter;
+  setupPreviewInitialView?: AgentSetupPreviewView;
   slackOAuthError?: string;
 } = {}) {
   if (agentId) {
@@ -95,7 +151,9 @@ export function AgentSetupSurface({
         computerAdapter={computerAdapter}
         onExternalNavigation={onExternalNavigation}
         onOpenAgent={onOpenAgent}
+        onPreviewViewChange={onSetupPreviewViewChange}
         onReady={onReady}
+        previewInitialView={setupPreviewInitialView}
         refreshSignal={refreshSignal}
         reviewMode={reviewMode}
         slackOAuthError={slackOAuthError}
@@ -105,6 +163,9 @@ export function AgentSetupSurface({
   return (
     <AgentCreatePage
       creationPreview={creationPreview}
+      creationPreviewInitialView={creationPreviewInitialView}
+      existingAgentNames={existingAgentNames}
+      onCreationPreviewViewChange={onCreationPreviewViewChange}
       onAgentAvailable={onAgentAvailable}
       onBackToAgents={onBackToAgents}
     />
@@ -113,15 +174,25 @@ export function AgentSetupSurface({
 
 function AgentCreatePage({
   creationPreview,
+  creationPreviewInitialView = "destination",
+  existingAgentNames = [],
+  onCreationPreviewViewChange,
   onAgentAvailable,
   onBackToAgents,
 }: {
   creationPreview?: (request: CreateAgentRequest) => Promise<{ readonly id: string }>;
+  creationPreviewInitialView?: CreationPreviewView;
+  existingAgentNames?: readonly string[];
+  onCreationPreviewViewChange?: (view: CreationPreviewView) => void;
   onAgentAvailable?: (agentId: string) => Promise<void> | void;
   onBackToAgents?: () => void;
 }) {
-  const [draft, setDraft] = useState<AgentDraft>(emptyDraft);
-  const [destinationConfirmed, setDestinationConfirmed] = useState(false);
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<AgentDraft>(() => {
+    const initial = emptyDraft(existingAgentNames);
+    return creationPreviewInitialView === "agent" ? { ...initial, destination: "local" } : initial;
+  });
+  const [destinationConfirmed, setDestinationConfirmed] = useState(creationPreviewInitialView === "agent");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   /**
@@ -133,6 +204,10 @@ function AgentCreatePage({
   const [taken, setTaken] = useState<{ id: string; name: string } | "unnamed">();
   /** One creation at a time. A second press before the first answers would ask for a second Agent. */
   const createInFlight = useRef(false);
+
+  useEffect(() => {
+    onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
+  }, [destinationConfirmed, onCreationPreviewViewChange]);
 
   /*
    * What a refusal offers, if anything. Naming the Agent is always worth saying: it is somewhere
@@ -169,10 +244,14 @@ function AgentCreatePage({
       // Cleared with the error it belongs to: an offer left over from a previous refusal would sit
       // under a failure it does not describe.
       setTaken(undefined);
+      const report = creationReport(creationPreview);
       try {
         const created = creationPreview ? await creationPreview(request) : await browserApi.createAgent(request);
+        report.created(request.runtimeProvider);
+        if (!creationPreview) void syncAgentQueries(queryClient, created.id);
         await Promise.resolve(onAgentAvailable?.(created.id));
       } catch (cause) {
+        report.refused(cause);
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
         setTaken(await refusedNameHolder(cause, request.name));
       } finally {
@@ -180,13 +259,13 @@ function AgentCreatePage({
         setSubmitting(false);
       }
     },
-    [creationPreview, onAgentAvailable],
+    [creationPreview, onAgentAvailable, queryClient],
   );
 
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-create">
       <header className="flex items-center justify-between p-6">
-        <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
+        <OpenTagLogo label={m.onboarding_v2_brand_name()} variant="wordmark" />
         {/*
           The only way out, and only for an Account that has somewhere to go. An Account with no
           Agent has nothing behind this page: leaving would land on a list that sends it straight

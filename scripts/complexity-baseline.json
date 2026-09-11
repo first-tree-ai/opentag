@@ -594,13 +594,13 @@
       "id": "packages/server/src/api/slack-events.ts#callback",
       "path": "packages/server/src/api/slack-events.ts",
       "symbol": "callback",
-      "complexity": 20
+      "complexity": 27
     },
     {
       "id": "packages/server/src/api/slack-events.ts#callback~2",
       "path": "packages/server/src/api/slack-events.ts",
       "symbol": "callback",
-      "complexity": 27
+      "complexity": 20
     },
     {
       "id": "packages/server/src/api/slack-events.ts#callback~3",

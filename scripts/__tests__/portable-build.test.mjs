@@ -63,7 +63,7 @@ test("artifact names and download URLs stay derivable from the release coordinat
       fileName: "open-tag-1.2.3-linux-x64.tar.gz",
       version: "1.2.3",
     }),
-    "https://storage.googleapis.com/opentag-release/releases/prod/1.2.3/open-tag-1.2.3-linux-x64.tar.gz",
+    "https://dl.opentag.build/releases/prod/1.2.3/open-tag-1.2.3-linux-x64.tar.gz",
   );
   assert.equal(
     manifestDownloadUrl({
@@ -71,23 +71,17 @@ test("artifact names and download URLs stay derivable from the release coordinat
       downloadBaseUrl: DEFAULT_DOWNLOAD_BASE_URL,
       version: "0.0.2-staging.4.1",
     }),
-    "https://storage.googleapis.com/opentag-release/releases/staging/0.0.2-staging.4.1/manifest.json",
+    "https://dl.opentag.build/releases/staging/0.0.2-staging.4.1/manifest.json",
   );
 });
 
 test("download base URLs reject inputs that would publish to the wrong prefix", () => {
-  assert.equal(
-    normalizeDownloadBaseUrl("https://storage.googleapis.com/opentag-release/releases//"),
-    "https://storage.googleapis.com/opentag-release/releases",
-  );
+  assert.equal(normalizeDownloadBaseUrl("https://dl.opentag.build/releases//"), "https://dl.opentag.build/releases");
   assert.throws(
-    () => normalizeDownloadBaseUrl("https://storage.googleapis.com/opentag-release/releases/prod"),
+    () => normalizeDownloadBaseUrl("https://dl.opentag.build/releases/prod"),
     /must not include the channel segment/,
   );
-  assert.throws(
-    () => normalizeDownloadBaseUrl("http://storage.googleapis.com/opentag-release/releases"),
-    /must use https/,
-  );
+  assert.throws(() => normalizeDownloadBaseUrl("http://dl.opentag.build/releases"), /must use https/);
   assert.throws(() => normalizeDownloadBaseUrl(""), /is required/);
   // Local endpoints stay usable so an installer can be exercised without a public bucket.
   assert.equal(normalizeDownloadBaseUrl("http://127.0.0.1:8799"), "http://127.0.0.1:8799");
@@ -98,7 +92,7 @@ test("release metadata pins the version manifest the channel pointer resolves to
     {
       platform: "linux-x64",
       fileName: "open-tag-1.2.3-linux-x64.tar.gz",
-      url: "https://storage.googleapis.com/opentag-release/releases/prod/1.2.3/open-tag-1.2.3-linux-x64.tar.gz",
+      url: "https://dl.opentag.build/releases/prod/1.2.3/open-tag-1.2.3-linux-x64.tar.gz",
       sha256: "a".repeat(64),
       size: 42,
     },
@@ -120,7 +114,7 @@ test("release metadata pins the version manifest the channel pointer resolves to
   assert.equal(manifest.generatedAt, "2026-08-25T00:00:00.000Z");
   assert.deepEqual(manifest.assets, assets);
   assert.equal(manifest.manifestUrl, undefined);
-  assert.equal(latest.manifestUrl, "https://storage.googleapis.com/opentag-release/releases/prod/1.2.3/manifest.json");
+  assert.equal(latest.manifestUrl, "https://dl.opentag.build/releases/prod/1.2.3/manifest.json");
 });
 
 test("normalizers fail closed on inexact release inputs", () => {
@@ -201,15 +195,11 @@ test("the artifact shim runs the embedded runtime through relative paths only", 
 
 test("rendered installers pin the channel and base URL they were released with", async () => {
   const template = await readFile(join(portableDir, "install.sh"), "utf8");
-  const rendered = renderInstallerForChannel(
-    "staging",
-    "https://storage.googleapis.com/opentag-release/releases",
-    template,
-  );
+  const rendered = renderInstallerForChannel("staging", "https://dl.opentag.build/releases", template);
   assert.match(rendered, /PORTABLE_CHANNEL="\$\{OPENTAG_PORTABLE_CHANNEL:-staging\}"/);
   assert.match(
     rendered,
-    /DOWNLOAD_BASE_URL="\$\{OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https:\/\/storage\.googleapis\.com\/opentag-release\/releases\}"/,
+    /DOWNLOAD_BASE_URL="\$\{OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https:\/\/dl\.opentag\.build\/releases\}"/,
   );
   assert.throws(
     () => renderInstallerForChannel("dev", DEFAULT_DOWNLOAD_BASE_URL, template),
@@ -404,7 +394,10 @@ test("shell helpers import release modules without tripping their CLI entry poin
   assert.equal(result.stderr, "");
 });
 
-test("the release scripts default to the OpenTag Cloud Storage coordinates", async () => {
+// The Cloud Storage coordinates and the public download host are independent: the bucket and prefix
+// only ever build gs:// URIs, while the base URL is a custom domain served in front of them. They are
+// pinned in one place so a cutover of either one cannot silently drift the other.
+test("the release scripts default to the OpenTag storage coordinates and download host", async () => {
   const upload = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
   assert.match(upload, /DEFAULT_BUCKET="opentag-release"/);
   assert.match(upload, /DEFAULT_PREFIX="releases"/);
@@ -412,9 +405,18 @@ test("the release scripts default to the OpenTag Cloud Storage coordinates", asy
   for (const name of ["build-release.sh", "release-gcs.sh"]) {
     const source = await readFile(join(portableDir, name), "utf8");
     await access(join(portableDir, name), constants.X_OK);
-    assert.match(source, /DEFAULT_DOWNLOAD_BASE_URL="https:\/\/storage\.googleapis\.com\/opentag-release\/releases"/);
+    assert.match(source, /DEFAULT_DOWNLOAD_BASE_URL="https:\/\/dl\.opentag\.build\/releases"/);
   }
-  assert.equal(DEFAULT_DOWNLOAD_BASE_URL, "https://storage.googleapis.com/opentag-release/releases");
+
+  // The installer template ships its own fallback, and a local `sh install.sh` run resolves against it
+  // whenever the rendered per-channel copy is not what the user fetched. Nothing else pins this literal.
+  const installer = await readFile(join(portableDir, "install.sh"), "utf8");
+  assert.match(
+    installer,
+    /DOWNLOAD_BASE_URL="\$\{OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https:\/\/dl\.opentag\.build\/releases\}"/,
+  );
+
+  assert.equal(DEFAULT_DOWNLOAD_BASE_URL, "https://dl.opentag.build/releases");
 });
 
 test("forwarded option arrays survive the bash 3.2 that ships with macOS", async () => {

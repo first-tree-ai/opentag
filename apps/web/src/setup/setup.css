@@ -212,6 +212,14 @@
   min-height: 20px;
 }
 
+/*
+ * Idle repair has nothing to announce yet, and the row it was holding open for one left dead space
+ * under the command block. The region stays mounted so the first real announcement is heard.
+ */
+[data-ui="computer-connect"][data-state="idle"] .ots-slot--status {
+  min-height: 0;
+}
+
 @media (width <= 640px) {
   .ots-command__body {
     height: 240px;

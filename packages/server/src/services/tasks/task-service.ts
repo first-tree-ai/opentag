@@ -7,11 +7,12 @@ import type {
   TaskTurn,
   TurnReportRequest,
 } from "@opentag/shared";
-import { TaskTitleSchema } from "@opentag/shared";
+import { TASK_CANCELLED_DELIVERY_REASON, TaskTitleSchema } from "@opentag/shared";
 import { and, asc, eq, inArray, isNull, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
-import { sessionMessages, sessions } from "../../db/schema/index.js";
+import { imMessageDeliveries, sessionMessages, sessions } from "../../db/schema/index.js";
+import { DISPATCH_CLAIM_PREFIX } from "../../runtime/im-delivery-claim.js";
 import { AuthServiceError } from "../auth/index.js";
 import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
 
@@ -60,6 +61,7 @@ interface TaskSummaryRow extends Record<string, unknown> {
   hasRunning: boolean;
   hasPending: boolean;
   deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired" | null;
+  deliveryReason: string | null;
   latestRunning: boolean | null;
   reportedAt: Date | string | null;
   turnReport: TurnReportRequest | null;
@@ -69,6 +71,7 @@ interface TaskTurnRow extends Record<string, unknown> {
   deliveryId: string;
   attention: "direct" | "ambient";
   deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired";
+  isRunning: boolean;
   attemptCount: number;
   acceptedAt: Date | string | null;
   steeredAt: Date | string | null;
@@ -153,7 +156,11 @@ function encodeCursor(at: Date | string, id: string): string {
  * still queued, and only then the outcome of the last execution. An accepted delivery counts as
  * running only while its deadline has not passed, its Session is alive, and no later Turn ran in
  * that Session; a Session runs one Turn at a time, so a later acceptance proves the earlier one
- * ended without a report.
+ * ended without a report. A delivery the Account withdrew from the queue is stored as expired with
+ * the cancelled reason, and reads as `cancelled` rather than as a deadline that passed. The
+ * withdrawal is an execution event of its own: the row's `expires_at` holds the cancel instant and
+ * counts as its activity, so a Turn that finished after the withdrawn message arrived, but before
+ * the cancel, does not outrank it.
  */
 function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.endedAt) return "ended";
@@ -161,7 +168,8 @@ function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.hasPending) return "queued";
   // Every listed topic has a direct delivery, so a missing latest execution cannot happen.
   if (!row.deliveryState) return "idle";
-  if (row.deliveryState === "expired") return "expired";
+  if (row.deliveryState === "expired")
+    return row.deliveryReason === TASK_CANCELLED_DELIVERY_REASON ? "cancelled" : "expired";
   if (row.deliveryState === "terminal_rejected") return "failed";
   if (!row.reportedAt || !row.turnReport) return row.latestRunning ? "running" : "expired";
   return row.turnReport.outcome === "completed" ? "completed" : "failed";
@@ -218,6 +226,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
     attention: row.attention,
     delivery: {
       state: row.deliveryState,
+      isRunning: row.isRunning,
       attemptCount: row.attemptCount,
       acceptedAt: row.acceptedAt ? toIso(row.acceptedAt) : null,
       steeredAt: row.steeredAt ? toIso(row.steeredAt) : null,
@@ -255,6 +264,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
                 }
               : null,
             traceSummary: report.traceSummary,
+            outgoingReplies: report.outgoingReplies ?? null,
             reportedAt: toIso(row.reportedAt),
           }
         : null,
@@ -446,7 +456,11 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
           tm.occurred_at,
           coalesce(d.accepted_at, tm.occurred_at),
           coalesce(d.steered_at, tm.occurred_at),
-          coalesce(case when d.state = 'steered' then root.reported_at else d.reported_at end, tm.occurred_at)
+          coalesce(case when d.state = 'steered' then root.reported_at else d.reported_at end, tm.occurred_at),
+          coalesce(
+            case when d.state = 'expired' and d.reason = ${TASK_CANCELLED_DELIVERY_REASON} then d.expires_at end,
+            tm.occurred_at
+          )
         ) as activity_at
       from im_message_deliveries d
       inner join topic_messages tm on tm.id = d.message_id
@@ -485,8 +499,69 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
   `;
 }
 
+/**
+ * How a withdrawal ended: the topic's remaining pending deliveries were all expired; a Turn is
+ * running; no row was still pending under the lock, either because another cancel withdrew the
+ * whole queue first (`already_cancelled`) or because the rest was rejected or lapsed (`left_queue`);
+ * a worker holds a live claim on a pending row (`in_flight`); a pending row was handed to a Computer
+ * that has not answered yet (`awaiting_computer`); or nothing was pending to begin with.
+ */
+type WithdrawalOutcome =
+  | "withdrawn"
+  | "running"
+  | "already_cancelled"
+  | "left_queue"
+  | "in_flight"
+  | "awaiting_computer"
+  | "nothing";
+
+export interface LockedDeliveryRow extends Record<string, unknown> {
+  id: string;
+  state: string;
+  reason: string | null;
+  /** A worker's claim lease that has not lapsed: it is dispatching the row right now. */
+  claimed: boolean;
+  /** A dispatch correlation: the row was handed to a Computer whose answer has not arrived. */
+  dispatched: boolean;
+  topicRunning: boolean;
+}
+
+/**
+ * Why the locked rows of a topic that are still `pending` cannot be withdrawn, or undefined when
+ * they can. A running Turn refuses first — including one the locked read is the first to see: an
+ * `accepted` or `steered` row is not an exit from the queue but a Turn that took the message while
+ * the cancel waited, so the topic is running however the pre-transaction summary looked. Rows that
+ * left `pending` under the lock — withdrawn by a concurrent cancel, rejected by a worker, or
+ * lapsed — are set aside: they are what the queue no longer holds, and the verdict is about what
+ * it still holds. Among the remaining pending rows a
+ * live claim outranks a bare dispatch correlation, since a worker is acting on that row now; with
+ * neither, the remaining rows are withdrawable. When nothing remains pending, the Task is already
+ * cancelled if every row was withdrawn with the cancelled reason, and has left the queue otherwise.
+ */
+export function withdrawalRefusal(
+  rows: readonly LockedDeliveryRow[],
+): Exclude<WithdrawalOutcome, "withdrawn"> | undefined {
+  if (rows.length === 0) return "nothing";
+  if (rows.some((row) => row.topicRunning)) return "running";
+  // `accepted` / `steered` are not exits from the queue: a Turn took the message, so the topic is
+  // running however the pre-transaction summary looked.
+  if (rows.some((row) => row.state === "accepted" || row.state === "steered")) return "running";
+  const pending = rows.filter((row) => row.state === "pending");
+  if (pending.length === 0) {
+    const withdrawn = rows.every((row) => row.state === "expired" && row.reason === TASK_CANCELLED_DELIVERY_REASON);
+    return withdrawn ? "already_cancelled" : "left_queue";
+  }
+  if (pending.some((row) => row.claimed)) return "in_flight";
+  if (pending.some((row) => row.dispatched)) return "awaiting_computer";
+  return undefined;
+}
+
 function taskNotFound(): AuthServiceError {
   return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+}
+
+function taskNotQueued(detail: string): AuthServiceError {
+  return new AuthServiceError("TASK_NOT_QUEUED", "deterministic", `${detail}, so there is nothing to cancel`, 409);
 }
 
 export class TaskService {
@@ -604,6 +679,53 @@ export class TaskService {
   }
 
   /**
+   * Withdraw a queued Task before any of it runs. The id may be the Task's own id or one of its
+   * Sessions. The withdrawal is all or nothing: every pending delivery of the topic is expired
+   * with the cancelled reason, which keeps it out of the delivery worker's reach for good (the
+   * worker claims only `pending` rows, and recovers expired ones only while they carry a dispatch
+   * correlation, which a never-dispatched row does not have), or none of them is touched.
+   *
+   * Only a `queued` Task cancels. A Task that has started, or that already finished, is refused
+   * with 409 so the caller re-reads its state instead; a Task that is already `cancelled` is a
+   * no-op success, so a repeated cancel is harmless — whether it repeats after the first one or
+   * races it under the lock. A delivery a worker is dispatching right now — one carrying a live
+   * claim lease or a dispatch correlation — cannot be withdrawn, because the Runtime may already
+   * be running it; while the topic has one, nothing of it is withdrawn and the answer is a 409
+   * that says which, so a success always leaves the Task `cancelled` rather than partly queued.
+   * A row that a worker rejected, or that lapsed, while the cancel waited for the lock is not
+   * queued any more and is left as the worker left it; the rows still pending beside it are
+   * withdrawn as usual. When nothing is pending any more, the refusal names the status the Task
+   * now reads — unless that status is `cancelled`, which is the documented no-op success.
+   */
+  async cancel(accountId: string, id: string): Promise<TaskSummary> {
+    const scope = (await this.#scopeOfMessage(accountId, id)) ?? (await this.#scopeOfSession(accountId, id));
+    if (!scope) throw taskNotFound();
+    const [before] = await this.#summaryRows(accountId, { scope, limit: 1 });
+    if (!before) throw taskNotFound();
+    const status = taskStatus(before);
+    if (status === "cancelled") return toSummary(before);
+    if (status !== "queued") throw taskNotQueued(`The Task is ${status}, not queued`);
+    const outcome = await this.#withdrawQueuedDeliveries(accountId, scope);
+    if (outcome === "running") throw taskNotQueued("The Task is running, not queued");
+    if (outcome === "in_flight") throw taskNotQueued("The Task's queued message is already being delivered");
+    if (outcome === "awaiting_computer")
+      throw taskNotQueued("The Task's queued message was handed to a Computer that has not reported back yet");
+    const [after] = await this.#summaryRows(accountId, { scope, limit: 1 });
+    if (!after) throw taskNotFound();
+    // Nothing left to withdraw: another cancel got there first, or the queue drained some other way.
+    // A message that arrived after the locked read can leave the Task queued again; say so rather
+    // than contradicting the status the caller is about to re-read.
+    const settled = taskStatus(after);
+    if (outcome !== "withdrawn" && settled !== "cancelled")
+      throw taskNotQueued(
+        settled === "queued"
+          ? "The Task's queue changed while it was being cancelled"
+          : `The Task is ${settled}, not queued`,
+      );
+    return toSummary(after);
+  }
+
+  /**
    * Store one best-effort generated title without ever replacing a manual override. A false
    * result means the task disappeared or a manual title won the race.
    */
@@ -676,6 +798,65 @@ export class TaskService {
     return [...rows].map(({ id }) => id);
   }
 
+  /**
+   * Expire every pending delivery of the topic, or none. The transaction first locks the
+   * topic's pending rows: the worker's claim steps around locked rows (`for update skip
+   * locked`), and its acceptance of a row it already claimed waits behind the lock, so what the
+   * locked read shows is what the update acts on. A lock that waited behind a worker's write
+   * returns the row as the worker left it: a claim taken in the meantime, or a row the worker
+   * accepted or steered into a Turn, refuses the whole withdrawal as running, while a row that
+   * was withdrawn, rejected or lapsed is set aside and only the rows still pending are withdrawn
+   * — an already withdrawn or rejected row is never stamped again. A lock
+   * that waited behind another cancel sees every row withdrawn with the cancelled reason, and
+   * reports the Task as already cancelled rather than refusing. A claim whose lease lapsed belongs
+   * to a worker that is gone, and is withdrawn like an unclaimed row — exactly as any worker may
+   * take such a row again. A topic with a running Turn is never withdrawn either, however the
+   * summary read before the transaction looked.
+   *
+   * The withdrawn row expires at the cancel instant rather than at its original deadline: that
+   * is when it left the queue, and the instant the topic's status derivation orders it by, so the
+   * cancel outranks every Turn that finished before it. Retention counts from the same column,
+   * so a withdrawn row is kept for the retention window after the cancel, as a lapsed one is kept
+   * after its deadline.
+   */
+  async #withdrawQueuedDeliveries(accountId: string, scope: TopicScope): Promise<WithdrawalOutcome> {
+    const now = this.#now();
+    return this.database.transaction(async (transaction) => {
+      const locked = await transaction.execute<LockedDeliveryRow>(sql`
+        with ${topicCtes({ accountId, scope, now })}
+        select
+          d.id,
+          d.state,
+          d.reason,
+          (
+            d.last_error_code like ${`${DISPATCH_CLAIM_PREFIX}%`}
+            and d.next_attempt_at > ${now.toISOString()}::timestamptz
+          ) as "claimed",
+          (d.dispatch_request_id is not null) as "dispatched",
+          exists (select 1 from executions e where e.is_running) as "topicRunning"
+        from im_message_deliveries d
+        where d.id in (select e.id from executions e where e.state = 'pending')
+        for update of d
+      `);
+      const rows = [...locked];
+      const refusal = withdrawalRefusal(rows);
+      if (refusal) return refusal;
+      const pending = rows.filter((row) => row.state === "pending");
+      const withdrawn = await transaction
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: TASK_CANCELLED_DELIVERY_REASON, expiresAt: now })
+        .where(
+          inArray(
+            imMessageDeliveries.id,
+            pending.map((row) => row.id),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (withdrawn.length !== pending.length) throw new Error("A locked queued delivery was not withdrawn");
+      return "withdrawn";
+    });
+  }
+
   /** The Session a topic reads its manual and generated title from, if it has one. */
   async #titleSessionId(accountId: string, scope: TopicScope): Promise<string | undefined> {
     const rows = await this.database.execute<{ id: string } & Record<string, unknown>>(sql`
@@ -697,6 +878,7 @@ export class TaskService {
         e.id as "deliveryId",
         d.attention,
         d.state as "deliveryState",
+        e.is_running as "isRunning",
         d.attempt_count::int as "attemptCount",
         d.accepted_at as "acceptedAt",
         d.steered_at as "steeredAt",
@@ -841,6 +1023,7 @@ export class TaskService {
         p.has_running as "hasRunning",
         p.has_pending as "hasPending",
         le.state as "deliveryState",
+        le_delivery.reason as "deliveryReason",
         le.is_running as "latestRunning",
         le.reported_at as "reportedAt",
         case when le.state = 'steered' then le_root.turn_report else le_delivery.turn_report end as "turnReport"

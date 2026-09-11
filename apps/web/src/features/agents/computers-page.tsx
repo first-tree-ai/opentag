@@ -1,10 +1,17 @@
 import type { AccountComputerSummary } from "@opentag/shared/browser";
 import { useState } from "react";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
 import { Button, StatusIndicator, Text } from "../../ui/design-system.js";
 import { ComputerConnect } from "../computer-connect/computer-connect.js";
 import { Page } from "../layout/page.js";
-import { AsyncState, toResourceState } from "../resource/resource-state.js";
+import {
+  AsyncState,
+  isTerminalResourceError,
+  ResourceRefreshNotice,
+  toResourceState,
+  usePersistedSettledError,
+} from "../resource/resource-state.js";
 import { useComputersQuery } from "./agent-queries.js";
 
 /**
@@ -16,11 +23,29 @@ export function ComputersPage() {
   // The one Computers entry every surface reads, watched because this page is where an operator
   // waits for a Computer to come back.
   const query = useComputersQuery(true);
-  const state = toResourceState(query);
+  const persistedError = usePersistedSettledError(queryKeys.computers(), {
+    error: query.error instanceof Error ? query.error : query.error ? new Error(String(query.error)) : null,
+    isError: query.isError,
+    isSuccess: query.isSuccess,
+  });
+  const terminalError = persistedError && isTerminalResourceError(persistedError) ? persistedError : null;
+  const refreshError =
+    !terminalError && query.data && query.isError && persistedError && !isTerminalResourceError(persistedError)
+      ? persistedError
+      : null;
+  const state = toResourceState(
+    {
+      data: query.data,
+      error: terminalError ?? (query.data ? null : persistedError),
+      isError: terminalError !== null || (Boolean(persistedError) && !query.data),
+    },
+    (value) => value,
+  );
   const [connecting, setConnecting] = useState(false);
 
   return (
     <Page title={m.agents_computers_title()} description={m.agents_computers_description()}>
+      {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void query.refetch()} /> : null}
       <AsyncState state={state}>
         {(value) => (
           <div className="grid gap-6">

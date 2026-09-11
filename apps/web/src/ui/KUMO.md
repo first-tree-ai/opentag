@@ -62,11 +62,28 @@ buttons at runtime, so the adapter replaces that mix with reviewed primary and
 danger gradients. The theme contrast test verifies every rendered gradient
 endpoint for normal-text WCAG AA, not only the source accent.
 
-The theme uses explicit `data-theme="opentag"` and `data-mode="light|dark"`
-attributes. The product currently ships light mode; dark values remain available
-for compatibility and future completion, not as a supported product theme.
+The theme uses explicit `data-opentag-theme="opentag"` and `data-opentag-mode="light|dark"`
+attributes, set statically on `<html>` in `index.html`. The namespacing keeps third-party code
+that rewrites the generic `data-theme` or `data-mode` attributes from detaching OpenTag's
+selectors from the document, and tokens stay on the root element so body-mounted Dialog, Select,
+and Tooltip portals inherit them. Emphasis buttons additionally carry literal light-palette
+fallbacks inside their `var(--opentag-button-…, …)` overrides — in `buttonClassName` they must be
+static strings for Tailwind scanning — so an emphasis surface stays accessible even when no
+ancestor resolves the OpenTag tokens. The product currently ships light mode; dark values remain
+available for compatibility and future completion, not as a supported product theme.
 Brand values were chosen for readable text and button contrast in both modes;
 do not add raw colour literals to page components.
+
+`src/features/theme-integrity-notice.tsx` watches the same four theme attributes on the root
+element only — initial state plus later mutations, including a value changed and restored within
+one mutation batch — and shows one dismissible, localized warning per App mount when they drift
+from the shipped scaffold. It is deliberately read-only: it never rewrites a root attribute, and
+it does not attempt to detect arbitrary injected styles or other DOM modifications exhaustively.
+Kumo status tokens are not part of the notice's local theme scope, so the wrapper additionally
+pins the banner's warning text and tint through component-local Tailwind arbitrary properties
+(with `color-scheme: light`) on existing Kumo/Tailwind light palette primitives — otherwise a
+generic dark mode written onto the root re-themes the banner into poor contrast over the warm
+light page.
 
 ## Router links and overlays
 

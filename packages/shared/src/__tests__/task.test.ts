@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   ListTasksResponseSchema,
   TASK_TITLE_MAX_LENGTH,
+  TaskCancelResponseSchema,
   TaskDetailSchema,
+  TaskStatusSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
+  taskCancelPath,
 } from "../index.js";
 
 const summary = {
@@ -90,6 +93,7 @@ describe("Task browser contracts", () => {
             errorReason: null,
             usage: null,
             traceSummary: { lastSequence: 2, droppedEvents: 0 },
+            outgoingReplies: null,
             reportedAt: "2026-08-27T02:00:00.000Z",
           },
         },
@@ -99,7 +103,44 @@ describe("Task browser contracts", () => {
       nextCursor: null,
     });
     expect(detail.turns[0]?.report?.finalText).toBe("Stored runtime final output");
+    expect(detail.turns[0]?.report?.outgoingReplies).toBeNull();
     expect(() => TaskDetailSchema.parse({ ...detail, providerOutboundMessages: [] })).toThrow();
+    const rootTurn = detail.turns[0];
+    const rootReport = rootTurn?.report;
+    if (!rootTurn || !rootReport) throw new Error("Expected a Task Turn report fixture");
+    expect(
+      TaskDetailSchema.parse({
+        ...detail,
+        turns: [
+          {
+            ...rootTurn,
+            report: {
+              ...rootReport,
+              outgoingReplies: {
+                status: "complete",
+                replies: [
+                  {
+                    provider: "feishu",
+                    teamBrand: "lark",
+                    messageId: "om_sent",
+                    chatId: "oc_debug",
+                    content: { msgType: "text", text: "Actual Lark reply" },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      }).turns[0]?.report?.outgoingReplies?.replies[0]?.content.text,
+    ).toBe("Actual Lark reply");
+  });
+
+  it("answers a cancel with the refreshed summary and addresses it under the Task", () => {
+    expect(taskCancelPath("session/with spaces")).toBe("/api/v1/sessions/session%2Fwith%20spaces/cancel");
+    expect(TaskStatusSchema.parse("cancelled")).toBe("cancelled");
+    const cancelled = { ...summary, status: "cancelled" };
+    expect(TaskCancelResponseSchema.parse({ task: cancelled })).toEqual({ task: cancelled });
+    expect(() => TaskCancelResponseSchema.parse({ task: cancelled, cancelled: 1 })).toThrow();
   });
 
   it("accepts trimmed manual titles and an explicit clear operation", () => {

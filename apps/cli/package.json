@@ -1,6 +1,6 @@
 {
   "name": "open-tag",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "private": true,
   "description": "OpenTag command-line interface for connecting team messaging with AI coding agents.",
   "keywords": [
@@ -51,7 +51,7 @@
     "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {
-    "@first-tree-ai/context-tree": "0.1.8"
+    "@first-tree-ai/context-tree": "0.1.12"
   },
   "devDependencies": {
     "@opentag/client": "workspace:*",

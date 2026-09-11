@@ -104,4 +104,18 @@ describe("SlackConfiguration", () => {
     expect(await screen.findAllByRole("alert")).toHaveLength(2);
     unmount();
   });
+
+  it("explains how to recover when a Slack workspace belongs to another Agent", async () => {
+    window.history.replaceState(
+      {},
+      "",
+      `/agents/${agentId}/settings/messaging?slack_oauth_error=SLACK_APP_TEAM_ALREADY_BOUND`,
+    );
+    render(<Harness />);
+
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "This Slack workspace is already connected to another Agent. Disconnect it from that Agent, or choose a different workspace.",
+    );
+  });
 });

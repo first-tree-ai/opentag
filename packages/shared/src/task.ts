@@ -7,9 +7,21 @@ import {
   ImConversationKindSchema,
   ImMessageOperationSchema,
 } from "./im-message.js";
+import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
-export const TaskStatusSchema = z.enum(["queued", "running", "completed", "failed", "expired", "ended", "idle"]);
+export const TaskStatusSchema = z.enum([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "expired",
+  "ended",
+  "idle",
+]);
 export const TaskSessionKindSchema = z.enum(["channel", "thread"]);
+/** The delivery `reason` a queued message carries once its Account withdrew it before any worker took it. */
+export const TASK_CANCELLED_DELIVERY_REASON = "cancelled";
 export const TASK_AUTO_TITLE_MAX_GRAPHEMES = 80;
 export const TASK_TITLE_MAX_LENGTH = 120;
 const taskTitleSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -65,6 +77,12 @@ export const ListTasksResponseSchema = z
 
 export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
+/**
+ * The Task after its queued deliveries were withdrawn. The withdrawal is the topic's latest
+ * activity, so the status reads `cancelled` until a later Turn runs in the topic.
+ */
+export const TaskCancelResponseSchema = z.object({ task: TaskSummarySchema }).strict();
+
 export const TaskTurnSchema = z
   .object({
     deliveryId: z.string().uuid(),
@@ -72,6 +90,8 @@ export const TaskTurnSchema = z
     delivery: z
       .object({
         state: z.enum(["pending", "accepted", "steered", "terminal_rejected", "expired"]),
+        // Older servers omit this; consumers must not infer liveness from acceptance alone.
+        isRunning: z.boolean().optional(),
         attemptCount: z.number().int().nonnegative(),
         acceptedAt: z.string().datetime().nullable(),
         steeredAt: z.string().datetime().nullable(),
@@ -120,6 +140,7 @@ export const TaskTurnSchema = z
             droppedEvents: z.number().int().nonnegative(),
           })
           .strict(),
+        outgoingReplies: TurnOutgoingReplySnapshotSchema.nullable(),
         reportedAt: z.string().datetime(),
       })
       .strict()
@@ -167,6 +188,7 @@ export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 export type ListTasksResponse = z.infer<typeof ListTasksResponseSchema>;
 export type TaskTitleUpdateRequest = z.infer<typeof TaskTitleUpdateRequestSchema>;
 export type TaskTitleUpdateResponse = z.infer<typeof TaskTitleUpdateResponseSchema>;
+export type TaskCancelResponse = z.infer<typeof TaskCancelResponseSchema>;
 export type TaskTurn = z.infer<typeof TaskTurnSchema>;
 export type TaskInternalSession = z.infer<typeof TaskInternalSessionSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;

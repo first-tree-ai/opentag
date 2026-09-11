@@ -3,13 +3,10 @@ import feishuMark from "../assets/feishu.svg";
 import openAIBlossomBlack from "../assets/openai-blossom-black.svg";
 import openAIBlossomWhite from "../assets/openai-blossom-white.svg";
 import slackMark from "../assets/slack.svg";
+import { OpenTagLogo } from "../ui/opentag-logo.js";
 
 /**
- * The marks shown beside a runtime or a messaging app. Each is the vendor's own published file,
- * carried in `assets/` with a comment recording where and when it came from. None is redrawn: an
- * imitation of a trademark is both inaccurate and the worse licensing position. Ownership and the
- * conditions each publisher sets are recorded in TRADEMARKS.md at the repository root. Anything we
- * have no redistribution grant for is not carried here at all.
+ * Vendor marks shown beside a runtime or messaging app.
  */
 export type BrandId = "opentag" | "feishu" | "slack" | "claude-code" | "codex";
 
@@ -30,24 +27,7 @@ export function BrandMark({ brand, label }: { brand: BrandId; label: string }) {
         className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg bg-kumo-recessed text-sm font-medium text-kumo-subtle overflow-hidden"
         data-brand={brand}
       >
-        <svg className="size-8" focusable="false" viewBox="0 0 48 48">
-          <title>{label}</title>
-          <path
-            d="M23.8 4.4c7.1-.8 14.3 2.6 17.6 8.2 3.5 5.9 3.1 15.3-.8 22-4.2 7.1-12.5 9.6-21.2 9.1-8.3-.5-14.1-4.2-15.2-11.3C2.9 24.6 4.9 15.2 11 9.9c3.3-2.9 7.8-4.9 12.8-5.5Z"
-            fill="var(--otv2-mark-tint)"
-            stroke="var(--otv2-mark-ink)"
-            strokeWidth="1.5"
-          />
-          <path
-            d="M31.3 42.7c.1-6.3 3.8-10.6 11.8-12.7-1.4 6.7-5.7 11-11.8 12.7Z"
-            fill="var(--otv2-mark-surface)"
-            stroke="var(--otv2-mark-ink)"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-          />
-          <circle cx="17.4" cy="23" fill="var(--otv2-mark-ink)" r="1.8" />
-          <circle cx="29.4" cy="23" fill="var(--otv2-mark-ink)" r="1.8" />
-        </svg>
+        <OpenTagLogo label="" variant="mark" />
       </span>
     );
   }

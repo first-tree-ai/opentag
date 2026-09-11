@@ -13,9 +13,9 @@ export const Route = createFileRoute("/_authenticated/internal/")({
 });
 
 /**
- * The staging-only internal tools index. A deployment outside staging is answered exactly like a
- * page that does not exist; on staging every signed-in Account may reset its own onboarding, so
- * reachability is the only question the Server answers here.
+ * The internal tools index for staging and opted-in local development. Deployments without the
+ * tools answer like a page that does not exist. Every signed-in Account may reset its own
+ * onboarding where offered, so reachability is the only question the Server answers here.
  */
 function InternalToolsRoute() {
   const { me, refreshMe } = useAccount();

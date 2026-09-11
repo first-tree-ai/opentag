@@ -12,6 +12,8 @@ import {
 } from "../../storage/durable-file.js";
 import { type ProviderCliAccountLayout, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
+import { recoverSessionOutgoingReplyEvidence } from "./outgoing-reply-store.js";
+import { sweepAbandonedOutgoingReplyRuns } from "./outgoing-reply-sweep.js";
 import {
   type ProviderCliSelectionRecord,
   providerCliSelectionTargetPath,
@@ -28,6 +30,7 @@ import {
   managedArtifactDigest,
   type ProviderCliTurnPlan,
   ProviderCliTurnPlanError,
+  planCapturesOutgoingReplies,
   providerCliPlanHomeDir,
   providerCliPlanSessionDir,
   providerCliTurnLauncherPath,
@@ -47,7 +50,10 @@ export interface ProviderCliTurnPlanManagerDeps {
   /** Absolute argv that starts the current daemon Node and loads the runner module. */
   readonly runnerInvocation: readonly string[];
   /** Production readiness fence. Omit only in isolated storage tests. */
-  readonly readySelection?: (provider: ProviderCliProvider) => Promise<ProviderCliReadySelection | undefined>;
+  readonly readySelection?: (
+    provider: ProviderCliProvider,
+    signal?: AbortSignal,
+  ) => Promise<ProviderCliReadySelection | undefined>;
   readonly platform?: NodeJS.Platform;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -58,6 +64,7 @@ export interface ProviderCliTurnPlanPrepareInput {
   readonly runId: string;
   /** Absolute Slack config leaf supplied by the trusted caller; Feishu must omit this. */
   readonly configDir?: string;
+  readonly captureOutgoingReplies?: boolean;
 }
 
 export interface ProviderCliPreparedTurnPlan {
@@ -113,7 +120,8 @@ export class ProviderCliTurnPlanManager {
    * same Session is rejected; the same Run is idempotent even if selection later
    * changes.
    */
-  async prepare(input: ProviderCliTurnPlanPrepareInput): Promise<ProviderCliPreparedTurnPlan> {
+  async prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<ProviderCliPreparedTurnPlan> {
+    signal?.throwIfAborted();
     const sessionId = assertIdentity("sessionId", input.sessionId);
     const runId = assertIdentity("runId", input.runId);
     assertProviderCliTurnPlanConfigDir(input.provider, input.configDir);
@@ -121,7 +129,10 @@ export class ProviderCliTurnPlanManager {
     const sessionDir = providerCliPlanSessionDir(this.#layout, this.#homeNamespace, sessionKey);
     assertPlanWithinRoot(this.#layout.plans, sessionDir);
     await ensurePrivateDirectory(this.#layout.root, sessionDir);
-    return await this.#withSessionLock(sessionDir, () => this.#prepareLocked(input, sessionId, runId, sessionDir));
+    assertCaptureOutgoingRepliesInput(input);
+    return await this.#withSessionLock(sessionDir, () =>
+      this.#prepareLocked(input, sessionId, runId, sessionDir, signal),
+    );
   }
 
   /**
@@ -187,6 +198,12 @@ export class ProviderCliTurnPlanManager {
       if (!isProviderCliSessionKey(entry.name) || !entry.isDirectory() || entry.isSymbolicLink()) continue;
       const sessionDir = join(homeDir, entry.name);
       assertPlanWithinRoot(homeDir, sessionDir);
+      await sweepAbandonedOutgoingReplyRuns({ plansRoot: this.#layout.plans, sessionDir });
+      const keptReceipts = await recoverSessionOutgoingReplyEvidence({
+        plansRoot: this.#layout.plans,
+        sessionDir,
+      });
+      if (keptReceipts) continue;
       await rm(sessionDir, { recursive: true, force: true });
     }
   }
@@ -210,10 +227,17 @@ export class ProviderCliTurnPlanManager {
     sessionId: string,
     runId: string,
     sessionDir: string,
+    signal?: AbortSignal,
   ): Promise<ProviderCliPreparedTurnPlan> {
+    signal?.throwIfAborted();
     const existing = await this.#readExistingPlan(sessionDir);
+    await sweepAbandonedOutgoingReplyRuns({
+      plansRoot: this.#layout.plans,
+      sessionDir,
+      activeRunId: existing?.runId ?? runId,
+    });
     if (existing) return this.#reuseExistingPlan(input, sessionId, runId, sessionDir, existing);
-    return this.#publishNewPlan(input, sessionId, runId, sessionDir);
+    return this.#publishNewPlan(input, sessionId, runId, sessionDir, signal);
   }
 
   async #reuseExistingPlan(
@@ -227,7 +251,11 @@ export class ProviderCliTurnPlanManager {
     if (existing.sessionId !== sessionId) {
       throw new ProviderCliTurnPlanError("session_mismatch", "Provider CLI Turn plan session does not match");
     }
-    if (existing.runId !== runId || existing.provider !== input.provider) {
+    if (
+      existing.runId !== runId ||
+      existing.provider !== input.provider ||
+      planCapturesOutgoingReplies(existing) !== requestedCaptureOutgoingReplies(input)
+    ) {
       throw new ProviderCliTurnPlanError(
         "active_run_conflict",
         "The Session already has a different active Provider CLI Turn Run",
@@ -242,8 +270,11 @@ export class ProviderCliTurnPlanManager {
     sessionId: string,
     runId: string,
     sessionDir: string,
+    signal?: AbortSignal,
   ): Promise<ProviderCliPreparedTurnPlan> {
-    const expected = await this.#deps.readySelection?.(input.provider);
+    signal?.throwIfAborted();
+    const expected = await this.#deps.readySelection?.(input.provider, signal);
+    signal?.throwIfAborted();
     if (this.#deps.readySelection && !expected) {
       throw new ProviderCliTurnPlanError(
         "selection_invalid",
@@ -252,13 +283,35 @@ export class ProviderCliTurnPlanManager {
     }
     const record = await this.#readSelection(input.provider);
     const plan = await this.#planFromSelection(input, sessionId, runId, record, expected);
+    signal?.throwIfAborted();
     await this.#writeLauncher(sessionDir, plan);
-    const published = await publishProviderCliTurnPlanExclusive(providerCliTurnPlanPath(sessionDir), plan);
+    signal?.throwIfAborted();
+    let published: "created" | "exists";
+    try {
+      published = await publishProviderCliTurnPlanExclusive(providerCliTurnPlanPath(sessionDir), plan);
+    } finally {
+      if (signal?.aborted) await this.#discardMatchingPlan(input, sessionDir);
+    }
+    signal?.throwIfAborted();
     if (published === "created") return this.#prepared(plan, sessionDir);
 
     const raced = await this.#readExistingPlan(sessionDir);
     if (!raced) throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan publish raced");
     return this.#reuseExistingPlan(input, sessionId, runId, sessionDir, raced);
+  }
+
+  async #discardMatchingPlan(input: ProviderCliTurnPlanPrepareInput, sessionDir: string): Promise<void> {
+    const existing = await this.#readExistingPlan(sessionDir);
+    if (!existing) return;
+    if (
+      existing.homeNamespace !== this.#homeNamespace ||
+      existing.sessionId !== input.sessionId ||
+      existing.runId !== input.runId ||
+      existing.provider !== input.provider
+    ) {
+      return;
+    }
+    await rm(providerCliTurnPlanPath(sessionDir), { force: true });
   }
 
   async #readSelection(provider: ProviderCliProvider): Promise<ProviderCliSelectionRecord> {
@@ -327,6 +380,7 @@ export class ProviderCliTurnPlanManager {
       homeNamespace: this.#homeNamespace,
       sessionId,
       runId,
+      ...(requestedCaptureOutgoingReplies(input) ? { captureOutgoingReplies: true as const } : {}),
     };
     if (input.provider === "slack") {
       const configDir = assertProviderCliTurnPlanConfigDir("slack", input.configDir);
@@ -474,5 +528,18 @@ function mapPrepareTargetError(error: unknown): ProviderCliTurnPlanError {
     error instanceof Error ? error.message : "Provider CLI selection target is invalid",
   );
 }
+
+function assertCaptureOutgoingRepliesInput(input: ProviderCliTurnPlanPrepareInput): void {
+  if (input.captureOutgoingReplies === undefined) return;
+  if (typeof input.captureOutgoingReplies !== "boolean") {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn captureOutgoingReplies must be a boolean");
+  }
+  if (input.provider === "slack" && input.captureOutgoingReplies) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "Slack Provider CLI Turn plans do not capture outgoing replies");
+  }
+}
+
+const requestedCaptureOutgoingReplies = (input: ProviderCliTurnPlanPrepareInput): boolean =>
+  input.provider === "feishu" && input.captureOutgoingReplies === true;
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

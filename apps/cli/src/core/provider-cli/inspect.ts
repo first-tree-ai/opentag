@@ -71,7 +71,7 @@ function renderInspectionLines(
 function nextActionFor(inspection: ProviderCliInspection): ProviderCliNextAction | undefined {
   if (inspection.state === "ready") return undefined;
   const reason = inspection.diagnostic?.code ?? (inspection.readiness === "install" ? "not_installed" : "unavailable");
-  if (!providerCliCanAutoRepair(reason)) return undefined;
+  if (!providerCliCanAutoRepair(reason, "inspect")) return undefined;
   return {
     provider: inspection.provider,
     command: providerCliRepairCommand(inspection.provider),

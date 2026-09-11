@@ -486,7 +486,7 @@ export function installApi(
       return response;
     }
     if (path === "/api/v1/me") {
-      if (loggedOut && options.meAfterLogout) return options.meAfterLogout();
+      if (loggedOut) return options.meAfterLogout?.() ?? json({ error: { message: "Sign in required" } }, 401);
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       if (profileUpdated && options.meAfterProfileUpdate) return options.meAfterProfileUpdate();
       if (profileUpdated && meFailuresRemaining > 0) {
@@ -562,6 +562,7 @@ export function installApi(
               errorReason: null,
               usage: null,
               traceSummary: { lastSequence: 2, droppedEvents: 0 },
+              outgoingReplies: null,
               reportedAt: "2026-08-20T00:02:00.000Z",
             },
           },

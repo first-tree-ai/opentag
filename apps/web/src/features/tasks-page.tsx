@@ -1,10 +1,11 @@
-import type {
-  ListTasksResponse,
-  TaskDetail,
-  TaskStatus,
-  TaskSummary,
-  TaskTurn,
-  TurnFailureReason,
+import {
+  type ListTasksResponse,
+  TASK_CANCELLED_DELIVERY_REASON,
+  type TaskDetail,
+  type TaskStatus,
+  type TaskSummary,
+  type TaskTurn,
+  type TurnFailureReason,
 } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -15,6 +16,7 @@ import { compareText, foldCase, formatDateTime, formatRelativeTime, initials } f
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
+import { liveResourceQueryOptions } from "../query/live.js";
 import {
   Button,
   buttonClassName,
@@ -30,8 +32,16 @@ import {
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
-import { isTerminalResourceError } from "./resource/resource-state.js";
+import {
+  liveRefreshErrors,
+  ResourceRefreshNotice,
+  ResourceRefreshStatus,
+  usePersistedSettledError,
+} from "./resource/resource-state.js";
+import { useRememberedState } from "./shell/shell-memory.js";
+import { TaskCancelControl } from "./task-cancel.js";
 import { TaskMessageBody } from "./task-message-body.js";
+import { TaskOutgoingReplies } from "./task-outgoing-replies.js";
 
 type TaskFilter = "all" | TaskStatus;
 
@@ -40,36 +50,48 @@ const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
   running: { tone: "info" },
   completed: { tone: "success" },
   failed: { tone: "danger" },
+  cancelled: { tone: "neutral" },
   expired: { tone: "warning" },
   ended: { tone: "neutral" },
   idle: { tone: "neutral" },
 };
 
 export function TasksPage({ agentId, showExamples = false }: { agentId?: string; showExamples?: boolean } = {}) {
-  const [query, setQuery] = useState("");
+  const filterKey = taskFilterKey(agentId);
+  const [query, setQuery] = useRememberedState(`${filterKey}:query`, "");
   const [selectedAgentId, setSelectedAgentId] = useState("all");
-  const [status, setStatus] = useState<TaskFilter>("all");
+  const [status, setStatus] = useRememberedState<TaskFilter>(`${filterKey}:status`, "all");
   /*
    * Pages accumulate in the cache, so a failed append leaves the rows already on screen alone and
    * stays retryable — the behavior the hand-rolled append kept its own error state for.
    */
+  const listKey = taskListQueryKey(agentId, showExamples);
   const tasksQuery = useInfiniteQuery({
-    queryKey: taskListQueryKey(agentId, showExamples),
+    queryKey: listKey,
     queryFn: ({ pageParam }) => readTasks({ agentId, cursor: pageParam, showExamples }),
     initialPageParam: undefined as string | undefined,
     // The API reports the end of the list as null; the cache reads undefined as "no page after this".
     getNextPageParam: (page) => page.nextCursor ?? undefined,
+    ...liveResourceQueryOptions,
   });
   const loaded = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
   const taskError = asError(tasksQuery.error);
+  const persistedError = usePersistedSettledError(listKey, {
+    error: tasksQuery.error ? taskError : null,
+    isError: tasksQuery.isError,
+    isSuccess: tasksQuery.isSuccess,
+  });
   /*
    * Which page failed does not change what a terminal status means. The Server resolves the Task
    * scope before it parses a cursor — an unusable cursor is a 400 — so a 401, 403, 404 or 410 on an
    * append says the same thing it says on the first read, and the rows already in hand are exactly
    * what must stop being shown.
    */
-  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
-  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
+  const {
+    terminalError: terminalTasksError,
+    loadMoreError,
+    refreshError,
+  } = liveRefreshErrors({ ...tasksQuery, error: taskError }, persistedError);
 
   const agents = useMemo(
     () =>
@@ -177,6 +199,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
           {m.tasks_development_examples()}
         </Text>
       ) : null}
+      {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void tasksQuery.refetch()} /> : null}
 
       {!terminalTasksError && tasksQuery.isPending ? (
         <TaskNotice loading heading={m.tasks_loading_tasks()} detail={m.tasks_loading_tasks_detail()} />
@@ -209,11 +232,11 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
           {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                disabled={tasksQuery.isFetchingNextPage}
+                disabled={tasksQuery.isFetching}
                 loading={tasksQuery.isFetchingNextPage}
                 type="button"
                 variant="secondary"
-                onClick={() => void tasksQuery.fetchNextPage()}
+                onClick={() => void tasksQuery.fetchNextPage({ cancelRefetch: false })}
               >
                 {tasksQuery.isFetchingNextPage
                   ? m.tasks_loading_more()
@@ -248,18 +271,28 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
    * belongs to the entry that started it, and the pages it accumulated are still there on the way
    * back — which is what the generation counter here had to imitate by hand.
    */
+  const listKey = queryKeys.tasks.byAgent(agentId);
   const tasksQuery = useInfiniteQuery({
-    queryKey: queryKeys.tasks.byAgent(agentId),
+    queryKey: listKey,
     queryFn: ({ pageParam }) => readTasks({ agentId, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
+    ...liveResourceQueryOptions,
   });
   const tasks = useMemo(() => tasksQuery.data?.pages.flatMap((page) => page.tasks) ?? [], [tasksQuery.data]);
   const taskError = asError(tasksQuery.error);
+  const persistedError = usePersistedSettledError(listKey, {
+    error: tasksQuery.error ? taskError : null,
+    isError: tasksQuery.isError,
+    isSuccess: tasksQuery.isSuccess,
+  });
   // The same rule the Account list follows: a refusal withdraws the rows it refused, whichever
   // page asked for them. Only a transient append failure keeps them, reported beside its control.
-  const terminalTasksError = tasksQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
-  const loadMoreError = tasksQuery.isFetchNextPageError && !terminalTasksError ? taskError : null;
+  const {
+    terminalError: terminalTasksError,
+    loadMoreError,
+    refreshError,
+  } = liveRefreshErrors({ ...tasksQuery, error: taskError }, persistedError);
   const unavailable = terminalTasksError !== null || (tasksQuery.isError && !tasksQuery.data);
 
   return (
@@ -286,6 +319,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
           {m.tasks_temporarily_unavailable()}
         </p>
       ) : null}
+      {refreshError ? <ResourceRefreshStatus error={refreshError} onRetry={() => void tasksQuery.refetch()} /> : null}
       {!unavailable && tasksQuery.data && tasks.length === 0 ? (
         <p className="text-sm text-kumo-subtle" role="status">
           {m.tasks_no_tasks_yet_detail()}
@@ -297,10 +331,10 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
           {tasksQuery.hasNextPage ? (
             <div className="flex flex-wrap items-center gap-3">
               <Button
-                disabled={tasksQuery.isFetchingNextPage}
+                disabled={tasksQuery.isFetching}
                 type="button"
                 variant="secondary"
-                onClick={() => void tasksQuery.fetchNextPage()}
+                onClick={() => void tasksQuery.fetchNextPage({ cancelRefetch: false })}
               >
                 {tasksQuery.isFetchingNextPage
                   ? m.tasks_loading_more()
@@ -334,20 +368,30 @@ export function TaskDetailPage({
    * The Task itself, its internal Sessions and its collaboration messages come from the first page
    * only, exactly as the hand-rolled append kept them; each further page contributes Turns.
    */
+  const detailKey = taskDetailQueryKey(taskId, showExamples);
   const taskQuery = useInfiniteQuery({
-    queryKey: taskDetailQueryKey(taskId, showExamples),
+    queryKey: detailKey,
     queryFn: ({ pageParam }) => readTaskDetail(taskId as string, agentId, pageParam, showExamples),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
     enabled: taskId !== undefined,
+    ...liveResourceQueryOptions,
   });
   const first = taskQuery.data?.pages[0];
   const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
   const taskError = asError(taskQuery.error);
+  const persistedError = usePersistedSettledError(detailKey, {
+    error: taskQuery.error ? taskError : null,
+    isError: taskQuery.isError,
+    isSuccess: taskQuery.isSuccess,
+  });
   // `TaskService.get` resolves the Task before it parses a cursor, so a terminal status on a Turn
   // append is about the Task, not the page boundary. It withdraws the conversation with it.
-  const terminalTaskError = taskQuery.isError && isTerminalResourceError(taskError) ? taskError : null;
-  const loadMoreError = taskQuery.isFetchNextPageError && !terminalTaskError ? taskError : null;
+  const {
+    terminalError: terminalTaskError,
+    loadMoreError,
+    refreshError,
+  } = liveRefreshErrors({ ...taskQuery, error: taskError }, persistedError);
 
   if (terminalTaskError) {
     return <TaskUnavailable agentId={agentId} error={terminalTaskError} showExamples={showExamples} />;
@@ -414,7 +458,10 @@ export function TaskDetailPage({
             <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
           </TaskDetailFact>
         </dl>
+        <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
+
+      {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void taskQuery.refetch()} /> : null}
 
       <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
         <Text as="h2" id="task-activity-title" variant="heading">
@@ -435,8 +482,8 @@ export function TaskDetailPage({
           loading={taskQuery.isFetchingNextPage}
           type="button"
           variant="secondary"
-          disabled={taskQuery.isFetchingNextPage}
-          onClick={() => void taskQuery.fetchNextPage()}
+          disabled={taskQuery.isFetching}
+          onClick={() => void taskQuery.fetchNextPage({ cancelRefetch: false })}
         >
           {m.tasks_load_earlier_activity()}
         </Button>
@@ -525,7 +572,7 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
                       outcome: humanizeEnum(report.outcome),
                       time: formatDateTime(report.reportedAt),
                     })
-                  : deliveryStateLabel(turn.delivery.state)}
+                  : deliveryStateLabel(turn.delivery)}
             </small>
           </header>
           <section
@@ -537,23 +584,73 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
               <p className="text-sm text-kumo-subtle" data-ui="task-progress-summary">
                 {m.tasks_included_in_active_work()}
               </p>
-            ) : report?.finalText ? (
-              <TaskMessageBody format="markdown" text={report.finalText} />
-            ) : report?.errorReason ? (
-              <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p>
             ) : (
-              <p
-                className="text-sm text-kumo-subtle"
-                data-state={turn.delivery.state === "accepted" ? "progress" : "attention"}
-              >
-                {turn.delivery.state === "accepted"
-                  ? m.tasks_work_in_progress()
-                  : m.tasks_message_state({ state: deliveryStateLabel(turn.delivery.state).toLocaleLowerCase() })}
-              </p>
+              <TaskAgentReplyBody task={task} turn={turn} />
             )}
           </section>
         </div>
       </article>
+    </section>
+  );
+}
+
+function TaskAgentReplyBody({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
+  const report = turn.report;
+  if (!report) return <TaskUnreportedBody delivery={turn.delivery} />;
+  return (
+    <div className="grid gap-4">
+      {task.source.provider === "feishu" ? <TaskCapturedReplies report={report} /> : null}
+      {report.finalText ? (
+        <TaskExecutionSummary text={report.finalText} truncated={report.outgoingReplies?.runtimeSummaryTruncated} />
+      ) : report.outgoingReplies?.runtimeSummaryTruncated ? (
+        <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p>
+      ) : null}
+      {report.errorReason ? <p className="text-sm text-kumo-danger">{turnFailureLabel(report.errorReason)}</p> : null}
+    </div>
+  );
+}
+
+function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
+  const running = delivery.isRunning === true;
+  return (
+    <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
+      {running
+        ? m.tasks_work_in_progress()
+        : delivery.state === "accepted"
+          ? m.tasks_execution_report_unavailable()
+          : m.tasks_message_state({ state: deliveryStateLabel(delivery).toLocaleLowerCase() })}
+    </p>
+  );
+}
+
+function TaskCapturedReplies({ report }: { report: NonNullable<TaskTurn["report"]> }) {
+  const snapshot = report.outgoingReplies;
+  if (!snapshot || snapshot.status === "unavailable") {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-reply-unavailable">
+        {m.tasks_reply_data_unavailable()}
+      </p>
+    );
+  }
+  if (snapshot.replies.length > 0 || snapshot.status === "incomplete" || (snapshot.omittedCount ?? 0) > 0) {
+    return <TaskOutgoingReplies snapshot={snapshot} />;
+  }
+  if (snapshot.status === "complete") {
+    return (
+      <p className="text-sm text-kumo-subtle" data-ui="task-no-reply">
+        {m.tasks_no_reply_sent()}
+      </p>
+    );
+  }
+  return null;
+}
+
+function TaskExecutionSummary({ text, truncated }: { text: string; truncated?: boolean }) {
+  return (
+    <section className="grid gap-2" data-ui="task-execution-summary" aria-label={m.tasks_execution_summary()}>
+      <strong className="text-sm">{m.tasks_execution_summary()}</strong>
+      <TaskMessageBody format="markdown" text={text} />
+      {truncated ? <p className="text-sm text-kumo-subtle">{m.tasks_summary_truncated()}</p> : null}
     </section>
   );
 }
@@ -822,8 +919,13 @@ function attentionLabel(value: TaskTurn["attention"]): string {
   return humanizeEnum(value);
 }
 
-function deliveryStateLabel(value: TaskTurn["delivery"]["state"]): string {
-  return value === "accepted" ? m.tasks_in_progress() : humanizeEnum(value);
+function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
+  if (delivery.isRunning === true) return m.tasks_in_progress();
+  // A withdrawn delivery is stored as expired; the reader asked for it and is told so.
+  if (delivery.state === "expired" && delivery.reason === TASK_CANCELLED_DELIVERY_REASON) {
+    return m.tasks_status_cancelled();
+  }
+  return humanizeEnum(delivery.state);
 }
 
 /*
@@ -857,6 +959,7 @@ function taskStatusLabel(value: TaskStatus): string {
   if (value === "running") return m.tasks_status_running();
   if (value === "completed") return m.tasks_status_completed();
   if (value === "failed") return m.tasks_status_failed();
+  if (value === "cancelled") return m.tasks_status_cancelled();
   if (value === "expired") return m.tasks_status_expired();
   if (value === "ended") return m.tasks_status_ended();
   return m.tasks_status_idle();
@@ -918,4 +1021,8 @@ async function loadDevelopmentTaskData() {
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(m.tasks_request_failed());
+}
+
+function taskFilterKey(agentId: string | undefined) {
+  return `tasks:${agentId ?? "examples"}`;
 }

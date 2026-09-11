@@ -1,6 +1,6 @@
 /* Generated from kumo-theme.tokens.ts. Do not edit node_modules Kumo styles. */
-:root[data-theme="opentag"],
-[data-theme="opentag"] {
+:root[data-opentag-theme="opentag"],
+[data-opentag-theme="opentag"] {
   --color-kumo-brand: #3a5c04;
   --color-kumo-brand-hover: #2f4a03;
   --text-color-kumo-brand: #3a5c04;
@@ -16,9 +16,9 @@
   --opentag-button-danger-ring: #88180f;
 }
 
-:root[data-theme="opentag"][data-mode="dark"],
-[data-theme="opentag"][data-mode="dark"],
-[data-theme="opentag"] [data-mode="dark"] {
+:root[data-opentag-theme="opentag"][data-opentag-mode="dark"],
+[data-opentag-theme="opentag"][data-opentag-mode="dark"],
+[data-opentag-theme="opentag"] [data-opentag-mode="dark"] {
   --color-kumo-brand: #8fdd14;
   --color-kumo-brand-hover: #a8ec45;
   --text-color-kumo-brand: #8fdd14;

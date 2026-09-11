@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-09-02
+> Last synced with: 2026-09-11
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI 的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -89,7 +89,7 @@ service，不会配置 CapRover 的 server container。
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `BETTER_AUTH_SECRET` 不同；仅用于签名 Slack OAuth state |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://storage.googleapis.com/opentag-release/releases` |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
 
 这两个可选变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询下载
@@ -105,6 +105,16 @@ CapRover 会不断重启一个在启动阶段就退出的容器，而不是以�
 GHCR package 是公开的，因此 CapRover 匿名拉取镜像即可。如果该 package 之后被改为私有，需要在
 **CapRover → Cluster → Docker Registries** 中用带 `read:packages` 的 GitHub token 添加 registry 凭据，否则每次部署都会
 在拉取阶段失败。
+
+## 官网登录状态提示
+
+当 `OPENTAG_PUBLIC_URL` 为 `https://app.opentag.build` 时，Server 提供
+`GET /api/v1/auth/browser/session-status`，仅允许 `https://opentag.build` 和 `https://www.opentag.build` 访问。
+这个携带浏览器凭据的 CORS 读取接口只返回 `{ "authenticated": true | false }`，不会返回 Account 资料或 token。
+接口实时检查浏览器 session 和 Account 是否有效，不延长 session 有效期；响应使用 `no-store`。其他部署不注册
+该接口，其他 API 路由保持原有的来源校验规则。
+
+应先部署 Server 的支持，再部署官网的导航状态提示。检查不可用时，官网保留普通登录入口，进入应用后仍会校验 session。
 
 ## 手动部署与回滚
 

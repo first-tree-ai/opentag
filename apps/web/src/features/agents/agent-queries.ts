@@ -1,72 +1,115 @@
-import type { ImBindingHandoffStatus, ImBindingSummary } from "@opentag/shared/browser";
-import { useQueries, useQuery } from "@tanstack/react-query";
-import { useRef } from "react";
+import type {
+  AccountComputerSummary,
+  AgentDetail,
+  AgentListItem as AgentListApiItem,
+  ImBindingHandoffStatus,
+  ImBindingSummary,
+} from "@opentag/shared/browser";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
+import { liveResourceQueryOptions } from "../../query/live.js";
+import {
+  observedAfter,
+  type ResourceObservation,
+  refusalOutranks,
+  resourceSuccessObservation,
+  type TerminalResourceObservation,
+  terminalResourceObservation,
+} from "../../query/session-cache.js";
 import type { LoadState } from "../resource/resource-state.js";
-import { isTerminalResourceError, toResourceState } from "../resource/resource-state.js";
+import {
+  isConfirmedQuerySuccess,
+  isTerminalResourceError,
+  toResourceState,
+  usePersistedSettledError,
+} from "../resource/resource-state.js";
 import type { AgentDetailView, AgentListItem } from "./agent-model.js";
-import { markAgentDetailUnconfirmed, markAgentListUnconfirmed, projectAgentAvailability } from "./agent-model.js";
+import {
+  agentDetailFromListItem,
+  markAgentDetailUnconfirmed,
+  markAgentListUnconfirmed,
+  projectAgentAvailability,
+} from "./agent-model.js";
 
-/**
- * What a page that waits for an Agent to recover asks for: re-read on an interval, and again when
- * the Account comes back to the tab. The query client leaves both off by default, because most
- * reads here answer a question the Account asked once.
- */
-const WATCHED = { refetchInterval: 30_000, refetchOnWindowFocus: true } as const;
+export function readAgentList() {
+  return browserApi.agents();
+}
+
+export function readAgent(agentId: string) {
+  return browserApi.agent(agentId);
+}
+
+export function readComputers() {
+  return browserApi.computers();
+}
 
 /*
  * These two endpoints answer 204 for an Agent that has none, which the API layer resolves as
  * `undefined`. A query may not resolve `undefined` — it is how the cache says "nothing read yet" —
  * so absence becomes `null` here, at the only place that has to know the difference.
  */
-const readImBinding = (agentId: string): Promise<ImBindingSummary | null> =>
+export const readImBinding = (agentId: string): Promise<ImBindingSummary | null> =>
   browserApi.imBinding(agentId).then((binding) => binding ?? null);
 
-const readImBindingHandoff = (agentId: string): Promise<ImBindingHandoffStatus | null> =>
+export const readImBindingHandoff = (agentId: string): Promise<ImBindingHandoffStatus | null> =>
   browserApi.imBindingHandoff(agentId).then((handoff) => handoff ?? null);
 
-/** The part of a query this remembers. Taking a plain object keeps the reads it accepts explicit. */
-interface SettlingQuery {
-  error: Error | null;
-  isError: boolean;
-  isSuccess: boolean;
+/** The Account's Computers. One cache entry, so every surface that needs them shares one read. */
+export function useComputersQuery(
+  watched = false,
+  enabled = true,
+  options: { refetchOnMount?: boolean | "always" } = {},
+) {
+  return useQuery({
+    queryKey: queryKeys.computers(),
+    queryFn: readComputers,
+    enabled,
+    ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
+    ...(options.refetchOnMount !== undefined ? { refetchOnMount: options.refetchOnMount } : {}),
+  });
+}
+
+export function useAgentListQuery(accountId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.agents.list(accountId),
+    queryFn: readAgentList,
+    enabled: enabled && accountId.length > 0,
+    ...liveResourceQueryOptions,
+  });
 }
 
 /**
- * The last answer the Server actually gave, held across the re-read that follows it.
- *
- * The cache clears `error` the moment a fetch starts on a query that has never held data, so
- * `isError` describes only the attempt in flight. A terminal response is not an attempt that failed
- * but an answer — the Agent is gone or forbidden — and forgetting it on every interval and every
- * focus is what let route state put a deleted Agent back on screen between re-reads. Only a success
- * retires it, and the resource it was recorded for keys it so a different Agent never inherits it.
+ * Names and ids only. The switcher must not subscribe to Computer, binding or handoff evidence for
+ * every Agent — those reads belong to surfaces that actually display availability.
  */
-function useSettledError(key: string, query: SettlingQuery): Error | null {
-  const settled = useRef<{ key: string; error: Error | null }>({ key, error: null });
-  if (settled.current.key !== key) settled.current = { key, error: null };
-  if (query.isSuccess) settled.current.error = null;
-  else if (query.isError) {
-    const error = query.error ?? new Error("The request failed");
-    const held = settled.current.error;
-    /*
-     * Losing contact is not news about the Agent. A 404 followed by a dropped connection still
-     * means the Agent is gone, so a transient failure may replace another transient failure or
-     * nothing at all, never a terminal answer — only a success says the Agent is readable again.
-     * A second terminal answer does replace the first: it is the Server's current one.
-     */
-    if (!held || !isTerminalResourceError(held) || isTerminalResourceError(error)) settled.current.error = error;
-  }
-  return settled.current.error;
+export function useAgentIdentityList(
+  accountId: string,
+): LoadState<{ agents: readonly { id: string; displayName: string }[] }> {
+  const agentsQuery = useAgentListQuery(accountId);
+  const agentsError = usePersistedSettledError(queryKeys.agents.list(accountId), agentsQuery);
+  if (agentsError && isTerminalResourceError(agentsError)) return { kind: "error", error: agentsError };
+  if (!agentsQuery.isFetched) return { kind: "loading" };
+  if (!agentsQuery.data) return { kind: "error", error: agentsError ?? new Error("The request failed") };
+  return toResourceState(
+    { data: { agents: agentsQuery.data.agents }, error: agentsError, isError: agentsError !== null },
+    (value) => value,
+  );
 }
 
-/** The Account's Computers. One cache entry, so every surface that needs them shares one read. */
-export function useComputersQuery(watched = false, enabled = true) {
+export function useImBindingQuery(agentId: string, watched = true) {
   return useQuery({
-    queryKey: queryKeys.computers(),
-    queryFn: () => browserApi.computers(),
-    enabled,
-    ...(watched ? WATCHED : {}),
+    queryKey: queryKeys.agents.imBinding(agentId),
+    queryFn: () => readImBinding(agentId),
+    ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
+  });
+}
+
+export function useImBindingHandoffQuery(agentId: string, watched = true) {
+  return useQuery({
+    queryKey: queryKeys.agents.imBindingHandoff(agentId),
+    queryFn: () => readImBindingHandoff(agentId),
+    ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
   });
 }
 
@@ -79,20 +122,16 @@ export function useComputersQuery(watched = false, enabled = true) {
  * kind of partial outage that makes this expensive.
  */
 export function useAgentListView(accountId: string): LoadState<{ agents: AgentListItem[] }> {
-  const agentsQuery = useQuery({
-    queryKey: queryKeys.agents.list(accountId),
-    queryFn: () => browserApi.agents(),
-    ...WATCHED,
-  });
+  const agentsQuery = useAgentListQuery(accountId);
   const computersQuery = useComputersQuery(true);
   const agents = agentsQuery.data?.agents ?? [];
-  const evidenceOffered = computersQuery.isSuccess;
+  const evidenceOffered = isConfirmedQuerySuccess(computersQuery);
   const bindings = useQueries({
     queries: agents.map((agent) => ({
       queryKey: queryKeys.agents.imBinding(agent.id),
       queryFn: () => readImBinding(agent.id),
       enabled: evidenceOffered,
-      ...WATCHED,
+      ...liveResourceQueryOptions,
     })),
   });
   const handoffs = useQueries({
@@ -100,11 +139,11 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
       queryKey: queryKeys.agents.imBindingHandoff(agent.id),
       queryFn: () => readImBindingHandoff(agent.id),
       enabled: evidenceOffered,
-      ...WATCHED,
+      ...liveResourceQueryOptions,
     })),
   });
 
-  const agentsError = useSettledError(accountId, agentsQuery);
+  const agentsError = usePersistedSettledError(queryKeys.agents.list(accountId), agentsQuery);
 
   // A terminal response is an answer about the list itself, so it outranks the reads still settling
   // beside it as well as any rows the cache still holds.
@@ -115,11 +154,13 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
   // failed Computer read leaves them disabled and never fetched, which would hold the page forever.
   if (evidenceOffered && [...bindings, ...handoffs].some((query) => !query.isFetched)) return { kind: "loading" };
 
-  const computers = computersQuery.data?.computers ?? [];
+  const computers = evidenceOffered ? (computersQuery.data?.computers ?? []) : [];
   const view = {
     agents: agents.map((agent, index) => {
       const binding = bindings[index];
       const handoff = handoffs[index];
+      const bindingConfirmed = Boolean(binding && isConfirmedQuerySuccess(binding));
+      const handoffConfirmed = Boolean(handoff && isConfirmedQuerySuccess(handoff));
       return {
         ...agent,
         availability: projectAgentAvailability(
@@ -127,10 +168,10 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
           evidenceOffered
             ? computers.find((computer) => computer.computerId === agent.computer?.computerId)
             : undefined,
-          binding?.isSuccess ? (binding.data ?? undefined) : undefined,
-          handoff?.isSuccess ? (handoff.data ?? undefined) : undefined,
-          binding?.isSuccess ?? false,
-          handoff?.isSuccess ?? false,
+          bindingConfirmed ? (binding?.data ?? undefined) : undefined,
+          handoffConfirmed ? (handoff?.data ?? undefined) : undefined,
+          bindingConfirmed,
+          handoffConfirmed,
         ),
         evidenceConfirmed: true,
       };
@@ -144,72 +185,208 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
  * has anything to show; the Computer, binding and handoff reads each contribute evidence and are
  * independent of one another, as they were when this was three settled promises.
  *
+ * When `accountId` is provided, a successful list row for this Agent is reused instead of repeating
+ * GET /agents/:id. A list failure is not an answer about this Agent: per-ID confirmation stays
+ * available, and a later list error cannot un-read a successful per-ID recovery.
+ *
  * `initialAgent` is an Agent carried in history state by the link that opened this page, so a page
  * reached from one that already had it does not flash a loading state.
  */
 export function useAgentDetailView(
   agentId: string,
-  { watched = false, initialAgent }: { watched?: boolean; initialAgent?: AgentDetailView } = {},
+  {
+    watched = false,
+    initialAgent,
+    accountId,
+  }: { watched?: boolean; initialAgent?: AgentDetailView; accountId?: string } = {},
 ): LoadState<AgentDetailView> {
-  const watch = watched ? WATCHED : {};
+  const queryClient = useQueryClient();
+  const watch = watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime };
+  const listQuery = useAgentListQuery(accountId ?? "", Boolean(accountId));
+  const listed = listQuery.data?.agents.find((agent) => agent.id === agentId);
+  const detailKey = queryKeys.agents.detail(agentId);
+  /*
+   * Observation order — never the wall clock — arbitrates between the shared list row and the
+   * per-Agent read: two answers that settle in the same millisecond, or under a clock that moved
+   * backwards, still order by which the cache observed later.
+   */
+  const listSuccess = resourceSuccessObservation(queryClient, queryKeys.agents.list(accountId ?? ""));
+  const detailSuccess = resourceSuccessObservation(queryClient, detailKey);
+  const detailRefusal = terminalResourceObservation(queryClient, detailKey);
+  const listedUsable = Boolean(
+    listed &&
+      isConfirmedQuerySuccess(listQuery) &&
+      !refusalOutranks(detailRefusal, listSuccess) &&
+      !observedAfter(detailSuccess, listSuccess),
+  );
+  const listSettled = !accountId || listQuery.isFetched;
   const agentQuery = useQuery({
-    queryKey: queryKeys.agents.detail(agentId),
-    queryFn: () => browserApi.agent(agentId),
+    queryKey: detailKey,
+    queryFn: () => readAgent(agentId),
+    enabled: listSettled && !listedUsable,
     ...watch,
   });
   const computersQuery = useComputersQuery(watched);
-  const bindingQuery = useQuery({
-    queryKey: queryKeys.agents.imBinding(agentId),
-    queryFn: () => readImBinding(agentId),
-    ...watch,
-  });
-  const handoffQuery = useQuery({
-    queryKey: queryKeys.agents.imBindingHandoff(agentId),
-    queryFn: () => readImBindingHandoff(agentId),
-    ...watch,
-  });
+  const bindingQuery = useImBindingQuery(agentId, watched);
+  const handoffQuery = useImBindingHandoffQuery(agentId, watched);
+  const listError = usePersistedSettledError(queryKeys.agents.list(accountId ?? ""), listQuery);
+  const detailError = usePersistedSettledError(detailKey, agentQuery);
 
   /*
    * Waiting on the first read of each, not on whether one is in flight now. A re-read must not put
    * the page back into loading: doing so unmounts what the page is showing, and anything below that
    * reads the same evidence would be remounted into re-reading it, which never settles.
    */
-  const settling =
-    !agentQuery.isFetched || !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
-  const agentError = useSettledError(agentId, agentQuery);
-  if (agentError && isTerminalResourceError(agentError)) {
-    // A terminal primary response wins even while the evidence reads are still settling, and it
-    // keeps winning while the next re-read is in flight. Route state must not keep a deleted or
-    // forbidden Agent visible during either window.
-    return { kind: "error", error: agentError };
-  }
-  if (settling) return initialAgent ? { kind: "ready", value: initialAgent } : { kind: "loading" };
-  if (!agentQuery.data) {
-    // Route state is only a non-terminal fallback. A deleted or forbidden Agent must never remain
-    // visible just because navigation carried the last object that was rendered.
-    if (initialAgent) {
-      return { kind: "ready", value: markAgentDetailUnconfirmed(initialAgent) };
-    }
-    return { kind: "error", error: agentError ?? new Error("The request failed") };
-  }
+  const evidenceSettling = !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
+  const bindingConfirmed = isConfirmedQuerySuccess(bindingQuery);
+  const handoffConfirmed = isConfirmedQuerySuccess(handoffQuery);
+  const computersConfirmed = isConfirmedQuerySuccess(computersQuery);
+  return presentAgentDetailView({
+    agentData: agentQuery.data,
+    agentFetched: agentQuery.isFetched,
+    binding: bindingConfirmed ? (bindingQuery.data ?? undefined) : undefined,
+    bindingConfirmed,
+    computers: computersConfirmed ? computersQuery.data?.computers : undefined,
+    computersConfirmed,
+    detailError,
+    detailRefusal,
+    detailSuccess,
+    evidenceSettling,
+    handoff: handoffConfirmed ? (handoffQuery.data ?? undefined) : undefined,
+    handoffConfirmed,
+    initialAgent,
+    listError,
+    listSettled,
+    listSuccess,
+    listed,
+    listedUsable,
+  });
+}
 
-  const agent = agentQuery.data;
-  const binding = bindingQuery.isSuccess ? (bindingQuery.data ?? undefined) : undefined;
-  const view: AgentDetailView = {
+function detailDisplayError(
+  listedUsable: boolean,
+  listError: Error | null,
+  detailError: Error | null,
+  listed: AgentListApiItem | undefined,
+): Error | null {
+  if (listedUsable) return listError && !isTerminalResourceError(listError) ? listError : null;
+  if (detailError) return detailError;
+  return listed && listError && !isTerminalResourceError(listError) ? listError : null;
+}
+
+function isNewerDetailRefusal(
+  detailError: Error | null,
+  detailRefusal: TerminalResourceObservation | undefined,
+  listSuccess: ResourceObservation | undefined,
+  detailSuccess: ResourceObservation | undefined,
+): detailError is Error {
+  return Boolean(
+    detailError &&
+      isTerminalResourceError(detailError) &&
+      refusalOutranks(detailRefusal, listSuccess) &&
+      refusalOutranks(detailRefusal, detailSuccess),
+  );
+}
+
+function resolveAgentProjection(
+  listedUsable: boolean,
+  listed: AgentListApiItem | undefined,
+  agentData: AgentDetail | undefined,
+): AgentDetail | undefined {
+  if (listedUsable && listed) return agentDetailFromListItem(listed);
+  return agentData ?? (listed ? agentDetailFromListItem(listed) : undefined);
+}
+
+function assembleAgentDetailView(
+  agent: AgentDetail,
+  computersConfirmed: boolean,
+  computers: readonly AccountComputerSummary[] | undefined,
+  bindingConfirmed: boolean,
+  binding: ImBindingSummary | undefined,
+  handoffConfirmed: boolean,
+  handoff: ImBindingHandoffStatus | undefined,
+): AgentDetailView {
+  return {
     ...agent,
-    messaging: bindingQuery.isSuccess ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
+    messaging: bindingConfirmed ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,
-      // Evidence counts only while the read that carries it is confirmed, as it does on the list. A
-      // Computer the cache still holds after a failed re-read is not evidence of anything.
-      computersQuery.isSuccess
-        ? computersQuery.data.computers.find((computer) => computer.computerId === agent.computer?.computerId)
+      computersConfirmed
+        ? computers?.find((computer) => computer.computerId === agent.computer?.computerId)
         : undefined,
       binding,
-      handoffQuery.isSuccess ? (handoffQuery.data ?? undefined) : undefined,
-      bindingQuery.isSuccess,
-      handoffQuery.isSuccess,
+      handoff,
+      bindingConfirmed,
+      handoffConfirmed,
     ),
   };
-  return toResourceState({ data: view, error: agentError, isError: agentError !== null }, markAgentDetailUnconfirmed);
+}
+
+function presentAgentDetailView({
+  agentData,
+  agentFetched,
+  binding,
+  bindingConfirmed,
+  computers,
+  computersConfirmed,
+  detailError,
+  detailRefusal,
+  detailSuccess,
+  evidenceSettling,
+  handoff,
+  handoffConfirmed,
+  initialAgent,
+  listError,
+  listSettled,
+  listSuccess,
+  listed,
+  listedUsable,
+}: {
+  agentData?: AgentDetail;
+  agentFetched: boolean;
+  binding?: ImBindingSummary;
+  bindingConfirmed: boolean;
+  computers?: readonly AccountComputerSummary[];
+  computersConfirmed: boolean;
+  detailError: Error | null;
+  detailRefusal?: TerminalResourceObservation;
+  detailSuccess?: ResourceObservation;
+  evidenceSettling: boolean;
+  handoff?: ImBindingHandoffStatus;
+  handoffConfirmed: boolean;
+  initialAgent?: AgentDetailView;
+  listError: Error | null;
+  listSettled: boolean;
+  listSuccess?: ResourceObservation;
+  listed?: AgentListApiItem;
+  listedUsable: boolean;
+}): LoadState<AgentDetailView> {
+  if (isNewerDetailRefusal(detailError, detailRefusal, listSuccess, detailSuccess)) {
+    return { kind: "error", error: detailError };
+  }
+  if (!listSettled || evidenceSettling || (!listedUsable && !agentFetched && !listed)) {
+    return initialAgent ? { kind: "ready", value: initialAgent } : { kind: "loading" };
+  }
+  const agent = resolveAgentProjection(listedUsable, listed, agentData);
+  if (!agent) {
+    if (initialAgent) return { kind: "ready", value: markAgentDetailUnconfirmed(initialAgent) };
+    return { kind: "error", error: detailError ?? new Error("The request failed") };
+  }
+  const displayError = detailDisplayError(listedUsable, listError, detailError, listed);
+  return toResourceState(
+    {
+      data: assembleAgentDetailView(
+        agent,
+        computersConfirmed,
+        computers,
+        bindingConfirmed,
+        binding,
+        handoffConfirmed,
+        handoff,
+      ),
+      error: displayError,
+      isError: displayError !== null,
+    },
+    markAgentDetailUnconfirmed,
+  );
 }

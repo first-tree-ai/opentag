@@ -1,9 +1,19 @@
 import type { AccountComputerSummary as Computer, ComputerConnectCodeStatus } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { StrictMode } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render as renderPlain, screen } from "@testing-library/react";
+import { type ReactNode, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { analytics } from "../../analytics/analytics.js";
+import type { GtagCommand } from "../../analytics/gtag.js";
 import { browserApi } from "../../api.js";
+import { createQueryClient } from "../../query/client.js";
 import { ComputerConnect } from "./computer-connect.js";
+
+function render(ui: ReactNode) {
+  const client = createQueryClient();
+  const view = renderPlain(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return Object.assign(view, { disposeQueryClient: () => client.clear() });
+}
 
 const NOW = "2026-08-20T00:00:00.000Z";
 const CONNECT_CODE_ID = "7a1c9e52-9a8b-4c7d-8e1f-2a3b4c5d6e7f";
@@ -65,6 +75,7 @@ describe("ComputerConnect", () => {
   });
 
   afterEach(() => {
+    analytics.disarm();
     vi.restoreAllMocks();
     vi.useRealTimers();
     Reflect.deleteProperty(navigator, "clipboard");
@@ -119,10 +130,13 @@ describe("ComputerConnect", () => {
       />,
     );
     expect(issue).not.toHaveBeenCalled();
-    const repairAction = screen.getByRole("button", { name: "Generate a repair command" });
+    const repairAction = screen.getByRole("button", { name: "Generate an install command" });
     expect(repairAction.closest(".ots-command__body")).toBeTruthy();
     expect(screen.getByText("Need to reinstall?")).toBeTruthy();
-    expect(screen.getByText(/Start OpenTag on Ada's Mac/)).toBeTruthy();
+    // Idle is the one state with no command and no countdown, so it renders no lead row. The
+    // failed and expired states still introduce a command that is not there to paste; that is
+    // older than this change and left alone rather than half-fixed here.
+    expect(screen.queryByText(/Start OpenTag on Ada's Mac/)).toBeNull();
     fireEvent.click(repairAction);
     await flushAsync();
 
@@ -147,7 +161,7 @@ describe("ComputerConnect", () => {
         intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
     fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
     await flushAsync();
@@ -181,6 +195,52 @@ describe("ComputerConnect", () => {
     expect(screen.getByText("Ada's Mac is connected")).toBeTruthy();
   });
 
+  it("reports the command being shown and the connection that follows it, once each", async () => {
+    const sent: GtagCommand[] = [];
+    analytics.arm((command) => sent.push(command));
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+
+    render(<ComputerConnect intent={{ mode: "create" }} />);
+    await flushAsync();
+    // The poll keeps running after the latch; a second verdict must not be a second connection.
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sent.map((command) => command[1])).toEqual(["computer_connect_started", "computer_connected"]);
+    expect(sent[1]?.[2]).toEqual({ mode: "create", funnel: "activation", funnel_step: 3 });
+  });
+
+  it("keeps a repair out of the activation funnel, while still reporting it", async () => {
+    const sent: GtagCommand[] = [];
+    analytics.arm((command) => sent.push(command));
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      connectCodeId: CONNECT_CODE_ID,
+      bootstrapCommand: COMMAND,
+      expiresIn: 900,
+      issuedAt: NOW,
+    });
+    vi.mocked(browserApi.computerConnectCodeStatus).mockResolvedValue(redeemed());
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+
+    render(
+      <ComputerConnect
+        intent={{ mode: "repair", target: { computerId: COMPUTER_ID, displayName: computer.displayName } }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
+    await flushAsync();
+
+    // Reconnecting a Computer the Account already had is not somebody reaching step 3 again.
+    expect(sent.map((command) => command[1])).toEqual(["computer_connect_started", "computer_connected"]);
+    expect(sent[1]?.[2]).toEqual({ mode: "repair" });
+  });
+
   it("does not let another Computer satisfy a repair attempt", async () => {
     const onConnected = vi.fn();
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
@@ -198,7 +258,7 @@ describe("ComputerConnect", () => {
         onConnected={onConnected}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "Generate a repair command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate an install command" }));
     await flushAsync();
 
     expect(computers).not.toHaveBeenCalled();
@@ -454,12 +514,16 @@ describe("ComputerConnect", () => {
 
     const view = render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
+    const statusCalls = vi.mocked(browserApi.computerConnectCodeStatus).mock.calls.length;
     view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    expect(vi.mocked(browserApi.computerConnectCodeStatus).mock.calls.length).toBe(statusCalls);
     poll.resolve(redeemed());
     await flushAsync();
-
     expect(computers).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    view.disposeQueryClient();
   });
 
   it("ignores a late issuance response after unmount", async () => {
@@ -470,8 +534,7 @@ describe("ComputerConnect", () => {
     view.unmount();
     issued.resolve({ connectCodeId: CONNECT_CODE_ID, bootstrapCommand: COMMAND, expiresIn: 900, issuedAt: NOW });
     await flushAsync();
-
     expect(browserApi.computerConnectCodeStatus).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    view.disposeQueryClient();
   });
 });

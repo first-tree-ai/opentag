@@ -1,5 +1,6 @@
 import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
+import { resetReportedMilestones } from "../analytics/milestones.js";
 import { overwriteGetLocale, overwriteSetLocale } from "../paraglide/runtime.js";
 
 // Tests assert the published English copy; pin locale resolution and disable navigation in jsdom.
@@ -59,6 +60,15 @@ vi.stubGlobal("ResizeObserver", TestResizeObserver);
 
 vi.stubGlobal("fetch", vi.fn());
 
+beforeEach(() => {
+  // Model the static index.html scaffold: OpenTag's namespaced theme identity is present and the
+  // generic attributes are absent. Tests that exercise the theme integrity notice rewrite them.
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-mode");
+  document.documentElement.setAttribute("data-opentag-theme", "opentag");
+  document.documentElement.setAttribute("data-opentag-mode", "light");
+});
+
 afterEach(async () => {
   cleanup();
   // A loader that requests again after its first await keeps running once the component is gone.
@@ -69,6 +79,9 @@ afterEach(async () => {
   window.history.replaceState({}, "", "/");
   // memoryStorage() is shared by every test file, so clear the generated locale preference between tests.
   window.localStorage.clear();
+  // Milestones are reported once per document as well as once per browser, and the per-document
+  // floor is module state that outlives a render.
+  resetReportedMilestones();
   // A popup that was still open when its tree unmounted leaves behind the scroll lock it applied to
   // <body>. Nothing else in these tests writes an inline body style, so the next test starts in a
   // document no earlier test has locked.

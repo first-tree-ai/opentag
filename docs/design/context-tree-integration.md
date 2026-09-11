@@ -45,8 +45,7 @@ whenever `npm_config_global` was set — which npm also sets for the dependencie
 install, so `npm i -g open-tag` would have written six skill directories into the user's personal
 `~/.claude` and `~/.codex` as an invisible side effect. `@first-tree-ai/context-tree` now also
 requires that it is the install *target* rather than a nested copy, so being a dependency has no
-side effects. That guard first ships in **0.1.8**, which is the pinned version; **do not relax the
-pin below it.** `scripts/cli-pack-smoke.mjs` holds the line empirically: for the production
+side effects. That guard first ships in **0.1.8**. `scripts/cli-pack-smoke.mjs` holds the line empirically: for the production
 identity it installs the packed CLI globally under an isolated `HOME`, asserts no `.claude` or
 `.codex` appears, and then runs the nested `postinstall` with `npm_config_global=true` to prove the
 dependency guard is what kept it inert rather than a script that merely failed to run.
@@ -75,10 +74,22 @@ There is deliberately no `inspect` subcommand. `opentag doctor` already owns dia
 the injectable-inspector seam, and two surfaces over one piece of state means every future reason
 code has to be rendered twice.
 
-The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree.json`, mode
+The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree/config.json`, mode
 `0600`, credential-free. The Server is not involved. The three target kinds mirror
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
 reinterpreting it.
+
+**Upgrade requires reconnecting.** Existing `<OPENTAG_HOME>/config/context-tree.json` files are
+ignored, so previously configured installations report unconfigured until reconnected. Run
+`opentag context-tree connect <managed-name>`, `opentag context-tree connect OWNER/REPO`, or
+`opentag context-tree connect --tree-path <path>` using the previous target. Restart the daemon
+and affected Sessions to pick up the Runtime changes, then verify the connection with
+`opentag doctor`. The old configuration and existing tree data remain on disk; there is no
+fallback or automatic migration.
+
+Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
+still applies when reading it, but direct edits bypass command-level target validation. Later
+Provider Runtime starts consume the changed target.
 
 `connect` validates without side effects: `list` for a managed name, `verify` for an exact path.
 It deliberately does not connect a throwaway project directory to test a target, because that
@@ -95,7 +106,7 @@ workspace once per recorded target, cached in memory:
 
 ```text
 cwd = await workspace.cwd(agentId)
-connect <target> --project-path <cwd>     # clones on first use when the kind is github
+connect <target> --project-path <cwd> --json  # clones on first use when the kind is github
 install --host claude --project <cwd>     # -> <cwd>/.claude/skills/context-tree-*
 install --host codex                      # -> $CODEX_HOME/skills/context-tree-*
 ```
@@ -110,8 +121,7 @@ tree shared across Agents.
 
 The path always comes from `AgentWorkspaceManager.cwd(agentId)`, which refuses to return a path
 until the workspace layout state is schema-v3 `complete`. That ordering is load-bearing: it is
-what keeps the connection from writing into a workspace still mid-migration, where an unproven
-root `AGENTS.md` would make the transition fail closed.
+what keeps preparation from installing skills into a workspace still mid-migration.
 
 Preparation runs in `SessionRuntimeManager` at Provider Runtime start, not in workspace
 preparation. `verifyAgent` delegates to `prepareAgent` and the preflight calls it on every Turn
@@ -122,7 +132,7 @@ admission, so work placed there would run per Turn.
 The CLI replaces its connection store atomically but without a cross-process lock, so concurrent
 read-modify-write can lose unrelated records. OpenTag serializes its own invocations behind one
 in-process mutex. Concurrent starts for the same workspace join one in-flight preparation.
-Session start races that work against a 5-second budget: if preparation is still running, the
+Session start races the full pipeline, including shim preparation and configuration reads, against a 5-second budget: if preparation is still running, the
 Session receives `PREPARING` and starts without durable memory while the serialized work continues
 in the background. A completed success is cached per workspace and target. A failure is held in a
 one-minute cooldown, limiting an unreachable target to one attempt per minute per workspace while
@@ -159,11 +169,22 @@ What this costs, stated rather than left implicit:
 
 ### The CLI shim
 
-`<OPENTAG_HOME>/context-tree/bin/context-tree` is a generated `0700` shim that execs the installed
+`<OPENTAG_HOME>/context-tree/bin/context-tree` is a generated `0700` shim that execs the bundled
 CLI with the same Node.js runtime OpenTag itself uses, so a Session cannot resolve a different one
 from the user's shell configuration. That directory is prepended to the Provider `PATH` during
 Client composition, unconditionally — it is a stable OpenTag-owned path, and a directory that does
 not exist yet is inert on `PATH`.
+
+Shim preparation is shared across workspaces and cached after success for the manager's lifetime;
+restart the daemon to refresh it. Failed preparation retries after the one-minute cooldown.
+Configured package and shim failures replace the durable preparation record and use the workspace
+cooldown. Without a target they remain unavailable statuses without creating a preparation record;
+they are distinct from ordinary unconfigured state.
+
+The shim is prepared before checking Computer configuration, so an unconfigured Computer can run
+the bundled command without creating or connecting a tree. Preparation failures retain the existing
+unavailable statuses. Managed instructions identify command availability failures as runtime setup
+problems; a global install is unnecessary.
 
 The package's own `node_modules/.bin/context-tree` is not used for this: npm populates
 `<consumer>/node_modules/.bin` but pnpm's virtual store does not, so the location is not portable
@@ -173,6 +194,13 @@ resolve whatever `node` the Session's `PATH` happens to find.
 It is prepended at composition rather than through per-Session workspace environment because a
 Session-level `PATH` would replace the value the factory composes, including the discovered
 executable directory that lets `codex` and `claude` resolve at all.
+
+Visible Sessions supply their tool directory through workspace `pathPrepend`. Every Provider factory
+prepends it after composing its environment, preserving the Context Tree and executable directories.
+Internal Sessions retain Context Tree without adding visible-Session tools.
+
+Rollout requires reconnecting existing installations and restarting the daemon and affected Sessions
+as described in the upgrade instructions above.
 
 OpenTag's own invocations never rely on the shim: they exec the resolved CLI path directly, so a
 broken or shadowed shim cannot change what OpenTag executes.
@@ -196,10 +224,10 @@ Two consequences to hold in view:
   `effectiveSnapshotHash` therefore does not fully determine future Session behaviour. V1 accepts
   this because the workspace is OpenTag's own private per-Agent directory and Claude Code already
   runs there with bypassed permissions.
-- `context-tree connect` writes a marker-delimited pointer into `<workspace>/AGENTS.md` and
-  symlinks `CLAUDE.md` to it. With project settings loaded, that block becomes the Session's
-  ambient notice of the tree path — OpenTag-controlled text, but a second instruction channel
-  alongside the managed prompt. Suppressing it needs a `--no-pointer` flag upstream.
+- Context Tree leaves workspace `AGENTS.md` unchanged. When it is a regular file and no
+  `CLAUDE.md` entry exists, connection best-effort creates a `CLAUDE.md → AGENTS.md` symlink.
+  OpenTag supplies memory instructions through its managed prompt. Existing instruction
+  content, including legacy pointer blocks, is preserved.
 
 ### Codex
 
@@ -218,6 +246,13 @@ This mutates user configuration, which an earlier revision of this document reje
 a managed `CODEX_HOME`. That option was dropped because it changes provider artifact identity,
 invalidating existing bindings, and forces a visible one-time `codex login` in the managed home.
 Writing one owned, reversible skill directory is the smaller intrusion.
+
+OpenTag creates the Context Tree config leaf — `<OPENTAG_HOME>/config/context-tree/` — before
+granting access, on both platforms. The grant is that leaf directory, which contains exactly one
+file, so it carries no more authority on Linux than the macOS file grant and never touches
+`<OPENTAG_HOME>/config`, where the Computer's identity and machine credential live. If directory
+creation fails, OpenTag logs the failure and starts the provider without that grant, preserving
+workspace, Slack, and tree grants.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather
@@ -312,9 +347,7 @@ which is why the failure reader honours both shapes.
 Both delivery mechanisms were confirmed against the real CLIs before the surrounding work landed:
 
 - Claude Code under `--print --input-format stream-json --setting-sources project` discovers
-  `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not. The same
-  contrast holds for the workspace `AGENTS.md` pointer, which is inert without project settings
-  and ambient with them.
+  `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not.
 - Codex discovers `~/.codex/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
   `skip_host_skill_discovery` feature is separate from both.
 
@@ -359,7 +392,6 @@ the dependency from the published bundle.
   `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
   OpenTag-written content.
 - Server-propagated target, so a Computer inherits it when it connects.
-- Suppressing the workspace `AGENTS.md` pointer with an upstream `--no-pointer` flag.
 - Project-scoped trees, so several Agents share a tree without sharing all Computer memory.
 - Windows support, which needs Provider lifecycle, path, lock, and isolated-home CI coverage
   first. The shim is POSIX and reports `shim_unavailable` elsewhere.

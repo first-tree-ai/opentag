@@ -445,22 +445,47 @@ describe("staging Account setup reset", () => {
     });
   });
 
-  it("refuses outside staging, whichever Account asks", async () => {
+  it("refuses unconfigured development and production, whichever Account asks", async () => {
     const value = await fixture();
     const other = await seedOtherAccount(value.database, value.agentService, value.machineAuth);
-    for (const environment of ["dev", "prod"] as const) {
+    for (const options of [
+      { environment: "dev" },
+      { environment: "prod" },
+      { environment: "prod", allowLocalPreview: true },
+    ] as const) {
       const guarded = new OnboardingResetService({
         agents: value.agentService,
         database: value.database,
-        environment,
+        ...options,
       });
 
       await expect(guarded.resetOnboarding(value.tester.accountId)).rejects.toMatchObject({ statusCode: 404 });
       await expect(guarded.resetOnboarding(other.accountId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(guarded.reboard(value.tester.accountId)).rejects.toMatchObject({ statusCode: 404 });
     }
 
     expect((await facts(value.database, value.tester)).activeAgents).toBe(1);
     expect((await facts(value.database, other)).activeAgents).toBe(1);
+  });
+
+  it("offers both operations in opted-in local development with the same Account scope", async () => {
+    const value = await fixture();
+    const other = await seedOtherAccount(value.database, value.agentService, value.machineAuth);
+    const before = await facts(value.database, value.tester);
+    const otherBefore = await facts(value.database, other);
+    const local = new OnboardingResetService({
+      agents: value.agentService,
+      database: value.database,
+      environment: "dev",
+      allowLocalPreview: true,
+    });
+
+    expect(local.enabled).toBe(true);
+    await local.reboard(value.tester.accountId);
+    expect(await facts(value.database, value.tester)).toEqual({ ...before, setupCompletedAt: null });
+    await local.resetOnboarding(value.tester.accountId);
+    expect(await facts(value.database, value.tester)).toMatchObject({ activeAgents: 0, setupCompletedAt: null });
+    expect(await facts(value.database, other)).toEqual(otherBefore);
   });
 
   it("leaves another tester's Account untouched, so two testers never collide", async () => {

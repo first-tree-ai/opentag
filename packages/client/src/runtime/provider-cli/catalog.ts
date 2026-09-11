@@ -82,7 +82,7 @@ export const PROVIDER_CLI_CATALOG: readonly ProviderCliCatalogEntry[] = [
     command: "lark-cli",
     displayName: "Feishu/Lark CLI",
     version: LARK_VERSION,
-    compatibility: ">=1.0.0 <2.0.0",
+    compatibility: ">=1.0.92 <2.0.0",
     probes: {
       versionArgs: ["--version"],
       surfaceArgs: ["im", "--help"],

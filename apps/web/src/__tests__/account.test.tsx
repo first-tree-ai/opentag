@@ -3,6 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 import { agentId, installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
 
+async function expectPreparationGate(): Promise<HTMLButtonElement> {
+  expect(await screen.findByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
+  const continueButton = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+  await waitFor(() => expect(continueButton.disabled).toBe(false));
+  return continueButton;
+}
+
 describe("OpenTag Web App Shell", () => {
   beforeEach(resetWebAppState);
 
@@ -197,7 +204,7 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete admission into Agent Setup", async () => {
     installApi({ workspaceless: true });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
@@ -207,7 +214,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
@@ -215,7 +222,7 @@ describe("OpenTag Web App Shell", () => {
   it("routes an Account with incomplete admission into Agent Setup", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
@@ -232,7 +239,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ setupCompletedAt: null, agentUnbound: true });
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect your computer" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
     // Reachable and resolved right here, not merely advertised: the Account has one Computer, so
@@ -246,6 +253,7 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toBe(true),
     );
+    fireEvent.click(await expectPreparationGate());
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
     expect(window.location.pathname).toBe("/agents/setup");
@@ -287,6 +295,7 @@ describe("OpenTag Web App Shell", () => {
     // The second row, so this cannot pass by binding whichever Computer happens to be first.
     fireEvent.click(await screen.findByRole("button", { name: "Use Spare" }));
 
+    fireEvent.click(await expectPreparationGate());
     expect(await screen.findByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     // Still inside the gate throughout -- nothing navigated, so nothing could be redirected back.
     expect(window.location.pathname).toBe("/agents/setup");
@@ -295,7 +304,7 @@ describe("OpenTag Web App Shell", () => {
   it("renders Agent Setup without the application navigation", async () => {
     installApi({ setupCompletedAt: null });
     render(<App />);
-    await screen.findByRole("heading", { name: "Set up Reviewer" });
+    await expectPreparationGate();
 
     // The Account has not entered the application yet. Every destination the primary navigation
     // offers is behind the setup gate, which sends them all straight back here, and the shell
@@ -303,7 +312,7 @@ describe("OpenTag Web App Shell", () => {
     // The sidebar is an <aside>, so it is `complementary`; asking for `navigation` here matched
     // nothing whether or not the shell rendered.
     expect(screen.queryByRole("complementary", { name: "Primary navigation" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "All Agents" })).toBeNull();
     expect(screen.queryAllByRole("link", { name: "OpenTag" })).toHaveLength(0);
   });
 
@@ -311,7 +320,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     window.history.replaceState({}, "", "/agents/setup");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Set up Reviewer" })).toBeTruthy();
+    await expectPreparationGate();
     expect(window.location.pathname).toBe("/agents/setup");
     expect(window.location.search).toBe(`?agentId=${agentId}`);
   });
@@ -347,7 +356,7 @@ describe("OpenTag Web App Shell", () => {
     ).toHaveLength(1);
 
     fireEvent.click(screen.getByRole("button", { name: "Finish re-board" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
     expect(
       vi
@@ -369,7 +378,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
     const { menu: accountMenu } = await openAccountMenu();
     fireEvent.click(within(accountMenu).getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       "/api/v1/auth/browser/logout",
       expect.objectContaining({ method: "POST" }),
@@ -381,13 +390,13 @@ describe("OpenTag Web App Shell", () => {
     const pendingMe = new Promise<Response>((resolve) => {
       releaseMe = resolve;
     });
-    installApi({ meAfterLogout: () => pendingMe });
+    installApi({ meAfterLogout: () => pendingMe.then((response) => response.clone()) });
     render(<App />);
 
     expect(await screen.findByRole("link", { name: "Open Reviewer" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByText("Checking your sign-in status…")).toBeTruthy();
 
     await act(async () => {
       window.history.pushState({}, "", "/agents");
@@ -399,7 +408,7 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));
     });
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
   });
 
   it("discards an Account refresh that outlived the session that started it", async () => {
@@ -411,7 +420,10 @@ describe("OpenTag Web App Shell", () => {
     const pendingMe = new Promise<Response>((resolve) => {
       releaseMe = resolve;
     });
-    installApi({ meAfterProfileUpdate: () => pendingRefresh, meAfterLogout: () => pendingMe });
+    installApi({
+      meAfterProfileUpdate: () => pendingRefresh,
+      meAfterLogout: () => pendingMe.then((response) => response.clone()),
+    });
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
@@ -424,7 +436,7 @@ describe("OpenTag Web App Shell", () => {
     // retire that read, because the cache never started it.
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByText("Checking your sign-in status…")).toBeTruthy();
 
     // It left with a cookie that was still valid, so it answers for the Account that just left.
     await act(async () => {
@@ -447,7 +459,7 @@ describe("OpenTag Web App Shell", () => {
     await act(async () => {
       releaseMe(json({ error: { message: "Sign in required" } }, 401));
     });
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
   });
 
   it("opens the Computers page from the account menu", async () => {

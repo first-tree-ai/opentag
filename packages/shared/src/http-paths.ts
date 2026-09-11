@@ -38,6 +38,7 @@ export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
 export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/navigation-visibility`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
+export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
@@ -53,6 +54,7 @@ export const HTTP_PATHS = {
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
+  authBrowserSessionStatus: `${API_V1_PREFIX}/auth/browser/session-status`,
   authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
   /*
    * Below `/auth/email/` rather than Better Auth's own `/sign-in/email`, so these stay OpenTag routes that call into
@@ -74,6 +76,10 @@ export const HTTP_PATHS = {
 
 export function taskByIdPath(sessionId: string): string {
   return `${ACCOUNT_TASKS_PATH}/${encodeURIComponent(sessionId)}`;
+}
+
+export function taskCancelPath(sessionId: string): string {
+  return `${taskByIdPath(sessionId)}/cancel`;
 }
 
 export function accountComputerConnectCodePath(connectCodeId: string): string {

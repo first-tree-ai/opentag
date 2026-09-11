@@ -103,6 +103,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_ENV_EXPLICIT: z.boolean(),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
+    OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: booleanString("false"),
     /*
      * Defaults to off because turning it on opens Account creation to anyone who can reach the server. Every other
      * sign-in method the server offers requires something a deployment already granted — a Google client, a loopback
@@ -123,9 +124,7 @@ const ServerEnvironmentSchema = z
      * This is the same authority the portable installer consumes; release tooling keeps the npm
      * dist-tag at the same coordinate, so one target serves both install modes.
      */
-    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default(
-      "https://storage.googleapis.com/opentag-release/releases",
-    ),
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: DownloadBaseUrlSchema.default("https://dl.opentag.build/releases"),
     OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(300_000),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,
@@ -145,6 +144,18 @@ const ServerEnvironmentSchema = z
       .default(60 * 60 * 24 * 30),
   })
   .strict()
+  .superRefine((value, context) => {
+    if (!value.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED) return;
+    if (!value.OPENTAG_ENV_EXPLICIT || value.OPENTAG_ENV !== "dev") {
+      context.addIssue({ code: "custom", message: "Local Internal Tools requires OPENTAG_ENV=dev" });
+    }
+    if (!isLoopbackHostname(value.OPENTAG_HOST) || !isLoopbackHostname(new URL(value.OPENTAG_PUBLIC_URL).hostname)) {
+      context.addIssue({
+        code: "custom",
+        message: "Local Internal Tools requires loopback OPENTAG_HOST and OPENTAG_PUBLIC_URL",
+      });
+    }
+  })
   .superRefine((value, context) => {
     if (Boolean(value.OPENTAG_GOOGLE_CLIENT_ID) !== Boolean(value.OPENTAG_GOOGLE_CLIENT_SECRET)) {
       context.addIssue({ code: "custom", message: "Google client id and secret must be configured together" });
@@ -277,10 +288,10 @@ export interface ServerConfig {
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
   /**
-   * Whether this deployment lets an Account undo its own setup and walk onboarding again. It takes
-   * no configuration: the reset acts only on the Account that asks for it.
+   * Whether this deployment offers Internal Tools, including Account-owned setup resets.
+   * Enabled on staging, or explicitly opted into on a loopback development server.
    */
-  stagingSetupReset: boolean;
+  internalTools: boolean;
 }
 
 export interface DatabaseConfig {
@@ -315,6 +326,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_ENV_EXPLICIT: environment.OPENTAG_ENV !== undefined,
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
+    OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
@@ -382,6 +394,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
-    stagingSetupReset: parsed.OPENTAG_ENV === "staging",
+    internalTools: offersInternalTools(parsed.OPENTAG_ENV, parsed.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED),
   };
+}
+
+function offersInternalTools(environment: ChannelName, localPreviewEnabled: boolean): boolean {
+  return environment === "staging" || (environment === "dev" && localPreviewEnabled);
 }

@@ -148,6 +148,7 @@ describe("Kumo integration contract", () => {
   it("keeps module-owned stylesheet imports at reviewed seams", () => {
     const allowedImports = new Set([
       "main.tsx -> ./app.css",
+      "features/auth/login-provider-link.tsx -> ./google-sign-in.css",
       "onboarding-v2/agent-setup-page.tsx -> ./onboarding-v2.css",
       "onboarding-v2/page.tsx -> ./onboarding-v2.css",
       "setup/command-block.tsx -> ./setup.css",
@@ -174,7 +175,17 @@ describe("Kumo integration contract", () => {
   });
 
   it("keeps raw colors at the theme seam or an explicitly reviewed module stylesheet", () => {
-    const allowedFiles = new Set(["app.css", "setup/setup.css", "ui/kumo-theme.css", "ui/kumo-theme.tokens.ts"]);
+    const allowedFiles = new Set([
+      "app.css",
+      "setup/setup.css",
+      "ui/kumo-theme.css",
+      "ui/kumo-theme.tokens.ts",
+      // Button emphasis fallbacks must be literal because Tailwind only scans static class
+      // strings; theme-identity.test pins them to the canonical kumoThemeTokens.light values.
+      "ui/design-system.tsx",
+      // Google's provider identity has reviewed colors independent of the OpenTag semantic palette.
+      "features/auth/google-sign-in.css",
+    ]);
     const violations = [...productModules, ...stylesheets]
       .filter(({ content }) => hasRawColorLiteral(content))
       .map(({ path }) => path)
@@ -201,30 +212,26 @@ describe("Kumo integration contract", () => {
   });
 
   it("uses the Kumo compound sidebar layout for the application shell", () => {
-    const shell = ["app-shell.tsx", "agent-shell.tsx", "shell-main.tsx"]
+    const shell = ["app-shell.tsx", "agent-shell.tsx", "shell-main.tsx", "account-menu.tsx"]
       .map((file) => readFileSync(resolve(root, "features/shell", file), "utf8"))
       .join("\n");
-    expect(shell).toContain('<Sidebar.Header className="h-16 border-b-0 px-3">');
+    expect(shell).toMatch(/<Sidebar\.Header(?:\s|>)/);
     expect(shell).toMatch(/<Sidebar\.Content(?:\s|>)/);
     expect(shell).toContain('<Sidebar.Menu className="gap-1">');
     expect(shell).toContain("<Sidebar.MenuButton");
-    expect(shell).toContain('<Sidebar.Footer className="h-14 px-3">');
+    expect(shell).toMatch(/<Sidebar\.Footer(?:\s|>)/);
     expect(shell).toContain("<DropdownMenu.LinkItem");
     expect(shell).toContain("<DropdownMenu.Separator />");
-    expect(shell).toContain("selected={candidate.id === agent?.id}");
-    expect(shell).toContain('className="flex w-8 shrink-0 items-center justify-center"');
+    expect(shell).toContain('aria-current={candidate.id === agentId ? "true" : undefined}');
     expect(shell).not.toContain("accountMenuRef");
     expect(shell).not.toContain("<Sidebar.Rail />");
-    expect(shell).toContain('collapsible={isMobileAgentShell ? "icon" : "none"}');
+    expect(shell).toContain('collapsible={isMobile ? "icon" : "none"}');
     expect(shell).toContain('variant="floating"');
-    expect(shell).toContain('<Sidebar.Close className="sm:hidden" />');
+    expect(shell).toContain("<Sidebar.Close />");
     expect(shell).toContain('className="app-mobile-header');
     expect(shell).toContain('className="h-full min-h-0 overflow-hidden bg-kumo-canvas"');
-    expect(shell).toContain('className="flex h-full min-h-0 min-w-0 flex-1 bg-kumo-canvas"');
-    expect(shell).toContain(
-      'className="bg-kumo-base md:m-3 md:mr-0 md:h-[calc(100%-1.5rem)] md:rounded-xl md:shadow-xs"',
-    );
-    expect(shell).toContain('className="flex min-h-0 min-w-0 flex-1 flex-col bg-kumo-canvas md:ml-2"');
+    expect(shell).toContain('data-scope={agentId ? "agent" : "workspace"}');
+    expect(shell).toContain('<AccountMenu placement={agentId ? "sidebar" : "dock"} />');
     expect(shell).toContain("min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto");
     expect(shell).toContain(
       'className="@container/content mx-auto w-full min-w-0 max-w-5xl" data-ui="content-page-frame"',

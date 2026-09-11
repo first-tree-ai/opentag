@@ -220,4 +220,45 @@ describe("Agent lifecycle actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t pause this Agent. Try again.");
   });
+
+  it("does not make an unchanged peer list row newer than that peer's detail", async () => {
+    stubEvidence();
+    const peerId = "22222222-2222-4222-8222-222222222222";
+    const peer = { ...listItem, id: peerId, displayName: "Peer" };
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [listItem, peer] });
+    vi.spyOn(browserApi, "agent").mockResolvedValue({ ...agentDetail, id: peerId, displayName: "Updated peer" });
+    vi.spyOn(browserApi, "deleteAgent").mockResolvedValue(undefined);
+    let client!: ReturnType<typeof useQueryClient>;
+    function Capture() {
+      client = useQueryClient();
+      return null;
+    }
+    function PeerNameProbe() {
+      const state = useAgentDetailView(peerId, { accountId });
+      return <output data-testid="peer-name">{state.kind === "ready" ? state.value.displayName : state.kind}</output>;
+    }
+    const view = await renderInRouter(<Capture />);
+    client.setQueryData(
+      queryKeys.agents.list(accountId),
+      { agents: [listItem, peer] },
+      { updatedAt: Date.now() - 1_000 },
+    );
+    client.setQueryData(
+      queryKeys.agents.detail(peerId),
+      { ...agentDetail, id: peerId, displayName: "Updated peer" },
+      { updatedAt: Date.now() - 500 },
+    );
+    view.rerender(
+      <>
+        <Capture />
+        <AgentListProbe />
+        <PeerNameProbe />
+        <AgentManageSettings agent={agentView} initialConfig={config} onAgentChanged={() => undefined} />
+      </>,
+    );
+    await waitFor(() => expect(screen.getByTestId("peer-name").textContent).toBe("Updated peer"));
+    await confirmDelete();
+    await waitFor(() => expect(screen.getByTestId("agent-list").textContent).toBe("Peer"));
+    expect(screen.getByTestId("peer-name").textContent).toBe("Updated peer");
+  });
 });

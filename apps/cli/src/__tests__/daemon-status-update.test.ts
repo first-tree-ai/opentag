@@ -80,7 +80,7 @@ describe("daemon status update visibility", () => {
     expect(exitCode).toBe(0);
     const text = outputs.join("\n");
     expect(text).toContain("State: active");
-    expect(text).toContain("Update current: 0.0.2");
+    expect(text).toContain(`Update current: ${CLI_VERSION}`);
     expect(text).toContain("Update state: awaiting_protected_work");
     expect(text).toContain("Update target: 0.0.3");
   });

@@ -12,10 +12,10 @@ describe("OpenTag Web App Shell", () => {
     installApi({ unauthenticated: true });
     window.history.replaceState({}, "", path);
     render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Welcome back" });
+    const heading = await screen.findByRole("heading", { name: "Sign in to OpenTag" });
     expect(heading.closest("main")?.getAttribute("data-ui")).toBe("login-page");
     expect(screen.getByText("OpenTag").closest('[data-ui="login-brand-lockup"]')).toBeTruthy();
-    expect(screen.getByText("Sign in to continue to OpenTag.")).toBeTruthy();
+    expect(screen.getByText("Manage your Agents and Computers.")).toBeTruthy();
     expect(screen.queryByText(/Permissions are checked/)).toBeNull();
     const expectedNext = path === "/" ? "/agents" : path;
     expect(window.location.search).toBe(`?next=${encodeURIComponent(expectedNext)}`);
@@ -31,16 +31,17 @@ describe("OpenTag Web App Shell", () => {
 
     const signIn = await screen.findByRole("link", { name: "Sign in with Google" });
     expect(signIn.getAttribute("data-ui")).toBe("login-provider-google");
-    expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
+    expect(signIn.textContent).toBe("Sign in with Google");
+    expect(signIn.querySelector('img[alt=""]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
-    expect(screen.getByText("Sign in to manage your Agents and Computers.")).toBeTruthy();
+    expect(screen.getByText("Manage your Agents and Computers.")).toBeTruthy();
   });
 
   /*
    * The login surface itself, not a re-composition of it. A test that calls authProviderLabel and
    * builds the sentence the way the component does would keep passing if the component went back to
    * interpolating provider.id -- which is the regression this exists to catch. Only `dev` reaches
-   * this sentence in production: `google` renders as an image and `password` as a form.
+   * this sentence in production: `google` has a branded label and `password` is a form.
    */
   it("names the sign-in method on the button rather than its identifier", async () => {
     installApi({

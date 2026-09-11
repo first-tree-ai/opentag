@@ -68,16 +68,19 @@ import {
   ListTasksResponseSchema,
   type MeResponse,
   MeResponseSchema,
+  PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   type RebindAgentComputerRequest,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
+  TaskCancelResponseSchema,
   type TaskDetail,
   TaskDetailSchema,
   type TaskTitleUpdateRequest,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
+  taskCancelPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
@@ -118,6 +121,39 @@ export class CancelledRequestError extends Error {
   constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : "Request cancelled", { cause });
     this.name = "AbortError";
+  }
+}
+
+/** Covers one Agent setup snapshot read: fetch, body, and diagnostic clones. */
+export const AGENT_SETUP_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * Bounds `run` in elapsed time even when the AbortSignal is ignored. Fetch cancellation is
+ * best-effort; the deadline itself always rejects, including while a response body is hanging.
+ */
+export async function withDeadline<T>(timeoutMs: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeoutError = (): CancelledRequestError => {
+    const cause = new Error("The operation timed out.");
+    cause.name = "TimeoutError";
+    return new CancelledRequestError(cause);
+  };
+  const operation = Promise.resolve().then(() => run(controller.signal));
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const error = timeoutError();
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (timedOut) void operation.catch(() => undefined);
   }
 }
 
@@ -193,6 +229,14 @@ export class BrowserApi {
     }).then(({ task }) => task);
   }
 
+  /** Withdraws a queued Task. A `409` means it is no longer queued and its state should be re-read. */
+  cancelTask(sessionId: string): Promise<TaskDetail["task"]> {
+    return this.request(taskCancelPath(sessionId), TaskCancelResponseSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    }).then(({ task }) => task);
+  }
+
   agent(agentId: string): Promise<AgentDetail> {
     return this.request(agentByIdPath(agentId), AgentDetailSchema);
   }
@@ -208,9 +252,15 @@ export class BrowserApi {
   /**
    * The canonical setup state of one exact Agent. Stage, blockers, and permitted actions all
    * arrive derived by the Server; callers render them rather than re-deriving them locally.
+   * The deadline covers fetch and every body read; it does not depend on the transport honoring abort.
    */
   agentSetup(agentId: string): Promise<AgentSetupSnapshot> {
-    return this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema);
+    return withDeadline(AGENT_SETUP_READ_TIMEOUT_MS, (signal) =>
+      this.request(agentSetupPath(agentId), AgentSetupSnapshotSchema, {
+        signal,
+        headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+      }),
+    );
   }
 
   /** Starts a fresh Computer-owned preparation for this exact bound Agent. */
@@ -284,7 +334,9 @@ export class BrowserApi {
   }
 
   imBindingHandoff(agentId: string): Promise<ImBindingHandoffStatus | undefined> {
-    return this.requestOptional(agentImBindingHandoffPath(agentId), ImBindingHandoffStatusSchema);
+    return this.requestOptional(agentImBindingHandoffPath(agentId), ImBindingHandoffStatusSchema, {
+      headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+    });
   }
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {
@@ -331,7 +383,9 @@ export class BrowserApi {
   }
 
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
-    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema);
+    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
+      headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+    });
   }
 
   disableImBinding(imBindingId: string): Promise<void> {
@@ -343,7 +397,7 @@ export class BrowserApi {
 
   computers(): Promise<ListAccountComputersResponse> {
     return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
     });
   }
 
@@ -361,9 +415,8 @@ export class BrowserApi {
   }
 
   /**
-   * Whether this deployment offers the staging internal tools. Outside staging the interface is
-   * absent rather than closed, and everything behind it is open to any authenticated Account where
-   * it is present, so reachability is the whole answer.
+   * Whether this deployment offers Internal Tools: staging or an opted-in local preview. Everything
+   * behind it is open to any authenticated Account where present, so reachability is the whole answer.
    */
   async internalToolsOffered(): Promise<boolean> {
     const response = await this.fetchWithRefresh(HTTP_PATHS.accountSetupReset);
@@ -373,7 +426,7 @@ export class BrowserApi {
   }
 
   /**
-   * Reads the staging-wide navigation preview. A deployment without Internal Tools has no endpoint,
+   * Reads the Server-wide navigation preview. A deployment without Internal Tools has no endpoint,
    * which is the same product answer as both previews being hidden.
    */
   async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
@@ -394,7 +447,7 @@ export class BrowserApi {
   }
 
   /**
-   * Undoes setup for the authenticated staging Account; it accepts no client-selected Account.
+   * Undoes setup for the authenticated test-environment Account; it accepts no client-selected Account.
    * `all` also destroys that Account's Agents and Computer access, `reboard` keeps them.
    */
   resetAccountSetup(mode: AccountSetupResetMode): Promise<void> {
@@ -460,8 +513,12 @@ export class BrowserApi {
     return this.parseResponse(path, schema, body);
   }
 
-  private async requestOptional<T>(path: string, schema: RuntimeSchema<T>): Promise<T | undefined> {
-    const response = await this.fetchWithRefresh(path);
+  private async requestOptional<T>(
+    path: string,
+    schema: RuntimeSchema<T>,
+    init: RequestInit = {},
+  ): Promise<T | undefined> {
+    const response = await this.fetchWithRefresh(path, init);
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);

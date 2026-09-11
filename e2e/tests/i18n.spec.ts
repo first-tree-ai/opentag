@@ -29,8 +29,8 @@ test("browser negotiation renders the supported locale without persisting an imp
   try {
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "networkidle" });
-    await expect(page.getByRole("heading", { name: "欢迎回来", exact: true })).toBeVisible();
-    await expect(page.getByText("登录后继续使用 OpenTag。", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "登录 OpenTag", exact: true })).toBeVisible();
+    await expect(page.getByText("管理你的 Agent 和 Computer。", { exact: true })).toBeVisible();
     // Document metadata remains on the base locale until the ongoing visible-copy migration is complete.
     await expect(page.locator("html")).toHaveAttribute("lang", "en");
     await expect(page.locator("html")).toHaveAttribute("dir", "ltr");

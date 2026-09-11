@@ -5,7 +5,7 @@ import { queryKeys } from "../query/keys.js";
 
 const HIDDEN_INTERNAL_NAVIGATION: InternalNavigationVisibility = { integrations: false, skills: false };
 
-/** Reads the one staging-wide preview state; production's absent endpoint resolves to hidden. */
+/** Reads the Server-wide preview state; production's absent endpoint resolves to hidden. */
 export function useInternalNavigationVisibility(): InternalNavigationVisibility {
   return (
     useQuery({

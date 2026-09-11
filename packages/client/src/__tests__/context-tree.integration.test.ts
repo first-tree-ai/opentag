@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
@@ -58,7 +58,9 @@ async function isolatedAccount(prefix: string): Promise<{
   );
   const environment: NodeJS.ProcessEnv = { HOME: accountHome, PATH: process.env.PATH };
   const seed = await temporaryDirectory(`${prefix}-seed-`);
-  const { treePath } = (await runCli(["create", "--project-path", seed], environment)) as { treePath: string };
+  const { treePath } = (await runCli(["create", "--project-path", seed, "--json"], environment)) as {
+    treePath: string;
+  };
 
   previousHome = process.env.HOME;
   homeWasSet = true;
@@ -66,7 +68,7 @@ async function isolatedAccount(prefix: string): Promise<{
 
   const openTagHome = await temporaryDirectory(`${prefix}-home-`);
   const layout = resolveOpenTagHomeLayout(openTagHome);
-  await mkdir(layout.config, { mode: 0o700, recursive: true });
+  await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
   await writeFile(
     layout.contextTreeConfigFile,
     `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
@@ -93,6 +95,23 @@ async function recordMemberMemory(worktreePath: string, slug: string, memory: st
 }
 
 describe("Context Tree end-to-end", () => {
+  it("provides the bundled command before configuration without connecting or creating a tree", async () => {
+    const home = await temporaryDirectory("opentag-ct-unconfigured-");
+    const cwd = await temporaryDirectory("opentag-ct-unconfigured-agent-");
+    const manager = new ContextTreeManager({ home });
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
+    const { stdout } = await execFileAsync("/bin/sh", ["-c", "context-tree --version"], {
+      cwd,
+      env: { HOME: home, PATH: manager.binDirectory() },
+    });
+    expect(stdout.trim()).not.toBe("");
+    expect(await readdir(cwd)).toEqual([]);
+    await expect(readFile(resolveOpenTagHomeLayout(home).contextTreeConfigFile)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readdir(home)).toEqual(["context-tree"]);
+  });
+
   it("connects two Agent workspaces on one Computer to the same shared tree", async () => {
     const { accountHome, treePath, manager } = await isolatedAccount("opentag-ct-share");
     // The CLI installs Codex skills only for a host that is present. Simulate an installed Codex.
@@ -105,6 +124,12 @@ describe("Context Tree end-to-end", () => {
     // Sharing one tree across Agents is the point of the feature, so both must land on it.
     await expect(manager.ensureAgent(workspaceB)).resolves.toEqual(first);
 
+    for (const workspace of [workspaceA, workspaceB]) {
+      for (const file of ["AGENTS.md", "CLAUDE.md"]) {
+        await expect(readFile(join(workspace, file))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    }
+
     // Each workspace carries the skills Claude Code discovers under `--setting-sources project`.
     for (const workspace of [workspaceA, workspaceB]) {
       await expect(
@@ -116,7 +141,7 @@ describe("Context Tree end-to-end", () => {
     ).resolves.toContain("context-tree");
 
     // Exactly what a Session does: run the bare command name with the shim directory on PATH.
-    const { stdout } = await execFileAsync("context-tree", ["resolve", "--project-path", workspaceA], {
+    const { stdout } = await execFileAsync("context-tree", ["resolve", "--project-path", workspaceA, "--json"], {
       encoding: "utf8",
       env: { HOME: accountHome, PATH: `${manager.binDirectory()}${delimiter}${process.env.PATH ?? ""}` },
     });
@@ -197,7 +222,7 @@ describe("Context Tree end-to-end", () => {
 
     // Agent B, in a different workspace, reads it from the shared tree.
     const read = (await runCli(
-      ["read", "members/researcher-agent/memory.md", "--tree-path", treePath],
+      ["read", "members/researcher-agent/memory.md", "--tree-path", treePath, "--json"],
       environment,
     )) as { node: { body: string } };
     expect(read.node.body).toContain("Prefer the repository formatter");

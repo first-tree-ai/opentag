@@ -4,6 +4,7 @@ import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
+import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
 import {
@@ -603,6 +604,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     cwd: string,
     args: readonly string[],
     environment?: Readonly<Record<string, string>>,
+    pathPrepend?: string,
   ) => ClaudeCodeProcessClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
@@ -618,12 +620,12 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     const prefix = options.process?.args ?? [];
     this.#createProcess =
       options.createProcess ??
-      ((cwd, args, workspaceEnvironment) =>
+      ((cwd, args, workspaceEnvironment, pathPrepend) =>
         new ClaudeCodeProcess({
           command,
           args: [...prefix, ...args],
           cwd,
-          env: { ...environment, ...workspaceEnvironment },
+          env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
           maxLineBytes: options.process?.maxLineBytes,
           maxStderrBytes: options.process?.maxStderrBytes,
           spawnProcess: options.process?.spawnProcess,
@@ -688,7 +690,13 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       return new ClaudeCodeAgentRuntime({
         binding,
         configuration: request.configuration,
-        createProcess: (args) => this.#createProcess(request.workspace.cwd, args, request.workspace.environment),
+        createProcess: (args) =>
+          this.#createProcess(
+            request.workspace.cwd,
+            args,
+            request.workspace.environment,
+            request.workspace.pathPrepend,
+          ),
         emptyNativeToolAllowList: isEmptyNativeToolAllowList(request.policy),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,

@@ -40,6 +40,8 @@ export interface OnboardingResetConnectionRegistry {
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
 export interface OnboardingResetServiceOptions {
+  /** Opt-in for local acceptance; server configuration restricts this to loopback development. */
+  allowLocalPreview?: boolean;
   /** Test seam: runs after cleanup and before the locked commit boundary, to interleave a writer. */
   afterCleanup?: () => Promise<void>;
   /** Test seam: runs inside the locked commit, between verification and the setup marker. */
@@ -52,7 +54,7 @@ export interface OnboardingResetServiceOptions {
 }
 
 /**
- * Staging-only orchestration that returns the authenticated Account to a first-run state.
+ * Staging and opt-in local orchestration that returns the authenticated Account to a first-run state.
  *
  * It is deliberately separate from the production setup-completion module, whose transition
  * stays one-way. Every step is idempotent: a failed reset can simply be run again and continues
@@ -63,6 +65,7 @@ export interface OnboardingResetServiceOptions {
  * retired ownership persistence.
  */
 export class OnboardingResetService {
+  readonly #allowLocalPreview: boolean;
   readonly #afterCleanup?: () => Promise<void>;
   readonly #afterVerified?: () => Promise<void>;
   readonly #agents: OnboardingResetAgentLifecycle;
@@ -72,6 +75,7 @@ export class OnboardingResetService {
   readonly #registry: OnboardingResetConnectionRegistry | undefined;
 
   constructor(options: OnboardingResetServiceOptions) {
+    this.#allowLocalPreview = options.allowLocalPreview ?? false;
     this.#afterCleanup = options.afterCleanup;
     this.#afterVerified = options.afterVerified;
     this.#agents = options.agents;
@@ -82,7 +86,7 @@ export class OnboardingResetService {
   }
 
   get enabled(): boolean {
-    return this.#environment === "staging";
+    return this.#environment === "staging" || (this.#environment === "dev" && this.#allowLocalPreview);
   }
 
   /**

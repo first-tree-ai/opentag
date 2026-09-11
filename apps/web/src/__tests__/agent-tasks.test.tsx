@@ -88,7 +88,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Integrations" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
     expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/integrations`);
@@ -101,8 +101,11 @@ describe("OpenTag Web App Shell", () => {
     const getItem = vi.spyOn(Storage.prototype, "getItem");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(getItem).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: "All Agents" })).toBeTruthy();
+    // No remembered scope, which is the claim — rather than no storage at all, which would make
+    // this a tripwire for every unrelated key the application ever reads.
+    const readKeys = getItem.mock.calls.map(([key]) => String(key));
+    expect(readKeys.filter((key) => /workspace|scope|organi[sz]ation|membership/i.test(key))).toEqual([]);
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path) === "/api/v1/agents")).toBe(true),
     );

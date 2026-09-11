@@ -44,8 +44,13 @@ The status is the topic's latest execution situation, read by precedence:
    later acceptance proves the earlier one ended without a report.
 3. `queued` when a delivery is still pending.
 4. Otherwise the outcome of the latest execution: `completed`, `failed` (including rejected
-   deliveries), or `expired` (a delivery that expired unprocessed, or an unreported Turn whose
-   deadline has passed).
+   deliveries), `cancelled` (a queued delivery the Account withdrew before it ran), or `expired` (a
+   delivery that expired unprocessed, or an unreported Turn whose deadline has passed).
+
+Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
+shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
+An unreported inactive Turn, including data from older servers that omit the field, shows that no
+execution report is available.
 
 ## Titles
 
@@ -58,6 +63,40 @@ chat's channel Session, overrides it.
 its Sessions; the title is written to the Session the Task reads it from. A top-level group request
 that nobody replied to has no such Session and returns `404`.
 
+## Cancelling a queued Task
+
+`POST /api/v1/sessions/:id/cancel` withdraws a Task that is still `queued`. The id may be the Task
+id or one of its Sessions. The withdrawal is all or nothing: every pending delivery of the topic is
+expired with reason `cancelled`, its `expiresAt` set to the instant of the cancel, or none of them
+is touched. The delivery worker claims only pending rows and recovers expired ones only while they
+carry a dispatch correlation, so a withdrawn delivery is never picked up later. The cancel instant
+is the withdrawn delivery's activity, and so the topic's latest activity: the response carries the
+refreshed Task summary with status `cancelled`, even when an earlier Turn of the topic finished
+after the withdrawn message arrived, and the status stays `cancelled` until a later Turn runs in
+the topic. A `200` therefore always means that every queued delivery of the topic was withdrawn
+and the Task reads `cancelled`; a topic with a running Turn, or with a delivery a worker is
+dispatching, answers `409` and nothing of it is withdrawn.
+
+Only a queued Task cancels. A Task that is `running`, or that already finished, answers `409
+TASK_NOT_QUEUED`, and so does a queued Task any of whose pending deliveries a worker is dispatching
+at that moment — the Runtime may already be running it, and the rest of the queue is left in place
+with it rather than withdrawn around it. The pending rows are locked for the check and the update,
+so a worker that starts on one of them while the cancel is under way makes the whole cancel a `409`
+too — a row it claimed, accepted or steered meanwhile is a Turn in progress, not an exit from the
+queue, and the messages queued behind it stay in place. A row that a worker rejected, or that
+lapsed, while the cancel waited for the lock is left as
+the worker wrote it, and the rows still pending beside it are withdrawn as usual; when nothing is
+pending any more, the `409` names the status the Task now reads (`The Task is failed, not queued`).
+The Web refreshes the Task on that answer instead of reporting a failure, and tells the two shapes
+apart by what the refresh shows: a Task that left the queue is announced as "no longer queued",
+while one still `queued` is announced as not cancelled yet — its delivery is in progress or awaiting
+confirmation — and keeps its cancel control. That refusal covers two states of the queued message:
+a worker holds a live claim on it (delivery in progress, whether or not a Computer has received it
+yet), or it was handed to a Computer that has not reported back. A success is announced from the
+returned status the same way. Cancelling a Task that is already `cancelled` is a no-op success, so
+repeating the request is harmless — including a second cancel that waited behind the first one's
+lock.
+
 ## Internal Sessions and collaboration messages
 
 A Task includes the internal Sessions that inherited its scope (channel and thread key, or the
@@ -67,8 +106,18 @@ messages are those exchanged by the topic's own Sessions and its internal Sessio
 
 ## Boundaries
 
-- Outbound messages are not observed, so a Task cannot say whether the Agent replied; it records
-  what was asked and how each Turn ended.
+- Task reply history uses captured successful Lark outbound receipts from the originating Turn
+  report when that snapshot is present. `finalText` is only an execution summary, never a substitute
+  sent reply. A complete capture with no recorded send, or a legacy report without a snapshot, has an accurate
+  empty or unavailable state rather than “in progress.” Slack is not collected as Lark. Send receipts
+  are not read receipts. Partial capture is labelled independently of the number of replies; content
+  truncation and native post/card details remain visible. Replies become available with the terminal
+  report and are not backfilled from old runtime transcripts.
+- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks retain their execution
+  summaries without a permanent notice about a capture feature they do not support.
+- Reply snapshots require `runtime.turnReport` v2 on the current connection. A report created on v2
+  remains durable during a v1 reconnect and resumes unchanged after v2 is negotiated again. A v2
+  server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.
 - A crashed Turn on a group's channel Session stays `running` until that Session accepts another
   delivery or the delivery deadline passes.
 - The list is computed per request from the Account's stored messages. Rollups decide the page

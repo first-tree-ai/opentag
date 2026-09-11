@@ -21,7 +21,8 @@ import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 
 export function AgentDetailPage({ agentId }: { agentId: string }) {
-  const state = useAgentDetailView(agentId, { watched: true });
+  const { me } = useAccount();
+  const state = useAgentDetailView(agentId, { watched: true, accountId: me.user.id });
   return (
     <AsyncState state={state}>
       {(agent) => (
@@ -34,7 +35,7 @@ export function AgentDetailPage({ agentId }: { agentId: string }) {
              * dependency belongs beside the work it is stopping rather than in a banner above it.
              */}
             <div className="grid gap-6 @min-[48rem]/content:grid-cols-2">
-              <AgentUsageOverview agentId={agent.id} />
+              <AgentUsageOverview accountId={me.user.id} agentId={agent.id} />
               <AgentStatusCard agent={agent} />
             </div>
             <AgentTasksSection agentId={agent.id} />

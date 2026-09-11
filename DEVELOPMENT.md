@@ -2,69 +2,116 @@
 
 [简体中文](./DEVELOPMENT.zh-CN.md)
 
-## Prerequisites
+## Run locally from source
 
-- Node.js 24.19.0 for the pinned development toolchain (the supported range is Node.js 22.22.2 or newer on 22.x,
-  Node.js 24.15 or newer on 24.x, or Node.js 26.x; Node.js 24 is primary)
-- Corepack and pnpm 10.12.1
-- Docker with Compose support, only when running the local PostgreSQL service
+You'll need macOS or Linux, Node.js (use the version in [.node-version](./.node-version)), pnpm 10.12.1,
+Docker with Compose, and a signed-in Codex or Claude Code CLI. Keep Docker running and run the commands below
+from the root of your cloned repository.
 
-## Setup
-
-```bash
-corepack enable
-pnpm install
-```
-
-The repository pins pnpm in `package.json` and pins the development Node.js patch in `.node-version`. It also sets
-`engine-strict=true` in `.npmrc`, so an unsupported Node.js version fails dependency installation instead of producing
-only an engine warning. Do not use npm or Yarn to update dependencies.
-
-## Local development workflow
-
-The README keeps the product overview and the Docker Compose dependency sample concise. Keep the repository-specific
-workflow in this guide:
-
-1. Start the local PostgreSQL service and run the Server health-check path.
-2. Bootstrap an Account, install the development CLI, and exchange the Account login code.
-3. Connect a Computer, start its daemon, and create an Agent configuration.
-4. Configure Google sign-in or the loopback development bypass when the Web App is needed.
-
-The sections below contain the commands and environment details for each step.
-
-## Git hooks and worktrees
-
-`pnpm install` runs the root `prepare` script, which installs three hooks into the clone's hooks directory:
-
-- `pre-commit` runs Biome over the staged files, applies the fixes it can make safely, and stages the result.
-- `pre-push` runs `pnpm exec biome lint .`, `pnpm exec biome format .`, `pnpm check`, and `pnpm typecheck` over the whole
-  repository. These read-only jobs run in parallel.
-- `post-checkout` prepares a worktree that `git worktree add` has just created: it runs `pnpm install` inside the new
-  worktree and reinstalls the hooks, so the worktree is ready to commit and push.
-
-Git shares one hooks directory between a clone and all of its linked worktrees, so a single installation covers every
-worktree. The `post-checkout` payload in `scripts/git-hooks/` is installed by `scripts/install-git-hooks.mjs` rather than
-by lefthook, because it has to run before the new worktree has a `node_modules` directory. Prepare a worktree by hand
-when it was created by a tool that bypasses Git hooks:
+### 1. Install OpenTag
 
 ```bash
-pnpm worktree:setup
+./scripts/dev-install.sh
 ```
 
-`lefthook.yml` holds the shared configuration; personal overrides belong in an untracked `lefthook-local.yml`. The hooks
-stay out of the way when they are not wanted:
+This installs dependencies, builds the app, and installs the development CLI at `~/.local/bin/opentag-dev`.
 
-| Variable | Effect |
+### 2. Save your local configuration
+
+Run this once for a new local installation. It saves your settings and generated secrets in `.env.local`,
+which Git ignores. Keep this file for future restarts; if you already have local settings, reuse them.
+
+```bash
+(umask 077; cat > .env.local <<EOF
+OPENTAG_DATABASE_URL=postgresql://opentag:opentag@127.0.0.1:5432/opentag
+OPENTAG_JWT_SECRET=$(openssl rand -base64 32)
+BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+OPENTAG_ENV=dev
+OPENTAG_HOST=127.0.0.1
+OPENTAG_PORT=8000
+OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
+OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
+OPENTAG_DEV_AUTH_EMAIL=admin@example.com
+EOF
+)
+```
+
+### 3. Start the server
+
+Load the settings, start PostgreSQL, and create your local account:
+
+```bash
+set -a
+source .env.local
+set +a
+docker compose up -d --wait postgres
+pnpm --filter @opentag/server bootstrap:admin
+pnpm --filter @opentag/server start
+```
+
+Leave this terminal running. Account creation is a one-time step; for subsequent runs, use
+[Stop and restart](#stop-and-restart).
+
+### 4. Connect your agent
+
+Open <http://127.0.0.1:8000> and choose **Developer sign-in**. In **Agents**, follow the setup steps to
+choose Codex or Claude Code, then run the generated connection command in a second terminal.
+
+Follow the chat setup for Slack or Lark / Feishu, then send your agent a message.
+For Slack, see the [additional setup instructions](./docs/slack-app-setup.md).
+
+## Stop and restart
+
+Press Ctrl+C in the server terminal to stop the server. To start it again, run from the repository root:
+
+```bash
+set -a
+source .env.local
+set +a
+docker compose up -d --wait postgres
+pnpm --filter @opentag/server start
+```
+
+The settings file must be loaded in each new server terminal. Reuse the saved secrets with the existing database.
+Database migrations run automatically when the server starts.
+
+The agent runs in a separate background service. Stop or start it with:
+
+```bash
+~/.local/bin/opentag-dev daemon stop
+~/.local/bin/opentag-dev daemon start
+```
+
+To stop PostgreSQL, run `docker compose stop postgres`. Its data remains in the Docker volume.
+
+## Making changes
+
+After editing code, stop the server, rebuild, and start it again in the terminal with your settings loaded:
+
+```bash
+pnpm build
+pnpm --filter @opentag/server start
+```
+
+After changing CLI or agent runtime code, also run `~/.local/bin/opentag-dev daemon restart`.
+After dependency changes, run `pnpm install` before building.
+
+| Directory | Contents |
 | --- | --- |
-| `LEFTHOOK=0` | skip the lefthook gates for one command |
-| `OPENTAG_SKIP_WORKTREE_BOOTSTRAP=1` | skip the worktree bootstrap |
-| `OPENTAG_SKIP_GIT_HOOKS=1` | skip hook installation during `pnpm install` |
-| `OPENTAG_HOOKS_LOG_LEVEL=debug` | print every decision the hook scripts make |
+| `apps/web` | Web interface |
+| `apps/cli` | Command-line interface |
+| `packages/server` | API, authentication, and database |
+| `packages/client` | Server client and local agent runtime |
+| `packages/shared` | Shared schemas and types |
 
-A set `CI` variable disables the bootstrap and the installation as well, so automated checkouts never install local
-hooks.
+For UI translations, see [Web i18n](./docs/i18n.md).
 
-## Validation
+## Checks
+
+Run these before opening a pull request:
 
 ```bash
 pnpm check
@@ -75,444 +122,37 @@ pnpm --filter @opentag/client test:agent-runtime:coverage
 pnpm --filter @opentag/server test:integration
 ```
 
-Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
+The server integration tests need Docker. Run `pnpm test:coverage` when changing coverage configuration or
+investigating coverage gaps. See the [E2E guide](./e2e/README.md) for browser tests.
 
-The separate `Unit Coverage` workflow runs `pnpm test:coverage` against `main` every Monday at 03:17 UTC and can also be
-started manually. It builds the workspaces and measures the offline unit tests for CLI, Web, Shared, Client, and Server,
-then retains the unified report for 14 days. Run the command locally when changing the root coverage configuration or
-investigating coverage gaps. The measurement includes production source files that tests do not import, but excludes
-root `scripts/`, Server PostgreSQL integration tests, and Provider end-to-end tests. It is a baseline for finding and
-prioritizing gaps, not a required pull request check, and does not yet enforce repository-wide or per-workspace coverage
-thresholds. Add regression thresholds only after the measurement is stable across repeated runs.
+## Git hooks and worktrees
 
-## Web i18n
+`pnpm install` installs hooks that format and lint staged files before commits and check the repository before pushes.
+New Git worktrees install dependencies automatically. If a worktree wasn't initialized, run `pnpm worktree:setup` in it.
+See [Contributing](./CONTRIBUTING.md) for branch and pull request conventions.
 
-Web messages live in `apps/web/messages/<area>/{en,zh}.json` and use `<area>_<surface>_<slot>` keys. Add the English
-message and its hand-authored Simplified Chinese counterpart in the area that emits the final visible string. Keep the
-key sets, placeholders, and sort order identical. Use Paraglide for sentences and `src/i18n/format.ts` for locale-aware
-dates and numbers. Run `pnpm --filter @opentag/web paraglide` after adding or changing messages; `typecheck`, `test`, and
-the Vite build also run this code generation through their Turbo dependency. If generated output looks stale, remove
-`apps/web/src/paraglide/` and rerun the command. Never run `inlang machine translate` or Sherlock extract: the array
-path pattern would duplicate the merged catalogue into every area file.
+## Troubleshooting
 
-`pnpm test:coverage` measures one Vitest project at a time and concatenates the per-workspace summaries into
-`coverage/unit/coverage-summary.json` and the detailed Istanbul maps into `coverage/unit/coverage-final.json`. A single
-merged Vitest pass under-reports, so those aggregates must not be produced by the coverage provider's merge. Pull
-requests run a separate `Patch Coverage` check that reads the detailed map and fails when fewer than 80% of the
-executable TypeScript lines the pull request added or changed were hit.
+- **Local sign-in fails:** confirm the server loaded `.env.local` and the bootstrap account was created.
+  Developer sign-in requires `OPENTAG_ENV=dev` and loopback addresses for the host and public URL.
+- **“Bootstrap has already been completed”:** the database already has an account. Use the restart commands above.
+- **Agent doesn't connect:** run `~/.local/bin/opentag-dev doctor` and `~/.local/bin/opentag-dev daemon status`.
+- **Need daemon logs:** on Linux, run `journalctl --user -u opentag-dev.service`; on macOS, check `~/.opentag-dev/logs`.
 
-Required pull request CI still runs all offline unit tests. Agent Runtime keeps its separate 100% gate in
-`packages/client/vitest.agent-runtime.config.ts`, enforced by
-`pnpm --filter @opentag/client test:agent-runtime:coverage`.
+Local agent settings and files are stored in `~/.opentag-dev` by default. Back up this directory to preserve local
+work and session state; the server cannot restore those files.
 
-The required pull request check is the stable `CI` fan-in job. It covers the required commands above, source and staging CLI
-tarball installation, a production-container health smoke, and the supported Node.js lines. Full validation and releases
-run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.22.2 floor and the latest
-Node.js 26 release; that command builds, tests, and installs the packed CLI. Node.js 23 and 25 are end-of-life and are not
-supported. To exercise the current source tarball locally after a build:
+## Configuration and further reading
 
-~~~bash
-node scripts/cli-pack-smoke.mjs \
-  --channel source \
-  --name open-tag \
-  --version 0.0.1 \
-  --binary opentag-dev
-~~~
+For additional settings, see [.env.example](./.env.example). Add the values you need to `.env.local` and reload it
+before restarting the server.
 
-## Run the server and health-check path
-
-Start PostgreSQL, configure the required database URL and secrets, then build and start the server. Migrations run before
-the server listens.
-
-```bash
-docker compose up -d postgres
-export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
-export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
-export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
-export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
-export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
-pnpm build
-pnpm --filter @opentag/server start
-```
-
-The server listens on `http://127.0.0.1:8000` by default. In another terminal, run:
-
-```bash
-pnpm --filter open-tag start doctor
-```
-
-Use a different server URL with `--server-url` or `OPENTAG_SERVER_URL`:
-
-```bash
-pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
-```
-
-## Local PostgreSQL
-
-The local PostgreSQL service supports migration and authentication development:
-
-```bash
-docker compose up -d postgres
-pnpm --filter @opentag/server db:migrate
-docker compose down
-```
-
-The service exposes port `5432` and stores data in the `opentag-postgres-data` named volume.
-The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DATABASE_URL` to a separately managed
-PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
-
-To bootstrap an empty installation, set the required bootstrap fields and run the one-time bootstrap command. It migrates
-an empty database before creating the initial Account and Account login code.
-
-```bash
-export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
-export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-pnpm --filter @opentag/server bootstrap:admin
-./scripts/dev-install.sh
-export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
-```
-
-The source checkout is the `dev` channel. `scripts/dev-install.sh` builds the complete workspace, links the configured
-dev binary to `~/.local/bin/opentag-dev`, verifies it, and reconciles an existing machine-credentialed daemon service. A first
-install has no machine credentials, so service setup is deliberately deferred to `computer connect`; this matches the
-published installer boundary without making the installer consume a connect code. Keep `~/.local/bin` first in `PATH`
-so service reconciliation cannot select an older `opentag-dev` shim. The dev channel defaults to
-`~/.opentag-dev`; staging and production builds use `opentag-staging` / `~/.opentag-staging` and `opentag` /
-`~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
-
-Account login stores only management credentials. Generate a Computer connection command from the Web's Agents area,
-then run it on the execution host; `computer connect` stores a Computer-scoped machine credential and installs or
-restarts the user service on Linux and macOS. Inspect it from another terminal:
-
-```bash
-opentag-dev computer connect --server http://127.0.0.1:8000 -- <computer-connect-code>
-opentag-dev daemon status
-opentag-dev computer list
-```
-
-The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads the canonical
-Computer credential from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
-service start, and opens one Runtime connection for that Computer. OpenTag Home is organized by lifecycle:
-
-```text
-${OPENTAG_HOME}/
-├── config/
-│   ├── credentials.json
-│   ├── computer-credentials.json
-│   ├── computer.json
-│   └── daemon.env
-├── data/
-│   ├── runtime/
-│   │   ├── workspace-states/<agent-key>.json
-│   │   ├── session-bindings/<agent-key>/<session-key>.json
-│   │   └── effective-snapshots/<agent-key>/<snapshot-key>.json
-│   └── workspaces/<agent-key>/  # New Agent cwd and writable root
-├── state/
-│   ├── daemon/owner.json
-│   └── service/
-│       ├── operation.json
-│       ├── target-operation.json  # default channel Home only
-│       └── <serviceId>
-└── logs/
-```
-
-Directories are private (`0700`); credentials, identity, runtime recovery records, and lease files are private regular
-files (`0600`). Directories and files are created only when their owner needs them. Account `login` creates only
-`config/credentials.json`; `computer connect --no-start` stores `config/computer-credentials.json` without installing the
-daemon; runtime recovery records and workspaces appear on the first relevant reconcile.
-
-OpenTag does not maintain control files inside an Agent work area. Platform and Agent instructions are injected through
-the selected Provider's native system-prompt surface. A new work-area root is the Provider cwd. For an existing
-schema-v1/v2 local Workspace layout, one compatibility transition preserves `files/` as the cwd instead of moving user files. It
-removes only legacy instruction files whose OpenTag provenance can be established from the old state; a user-authored or
-changed conflict is preserved and fails closed. The transition state is written before cleanup so an interrupted attempt
-is idempotent. After it completes, the Client uses workspace state only to preserve layout and identity and no longer
-inspects or manages local Workspace entries. Schema v3 is also a downgrade fence: older v1/v2 Clients reject it instead
-of reinterpreting an upgraded layout. Here `workspace-states` and `workspaces` are persisted local runtime names, not the
-removed product Workspace management concept.
-
-This layout is a clean break: OpenTag does not read, migrate, delete, or fall back to root-level `credentials.json`,
-`computer.json`, `daemon-owner.json`, `runtime/`, `service/`, `data/computer.json`, `data/runtime/agents`, or
-`~/.opentag-service-targets`. Use a fresh Home, or move the old Home aside and log in again. Existing legacy files
-otherwise remain unused on disk.
-
-### Local data loss and recovery
-
-Running `computer connect` again rotates the Computer credential and restores connectivity, not the prior
-local execution continuity. The Server can reissue credentials and
-rebuild effective snapshots; managed instructions are injected again when the Provider Runtime starts or resumes.
-Reissued credentials are new values. If `config/computer.json` is lost, the current Client creates a new Computer
-identity; although the Server retains the old Computer and placement records, the Client does not automatically reclaim
-that identity or repair old bindings.
-
-Provider bindings, evidence for Turns not yet reported successfully, Agent work-area files, and local `daemon.env` values are
-local-only. Losing a Session binding can reset exact Provider resume continuity and can leave accepted-but-unreported
-work requiring explicit repair. Work-area files require Git, external storage, or a local backup; the OpenTag Server
-cannot restore them. Losing workspace state while its work area is non-empty fails closed instead of silently choosing a
-different cwd. Effective snapshots are reproducible and are not a primary backup target.
-
-Daemon/service owner and lease state plus logs are locally reproducible only while the daemon is stopped and no service
-mutation is running. Deleting owner or lease evidence while operations are live can break single-daemon and service
-mutual exclusion. Backups should prioritize `config/computer.json`, `config/computer-credentials.json`, local `config/daemon.env`,
-`data/runtime/session-bindings`, and `data/runtime/workspace-states` together with `data/workspaces`.
-
-Manage the daemon with `daemon install/start/stop/restart/status/uninstall`. `uninstall` preserves `config/` and `data/`.
-Windows services are not supported in v0.1. Linux logs are available through
-`journalctl --user -u opentag-dev.service`; macOS logs are under `${OPENTAG_HOME}/logs`. Optional
-`${OPENTAG_HOME}/config/daemon.env` must be a private regular file (mode `0600`) and can provide service-only environment
-values without overriding pinned service settings. The CLI uses `/api/v1/auth/...` and `/api/v1/me/...`; `/healthz` and
-`/readyz` remain unversioned deployment probes.
-
-The dev service definition is `~/.config/systemd/user/opentag-dev.service` on Linux or
-`~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is
-`${OPENTAG_HOME}/state/service/opentag-dev`.
-Staging and production replace the suffix with their channel `serviceId` (`opentag-staging` or `opentag`). If login saves
-the machine credential was saved but service installation fails, fix the reported manager issue and run
-`opentag-dev daemon install`; do not request another connect code.
-
-Service mutation has two independent leases. `${OPENTAG_HOME}/state/service/operation.json` serializes operations for
-the current Home. The target lease is fixed at the current user's default Home for the binary's channel — for example,
-`~/.opentag-dev/state/service/target-operation.json` — so multiple custom `OPENTAG_HOME` values cannot concurrently
-modify the same `opentag-dev.service`. Dev, staging, and production use different default Homes and service targets, so
-their target leases do not contend.
-
-## Manage Agent configurations
-
-The product model is **Account → Computer → Agent → IM binding**. An Agent is visible to the Account that created it and
-is bound at creation time to a Computer owned by that Account. When the Account has one eligible Computer, it is selected
-automatically:
-
-```bash
-pnpm --filter open-tag start agent create \
-  --name code-reviewer \
-  --display-name "Code Reviewer" \
-  --provider codex
-pnpm --filter open-tag start agent list
-```
-
-Use `--computer <uuid>` when more than one Computer is available. There is no scope selector: the Agent belongs to the
-authenticated Account, which the Server resolves on its own. An offline Computer may be selected because online presence
-is not Agent configuration state. Inspect and
-change the mutable display name with:
-
-```bash
-pnpm --filter open-tag start agent show <agent-id>
-pnpm --filter open-tag start agent update <agent-id> --display-name "Reviewer"
-pnpm --filter open-tag start agent delete <agent-id>
-```
-
-Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Computer rebinding is not
-an update operation. Deletion is a server-side soft delete and is idempotent for the Account that created the Agent.
-`claude-code` is an accepted configuration value,
-but its runtime adapter and all Session/Turn delivery remain future work.
-
-The two `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
-The bootstrap email is Account profile data, not an email/password credential. The Account login-code flow resolves a
-stable user ID and then uses the provider-neutral token issuer.
-
-That issuer now hands out a Better Auth session rather than a signed access/refresh pair, so a CLI credential is a row
-the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
-`accessToken` and `refreshToken` carry the same session token, which is why a CLI built before the cutover keeps working
-unchanged. `OPENTAG_SESSION_TTL_SECONDS` is that credential's whole lifetime, defaulted to what the refresh token's was
-because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates: the
-presented token is withdrawn first, and only the caller whose withdrawal succeeded gets a replacement. That ordering is
-what makes it safe to race — two refreshes of one credential cannot both mint, and a revocation landing first is not
-undone — and it means a failure in between signs the client out rather than leaving alive a credential something
-already decided to end. A copy taken before the last refresh stops working rather than running to its own expiry.
-
-One consequence is worth stating plainly: a disclosed credential is now usable for the session lifetime rather than the
-old fifteen-minute access window. What made that window necessary was that its thirty-day refresh partner could not be
-revoked at all; a session can be, immediately, which is the trade this makes.
-
-Credentials the previous revision issued are no longer accepted; the compatibility bridge and its two TTL settings are
-gone. `OPENTAG_JWT_SECRET` remains because it also signs Slack OAuth state, which is not Account authentication.
-
-## Email and password sign-in
-
-`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED=true` lets an address and password both register an Account and sign one in, at
-`POST /api/v1/auth/email/sign-up` and `POST /api/v1/auth/email/sign-in`. It defaults to off, because it is the only
-sign-in method whose default could hand out Accounts: every other one needs something a deployment already granted — a
-Google client, a loopback bypass, a connect code. One setting covers both routes, since a server that accepted
-passwords but issued none would have no way to give anyone a first one.
-
-Passwords are between 12 and 128 characters. The bounds live in `@opentag/shared` and configure both the request schema
-and Better Auth, so the library cannot apply a different floor underneath and turn an accepted password into a rejected
-one. The stored value is a hash on the Account's `credential` identity row; the password itself is never persisted.
-
-These two routes are fenced on the request origin alone, not the double-submit CSRF token every other browser mutation
-carries. A signed-out browser has no such token — these are the requests that mint it — so requiring one would make
-signing in impossible rather than safer. Both responses carry the session cookie and a fresh double-submit token, which
-is what lets a newly signed-in browser write at all.
-
-Both routes send the browser to the same destination allowlist every other sign-in method uses. It lives in
-`@opentag/shared` as `resolveSignInDestination` rather than on the server, because this is the one method that
-navigates the browser itself instead of handing its destination to a route; two implementations would eventually
-disagree, and the more permissive half would be the one that mattered.
-
-A rejected sign-in gives one answer whether the address is unknown or the password is wrong, so the endpoint cannot be
-used to ask which addresses hold Accounts. That uniformity covers refusals only — a server that could not answer
-reports `SERVICE_UNAVAILABLE`, and a suspended Account is named as suspended, because reaching that answer took a
-password the caller already had. Registration cannot keep the address secret and still be actionable, so a taken
-address is reported as `AUTH_EMAIL_CONFLICT` while any other refusal stays a validation failure.
-
-Sign-in attempts are counted per source address and per email address, and the counters are **per process**: each
-replica keeps its own, and a restart clears them. That is enough to make one server unattractive to hammer, and it is
-not a deployment-wide bound — enforcing that needs a shared store or a gateway in front. The table is capped and evicts
-expired entries first, because an email address is caller-chosen and an unbounded key space would let a caller spend
-the server's memory rather than only its patience.
-
-`users.email_verified` stays false for these Accounts. Nothing in the product sends mail, so there is no verification
-step to assert the address, and recording one that never happened would be worse than recording none. For the same
-reason there is no password reset: adding one means adding a mail sender first.
-
-That has a consequence an operator has to weigh before enabling self-service registration at all. Because registration
-proves nothing about the address, anyone can register an address they do not own, receive a session, and have the
-Account provisioned — all while `email_verified` stays false.
-
-What happens next is worth stating precisely, because the obvious guess is wrong. Better Auth defaults
-`accountLinking.requireLocalEmailVerified` to true, and being a trusted provider does not lift it: that setting governs
-whether the *provider* verified the address, not whether the local Account did. A later Google sign-in for the squatted
-address is therefore refused rather than linked, so the squatter and the real owner do not end up sharing an Account.
-
-The harm is a lockout instead. `users_email_unique` reserves the address, so the real owner can neither register it nor
-reach it through Google, and the squatter holds a provisioned Account for an address they never proved. An integration
-test pins that behavior. Until ownership is proven before a password credential can claim an address, enable
-`OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` only where everyone who can reach the server is already trusted.
-
-An Account email is stored lowercased, and one address identifies at most one Account. The `users_email_unique` index
-enforces that, case-insensitively so a writer that skips normalization cannot get in through a casing variant. The
-resolver that used to serialize on the address is gone; nothing in Better Auth's linking orders two concurrent first
-sign-ins for the same address, so the index is what takes that job. It could only be created once no revision that
-wrote unnormalized addresses was still serving, which is why it arrived after the Better Auth migration rather than
-with it.
-
-A provider identity attaches to the Account that already holds its address rather than creating a second one: Google is
-a trusted provider, so an address it has verified links to the existing Account. This is how a bootstrap Account and
-that person's first Google sign-in become one Account.
-
-`users.email_verified` records whether a provider asserted the address currently stored on the Account. It is only ever
-raised for that address, never for some other address the provider returned, and the login-code flow never sets it.
-
-## Google sign-in and Web App
-
-Create a Google Web OAuth client whose callback is
+To use Google sign-in locally, configure a Google Web OAuth client with callback URL
 `http://127.0.0.1:8000/api/v1/auth/callback/google`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
-`OPENTAG_GOOGLE_CLIENT_SECRET`. That path is Better Auth's own callback and is the only one the server serves; the
-pre-migration `/api/v1/auth/google/callback` is gone and can be removed from the OAuth client. The Google configuration
-is validated before the server listens; `staging` and `prod` require an HTTPS `OPENTAG_PUBLIC_URL`. The browser session
-lives in an HttpOnly cookie Better Auth owns, while browser mutations additionally require a same-origin request and
-the readable double-submit CSRF cookie.
+`OPENTAG_GOOGLE_CLIENT_SECRET` in your local settings.
 
-For loopback-only development without Google credentials, explicitly enable the development bypass and select one
-existing bootstrap user:
-
-```bash
-export OPENTAG_ENV=dev
-export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
-export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
-```
-
-Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
-`Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and then issues the
-normal browser session through Better Auth, so it is the same revocable session a Google sign-in produces and signing
-out ends it. Which Account it signs in is fixed from configuration, not taken from the request. It never creates an
-Account or internal compatibility records and still rejects suspended Accounts; a missing or duplicate email match
-fails closed. The server refuses this configuration in `staging` and `prod`.
-
-`OPENTAG_ENV` is the only OpenTag environment and release-channel selector. `dev` selects local development behavior and
-the `opentag-dev` binary, `staging` selects `open-tag-staging` / `opentag-staging`, and `prod` selects
-`open-tag` / `opentag`. `NODE_ENV` may still be `production` in hosted Node.js processes, but it does not select OpenTag
-packages or product security behavior. The server logs the resolved environment, public URL, package, and binary at
-startup; it never infers the environment from the hostname.
-
-Open `/` for the management shell. Its top-level navigation is **Agents / Tasks / Skills / Integrations**, with no
-Settings tab. Computer connection and recovery live in the Agents area. **Generate connection command** mints a
-15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Account's
-Computers until the new daemon handshake arrives. The account menu contains Account actions.
-
-Session collaboration remains an Agent Runtime concern and does not introduce a product Workspace, Project, or shared
-management container. Context Tree can preserve long-term context independently; it does not establish per-Account
-ownership or change Computer connection, Agent placement, or IM binding.
-`OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
-
-## Agent Setup end-to-end check
-
-`scripts/e2e/onboarding-e2e.mjs` drives the whole `/agents/setup` flow against a real Server, a real PostgreSQL database,
-the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
-page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
-creates the Agent before Computer preparation, and then checks the handoff, Account admission, pending Provider validation,
-and that a later runtime outage stays in the normal Agents product flow.
-
-```bash
-pnpm build
-npm install --no-save playwright-core   # outside the workspace, or reuse an existing install
-OPENTAG_E2E_PLAYWRIGHT_PATH=/path/to/playwright-core node scripts/e2e/onboarding-e2e.mjs
-```
-
-The check needs a reachable PostgreSQL superuser URL and a Chromium executable. It creates and drops its own database,
-listens on its own port, and writes screenshots, Server and daemon logs, and recorded console entries to its artifact
-directory. Because it drops that database on every run, it refuses any name that is not an unmistakably disposable E2E
-identifier, and it drops that database again once the Server stops. The check also refuses to start when its port is
-already taken, so it can never drive another local Server. The daemon receives an explicit Provider environment rather
-than the invoking shell's, so readiness is the same on any developer machine.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENTAG_E2E_ADMIN_DATABASE_URL` | `postgresql://opentag:opentag@127.0.0.1:5432/postgres` | Superuser URL used to create the E2E database |
-| `OPENTAG_E2E_DATABASE` | `opentag_e2e` | E2E database name, dropped and recreated on every run; must be a lowercase identifier containing `e2e` |
-| `OPENTAG_E2E_PORT` | `8123` | Server listen port for the run |
-| `OPENTAG_E2E_CHROMIUM` | `/opt/pw-browsers/chromium` | Chromium executable |
-| `OPENTAG_E2E_PLAYWRIGHT_PATH` | `playwright-core` | Module specifier or path for `playwright-core` |
-| `OPENTAG_E2E_ARTIFACTS` | `$TMPDIR/opentag-onboarding-e2e` | Screenshot and log output directory |
-| `OPENTAG_E2E_PROVIDER_STUB` | `on` | Set to `off` to probe the Claude Code CLI installed on `PATH` instead of the stub |
-| `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | Claude Code configuration the daemon reads when the stub is off |
-| `OPENTAG_E2E_KEEP_DATABASE` | `off` | Set to `on` to keep the E2E database after the run for debugging |
-
-Two parts of the flow cannot run offline. Agent Runtime and Feishu CLI readiness use stub executables that answer the
-same probe contracts as Claude Code and `lark-cli`, because signed-in local CLIs are not available in CI. Feishu
-authorization needs `open.feishu.cn`, so the check starts a real setup attempt, records its outcome, and then writes an
-authorized binding into the database to confirm that the Server and page project the pending handoff. It does not fake
-the final provider credential-execution observation that the canonical Snapshot requires for `ready`.
-
-## Environment variables
-
-Copy `.env.example` only when you need local overrides. Environment files are not loaded automatically by the current
-processes.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
-| `OPENTAG_PORT` | `8000` | Server listen port |
-| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
-| `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and generated connect commands |
-| `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
-| `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
-| `OPENTAG_JWT_SECRET` | none | Required Slack OAuth state signing secret; at least 32 characters, and distinct from `BETTER_AUTH_SECRET` |
-| `BETTER_AUTH_SECRET` | none | Required Better Auth session/cookie signing secret; at least 32 characters |
-| `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
-| `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
-| `OPENTAG_GOOGLE_CLIENT_SECRET` | none | Optional Google OIDC client secret; requires the matching client id |
-| `OPENTAG_SLACK_CLIENT_ID` | none | Optional first-party Slack App client id; requires the matching secret, signing secret, and redirect URL |
-| `OPENTAG_SLACK_CLIENT_SECRET` | none | Optional first-party Slack App client secret; never logged |
-| `OPENTAG_SLACK_SIGNING_SECRET` | none | Optional first-party Slack App signing secret for Events API HMAC; never logged |
-| `OPENTAG_SLACK_REDIRECT_URL` | none | Optional public origin or exact Slack OAuth callback URL on `OPENTAG_PUBLIC_URL` |
-| `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
-| `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
-| `OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED` | `false` | Allow registering and signing in with an email address and password |
-| `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
-| `OPENTAG_OTEL_ENDPOINT` | empty | Optional OTLP/HTTP traces endpoint; see [server observability](./docs/observability.md) |
-| `OPENTAG_OTEL_HEADERS` | empty | Secret OTLP headers in comma-separated `key=value` form |
-| `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment label |
-| `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global trace head sample rate from `0` to `1` |
-| `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
-| `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
-
-If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
-the server is running and that the configured URL points to its base address.
-
-## Releases
-
-Release publishing belongs to GitHub Actions and npm trusted publishing. Never publish either channel from a maintainer
-machine and never add a long-lived npm token to the repository. See [docs/releasing.md](./docs/releasing.md) for channel
-identities, release guards, package smoke checks, and recovery steps.
+- [Deployment](./docs/deploying.md) — deployment configuration and operations.
+- [Runtime protocol](./docs/runtime-protocol.md) — communication between the server and agents.
+- [Provider CLIs](./docs/direct-provider-cli.md) — Codex and Claude Code integration.
+- [Observability](./docs/observability.md) — server tracing and diagnostics.
+- [Releases](./docs/releasing.md) — publishing through GitHub Actions.

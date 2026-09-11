@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
+import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
@@ -628,6 +629,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     cwd: string,
     args: readonly string[],
     environment?: Readonly<Record<string, string>>,
+    pathPrepend?: string,
   ) => PiRpcClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
@@ -648,12 +650,12 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     this.#sessionDirectory = sessionDirectory;
     this.#createClient =
       options.createClient ??
-      ((cwd, args, workspaceEnvironment) =>
+      ((cwd, args, workspaceEnvironment, pathPrepend) =>
         new PiRpcProcess({
           command,
           args: [...prefix, ...args],
           cwd,
-          env: { ...environment, ...workspaceEnvironment },
+          env: composeRuntimeEnvironment(environment, workspaceEnvironment, pathPrepend),
           maxLineBytes: options.process?.maxLineBytes,
           maxStderrBytes: options.process?.maxStderrBytes,
           requestTimeoutMs: options.process?.requestTimeoutMs,
@@ -712,7 +714,8 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       return new PiAgentRuntime({
         binding,
         configuration: request.configuration,
-        createClient: (args) => this.#createClient(request.workspace.cwd, args, request.workspace.environment),
+        createClient: (args) =>
+          this.#createClient(request.workspace.cwd, args, request.workspace.environment, request.workspace.pathPrepend),
         eventSink: request.eventSink,
         policy: request.policy,
         resume: mode === "resume",

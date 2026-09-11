@@ -1,7 +1,13 @@
 import type { AccountComputerSummary, ComputerConnectCodeStatus } from "@opentag/shared/browser";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type QueryClient, QueryClientContext } from "@tanstack/react-query";
+import { type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { analytics } from "../../analytics/analytics.js";
+import { ANALYTICS_EVENT } from "../../analytics/events.js";
+import { reportComputerConnected } from "../../analytics/milestones.js";
 import { browserApi } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys } from "../../query/keys.js";
+import { fetchSharedResource } from "../../query/session-cache.js";
 import { CommandBlock, formatRemaining, readConnectCodeVerdict, useRemaining } from "../../setup/index.js";
 import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 
@@ -194,14 +200,44 @@ export function ComputerConnect({ adapter, intent, onConnected }: ComputerConnec
   );
 }
 
-const browserAdapter: ComputerConnectAdapter = {
-  issue: (intent) =>
-    browserApi.issueComputerConnectCode(
-      intent.mode === "repair" ? { mode: "repair", targetComputerId: intent.target.computerId } : { mode: "create" },
-    ),
-  status: (connectCodeId) => browserApi.computerConnectCodeStatus(connectCodeId),
-  computers: () => browserApi.computers(),
-};
+function readComputerConnectStatus(
+  connectCodeId: string,
+  api: ComputerConnectBrowserApi,
+  queryClient?: QueryClient,
+): Promise<ComputerConnectCodeStatus> {
+  if (!queryClient) return api.computerConnectCodeStatus(connectCodeId);
+  return fetchSharedResource(queryClient, {
+    queryKey: queryKeys.computerConnectCode(connectCodeId),
+    queryFn: () => api.computerConnectCodeStatus(connectCodeId),
+    staleTime: 0,
+  });
+}
+
+function readComputerInventory(
+  api: ComputerConnectBrowserApi,
+  queryClient?: QueryClient,
+): Promise<{ readonly computers: readonly AccountComputerSummary[] }> {
+  if (!queryClient) return api.computers();
+  return fetchSharedResource(queryClient, {
+    queryKey: queryKeys.computers(),
+    queryFn: () => api.computers(),
+    staleTime: 0,
+  });
+}
+
+function createBrowserComputerConnectAdapter(
+  api: ComputerConnectBrowserApi = browserApi,
+  queryClient?: QueryClient,
+): ComputerConnectAdapter {
+  return {
+    issue: (intent) =>
+      api.issueComputerConnectCode(
+        intent.mode === "repair" ? { mode: "repair", targetComputerId: intent.target.computerId } : { mode: "create" },
+      ),
+    status: (connectCodeId) => readComputerConnectStatus(connectCodeId, api, queryClient),
+    computers: () => readComputerInventory(api, queryClient),
+  };
+}
 
 type ComputerConnectBrowserApi = Pick<
   typeof browserApi,
@@ -219,6 +255,7 @@ type ComputerConnectBrowserApi = Pick<
 export function createAgentTargetedComputerConnectAdapter(
   agentId: string,
   api: ComputerConnectBrowserApi = browserApi,
+  queryClient?: QueryClient,
 ): ComputerConnectAdapter {
   return {
     issue: (intent) =>
@@ -231,8 +268,8 @@ export function createAgentTargetedComputerConnectAdapter(
             }
           : { mode: "create", targetAgentId: agentId },
       ),
-    status: (connectCodeId) => api.computerConnectCodeStatus(connectCodeId),
-    computers: () => api.computers(),
+    status: (connectCodeId) => readComputerConnectStatus(connectCodeId, api, queryClient),
+    computers: () => readComputerInventory(api, queryClient),
   };
 }
 
@@ -241,16 +278,27 @@ export function createAgentTargetedComputerConnectAdapter(
  * The adapter is intentionally the only varying dependency: production and Review Lab both drive
  * the same state machine, including stale-work retirement and exact repair-target validation.
  */
+function useOptionalQueryClient(): QueryClient | undefined {
+  return useContext(QueryClientContext);
+}
+
 export function ComputerConnectLifecycleRoot({
-  adapter = browserAdapter,
+  adapter,
   children,
   intent,
   onConnected,
 }: ComputerConnectLifecycleProps) {
+  const queryClient = useOptionalQueryClient();
+  const defaultAdapter = useMemo(() => createBrowserComputerConnectAdapter(browserApi, queryClient), [queryClient]);
   const targetComputerId = intent.mode === "repair" ? intent.target.computerId : undefined;
   const attemptKey = `${intent.mode}:${targetComputerId ?? ""}`;
   return (
-    <ComputerConnectAttempt adapter={adapter} key={attemptKey} intent={intent} onConnected={onConnected}>
+    <ComputerConnectAttempt
+      adapter={adapter ?? defaultAdapter}
+      key={attemptKey}
+      intent={intent}
+      onConnected={onConnected}
+    >
       {children}
     </ComputerConnectAttempt>
   );
@@ -289,6 +337,9 @@ function ComputerConnectAttempt({
     try {
       const issued = await adapter.issue(intent);
       if (!mounted.current || generation.current !== mine) return;
+      // The command is now on screen. Everything after this is the reader leaving for a terminal,
+      // so this is the last thing that can be attributed to the page rather than to their patience.
+      analytics.track(ANALYTICS_EVENT.computerConnectStarted, { mode: intent.mode });
       setState({
         kind: "issued",
         issued: {
@@ -337,6 +388,9 @@ function ComputerConnectAttempt({
       if (!current()) return;
       completed = true;
       setError(undefined);
+      // Every surface that connects a Computer — onboarding, the bind step, the Computers page —
+      // ends here, and the latch above means one attempt reports once.
+      reportComputerConnected(targetComputerId ? "repair" : "create");
       setState({ kind: "connected", issued: state.issued, computer });
       onConnectedRef.current?.(computer);
     };
@@ -394,20 +448,32 @@ function ComputerConnectPresentation({
   const comment = targetName
     ? m.computer_connect_repair_command_comment({ computerName: targetName })
     : m.computer_connect_create_command_comment();
+  // Idle repair has no command to introduce yet, and the surface already asks whether one is
+  // wanted. Only idle is narrowed here: `issue-failed` and `expired` still say "paste this
+  // command" over a block that has none to paste, which predates this change and needs its own
+  // copy decision rather than a guard widened in passing.
   const intro =
-    state.kind === "idle" && targetName
-      ? m.computer_connect_repair_intro({ computerName: targetName })
+    state.kind === "idle"
+      ? undefined
       : targetName
         ? m.computer_connect_repair_command_intro({ computerName: targetName })
         : m.computer_connect_create_command_intro();
   return (
     <div aria-busy={state.kind === "issuing"} className="grid gap-3" data-ui="computer-connect" data-state={state.kind}>
-      <div className="ots-command-lead flex items-center justify-between gap-3" data-ui="computer-connect-command-lead">
-        <p className="text-sm text-kumo-subtle m-0">{intro}</p>
-        <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
-          {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+      {/* Reserved from the first issued command onward, so the block does not jump when the
+          countdown arrives. Idle has neither half of the row, and holding 20px of nothing there
+          detached the command block from whatever heading a caller puts above it. */}
+      {intro ? (
+        <div
+          className="ots-command-lead flex items-center justify-between gap-3"
+          data-ui="computer-connect-command-lead"
+        >
+          <p className="text-sm text-kumo-subtle m-0">{intro}</p>
+          <div className="ots-slot--expiry flex shrink-0 items-center text-sm" data-ui="computer-connect-expiry">
+            {state.kind === "issued" ? <Remaining expiresAt={state.issued.expiresAt} /> : null}
+          </div>
         </div>
-      </div>
+      ) : null}
       <ConnectCommandSurface comment={comment} error={error} issue={issue} state={state} />
       <AttemptStatus
         error={state.kind === "issue-failed" || state.kind === "expired" ? undefined : error}

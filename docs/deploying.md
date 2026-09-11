@@ -96,7 +96,7 @@ server container.
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging and distinct from `BETTER_AUTH_SECRET`; signs Slack OAuth state only |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
-| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://storage.googleapis.com/opentag-release/releases` |
+| `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
 
 The two optional variables control how the Server learns the exact channel latest target it advertises to connected
@@ -113,6 +113,17 @@ than serving a degraded App.
 The GHCR package is public, so CapRover pulls the image anonymously. If the package is ever made private, add a
 registry credential in **CapRover → Cluster → Docker Registries** using a GitHub token with `read:packages`, otherwise
 every deployment fails at the pull step.
+
+## Official website session indicator
+
+When `OPENTAG_PUBLIC_URL` is `https://app.opentag.build`, the Server exposes
+`GET /api/v1/auth/browser/session-status` to `https://opentag.build` and `https://www.opentag.build` only.
+This credentialed CORS read returns only `{ "authenticated": true | false }`; it never exposes an Account profile
+or token. It checks the live browser session and active Account without extending session lifetime. Responses are
+`no-store`. Other deployments do not register the endpoint, and other API routes retain their existing origin rules.
+
+Deploy this Server support before the website's navigation indicator. If the check is unavailable, the website keeps
+the ordinary login entry; the application still verifies the session after navigation.
 
 ## Manual deployment and rollback
 

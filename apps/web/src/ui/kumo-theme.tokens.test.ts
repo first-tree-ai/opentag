@@ -54,8 +54,8 @@ describe("OpenTag Kumo theme contrast", () => {
 function runtimeThemeTokens(mode: ThemeMode): RuntimeThemeTokens {
   const declarations = new Map<string, string>();
   stylesheet.walkRules((rule) => {
-    if (!rule.selectors.some((selector) => selector.includes('[data-theme="opentag"]'))) return;
-    const darkRule = rule.selectors.some((selector) => selector.includes('[data-mode="dark"]'));
+    if (!rule.selectors.some((selector) => selector.includes('[data-opentag-theme="opentag"]'))) return;
+    const darkRule = rule.selectors.some((selector) => selector.includes('[data-opentag-mode="dark"]'));
     if (darkRule !== (mode === "dark")) return;
     rule.walkDecls((declaration) => {
       declarations.set(declaration.prop, declaration.value);

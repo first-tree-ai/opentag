@@ -1,0 +1,127 @@
+[
+  {
+    "from": "accepted",
+    "to": "accepted",
+    "writer": "turn-report-owner.ts:217 - replayed accepted record is persisted unchanged"
+  },
+  {
+    "from": "accepted",
+    "to": "running",
+    "writer": "session-message-inbox.ts:299; turn-report-owner.ts:325 - queued work starts"
+  },
+  {
+    "from": "accepted",
+    "to": "retryable",
+    "writer": "session-message-inbox.ts:508; turn-report-owner.ts:462 - initial persistence or run-start failure"
+  },
+  {
+    "from": "accepted",
+    "to": "failed",
+    "writer": "session-message-inbox.ts:488; turn-report-owner.ts:247 - permanent run-start failure or terminal result"
+  },
+  {
+    "from": "accepted",
+    "to": "succeeded",
+    "writer": "turn-report-owner.ts:262 - acknowledgement arrives before deferred send"
+  },
+  {
+    "from": "accepted",
+    "to": "dead-letter",
+    "writer": "session-message-inbox.ts:431,497; turn-report-owner.ts:388,456 - retry budget exhausted"
+  },
+  {
+    "from": "running",
+    "to": "running",
+    "writer": "turn-report-owner.ts:325 - registered reconnect retransmits the report"
+  },
+  {
+    "from": "running",
+    "to": "succeeded",
+    "writer": "session-message-inbox.ts:351; turn-report-owner.ts:262 - provider or acknowledgement succeeds"
+  },
+  {
+    "from": "running",
+    "to": "retryable",
+    "writer": "session-message-inbox.ts:437,508; turn-report-owner.ts:393,462 - hydration or transient failure"
+  },
+  {
+    "from": "running",
+    "to": "failed",
+    "writer": "session-message-inbox.ts:488; turn-report-owner.ts:247 - permanent failure or terminal result"
+  },
+  {
+    "from": "running",
+    "to": "dead-letter",
+    "writer": "session-message-inbox.ts:431,497; turn-report-owner.ts:388,456 - retry budget exhausted"
+  },
+  {
+    "from": "retryable",
+    "to": "retryable",
+    "writer": "session-message-inbox.ts:508; turn-report-owner.ts:462 - repeated transient failure"
+  },
+  {
+    "from": "retryable",
+    "to": "accepted",
+    "writer": "session-message-inbox.ts:536; turn-report-owner.ts:352 - retry timer re-arms work"
+  },
+  {
+    "from": "retryable",
+    "to": "running",
+    "writer": "session-message-inbox.ts:299; turn-report-owner.ts:325 - hydrated or reconnected retry starts"
+  },
+  {
+    "from": "retryable",
+    "to": "succeeded",
+    "writer": "turn-report-owner.ts:262 - late acknowledgement follows timeout"
+  },
+  {
+    "from": "retryable",
+    "to": "failed",
+    "writer": "session-message-inbox.ts:488; turn-report-owner.ts:247 - permanent result failure"
+  },
+  {
+    "from": "retryable",
+    "to": "dead-letter",
+    "writer": "session-message-inbox.ts:431,497; turn-report-owner.ts:388,456 - retry budget exhausted"
+  },
+  {
+    "from": "failed",
+    "to": "failed",
+    "writer": "turn-report-owner.ts:217,247 - retained failure is replayed or reported again"
+  },
+  {
+    "from": "failed",
+    "to": "running",
+    "writer": "turn-report-owner.ts:282,325 - exact terminal rearm claim permits submit"
+  },
+  {
+    "from": "failed",
+    "to": "retryable",
+    "writer": "turn-report-owner.ts:462 - failed mirror handles transient persist failure"
+  },
+  {
+    "from": "failed",
+    "to": "dead-letter",
+    "writer": "turn-report-owner.ts:388 - failed hydration expires without a fence"
+  },
+  {
+    "from": "dead-letter",
+    "to": "dead-letter",
+    "writer": "turn-report-owner.ts:456 - failure handling receives dead-letter mirror"
+  },
+  {
+    "from": "dead-letter",
+    "to": "accepted",
+    "writer": "turn-report-owner.ts:193,217; mvp-turn-report-recovery.ts:207,212 - replay resets budget before submit"
+  },
+  {
+    "from": "dead-letter",
+    "to": "retryable",
+    "writer": "turn-report-owner.ts:462 - transient reopening failure has budget remaining"
+  },
+  {
+    "from": "succeeded",
+    "to": "succeeded",
+    "writer": "runtime-durable-work-store.ts:240 - byte-identical receipt replay is idempotent"
+  }
+]

@@ -67,15 +67,20 @@
 [data-opentag-mode="light"] {
   --opentag-logo-light-display: block;
   --opentag-logo-dark-display: none;
+  --opentag-logo-text: var(--fg);
 }
 
 [data-opentag-mode="dark"] {
   --opentag-logo-light-display: none;
   --opentag-logo-dark-display: block;
+  --opentag-logo-text: var(--on-dark);
 }
 
 .opentag-logo {
   display: inline-flex;
+  align-items: center;
+  gap: 9px; /* Match the homepage brand lockup. */
+  color: var(--opentag-logo-text);
   flex-shrink: 0;
   vertical-align: middle;
 }
@@ -95,6 +100,21 @@
 .opentag-logo > img {
   width: auto;
   height: 100%;
+}
+
+/* The homepage pairs a 26px mark with Sora 700 lettering at 19px. */
+.opentag-logo--lockup > img {
+  width: 26px;
+  height: 26px;
+}
+
+.opentag-logo__text {
+  font-family: "Sora", ui-sans-serif, system-ui, sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .opentag-logo__light {

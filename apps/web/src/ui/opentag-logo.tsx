@@ -1,24 +1,31 @@
-import lockupDark from "../assets/opentag/lockup-dark-transparent.svg";
-import lockupLight from "../assets/opentag/lockup-light-transparent.svg";
 import markDark from "../assets/opentag/logo-dark-transparent.svg";
 import markLight from "../assets/opentag/logo-light-transparent.svg";
-import wordmarkLight from "../assets/opentag/wordmark-black.svg";
-import wordmarkDark from "../assets/opentag/wordmark-white.svg";
 
-const ART = {
-  lockup: { light: lockupLight, dark: lockupDark, width: 2525, height: 900 },
-  mark: { light: markLight, dark: markDark, width: 1254, height: 1254 },
-  wordmark: { light: wordmarkLight, dark: wordmarkDark, width: 4524, height: 1273 },
-};
+const MARK = { light: markLight, dark: markDark, width: 1254, height: 1254 };
 
-/** Official artwork, with one accessible label shared by the app's light and dark variants. */
-export function OpenTagLogo({ variant = "lockup", label }: { variant?: keyof typeof ART; label: string }) {
-  const art = ART[variant];
+/**
+ * Homepage brand identity: the official OpenTag mark beside Sora 700 "OpenTag" lettering, as in
+ * the https://opentag.build/ navigation. The mark pair keeps the light/dark artwork swap driven by
+ * data-opentag-mode; the lettering follows the app foreground. One accessible label covers the
+ * whole treatment, so the visual text is the label and stays hidden when none is given.
+ */
+export function OpenTagLogo({
+  variant = "lockup",
+  label,
+}: {
+  variant?: "lockup" | "mark" | "wordmark";
+  label: string;
+}) {
   return (
     <span aria-hidden={label ? undefined : true} className={`opentag-logo opentag-logo--${variant}`}>
-      <img alt="" className="opentag-logo__light" height={art.height} src={art.light} width={art.width} />
-      <img alt="" className="opentag-logo__dark" height={art.height} src={art.dark} width={art.width} />
-      {label ? <span className="sr-only">{label}</span> : null}
+      {variant === "wordmark" ? null : (
+        <>
+          <img alt="" className="opentag-logo__light" height={MARK.height} src={MARK.light} width={MARK.width} />
+          <img alt="" className="opentag-logo__dark" height={MARK.height} src={MARK.dark} width={MARK.width} />
+        </>
+      )}
+      {variant === "mark" ? null : <span className="opentag-logo__text">{label || "OpenTag"}</span>}
+      {variant === "mark" && label ? <span className="sr-only">{label}</span> : null}
     </span>
   );
 }

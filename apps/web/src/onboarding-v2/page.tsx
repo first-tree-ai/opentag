@@ -9,6 +9,7 @@ import { agentDetailLink } from "../features/agents/agent-routes.js";
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
+import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
@@ -264,7 +265,7 @@ function AgentCreatePage({
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-create">
       <header className="flex items-center justify-between p-6">
-        <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
+        <OpenTagLogo label={m.onboarding_v2_brand_name()} variant="wordmark" />
         {/*
           The only way out, and only for an Account that has somewhere to go. An Account with no
           Agent has nothing behind this page: leaving would land on a list that sends it straight

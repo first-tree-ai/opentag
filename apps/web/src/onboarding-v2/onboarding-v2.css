@@ -14,17 +14,6 @@
 
 /* Brand mark ------------------------------------------------------------- */
 
-/*
- * The OpenTag mark is drawn inline so it inherits the theme, which means its parts are named here
- * rather than in the shape. An undefined custom property makes the whole presentation attribute
- * invalid, so the mark would fall back to solid black rather than to a sensible colour.
- */
-:root {
-  --otv2-mark-tint: var(--brand);
-  --otv2-mark-surface: var(--card);
-  --otv2-mark-ink: var(--brand-ink);
-}
-
 /* Codex follows OpenTag's explicit theme, not the operating system's colour preference. */
 .otv2-codex-mark--light {
   display: block;

@@ -59,6 +59,49 @@
   --text-color-kumo-link: var(--brand-ink);
 }
 
+/* Select the supplied artwork from the app theme, including locally themed surfaces. */
+:root,
+[data-mode="light"] {
+  --opentag-logo-light-display: block;
+  --opentag-logo-dark-display: none;
+}
+
+[data-mode="dark"] {
+  --opentag-logo-light-display: none;
+  --opentag-logo-dark-display: block;
+}
+
+.opentag-logo {
+  display: inline-flex;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+.opentag-logo--lockup {
+  height: 3rem;
+}
+
+.opentag-logo--mark {
+  height: 2rem;
+}
+
+.opentag-logo--wordmark {
+  height: 1.75rem;
+}
+
+.opentag-logo > img {
+  width: auto;
+  height: 100%;
+}
+
+.opentag-logo__light {
+  display: var(--opentag-logo-light-display);
+}
+
+.opentag-logo__dark {
+  display: var(--opentag-logo-dark-display);
+}
+
 /* OpenTag application boundary. Component styling belongs to Kumo. */
 :root {
   color: var(--fg);

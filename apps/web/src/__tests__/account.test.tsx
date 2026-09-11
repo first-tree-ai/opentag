@@ -390,13 +390,13 @@ describe("OpenTag Web App Shell", () => {
     const pendingMe = new Promise<Response>((resolve) => {
       releaseMe = resolve;
     });
-    installApi({ meAfterLogout: () => pendingMe });
+    installApi({ meAfterLogout: () => pendingMe.then((response) => response.clone()) });
     render(<App />);
 
     expect(await screen.findByRole("link", { name: "Open Reviewer" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByText("Checking your sign-in status…")).toBeTruthy();
 
     await act(async () => {
       window.history.pushState({}, "", "/agents");
@@ -420,7 +420,10 @@ describe("OpenTag Web App Shell", () => {
     const pendingMe = new Promise<Response>((resolve) => {
       releaseMe = resolve;
     });
-    installApi({ meAfterProfileUpdate: () => pendingRefresh, meAfterLogout: () => pendingMe });
+    installApi({
+      meAfterProfileUpdate: () => pendingRefresh,
+      meAfterLogout: () => pendingMe.then((response) => response.clone()),
+    });
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
@@ -433,7 +436,7 @@ describe("OpenTag Web App Shell", () => {
     // retire that read, because the cache never started it.
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
+    expect(await screen.findByText("Checking your sign-in status…")).toBeTruthy();
 
     // It left with a cookie that was still valid, so it answers for the Account that just left.
     await act(async () => {

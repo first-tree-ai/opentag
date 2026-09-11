@@ -18,7 +18,7 @@
   "tasks_cancel_confirm_description": "排队中的消息将不会投递给 Agent。已经开始的工作不受影响。",
   "tasks_cancel_confirm_title": "取消这个任务？",
   "tasks_cancel_failed": "无法取消任务。",
-  "tasks_cancel_in_flight": "无法取消此任务：排队中的消息已在投递给 Agent。",
+  "tasks_cancel_in_flight": "暂时无法取消此任务：排队中的消息正在投递或等待确认。",
   "tasks_cancel_keep_queued": "继续排队",
   "tasks_cancel_not_queued": "此任务已不在排队中，状态已刷新。",
   "tasks_cancel_queued": "取消排队任务",

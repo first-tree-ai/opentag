@@ -21,8 +21,9 @@ import { Banner, Button, Dialog } from "../ui/design-system.js";
  */
 /**
  * What the Task's status, as the Server last reported it, means for the cancel the reader asked
- * for: `cancelled` is the cancel itself; `queued` means the queued message is already with the
- * Agent's Computer and nothing was withdrawn; anything else means the Task left the queue on its own.
+ * for: `cancelled` is the cancel itself; `queued` means a worker holds the queued message — being
+ * delivered, or awaiting the Computer's confirmation — and nothing was withdrawn; anything else means
+ * the Task left the queue on its own.
  */
 function noticeFor(status: TaskSummary["status"] | undefined): string {
   if (status === "cancelled") return m.tasks_cancelled_notice();

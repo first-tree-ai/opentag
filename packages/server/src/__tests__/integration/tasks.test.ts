@@ -1,6 +1,7 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { computeTurnResultHash, type TurnReportRequest, TurnReportRequestSchema } from "@opentag/shared";
 import { eq } from "drizzle-orm";
+import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
@@ -134,6 +135,180 @@ async function fixture() {
     turnId,
   };
 }
+
+/** A later message of the fixture's private chat whose delivery still waits in the queue. */
+async function queueMessage(value: Awaited<ReturnType<typeof fixture>>, suffix: string, occurredAt: Date) {
+  const [message] = await value.database
+    .insert(imMessages)
+    .values({
+      imBindingId: value.binding.id,
+      providerEventId: `event-${suffix}`,
+      channelId: "oc_debug",
+      externalMessageId: `om_${suffix}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "ou_debug",
+      authorDisplayName: "Mia",
+      content: { version: 1, fallbackText: `Queued follow-up ${suffix}.`, blocks: [], truncated: false },
+      providerContext: { provider: "feishu", chatType: "p2p" },
+      occurredAt,
+    })
+    .returning();
+  if (!message) throw new Error("Queued message fixture was not created");
+  const [delivery] = await value.database
+    .insert(imMessageDeliveries)
+    .values({
+      messageId: message.id,
+      sessionId: value.session.id,
+      attention: "direct",
+      state: "pending",
+      placementGeneration: 1,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+    })
+    .returning();
+  if (!delivery) throw new Error("Queued delivery fixture was not created");
+  return { message, delivery };
+}
+
+/**
+ * Locks one delivery row from a second connection, as a worker's write does, so a cancel that
+ * starts meanwhile waits inside its transaction. `commit()` runs `write` on the holding connection
+ * and commits, and the waiting cancel then reads the row as `write` left it.
+ */
+async function holdDeliveryLock(deliveryId: string, write: (tx: postgres.TransactionSql) => Promise<unknown>) {
+  const holder = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+  let release = (): void => undefined;
+  let locked = (): void => undefined;
+  const ready = new Promise<void>((resolve) => {
+    locked = resolve;
+  });
+  const held = holder.begin(async (tx) => {
+    await tx`select id from im_message_deliveries where id = ${deliveryId}::uuid for update`;
+    locked();
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await write(tx);
+  });
+  await ready;
+  return {
+    async commit(): Promise<void> {
+      release();
+      await held;
+    },
+    end: () => holder.end(),
+  };
+}
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function deliveryState(value: Awaited<ReturnType<typeof fixture>>, deliveryId: string) {
+  const [row] = await value.database
+    .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, deliveryId));
+  if (!row) throw new Error("Delivery row disappeared");
+  return row;
+}
+
+describe("Task cancel under a row lock", () => {
+  // Each race starts the cancel, gives it a second to block on the held row, and only then lets the
+  // lock holder write and commit. PGlite cannot stage this: it has one connection, and a row that
+  // left `pending` before the transaction starts is never locked in the first place.
+  it("returns the idempotent 200 when a concurrent cancel withdrew the row it waited for", async () => {
+    const value = await fixture();
+    const { delivery } = await queueMessage(value, "race-cancel", new Date("2026-08-27T01:10:00.000Z"));
+    const lock = await holdDeliveryLock(
+      delivery.id,
+      (tx) => tx`
+        update im_message_deliveries
+        set state = 'expired', reason = 'cancelled', expires_at = now()
+        where id = ${delivery.id}::uuid
+      `,
+    );
+    try {
+      expect((await value.service.get(value.bootstrap.userId, value.message.id, { limit: 5 })).task.status).toBe(
+        "queued",
+      );
+      const racing = value.service.cancel(value.bootstrap.userId, value.message.id);
+      await wait(1_000);
+      await lock.commit();
+      await expect(racing).resolves.toMatchObject({ status: "cancelled" });
+      expect(await deliveryState(value, delivery.id)).toEqual({ state: "expired", reason: "cancelled" });
+    } finally {
+      await lock.end();
+      await value.sql.end();
+    }
+  }, 20_000);
+
+  it("refuses with the Task's actual status when a worker rejected the only row it waited for", async () => {
+    const value = await fixture();
+    const { delivery } = await queueMessage(value, "race-reject", new Date("2026-08-27T01:10:00.000Z"));
+    const lock = await holdDeliveryLock(
+      delivery.id,
+      (tx) => tx`
+        update im_message_deliveries
+        set state = 'terminal_rejected', reason = 'No connected computer', last_error_code = 'RUNTIME_UNAVAILABLE'
+        where id = ${delivery.id}::uuid
+      `,
+    );
+    try {
+      const racing = value.service.cancel(value.bootstrap.userId, value.message.id);
+      await wait(1_000);
+      await lock.commit();
+      await expect(racing).rejects.toMatchObject({
+        code: "TASK_NOT_QUEUED",
+        statusCode: 409,
+        message: "The Task is failed, not queued, so there is nothing to cancel",
+      });
+      expect(await deliveryState(value, delivery.id)).toEqual({
+        state: "terminal_rejected",
+        reason: "No connected computer",
+      });
+      expect((await value.service.get(value.bootstrap.userId, value.message.id, { limit: 5 })).task.status).toBe(
+        "failed",
+      );
+    } finally {
+      await lock.end();
+      await value.sql.end();
+    }
+  }, 20_000);
+
+  it("withdraws the sibling still pending when a worker rejected one row while the cancel waited", async () => {
+    const value = await fixture();
+    const rejected = await queueMessage(value, "race-mixed-a", new Date("2026-08-27T01:10:00.000Z"));
+    const sibling = await queueMessage(value, "race-mixed-b", new Date("2026-08-27T01:11:00.000Z"));
+    const lock = await holdDeliveryLock(
+      rejected.delivery.id,
+      (tx) => tx`
+        update im_message_deliveries
+        set state = 'terminal_rejected', reason = 'No connected computer', last_error_code = 'RUNTIME_UNAVAILABLE'
+        where id = ${rejected.delivery.id}::uuid
+      `,
+    );
+    try {
+      const racing = value.service.cancel(value.bootstrap.userId, value.message.id);
+      await wait(1_000);
+      await lock.commit();
+      // The rejected row left the queue on its own and is left as the worker wrote it; the row
+      // still queued behind it is withdrawn, so the Task reads cancelled rather than queued.
+      await expect(racing).resolves.toMatchObject({ status: "cancelled" });
+      expect(await deliveryState(value, rejected.delivery.id)).toEqual({
+        state: "terminal_rejected",
+        reason: "No connected computer",
+      });
+      expect(await deliveryState(value, sibling.delivery.id)).toEqual({ state: "expired", reason: "cancelled" });
+      expect((await value.service.get(value.bootstrap.userId, value.message.id, { limit: 5 })).task.status).toBe(
+        "cancelled",
+      );
+    } finally {
+      await lock.end();
+      await value.sql.end();
+    }
+  }, 20_000);
+});
 
 describe("Task topic queries", () => {
   it.each(["running", "expired", "ended", "superseded"] as const)(

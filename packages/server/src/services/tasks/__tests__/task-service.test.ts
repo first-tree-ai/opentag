@@ -1170,13 +1170,16 @@ describe("TaskService", () => {
     expect(await deliveryRow(dispatched.id)).toMatchObject({ state: "pending", reason: null });
   });
 
-  it("repeats as a no-op when another cancel withdrew the queue between the read and the transaction", async () => {
+  it("treats a queue withdrawn before the transaction as the no-op path", async () => {
     const { binding, bootstrap } = await fixture();
     const channel = await createSession(binding.id, { channelId: GROUP });
     const request = await createMessage(binding.id, { occurredAt: minutes(0) });
     const queued = await createDelivery(channel.id, request.id, { state: "pending" });
 
-    // A Server whose transaction starts only after a concurrent cancel of the same Task committed.
+    // A Server whose transaction starts only after a concurrent cancel of the same Task committed:
+    // the locked read no longer sees the row as pending, so nothing is locked and the re-read
+    // summary answers. A cancel that waits *under* the lock for the other one is a PostgreSQL race
+    // that PGlite's single connection cannot stage; the integration suite covers that branch.
     const database = unitDatabase.database;
     const racing = new Proxy(database, {
       get(target, property, receiver) {
@@ -1196,7 +1199,7 @@ describe("TaskService", () => {
     expect(await deliveryRow(queued.id)).toMatchObject({ state: "expired", reason: "cancelled" });
   });
 
-  it("classifies the locked rows a concurrent cancel, a rejection, or a lapse left behind", () => {
+  it("classifies the locked rows by what is still pending after a concurrent cancel, rejection, or lapse", () => {
     const row = (overrides: Partial<LockedDeliveryRow>): LockedDeliveryRow => ({
       id: crypto.randomUUID(),
       state: "pending",
@@ -1208,15 +1211,22 @@ describe("TaskService", () => {
     });
     const withdrawn = { state: "expired", reason: "cancelled" } as const;
 
+    const rejected = { state: "terminal_rejected", reason: "No connected computer" } as const;
+
     // A lock that waited behind another cancel sees every row withdrawn: already cancelled, not running.
     expect(withdrawalRefusal([row(withdrawn), row(withdrawn)])).toBe("already_cancelled");
-    // A row that left the queue any other way is no longer queued, and is never called running.
-    expect(withdrawalRefusal([row({ state: "terminal_rejected", reason: "No connected computer" })])).toBe(
-      "left_queue",
-    );
+    // When nothing is pending and the rows left the queue any other way, the Task is no longer
+    // queued, and is never called running.
+    expect(withdrawalRefusal([row(rejected)])).toBe("left_queue");
     expect(withdrawalRefusal([row({ state: "expired", reason: null })])).toBe("left_queue");
     expect(withdrawalRefusal([row(withdrawn), row({ state: "accepted" })])).toBe("left_queue");
-    expect(withdrawalRefusal([row(withdrawn), row({})])).toBe("left_queue");
+    expect(withdrawalRefusal([row(withdrawn), row(rejected)])).toBe("left_queue");
+    // Rows that left the queue are set aside: the verdict is about the rows still pending, which
+    // are withdrawn when no worker holds them.
+    expect(withdrawalRefusal([row(withdrawn), row({})])).toBeUndefined();
+    expect(withdrawalRefusal([row(rejected), row({})])).toBeUndefined();
+    expect(withdrawalRefusal([row(rejected), row({ claimed: true })])).toBe("in_flight");
+    expect(withdrawalRefusal([row(withdrawn), row({ dispatched: true })])).toBe("awaiting_computer");
     // A running Turn refuses before anything else; a live claim outranks a bare dispatch correlation.
     expect(withdrawalRefusal([row({ topicRunning: true, ...withdrawn })])).toBe("running");
     expect(withdrawalRefusal([row({ claimed: true }), row({ dispatched: true })])).toBe("in_flight");

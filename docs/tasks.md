@@ -82,11 +82,18 @@ TASK_NOT_QUEUED`, and so does a queued Task any of whose pending deliveries a wo
 at that moment — the Runtime may already be running it, and the rest of the queue is left in place
 with it rather than withdrawn around it. The pending rows are locked for the check and the update,
 so a worker that starts on one of them while the cancel is under way makes the whole cancel a `409`
-too. The Web refreshes the Task on that answer instead of reporting a failure, and tells the two
+too. A row that a worker rejected, or that lapsed, while the cancel waited for the lock is left as
+the worker wrote it, and the rows still pending beside it are withdrawn as usual; when nothing is
+pending any more, the `409` names the status the Task now reads (`The Task is failed, not queued`).
+The Web refreshes the Task on that answer instead of reporting a failure, and tells the two shapes
 apart by what the refresh shows: a Task that left the queue is announced as "no longer queued",
-while one still `queued` — its message on its way to the Agent — is announced as not cancelled, and
-keeps its cancel control. A success is announced from the returned status the same way. Cancelling
-a Task that is already `cancelled` is a no-op success, so repeating the request is harmless.
+while one still `queued` is announced as not cancelled yet — its delivery is in progress or awaiting
+confirmation — and keeps its cancel control. That refusal covers two states of the queued message:
+a worker holds a live claim on it (delivery in progress, whether or not a Computer has received it
+yet), or it was handed to a Computer that has not reported back. A success is announced from the
+returned status the same way. Cancelling a Task that is already `cancelled` is a no-op success, so
+repeating the request is harmless — including a second cancel that waited behind the first one's
+lock.
 
 ## Internal Sessions and collaboration messages
 

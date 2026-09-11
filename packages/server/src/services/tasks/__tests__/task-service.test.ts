@@ -1219,8 +1219,12 @@ describe("TaskService", () => {
     // queued, and is never called running.
     expect(withdrawalRefusal([row(rejected)])).toBe("left_queue");
     expect(withdrawalRefusal([row({ state: "expired", reason: null })])).toBe("left_queue");
-    expect(withdrawalRefusal([row(withdrawn), row({ state: "accepted" })])).toBe("left_queue");
     expect(withdrawalRefusal([row(withdrawn), row(rejected)])).toBe("left_queue");
+    // An accepted or steered row is not an exit from the queue: a Turn took the message while the
+    // cancel waited, so the topic is running, and the sibling still pending is left in place.
+    expect(withdrawalRefusal([row({ state: "accepted" }), row({})])).toBe("running");
+    expect(withdrawalRefusal([row({ state: "steered" }), row({})])).toBe("running");
+    expect(withdrawalRefusal([row(withdrawn), row({ state: "accepted" })])).toBe("running");
     // Rows that left the queue are set aside: the verdict is about the rows still pending, which
     // are withdrawn when no worker holds them.
     expect(withdrawalRefusal([row(withdrawn), row({})])).toBeUndefined();

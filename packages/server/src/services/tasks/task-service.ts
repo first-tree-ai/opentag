@@ -528,9 +528,12 @@ export interface LockedDeliveryRow extends Record<string, unknown> {
 
 /**
  * Why the locked rows of a topic that are still `pending` cannot be withdrawn, or undefined when
- * they can. A running Turn refuses first. Rows that left `pending` under the lock — withdrawn by a
- * concurrent cancel, rejected by a worker, or lapsed — are set aside: they are what the queue no
- * longer holds, and the verdict is about what it still holds. Among the remaining pending rows a
+ * they can. A running Turn refuses first — including one the locked read is the first to see: an
+ * `accepted` or `steered` row is not an exit from the queue but a Turn that took the message while
+ * the cancel waited, so the topic is running however the pre-transaction summary looked. Rows that
+ * left `pending` under the lock — withdrawn by a concurrent cancel, rejected by a worker, or
+ * lapsed — are set aside: they are what the queue no longer holds, and the verdict is about what
+ * it still holds. Among the remaining pending rows a
  * live claim outranks a bare dispatch correlation, since a worker is acting on that row now; with
  * neither, the remaining rows are withdrawable. When nothing remains pending, the Task is already
  * cancelled if every row was withdrawn with the cancelled reason, and has left the queue otherwise.
@@ -540,6 +543,9 @@ export function withdrawalRefusal(
 ): Exclude<WithdrawalOutcome, "withdrawn"> | undefined {
   if (rows.length === 0) return "nothing";
   if (rows.some((row) => row.topicRunning)) return "running";
+  // `accepted` / `steered` are not exits from the queue: a Turn took the message, so the topic is
+  // running however the pre-transaction summary looked.
+  if (rows.some((row) => row.state === "accepted" || row.state === "steered")) return "running";
   const pending = rows.filter((row) => row.state === "pending");
   if (pending.length === 0) {
     const withdrawn = rows.every((row) => row.state === "expired" && row.reason === TASK_CANCELLED_DELIVERY_REASON);
@@ -797,9 +803,10 @@ export class TaskService {
    * topic's pending rows: the worker's claim steps around locked rows (`for update skip
    * locked`), and its acceptance of a row it already claimed waits behind the lock, so what the
    * locked read shows is what the update acts on. A lock that waited behind a worker's write
-   * returns the row as the worker left it: a claim taken in the meantime refuses the whole
-   * withdrawal, while a row that is no longer pending is set aside and only the rows still
-   * pending are withdrawn — an already withdrawn or rejected row is never stamped again. A lock
+   * returns the row as the worker left it: a claim taken in the meantime, or a row the worker
+   * accepted or steered into a Turn, refuses the whole withdrawal as running, while a row that
+   * was withdrawn, rejected or lapsed is set aside and only the rows still pending are withdrawn
+   * — an already withdrawn or rejected row is never stamped again. A lock
    * that waited behind another cancel sees every row withdrawn with the cancelled reason, and
    * reports the Task as already cancelled rather than refusing. A claim whose lease lapsed belongs
    * to a worker that is gone, and is withdrawn like an unclaimed row — exactly as any worker may

@@ -82,7 +82,9 @@ TASK_NOT_QUEUED`, and so does a queued Task any of whose pending deliveries a wo
 at that moment — the Runtime may already be running it, and the rest of the queue is left in place
 with it rather than withdrawn around it. The pending rows are locked for the check and the update,
 so a worker that starts on one of them while the cancel is under way makes the whole cancel a `409`
-too. A row that a worker rejected, or that lapsed, while the cancel waited for the lock is left as
+too — a row it claimed, accepted or steered meanwhile is a Turn in progress, not an exit from the
+queue, and the messages queued behind it stay in place. A row that a worker rejected, or that
+lapsed, while the cancel waited for the lock is left as
 the worker wrote it, and the rows still pending beside it are withdrawn as usual; when nothing is
 pending any more, the `409` names the status the Task now reads (`The Task is failed, not queued`).
 The Web refreshes the Task on that answer instead of reporting a failure, and tells the two shapes

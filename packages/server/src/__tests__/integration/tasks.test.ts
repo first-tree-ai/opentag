@@ -308,6 +308,47 @@ describe("Task cancel under a row lock", () => {
       await value.sql.end();
     }
   }, 20_000);
+
+  it("refuses as running when a worker accepted the row it waited for, and leaves the sibling queued", async () => {
+    const value = await fixture();
+    const claimed = await queueMessage(value, "race-accept-a", new Date("2026-08-27T01:10:00.000Z"));
+    const sibling = await queueMessage(value, "race-accept-b", new Date("2026-08-27T01:11:00.000Z"));
+    // The worker's claim is committed before the lock is taken, as it is in the worker itself.
+    await value.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: "IM_DELIVERY_CLAIM_RACE", nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, claimed.delivery.id));
+    const lock = await holdDeliveryLock(
+      claimed.delivery.id,
+      (tx) => tx`
+        update im_message_deliveries
+        set state = 'accepted', accepted_at = now(), input_hash = ${"e".repeat(64)},
+            turn_id = 'turn-race-accept', report_owner_instance_id = gen_random_uuid(),
+            last_error_code = null
+        where id = ${claimed.delivery.id}::uuid
+      `,
+    );
+    try {
+      const racing = value.service.cancel(value.bootstrap.userId, value.message.id);
+      await wait(1_000);
+      await lock.commit();
+      // An accepted row is a Turn that started, not an exit from the queue: the whole cancel is
+      // refused as running and the message queued behind the new Turn stays where it is.
+      await expect(racing).rejects.toMatchObject({
+        code: "TASK_NOT_QUEUED",
+        statusCode: 409,
+        message: "The Task is running, not queued, so there is nothing to cancel",
+      });
+      expect(await deliveryState(value, claimed.delivery.id)).toEqual({ state: "accepted", reason: null });
+      expect(await deliveryState(value, sibling.delivery.id)).toEqual({ state: "pending", reason: null });
+      expect((await value.service.get(value.bootstrap.userId, value.message.id, { limit: 5 })).task.status).toBe(
+        "running",
+      );
+    } finally {
+      await lock.end();
+      await value.sql.end();
+    }
+  }, 20_000);
 });
 
 describe("Task topic queries", () => {

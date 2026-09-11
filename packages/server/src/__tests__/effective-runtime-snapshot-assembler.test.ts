@@ -1,4 +1,4 @@
-import { computeRuntimeSnapshotHashes, renderPlatformInstructions } from "@opentag/shared";
+import { computeRuntimeSnapshotHashes, EMPTY_AGENT_SKILLS_DIGEST, renderPlatformInstructions } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import {
@@ -241,6 +241,21 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       name: "EffectiveRuntimeSnapshotAssemblerError",
       code,
     });
+  });
+
+  it("carries the agent's skills digest and defaults to the empty-set constant", async () => {
+    const withoutSkills = await assembler(async () => authority()).assembleForSession(sessionId);
+    expect(withoutSkills.skills).toEqual({ digest: EMPTY_AGENT_SKILLS_DIGEST });
+    const digest = "5".repeat(64);
+    const withSkills = await assembler(async () => authority({ skillsDigest: digest })).assembleForSession(sessionId);
+    expect(withSkills.skills).toEqual({ digest });
+    expect(withSkills.revision).toEqual(withoutSkills.revision);
+    expect(computeRuntimeSnapshotHashes(withSkills).agentConfigHash).not.toBe(
+      computeRuntimeSnapshotHashes(withoutSkills).agentConfigHash,
+    );
+    expect(computeRuntimeSnapshotHashes(withSkills).sessionConfigHash).toBe(
+      computeRuntimeSnapshotHashes(withoutSkills).sessionConfigHash,
+    );
   });
 
   it("distinguishes database failures without including stored instructions", async () => {

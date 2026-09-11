@@ -1,14 +1,16 @@
 import {
   AgentNameSchema,
   AgentRuntimeConfigSchema,
+  computeAgentSkillsDigest,
   type EffectiveRuntimeSnapshot,
   EffectiveRuntimeSnapshotSchema,
+  EMPTY_AGENT_SKILLS_DIGEST,
   hashTuple,
   renderPlatformInstructions,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { agentRuntimeConfigs, agents, imBindings, sessions } from "../../db/schema/index.js";
+import { agentRuntimeConfigs, agentSkills, agents, imBindings, sessions, skills } from "../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "./errors.js";
 import { isServerAdmittedAgentRuntimeProvider, serverAgentRuntimeProviderPolicy } from "./provider-admission.js";
 
@@ -25,6 +27,8 @@ interface EffectiveRuntimeSnapshotAuthority {
   sessionRuntimeModel: string | null;
   sessionRuntimeReasoningEffort: string | null;
   sessionRuntimeMaxDurationMs: number | null;
+  /** Digest of the skills assigned to the agent; the empty-set constant when the loader does not supply one. */
+  skillsDigest?: string;
 }
 
 type AuthorityLoader = (sessionId: string) => Promise<EffectiveRuntimeSnapshotAuthority | undefined>;
@@ -125,6 +129,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       execution: providerPolicy.execution,
       workspace: { workspaceId: authority.agentId, mode: "empty_on_create", sharing: "agent" },
       ...(maxDurationMs !== null ? { budget: { maxDurationMs } } : {}),
+      skills: skillsLayer(authority),
     });
     if (!snapshot.success) {
       throw new EffectiveRuntimeSnapshotAssemblerError("SNAPSHOT_INVALID", { cause: snapshot.error });
@@ -164,6 +169,7 @@ async function loadAuthority(
     .limit(1);
   if (!row) return undefined;
   return {
+    skillsDigest: await loadAgentSkillsDigest(database, row.agentId),
     agentStatus: row.agentStatus,
     agentId: row.agentId,
     agentName: row.agentName,
@@ -186,6 +192,19 @@ async function loadAuthority(
     sessionRuntimeReasoningEffort: row.sessionRuntimeReasoningEffort,
     sessionRuntimeMaxDurationMs: row.sessionRuntimeMaxDurationMs,
   };
+}
+
+function skillsLayer(authority: EffectiveRuntimeSnapshotAuthority): { digest: string } {
+  return { digest: authority.skillsDigest ?? EMPTY_AGENT_SKILLS_DIGEST };
+}
+
+async function loadAgentSkillsDigest(database: DatabaseClient, agentId: string): Promise<string> {
+  const rows = await database
+    .select({ name: skills.name, digest: skills.digest })
+    .from(agentSkills)
+    .innerJoin(skills, eq(skills.id, agentSkills.skillId))
+    .where(eq(agentSkills.agentId, agentId));
+  return computeAgentSkillsDigest(rows);
 }
 
 /**

@@ -32,8 +32,8 @@ published SHA-256, extracts it, runs the new runtime once, and only then activat
 | `--force` | Reinstall even when the target version is already active |
 | `--no-path-edit` | Never edit shell startup files |
 | `--path-mode auto\|prompt\|off` | How the installer manages the `PATH` block |
-| `--quiet`, `-q` | Only print the final result and errors; also `OPENTAG_QUIET=1` |
-| `--no-color` | Disable colored output; also `NO_COLOR` or `OPENTAG_NO_COLOR=1` |
+| `--quiet`, `-q` | Only print the final result and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`) |
+| `--no-color` | Disable colored output; also `NO_COLOR` or `OPENTAG_NO_COLOR` set to any non-empty value (e.g. `1`) |
 
 **Reinstalling is cheap.** After reading `latest.json`, the installer checks whether the requested version is already
 the live install: the `current` symlink must resolve to a payload whose `INSTALL.json` matches the target version,

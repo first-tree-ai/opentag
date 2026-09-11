@@ -21,12 +21,13 @@ PATH_UPDATED_PROFILE=""
 ORIGINAL_PATH="${PATH:-}"
 BIN_NAME=""
 QUIET=0
-[ "${OPENTAG_QUIET:-}" != "1" ] || QUIET=1
+[ -z "${OPENTAG_QUIET:-}" ] || QUIET=1
 COLOR_MODE="auto"
-[ "${OPENTAG_NO_COLOR:-}" != "1" ] || COLOR_MODE="off"
+[ -z "${OPENTAG_NO_COLOR:-}" ] || COLOR_MODE="off"
 STEP_COUNT=6
 CURRENT_STEP=0
 STEP_OPEN=0
+SHIM_WRITTEN=0
 ACTIVATED=0
 C_RESET=""
 C_BOLD=""
@@ -137,8 +138,9 @@ end_step() {
 }
 
 die() {
-  # Start the error on its own line when a step line is still open.
-  [ "$STEP_OPEN" -eq 0 ] || printf '\n' >&2
+  # Close an open step line on stdout first, so the error starts on its own line and a redirected
+  # stdout still ends with a terminated line.
+  [ "$STEP_OPEN" -eq 0 ] || { printf '\n'; STEP_OPEN=0; }
   printf '%s%s%s\n' "$ERR_COLOR" "opentag portable installer: $*" "$ERR_RESET" >&2
   exit 1
 }
@@ -504,10 +506,11 @@ print_path_guidance() {
   fi
 }
 
+# print_footer <headline> [detail]
 print_footer() {
   info ""
-  [ "$QUIET" -eq 1 ] || printf '%s%s%s\n' "$C_GREEN" "OK  OpenTag is ready." "$C_RESET"
-  [ "$#" -eq 0 ] || log "$1"
+  [ "$QUIET" -eq 1 ] || printf '%s%s%s\n' "$C_GREEN" "OK  $1" "$C_RESET"
+  [ "$#" -lt 2 ] || log "$2"
   log "Command: $BIN_DIR/$BIN_NAME"
   print_path_guidance
   log "Run '$BIN_NAME --help' to get started."
@@ -520,11 +523,15 @@ cleanup() {
   rm -rf "$WORK_DIR" || :
   # An interrupted install must not leave a half-extracted payload under the install root.
   [ -z "$TEMP_VERSION_DIR" ] || rm -rf "$TEMP_VERSION_DIR" || :
+  # A failure that bypassed die (set -e, a signal) may still have a step line open on stdout.
+  [ "$STEP_OPEN" -eq 0 ] || printf '\n' || :
   if [ "$status" -ne 0 ]; then
-    if [ "$ACTIVATED" -eq 0 ]; then
-      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. Nothing was activated; any existing install is unchanged."
-    else
+    if [ "$ACTIVATED" -eq 1 ]; then
       summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}, after OpenTag ${VERSION} was activated."
+    elif [ "$SHIM_WRITTEN" -eq 1 ]; then
+      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. The launcher shim was rewritten but the current version link was not switched."
+    else
+      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. Nothing was activated; any existing install is unchanged."
     fi
     printf '%s%s%s\n' "$ERR_COLOR" "$summary" "$ERR_RESET" >&2 || :
     printf '%s\n' "Re-run with --help for options." >&2 || :
@@ -554,7 +561,8 @@ BIN_NAME="$(json_string "$MANIFEST_FILE" binName)"
 [ -n "$VERSION" ] || die "metadata missing version"
 [ -n "$PACKAGE_NAME" ] || die "metadata missing packageName"
 [ -n "$BIN_NAME" ] || die "metadata missing binName"
-info "      Resolved OpenTag ${VERSION}"
+# The resolved version closes step 2; the up-to-date check decides how that line ends.
+[ "$QUIET" -eq 1 ] || { printf '      Resolved OpenTag %s' "$VERSION"; STEP_OPEN=1; }
 
 # Resolve the install paths the same way a previous run did before comparing against it: `pwd -L`
 # drops trailing slashes and dot segments without resolving a caller-selected symlink prefix, which
@@ -567,12 +575,14 @@ if [ -d "$BIN_DIR" ]; then
 fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
+  ok "already current"
   log "OpenTag ${VERSION} is already installed and up to date; skipping download."
   log "Run this installer with --force to reinstall the same version."
   maybe_edit_path "$BIN_NAME"
-  print_footer
+  print_footer "OpenTag is already up to date."
   exit 0
 fi
+end_step
 
 ASSET_FILE="$WORK_DIR/asset.json"
 asset_block "$MANIFEST_FILE" "$PLATFORM" >"$ASSET_FILE"
@@ -664,6 +674,7 @@ fi
 # Prepare the stable shim while current still names the old version. The current symlink is the final
 # commit point, so a shim write failure never reports failure after activating the new runtime.
 write_shim "$BIN_DIR/$BIN_NAME" "$CURRENT_LINK" "$BIN_DIR"
+SHIM_WRITTEN=1
 rm -f "$NEW_LINK"
 ln -s "$FINAL_VERSION_DIR" "$NEW_LINK"
 atomic_replace_current_link "$NEW_LINK" "$CURRENT_LINK"
@@ -683,4 +694,4 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 
-print_footer "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"
+print_footer "OpenTag is ready." "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"

@@ -32,8 +32,8 @@ runtime，然后才激活它。可用选项：
 | `--force` | 即使目标 version 已经处于激活状态也重新安装 |
 | `--no-path-edit` | 不修改 shell 启动文件 |
 | `--path-mode auto\|prompt\|off` | installer 管理 `PATH` block 的方式 |
-| `--quiet`、`-q` | 只输出最终结果和错误；也可设置 `OPENTAG_QUIET=1` |
-| `--no-color` | 关闭彩色输出；也可设置 `NO_COLOR` 或 `OPENTAG_NO_COLOR=1` |
+| `--quiet`、`-q` | 只输出最终结果和错误；也可将 `OPENTAG_QUIET` 设为任意非空值（例如 `1`） |
+| `--no-color` | 关闭彩色输出；也可设置 `NO_COLOR`，或将 `OPENTAG_NO_COLOR` 设为任意非空值（例如 `1`） |
 
 **重复安装代价极低。** 读取 `latest.json` 之后，installer 会检查请求的 version 是否已经是当前生效的安装：`current`
 symlink 必须指向一份 `INSTALL.json` 与目标 version、platform、binary name 都一致的 payload，内嵌 runtime 与 app

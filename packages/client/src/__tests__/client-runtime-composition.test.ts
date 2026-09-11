@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  computeAgentSkillsDigest,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
@@ -37,8 +38,10 @@ import {
 } from "../runtime/provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-manager.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import type { SkillSyncManager } from "../runtime/skills/skill-sync-manager.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { buildSkillZip } from "./fixtures/skill-zip.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -1993,6 +1996,151 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       },
     });
     runtime.stop();
+  });
+});
+
+describe("createClientRuntime skill sync", () => {
+  const openImResource = async () => new Response(null, { status: 404 });
+
+  it("stays inert without a machine token or without the runtime skill endpoints", async () => {
+    const home = await temporaryDirectory("opentag-client-skills-inert-");
+    const skillApi = {
+      openImResource,
+      runtimeSkillsManifest: vi.fn(async () => ({ agents: [] })),
+      downloadRuntimeSkillArchive: vi.fn(async () => ({ status: 304 as const })),
+    };
+    const variants: Array<Parameters<typeof createClientRuntime>[1]> = [
+      { clientVersion: "0.0.1", environment: { HOME: home }, factory: readyFactory(), home, api: skillApi },
+      {
+        clientVersion: "0.0.1",
+        environment: { HOME: home },
+        factory: readyFactory(),
+        home,
+        machineToken: "machine-token",
+        api: { openImResource },
+      },
+      {
+        clientVersion: "0.0.1",
+        environment: { HOME: home },
+        factory: readyFactory(),
+        home,
+        machineToken: "machine-token",
+        api: { openImResource, runtimeSkillsManifest: skillApi.runtimeSkillsManifest },
+      },
+    ];
+    for (const options of variants) {
+      const runtime = await createClientRuntime(runtimeConnection(), options);
+      expect(runtime.skillSync).toBeUndefined();
+      runtime.stop();
+    }
+    expect(skillApi.runtimeSkillsManifest).not.toHaveBeenCalled();
+  });
+
+  it("syncs assigned skills on preparation, on skills:changed frames, and on the periodic sweep", async () => {
+    const home = await temporaryDirectory("opentag-client-skills-sync-");
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const connection = runtimeConnection(server.url);
+    const alpha = buildSkillZip("alpha", { "SKILL.md": "# alpha" });
+    const beta = buildSkillZip("beta", { "SKILL.md": "# beta" });
+    const assignments = new Map<string, Array<typeof alpha>>([["agent-1", [alpha]]]);
+    const api = {
+      openImResource,
+      runtimeSkillsManifest: vi.fn(async (_token: string, input: { agentId?: string } = {}) => ({
+        agents: [...assignments.entries()]
+          .filter(([agentId]) => input.agentId === undefined || agentId === input.agentId)
+          .map(([agentId, fixtures]) => ({
+            agentId,
+            digest: computeAgentSkillsDigest(fixtures.map((fixture) => fixture.entry)),
+            skills: fixtures.map((fixture) => fixture.entry),
+          })),
+      })),
+      downloadRuntimeSkillArchive: vi.fn(async (_token: string, name: string) => ({
+        status: 200 as const,
+        bytes: (name === "alpha" ? alpha : beta).bytes,
+      })),
+    };
+    let socket!: WebSocket;
+    const registered = new Promise<void>((resolveRegistration) => {
+      server.wss.on("connection", (connected) => {
+        socket = connected;
+        connected.on("message", (data) => {
+          const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (frame.type === "auth") {
+            completeLegacyAuth(connected, frame);
+            return;
+          }
+          if (frame.type === "computer:register") {
+            connected.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+            resolveRegistration();
+            return;
+          }
+          if (frame.type === "heartbeat") {
+            connected.send(
+              JSON.stringify({
+                type: "heartbeat:result",
+                requestId: frame.requestId,
+                ok: true,
+                serverTime: new Date().toISOString(),
+              }),
+            );
+          }
+        });
+      });
+    });
+    const runtime = await createClientRuntime(connection, {
+      api,
+      clientVersion: "0.0.1",
+      environment: { HOME: home },
+      factory: readyFactory(),
+      home,
+      machineToken: "machine-token",
+      skillsSweepIntervalMs: 20,
+    });
+    expect(runtime.skillSync).toBeDefined();
+    const verify = vi.spyOn(runtime.skillSync as SkillSyncManager, "verify");
+    const running = runtime.run();
+    await registered;
+
+    const runtimeSnapshot = { ...snapshot(), skills: { digest: computeAgentSkillsDigest([alpha.entry]) } };
+    await expect(
+      runtime.reconciler.reconcile(reconcileRequest(connection.installationId, runtimeSnapshot)),
+    ).resolves.toMatchObject({ status: "ready" });
+    const cwd = await runtime.workspace.cwd("agent-1");
+    await vi.waitFor(async () => {
+      expect(await readFile(resolve(cwd, ".skills", "alpha", "SKILL.md"), "utf8")).toBe("# alpha");
+    });
+    expect(await readlink(resolve(cwd, ".claude", "skills", "alpha"))).toBe("../../.skills/alpha");
+    await vi.waitFor(async () => {
+      expect(
+        JSON.parse(await readFile(runtime.workspace.paths("agent-1").workspaceState, "utf8")) as Record<
+          string,
+          unknown
+        >,
+      ).toMatchObject({ schemaVersion: 4, skills: { digest: computeAgentSkillsDigest([alpha.entry]) } });
+    });
+
+    assignments.set("agent-1", [alpha, beta]);
+    socket.send(
+      JSON.stringify({
+        type: "skills:changed",
+        agents: [
+          { agentId: "agent-1", digest: computeAgentSkillsDigest([alpha.entry, beta.entry]) },
+          { agentId: "agent-unprepared", digest: computeAgentSkillsDigest([]) },
+        ],
+      }),
+    );
+    await vi.waitFor(async () => {
+      expect(await readFile(resolve(cwd, ".skills", "beta", "SKILL.md"), "utf8")).toBe("# beta");
+    });
+    expect(api.runtimeSkillsManifest.mock.calls.every(([, input]) => input?.agentId === "agent-1")).toBe(true);
+    await vi.waitFor(() => expect(verify).toHaveBeenCalledWith("agent-1"));
+
+    runtime.stop();
+    await expect(running).resolves.toBeUndefined();
+    const sweeps = verify.mock.calls.length;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 60));
+    expect(verify).toHaveBeenCalledTimes(sweeps);
   });
 });
 

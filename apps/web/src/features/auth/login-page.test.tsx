@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { ApiError, browserApi } from "../../api.js";
 import * as locale from "../../i18n/locale.js";
@@ -28,6 +28,10 @@ function RefreshProviders() {
 }
 
 describe("LoginPage", () => {
+  beforeEach(() => {
+    vi.spyOn(browserApi, "me").mockRejectedValue(new ApiError(401, "Sign in required"));
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     overwriteGetLocale(() => "en");
@@ -41,9 +45,9 @@ describe("LoginPage", () => {
       ],
     });
     await renderInRouter(<LoginPage next="/agents" />);
+    expect(await screen.findByRole("link", { name: "Sign in with Google" })).toBeTruthy();
     expect(await screen.findByRole("heading", { name: "Sign in to OpenTag" })).toBeTruthy();
     expect(screen.getByText("or")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Sign in with Google" })).toBeTruthy();
   });
 
   it("explains when no enabled provider is available", async () => {
@@ -89,6 +93,7 @@ describe("LoginPage", () => {
       .mockReturnValueOnce(pending.promise)
       .mockResolvedValue({ providers: [google] });
     await renderInRouter(<LoginPage />);
+    await screen.findByText("Loading sign-in methods…");
     expect(screen.getByRole("status").textContent).toContain("Loading sign-in methods…");
     expect(screen.queryByRole("link")).toBeNull();
     await act(async () => pending.reject(new Error("Offline")));
@@ -184,12 +189,19 @@ describe("LoginPage", () => {
     expect(screen.getByRole("main").getAttribute("lang")).toBe("zh");
   });
 
-  it("lets an unauthenticated visitor switch languages", async () => {
+  it("keeps an open language selector usable when session verification reveals the login form", async () => {
     const setLocale = vi.spyOn(locale, "setLocale");
+    const session = pendingRequest<Awaited<ReturnType<typeof browserApi.me>>>();
+    vi.mocked(browserApi.me).mockReturnValue(session.promise);
     vi.spyOn(browserApi, "authProviders").mockResolvedValue({ providers: [google] });
     await renderInRouter(<LoginPage />);
-    fireEvent.click(screen.getByRole("combobox", { name: "Language" }));
+    const language = screen.getByRole("combobox", { name: "Language" });
+    fireEvent.click(language);
     const option = await screen.findByRole("option", { name: "中文" });
+    await act(async () => session.reject(new ApiError(401, "Sign in required")));
+    await screen.findByRole("link", { name: "Sign in with Google" });
+    expect(screen.getByRole("combobox", { name: "Language" })).toBe(language);
+    expect(screen.getByRole("option", { name: "中文" })).toBe(option);
     fireEvent.pointerMove(option);
     fireEvent.pointerDown(option);
     fireEvent.pointerUp(option);

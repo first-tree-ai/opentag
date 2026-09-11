@@ -1,5 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
+  "skills_actions_for": "{name} 的操作",
   "skills_agent_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
@@ -11,8 +12,11 @@
     }
   ],
   "skills_all_skills": "全部 Skill",
-  "skills_available": "可用 Skill",
-  "skills_built_by_opentag": "由 OpenTag 构建",
+  "skills_column_actions": "操作",
+  "skills_column_agents": "Agent",
+  "skills_column_files": "文件",
+  "skills_column_name": "名称",
+  "skills_column_updated": "更新时间",
   "skills_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
@@ -23,13 +27,55 @@
       }
     }
   ],
-  "skills_demo_data": "演示数据",
-  "skills_instructions_preview": "指令预览",
+  "skills_delete_confirm_description": "{name} 将从技能库中移除，并从所有 Agent 取消分配；其计算机会停止同步该技能。此操作无法撤销。",
+  "skills_delete_confirm_title": "删除 {name}？",
+  "skills_delete_failed": "无法删除该技能。",
+  "skills_deleted_notice": "{name} 已删除。",
+  "skills_deleting": "正在删除…",
+  "skills_download": "下载",
+  "skills_empty_detail": "上传一个根目录包含 SKILL.md 的 zip 压缩包，然后在各 Agent 的技能页面中分配给 Agent。",
+  "skills_empty_title": "还没有技能",
+  "skills_error_invalid_archive": "该压缩包不是有效的技能。请确认 SKILL.md 位于根目录，且 frontmatter 包含 name 和 description。",
+  "skills_error_storage_unavailable": "技能存储暂时不可用，请稍后重试。",
+  "skills_error_too_large": "服务器拒绝了该压缩包：大小超过 {limit}。",
+  "skills_error_unsupported_type": "服务器只接受 application/zip 压缩包。",
+  "skills_file_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} 个文件",
+        "countPlural=other": "{count} 个文件"
+      }
+    }
+  ],
+  "skills_load_more": "加载更多",
+  "skills_loading": "正在加载技能",
+  "skills_loading_detail": "正在读取技能库…",
+  "skills_loading_more": "正在加载更多…",
+  "skills_markdown_assigned_agents": "已分配的 Agent",
+  "skills_markdown_loading": "正在加载 SKILL.md…",
+  "skills_markdown_no_agents": "尚未分配给任何 Agent。",
+  "skills_markdown_unavailable": "无法加载 SKILL.md。",
   "skills_page_description": "可复用的工作手册，为 Agent 提供完成专业工作所需的上下文和方法。",
   "skills_page_title": "Skill",
-  "skills_preview": "预览",
-  "skills_shared": "共享",
+  "skills_request_failed": "请求失败",
+  "skills_table_region": "技能库",
+  "skills_try_again": "重试",
+  "skills_unavailable": "技能暂不可用",
+  "skills_updated_by_session": "Agent 会话",
+  "skills_updated_by_user": "网页上传",
   "skills_upload": "上传 Skill",
-  "skills_upload_unavailable": "当前页面使用演示数据，暂不支持上传。",
-  "skills_used_by": "使用者"
+  "skills_upload_conflict_description": "已存在与 {file} 同名的技能。替换后，所有分配了该技能的 Agent 都会更新。",
+  "skills_upload_conflict_replace": "替换",
+  "skills_upload_conflict_title": "替换已有技能？",
+  "skills_upload_drop_hint": "将 .zip 压缩包拖到列表任意位置即可上传。",
+  "skills_upload_failed": "无法上传该技能。",
+  "skills_upload_invalid_type": "只能上传 .zip 压缩包。",
+  "skills_upload_replaced": "{name} 已替换。",
+  "skills_upload_success": "{name} 已上传。",
+  "skills_upload_too_large": "{file} 超过 {limit}。技能压缩包不能大于 {limit}。",
+  "skills_upload_trust_warning": "只上传来源可信的技能：其中的指令和脚本会在你的 Agent 内执行。",
+  "skills_uploading": "正在上传 {name}…",
+  "skills_view_skill_md": "查看 SKILL.md"
 }

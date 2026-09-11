@@ -88,9 +88,9 @@ describe("OpenTag Web App Shell", () => {
       within(workspaceNavigation)
         .getAllByRole("link")
         .map((item) => item.textContent),
-    ).toEqual(["Overview", "Tasks", "Usage"]);
+    ).toEqual(["Overview", "Tasks", "Skills", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll("svg");
-    expect(navigationIcons).toHaveLength(3);
+    expect(navigationIcons).toHaveLength(4);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
     expect(within(workspaceNavigation).queryByText("Settings")).toBeNull();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();

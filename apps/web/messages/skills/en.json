@@ -1,5 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
+  "skills_actions_for": "Actions for {name}",
   "skills_agent_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
@@ -11,8 +12,11 @@
     }
   ],
   "skills_all_skills": "All skills",
-  "skills_available": "Available skills",
-  "skills_built_by_opentag": "Built by OpenTag",
+  "skills_column_actions": "Actions",
+  "skills_column_agents": "Agents",
+  "skills_column_files": "Files",
+  "skills_column_name": "Name",
+  "skills_column_updated": "Updated",
   "skills_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
@@ -23,13 +27,55 @@
       }
     }
   ],
-  "skills_demo_data": "Demo data",
-  "skills_instructions_preview": "Instructions preview",
+  "skills_delete_confirm_description": "{name} is removed from the library and unassigned from every Agent; their Computers stop syncing it. This cannot be undone.",
+  "skills_delete_confirm_title": "Delete {name}?",
+  "skills_delete_failed": "The skill could not be deleted.",
+  "skills_deleted_notice": "{name} was deleted.",
+  "skills_deleting": "Deleting…",
+  "skills_download": "Download",
+  "skills_empty_detail": "Upload a zip archive with a SKILL.md at its root, then assign it to Agents from each Agent's Skills page.",
+  "skills_empty_title": "No skills yet",
+  "skills_error_invalid_archive": "The archive is not a valid skill. Check that SKILL.md sits at the root with name and description frontmatter.",
+  "skills_error_storage_unavailable": "Skill storage is temporarily unavailable. Try again in a moment.",
+  "skills_error_too_large": "The Server refused the archive because it is larger than {limit}.",
+  "skills_error_unsupported_type": "The Server only accepts application/zip archives.",
+  "skills_file_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} file",
+        "countPlural=other": "{count} files"
+      }
+    }
+  ],
+  "skills_load_more": "Load more",
+  "skills_loading": "Loading skills",
+  "skills_loading_detail": "Reading the skill library…",
+  "skills_loading_more": "Loading more…",
+  "skills_markdown_assigned_agents": "Assigned Agents",
+  "skills_markdown_loading": "Loading SKILL.md…",
+  "skills_markdown_no_agents": "Not assigned to any Agent yet.",
+  "skills_markdown_unavailable": "SKILL.md could not be loaded.",
   "skills_page_description": "Reusable playbooks that give Agents the context and methods they need to do specialized work.",
   "skills_page_title": "Skills",
-  "skills_preview": "Preview",
-  "skills_shared": "Shared",
+  "skills_request_failed": "The request failed",
+  "skills_table_region": "Skill library",
+  "skills_try_again": "Try again",
+  "skills_unavailable": "Skills are unavailable",
+  "skills_updated_by_session": "Agent session",
+  "skills_updated_by_user": "Web upload",
   "skills_upload": "Upload skill",
-  "skills_upload_unavailable": "Upload is unavailable while this page uses demo data.",
-  "skills_used_by": "Used by"
+  "skills_upload_conflict_description": "A skill with the same name as {file} already exists. Replacing it updates every Agent it is assigned to.",
+  "skills_upload_conflict_replace": "Replace",
+  "skills_upload_conflict_title": "Replace the existing skill?",
+  "skills_upload_drop_hint": "Drop a .zip archive anywhere on the list to upload it.",
+  "skills_upload_failed": "The skill could not be uploaded.",
+  "skills_upload_invalid_type": "Only .zip archives can be uploaded.",
+  "skills_upload_replaced": "{name} was replaced.",
+  "skills_upload_success": "{name} was uploaded.",
+  "skills_upload_too_large": "{file} is larger than {limit}. Skill archives must be {limit} or smaller.",
+  "skills_upload_trust_warning": "Only upload skills from sources you trust: their instructions and scripts run inside your Agents.",
+  "skills_uploading": "Uploading {name}…",
+  "skills_view_skill_md": "View SKILL.md"
 }

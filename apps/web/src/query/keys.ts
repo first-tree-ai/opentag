@@ -39,5 +39,19 @@ export const queryKeys = {
     detail: (taskId: string) => ["tasks", taskId, "detail"] as const,
   },
 
+  skills: {
+    /** Everything read from the skill library, for a write that changes what any list would show. */
+    all: () => ["skills"] as const,
+    list: () => ["skills", "list"] as const,
+    detail: (name: string) => ["skills", name, "detail"] as const,
+    markdown: (name: string) => ["skills", name, "markdown"] as const,
+    agents: (name: string) => ["skills", name, "agents"] as const,
+    /**
+     * One Agent's assignment. Kept under the library rather than the Agent because an upload or a
+     * deletion changes what it lists, and those writes invalidate the library as a whole.
+     */
+    byAgent: (agentId: string) => ["skills", "byAgent", agentId] as const,
+  },
+
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,
 } as const;

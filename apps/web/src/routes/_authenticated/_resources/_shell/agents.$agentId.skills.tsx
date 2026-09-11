@@ -1,6 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { SkillsPage } from "../../../../features/skills-page.js";
+import { AgentSkillsPage } from "../../../../features/agents/agent-detail-capabilities.js";
 
 export const Route = createFileRoute("/_authenticated/_resources/_shell/agents/$agentId/skills")({
-  component: SkillsPage,
+  component: AgentSkillsRoute,
 });
+
+function AgentSkillsRoute() {
+  const { agentId } = Route.useParams();
+  return <AgentSkillsPage agentId={agentId} />;
+}

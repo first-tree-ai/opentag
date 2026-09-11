@@ -2,11 +2,11 @@ import { type AuthProvidersResponse, DEFAULT_SIGN_IN_DESTINATION } from "@openta
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { browserApi } from "../../api.js";
-import opentagLogo from "../../assets/opentag-logo.png";
 import { getLocale, isLocale, LOCALE_LABELS, locales, setLocale, toLocale } from "../../i18n/locale.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Empty, Field, Select, SkeletonLine, Text } from "../../ui/design-system.js";
+import { OpenTagLogo } from "../../ui/opentag-logo.js";
 import { toResourceState } from "../resource/resource-state.js";
 import { LoginProviderLink } from "./login-provider-link.js";
 import { PasswordSignInForm, type PasswordSignInMode } from "./password-sign-in-form.js";
@@ -168,9 +168,8 @@ function LoginLanguageSelect({ disabled }: { disabled: boolean }) {
 
 export function OpenTagBrandLockup() {
   return (
-    <div className="flex items-center gap-2 text-lg font-semibold text-kumo-strong" data-ui="login-brand-lockup">
-      <img alt="" className="size-8 shrink-0" height={32} src={opentagLogo} width={32} />
-      <span>{m.auth_brand_name()}</span>
+    <div className="flex items-center" data-ui="login-brand-lockup">
+      <OpenTagLogo label={m.auth_brand_name()} />
     </div>
   );
 }

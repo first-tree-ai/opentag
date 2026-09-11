@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "
 import { createDiagnosticEnvelope, normalizeError as normalizeDiagnosticError } from "../observability/diagnostics.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
+import { OpenTagLogo } from "../ui/opentag-logo.js";
 
 type BoundaryError = {
   readonly error: Error;
@@ -70,9 +71,7 @@ export function RouteErrorPage({ reset }: ErrorComponentProps) {
 
   return (
     <BoundaryCard data-ui="route-error">
-      <Text as="span" variant="secondary">
-        OpenTag
-      </Text>
+      <OpenTagLogo label={m.auth_brand_name()} variant="wordmark" />
       <Text as="h1" size="lg" variant="heading">
         {m.errors_something_went_wrong()}
       </Text>
@@ -93,9 +92,7 @@ export function StandaloneErrorPage({ actionLabel, onAction }: { actionLabel: st
   return (
     <main className="app-error-boundary grid bg-kumo-canvas p-6" data-ui="app-error-boundary">
       <BoundaryCard>
-        <Text as="span" variant="secondary">
-          OpenTag
-        </Text>
+        <OpenTagLogo label={m.auth_brand_name()} variant="wordmark" />
         <Text as="h1" size="lg" variant="heading">
           {m.errors_something_went_wrong()}
         </Text>

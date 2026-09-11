@@ -40,6 +40,7 @@ import { syncAgentQueries } from "../query/agent-sync.js";
 import { queryKeys } from "../query/keys.js";
 import { QrCode, WAITING_LINE } from "../setup/index.js";
 import { Banner, Button, Dialog, Icon, Loader, StatusIndicator, type StatusTone, Text } from "../ui/design-system.js";
+import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
@@ -741,7 +742,7 @@ function AgentSetupPageContent({
   return (
     <div className="otv2-shell flex min-h-screen flex-col bg-kumo-canvas" data-ui="agent-setup">
       <header className="flex items-center justify-between p-6">
-        <span className="text-lg font-semibold text-kumo-strong">{m.onboarding_v2_brand_name()}</span>
+        <OpenTagLogo label={m.onboarding_v2_brand_name()} variant="wordmark" />
         {onOpenAgent && !ready ? (
           <Button onClick={onOpenAgent} variant="ghost">
             {m.onboarding_v2_back_to_agent()}

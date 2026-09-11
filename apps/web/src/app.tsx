@@ -4,6 +4,7 @@ import { Link as RouterLink, RouterProvider } from "@tanstack/react-router";
 import { forwardRef, useEffect, useState } from "react";
 import { installRouteAnalytics } from "./analytics/route-analytics.js";
 import { AppErrorBoundary } from "./features/error-boundary.js";
+import { ThemeIntegrityNotice } from "./features/theme-integrity-notice.js";
 import { createQueryClient } from "./query/client.js";
 import { type AppRouter, createAppRouter } from "./router.js";
 
@@ -44,6 +45,8 @@ export function App({ router }: { router?: AppRouter } = {}) {
       <QueryClientProvider client={queryClient}>
         <LinkProvider component={AppLink}>
           <TooltipProvider>
+            {/* Mounted once above the routes so a route change keeps the dismissal. */}
+            <ThemeIntegrityNotice />
             <RouterProvider router={instance} />
           </TooltipProvider>
         </LinkProvider>

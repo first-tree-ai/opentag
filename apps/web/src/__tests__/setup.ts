@@ -1,5 +1,5 @@
 import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { resetReportedMilestones } from "../analytics/milestones.js";
 import { overwriteGetLocale, overwriteSetLocale } from "../paraglide/runtime.js";
 
@@ -59,6 +59,15 @@ class TestResizeObserver {
 vi.stubGlobal("ResizeObserver", TestResizeObserver);
 
 vi.stubGlobal("fetch", vi.fn());
+
+beforeEach(() => {
+  // Model the static index.html scaffold: OpenTag's namespaced theme identity is present and the
+  // generic attributes are absent. Tests that exercise the theme integrity notice rewrite them.
+  document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-mode");
+  document.documentElement.setAttribute("data-opentag-theme", "opentag");
+  document.documentElement.setAttribute("data-opentag-mode", "light");
+});
 
 afterEach(async () => {
   cleanup();

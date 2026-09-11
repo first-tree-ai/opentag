@@ -180,6 +180,9 @@ describe("Kumo integration contract", () => {
       "setup/setup.css",
       "ui/kumo-theme.css",
       "ui/kumo-theme.tokens.ts",
+      // Button emphasis fallbacks must be literal because Tailwind only scans static class
+      // strings; theme-identity.test pins them to the canonical kumoThemeTokens.light values.
+      "ui/design-system.tsx",
       // Google's provider identity has reviewed colors independent of the OpenTag semantic palette.
       "features/auth/google-sign-in.css",
     ]);

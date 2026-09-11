@@ -83,10 +83,12 @@ describe("OpenTag theme identity", () => {
       root.walkRules((rule) => {
         let declaresPalette = false;
         rule.walkDecls((declaration) => {
+          // The OpenTag palette is the button surfaces; --opentag-logo-*-display flags are layout
+          // switches with light defaults on :root, not colors, so they stay out of this scope.
           if (
             declaration.prop === "--brand" ||
             declaration.prop === "--color-kumo-canvas" ||
-            declaration.prop.startsWith("--opentag-")
+            declaration.prop.startsWith("--opentag-button-")
           ) {
             declaresPalette = true;
           }

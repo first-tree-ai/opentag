@@ -361,7 +361,10 @@
   "StructuredErrorSchema",
   "TASK_AUTO_TITLE_MAX_GRAPHEMES",
   "TASK_BY_ID_TEMPLATE",
+  "TASK_CANCELLED_DELIVERY_REASON",
+  "TASK_CANCEL_TEMPLATE",
   "TASK_TITLE_MAX_LENGTH",
+  "TaskCancelResponseSchema",
   "TaskCollaborationMessageSchema",
   "TaskDetailSchema",
   "TaskInternalSessionSchema",
@@ -448,6 +451,7 @@
   "runtimeWebSocketUrl",
   "serializeDiagnostic",
   "taskByIdPath",
+  "taskCancelPath",
   "unsupportedClientVersionMessage",
   "withComputerRuntimeProviderSupport"
 ]

@@ -1,4 +1,9 @@
-import { accountComputerConnectCodePath, HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import {
+  accountComputerConnectCodePath,
+  HTTP_PATHS,
+  PROVIDER_READINESS_V1_HEADER,
+  taskCancelPath,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
@@ -136,6 +141,7 @@ function services() {
     taskService: {
       list: vi.fn().mockResolvedValue({ tasks: [taskSummary], nextCursor: null }),
       updateTitle: vi.fn().mockResolvedValue(taskSummary),
+      cancel: vi.fn().mockResolvedValue({ ...taskSummary, status: "cancelled" as const }),
       get: vi.fn().mockResolvedValue({
         task: taskSummary,
         turns: [],
@@ -455,6 +461,43 @@ describe("Account-native management collections", () => {
     });
     expect(invalid.statusCode).toBe(400);
     expect(service.taskService.updateTitle).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a queued Task in the authenticated Account scope and relays a refusal", async () => {
+    const { app, service } = appWith();
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: taskCancelPath(taskSummary.id),
+      headers: authorization,
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.headers["cache-control"]).toBe("no-store");
+    expect(cancelled.json()).toEqual({ task: { ...taskSummary, status: "cancelled" } });
+    expect(service.taskService.cancel).toHaveBeenCalledWith(userId, taskSummary.id);
+
+    service.taskService.cancel.mockRejectedValueOnce(
+      new AuthServiceError("TASK_NOT_QUEUED", "deterministic", "The Task is running", 409),
+    );
+    const started = await app.inject({
+      method: "POST",
+      url: taskCancelPath(taskSummary.id),
+      headers: authorization,
+    });
+    expect(started.statusCode).toBe(409);
+    expect(started.json().error).toMatchObject({ code: "TASK_NOT_QUEUED", category: "deterministic" });
+
+    const malformed = await app.inject({
+      method: "POST",
+      url: taskCancelPath("not-a-task"),
+      headers: authorization,
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(service.taskService.cancel).toHaveBeenCalledTimes(2);
+
+    const anonymous = await app.inject({ method: "POST", url: taskCancelPath(taskSummary.id) });
+    expect(anonymous.statusCode).toBe(401);
+    expect(service.taskService.cancel).toHaveBeenCalledTimes(2);
   });
 
   it("creates and lists Agents without a client-selected scope", async () => {

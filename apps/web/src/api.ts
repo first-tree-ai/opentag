@@ -74,11 +74,13 @@ import {
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
+  TaskCancelResponseSchema,
   type TaskDetail,
   TaskDetailSchema,
   type TaskTitleUpdateRequest,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
+  taskCancelPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
@@ -224,6 +226,14 @@ export class BrowserApi {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    }).then(({ task }) => task);
+  }
+
+  /** Withdraws a queued Task. A `409` means it is no longer queued and its state should be re-read. */
+  cancelTask(sessionId: string): Promise<TaskDetail["task"]> {
+    return this.request(taskCancelPath(sessionId), TaskCancelResponseSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
     }).then(({ task }) => task);
   }
 

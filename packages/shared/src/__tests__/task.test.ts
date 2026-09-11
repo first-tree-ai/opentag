@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   ListTasksResponseSchema,
   TASK_TITLE_MAX_LENGTH,
+  TaskCancelResponseSchema,
   TaskDetailSchema,
+  TaskStatusSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
   taskByIdPath,
+  taskCancelPath,
 } from "../index.js";
 
 const summary = {
@@ -130,6 +133,14 @@ describe("Task browser contracts", () => {
         ],
       }).turns[0]?.report?.outgoingReplies?.replies[0]?.content.text,
     ).toBe("Actual Lark reply");
+  });
+
+  it("answers a cancel with the refreshed summary and addresses it under the Task", () => {
+    expect(taskCancelPath("session/with spaces")).toBe("/api/v1/sessions/session%2Fwith%20spaces/cancel");
+    expect(TaskStatusSchema.parse("cancelled")).toBe("cancelled");
+    const cancelled = { ...summary, status: "cancelled" };
+    expect(TaskCancelResponseSchema.parse({ task: cancelled })).toEqual({ task: cancelled });
+    expect(() => TaskCancelResponseSchema.parse({ task: cancelled, cancelled: 1 })).toThrow();
   });
 
   it("accepts trimmed manual titles and an explicit clear operation", () => {

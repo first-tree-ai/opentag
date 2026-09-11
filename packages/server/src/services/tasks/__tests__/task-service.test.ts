@@ -1,4 +1,5 @@
 import type { ImContentV1, TaskTurn, TurnReportRequest } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createUnitDatabase, type UnitDatabase } from "../../../__tests__/support/unit-database.js";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../../../admin/bootstrap.js";
@@ -34,7 +35,7 @@ function minutes(offset: number): Date {
   return new Date(BASE_TIME.getTime() + offset * 60_000);
 }
 
-async function fixture() {
+async function fixture(options: { now?: () => Date } = {}) {
   const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
     displayName: "Task User",
     email: "task@example.com",
@@ -68,7 +69,7 @@ async function fixture() {
     .returning();
   if (!binding) throw new Error("Binding fixture was not created");
   // Deliveries in these fixtures expire a week after BASE_TIME; pin the clock so that never passes.
-  const service = new TaskService(unitDatabase.database, { now: () => BASE_TIME });
+  const service = new TaskService(unitDatabase.database, { now: options.now ?? (() => BASE_TIME) });
   return { agent, binding, bootstrap, service };
 }
 
@@ -235,6 +236,26 @@ async function createDelivery(sessionId: string, messageId: string, options: Del
     .returning();
   if (!delivery) throw new Error("Delivery fixture was not created");
   return delivery;
+}
+
+async function deliveryRow(deliveryId: string) {
+  const [row] = await unitDatabase.database
+    .select()
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, deliveryId));
+  if (!row) throw new Error("Delivery row disappeared");
+  return row;
+}
+
+/** Mark a pending delivery the way the worker does while it dispatches it: a claim token with a lease. */
+async function claimDelivery(deliveryId: string, leaseUntil: Date) {
+  await unitDatabase.database
+    .update(imMessageDeliveries)
+    .set({
+      lastErrorCode: `IM_DELIVERY_CLAIM_${crypto.randomUUID().replaceAll("-", "").toUpperCase()}`,
+      nextAttemptAt: leaseUntil,
+    })
+    .where(eq(imMessageDeliveries.id, deliveryId));
 }
 
 /** A group with the root request delivered to the channel Session and one reply owned by a thread Session. */
@@ -968,5 +989,154 @@ describe("TaskService", () => {
       code: "VALIDATION_ERROR",
       statusCode: 400,
     });
+  });
+
+  it("cancels a queued Task, records why the delivery expired, and repeats as a no-op", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+    const request = await createMessage(binding.id, { text: "Please wait in line", occurredAt: minutes(0) });
+    const queued = await createDelivery(channel.id, request.id, { state: "pending" });
+
+    await expect(service.cancel(bootstrap.userId, request.id)).resolves.toMatchObject({
+      id: request.id,
+      status: "cancelled",
+    });
+    // Stored the way the worker never reads: it claims only pending rows, and recovers expired
+    // ones only while they carry a dispatch correlation.
+    expect(await deliveryRow(queued.id)).toMatchObject({
+      state: "expired",
+      reason: "cancelled",
+      dispatchRequestId: null,
+    });
+    const list = await service.list(bootstrap.userId, { limit: 10 });
+    expect(list.tasks.map((task) => [task.id, task.status])).toEqual([[request.id, "cancelled"]]);
+    const detail = await service.get(bootstrap.userId, request.id, { limit: 10 });
+    expect(detail.turns.map((turn) => turn.delivery)).toMatchObject([{ state: "expired", reason: "cancelled" }]);
+
+    // Idempotent: the second cancel finds nothing queued and nothing to complain about.
+    await expect(service.cancel(bootstrap.userId, request.id)).resolves.toMatchObject({ status: "cancelled" });
+
+    // A private chat cancels through its Session id as well as through its Task id.
+    const dm = await createSession(binding.id, { channelId: DM, conversationKind: "dm" });
+    const dmRequest = await createMessage(binding.id, {
+      channelId: DM,
+      text: "Direct request",
+      occurredAt: minutes(5),
+      providerContext: { provider: "feishu", chatType: "p2p" },
+    });
+    await createDelivery(dm.id, dmRequest.id, { state: "pending" });
+    await expect(service.cancel(bootstrap.userId, dm.id)).resolves.toMatchObject({
+      id: dmRequest.id,
+      status: "cancelled",
+    });
+  });
+
+  it("reads cancelled after withdrawing a follow-up queued behind a Turn that finished later", async () => {
+    // The user cancels at minute 6, after the first Turn finished; the Server's clock is the cancel instant.
+    const { binding, bootstrap, service } = await fixture({ now: () => minutes(6) });
+    const channel = await createSession(binding.id, { channelId: GROUP });
+
+    // The root request arrives, then the user queues a follow-up while it is still running.
+    const root = await createMessage(binding.id, { externalMessageId: "om_root", occurredAt: minutes(0) });
+    const followUp = await createMessage(binding.id, { threadKey: "om_root", occurredAt: minutes(2) });
+    const queued = await createDelivery(channel.id, followUp.id, { state: "pending" });
+    // The first Turn only finishes at minute 5, after the follow-up was already queued.
+    await createDelivery(channel.id, root.id, { at: minutes(5), reported: true });
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("queued");
+
+    const cancelled = await service.cancel(bootstrap.userId, root.id);
+    expect(await deliveryRow(queued.id)).toMatchObject({
+      state: "expired",
+      reason: "cancelled",
+      expiresAt: minutes(6),
+    });
+    // The withdrawal is the topic's latest activity, so the finished Turn does not outrank it.
+    expect(cancelled).toMatchObject({ status: "cancelled", lastActivityAt: minutes(6).toISOString() });
+    const list = await service.list(bootstrap.userId, { limit: 10 });
+    expect(list.tasks.map((task) => task.status)).toEqual(["cancelled"]);
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("cancelled");
+
+    // Idempotent: the second cancel is the same no-op success as for any cancelled Task.
+    await expect(service.cancel(bootstrap.userId, root.id)).resolves.toMatchObject({ status: "cancelled" });
+  });
+
+  it("refuses to cancel a Task that has started or finished, and leaves a running Task's queue alone", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+
+    const running = await createMessage(binding.id, { externalMessageId: "om_running", occurredAt: minutes(0) });
+    await createDelivery(channel.id, running.id, { at: minutes(1) });
+    const followUp = await createMessage(binding.id, { threadKey: "om_running", occurredAt: minutes(2) });
+    const queuedBehind = await createDelivery(channel.id, followUp.id, { state: "pending" });
+    await expect(service.cancel(bootstrap.userId, running.id)).rejects.toMatchObject({
+      code: "TASK_NOT_QUEUED",
+      statusCode: 409,
+    });
+    expect(await deliveryRow(queuedBehind.id)).toMatchObject({ state: "pending", reason: null });
+
+    const completed = await createMessage(binding.id, { occurredAt: minutes(10) });
+    await createDelivery(channel.id, completed.id, { at: minutes(11), reported: true });
+    await expect(service.cancel(bootstrap.userId, completed.id)).rejects.toMatchObject({
+      code: "TASK_NOT_QUEUED",
+      statusCode: 409,
+    });
+
+    const queued = await createMessage(binding.id, { occurredAt: minutes(20) });
+    await createDelivery(channel.id, queued.id, { state: "pending" });
+    await expect(service.cancel(crypto.randomUUID(), queued.id)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(service.cancel(bootstrap.userId, crypto.randomUUID())).rejects.toMatchObject({ statusCode: 404 });
+    expect((await service.get(bootstrap.userId, queued.id, { limit: 1 })).task.status).toBe("queued");
+  });
+
+  it("withdraws nothing when one of two pending deliveries is being dispatched", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+
+    const root = await createMessage(binding.id, { externalMessageId: "om_root", occurredAt: minutes(0) });
+    const inFlight = await createDelivery(channel.id, root.id, { state: "pending" });
+    await claimDelivery(inFlight.id, new Date(BASE_TIME.getTime() + 10_000));
+    const followUp = await createMessage(binding.id, { threadKey: "om_root", occurredAt: minutes(2) });
+    const queuedBehind = await createDelivery(channel.id, followUp.id, { state: "pending" });
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("queued");
+
+    // All or nothing: the follow-up could be withdrawn, but the root is on its way to the Runtime,
+    // so neither is, and the Task never reads as cancelled while part of it is still queued.
+    await expect(service.cancel(bootstrap.userId, root.id)).rejects.toMatchObject({
+      code: "TASK_NOT_QUEUED",
+      statusCode: 409,
+    });
+    expect(await deliveryRow(inFlight.id)).toMatchObject({ state: "pending", reason: null });
+    expect(await deliveryRow(queuedBehind.id)).toMatchObject({ state: "pending", reason: null });
+    expect((await service.get(bootstrap.userId, root.id, { limit: 5 })).task.status).toBe("queued");
+
+    // Once the worker's lease lapses without an acceptance, both rows are withdrawn together.
+    await claimDelivery(inFlight.id, new Date(BASE_TIME.getTime() - 1_000));
+    await expect(service.cancel(bootstrap.userId, root.id)).resolves.toMatchObject({ status: "cancelled" });
+    expect(await deliveryRow(inFlight.id)).toMatchObject({ state: "expired", reason: "cancelled" });
+    expect(await deliveryRow(queuedBehind.id)).toMatchObject({ state: "expired", reason: "cancelled" });
+  });
+
+  it("leaves a delivery a worker is dispatching alone and takes back one whose claim lapsed", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+
+    const inFlight = await createMessage(binding.id, { occurredAt: minutes(0) });
+    const claimed = await createDelivery(channel.id, inFlight.id, { state: "pending" });
+    await claimDelivery(claimed.id, new Date(BASE_TIME.getTime() + 10_000));
+    // The Task still reads as queued, but the only thing queued is already on its way to the Runtime.
+    expect((await service.get(bootstrap.userId, inFlight.id, { limit: 1 })).task.status).toBe("queued");
+    await expect(service.cancel(bootstrap.userId, inFlight.id)).rejects.toMatchObject({
+      code: "TASK_NOT_QUEUED",
+      statusCode: 409,
+    });
+    const untouched = await deliveryRow(claimed.id);
+    expect(untouched.state).toBe("pending");
+    expect(untouched.lastErrorCode).toMatch(/^IM_DELIVERY_CLAIM_/);
+
+    const abandoned = await createMessage(binding.id, { occurredAt: minutes(5) });
+    const lapsed = await createDelivery(channel.id, abandoned.id, { state: "pending" });
+    await claimDelivery(lapsed.id, new Date(BASE_TIME.getTime() - 1_000));
+    await expect(service.cancel(bootstrap.userId, abandoned.id)).resolves.toMatchObject({ status: "cancelled" });
+    expect(await deliveryRow(lapsed.id)).toMatchObject({ state: "expired", reason: "cancelled" });
   });
 });

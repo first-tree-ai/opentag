@@ -59,6 +59,7 @@ import {
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import { DISPATCH_CLAIM_PREFIX, dispatchClaimToken } from "./im-delivery-claim.js";
 import { withOperationDeadline } from "./im-delivery-deadline.js";
 import {
   createImDeliveryMaintenanceSchedulers,
@@ -80,7 +81,6 @@ const CLAIM_RENEW_MS = 5_000;
 // Replica model: persisted recoverable ownership. The durable marker bridges the
 // transaction-to-runtime gap. Advisory locks serialize competing claims; the
 // marker keeps later transactions fenced after commit.
-const DISPATCH_CLAIM_PREFIX = "IM_DELIVERY_CLAIM_";
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
@@ -1459,10 +1459,6 @@ function uncertainAgentCustody(delivery: typeof imMessageDeliveries | typeof acc
     and(inArray(delivery.state, ["pending", "expired"]), isNotNull(delivery.dispatchRequestId)),
     and(eq(delivery.state, "pending"), like(delivery.lastErrorCode, `${DISPATCH_CLAIM_PREFIX}%`)),
   );
-}
-
-function dispatchClaimToken(): string {
-  return `${DISPATCH_CLAIM_PREFIX}${randomUUID().replaceAll("-", "").toUpperCase()}`;
 }
 
 function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {

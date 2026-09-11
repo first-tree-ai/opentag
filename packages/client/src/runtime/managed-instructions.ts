@@ -47,7 +47,7 @@ function renderContextTree(status: ContextTreeStatus, cliCommand: string): reado
   ];
 }
 
-function renderAgentHome(agentHome?: string): readonly string[] {
+function renderAgentHome(cliCommand: string, agentHome?: string): readonly string[] {
   const location = agentHome
     ? `Your Agent Home is ${agentHome}. One persistent Home is shared across this Agent's Sessions on this Computer.`
     : "One persistent Home is shared across this Agent's Sessions on this Computer.";
@@ -62,6 +62,9 @@ function renderAgentHome(agentHome?: string): readonly string[] {
     "- `worktrees/<unique-task-key>/` — agent-managed checkouts for source access and code work. Concurrent code tasks each use a distinct worktree (and a distinct branch when editing). Keep later operations for the same task in its own worktree. No two code tasks edit one checkout.",
     "- `files/<unique-task-key>/` — non-repository task artifacts, created only when needed.",
     "",
+    "`.skills/` is managed by OpenTag: it mirrors the skills assigned to this Agent and is replaced on every sync, so do not edit it directly.",
+    `To publish a new or changed skill, run \`${cliCommand} skill push <dir>\` (inside a Session add \`--session <Current Session>\`); it is assigned to this Agent and synced back here. The same skills are projected to \`.claude/skills/\` (Claude Code) and \`.agents/skills/\` (Codex).`,
+    "",
     "OpenTag provides the bundled `context-tree` command. If it cannot run, report a runtime setup problem; do not install it globally.",
     'Context Tree stays the separately configured shared tree managed by its matching CLI and skills. When running Context Tree project commands from a task subdirectory, pass `--project-path "<Agent Home>"` to use the connected Home; do not create or reconnect a tree just because the task cwd changed. Follow the matching skill write protocol. Do not invent an independent Git policy for Tree writes.',
     "",
@@ -71,7 +74,7 @@ function renderAgentHome(agentHome?: string): readonly string[] {
 export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, context?: ManagedSessionContext): string {
   const session = context
     ? [
-        ...renderAgentHome(context.agentHome),
+        ...renderAgentHome(context.cliCommand, context.agentHome),
         "## Session",
         "",
         `Current Session: ${context.sessionId}`,

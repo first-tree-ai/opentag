@@ -7,7 +7,7 @@ import {
   type EffectiveRuntimeSnapshot,
   type SessionReconcileRequest,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { agentRuntimePaths, deriveRuntimeKey } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
@@ -549,6 +549,122 @@ describe("AgentWorkspaceManager", () => {
     await expect(workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
       /real director|workspace/i,
     );
+  });
+});
+
+describe("AgentWorkspaceManager skill sync integration", () => {
+  it("fires reconcile after preparation and verify on later reconciles without blocking Session start", async () => {
+    const home = await temporaryHome();
+    const computerId = randomUUID();
+    const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const calls: Array<[string, string, string | undefined]> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const skills = {
+      reconcile: vi.fn(async (agentId: string, options: { expectedDigest?: string }) => {
+        calls.push(["reconcile", agentId, options.expectedDigest]);
+        await gate;
+        throw new Error("sync failed");
+      }),
+      verify: vi.fn(async (agentId: string, options: { expectedDigest?: string }) => {
+        calls.push(["verify", agentId, options.expectedDigest]);
+        return { status: "unchanged" as const };
+      }),
+    };
+    const workspace = new AgentWorkspaceManager({ home, bindingStore, skills });
+    const reconciler = new SessionReconciler({ installationId: computerId, preparation: workspace });
+    const runtime = { ...snapshot("agent-1", "workspace-1", "session A"), skills: { digest: "b".repeat(64) } };
+
+    await expect(reconciler.reconcile(reconcileRequest(computerId, "session-1", runtime))).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(calls).toEqual([["reconcile", "agent-1", "b".repeat(64)]]);
+    await expect(reconciler.reconcile(reconcileRequest(computerId, "session-2", runtime))).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(calls).toEqual([
+      ["reconcile", "agent-1", "b".repeat(64)],
+      ["verify", "agent-1", "b".repeat(64)],
+    ]);
+    release();
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+    await expect(readWorkspaceState(workspace, "agent-1")).resolves.toMatchObject({ schemaVersion: 3 });
+  });
+
+  it("attaches a skill sync late and records the sync outcome as a schema version 4 state", async () => {
+    const fixture = await workspaceFixture();
+    const skills = { reconcile: vi.fn(async () => undefined), verify: vi.fn(async () => undefined) };
+    fixture.workspace.attachSkillSync(skills);
+    const runtime = snapshot("agent-1", "workspace-1", "session A");
+    await expect(
+      fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-1", runtime)),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(skills.reconcile).toHaveBeenCalledWith("agent-1", { expectedDigest: undefined });
+
+    const state = { digest: "c".repeat(64), syncedAt: "2026-09-11T10:00:00.000Z", lastError: "boom" };
+    await fixture.workspace.recordSkillsState("agent-1", state);
+    await expect(readWorkspaceState(fixture.workspace, "agent-1")).resolves.toEqual({
+      schemaVersion: 4,
+      agentId: "agent-1",
+      workspaceId: "workspace-1",
+      provider: "codex",
+      layout: "root",
+      transition: "complete",
+      skills: state,
+    });
+    const cwd = await fixture.workspace.cwd("agent-1");
+    expect(cwd).toBe(await realpathForTest(fixture.workspace.paths("agent-1").workspaceRoot));
+    await fixture.workspace.recordSkillsState("agent-1", { digest: "d".repeat(64), syncedAt: state.syncedAt });
+    await expect(readWorkspaceState(fixture.workspace, "agent-1")).resolves.toMatchObject({
+      schemaVersion: 4,
+      skills: { digest: "d".repeat(64), syncedAt: state.syncedAt },
+    });
+    await expect(
+      fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-2", runtime)),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(skills.verify).toHaveBeenCalledOnce();
+    await expect(
+      fixture.workspace.recordSkillsState("agent-missing", { digest: "d".repeat(64), syncedAt: state.syncedAt }),
+    ).rejects.toMatchObject({ code: "invalid" });
+  });
+
+  it("rejects malformed schema version 4 states", async () => {
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session A");
+    await fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-1", runtime));
+    const statePath = fixture.workspace.paths("agent-1").workspaceState;
+    const base = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    const invalidStates: Record<string, unknown>[] = [
+      { ...base, schemaVersion: 4 },
+      { ...base, schemaVersion: 4, skills: null },
+      { ...base, schemaVersion: 4, skills: { digest: "x", syncedAt: "2026-09-11T10:00:00.000Z" } },
+      { ...base, schemaVersion: 4, skills: { digest: "c".repeat(64), syncedAt: "not a date" } },
+      {
+        ...base,
+        schemaVersion: 4,
+        skills: { digest: "c".repeat(64), syncedAt: "2026-09-11T10:00:00.000Z", lastError: "" },
+      },
+      { ...base, schemaVersion: 4, skills: { digest: "c".repeat(64), syncedAt: "2026-09-11T10:00:00.000Z", extra: 1 } },
+      {
+        ...base,
+        schemaVersion: 4,
+        layout: "other",
+        skills: { digest: "c".repeat(64), syncedAt: "2026-09-11T10:00:00.000Z" },
+      },
+      {
+        ...base,
+        schemaVersion: 4,
+        transition: "pending",
+        skills: { digest: "c".repeat(64), syncedAt: "2026-09-11T10:00:00.000Z" },
+      },
+      { ...base, schemaVersion: 5 },
+    ];
+    for (const state of invalidStates) {
+      await writeFile(statePath, JSON.stringify(state));
+      await expect(fixture.workspace.cwd("agent-1")).rejects.toMatchObject({ code: "invalid" });
+    }
   });
 });
 

@@ -61,6 +61,8 @@ The optional `runtime.channelTarget` capability (version 1) lets a connected Cli
 
 The optional `runtime.skillsSync` capability (version 1) lets the Server tell a connected Client which Agents' assigned skill sets changed. When it is negotiated, the Server may send a `skills:changed` business frame listing `{ agentId, digest }` pairs after an upload, replacement, deletion, or assignment change; the Client syncs only the Agents named. The same digest travels in the effective runtime snapshot as `skills.digest`, so a Client that never negotiated the capability, or missed a frame, still converges on its next reconcile. See [Skills distribution](./design/skills-distribution.md).
 
+On the Client, the frame is a hint rather than a transaction: it triggers a sync only for Agents whose workspace is already prepared, the advertised digest is compared with the local `.skills/.opentag-skills.json`, and the runtime skills manifest plus any changed archives are fetched over HTTP with the machine token. The Client also verifies its local skill trees on workspace preparation, on each Turn admission, and on a periodic sweep.
+
 ## Adversarial checks
 
 The implementation and tests cover downgrade attempts with unmatched errors, missing required capabilities, unknown optional capabilities, invalid ranges, unacknowledged or unadmitted Provider readiness, out-of-order control frames, stale connection IDs, replacement sockets, frame-size limits, and mismatched negotiated maps. Authentication happens before capability use; capability negotiation cannot grant authorization or readiness.

@@ -62,6 +62,8 @@ disconnected -> connecting -> authenticating -> welcoming -> registering -> regi
 
 可选的 `runtime.skillsSync` capability（版本 1）让 Server 告知已连接的 Client 哪些 Agent 的 skill 分配集合发生了变化。协商成功后，Server 可以在上传、替换、删除或分配变更之后发送 `skills:changed` 业务帧，列出 `{ agentId, digest }` 对；Client 只同步帧中列出的 Agent。同一个 digest 也以 `skills.digest` 的形式随 effective runtime snapshot 下发，因此从未协商该 capability 或漏收帧的 Client 仍会在下一次 reconcile 时收敛。参见 [Skills 分发](../design/skills-distribution.md)。
 
+在 Client 侧，该帧只是提示而非事务：它只会为已经准备好 workspace 的 Agent 触发同步，帧中的 digest 会与本地 `.skills/.opentag-skills.json` 比对，再用 machine token 通过 HTTP 拉取 runtime skills manifest 和有变化的压缩包。Client 还会在 workspace 准备、每次 Turn 准入和周期性兜底扫描时校验本地 skill 目录。
+
 ## 对抗性检查
 
 实现与测试覆盖：不匹配错误诱导降级、必需能力缺失、未知可选能力、非法区间、未确认或未准入的 Provider readiness、乱序控制帧、过期 connection ID、替换 socket、帧大小边界和协商结果不一致。认证先于 Capability 使用；Capability 协商不能授予权限或 readiness。

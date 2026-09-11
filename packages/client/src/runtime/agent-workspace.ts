@@ -51,10 +51,24 @@ interface PendingAgentWorkspaceState extends AgentWorkspaceIdentity {
   };
 }
 
+/** Outcome of the latest skill sync, recorded beside the layout state (schema version 4). */
+export interface AgentWorkspaceSkillsState {
+  digest: string;
+  syncedAt: string;
+  lastError?: string;
+}
+
 export interface LocalAgentWorkspaceState extends AgentWorkspaceIdentity {
-  schemaVersion: 3;
+  schemaVersion: 3 | 4;
   layout: "root" | "legacy-files";
   transition: "complete";
+  skills?: AgentWorkspaceSkillsState;
+}
+
+/** The skill sync entry points the workspace manager fires after a workspace is complete; both are best-effort. */
+export interface AgentWorkspaceSkillSync {
+  reconcile(agentId: string, options: { expectedDigest?: string }): Promise<unknown>;
+  verify(agentId: string, options: { expectedDigest?: string }): Promise<unknown>;
 }
 
 type ParsedAgentWorkspaceState = LegacyAgentWorkspaceState | PendingAgentWorkspaceState | LocalAgentWorkspaceState;
@@ -80,18 +94,62 @@ const KNOWN_LEGACY_PARTIAL_MIGRATIONS = [
 export interface AgentWorkspaceManagerOptions {
   bindingStore: SessionBindingStore;
   home: string;
+  skills?: AgentWorkspaceSkillSync;
 }
 
 export class AgentWorkspaceManager implements RuntimePreparation {
   readonly #bindingStore: SessionBindingStore;
   readonly #home: string;
+  #skills?: AgentWorkspaceSkillSync;
 
   constructor(options: AgentWorkspaceManagerOptions) {
     this.#bindingStore = options.bindingStore;
     this.#home = options.home;
+    this.#skills = options.skills;
+  }
+
+  /** Late binding for the skill sync, whose own dependencies (`cwd`, `recordSkillsState`) live on this manager. */
+  attachSkillSync(skills: AgentWorkspaceSkillSync): void {
+    this.#skills = skills;
   }
 
   async prepareAgent(snapshot: EffectiveRuntimeSnapshot, _hashes: RuntimeSnapshotHashes): Promise<void> {
+    await this.#prepareWorkspace(snapshot);
+    this.#triggerSkillSync(snapshot, "reconcile");
+  }
+
+  async verifyAgent(snapshot: EffectiveRuntimeSnapshot, _hashes: RuntimeSnapshotHashes): Promise<void> {
+    await this.#prepareWorkspace(snapshot);
+    this.#triggerSkillSync(snapshot, "verify");
+  }
+
+  /**
+   * Skill sync is fired and forgotten: it downloads over the network and must never delay Session
+   * admission or turn a Server outage into a preparation failure. The manager records failures
+   * itself and retries with backoff.
+   */
+  #triggerSkillSync(snapshot: EffectiveRuntimeSnapshot, kind: "reconcile" | "verify"): void {
+    if (!this.#skills) return;
+    const options = { expectedDigest: snapshot.skills?.digest };
+    const run =
+      kind === "reconcile"
+        ? this.#skills.reconcile(snapshot.agentId, options)
+        : this.#skills.verify(snapshot.agentId, options);
+    void run.catch((error: unknown) => {
+      logger.debug({ code: "skill_sync_trigger_failed", error: String(error) }, "Skill sync trigger failed");
+    });
+  }
+
+  /** Persist the latest skill sync outcome; the workspace must already be complete. */
+  async recordSkillsState(agentId: string, skills: AgentWorkspaceSkillsState): Promise<void> {
+    const paths = agentRuntimePaths(this.#home, agentId);
+    const state = completeWorkspaceState(await readDurableJson(paths.workspaceState, parseAgentWorkspaceState));
+    const { skills: _previous, ...identity } = state;
+    const next: LocalAgentWorkspaceState = { ...identity, schemaVersion: 4, skills };
+    await writeDurableJson(paths.workspaceState, next);
+  }
+
+  async #prepareWorkspace(snapshot: EffectiveRuntimeSnapshot): Promise<void> {
     const paths = agentRuntimePaths(this.#home, snapshot.agentId);
     await ensurePrivateDirectory(this.#home, paths.workspaceStatesRoot);
     const state = await readDurableJson(paths.workspaceState, parseAgentWorkspaceState);
@@ -123,18 +181,11 @@ export class AgentWorkspaceManager implements RuntimePreparation {
     return this.#bindingStore.prepare(request, hashes);
   }
 
-  verifyAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {
-    return this.prepareAgent(snapshot, hashes);
-  }
-
   async stopSession(_sessionId: string, _placementGeneration: number): Promise<void> {}
 
   async cwd(agentId: string): Promise<string> {
     const paths = agentRuntimePaths(this.#home, agentId);
-    const state = await readDurableJson(paths.workspaceState, parseAgentWorkspaceState);
-    if (state?.schemaVersion !== 3 || state.transition !== "complete") {
-      throw new RuntimeStorageError("invalid", "Agent workspace compatibility transition is incomplete");
-    }
+    const state = completeWorkspaceState(await readDurableJson(paths.workspaceState, parseAgentWorkspaceState));
     const cwd = state.layout === "legacy-files" ? paths.files : paths.workspaceRoot;
     await assertRealDirectory(cwd);
     const canonicalHome = await realpath(this.#home);
@@ -366,6 +417,13 @@ function matchesKnownLegacyPartialMigration(
   return false;
 }
 
+function completeWorkspaceState(state: ParsedAgentWorkspaceState | undefined): LocalAgentWorkspaceState {
+  if (!state || "managedInstructionsHash" in state || state.transition !== "complete") {
+    throw new RuntimeStorageError("invalid", "Agent workspace compatibility transition is incomplete");
+  }
+  return state;
+}
+
 function completeState(
   snapshot: EffectiveRuntimeSnapshot,
   layout: LocalAgentWorkspaceState["layout"],
@@ -386,7 +444,12 @@ function parseAgentWorkspaceState(value: unknown): ParsedAgentWorkspaceState {
   }
   const state = value as Record<string, unknown>;
   if (state.schemaVersion === 1 || state.schemaVersion === 2) return parseLegacyState(state);
-  if (state.schemaVersion !== 3) throw new RuntimeStorageError("invalid", "Agent workspace state version is invalid");
+  if (state.schemaVersion === 3) return parseLayoutState(state);
+  if (state.schemaVersion === 4) return parseSkillsState(state);
+  throw new RuntimeStorageError("invalid", "Agent workspace state version is invalid");
+}
+
+function parseLayoutState(state: Record<string, unknown>): PendingAgentWorkspaceState | LocalAgentWorkspaceState {
   assertExactFields(
     state,
     state.transition === "pending"
@@ -416,6 +479,32 @@ function parseAgentWorkspaceState(value: unknown): ParsedAgentWorkspaceState {
     }
   }
   return state as unknown as PendingAgentWorkspaceState;
+}
+
+/** Schema version 4 is a complete version 3 state plus the recorded skill sync outcome. */
+function parseSkillsState(state: Record<string, unknown>): LocalAgentWorkspaceState {
+  assertExactFields(state, ["agentId", "layout", "provider", "schemaVersion", "skills", "transition", "workspaceId"]);
+  validateIdentityFields(state);
+  if (state.layout !== "root" && state.layout !== "legacy-files") {
+    throw new RuntimeStorageError("invalid", "Agent workspace layout is invalid");
+  }
+  if (state.transition !== "complete") {
+    throw new RuntimeStorageError("invalid", "Agent workspace transition is invalid");
+  }
+  if (!isWorkspaceSkillsState(state.skills)) {
+    throw new RuntimeStorageError("invalid", "Agent workspace skills state is invalid");
+  }
+  return state as unknown as LocalAgentWorkspaceState;
+}
+
+function isWorkspaceSkillsState(value: unknown): value is AgentWorkspaceSkillsState {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort().join(",");
+  if (keys !== "digest,syncedAt" && keys !== "digest,lastError,syncedAt") return false;
+  if (!RuntimeSha256Schema.safeParse(record.digest).success) return false;
+  if (typeof record.syncedAt !== "string" || Number.isNaN(Date.parse(record.syncedAt))) return false;
+  return record.lastError === undefined || (typeof record.lastError === "string" && record.lastError.length > 0);
 }
 
 function parseLegacyState(state: Record<string, unknown>): LegacyAgentWorkspaceState {

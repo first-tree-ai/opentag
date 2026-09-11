@@ -53,6 +53,17 @@ describe("renderManagedSystemPrompt Agent Home", () => {
     expect(prompt).not.toContain("migration");
   });
 
+  it("explains the managed .skills/ directory and how to publish a skill from a Session", () => {
+    const prompt = renderManagedSystemPrompt(snapshot, { ...session, agentHome: "/tmp/agent-home" });
+    expect(prompt).toContain("`.skills/` is managed by OpenTag");
+    expect(prompt).toContain("mirrors the skills assigned to this Agent");
+    expect(prompt).toContain("do not edit it directly");
+    expect(prompt).toContain("`opentag-dev skill push <dir>`");
+    expect(prompt).toContain("`--session <Current Session>`");
+    expect(prompt).toContain("`.claude/skills/` (Claude Code)");
+    expect(prompt).toContain("`.agents/skills/` (Codex)");
+  });
+
   it("still describes Agent Home conventions when the concrete path is omitted", () => {
     const prompt = renderManagedSystemPrompt(snapshot, session);
     expect(prompt).toContain("## Agent Home");

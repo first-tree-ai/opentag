@@ -380,6 +380,20 @@ describe("ClientRuntime domain dispatch", () => {
   });
 });
 
+describe("ClientRuntime skills:changed frames", () => {
+  it("hands skills:changed frames to the configured handler and ignores them otherwise", async () => {
+    const frame = { type: "skills:changed", agents: [{ agentId: "agent-1", digest: "a".repeat(64) }] };
+    const handleSkillsChanged = vi.fn(async () => undefined);
+    await new ClientRuntime(new FrameConnection([frame]) as unknown as RuntimeConnection, {
+      handleSkillsChanged,
+    }).run();
+    expect(handleSkillsChanged).toHaveBeenCalledWith(frame);
+    const silent = new FrameConnection([frame]);
+    await expect(new ClientRuntime(silent as unknown as RuntimeConnection).run()).resolves.toBeUndefined();
+    expect(silent.sent).toEqual([]);
+  });
+});
+
 class FrameConnection {
   readonly computerId = randomUUID();
   readonly sent: unknown[] = [];

@@ -48,3 +48,11 @@ export {
   runSessionList,
   runSessionSend,
 } from "./core/session/index.js";
+export {
+  formatAgentSkills,
+  formatSkillList,
+  formatSkillPulled,
+  formatSkillPushed,
+} from "./core/skill/formatting.js";
+export { runSkillAssign, runSkillDelete, runSkillPush } from "./core/skill/mutations.js";
+export { runSkillList, runSkillPull, runSkillShow } from "./core/skill/queries.js";

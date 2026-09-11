@@ -10,6 +10,7 @@ import { registerLoginCommand } from "../commands/login.js";
 import { registerLogsCommand } from "../commands/logs.js";
 import { registerProviderCliCommand } from "../commands/provider-cli.js";
 import { registerSessionCommand } from "../commands/session/index.js";
+import { registerSkillCommand } from "../commands/skill/index.js";
 import { registerUpgradeCommand } from "../commands/upgrade.js";
 import { channelConfig } from "../core/channel/config.js";
 
@@ -40,6 +41,7 @@ export function createProgram(options: { json?: boolean } = {}): Command {
   registerLogsCommand(program);
   registerProviderCliCommand(program);
   registerSessionCommand(program);
+  registerSkillCommand(program);
   registerUpgradeCommand(program);
   return program;
 }

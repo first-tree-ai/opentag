@@ -160,10 +160,12 @@ describe("spawnCapturedProcess", () => {
   });
 
   it("kills a child that outlives the timeout and reports timedOut", async () => {
+    // The timeout starts at spawn, so it must leave headroom for the child to boot
+    // and write its partial output on a loaded CI runner before it is killed.
     const result = await spawnCapturedProcess({
       ...nodeScript("process.stdout.write('partial'); setTimeout(() => {}, 30_000)"),
       env: process.env,
-      timeoutMs: 100,
+      timeoutMs: 1_500,
       maxBytes: 1024,
       forward: false,
     });

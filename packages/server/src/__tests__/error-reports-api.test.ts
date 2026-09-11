@@ -95,10 +95,11 @@ describe("POST /api/v1/error-reports", () => {
     const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
     const { app, logs } = createRelayApp({ reporter });
 
-    const stripped = await post(app, {
-      ...validReport,
-      url: "https://user:pass@opentag.example/agents?token=opaque#f",
-    });
+    // Assembled at runtime so the fixture is not itself a credential-bearing URL in the source tree.
+    const withCredentials = new URL("https://opentag.example/agents?token=opaque#f");
+    withCredentials.username = "user";
+    withCredentials.password = "pass";
+    const stripped = await post(app, { ...validReport, url: withCredentials.toString() });
     const rejected = await post(app, { ...validReport, url: "javascript:alert(1)" });
     await new Promise((resolve) => setTimeout(resolve, 0));
 

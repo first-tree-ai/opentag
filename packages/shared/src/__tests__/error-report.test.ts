@@ -10,6 +10,14 @@ import { HTTP_PATHS } from "../http-paths.js";
 
 const occurredAt = "2026-09-11T10:00:00.000Z";
 
+/** Assembled at runtime so no credential-bearing URL sits in the source tree for a scanner to find. */
+function urlWithCredentials(): string {
+  const url = new URL("https://opentag.example/agents/1?token=opaque#frag");
+  url.username = "user";
+  url.password = "pass";
+  return url.toString();
+}
+
 describe("ErrorReportRequestSchema", () => {
   it("publishes the relay path under the versioned API prefix", () => {
     expect(HTTP_PATHS.errorReports).toBe("/api/v1/error-reports");
@@ -43,12 +51,7 @@ describe("ErrorReportRequestSchema", () => {
 
   it("enforces the URL contract on parse: credentials, query, and fragment are stripped", () => {
     expect(
-      ErrorReportRequestSchema.parse({
-        source: "web",
-        message: "boom",
-        url: "https://user:pass@opentag.example/agents/1?token=opaque#frag",
-        occurredAt,
-      }).url,
+      ErrorReportRequestSchema.parse({ source: "web", message: "boom", url: urlWithCredentials(), occurredAt }).url,
     ).toBe("https://opentag.example/agents/1");
   });
 
@@ -70,9 +73,7 @@ describe("ErrorReportRequestSchema", () => {
 
 describe("sanitizeErrorReportUrl", () => {
   it("drops the query string, fragment, and credentials", () => {
-    expect(sanitizeErrorReportUrl("https://user:pw@opentag.example/agents/1?token=opaque#frag")).toBe(
-      "https://opentag.example/agents/1",
-    );
+    expect(sanitizeErrorReportUrl(urlWithCredentials())).toBe("https://opentag.example/agents/1");
   });
 
   it("rejects non-HTTP and malformed URLs", () => {

@@ -4,10 +4,11 @@ import {
   type AgentSetupMessagingState,
   type AgentSetupRuntimeState,
   projectAgentSetupComponents,
+  type SkillDetail,
   type TaskSummary,
 } from "@opentag/shared/browser";
 import { describe, expect, it, vi } from "vitest";
-import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi } from "../api.js";
+import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, ResponseSchemaError } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -688,3 +689,131 @@ function abortError(): Error {
   error.name = "AbortError";
   return error;
 }
+
+const skillDigest = "c".repeat(64);
+const skillDetail = {
+  name: "release-notes",
+  description: "Turns merged changes into release notes",
+  digest: skillDigest,
+  archiveSha256: skillDigest,
+  archiveBytes: 2048,
+  fileCount: 1,
+  totalBytes: 4096,
+  agentCount: 0,
+  updatedAt: "2026-09-10T10:00:00.000Z",
+  updatedBy: { kind: "user", id: userId },
+  manifest: {
+    schemaVersion: 1,
+    name: "release-notes",
+    files: [{ path: "SKILL.md", sha256: skillDigest, size: 4096, mode: "0644" }],
+  },
+} satisfies SkillDetail;
+
+describe("BrowserApi skills", () => {
+  it("routes the skill library reads and writes to their documented paths and methods", async () => {
+    setDocumentCookie("opentag_csrf=skill-token");
+    const calls: Array<{ path: string; method: string | undefined; init: RequestInit | undefined }> = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      calls.push({ path: String(input), method: init?.method, init });
+      return new Response(null, { status: 204 });
+    });
+    const api = new BrowserApi(fetchImpl);
+    await Promise.allSettled([
+      api.skills({ cursor: "after-issue-triage", limit: 20 }),
+      api.skills(),
+      api.skill("release-notes"),
+      api.skillAgents("release-notes"),
+      api.agentSkills(userId),
+      api.deleteSkill("release-notes"),
+      api.replaceAgentSkills(userId, ["issue-triage", "release-notes"]),
+    ]);
+    expect(calls.map(({ path, method }) => ({ path, method }))).toEqual([
+      { path: "/api/v1/skills?cursor=after-issue-triage&limit=20", method: undefined },
+      { path: "/api/v1/skills", method: undefined },
+      { path: "/api/v1/skills/release-notes", method: undefined },
+      { path: "/api/v1/skills/release-notes/agents", method: undefined },
+      { path: `/api/v1/agents/${userId}/skills`, method: undefined },
+      { path: "/api/v1/skills/release-notes", method: "DELETE" },
+      { path: `/api/v1/agents/${userId}/skills`, method: "PUT" },
+    ]);
+    const put = calls[6]?.init;
+    expect(new Headers(put?.headers).get("content-type")).toBe("application/json");
+    expect(new Headers(put?.headers).get("x-opentag-csrf")).toBe("skill-token");
+    expect(JSON.parse(String(put?.body))).toEqual({ skillNames: ["issue-triage", "release-notes"] });
+    expect(new Headers(calls[5]?.init?.headers).get("x-opentag-csrf")).toBe("skill-token");
+  });
+
+  it("uploads the raw archive as application/zip with the CSRF token and the conflict policy", async () => {
+    setDocumentCookie("opentag_csrf=skill-token");
+    const archive = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], { type: "application/zip" });
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(skillDetail));
+    const api = new BrowserApi(fetchImpl);
+
+    await expect(api.uploadSkill(archive)).resolves.toEqual(skillDetail);
+    await expect(api.uploadSkill(archive, { onConflict: "replace" })).resolves.toEqual(skillDetail);
+
+    const [first, second] = fetchImpl.mock.calls;
+    expect(first?.[0]).toBe("/api/v1/skills?onConflict=fail");
+    expect(second?.[0]).toBe("/api/v1/skills?onConflict=replace");
+    for (const call of [first, second]) {
+      const init = call?.[1];
+      expect(init?.method).toBe("POST");
+      expect(init?.body).toBe(archive);
+      expect(init?.credentials).toBe("same-origin");
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/zip");
+      expect(new Headers(init?.headers).get("x-opentag-csrf")).toBe("skill-token");
+    }
+  });
+
+  it("surfaces the upload refusals as ApiErrors carrying the status", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({ error: { code: "VALIDATION_ERROR", category: "validation", message: "exists" } }),
+          {
+            status: 409,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+    );
+    const api = new BrowserApi(fetchImpl);
+    await expect(api.uploadSkill(new Blob(["zip"]))).rejects.toMatchObject({ status: 409, message: "exists" });
+  });
+
+  it("reads SKILL.md as text and maps its failure envelope", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response("# Release notes\n", { status: 200, headers: { "content-type": "text/markdown; charset=utf-8" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { code: "RESOURCE_NOT_FOUND", category: "deterministic", message: "No such skill" },
+          }),
+          { status: 404, headers: { "content-type": "application/json" } },
+        ),
+      );
+    const api = new BrowserApi(fetchImpl);
+
+    await expect(api.skillMarkdown("release-notes")).resolves.toBe("# Release notes\n");
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("/api/v1/skills/release-notes/skill-md");
+    expect(fetchImpl.mock.calls[0]?.[1]?.method).toBeUndefined();
+    await expect(api.skillMarkdown("missing")).rejects.toMatchObject({ status: 404, message: "No such skill" });
+  });
+
+  it("rejects skill responses that do not match the shared schema", async () => {
+    const reporter = new DiagnosticReporter({ warn: vi.fn() });
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ skills: [{ name: "release-notes" }], nextCursor: null }))
+      .mockResolvedValueOnce(jsonResponse({ agentId: userId, digest: "not-a-digest", skills: [] }));
+    const api = new BrowserApi(fetchImpl, reporter);
+
+    await expect(api.skills()).rejects.toBeInstanceOf(ResponseSchemaError);
+    await expect(api.agentSkills(userId)).rejects.toMatchObject({
+      routeTemplate: "/api/v1/agents/:id/skills",
+      code: "invalid_response_schema",
+    });
+  });
+});

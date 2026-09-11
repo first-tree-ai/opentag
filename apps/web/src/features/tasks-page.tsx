@@ -1,10 +1,11 @@
-import type {
-  ListTasksResponse,
-  TaskDetail,
-  TaskStatus,
-  TaskSummary,
-  TaskTurn,
-  TurnFailureReason,
+import {
+  type ListTasksResponse,
+  TASK_CANCELLED_DELIVERY_REASON,
+  type TaskDetail,
+  type TaskStatus,
+  type TaskSummary,
+  type TaskTurn,
+  type TurnFailureReason,
 } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -38,6 +39,7 @@ import {
   usePersistedSettledError,
 } from "./resource/resource-state.js";
 import { useRememberedState } from "./shell/shell-memory.js";
+import { TaskCancelControl } from "./task-cancel.js";
 import { TaskMessageBody } from "./task-message-body.js";
 import { TaskOutgoingReplies } from "./task-outgoing-replies.js";
 
@@ -48,6 +50,7 @@ const statusPresentation: Record<TaskStatus, { readonly tone: StatusTone }> = {
   running: { tone: "info" },
   completed: { tone: "success" },
   failed: { tone: "danger" },
+  cancelled: { tone: "neutral" },
   expired: { tone: "warning" },
   ended: { tone: "neutral" },
   idle: { tone: "neutral" },
@@ -455,6 +458,7 @@ export function TaskDetailPage({
             <StatusIndicator label={taskStatusLabel(task.status)} tone={status?.tone ?? "neutral"} />
           </TaskDetailFact>
         </dl>
+        <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
 
       {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void taskQuery.refetch()} /> : null}
@@ -916,7 +920,12 @@ function attentionLabel(value: TaskTurn["attention"]): string {
 }
 
 function deliveryStateLabel(delivery: TaskTurn["delivery"]): string {
-  return delivery.isRunning === true ? m.tasks_in_progress() : humanizeEnum(delivery.state);
+  if (delivery.isRunning === true) return m.tasks_in_progress();
+  // A withdrawn delivery is stored as expired; the reader asked for it and is told so.
+  if (delivery.state === "expired" && delivery.reason === TASK_CANCELLED_DELIVERY_REASON) {
+    return m.tasks_status_cancelled();
+  }
+  return humanizeEnum(delivery.state);
 }
 
 /*
@@ -950,6 +959,7 @@ function taskStatusLabel(value: TaskStatus): string {
   if (value === "running") return m.tasks_status_running();
   if (value === "completed") return m.tasks_status_completed();
   if (value === "failed") return m.tasks_status_failed();
+  if (value === "cancelled") return m.tasks_status_cancelled();
   if (value === "expired") return m.tasks_status_expired();
   if (value === "ended") return m.tasks_status_ended();
   return m.tasks_status_idle();

@@ -273,7 +273,9 @@ export {
   SLACK_EVENTS_PATH,
   SLACK_OAUTH_CALLBACK_PATH,
   TASK_BY_ID_TEMPLATE,
+  TASK_CANCEL_TEMPLATE,
   taskByIdPath,
+  taskCancelPath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";

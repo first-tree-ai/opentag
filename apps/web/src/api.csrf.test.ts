@@ -73,6 +73,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   internalNavigationVisibility: [],
   updateInternalNavigationVisibility: [{ tasks: true }],
   updateTaskTitle: [ID, { title: "A task" }],
+  cancelTask: [ID],
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],

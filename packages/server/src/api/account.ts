@@ -20,6 +20,8 @@ import {
   ListTasksResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
   TASK_BY_ID_TEMPLATE,
+  TASK_CANCEL_TEMPLATE,
+  TaskCancelResponseSchema,
   TaskDetailSchema,
   TaskTitleUpdateRequestSchema,
   TaskTitleUpdateResponseSchema,
@@ -152,6 +154,19 @@ export function registerAccountRoutes(
       const { sessionId } = parseRequest(TaskParamsSchema, request.params);
       const query = parseRequest(TaskDetailQuerySchema, request.query);
       const response = TaskDetailSchema.parse(await taskService.get(accountId(request), sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    /*
+     * Withdraws a Task that is still waiting in the queue. The service refuses anything that is not
+     * queued with 409, so a caller whose Task started in the meantime learns to re-read it rather
+     * than believing it stopped something.
+     */
+    app.post(TASK_CANCEL_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const response = TaskCancelResponseSchema.parse({
+        task: await taskService.cancel(accountId(request), sessionId),
+      });
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
   }

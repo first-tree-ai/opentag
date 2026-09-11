@@ -44,8 +44,8 @@ The status is the topic's latest execution situation, read by precedence:
    later acceptance proves the earlier one ended without a report.
 3. `queued` when a delivery is still pending.
 4. Otherwise the outcome of the latest execution: `completed`, `failed` (including rejected
-   deliveries), or `expired` (a delivery that expired unprocessed, or an unreported Turn whose
-   deadline has passed).
+   deliveries), `cancelled` (a queued delivery the Account withdrew before it ran), or `expired` (a
+   delivery that expired unprocessed, or an unreported Turn whose deadline has passed).
 
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
@@ -62,6 +62,21 @@ chat's channel Session, overrides it.
 `PATCH /api/v1/sessions/:id` sets or clears the manual title. The id may be the Task id or one of
 its Sessions; the title is written to the Session the Task reads it from. A top-level group request
 that nobody replied to has no such Session and returns `404`.
+
+## Cancelling a queued Task
+
+`POST /api/v1/sessions/:id/cancel` withdraws a Task that is still `queued`. The id may be the Task
+id or one of its Sessions. Every pending delivery of the topic that no worker has claimed is
+expired with reason `cancelled`; the delivery worker claims only pending rows and recovers expired
+ones only while they carry a dispatch correlation, so a withdrawn delivery is never picked up
+later. The response carries the refreshed Task summary, whose status reads `cancelled` once
+nothing else ran after it.
+
+Only a queued Task cancels. A Task that is `running`, or that already finished, answers `409
+TASK_NOT_QUEUED`, and so does a queued Task whose only pending delivery a worker is dispatching at
+that moment — the Runtime may already be running it. The Web reads that answer as "no longer
+queued" and refreshes the Task instead of reporting a failure. Cancelling a Task that is already
+`cancelled` is a no-op success, so repeating the request is harmless.
 
 ## Internal Sessions and collaboration messages
 

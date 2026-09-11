@@ -9,8 +9,19 @@ import {
 } from "./im-message.js";
 import { TurnOutgoingReplySnapshotSchema } from "./turn-outgoing-reply.js";
 
-export const TaskStatusSchema = z.enum(["queued", "running", "completed", "failed", "expired", "ended", "idle"]);
+export const TaskStatusSchema = z.enum([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "expired",
+  "ended",
+  "idle",
+]);
 export const TaskSessionKindSchema = z.enum(["channel", "thread"]);
+/** The delivery `reason` a queued message carries once its Account withdrew it before any worker took it. */
+export const TASK_CANCELLED_DELIVERY_REASON = "cancelled";
 export const TASK_AUTO_TITLE_MAX_GRAPHEMES = 80;
 export const TASK_TITLE_MAX_LENGTH = 120;
 const taskTitleSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
@@ -65,6 +76,9 @@ export const ListTasksResponseSchema = z
   .strict();
 
 export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema }).strict();
+
+/** The Task after its queued deliveries were withdrawn; its status reads `cancelled` once nothing else ran. */
+export const TaskCancelResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
 export const TaskTurnSchema = z
   .object({
@@ -171,6 +185,7 @@ export type TaskSummary = z.infer<typeof TaskSummarySchema>;
 export type ListTasksResponse = z.infer<typeof ListTasksResponseSchema>;
 export type TaskTitleUpdateRequest = z.infer<typeof TaskTitleUpdateRequestSchema>;
 export type TaskTitleUpdateResponse = z.infer<typeof TaskTitleUpdateResponseSchema>;
+export type TaskCancelResponse = z.infer<typeof TaskCancelResponseSchema>;
 export type TaskTurn = z.infer<typeof TaskTurnSchema>;
 export type TaskInternalSession = z.infer<typeof TaskInternalSessionSchema>;
 export type TaskCollaborationMessage = z.infer<typeof TaskCollaborationMessageSchema>;

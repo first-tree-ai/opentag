@@ -7,11 +7,12 @@ import type {
   TaskTurn,
   TurnReportRequest,
 } from "@opentag/shared";
-import { TaskTitleSchema } from "@opentag/shared";
+import { TASK_CANCELLED_DELIVERY_REASON, TaskTitleSchema } from "@opentag/shared";
 import { and, asc, eq, inArray, isNull, or, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
 import { sessionMessages, sessions } from "../../db/schema/index.js";
+import { DISPATCH_CLAIM_PREFIX } from "../../runtime/im-delivery-claim.js";
 import { AuthServiceError } from "../auth/index.js";
 import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
 
@@ -60,6 +61,7 @@ interface TaskSummaryRow extends Record<string, unknown> {
   hasRunning: boolean;
   hasPending: boolean;
   deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired" | null;
+  deliveryReason: string | null;
   latestRunning: boolean | null;
   reportedAt: Date | string | null;
   turnReport: TurnReportRequest | null;
@@ -154,7 +156,8 @@ function encodeCursor(at: Date | string, id: string): string {
  * still queued, and only then the outcome of the last execution. An accepted delivery counts as
  * running only while its deadline has not passed, its Session is alive, and no later Turn ran in
  * that Session; a Session runs one Turn at a time, so a later acceptance proves the earlier one
- * ended without a report.
+ * ended without a report. A delivery the Account withdrew from the queue is stored as expired with
+ * the cancelled reason, and reads as `cancelled` rather than as a deadline that passed.
  */
 function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.endedAt) return "ended";
@@ -162,7 +165,8 @@ function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.hasPending) return "queued";
   // Every listed topic has a direct delivery, so a missing latest execution cannot happen.
   if (!row.deliveryState) return "idle";
-  if (row.deliveryState === "expired") return "expired";
+  if (row.deliveryState === "expired")
+    return row.deliveryReason === TASK_CANCELLED_DELIVERY_REASON ? "cancelled" : "expired";
   if (row.deliveryState === "terminal_rejected") return "failed";
   if (!row.reportedAt || !row.turnReport) return row.latestRunning ? "running" : "expired";
   return row.turnReport.outcome === "completed" ? "completed" : "failed";
@@ -492,6 +496,10 @@ function taskNotFound(): AuthServiceError {
   return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
 }
 
+function taskNotQueued(detail: string): AuthServiceError {
+  return new AuthServiceError("TASK_NOT_QUEUED", "deterministic", `${detail}, so there is nothing to cancel`, 409);
+}
+
 export class TaskService {
   readonly #now: () => Date;
 
@@ -607,6 +615,34 @@ export class TaskService {
   }
 
   /**
+   * Withdraw a queued Task before any of it runs. The id may be the Task's own id or one of its
+   * Sessions. Every pending delivery of the topic that no worker holds is expired with the
+   * cancelled reason, which keeps it out of the delivery worker's reach for good: the worker
+   * claims only `pending` rows, and recovers expired ones only while they carry a dispatch
+   * correlation, which a never-dispatched row does not have.
+   *
+   * Only a `queued` Task cancels. A Task that has started, or that already finished, is refused
+   * with 409 so the caller re-reads its state instead; a Task that is already `cancelled` is a
+   * no-op success, so a repeated cancel is harmless. A delivery a worker is dispatching right
+   * now — one carrying a live claim lease — is left alone, because the Runtime may already be
+   * running it; when that is all the Task had queued, the answer is the same 409.
+   */
+  async cancel(accountId: string, id: string): Promise<TaskSummary> {
+    const scope = (await this.#scopeOfMessage(accountId, id)) ?? (await this.#scopeOfSession(accountId, id));
+    if (!scope) throw taskNotFound();
+    const [before] = await this.#summaryRows(accountId, { scope, limit: 1 });
+    if (!before) throw taskNotFound();
+    const status = taskStatus(before);
+    if (status === "cancelled") return toSummary(before);
+    if (status !== "queued") throw taskNotQueued(`The Task is ${status}, not queued`);
+    const withdrawn = await this.#withdrawQueuedDeliveries(accountId, scope);
+    if (withdrawn === 0) throw taskNotQueued("The Task's queued message is already being delivered");
+    const [after] = await this.#summaryRows(accountId, { scope, limit: 1 });
+    if (!after) throw taskNotFound();
+    return toSummary(after);
+  }
+
+  /**
    * Store one best-effort generated title without ever replacing a manual override. A false
    * result means the task disappeared or a manual title won the race.
    */
@@ -677,6 +713,36 @@ export class TaskService {
       select ts.id from title_sessions ts where ts.topic_key is not distinct from ${scope.topicKey}
     `);
     return [...rows].map(({ id }) => id);
+  }
+
+  /**
+   * Expire the topic's pending deliveries that no worker is dispatching, and count them. The
+   * worker's claim takes a row lock, so an update that waits behind a claim re-reads the row and
+   * sees the claim marker; an update that wins the lock leaves nothing `pending` for the claim to
+   * find. A claim whose lease lapsed belongs to a worker that is gone, and is withdrawn like an
+   * unclaimed row — exactly as any worker may take such a row again.
+   */
+  async #withdrawQueuedDeliveries(accountId: string, scope: TopicScope): Promise<number> {
+    const now = this.#now();
+    const rows = await this.database.execute<{ id: string } & Record<string, unknown>>(sql`
+      with ${topicCtes({ accountId, scope, now })},
+      queued as (
+        select e.id from executions e where e.state = 'pending'
+      )
+      update im_message_deliveries as delivery
+      set state = 'expired', reason = ${TASK_CANCELLED_DELIVERY_REASON}
+      from queued
+      where delivery.id = queued.id
+        and delivery.state = 'pending'
+        and delivery.dispatch_request_id is null
+        and (
+          delivery.last_error_code is null
+          or delivery.last_error_code not like ${`${DISPATCH_CLAIM_PREFIX}%`}
+          or delivery.next_attempt_at <= ${now.toISOString()}::timestamptz
+        )
+      returning delivery.id
+    `);
+    return [...rows].length;
   }
 
   /** The Session a topic reads its manual and generated title from, if it has one. */
@@ -845,6 +911,7 @@ export class TaskService {
         p.has_running as "hasRunning",
         p.has_pending as "hasPending",
         le.state as "deliveryState",
+        le_delivery.reason as "deliveryReason",
         le.is_running as "latestRunning",
         le.reported_at as "reportedAt",
         case when le.state = 'steered' then le_root.turn_report else le_delivery.turn_report end as "turnReport"

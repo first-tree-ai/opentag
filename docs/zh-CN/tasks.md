@@ -1,7 +1,7 @@
 # 任务
 
 > Canonical source: [tasks.md](../tasks.md)
-> Last synced with: 2026-09-09
+> Last synced with: 2026-09-11
 
 任务（Task）是账户拥有者对"有人在飞书或 Slack 里让 Agent 做的一件事"的只读视图。它是对已存储的入站
 `ImMessage` 记录及其 `im_message_deliveries` 的投影；消息投递、Session 物化和 Agent Runtime 都不因它而
@@ -36,8 +36,8 @@ channel Session 里的 `ambient` 旁听副本，以及因消息出现更新修�
 2. `running`：存在已接受但未报告的投递，且未过截止时间、其 Session 仍存活、同一 Session 里没有更晚被
    接受的 Turn。一个 Session 同时只跑一个 Turn，更晚的接受即证明前一个已结束而没有报告。
 3. `queued`：存在仍在等待的投递。
-4. 否则取最新执行的结果：`completed`、`failed`（含被拒绝的投递）或 `expired`（未处理即过期的投递，
-   或超过截止仍未报告的 Turn）。
+4. 否则取最新执行的结果：`completed`、`failed`（含被拒绝的投递）、`cancelled`（账户在运行前撤回的排队
+   投递）或 `expired`（未处理即过期的投递，或超过截止仍未报告的 Turn）。
 
 详情中每条 Turn 的 `delivery.isRunning` 与列表使用同一个有效运行条件。Web 仅在该值为 true 时显示进行中，
 不会从持久化的 `accepted` 推断仍在运行。已经不活跃且没有报告的 Turn，以及旧服务器未提供该字段的数据，
@@ -50,6 +50,17 @@ Task 的标题来自根消息，沿用列表一直使用的推导方式：去掉
 
 `PATCH /api/v1/sessions/:id` 设置或清除手动标题。id 可以是 Task id，也可以是它的某条 Session；标题
 写入 Task 读取标题的那条 Session。没有人回复的顶层群聊请求没有这样的 Session，返回 `404`。
+
+## 取消排队中的 Task
+
+`POST /api/v1/sessions/:id/cancel` 撤回仍处于 `queued` 状态的 Task。id 可以是 Task id，也可以是它的某条
+Session。话题内所有尚未被 worker 认领的待处理投递都会被置为过期并标注 `cancelled` 原因；投递 worker 只认领
+pending 行，且只在过期行仍带有派发关联时才会恢复它，因此被撤回的投递之后不会再被拾起。响应返回刷新后的
+Task 摘要，在其后没有其他执行时状态为 `cancelled`。
+
+只有排队中的 Task 才能取消。`running` 或已结束的 Task 返回 `409 TASK_NOT_QUEUED`；排队中的 Task 若其唯一的
+待处理投递此刻正被 worker 派发，也会得到同样的答复——Runtime 可能已经在运行它。Web 会把这个答复理解为
+"已不在排队中"，刷新 Task 而不是报告失败。对已经 `cancelled` 的 Task 再次取消是无操作的成功，重复请求无害。
 
 ## 内部 Session 与协作消息
 

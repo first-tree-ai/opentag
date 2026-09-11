@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="docs/assets/opentag-logo.png" alt="OpenTag" width="72">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/opentag-logo-on-dark.png">
+  <img src="docs/assets/opentag-logo.png" alt="OpenTag" width="72">
+</picture>
 
 # OpenTag
 

@@ -102,11 +102,15 @@ describe("withProviderCliLock", () => {
     const { layout, lockPath } = await makeLayout();
     await writeFile(lockPath, JSON.stringify({ pid: process.pid, token: "someone-else" }), { mode: 0o600 });
     const isProcessAlive = vi.fn(() => true);
+    const sleep = vi.fn(noSleep);
     await expect(
-      withProviderCliLock(layout, "feishu", async () => "never", { isProcessAlive, maxAttempts: 2, retryDelayMs: 1 }),
+      withProviderCliLock(layout, "feishu", async () => "never", { isProcessAlive, sleep, maxAttempts: 2 }),
     ).rejects.toBeInstanceOf(ProviderCliLockBusyError);
     expect(isProcessAlive).toHaveBeenCalledTimes(2);
     expect(isProcessAlive).toHaveBeenCalledWith(process.pid);
+    // No retryDelayMs was injected, so the retry waits for the 100ms default.
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(100);
   });
 
   it("breaks a lock whose holder process has exited", async () => {

@@ -29,6 +29,21 @@ describe("application error boundaries", () => {
     setErrorReportSink(undefined);
   });
 
+  it("relays caught and uncaught root errors but keeps recoverable ones on the console path", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+
+    rootErrorHandlers.onRecoverableError(new Error("hydration mismatch"), {});
+    expect(sink).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    rootErrorHandlers.onCaughtError(new Error("caught"), {});
+    rootErrorHandlers.onUncaughtError(new Error("uncaught"), {});
+    expect(sink.mock.calls.map((call) => call[0].message)).toEqual(["caught", "uncaught"]);
+    expect(consoleError).toHaveBeenCalledTimes(3);
+  });
+
   it("relays a boundary failure to the installed sink without credential-shaped values", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const sink = vi.fn();

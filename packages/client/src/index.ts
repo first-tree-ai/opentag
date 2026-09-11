@@ -88,6 +88,7 @@ export {
   CLIENT_ERROR_REPORT_TIMEOUT_MS,
   type ClientErrorReportMetadata,
   installProcessErrorReporting,
+  PROCESS_ERROR_FLUSH_WAIT_MS,
   PROCESS_ERROR_REPORT_WAIT_MS,
   type ProcessErrorOrigin,
   type ProcessErrorReportingOptions,

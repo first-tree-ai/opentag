@@ -111,6 +111,11 @@ Configuration is validated before the server listens, so add a newly required va
 revision that needs it is deployed. A missing one leaves CapRover restarting a container that exits at startup rather
 than serving a degraded App.
 
+The image workflows pass the commit SHA as the `OPENTAG_WEB_VERSION` build argument, which the Web App stamps
+into the error reports it relays (see [Client error reporting](./error-reporting.md)). A self-built image should
+pass its own release identity the same way, `docker build --build-arg OPENTAG_WEB_VERSION=$(git rev-parse HEAD) .`,
+or its reports carry the placeholder manifest version.
+
 The GHCR package is public, so CapRover pulls the image anonymously. If the package is ever made private, add a
 registry credential in **CapRover → Cluster → Docker Registries** using a GitHub token with `read:packages`, otherwise
 every deployment fails at the pull step.

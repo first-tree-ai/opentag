@@ -62,6 +62,29 @@ describe("web error report sink", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
+  it("forgets the oldest failures once the table is full and dedupes on an explicit key", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const sink = createErrorReportSink({ fetchImpl, target, cooldownMs: 60_000, now: () => 1_000 });
+
+    for (let index = 0; index <= 200; index += 1) sink({ code: "unhandled_error", message: `failure ${index}` });
+    sink({ code: "unhandled_error", message: "failure 0" });
+    sink({ code: "unhandled_error", message: "failure 200" });
+    sink({
+      code: "resource_load_failed",
+      message: "resource_load_failed: /assets/a.js",
+      dedupeKey: "resource_load_failed",
+    });
+    sink({
+      code: "resource_load_failed",
+      message: "resource_load_failed: /assets/b.js",
+      dedupeKey: "resource_load_failed",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 201 distinct failures, then "failure 0" again (evicted, so sent), "failure 200" (still tracked), one resource failure.
+    expect(fetchImpl).toHaveBeenCalledTimes(201 + 1 + 1);
+  });
+
   it("swallows a rejected request, a throwing fetch, and a missing target", async () => {
     const rejecting = vi.fn<typeof fetch>().mockRejectedValue(new Error("offline"));
     const throwing = vi.fn<typeof fetch>().mockImplementation(() => {

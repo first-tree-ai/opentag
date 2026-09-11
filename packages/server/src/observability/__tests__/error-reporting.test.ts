@@ -130,6 +130,37 @@ describe("createErrorReporter", () => {
     });
   });
 
+  it("gives up on a forward that exceeds its deadline and logs it", async () => {
+    const { logger, resolve } = fakeLogger();
+    const held: ErrorReportingClient = { report: vi.fn() };
+    const reporter = createErrorReporter({ projectId: "p", logger: resolve, createClient: () => held, timeoutMs: 20 });
+
+    await expect(reporter.report(webEvent)).resolves.toBeUndefined();
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warning = logger.warn.mock.calls[0]?.[0] as { err?: Error } | undefined;
+    expect(warning?.err?.message).toContain("exceeded 20ms");
+  });
+
+  it("forwards a stack longer than a log field without truncating it", async () => {
+    const { resolve } = fakeLogger();
+    const client: ErrorReportingClient = {
+      report: vi.fn((_error, _request, callback: (error: Error | null) => void) => callback(null)),
+    };
+    const reporter = createErrorReporter({ projectId: "p", logger: resolve, createClient: () => client });
+    const frames = Array.from(
+      { length: 150 },
+      (_value, index) => `    at frame${index} (module-${index}.js:${index}:1)`,
+    );
+    const stack = ["Error: Render failed", ...frames].join("\n");
+
+    await reporter.report({ ...webEvent, stack });
+
+    const forwarded = vi.mocked(client.report).mock.calls[0]?.[0] as { stack: string };
+    expect(forwarded.stack).toHaveLength(stack.length);
+    expect(forwarded.stack.endsWith(frames.at(-1) ?? "")).toBe(true);
+  });
+
   it("survives a missing logger", async () => {
     const reporter = createErrorReporter({
       projectId: "p",

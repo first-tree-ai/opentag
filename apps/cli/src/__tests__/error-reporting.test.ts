@@ -9,6 +9,7 @@ import { CommandError } from "../core/command/policy.js";
 import {
   installCliProcessErrorReporting,
   reportCliError,
+  reportCommandFailure,
   resolveCommandPath,
   resolveErrorReportServerUrl,
   shouldReportCommandError,
@@ -125,6 +126,27 @@ describe("reportCliError", () => {
         },
       }),
     ).resolves.toEqual({ ok: false });
+  });
+});
+
+describe("reportCommandFailure", () => {
+  it("relays a defect once per thrown value and skips caller-facing categories", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const home = await loggedInHome("https://opentag.example");
+    const failure = new Error("boom");
+    const internal = new CommandError(
+      { code: "INTERNAL_ERROR", category: "internal", retryability: "never", phase: "unknown" },
+      "boom",
+    );
+    const validation = new CommandError(
+      { code: "VALIDATION_ERROR", category: "validation", retryability: "never", phase: "validation" },
+      "bad input",
+    );
+
+    await expect(reportCommandFailure(failure, internal, { home, fetchImpl })).resolves.toEqual({ ok: true });
+    await expect(reportCommandFailure(failure, internal, { home, fetchImpl })).resolves.toEqual({ ok: false });
+    await expect(reportCommandFailure(new Error("x"), validation, { home, fetchImpl })).resolves.toEqual({ ok: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });
 

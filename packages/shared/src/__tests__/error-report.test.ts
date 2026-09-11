@@ -41,7 +41,20 @@ describe("ErrorReportRequestSchema", () => {
     ).toBe("agent create");
   });
 
+  it("enforces the URL contract on parse: credentials, query, and fragment are stripped", () => {
+    expect(
+      ErrorReportRequestSchema.parse({
+        source: "web",
+        message: "boom",
+        url: "https://user:pass@opentag.example/agents/1?token=opaque#frag",
+        occurredAt,
+      }).url,
+    ).toBe("https://opentag.example/agents/1");
+  });
+
   it.each([
+    { source: "web", message: "boom", occurredAt, url: "javascript:alert(1)" },
+    { source: "web", message: "boom", occurredAt, url: "not a url" },
     { source: "server", message: "boom", occurredAt },
     { source: "web", message: "", occurredAt },
     { source: "web", message: "boom", occurredAt: "yesterday" },

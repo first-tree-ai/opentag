@@ -14,6 +14,24 @@ export function shouldReportCommandError(error: CommandError): boolean {
   return REPORTED_CATEGORIES.has(error.category);
 }
 
+const reportedFailures = new WeakSet<object>();
+
+/**
+ * Relay one command failure at most once. The same thrown value can be handled by `executeCommand`
+ * and still surface at the entry point, so the original error object is the identity that is tracked.
+ */
+export async function reportCommandFailure(
+  error: unknown,
+  commandError: CommandError,
+  options: CliErrorReportOptions = {},
+): Promise<{ ok: boolean }> {
+  if (!shouldReportCommandError(commandError)) return { ok: false };
+  const identity = typeof error === "object" && error !== null ? error : commandError;
+  if (reportedFailures.has(identity)) return { ok: false };
+  reportedFailures.add(identity);
+  return reportCliError(error, options);
+}
+
 /**
  * The subcommand path Commander would dispatch to, such as `agent create`, from the raw arguments.
  * Options are skipped and the walk stops at the first token that is not a registered subcommand,
@@ -24,6 +42,7 @@ export function resolveCommandPath(program: Command, argv: readonly string[]): s
   let current = program;
   for (const token of argv) {
     if (token.startsWith("-")) continue;
+    if (!Array.isArray(current.commands)) break;
     const next = current.commands.find(
       (candidate) => candidate.name() === token || candidate.aliases().includes(token),
     );

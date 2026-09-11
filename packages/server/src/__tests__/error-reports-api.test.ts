@@ -1,4 +1,4 @@
-import { HTTP_PATHS } from "@opentag/shared";
+import { ERROR_REPORT_STACK_MAX_LENGTH, HTTP_PATHS, STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RouteRateLimiter } from "../api/browser-auth.js";
 import { ERROR_REPORT_RATE_LIMIT, ERROR_REPORT_RATE_LIMIT_WINDOW_MS } from "../api/error-reports.js";
@@ -45,6 +45,7 @@ describe("POST /api/v1/error-reports", () => {
     const { app, logs } = createRelayApp({ reporter });
 
     const response = await post(app, validReport);
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(response.statusCode).toBe(202);
     expect(response.body).toBe("");
@@ -64,6 +65,7 @@ describe("POST /api/v1/error-reports", () => {
     apps.push(app);
 
     const response = await post(app, { ...validReport, source: "cli", command: "agent create", url: undefined });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(response.statusCode).toBe(202);
     expect(chunks.join("")).toContain("GOOGLE_CLOUD_PROJECT is not set");
@@ -89,6 +91,25 @@ describe("POST /api/v1/error-reports", () => {
     expect(reporter.report).not.toHaveBeenCalled();
   });
 
+  it("strips credentials and query from the URL before logging or forwarding, and rejects non-HTTP URLs", async () => {
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
+    const { app, logs } = createRelayApp({ reporter });
+
+    const stripped = await post(app, {
+      ...validReport,
+      url: "https://user:pass@opentag.example/agents?token=opaque#f",
+    });
+    const rejected = await post(app, { ...validReport, url: "javascript:alert(1)" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(stripped.statusCode).toBe(202);
+    expect(rejected.statusCode).toBe(400);
+    expect(vi.mocked(reporter.report).mock.calls[0]?.[0].url).toBe("https://opentag.example/agents");
+    expect(reporter.report).toHaveBeenCalledTimes(1);
+    expect(logs()).not.toContain("opaque");
+    expect(logs()).not.toContain("user:pass");
+  });
+
   it("rate limits one address without affecting another", async () => {
     const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
     const { app } = createRelayApp({
@@ -102,6 +123,7 @@ describe("POST /api/v1/error-reports", () => {
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toMatchObject({ error: { code: "RATE_LIMITED", message: "Too many error reports" } });
     expect((await post(app, validReport, "198.51.100.2")).statusCode).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(reporter.report).toHaveBeenCalledTimes(3);
   });
 
@@ -110,13 +132,47 @@ describe("POST /api/v1/error-reports", () => {
     expect(ERROR_REPORT_RATE_LIMIT_WINDOW_MS).toBe(60_000);
   });
 
-  it("still answers 202 when the reporter rejects", async () => {
-    const reporter: ErrorReporter = { report: vi.fn().mockRejectedValue(new Error("tracker unavailable")) };
+  it("forwards the full stack while the log line stays capped per field", async () => {
+    const reporter: ErrorReporter = { report: vi.fn().mockResolvedValue(undefined) };
     const { app, logs } = createRelayApp({ reporter });
+    const frames = Array.from(
+      { length: 150 },
+      (_value, index) =>
+        `    at frame${index} (https://opentag.example/assets/very/long/path/to/module-${index}.js:${index}:1)`,
+    );
+    const stack = ["Error: Render failed", ...frames].join("\n");
+    expect(stack.length).toBeGreaterThan(STRUCTURED_ERROR_LOG_FIELD_MAX_BYTES * 2);
+    expect(stack.length).toBeLessThan(ERROR_REPORT_STACK_MAX_LENGTH);
 
-    const response = await post(app, validReport);
+    const response = await post(app, { ...validReport, stack });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(response.statusCode).toBe(202);
-    expect(logs()).toContain("Error reporter failed");
+    const forwarded = vi.mocked(reporter.report).mock.calls[0]?.[0];
+    expect(forwarded?.stack).toHaveLength(stack.length);
+    expect(forwarded?.stack?.endsWith(frames.at(-1) ?? "")).toBe(true);
+    expect(logs()).toContain("[TRUNCATED]");
+    expect(logs()).not.toContain("frame149 ");
+  });
+
+  it("answers 202 without waiting for the forward and logs a reporter that rejects", async () => {
+    const held: ErrorReporter = { report: vi.fn(() => new Promise<void>(() => undefined)) };
+    const { app } = createRelayApp({ reporter: held });
+
+    const outcome = await Promise.race([
+      post(app, validReport).then((response) => response.statusCode),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+    expect(outcome).toBe(202);
+    expect(held.report).toHaveBeenCalledTimes(1);
+
+    const rejecting: ErrorReporter = { report: vi.fn().mockRejectedValue(new Error("tracker unavailable")) };
+    const relay = createRelayApp({ reporter: rejecting });
+    const response = await post(relay.app, validReport);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(response.statusCode).toBe(202);
+    expect(relay.logs()).toContain("Error reporter failed");
+    expect(relay.logs()).toContain("tracker unavailable");
   });
 });

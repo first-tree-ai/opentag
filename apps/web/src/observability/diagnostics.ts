@@ -151,6 +151,13 @@ export class DiagnosticReporter {
 
   report(input: DiagnosticEnvelope, level: DiagnosticLevel = "warn"): boolean {
     const safe = createDiagnosticEnvelope(input);
+    /*
+     * Relayed before the console cooldown, which keys on route and code only: two different
+     * failures with the same code inside one window are one console line but two reports. The sink
+     * applies its own code-and-message cooldown. Only the error level is relayed; a warning is a
+     * handled or degraded path, not a defect.
+     */
+    if (level === "error") forwardErrorReport({ code: safe.code, ...diagnosticErrorText(safe) });
     const key = `${safe.routeTemplate}\u0000${safe.code}`;
     const now = this.now();
     const previous = this.lastReportedAt.get(key);
@@ -158,8 +165,6 @@ export class DiagnosticReporter {
     this.lastReportedAt.set(key, now);
     const logger = level === "error" ? this.errorLogger : this.warnLogger;
     logger("[OpenTag] Diagnostic", safe);
-    // Only the error level is relayed: a warning is a handled or degraded path, not a defect.
-    if (level === "error") forwardErrorReport({ code: safe.code, ...diagnosticErrorText(safe) });
     return true;
   }
 
@@ -169,14 +174,22 @@ export class DiagnosticReporter {
 }
 
 /** The already-redacted message and stack of an envelope, or a description built from its stable fields. */
-function diagnosticErrorText(safe: DiagnosticEnvelope): { message: string; stack?: string } {
+function diagnosticErrorText(safe: DiagnosticEnvelope): { message: string; stack?: string; dedupeKey?: string } {
   const error = safe.error as { message?: unknown; stack?: unknown } | undefined;
   const stack = typeof error?.stack === "string" && error.stack ? { stack: error.stack } : {};
   if (typeof error?.message === "string" && error.message) return { message: error.message, ...stack };
-  return { message: typeof safe.resourcePath === "string" ? `${safe.code}: ${safe.resourcePath}` : safe.code };
+  if (typeof safe.resourcePath !== "string") return { message: safe.code };
+  /*
+   * A stale client after a deploy hunts for every chunk hash that no longer exists; one relayed
+   * report per cooldown says that, one per path would only say it louder.
+   */
+  return { message: `${safe.code}: ${safe.resourcePath}`, dedupeKey: safe.code };
 }
 
-/** Register global listeners for failures that React root handlers cannot observe. */
+/**
+ * Register global listeners for failures that React root handlers cannot observe: unhandled promise
+ * rejections, uncaught exceptions outside React, and same-origin resource load failures.
+ */
 export function installWindowDiagnosticHandlers(
   target: Window = window,
   reporter: DiagnosticReporter = windowDiagnosticReporter,
@@ -194,7 +207,23 @@ export function installWindowDiagnosticHandlers(
     );
   };
 
-  const onResourceError = (event: ErrorEvent) => {
+  const onWindowError = (event: ErrorEvent) => {
+    // An uncaught exception outside React (a timer, a native listener) arrives as an ErrorEvent
+    // carrying the thrown value; a resource that failed to load carries none and targets its element.
+    const thrown = event.error;
+    if ((thrown !== undefined && thrown !== null) || event.target === target) {
+      const normalized = normalizeError(thrown ?? event.message, "unhandled_error");
+      reporter.report(
+        {
+          source: "window",
+          code: normalized.code,
+          routeTemplate: "window",
+          error: { name: normalized.error.name, message: normalized.error.message, stack: normalized.error.stack },
+        },
+        "error",
+      );
+      return;
+    }
     const element = event.target;
     if (!(element instanceof HTMLScriptElement) && !(element instanceof HTMLLinkElement)) return;
     const resourceType = element instanceof HTMLScriptElement ? "script" : "link";
@@ -219,10 +248,10 @@ export function installWindowDiagnosticHandlers(
   };
 
   target.addEventListener("unhandledrejection", onUnhandledRejection);
-  target.addEventListener("error", onResourceError, true);
+  target.addEventListener("error", onWindowError, true);
   return () => {
     target.removeEventListener("unhandledrejection", onUnhandledRejection);
-    target.removeEventListener("error", onResourceError, true);
+    target.removeEventListener("error", onWindowError, true);
   };
 }
 

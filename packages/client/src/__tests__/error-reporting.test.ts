@@ -170,6 +170,30 @@ describe("installProcessErrorReporting", () => {
     expect(exit).toHaveBeenCalledTimes(1);
   });
 
+  it("writes the crash output through stderr and exits only after it drained", async () => {
+    const target = new EventEmitter();
+    const { logger } = recordingLogger();
+    const exit = vi.fn();
+    const drained: Array<() => void> = [];
+    const write = vi.spyOn(process.stderr, "write").mockImplementation(((_chunk: unknown, callback?: unknown) => {
+      if (typeof callback === "function") drained.push(callback as () => void);
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      installProcessErrorReporting({ report: async () => undefined, logger, target, exit, waitMs: 20 });
+
+      target.emit("uncaughtException", new Error("boom"));
+      await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+      expect(String(write.mock.calls[0]?.[0])).toContain("Error: boom");
+      expect(exit).not.toHaveBeenCalled();
+
+      drained[0]?.();
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+    } finally {
+      write.mockRestore();
+    }
+  });
+
   it("still exits when the report or the logger throws", async () => {
     const target = new EventEmitter();
     const logger: ClientLogger = {

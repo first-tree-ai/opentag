@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { type ChannelName, createErrorReport, type ErrorReportRequest, HTTP_PATHS } from "@opentag/shared";
 import type { ClientLogger } from "./logger.js";
 
@@ -5,6 +6,8 @@ import type { ClientLogger } from "./logger.js";
 export const CLIENT_ERROR_REPORT_TIMEOUT_MS = 3_000;
 /** How long a crashing process waits for its last report before exiting anyway. */
 export const PROCESS_ERROR_REPORT_WAIT_MS = 2_000;
+/** How long a crashing process waits for its stderr output to drain before exiting anyway. */
+export const PROCESS_ERROR_FLUSH_WAIT_MS = 1_000;
 
 export interface ClientErrorReportMetadata {
   version: string;
@@ -69,9 +72,23 @@ export interface ProcessErrorReportingOptions {
   target?: ProcessErrorTarget;
   /** Ends the process; `process.exit` by default. Injected so tests can observe the code. */
   exit?: (code: number) => void;
-  /** Writes the failure to stderr as Node would have; `console.error` by default. */
-  print?: (error: unknown) => void;
+  /**
+   * Writes the failure to stderr as Node would have. The default writes through `process.stderr`
+   * and resolves once the bytes are handed to the operating system, so a piped stderr keeps the
+   * crash output that a synchronous exit would have dropped.
+   */
+  print?: (error: unknown) => void | Promise<void>;
   waitMs?: number;
+}
+
+function writeCrashOutput(error: unknown): Promise<void> {
+  return new Promise((resolve) => {
+    const flushed = setTimeout(resolve, PROCESS_ERROR_FLUSH_WAIT_MS);
+    process.stderr.write(`${inspect(error)}\n`, () => {
+      clearTimeout(flushed);
+      resolve();
+    });
+  });
 }
 
 function describeFailure(error: unknown): Record<string, unknown> {
@@ -96,7 +113,7 @@ function describeFailure(error: unknown): Record<string, unknown> {
 export function installProcessErrorReporting(options: ProcessErrorReportingOptions): () => void {
   const target = options.target ?? process;
   const exit = options.exit ?? ((code: number) => process.exit(code));
-  const print = options.print ?? ((error: unknown) => console.error(error));
+  const print = options.print ?? writeCrashOutput;
   const waitMs = options.waitMs ?? PROCESS_ERROR_REPORT_WAIT_MS;
   let terminating = false;
 
@@ -113,10 +130,10 @@ export function installProcessErrorReporting(options: ProcessErrorReportingOptio
       .then(() => options.report(error, origin))
       .catch(() => undefined);
     const deadline = new Promise<void>((resolve) => setTimeout(resolve, waitMs));
-    void Promise.race([report, deadline]).finally(() => {
-      print(error);
-      exit(1);
-    });
+    void Promise.race([report, deadline])
+      .then(() => print(error))
+      .catch(() => undefined)
+      .finally(() => exit(1));
   };
 
   const onException = handle("uncaughtException");

@@ -33,8 +33,21 @@ export const ErrorReportRequestSchema = z
     version: shortField.optional(),
     channel: ChannelNameSchema.optional(),
     environment: shortField.optional(),
-    /** Web only: the document URL without query string or fragment. */
-    url: z.string().min(1).max(ERROR_REPORT_URL_MAX_LENGTH).optional(),
+    /** Web only: an HTTP(S) document URL; query string, fragment, and credentials are stripped on parse. */
+    url: z
+      .string()
+      .min(1)
+      .max(ERROR_REPORT_URL_MAX_LENGTH)
+      .transform((value, context) => {
+        // Enforced where the report is accepted, not only where it is built: the client is untrusted.
+        const sanitized = sanitizeErrorReportUrl(value);
+        if (sanitized === undefined) {
+          context.addIssue({ code: "custom", message: "Must be an HTTP(S) URL" });
+          return z.NEVER;
+        }
+        return sanitized;
+      })
+      .optional(),
     /** CLI only: the command path without user arguments, such as `agent create`. */
     command: shortField.optional(),
     userAgent: shortField.optional(),
@@ -45,7 +58,9 @@ export const ErrorReportRequestSchema = z
 export type ErrorReportSource = z.infer<typeof ErrorReportSourceSchema>;
 export type ErrorReportRequest = z.infer<typeof ErrorReportRequestSchema>;
 
-export type ErrorReportMetadata = Omit<ErrorReportRequest, "message" | "stack" | "code" | "occurredAt"> & {
+export type ErrorReportMetadata = Omit<ErrorReportRequest, "message" | "stack" | "code" | "occurredAt" | "url"> & {
+  /** Any document URL; it is sanitized here and dropped when it is not HTTP(S). */
+  url?: string;
   code?: string;
   occurredAt?: string;
 };

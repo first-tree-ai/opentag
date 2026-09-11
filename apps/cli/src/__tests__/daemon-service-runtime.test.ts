@@ -304,7 +304,7 @@ describe("daemon service runtime", () => {
     ).resolves.toBe(1);
 
     expect(release).toHaveBeenCalledOnce();
-    // An unexpected terminal failure is relayed once, and a failing relay changes nothing about the exit.
+    // A throwing relay must not replace the daemon's own exit code.
     expect(reportFailure).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ message: "sensitive release failure" }),
     );

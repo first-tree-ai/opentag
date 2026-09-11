@@ -6,7 +6,7 @@ import {
   normalizeError,
   routeTemplate,
 } from "./diagnostics.js";
-import { setErrorReportSink } from "./error-reporting.js";
+import { createErrorReportSink, setErrorReportSink } from "./error-reporting.js";
 
 describe("web diagnostics", () => {
   afterEach(() => {
@@ -47,6 +47,7 @@ describe("web diagnostics", () => {
     expect(sink).toHaveBeenCalledWith({
       code: "resource_load_failed",
       message: "resource_load_failed: /assets/chunk.js",
+      dedupeKey: "resource_load_failed",
     });
     expect(JSON.stringify(sink.mock.calls)).not.toContain("opaque");
   });
@@ -92,6 +93,52 @@ describe("web diagnostics", () => {
     expect(normalizeError(Object.assign(new Error("request stopped"), { code: "REQUEST_STOPPED" })).code).toBe(
       "REQUEST_STOPPED",
     );
+  });
+
+  it("relays two different failures with one code inside the console cooldown, and a duplicate once", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    setErrorReportSink(
+      createErrorReportSink({
+        fetchImpl,
+        target: () => ({ location: { href: "https://opentag.example/" } as Location, navigator: window.navigator }),
+      }),
+    );
+    const error = vi.fn();
+    const remove = installWindowDiagnosticHandlers(window, new DiagnosticReporter({ error }));
+
+    for (const message of ["first failure", "second failure", "first failure"]) {
+      const rejection = new Event("unhandledrejection") as PromiseRejectionEvent;
+      Object.defineProperty(rejection, "reason", { value: new Error(message) });
+      window.dispatchEvent(rejection);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const bodies = fetchImpl.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as { message: string });
+    expect(bodies.map((body) => body.message)).toEqual(["first failure", "second failure"]);
+    remove();
+  });
+
+  it("reports an uncaught exception outside React with its stack", () => {
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const error = vi.fn();
+    const remove = installWindowDiagnosticHandlers(window, new DiagnosticReporter({ error }));
+    const thrown = Object.assign(new Error("timer callback failed: token=opaque-timer"), { code: "TIMER_FAILED" });
+    thrown.stack = "Error: timer callback failed\n    at tick (app.js:9:9)";
+
+    window.dispatchEvent(new ErrorEvent("error", { error: thrown, message: thrown.message }));
+
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[1]).toMatchObject({ code: "TIMER_FAILED", routeTemplate: "window", source: "window" });
+    expect(sink).toHaveBeenCalledExactlyOnceWith({
+      code: "TIMER_FAILED",
+      message: expect.stringContaining("timer callback failed: token=[REDACTED]"),
+      stack: expect.stringContaining("at tick (app.js:9:9)"),
+    });
+    expect(JSON.stringify([error.mock.calls, sink.mock.calls])).not.toContain("opaque-timer");
+    remove();
   });
 
   it("records unhandled rejections and capture-phase resource failures", () => {

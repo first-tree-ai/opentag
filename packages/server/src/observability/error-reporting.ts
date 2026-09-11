@@ -1,5 +1,5 @@
 import { ErrorReporting } from "@google-cloud/error-reporting";
-import { type ErrorReportRequest, redactForLog } from "@opentag/shared";
+import { type ErrorReportRequest, redactSensitive } from "@opentag/shared";
 import type { FastifyBaseLogger } from "fastify";
 
 /** Forwards one relayed client failure. Implementations never throw; a lost report is logged, not surfaced. */
@@ -22,7 +22,15 @@ export interface ErrorReporterOptions {
   logger: () => FastifyBaseLogger | undefined;
   /** Injectable for tests. Defaults to the Google Cloud SDK, constructed on the first report. */
   createClient?: (projectId: string) => ErrorReportingClient;
+  /** Longest a single forward may take before it is given up on and logged. */
+  timeoutMs?: number;
 }
+
+/**
+ * The SDK sets no deadline of its own and retries with backoff, so a blocked or slow egress to
+ * Google would otherwise hold a forward open indefinitely.
+ */
+export const ERROR_REPORT_FORWARD_TIMEOUT_MS = 5_000;
 
 const SERVICE_BY_SOURCE: Record<ErrorReportRequest["source"], string> = {
   web: "opentag-web",
@@ -82,12 +90,15 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
 
   let client: ErrorReportingClient | undefined;
   const createClient = options.createClient ?? defaultCreateClient;
+  const timeoutMs = options.timeoutMs ?? ERROR_REPORT_FORWARD_TIMEOUT_MS;
   return {
     async report(event, context = {}) {
-      const safe = redactForLog(event);
+      // No per-field cap here: the log line already applied one, and the schema bounds the stack.
+      const safe = redactSensitive(event);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         client ??= createClient(projectId);
-        await new Promise<void>((resolve, reject) => {
+        const forward = new Promise<void>((resolve, reject) => {
           client?.report(
             toReportedError(safe),
             {
@@ -99,6 +110,10 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
             (error) => (error ? reject(error) : resolve()),
           );
         });
+        const deadline = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`Error report forwarding exceeded ${timeoutMs}ms`)), timeoutMs);
+        });
+        await Promise.race([forward, deadline]);
       } catch (error) {
         options
           .logger()
@@ -106,6 +121,8 @@ export function createErrorReporter(options: ErrorReporterOptions): ErrorReporte
             { module: "error-reporting", err: error, source: safe.source, errorCode: safe.code },
             "Forwarding an error report to Google Cloud Error Reporting failed",
           );
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
       }
     },
   };

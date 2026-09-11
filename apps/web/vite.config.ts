@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 import type { Plugin, Rollup } from "vite";
 import { defineConfig } from "vitest/config";
 import packageManifest from "./package.json" with { type: "json" };
+import { resolveWebVersion } from "./src/observability/web-version.js";
 
 const ENTRY_CHUNK_BUDGET_BYTES = 600 * 1024;
 const ECHARTS_CHUNK_BUDGET_BYTES = 600 * 1024;
@@ -47,11 +48,8 @@ const bundleBudgetPlugin: Plugin = {
  */
 const generateRoutes = !process.env.VITEST;
 
-/**
- * The release identity error reports carry. Release tooling may stamp a commit or tag through
- * `OPENTAG_WEB_VERSION`; a plain local build falls back to the manifest version.
- */
-const webVersion = process.env.OPENTAG_WEB_VERSION?.trim() || packageManifest.version;
+/** The release identity error reports carry; see `resolveWebVersion` for where it comes from. */
+const webVersion = resolveWebVersion(process.env, packageManifest.version);
 
 export default defineConfig({
   base: "/",

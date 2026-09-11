@@ -1,4 +1,4 @@
-import { ErrorReportRequestSchema, HTTP_PATHS, redactForLog } from "@opentag/shared";
+import { ErrorReportRequestSchema, HTTP_PATHS, redactForLog, redactSensitive } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createErrorReporter, type ErrorReporter } from "../observability/error-reporting.js";
 import { AuthServiceError } from "../services/auth/errors.js";
@@ -16,13 +16,9 @@ export interface ErrorReportRoutesOptions {
 }
 
 /**
- * `POST /api/v1/error-reports`: the relay Web App and CLI failures travel through.
- *
- * No authentication, because an error before sign-in is still an error. The body is strictly
- * validated and bounded, the caller is rate limited by address, and the redacted event is always
- * written to the server log so an operator without a Google Cloud project still sees it. The reply
- * is `202` regardless of whether forwarding succeeded: a client is never made to wait on, or fail
- * because of, an error tracker.
+ * `POST /api/v1/error-reports`, the relay for Web App and CLI failures. Anonymous, because an error
+ * before sign-in is still an error; always logged, so an operator without a Google Cloud project
+ * still sees it; answered before forwarding, so a client never waits on the error tracker.
  */
 export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorReportRoutesOptions = {}): void {
   const reporter = options.reporter ?? createErrorReporter({ logger: () => app.log });
@@ -38,17 +34,19 @@ export function registerErrorReportRoutes(app: FastifyInstance, options: ErrorRe
       }
       throw error;
     }
-    const event = redactForLog(parseRequest(ErrorReportRequestSchema, request.body));
+    const event = parseRequest(ErrorReportRequestSchema, request.body);
+    // The log line is capped per field; the forwarded copy keeps the full stack the schema allows.
     request.log.warn(
-      { module: "error-reporting", source: event.source, errorCode: event.code, errorReport: event },
+      { module: "error-reporting", source: event.source, errorCode: event.code, errorReport: redactForLog(event) },
       "Client error reported",
     );
-    try {
-      await reporter.report(event, { ip: request.ip });
-    } catch (error) {
-      // The reporter contract is to swallow its own failures; one that leaks is still not the caller's problem.
-      request.log.warn({ module: "error-reporting", err: error }, "Error reporter failed");
-    }
+    const { ip } = request;
+    void Promise.resolve()
+      .then(() => reporter.report(redactSensitive(event), { ip }))
+      .catch((error: unknown) => {
+        // The reporter contract is to swallow its own failures; one that leaks is still not the caller's problem.
+        request.log.warn({ module: "error-reporting", err: error }, "Error reporter failed");
+      });
     reply.header("cache-control", "no-store");
     return reply.code(202).send();
   });

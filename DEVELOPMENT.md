@@ -109,6 +109,40 @@ After dependency changes, run `pnpm install` before building.
 
 For UI translations, see [Web i18n](./docs/i18n.md).
 
+### Skills sync
+
+The daemon mirrors the skills assigned to each Agent into that Agent's Home:
+
+| Path | Contents |
+| --- | --- |
+| `<Agent Home>/.skills/<name>/` | The skill's files, exactly as the server's manifest lists them |
+| `<Agent Home>/.skills/.opentag-skills.json` | Local sync record (`0600`): the agent digest, per-skill digests and manifests, `syncedAt`, and `lastError` |
+| `<Agent Home>/.claude/skills/<name>` | Relative symlink to `../../.skills/<name>` so Claude Code discovers the skill |
+| `data/runtime/workspace-states/a-<hash>.json` | Workspace layout state; schema version 4 adds the latest sync outcome |
+
+`.skills/` is fully managed: a sync installs what the server assigns, removes what it no longer lists, and
+never touches other entries under `.claude/skills/` (such as `context-tree-*`). Sync runs when a workspace is
+prepared, when the server pushes a `skills:changed` frame, and every ten minutes as a safety net; failures are
+recorded in `lastError` and retried with exponential backoff (one minute up to thirty minutes) without blocking
+Session start. Codex reads skills from the Computer-wide `$CODEX_HOME/skills`, which is shared by every Agent,
+so per-Agent projection for Codex is not performed yet.
+
+Manage the library from the CLI:
+
+```bash
+opentag skill list
+opentag skill show <name>
+opentag skill push <dir-or-zip> [--replace]
+opentag skill pull <name> [--out <dir>]
+opentag skill delete <name> [--yes]
+opentag skill assign <agent-id-or-name> --set <names...>
+```
+
+`push` packs a directory into a zip (skipping `.git/`, `node_modules/`, and `.DS_Store`; at most 5 MiB
+compressed, 20 MiB unpacked, 200 files) and requires a `SKILL.md` at the root. Inside an Agent Session it
+publishes through the Session and assigns the skill to that Agent; pass `--session <session-id>` with the
+Current Session named in the managed instructions.
+
 ## Checks
 
 Run these before opening a pull request:

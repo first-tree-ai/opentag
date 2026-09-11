@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-09-09
+> 同步日期：2026-09-11
 
 ## 从源码在本地运行
 
@@ -108,6 +108,38 @@ pnpm --filter @opentag/server start
 | `packages/shared` | 共用 schema 和类型 |
 
 界面翻译请参阅 [Web 国际化](./docs/zh-CN/i18n.md)。
+
+### Skill 同步
+
+daemon 会把分配给每个 Agent 的 skill 镜像到该 Agent 的 Home 目录：
+
+| 路径 | 内容 |
+| --- | --- |
+| `<Agent Home>/.skills/<name>/` | skill 的文件，与服务器 manifest 完全一致 |
+| `<Agent Home>/.skills/.opentag-skills.json` | 本地同步记录（`0600`）：agent digest、每个 skill 的 digest 与 manifest、`syncedAt` 和 `lastError` |
+| `<Agent Home>/.claude/skills/<name>` | 指向 `../../.skills/<name>` 的相对符号链接，供 Claude Code 发现 skill |
+| `data/runtime/workspace-states/a-<hash>.json` | workspace 布局状态；schema 版本 4 增加了最近一次同步结果 |
+
+`.skills/` 完全由 daemon 托管：同步会安装服务器分配的 skill、删除服务器不再列出的 skill，且绝不触碰
+`.claude/skills/` 下的其他条目（例如 `context-tree-*`）。同步在 workspace 准备完成、服务器推送 `skills:changed`
+帧以及每十分钟一次的兜底扫描时运行；失败会记录到 `lastError` 并按指数退避（1 分钟到 30 分钟）重试，不会阻塞
+Session 启动。Codex 从整机共享的 `$CODEX_HOME/skills` 读取 skill，所有 Agent 共用该目录，因此暂不为 Codex 做
+按 Agent 的投影。
+
+通过 CLI 管理 skill 库：
+
+```bash
+opentag skill list
+opentag skill show <name>
+opentag skill push <dir-or-zip> [--replace]
+opentag skill pull <name> [--out <dir>]
+opentag skill delete <name> [--yes]
+opentag skill assign <agent-id-or-name> --set <names...>
+```
+
+`push` 会把目录打包为 zip（跳过 `.git/`、`node_modules/` 和 `.DS_Store`；压缩后不超过 5 MiB、解压不超过
+20 MiB、文件数不超过 200），并要求根目录有 `SKILL.md`。在 Agent Session 内执行时会通过该 Session 发布并把 skill
+分配给该 Agent；请用 `--session <session-id>` 传入托管指令中给出的 Current Session。
 
 ## 检查
 

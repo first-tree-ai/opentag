@@ -20,6 +20,22 @@ FORCE=0
 PATH_UPDATED_PROFILE=""
 ORIGINAL_PATH="${PATH:-}"
 BIN_NAME=""
+QUIET=0
+[ "${OPENTAG_QUIET:-}" != "1" ] || QUIET=1
+COLOR_MODE="auto"
+[ "${OPENTAG_NO_COLOR:-}" != "1" ] || COLOR_MODE="off"
+STEP_COUNT=6
+CURRENT_STEP=0
+STEP_OPEN=0
+ACTIVATED=0
+C_RESET=""
+C_BOLD=""
+C_DIM=""
+C_GREEN=""
+C_RED=""
+C_BRAND=""
+ERR_COLOR=""
+ERR_RESET=""
 
 START_MARKER="# >>> opentag portable >>>"
 END_MARKER="# <<< opentag portable <<<"
@@ -35,17 +51,117 @@ Options:
   --force                   Reinstall even when the target version is already active
   --no-path-edit            Do not edit shell startup files
   --path-mode <mode>        auto, prompt, or off (default: auto)
+  --quiet, -q               Only print the final result and errors (also: OPENTAG_QUIET=1)
+  --no-color                Disable colored output (also: NO_COLOR, OPENTAG_NO_COLOR=1)
   --help                    Show this help
 EOF
 }
 
+# Escape codes only ever wrap a whole message, so plain-text output stays grep-able byte for byte.
+setup_colors() {
+  [ "$COLOR_MODE" != "off" ] || return 0
+  [ -z "${NO_COLOR:-}" ] || return 0
+  [ "${TERM:-dumb}" != "dumb" ] || return 0
+  [ -t 1 ] || return 0
+  C_RESET="$(printf '\033[0m')"
+  C_BOLD="$(printf '\033[1m')"
+  C_DIM="$(printf '\033[2m')"
+  C_GREEN="$(printf '\033[32m')"
+  C_RED="$(printf '\033[31m')"
+  colors="$(tput colors 2>/dev/null || printf 0)"
+  case "$colors" in
+    *[!0-9]*|"") colors=0 ;;
+  esac
+  if [ "$colors" -ge 256 ]; then
+    C_BRAND="$(printf '\033[38;5;118m')"
+  else
+    C_BRAND="$C_GREEN"
+  fi
+  if [ -t 2 ]; then
+    ERR_COLOR="$C_RED"
+    ERR_RESET="$C_RESET"
+  fi
+}
+
+print_banner() {
+  printf '%s' "$C_BRAND"
+  cat <<'EOF'
+    .-~~~~~~-.                              _
+  .'  /\  /\  '.     ___  _ __   ___ _ __ | |_ __ _  __ _
+ /   /      \   \   / _ \| '_ \ / _ \ '_ \| __/ _' |/ _' |
+|    | o  o |    | | (_) | |_) |  __/ | | | || (_| | (_| |
+|     \ ^^ /    /   \___/| .__/ \___|_| |_|\__\__,_|\__, |
+ \     '--'   .'         |_|                        |___/
+  '-.______.-~
+EOF
+  printf '%s' "$C_RESET"
+  subtitle="  OpenTag portable installer  -  channel: ${PORTABLE_CHANNEL}"
+  [ -z "$REQUESTED_VERSION" ] || subtitle="$subtitle  -  version: $REQUESTED_VERSION"
+  printf '%s%s%s\n\n' "$C_DIM" "$subtitle" "$C_RESET"
+}
+
+# Result lines: always printed.
 log() {
   printf '%s\n' "$*"
 }
 
+# Progress lines: silenced by --quiet.
+info() {
+  [ "$QUIET" -eq 0 ] || return 0
+  printf '%s\n' "$*"
+}
+
+dim() {
+  [ "$QUIET" -eq 0 ] || return 0
+  printf '%s%s%s\n' "$C_DIM" "$*" "$C_RESET"
+}
+
+# Opens a "[n/6] message" line and leaves the cursor on it; ok or end_step closes it.
+step() {
+  CURRENT_STEP=$((CURRENT_STEP + 1))
+  [ "$QUIET" -eq 0 ] || return 0
+  STEP_OPEN=1
+  printf '%s[%s/%s]%s %s' "$C_BOLD" "$CURRENT_STEP" "$STEP_COUNT" "$C_RESET" "$*"
+}
+
+ok() {
+  STEP_OPEN=0
+  [ "$QUIET" -eq 0 ] || return 0
+  printf ' %s%s%s\n' "$C_GREEN" "${*:-ok}" "$C_RESET"
+}
+
+end_step() {
+  STEP_OPEN=0
+  [ "$QUIET" -eq 0 ] || return 0
+  printf '\n'
+}
+
 die() {
-  printf 'opentag portable installer: %s\n' "$*" >&2
+  # Start the error on its own line when a step line is still open.
+  [ "$STEP_OPEN" -eq 0 ] || printf '\n' >&2
+  printf '%s%s%s\n' "$ERR_COLOR" "opentag portable installer: $*" "$ERR_RESET" >&2
   exit 1
+}
+
+human_size() {
+  bytes="$1"
+  case "$bytes" in
+    ""|*[!0-9]*)
+      printf 'unknown size'
+      return 0
+      ;;
+  esac
+  if [ "$bytes" -ge 1048576 ]; then
+    unit=1048576
+    label="MB"
+  elif [ "$bytes" -ge 1024 ]; then
+    unit=1024
+    label="KB"
+  else
+    printf '%s bytes' "$bytes"
+    return 0
+  fi
+  printf '%s.%s %s' "$((bytes / unit))" "$(((bytes % unit) * 10 / unit))" "$label"
 }
 
 need_value() {
@@ -88,6 +204,14 @@ while [ "$#" -gt 0 ]; do
       esac
       shift 2
       ;;
+    --quiet|-q)
+      QUIET=1
+      shift
+      ;;
+    --no-color)
+      COLOR_MODE="off"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -106,6 +230,11 @@ case "$BIN_DIR" in
   /*) ;;
   *) die "--bin-dir must be an absolute path" ;;
 esac
+
+setup_colors
+if [ "$QUIET" -eq 0 ] && [ -t 1 ]; then
+  print_banner
+fi
 
 command_exists() {
   command -v "$1" >/dev/null 2>&1
@@ -375,16 +504,37 @@ print_path_guidance() {
   fi
 }
 
+print_footer() {
+  info ""
+  [ "$QUIET" -eq 1 ] || printf '%s%s%s\n' "$C_GREEN" "OK  OpenTag is ready." "$C_RESET"
+  [ "$#" -eq 0 ] || log "$1"
+  log "Command: $BIN_DIR/$BIN_NAME"
+  print_path_guidance
+  log "Run '$BIN_NAME --help' to get started."
+}
+
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/opentag-portable.XXXXXX")"
 TEMP_VERSION_DIR=""
 cleanup() {
-  rm -rf "$WORK_DIR"
+  status=$?
+  rm -rf "$WORK_DIR" || :
   # An interrupted install must not leave a half-extracted payload under the install root.
-  [ -z "$TEMP_VERSION_DIR" ] || rm -rf "$TEMP_VERSION_DIR"
+  [ -z "$TEMP_VERSION_DIR" ] || rm -rf "$TEMP_VERSION_DIR" || :
+  if [ "$status" -ne 0 ]; then
+    if [ "$ACTIVATED" -eq 0 ]; then
+      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}. Nothing was activated; any existing install is unchanged."
+    else
+      summary="Installation failed at step ${CURRENT_STEP}/${STEP_COUNT}, after OpenTag ${VERSION} was activated."
+    fi
+    printf '%s%s%s\n' "$ERR_COLOR" "$summary" "$ERR_RESET" >&2 || :
+    printf '%s\n' "Re-run with --help for options." >&2 || :
+  fi
 }
 trap cleanup EXIT HUP INT TERM
 
+step "Detecting platform ..."
 PLATFORM="$(detect_platform)"
+ok "$PLATFORM"
 BASE="$(trim_slashes "$DOWNLOAD_BASE_URL")"
 if [ -n "$REQUESTED_VERSION" ]; then
   MANIFEST_URL="${BASE}/${PORTABLE_CHANNEL}/${REQUESTED_VERSION}/manifest.json"
@@ -393,7 +543,9 @@ else
 fi
 
 MANIFEST_FILE="$WORK_DIR/manifest.json"
-log "Downloading OpenTag portable metadata: $MANIFEST_URL"
+step "Fetching release metadata (${PORTABLE_CHANNEL}${REQUESTED_VERSION:+ / $REQUESTED_VERSION}) ..."
+end_step
+dim "      $MANIFEST_URL"
 download_to "$MANIFEST_URL" "$MANIFEST_FILE"
 
 VERSION="$(json_string "$MANIFEST_FILE" version)"
@@ -402,6 +554,7 @@ BIN_NAME="$(json_string "$MANIFEST_FILE" binName)"
 [ -n "$VERSION" ] || die "metadata missing version"
 [ -n "$PACKAGE_NAME" ] || die "metadata missing packageName"
 [ -n "$BIN_NAME" ] || die "metadata missing binName"
+info "      Resolved OpenTag ${VERSION}"
 
 # Resolve the install paths the same way a previous run did before comparing against it: `pwd -L`
 # drops trailing slashes and dot segments without resolving a caller-selected symlink prefix, which
@@ -415,10 +568,9 @@ fi
 
 if [ "$FORCE" -eq 0 ] && portable_install_is_current "$VERSION" "$BIN_NAME"; then
   log "OpenTag ${VERSION} is already installed and up to date; skipping download."
-  log "Command: $BIN_DIR/$BIN_NAME"
   log "Run this installer with --force to reinstall the same version."
   maybe_edit_path "$BIN_NAME"
-  print_path_guidance
+  print_footer
   exit 0
 fi
 
@@ -437,15 +589,19 @@ mkdir -p "$PREFIX/versions" "$PREFIX/.tmp" "$BIN_DIR"
 PREFIX="$(CDPATH="" cd -L "$PREFIX" && pwd -L)"
 BIN_DIR="$(CDPATH="" cd -L "$BIN_DIR" && pwd -L)"
 TARBALL="$WORK_DIR/payload.tar.gz"
-log "Downloading OpenTag ${VERSION} for ${PLATFORM}"
+step "Downloading OpenTag ${VERSION} for ${PLATFORM} ($(human_size "$ASSET_SIZE"))"
+end_step
 download_to "$ASSET_URL" "$TARBALL"
+step "Verifying checksum ..."
 ACTUAL_SHA="$(sha256_file "$TARBALL")"
 if [ "$ACTUAL_SHA" != "$ASSET_SHA" ]; then
   die "checksum mismatch for portable payload: expected $ASSET_SHA, got $ACTUAL_SHA"
 fi
+ok
 
 CANONICAL_VERSION_DIR="$PREFIX/versions/$VERSION"
 TEMP_VERSION_DIR="$PREFIX/.tmp/${VERSION}.$$"
+step "Extracting and smoke-testing the bundled runtime ..."
 rm -rf "$TEMP_VERSION_DIR"
 mkdir -p "$TEMP_VERSION_DIR"
 extract_tarball "$TARBALL" "$TEMP_VERSION_DIR"
@@ -495,6 +651,9 @@ NEW_LINK="$PREFIX/.current.$$"
 if ! "$VALIDATION_DIR/node/bin/node" "$VALIDATION_DIR/$INSTALL_ENTRY" --version >/dev/null; then
   die "portable payload failed the pre-commit runtime smoke check"
 fi
+ok
+
+step "Activating ${VERSION} (writing shim, switching current link) ..."
 
 # A single rename into a path nothing occupies. Until `current` moves, the previous install stays
 # whole and reachable; after it moves, the new payload is already complete.
@@ -508,6 +667,8 @@ write_shim "$BIN_DIR/$BIN_NAME" "$CURRENT_LINK" "$BIN_DIR"
 rm -f "$NEW_LINK"
 ln -s "$FINAL_VERSION_DIR" "$NEW_LINK"
 atomic_replace_current_link "$NEW_LINK" "$CURRENT_LINK"
+ACTIVATED=1
+ok
 
 # Past the commit point. Everything below is best-effort and must not fail the install.
 #
@@ -522,6 +683,4 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 
-log "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"
-log "Command: $BIN_DIR/$BIN_NAME"
-print_path_guidance
+print_footer "OpenTag ${VERSION} installed at $FINAL_VERSION_DIR"

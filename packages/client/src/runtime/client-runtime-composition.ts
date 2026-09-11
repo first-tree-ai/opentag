@@ -74,6 +74,7 @@ import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
+import { type SkillSyncApi, SkillSyncManager } from "./skills/skill-sync-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 
@@ -240,7 +241,9 @@ function resolveSharedProviderRefreshResult(
 }
 
 export interface CreateClientRuntimeOptions {
-  readonly api?: Pick<OpenTagApi, "openImResource">;
+  /** Skill sync activates only when the API also carries the runtime skill methods and a machine token is given. */
+  readonly api?: Pick<OpenTagApi, "openImResource"> & Partial<SkillSyncApi>;
+  readonly skillsSweepIntervalMs?: number;
   readonly serverDurability?: {
     readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
     readonly machineToken: string;
@@ -277,6 +280,7 @@ export class ComposedClientRuntime {
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
   readonly workspace: AgentWorkspaceManager;
+  readonly skillSync?: SkillSyncManager;
   readonly #providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
   readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
@@ -302,6 +306,7 @@ export class ComposedClientRuntime {
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
+      skillSync?: SkillSyncManager;
       refreshCapability: () => Promise<void>;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
@@ -323,6 +328,7 @@ export class ComposedClientRuntime {
     this.runner = components.runner;
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
+    this.skillSync = components.skillSync;
     this.#refreshCapability = components.refreshCapability;
     this.#capabilityRefreshIntervalMs = components.capabilityRefreshIntervalMs;
     this.#capabilityAbort = components.capabilityAbort;
@@ -330,6 +336,7 @@ export class ComposedClientRuntime {
 
   async run(): Promise<void> {
     this.#startCapabilityMonitor();
+    this.skillSync?.startSweep();
     try {
       await this.#runtime.run();
     } finally {
@@ -397,6 +404,7 @@ export class ComposedClientRuntime {
 
   async #performShutdown(): Promise<void> {
     this.#stopCapabilityMonitor();
+    this.skillSync?.close();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
@@ -576,6 +584,7 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
+  const skillSync = createSkillSyncManager(options, workspace, moduleLogger("skill-sync"));
   const contextTree = new ContextTreeManager({
     codexHome,
     home: options.home,
@@ -694,6 +703,7 @@ export async function createClientRuntime(
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
     availabilityTester,
+    ...skillsChangedHandler(skillSync),
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
@@ -708,6 +718,7 @@ export async function createClientRuntime(
     runner,
     runtimeManager,
     workspace,
+    skillSync,
     refreshCapability,
     providerCliReconciler,
     providerCliTurnPlans,
@@ -717,6 +728,44 @@ export async function createClientRuntime(
       options.capabilityRefreshIntervalMs ?? DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS,
     ),
   });
+}
+
+function isSkillSyncApi(
+  api: CreateClientRuntimeOptions["api"],
+): api is Pick<OpenTagApi, "openImResource"> & SkillSyncApi {
+  return typeof api?.runtimeSkillsManifest === "function" && typeof api.downloadRuntimeSkillArchive === "function";
+}
+
+/**
+ * Skill sync needs the machine token and the runtime skill endpoints; a composition without them
+ * (tests, or an API surface that predates skills) runs with the feature inert.
+ */
+function createSkillSyncManager(
+  options: CreateClientRuntimeOptions,
+  workspace: AgentWorkspaceManager,
+  logger: ClientLogger,
+): SkillSyncManager | undefined {
+  if (!options.machineToken || !isSkillSyncApi(options.api)) return undefined;
+  const api = options.api;
+  const skillSync = new SkillSyncManager({
+    api: {
+      runtimeSkillsManifest: (...args) => api.runtimeSkillsManifest(...args),
+      downloadRuntimeSkillArchive: (...args) => api.downloadRuntimeSkillArchive(...args),
+    },
+    machineToken: options.machineToken,
+    agentHome: (agentId) => workspace.cwd(agentId),
+    recordState: (agentId, state) => workspace.recordSkillsState(agentId, state),
+    logger,
+    sweepIntervalMs: options.skillsSweepIntervalMs,
+  });
+  workspace.attachSkillSync(skillSync);
+  return skillSync;
+}
+
+function skillsChangedHandler(
+  skillSync: SkillSyncManager | undefined,
+): Pick<ClientRuntimeOptions, "handleSkillsChanged"> {
+  return skillSync ? { handleSkillsChanged: (frame) => skillSync.handleSkillsChanged(frame) } : {};
 }
 
 export function codexProviderReadiness(

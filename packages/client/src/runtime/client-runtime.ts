@@ -17,6 +17,7 @@ import {
   type SessionReconcileRequest,
   type SessionReconcileResult,
   SessionReconcileResultSchema,
+  type SkillsChangedFrame,
   type TurnReportResult,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -48,6 +49,7 @@ export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
+  handleSkillsChanged?(frame: SkillsChangedFrame): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequest,
   ): Promise<SessionMessageDeliveryResult> | SessionMessageDeliveryResult;
@@ -198,7 +200,11 @@ export class ClientRuntime {
       this.#tests.get(frame.requestId)?.abort();
       return;
     }
-    if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
+    if (frame.type === "turn:report:result") {
+      await this.#options.handleTurnReportResult?.(frame);
+      return;
+    }
+    if (frame.type === "skills:changed") await this.#options.handleSkillsChanged?.(frame);
   }
 
   async #runAgentRuntimeTest(frame: AgentRuntimeTestRequestFrame): Promise<void> {

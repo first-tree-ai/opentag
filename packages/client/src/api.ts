@@ -1,4 +1,5 @@
 import {
+  ACCOUNT_SKILLS_PATH,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -6,6 +7,9 @@ import {
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
   AgentRuntimeTestResponseSchema,
+  type AgentSkillAssignmentRequest,
+  type AgentSkillsResponse,
+  AgentSkillsResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -18,6 +22,7 @@ import {
   agentImBindingPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -50,6 +55,8 @@ import {
   ListAccountComputersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListSkillsResponse,
+  ListSkillsResponseSchema,
   type MeResponse,
   MeResponseSchema,
   PROVIDER_CLI_REASON_V2_HEADER,
@@ -60,8 +67,13 @@ import {
   type RuntimeDurableWorkKind,
   RuntimeDurableWorkListResponseSchema,
   type RuntimeDurableWorkRecord,
+  type RuntimeSkillsManifest,
+  RuntimeSkillsManifestSchema,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
+  runtimeSessionSkillsPath,
+  runtimeSkillArchivePath,
+  runtimeSkillsPath,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCommandResponse,
   SessionCliCommandResponseSchema,
@@ -70,11 +82,19 @@ import {
   type SessionCliListResponse,
   SessionCliListResponseSchema,
   type SessionCliSendRequest,
+  SKILL_ARCHIVE_MAX_BYTES,
+  type SkillDetail,
+  SkillDetailSchema,
+  type SkillListQuery,
+  type SkillOnConflict,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
   type StructuredError,
   StructuredErrorSchema,
+  skillArchivePath,
+  skillByNamePath,
+  skillSkillMdPath,
   type UpdateAgentRequest,
   type ValidationIssue,
 } from "@opentag/shared";
@@ -95,6 +115,25 @@ import {
 
 interface RuntimeSchema<T> {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
+}
+
+/** Result of a conditional skill archive download; `304` means the `If-None-Match` value still matches. */
+export type SkillArchiveDownload =
+  | { readonly status: 200; readonly bytes: Uint8Array; readonly etag?: string }
+  | { readonly status: 304 };
+
+export interface SkillUploadOptions {
+  readonly onConflict?: SkillOnConflict;
+}
+
+const ZIP_CONTENT_TYPE = "application/zip";
+
+function skillUploadPath(basePath: string, input: SkillUploadOptions): string {
+  return input.onConflict ? `${basePath}?${new URLSearchParams({ onConflict: input.onConflict })}` : basePath;
+}
+
+function zipBody(bytes: Uint8Array): Blob {
+  return new Blob([bytes as Uint8Array<ArrayBuffer>], { type: ZIP_CONTENT_TYPE });
 }
 
 export class OpenTagApiError extends Error {
@@ -646,6 +685,170 @@ export class OpenTagApi {
     );
   }
 
+  runtimeSkillsManifest(
+    machineToken: string,
+    input: { agentId?: string } = {},
+    options?: RequestOptions,
+  ): Promise<RuntimeSkillsManifest> {
+    return this.#request(
+      runtimeSkillsPath(input.agentId),
+      RuntimeSkillsManifestSchema,
+      { headers: { authorization: `Bearer ${machineToken}` } },
+      options,
+    );
+  }
+
+  downloadRuntimeSkillArchive(
+    machineToken: string,
+    name: string,
+    input: { etag?: string } = {},
+    options?: RequestOptions,
+  ): Promise<SkillArchiveDownload> {
+    return this.#downloadArchive(
+      runtimeSkillArchivePath(name),
+      {
+        authorization: `Bearer ${machineToken}`,
+        ...(input.etag ? { "if-none-match": `"${input.etag}"` } : {}),
+      },
+      options,
+    );
+  }
+
+  uploadSessionSkill(
+    proof: string,
+    sessionId: string,
+    bytes: Uint8Array,
+    input: SkillUploadOptions = {},
+    options?: RequestOptions,
+  ): Promise<SkillDetail> {
+    return this.#request(
+      skillUploadPath(runtimeSessionSkillsPath(sessionId), input),
+      SkillDetailSchema,
+      {
+        method: "POST",
+        body: zipBody(bytes),
+        headers: { "content-type": ZIP_CONTENT_TYPE, [SESSION_CLI_PROOF_HEADER]: proof },
+      },
+      options,
+    );
+  }
+
+  listSkills(
+    accessToken: string,
+    input: Partial<SkillListQuery> = {},
+    options?: RequestOptions,
+  ): Promise<ListSkillsResponse> {
+    const query = new URLSearchParams({
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.limit !== undefined ? { limit: String(input.limit) } : {}),
+    });
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.#request(
+      `${ACCOUNT_SKILLS_PATH}${suffix}`,
+      ListSkillsResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  getSkill(accessToken: string, name: string, options?: RequestOptions): Promise<SkillDetail> {
+    return this.#request(
+      skillByNamePath(name),
+      SkillDetailSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  async getSkillMarkdown(accessToken: string, name: string, options?: RequestOptions): Promise<string> {
+    const response = await this.#fetchResponse(
+      skillSkillMdPath(name),
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
+    }
+    return response.text();
+  }
+
+  downloadSkillArchive(accessToken: string, name: string, options?: RequestOptions): Promise<SkillArchiveDownload> {
+    return this.#downloadArchive(skillArchivePath(name), { authorization: `Bearer ${accessToken}` }, options);
+  }
+
+  uploadSkill(
+    accessToken: string,
+    bytes: Uint8Array,
+    input: SkillUploadOptions = {},
+    options?: RequestOptions,
+  ): Promise<SkillDetail> {
+    return this.#request(
+      skillUploadPath(ACCOUNT_SKILLS_PATH, input),
+      SkillDetailSchema,
+      {
+        method: "POST",
+        body: zipBody(bytes),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": ZIP_CONTENT_TYPE },
+      },
+      options,
+    );
+  }
+
+  deleteSkill(accessToken: string, name: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      skillByNamePath(name),
+      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  getAgentSkills(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentSkillsResponse> {
+    return this.#request(
+      agentSkillsPath(agentId),
+      AgentSkillsResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  replaceAgentSkills(
+    accessToken: string,
+    agentId: string,
+    input: AgentSkillAssignmentRequest,
+    options?: RequestOptions,
+  ): Promise<AgentSkillsResponse> {
+    return this.#request(
+      agentSkillsPath(agentId),
+      AgentSkillsResponseSchema,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  async #downloadArchive(
+    path: string,
+    headers: Record<string, string>,
+    options?: RequestOptions,
+  ): Promise<SkillArchiveDownload> {
+    const response = await this.#fetchResponse(path, { headers }, options);
+    if (response.status === 304) return { status: 304 };
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
+    }
+    const bytes = await readLimitedBody(response, SKILL_ARCHIVE_MAX_BYTES, this.#requestIdFromResponse(response));
+    const etag = response.headers
+      .get("etag")
+      ?.replace(/^W\//, "")
+      .replace(/^"(.*)"$/, "$1");
+    return { status: 200, bytes, ...(etag ? { etag } : {}) };
+  }
+
   async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit, options?: RequestOptions): Promise<T> {
     const response = await this.#fetchResponse(path, init, options);
     const body = await response.json().catch(() => undefined);
@@ -783,6 +986,47 @@ export class OpenTagApi {
     const fallback = statusFallback(status);
     throw new OpenTagApiError(fallback.code, fallback.category, fallback.message, status, undefined, { requestId });
   }
+}
+
+/** Read a response body while enforcing a hard byte ceiling; oversized bodies are rejected before completion. */
+async function readLimitedBody(response: Response, maxBytes: number, requestId: string): Promise<Uint8Array> {
+  const tooLarge = () =>
+    new OpenTagApiError(
+      "SKILL_ARCHIVE_TOO_LARGE",
+      "deterministic",
+      `The skill archive exceeds ${maxBytes} bytes`,
+      response.status,
+      undefined,
+      { requestId, phase: "serialization" },
+    );
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) throw tooLarge();
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw tooLarge();
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) throw tooLarge();
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 export function normalizeServerUrl(serverUrl: string): string {

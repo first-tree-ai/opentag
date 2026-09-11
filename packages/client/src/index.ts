@@ -53,7 +53,13 @@ export {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "./agent-runtime/types.js";
-export { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "./api.js";
+export {
+  normalizeServerUrl,
+  OpenTagApi,
+  OpenTagApiError,
+  type SkillArchiveDownload,
+  type SkillUploadOptions,
+} from "./api.js";
 export {
   CREDENTIALS_FILE_NAME,
   credentialsPath,
@@ -476,6 +482,48 @@ export {
   SessionRuntimeManager,
   type SessionRuntimeManagerOptions,
 } from "./runtime/session-runtime-manager.js";
+export {
+  type ExtractSkillArchiveOptions,
+  extractSkillArchive,
+  inspectSkillArchive,
+  type PackedSkillDirectory,
+  packSkillDirectory,
+  type SkillArchiveEntry,
+  SkillArchiveError,
+  type SkillArchiveRejection,
+  sha256Hex,
+  validateSkillPath,
+} from "./runtime/skills/skill-archive.js";
+export {
+  type LocalSkillEntry,
+  type LocalSkillsManifest,
+  readLocalSkillsManifest,
+  SKILLS_DIRECTORY,
+  SKILLS_MANIFEST_FILE,
+  skillDirectoryPath,
+  skillsManifestPath,
+  skillsRootPath,
+  verifyLocalSkills,
+  writeLocalSkillsManifest,
+} from "./runtime/skills/skill-manifest-store.js";
+export {
+  CLAUDE_SKILLS_DIRECTORY,
+  claudeSkillsProjectionRoot,
+  projectSkills,
+  type SkillProjectionResult,
+} from "./runtime/skills/skill-projection.js";
+export {
+  SKILL_SYNC_INITIAL_RETRY_DELAY_MS,
+  SKILL_SYNC_MAX_RETRY_DELAY_MS,
+  SKILL_SYNC_SWEEP_INTERVAL_MS,
+  SKILL_SYNC_VERIFY_INTERVAL_MS,
+  type SkillSyncApi,
+  SkillSyncError,
+  SkillSyncManager,
+  type SkillSyncManagerOptions,
+  type SkillSyncOutcome,
+  type SkillSyncState,
+} from "./runtime/skills/skill-sync-manager.js";
 export {
   TURN_TRACE_BATCH_SOFT_LIMIT_BYTES,
   TURN_TRACE_MAX_BUFFER_BYTES,

@@ -51,8 +51,10 @@ import {
   Copy,
   Cpu,
   DotsThreeVertical,
+  DownloadSimple,
   Eye,
   EyeSlash,
+  FileText,
   Gear,
   House,
   type IconWeight,
@@ -65,6 +67,8 @@ import {
   Plus,
   Shield,
   SquaresFour,
+  Trash,
+  UploadSimple,
   User,
   Wrench,
   X,
@@ -420,8 +424,10 @@ export type IconName =
   | "chevron-up"
   | "close"
   | "copy"
+  | "download"
   | "eye"
   | "eye-slash"
+  | "file-text"
   | "instructions"
   | "overview"
   | "home"
@@ -434,6 +440,8 @@ export type IconName =
   | "settings"
   | "shield"
   | "sign-out"
+  | "trash"
+  | "upload"
   | "user"
   | "usage";
 
@@ -446,8 +454,10 @@ const icons: Record<IconName, PhosphorIcon> = {
   "chevron-up": CaretUp,
   close: X,
   copy: Copy,
+  download: DownloadSimple,
   eye: Eye,
   "eye-slash": EyeSlash,
+  "file-text": FileText,
   instructions: List,
   home: House,
   overview: SquaresFour,
@@ -460,6 +470,8 @@ const icons: Record<IconName, PhosphorIcon> = {
   settings: Gear,
   shield: Shield,
   "sign-out": ArrowRight,
+  trash: Trash,
+  upload: UploadSimple,
   user: User,
   usage: ChartLine,
 };

@@ -25,31 +25,3 @@ export const agentIntegrationPreviews: readonly AgentIntegrationPreview[] = [
     availability: "Unavailable",
   },
 ];
-
-export type AgentSkillPreview = {
-  readonly name: string;
-  readonly description: string;
-  readonly source: "OpenTag" | "Shared";
-  readonly assignment: "Assigned" | "Assignment unavailable";
-};
-
-export const agentSkillPreviews: readonly AgentSkillPreview[] = [
-  {
-    name: "Release notes writer",
-    description: "Turns merged changes into concise release notes for teammates and customers.",
-    source: "Shared",
-    assignment: "Assigned",
-  },
-  {
-    name: "Browser validation",
-    description: "Checks key product flows and reports reproducible regressions.",
-    source: "OpenTag",
-    assignment: "Assigned",
-  },
-  {
-    name: "Issue triage",
-    description: "Classifies incoming issues and recommends a priority.",
-    source: "Shared",
-    assignment: "Assignment unavailable",
-  },
-];

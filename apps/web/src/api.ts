@@ -1,4 +1,5 @@
 import {
+  ACCOUNT_SKILLS_PATH,
   type AccountComputerConnectCodeIssueRequest,
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
@@ -12,6 +13,9 @@ import {
   AgentRuntimeTestResponseSchema,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
+  type AgentSkillAssignmentRequest,
+  type AgentSkillsResponse,
+  AgentSkillsResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -30,6 +34,7 @@ import {
   agentRuntimeTestPath,
   agentSetupPath,
   agentSetupRefreshPath,
+  agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -64,6 +69,8 @@ import {
   ListAccountComputersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListSkillsResponse,
+  ListSkillsResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
   type MeResponse,
@@ -71,9 +78,17 @@ import {
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   type RebindAgentComputerRequest,
+  type SkillAgentsResponse,
+  SkillAgentsResponseSchema,
+  type SkillDetail,
+  SkillDetailSchema,
+  type SkillOnConflict,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
+  skillAgentsPath,
+  skillByNamePath,
+  skillSkillMdPath,
   TaskCancelResponseSchema,
   type TaskDetail,
   TaskDetailSchema,
@@ -395,6 +410,63 @@ export class BrowserApi {
     });
   }
 
+  /** One page of the Account's skill library, sorted by name. `nextCursor` is null on the last page. */
+  skills(input: { cursor?: string; limit?: number } = {}): Promise<ListSkillsResponse> {
+    const query = new URLSearchParams();
+    if (input.cursor) query.set("cursor", input.cursor);
+    if (input.limit !== undefined) query.set("limit", String(input.limit));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request(`${ACCOUNT_SKILLS_PATH}${suffix}`, ListSkillsResponseSchema);
+  }
+
+  skill(name: string): Promise<SkillDetail> {
+    return this.request(skillByNamePath(name), SkillDetailSchema);
+  }
+
+  /** The skill's `SKILL.md` as the Server stores it. The only file of the package the Web may read. */
+  skillMarkdown(name: string): Promise<string> {
+    return this.requestText(skillSkillMdPath(name));
+  }
+
+  /**
+   * Uploads one zip archive as the skill its `SKILL.md` frontmatter names. The Server answers `409`
+   * for a name it already holds unless `onConflict` is `replace`, in which case the stored version
+   * is swapped for this one and every Agent assigned to it receives the new content.
+   */
+  uploadSkill(archive: Blob, input: { onConflict?: SkillOnConflict } = {}): Promise<SkillDetail> {
+    const query = new URLSearchParams({ onConflict: input.onConflict ?? "fail" });
+    return this.request(`${ACCOUNT_SKILLS_PATH}?${query.toString()}`, SkillDetailSchema, {
+      method: "POST",
+      body: archive,
+      headers: { "content-type": "application/zip", ...this.csrfHeaders() },
+    });
+  }
+
+  /** Removes the skill, its stored archive and every Agent assignment that pointed at it. */
+  deleteSkill(name: string): Promise<void> {
+    return this.requestNoContent(skillByNamePath(name), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  skillAgents(name: string): Promise<SkillAgentsResponse> {
+    return this.request(skillAgentsPath(name), SkillAgentsResponseSchema);
+  }
+
+  agentSkills(agentId: string): Promise<AgentSkillsResponse> {
+    return this.request(agentSkillsPath(agentId), AgentSkillsResponseSchema);
+  }
+
+  /** Replaces the Agent's whole assignment set; sending the same names twice is a no-op. */
+  replaceAgentSkills(agentId: string, skillNames: readonly string[]): Promise<AgentSkillsResponse> {
+    return this.request(agentSkillsPath(agentId), AgentSkillsResponseSchema, {
+      method: "PUT",
+      body: JSON.stringify({ skillNames: [...skillNames] } satisfies AgentSkillAssignmentRequest),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   computers(): Promise<ListAccountComputersResponse> {
     return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
@@ -523,6 +595,13 @@ export class BrowserApi {
     const body = await response.json().catch(() => undefined);
     if (!response.ok) throw this.apiError(response, body);
     return this.parseResponse(path, schema, body);
+  }
+
+  /** A body the Server sends as text rather than JSON; a failure still arrives as a JSON envelope. */
+  private async requestText(path: string, init: RequestInit = {}): Promise<string> {
+    const response = await this.fetchWithRefresh(path, init);
+    if (!response.ok) throw this.apiError(response, await response.json().catch(() => undefined));
+    return response.text();
   }
 
   private async requestNoContent(path: string, init: RequestInit): Promise<void> {

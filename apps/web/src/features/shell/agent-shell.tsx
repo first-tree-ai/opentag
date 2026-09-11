@@ -25,9 +25,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   const items = [
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
     { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
-    ...(internal.skills
-      ? ([{ section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) }] as const)
-      : []),
+    { section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) },
     ...(internal.integrations
       ? ([
           {

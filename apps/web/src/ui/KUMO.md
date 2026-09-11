@@ -79,6 +79,11 @@ element only — initial state plus later mutations, including a value changed a
 one mutation batch — and shows one dismissible, localized warning per App mount when they drift
 from the shipped scaffold. It is deliberately read-only: it never rewrites a root attribute, and
 it does not attempt to detect arbitrary injected styles or other DOM modifications exhaustively.
+Kumo status tokens are not part of the notice's local theme scope, so the wrapper additionally
+pins the banner's warning text and tint through component-local Tailwind arbitrary properties
+(with `color-scheme: light`) on existing Kumo/Tailwind light palette primitives — otherwise a
+generic dark mode written onto the root re-themes the banner into poor contrast over the warm
+light page.
 
 ## Router links and overlays
 

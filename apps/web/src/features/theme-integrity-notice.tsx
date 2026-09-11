@@ -72,7 +72,18 @@ export function ThemeIntegrityNotice() {
 
   if (!tampered || dismissed) return null;
   return (
-    <div data-opentag-mode="light" data-opentag-theme="opentag" data-ui="theme-integrity-notice">
+    /*
+     * The wrapper's local theme scope does not cover Kumo status tokens: a root rewritten into a
+     * generic dark mode would re-theme the warning banner into poor contrast over the warm light
+     * page. Keep the banner surface on existing Kumo/Tailwind light palette primitives — static
+     * strings so Tailwind emits them, the same pattern as the button emphasis adapter.
+     */
+    <div
+      className="[color-scheme:light] [--text-color-kumo-warning:var(--color-orange-800)] [--color-kumo-warning-tint:var(--color-yellow-100)]"
+      data-opentag-mode="light"
+      data-opentag-theme="opentag"
+      data-ui="theme-integrity-notice"
+    >
       <Banner
         action={
           <Button

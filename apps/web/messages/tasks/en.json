@@ -18,7 +18,7 @@
   "tasks_cancel_confirm_description": "The queued message will not be delivered to the Agent. Work that has already started is not affected.",
   "tasks_cancel_confirm_title": "Cancel this Task?",
   "tasks_cancel_failed": "The Task could not be cancelled.",
-  "tasks_cancel_in_flight": "This Task could not be cancelled: its queued message is already being delivered to the Agent.",
+  "tasks_cancel_in_flight": "This Task could not be cancelled: its queued message has already been handed to the Agent's Computer, which has not reported back yet.",
   "tasks_cancel_keep_queued": "Keep in queue",
   "tasks_cancel_not_queued": "This Task is no longer queued. Its status has been refreshed.",
   "tasks_cancel_queued": "Cancel queued Task",

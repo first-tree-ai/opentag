@@ -119,7 +119,7 @@ describe("Cancelling a queued Task", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel Task" }));
 
     expect((await screen.findByRole("status")).textContent).toContain(
-      "This Task could not be cancelled: its queued message is already being delivered to the Agent.",
+      "This Task could not be cancelled: its queued message has already been handed to the Agent's Computer, which has not reported back yet.",
     );
     expect(screen.queryByText("The Task was cancelled.")).toBeNull();
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
@@ -141,7 +141,7 @@ describe("Cancelling a queued Task", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel Task" }));
 
     expect((await screen.findByRole("status")).textContent).toContain(
-      "This Task could not be cancelled: its queued message is already being delivered to the Agent.",
+      "This Task could not be cancelled: its queued message has already been handed to the Agent's Computer, which has not reported back yet.",
     );
     expect(screen.queryByText(/no longer queued/)).toBeNull();
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());

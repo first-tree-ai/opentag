@@ -500,17 +500,52 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
 }
 
 /**
- * How a withdrawal ended: the topic's pending deliveries were all expired; a Turn is running, or a
- * pending row stopped being pending under the lock; a worker is dispatching one of them; or
- * nothing was pending any more.
+ * How a withdrawal ended: the topic's pending deliveries were all expired; a Turn is running; a
+ * pending row stopped being pending under the lock, either because another cancel withdrew the
+ * whole queue first (`already_cancelled`) or because it was rejected or lapsed (`left_queue`); a
+ * worker holds a live claim on one of them (`in_flight`); one was handed to a Computer that has not
+ * answered yet (`awaiting_computer`); or nothing was pending any more.
  */
-type WithdrawalOutcome = "withdrawn" | "running" | "in_flight" | "nothing";
+type WithdrawalOutcome =
+  | "withdrawn"
+  | "running"
+  | "already_cancelled"
+  | "left_queue"
+  | "in_flight"
+  | "awaiting_computer"
+  | "nothing";
 
-interface LockedDeliveryRow extends Record<string, unknown> {
+export interface LockedDeliveryRow extends Record<string, unknown> {
   id: string;
   state: string;
-  inFlight: boolean;
+  reason: string | null;
+  /** A worker's claim lease that has not lapsed: it is dispatching the row right now. */
+  claimed: boolean;
+  /** A dispatch correlation: the row was handed to a Computer whose answer has not arrived. */
+  dispatched: boolean;
   topicRunning: boolean;
+}
+
+/**
+ * Why the locked pending rows of a topic cannot all be withdrawn, or undefined when they can. A
+ * running Turn refuses first. A row that left `pending` under the lock refuses next: when every
+ * such row was withdrawn with the cancelled reason, a concurrent cancel got there first and the
+ * Task is already cancelled; any other exit from the queue means the Task is no longer queued. A
+ * live claim outranks a bare dispatch correlation, since a worker is acting on that row now.
+ */
+export function withdrawalRefusal(
+  rows: readonly LockedDeliveryRow[],
+): Exclude<WithdrawalOutcome, "withdrawn"> | undefined {
+  if (rows.length === 0) return "nothing";
+  if (rows.some((row) => row.topicRunning)) return "running";
+  const left = rows.filter((row) => row.state !== "pending");
+  if (left.length > 0) {
+    const withdrawn = left.every((row) => row.state === "expired" && row.reason === TASK_CANCELLED_DELIVERY_REASON);
+    return withdrawn && left.length === rows.length ? "already_cancelled" : "left_queue";
+  }
+  if (rows.some((row) => row.claimed)) return "in_flight";
+  if (rows.some((row) => row.dispatched)) return "awaiting_computer";
+  return undefined;
 }
 
 function taskNotFound(): AuthServiceError {
@@ -644,11 +679,11 @@ export class TaskService {
    *
    * Only a `queued` Task cancels. A Task that has started, or that already finished, is refused
    * with 409 so the caller re-reads its state instead; a Task that is already `cancelled` is a
-   * no-op success, so a repeated cancel is harmless. A delivery a worker is dispatching right
-   * now — one carrying a live claim lease or a dispatch correlation — cannot be withdrawn,
-   * because the Runtime may already be running it; while the topic has one, nothing of it is
-   * withdrawn and the answer is the same 409, so a success always leaves the Task `cancelled`
-   * rather than partly queued.
+   * no-op success, so a repeated cancel is harmless — whether it repeats after the first one or
+   * races it under the lock. A delivery a worker is dispatching right now — one carrying a live
+   * claim lease or a dispatch correlation — cannot be withdrawn, because the Runtime may already
+   * be running it; while the topic has one, nothing of it is withdrawn and the answer is a 409
+   * that says which, so a success always leaves the Task `cancelled` rather than partly queued.
    */
   async cancel(accountId: string, id: string): Promise<TaskSummary> {
     const scope = (await this.#scopeOfMessage(accountId, id)) ?? (await this.#scopeOfSession(accountId, id));
@@ -660,11 +695,14 @@ export class TaskService {
     if (status !== "queued") throw taskNotQueued(`The Task is ${status}, not queued`);
     const outcome = await this.#withdrawQueuedDeliveries(accountId, scope);
     if (outcome === "running") throw taskNotQueued("The Task is running, not queued");
+    if (outcome === "left_queue") throw taskNotQueued("The Task is no longer queued");
     if (outcome === "in_flight") throw taskNotQueued("The Task's queued message is already being delivered");
+    if (outcome === "awaiting_computer")
+      throw taskNotQueued("The Task's queued message was handed to a Computer that has not reported back yet");
     const [after] = await this.#summaryRows(accountId, { scope, limit: 1 });
     if (!after) throw taskNotFound();
     // Nothing left to withdraw: another cancel got there first, or the queue drained some other way.
-    if (outcome === "nothing" && taskStatus(after) !== "cancelled")
+    if (outcome !== "withdrawn" && taskStatus(after) !== "cancelled")
       throw taskNotQueued(`The Task is ${taskStatus(after)}, not queued`);
     return toSummary(after);
   }
@@ -748,7 +786,9 @@ export class TaskService {
    * locked`), and its acceptance of a row it already claimed waits behind the lock, so what the
    * locked read shows is what the update acts on. A lock that waited behind a worker's write
    * returns the row as the worker left it, so a claim taken in the meantime, or a row that is no
-   * longer pending, is seen and refuses the whole withdrawal. A claim whose lease lapsed belongs
+   * longer pending, is seen and refuses the whole withdrawal; a lock that waited behind another
+   * cancel sees every row withdrawn with the cancelled reason, and reports the Task as already
+   * cancelled rather than refusing. A claim whose lease lapsed belongs
    * to a worker that is gone, and is withdrawn like an unclaimed row — exactly as any worker may
    * take such a row again. A topic with a running Turn is never withdrawn either, however the
    * summary read before the transaction looked.
@@ -767,22 +807,20 @@ export class TaskService {
         select
           d.id,
           d.state,
+          d.reason,
           (
-            d.dispatch_request_id is not null
-            or (
-              d.last_error_code like ${`${DISPATCH_CLAIM_PREFIX}%`}
-              and d.next_attempt_at > ${now.toISOString()}::timestamptz
-            )
-          ) as "inFlight",
+            d.last_error_code like ${`${DISPATCH_CLAIM_PREFIX}%`}
+            and d.next_attempt_at > ${now.toISOString()}::timestamptz
+          ) as "claimed",
+          (d.dispatch_request_id is not null) as "dispatched",
           exists (select 1 from executions e where e.is_running) as "topicRunning"
         from im_message_deliveries d
         where d.id in (select e.id from executions e where e.state = 'pending')
         for update of d
       `);
       const rows = [...locked];
-      if (rows.length === 0) return "nothing";
-      if (rows.some((row) => row.topicRunning || row.state !== "pending")) return "running";
-      if (rows.some((row) => row.inFlight)) return "in_flight";
+      const refusal = withdrawalRefusal(rows);
+      if (refusal) return refusal;
       const withdrawn = await transaction
         .update(imMessageDeliveries)
         .set({ state: "expired", reason: TASK_CANCELLED_DELIVERY_REASON, expiresAt: now })

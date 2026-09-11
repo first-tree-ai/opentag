@@ -16,6 +16,7 @@ import {
   StatusIndicator,
   Tabs,
 } from "./design-system.js";
+import { kumoThemeTokens } from "./kumo-theme.tokens.js";
 
 describe("Kumo semantic adapter", () => {
   it("maps legacy button intents to Kumo variants", () => {
@@ -47,10 +48,14 @@ describe("Kumo semantic adapter", () => {
     );
     const primary = screen.getByRole("button", { name: "Create" });
     const danger = screen.getByRole("button", { name: "Delete" });
-    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)]");
-    expect(danger.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)]");
-    expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-primary-bg)");
-    expect(danger.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe("var(--opentag-button-danger-bg)");
+    expect(primary.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#3a5c04)]");
+    expect(danger.className).toContain("[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)]");
+    expect(primary.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe(
+      `var(--opentag-button-primary-bg, ${kumoThemeTokens.light.buttonBackground})`,
+    );
+    expect(danger.style.getPropertyValue("--kumo-button-emphasis-bg")).toBe(
+      `var(--opentag-button-danger-bg, ${kumoThemeTokens.light.dangerButtonBackground})`,
+    );
   });
 
   it("provides labelled Kumo tabs and settings rows", () => {

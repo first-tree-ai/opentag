@@ -10,9 +10,11 @@
 @source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
 
 /* OpenTag brand tokens. Keep usage constraints next to the values so a new surface does not
- * accidentally turn an inaccessible accent into body copy. */
-:root[data-theme="opentag"],
-[data-theme="opentag"] {
+ * accidentally turn an inaccessible accent into body copy.
+ * The namespaced attribute is the theme identity: third-party code that rewrites the generic
+ * data-theme or data-mode attributes must not be able to strip the OpenTag palette. */
+:root[data-opentag-theme="opentag"],
+[data-opentag-theme="opentag"] {
   --brand: #8fdd14; /* logo green — fills, color blocks, icons ONLY; never a text color */
   --brand-display: #649a0e; /* display green — text at >= 24px only (large headings) */
   --brand-ink: #3a5c04; /* body-level green — green text at normal sizes uses this */
@@ -34,8 +36,8 @@
 
 /* Kumo semantic base. These aliases make the application canvas, surfaces, text, and borders
  * inherit the OpenTag palette without changing Kumo component internals. */
-:root[data-theme="opentag"],
-[data-theme="opentag"] {
+:root[data-opentag-theme="opentag"],
+[data-opentag-theme="opentag"] {
   --color-kumo-canvas: var(--bg);
   --color-kumo-elevated: var(--surface-elevated);
   --color-kumo-recessed: var(--surface-recessed);
@@ -59,14 +61,15 @@
   --text-color-kumo-link: var(--brand-ink);
 }
 
-/* Select the supplied artwork from the app theme, including locally themed surfaces. */
+/* Select the supplied artwork from the app theme, including locally themed surfaces. The :root
+ * default keeps the light artwork readable when the namespaced theme identity is missing. */
 :root,
-[data-mode="light"] {
+[data-opentag-mode="light"] {
   --opentag-logo-light-display: block;
   --opentag-logo-dark-display: none;
 }
 
-[data-mode="dark"] {
+[data-opentag-mode="dark"] {
   --opentag-logo-light-display: none;
   --opentag-logo-dark-display: block;
 }

@@ -23,15 +23,15 @@
   display: none;
 }
 
-:root[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--light,
-[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--light,
-[data-theme="opentag"] [data-mode="dark"] .otv2-codex-mark--light {
+:root[data-opentag-theme="opentag"][data-opentag-mode="dark"] .otv2-codex-mark--light,
+[data-opentag-theme="opentag"][data-opentag-mode="dark"] .otv2-codex-mark--light,
+[data-opentag-theme="opentag"] [data-opentag-mode="dark"] .otv2-codex-mark--light {
   display: none;
 }
 
-:root[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--dark,
-[data-theme="opentag"][data-mode="dark"] .otv2-codex-mark--dark,
-[data-theme="opentag"] [data-mode="dark"] .otv2-codex-mark--dark {
+:root[data-opentag-theme="opentag"][data-opentag-mode="dark"] .otv2-codex-mark--dark,
+[data-opentag-theme="opentag"][data-opentag-mode="dark"] .otv2-codex-mark--dark,
+[data-opentag-theme="opentag"] [data-opentag-mode="dark"] .otv2-codex-mark--dark {
   display: block;
 }
 

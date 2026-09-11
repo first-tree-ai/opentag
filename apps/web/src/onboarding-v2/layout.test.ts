@@ -42,8 +42,8 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-codex-mark--dark", "display")).toBe("none");
 
     const stylesheetText = stylesheet.toString();
-    expect(stylesheetText).toContain('[data-mode="dark"] .otv2-codex-mark--light');
-    expect(stylesheetText).toContain('[data-mode="dark"] .otv2-codex-mark--dark');
+    expect(stylesheetText).toContain('[data-opentag-mode="dark"] .otv2-codex-mark--light');
+    expect(stylesheetText).toContain('[data-opentag-mode="dark"] .otv2-codex-mark--dark');
     expect(stylesheetText).not.toContain("prefers-color-scheme");
   });
 

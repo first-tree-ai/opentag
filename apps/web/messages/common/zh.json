@@ -7,6 +7,8 @@
   "common_add": "添加",
   "common_agent_setup_lab": "Agent Setup 实验室",
   "common_agent_setup_lab_description": "使用内存 Adapter 展示 Agent Setup，不会访问 Server。",
+  "common_appearance_changed_description": "检测到页面显示设置被修改。如果页面显示或操作异常，请暂时关闭可能影响此网站的浏览器扩展，然后刷新页面。",
+  "common_appearance_changed_title": "页面显示设置发生变化",
   "common_back": "返回",
   "common_cancel": "取消",
   "common_close": "关闭",

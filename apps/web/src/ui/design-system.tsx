@@ -90,6 +90,7 @@ import {
   useRef,
 } from "react";
 import * as m from "../paraglide/messages.js";
+import { kumoThemeTokens } from "./kumo-theme.tokens.js";
 
 export {
   Banner,
@@ -169,13 +170,18 @@ export function buttonClassName({
   size?: ButtonProps["size"];
   variant?: ButtonVariant;
 } = {}): string {
+  // Tailwind arbitrary properties must stay static strings, so the literal fallbacks below
+  // repeat the reviewed light palette from kumo-theme.tokens.ts; the theme identity test
+  // rejects any drift. The fallback keeps an emphasis button on an accessible surface even
+  // when no ancestor resolves the OpenTag token (for example a portal mounted outside the
+  // themed root, or third-party markup sitting above it).
   return classes(
     buttonVariants({ variant: kumoButtonVariant(variant), size: size === "compact" ? "sm" : "base" }),
     "justify-center",
     variant === "primary" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-primary-bg,#3a5c04)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-primary-gradient-end,#3a5c04)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-primary-gradient-start,#4b7308)] [--kumo-button-emphasis-ring:var(--opentag-button-primary-ring,#2f4a03)]",
     variant === "danger" &&
-      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-gradient-end)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-gradient-start)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring)]",
+      "[--kumo-button-emphasis-bg:var(--opentag-button-danger-bg,#b42318)] [--kumo-button-emphasis-gradient-end:var(--opentag-button-danger-gradient-end,#a61b13)] [--kumo-button-emphasis-gradient-start:var(--opentag-button-danger-gradient-start,#c12c20)] [--kumo-button-emphasis-ring:var(--opentag-button-danger-ring,#88180f)]",
     className,
   );
 }
@@ -187,14 +193,33 @@ type EmphasisButtonStyle = CSSProperties & {
   "--kumo-button-emphasis-ring": string;
 };
 
+/* Literal fallbacks come from the canonical light palette so the inline custom properties stay
+ * as accessible as the themed value when the token itself cannot resolve. Dark scopes keep
+ * working because a defined token always wins over the fallback. */
+const emphasisFallbacks = {
+  primary: {
+    bg: kumoThemeTokens.light.buttonBackground,
+    gradientEnd: kumoThemeTokens.light.buttonGradientEnd,
+    gradientStart: kumoThemeTokens.light.buttonGradientStart,
+    ring: kumoThemeTokens.light.buttonRing,
+  },
+  danger: {
+    bg: kumoThemeTokens.light.dangerButtonBackground,
+    gradientEnd: kumoThemeTokens.light.dangerButtonGradientEnd,
+    gradientStart: kumoThemeTokens.light.dangerButtonGradientStart,
+    ring: kumoThemeTokens.light.dangerButtonRing,
+  },
+} as const;
+
 function emphasisButtonStyle(variant: ButtonVariant): EmphasisButtonStyle | undefined {
   const intent = variant === "primary" ? "primary" : variant === "danger" ? "danger" : undefined;
   if (!intent) return undefined;
+  const fallback = emphasisFallbacks[intent];
   return {
-    "--kumo-button-emphasis-bg": `var(--opentag-button-${intent}-bg)`,
-    "--kumo-button-emphasis-gradient-end": `var(--opentag-button-${intent}-gradient-end)`,
-    "--kumo-button-emphasis-gradient-start": `var(--opentag-button-${intent}-gradient-start)`,
-    "--kumo-button-emphasis-ring": `var(--opentag-button-${intent}-ring)`,
+    "--kumo-button-emphasis-bg": `var(--opentag-button-${intent}-bg, ${fallback.bg})`,
+    "--kumo-button-emphasis-gradient-end": `var(--opentag-button-${intent}-gradient-end, ${fallback.gradientEnd})`,
+    "--kumo-button-emphasis-gradient-start": `var(--opentag-button-${intent}-gradient-start, ${fallback.gradientStart})`,
+    "--kumo-button-emphasis-ring": `var(--opentag-button-${intent}-ring, ${fallback.ring})`,
   };
 }
 

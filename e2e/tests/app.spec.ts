@@ -53,7 +53,7 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
 
   await expectContainedDimensions();
   await page.emulateMedia({ colorScheme: "dark" });
-  await expect(page.locator("html")).toHaveAttribute("data-mode", "light");
+  await expect(page.locator("html")).toHaveAttribute("data-opentag-mode", "light");
   await expect(lightMark).toHaveCSS("display", "block");
   await expect(darkMark).toHaveCSS("display", "none");
   await page.setViewportSize({ width: 390, height: 844 });

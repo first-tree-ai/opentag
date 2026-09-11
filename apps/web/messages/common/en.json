@@ -7,6 +7,8 @@
   "common_add": "Add",
   "common_agent_setup_lab": "Agent Setup lab",
   "common_agent_setup_lab_description": "The Agent Setup presentation against its in-memory adapter, reaching no Server.",
+  "common_appearance_changed_description": "The page appearance settings were modified. If the page looks wrong or does not respond as expected, temporarily disable browser extensions that may affect this site, then refresh the page.",
+  "common_appearance_changed_title": "Page appearance settings changed",
   "common_back": "Back",
   "common_cancel": "Cancel",
   "common_close": "Close",

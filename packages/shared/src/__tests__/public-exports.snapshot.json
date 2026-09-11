@@ -381,6 +381,7 @@
   "SkillAgentsResponseSchema",
   "SkillDescriptionSchema",
   "SkillDetailSchema",
+  "SkillErrorDetailSchema",
   "SkillFileEntrySchema",
   "SkillFileModeSchema",
   "SkillListQuerySchema",

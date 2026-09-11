@@ -288,6 +288,13 @@
       "when": 1788658011768,
       "tag": "0040_watery_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789127025309,
+      "tag": "0041_far_quentin_quire",
+      "breakpoints": true
     }
   ]
 }

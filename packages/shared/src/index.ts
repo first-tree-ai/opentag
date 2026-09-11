@@ -211,6 +211,8 @@ export {
   ErrorDetailSchema,
   type ErrorEnvelope,
   ErrorEnvelopeSchema,
+  type SkillErrorDetail,
+  SkillErrorDetailSchema,
   type ValidationIssue,
   ValidationIssueSchema,
 } from "./errors.js";

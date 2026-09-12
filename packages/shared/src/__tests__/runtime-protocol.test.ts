@@ -495,27 +495,32 @@ describe("runtime protocol refinements", () => {
   });
 
   it("skips capabilities the remote does not offer or cannot overlap, in sorted order", () => {
+    // Local offers list the overlapping names in reverse lexical order so that
+    // insertion order alone would yield zeta, gamma, alpha; only the sort in
+    // negotiateRuntimeCapabilities produces alpha, gamma, zeta.
     const negotiated = negotiateRuntimeCapabilities(
       {
-        "zeta.localOnly": { min: 1, max: 1 },
+        "zeta.shared": { min: 1, max: 3 },
+        "theta.localOnly": { min: 1, max: 1 },
+        "gamma.pinned": { min: 2, max: 2 },
         "beta.disjoint": { min: 3, max: 4 },
         "alpha.shared": { min: 1, max: 2 },
-        "gamma.pinned": { min: 2, max: 2 },
       },
       {
         "gamma.pinned": { min: 1, max: 3 },
         "alpha.shared": { min: 2, max: 5 },
+        "zeta.shared": { min: 2, max: 4 },
         "beta.disjoint": { min: 1, max: 2 },
         "delta.remoteOnly": { min: 1, max: 1 },
       },
     );
-    expect(negotiated).toEqual({ "alpha.shared": 2, "gamma.pinned": 2 });
-    expect(Object.keys(negotiated)).toEqual(["alpha.shared", "gamma.pinned"]);
+    expect(negotiated).toEqual({ "alpha.shared": 2, "gamma.pinned": 2, "zeta.shared": 3 });
+    expect(Object.keys(negotiated)).toEqual(["alpha.shared", "gamma.pinned", "zeta.shared"]);
     expect(negotiateRuntimeCapabilities({}, RUNTIME_SERVER_CAPABILITY_OFFERS)).toEqual({});
     expect(missingRuntimeCapabilities([], negotiated)).toEqual([]);
-    expect(missingRuntimeCapabilities(["beta.disjoint", "alpha.shared", "zeta.localOnly"], negotiated)).toEqual([
+    expect(missingRuntimeCapabilities(["beta.disjoint", "alpha.shared", "theta.localOnly"], negotiated)).toEqual([
       "beta.disjoint",
-      "zeta.localOnly",
+      "theta.localOnly",
     ]);
   });
 

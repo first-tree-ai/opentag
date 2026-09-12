@@ -290,15 +290,24 @@ describe("daemon service runtime", () => {
       stop: vi.fn(),
     });
 
+    const reportFailure = vi.fn(async () => {
+      throw new Error("relay unavailable");
+    });
+
     await expect(
       runDaemonServiceEntry({
         home,
         logger: recordingLogger(entries),
         signals: signals as unknown as NodeJS.Process,
+        reportFailure,
       }),
     ).resolves.toBe(1);
 
     expect(release).toHaveBeenCalledOnce();
+    // A throwing relay must not replace the daemon's own exit code.
+    expect(reportFailure).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ message: "sensitive release failure" }),
+    );
     expect(entries).toContainEqual(
       expect.objectContaining({
         fields: expect.objectContaining({

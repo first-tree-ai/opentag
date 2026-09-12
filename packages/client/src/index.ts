@@ -84,6 +84,19 @@ export {
   ServerHealthTimeoutError,
 } from "./health.js";
 export {
+  buildClientErrorReport,
+  CLIENT_ERROR_REPORT_TIMEOUT_MS,
+  type ClientErrorReportMetadata,
+  installProcessErrorReporting,
+  PROCESS_ERROR_FLUSH_WAIT_MS,
+  PROCESS_ERROR_REPORT_WAIT_MS,
+  type ProcessErrorOrigin,
+  type ProcessErrorReportingOptions,
+  type ProcessErrorTarget,
+  type ReportClientErrorOptions,
+  reportClientError,
+} from "./observability/error-reporting.js";
+export {
   type ClientLogBindings,
   type ClientLogger,
   type CreateLoggerOptions,

@@ -27,6 +27,7 @@
     "@autotelic/fastify-opentelemetry": "^0.23.0",
     "@fastify/static": "^10.1.3",
     "@fastify/websocket": "^11.3.0",
+    "@google-cloud/error-reporting": "^4.0.1",
     "@larksuiteoapi/node-sdk": "^1.73.3",
     "@opentag/shared": "workspace:*",
     "@opentelemetry/api": "^1.9.0",

@@ -98,6 +98,7 @@ server container.
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | Optional; defaults to `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | Optional; defaults to `300000` |
+| `GOOGLE_CLOUD_PROJECT` | Optional; forwards relayed Web App and CLI errors to Google Cloud Error Reporting, see [Client error reporting](./error-reporting.md) |
 
 The two optional variables control how the Server learns the exact channel latest target it advertises to connected
 Clients for automatic upgrades: it polls the channel's published `latest.json` under the download base URL and keeps
@@ -109,6 +110,11 @@ environment whose public URL is not HTTPS. Staging secrets must not be shared wi
 Configuration is validated before the server listens, so add a newly required variable to the App **before** the
 revision that needs it is deployed. A missing one leaves CapRover restarting a container that exits at startup rather
 than serving a degraded App.
+
+The image workflows pass the commit SHA as the `OPENTAG_WEB_VERSION` build argument, which the Web App stamps
+into the error reports it relays (see [Client error reporting](./error-reporting.md)). A self-built image should
+pass its own release identity the same way, `docker build --build-arg OPENTAG_WEB_VERSION=$(git rev-parse HEAD) .`,
+or its reports carry the placeholder manifest version.
 
 The GHCR package is public, so CapRover pulls the image anonymously. If the package is ever made private, add a
 registry credential in **CapRover → Cluster → Docker Registries** using a GitHub token with `read:packages`, otherwise

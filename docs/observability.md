@@ -6,6 +6,8 @@ OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The i
 
 Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only.
 
+Failures that happen in the Web App or the CLI rather than on the server travel a separate path: the server relays them to Google Cloud Error Reporting. See [Client error reporting](./error-reporting.md).
+
 ## Logging contract
 
 Logs use a fixed vocabulary. Use one key for each concept so dashboards and later adoption lanes do not have to merge
@@ -60,6 +62,7 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | `deployment.environment.name` resource label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global head sample rate in the inclusive range `0` to `1` |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` |
+| `GOOGLE_CLOUD_PROJECT` | unset | Forwards relayed Web App and CLI errors to Google Cloud Error Reporting; see [Client error reporting](./error-reporting.md) |
 
 The service resource is fixed to `service.name=opentag-server`. Every process also emits its random startup identity as `service.instance.id`, which distinguishes replicas and restarts.
 

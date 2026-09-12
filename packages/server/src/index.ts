@@ -12,6 +12,7 @@ import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { agents, computers } from "./db/schema/index.js";
 import {
   createBackgroundFailureSupervisor,
+  createErrorReporter,
   createServerDiagnosticReporter,
   createServiceLoggerPort,
   initTelemetry,
@@ -404,6 +405,12 @@ export async function startServer(): Promise<void> {
     const internalNavigationService = new InternalNavigationVisibilityService();
     app = createApp({
       loggerLevel: config.logLevel,
+      errorReporting: {
+        reporter: createErrorReporter({
+          projectId: config.observability.errorReporting.projectId,
+          logger: () => app?.log,
+        }),
+      },
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       agentService,

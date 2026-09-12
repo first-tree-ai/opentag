@@ -57,6 +57,7 @@ import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
+import { composeSkillServices, skillStorageSecretValues } from "./services/skills/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
@@ -123,6 +124,15 @@ export {
   type SessionCollaborationServiceOptions,
   SessionService,
 } from "./services/sessions/index.js";
+export {
+  MemorySkillBlobStore,
+  S3SkillBlobStore,
+  SkillAssignmentService,
+  type SkillBlobStore,
+  SkillOrphanSweeper,
+  SkillService,
+  SkillServiceError,
+} from "./services/skills/index.js";
 
 class InternalNavigationVisibilityService {
   #value: InternalNavigationVisibility = { integrations: false, skills: false };
@@ -159,6 +169,7 @@ export async function startServer(): Promise<void> {
       process.env.OPENTAG_OTEL_HEADERS ?? "",
       process.env.OPENTAG_SLACK_CLIENT_SECRET ?? "",
       process.env.OPENTAG_SLACK_SIGNING_SECRET ?? "",
+      ...skillStorageSecretValues(process.env),
     );
     const config = parseServerConfig(process.env);
     const instanceId = randomUUID();
@@ -402,6 +413,7 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const internalNavigationService = new InternalNavigationVisibilityService();
+    const skillComposition = composeSkillServices({ config, database, registry, serviceLogger });
     app = createApp({
       loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
@@ -475,7 +487,9 @@ export async function startServer(): Promise<void> {
       },
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
+      ...skillComposition.appOptions,
     });
+    skillComposition.start(app.log);
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
@@ -489,6 +503,7 @@ export async function startServer(): Promise<void> {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
+      skillComposition.stop();
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();

@@ -57,6 +57,16 @@ export const ErrorCodeSchema = z.enum([
   "RUNTIME_REGISTER_TIMEOUT",
   "SESSION_CURSOR_INVALID",
   "SESSION_PROOF_INVALID",
+  "SKILL_NOT_FOUND",
+  "SKILL_ALREADY_EXISTS",
+  "SKILL_ARCHIVE_INVALID",
+  "SKILL_ARCHIVE_TOO_LARGE",
+  "SKILL_ARCHIVE_TOO_MANY_FILES",
+  "SKILL_ARCHIVE_INVALID_PATH",
+  "SKILL_ARCHIVE_UNSUPPORTED_MEDIA_TYPE",
+  "SKILL_MANIFEST_INVALID",
+  "SKILL_QUOTA_EXCEEDED",
+  "SKILL_STORAGE_UNAVAILABLE",
   "TASK_NOT_QUEUED",
   "INTERNAL_ERROR",
   "RATE_LIMITED",
@@ -73,6 +83,14 @@ export const ValidationIssueSchema = z
   })
   .strict();
 
+/** Structured context for skill library failures: the offending SKILL.md field, or the names an assignment lacked. */
+export const SkillErrorDetailSchema = z
+  .object({
+    field: z.string().min(1).max(256).optional(),
+    missing: z.array(z.string().min(1).max(256)).max(200).optional(),
+  })
+  .strict();
+
 export const ErrorDetailSchema = z
   .object({
     code: ErrorCodeSchema,
@@ -82,6 +100,7 @@ export const ErrorDetailSchema = z
     retryAfterSeconds: z.number().int().positive().optional(),
     issues: z.array(ValidationIssueSchema).optional(),
     unbindRequired: ImBindingUnbindRequiredDetailSchema.optional(),
+    details: SkillErrorDetailSchema.optional(),
   })
   .strict()
   .superRefine((detail, context) => {
@@ -90,6 +109,13 @@ export const ErrorDetailSchema = z
         code: "custom",
         path: ["unbindRequired"],
         message: "Only an unbind-required failure carries the unbind identity",
+      });
+    }
+    if (detail.details && !detail.code.startsWith("SKILL_")) {
+      context.addIssue({
+        code: "custom",
+        path: ["details"],
+        message: "Only skill library failures carry structured details",
       });
     }
   });
@@ -104,4 +130,5 @@ export type ErrorCategory = z.infer<typeof ErrorCategorySchema>;
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export type ErrorDetail = z.infer<typeof ErrorDetailSchema>;
 export type ErrorEnvelope = z.infer<typeof ErrorEnvelopeSchema>;
+export type SkillErrorDetail = z.infer<typeof SkillErrorDetailSchema>;
 export type ValidationIssue = z.infer<typeof ValidationIssueSchema>;

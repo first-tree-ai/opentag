@@ -205,6 +205,11 @@
       "idx": 40,
       "tag": "0040_watery_electro",
       "sha256": "9f0e919374569a7f309184c5e950a9cee9c2fd85052b60d7ca6f01fede69cb39"
+    },
+    {
+      "idx": 41,
+      "tag": "0041_far_quentin_quire",
+      "sha256": "2541fd552d5069b82102fa4bf2191f9d14cd797f2249bd109b44b3f83f9b9b0f"
     }
   ]
 }

@@ -8,8 +8,6 @@
   "agent_settings_cancel_action": "Cancel",
   "agent_settings_change_action": "Change",
   "agent_settings_change_model_title": "Change model",
-  "agent_settings_channel_detail": "{provider}",
-  "agent_settings_channel_detail_with_name": "{provider} · @{name}",
   "agent_settings_claude_code": "Claude Code",
   "agent_settings_codex": "Codex",
   "agent_settings_computer_description": "The Computer this Agent runs on. It can work only while that Computer is online.",

@@ -86,3 +86,24 @@ describe("updater state store", () => {
     await expect(store.loadState()).rejects.toThrow(UpdaterStateInvalidError);
   });
 });
+
+describe("updater attempt validation", () => {
+  it.each([
+    ["an empty startedAt", { startedAt: "" }],
+    ["a non-string startedAt", { startedAt: 1_700_000_000 }],
+    ["an unknown result", { result: "other" }],
+    ["a non-string finishedAt", { finishedAt: 5 }],
+    ["a non-string failureReason", { failureReason: { code: "x" } }],
+  ])("fails closed on an attempt with %s", async (_label, overrides) => {
+    const home = await tempHome();
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.daemonState, { recursive: true, mode: 0o700 });
+    const attempt = { target: "0.0.3", startedAt: "2023-11-14T22:13:20.000Z", ...overrides };
+    await writeFile(
+      join(paths.daemonState, "updater.json"),
+      JSON.stringify({ schemaVersion: 1, currentVersion: "0.0.2", state: "idle", attempts: { "0.0.3": attempt } }),
+      { mode: 0o600 },
+    );
+    expect((await readUpdaterState(home)).status).toBe("invalid");
+  });
+});

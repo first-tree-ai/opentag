@@ -146,8 +146,9 @@ describe("FeishuSetup dialog lifecycle", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
 
+    // `onSuccess` fires in the same turn as `setDialogOpen(false)`, so the exit still has to settle.
     await waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.queryByText("Loading setup")).toBeNull();
   });
 
@@ -192,9 +193,16 @@ describe("FeishuSetup dialog lifecycle", () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it("offers a new code for an expired attempt and clears the dialog on Close", async () => {
-    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
-      attempt({ id: attemptId, intent: "create", state: "expired" }),
+  it("offers a new code for an expired attempt and asks the Server again after Close", async () => {
+    const retriedAttemptId = "3a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const create = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockResolvedValueOnce(attempt({ id: attemptId, intent: "create", state: "expired" }))
+      .mockResolvedValueOnce(attempt({ id: retriedAttemptId, intent: "create", state: "awaiting_user", qrUrl }))
+      // Once the scripted answers run out a spy falls back to the real client, which would reach the network.
+      .mockRejectedValue(new Error("unexpected third createFeishuSetupAttempt"));
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockResolvedValue(
+      attempt({ id: retriedAttemptId, intent: "create", state: "awaiting_user", qrUrl }),
     );
     render(<Harness presentation="dialog" />);
 
@@ -206,11 +214,15 @@ describe("FeishuSetup dialog lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connect Lark" })).toBeNull());
-    // The retained terminal attempt is dropped with the dialog; a fresh open starts clean.
+
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    expect((await screen.findByRole("dialog", { name: "Connect Lark" })).textContent).toContain(
-      "This QR code expired. Generate a new one and try again.",
-    );
+
+    // Close discarded the finished attempt, so the reopened dialog waits on a new one in the window
+    // before it lands, rather than reviving the expiry it was closed on.
+    expect(screen.getByText("Preparing QR code…")).toBeTruthy();
+    expect(screen.queryByText("This QR code expired. Generate a new one and try again.")).toBeNull();
+    expect(await screen.findByRole("img", { name: "Scan this QR code in Lark" })).toBeTruthy();
+    expect(create).toHaveBeenCalledTimes(2);
   });
 
   it("offers Try again when the start itself fails before any attempt exists", async () => {

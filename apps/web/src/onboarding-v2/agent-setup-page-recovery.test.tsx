@@ -4,7 +4,12 @@
  * the handoff and blocked copy the Server projects but the in-memory model never emits on its own.
  */
 
-import type { AgentSetupAction, AgentSetupSnapshot, ProviderCliHandoffProgress } from "@opentag/shared/browser";
+import {
+  type AgentSetupAction,
+  type AgentSetupSnapshot,
+  AgentSetupSnapshotSchema,
+  type ProviderCliHandoffProgress,
+} from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -245,7 +250,7 @@ describe("AgentSetupPage action failures", () => {
     expect(reads).toHaveBeenCalledTimes(readsBeforeUnmount);
   });
 
-  it("does not retry a readiness report that is refused after the page is gone", async () => {
+  it("absorbs a readiness report that is refused after the page is gone", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true },
@@ -261,6 +266,42 @@ describe("AgentSetupPage action failures", () => {
     await settle();
 
     expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-arm a readiness report whose effect was retired while it was in flight", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack", reachable: true },
+    });
+    const report = deferred<void>();
+    const first = vi.fn(() => report.promise);
+    const second = vi.fn(async () => undefined);
+    // Built by hand rather than through `renderSetup` because the rerender has to change `onReady`
+    // while holding the same QueryClient, so the page is updated instead of remounted.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (onReady: AgentSetupPageProps["onReady"]) => (
+      <QueryClientProvider client={queryClient}>
+        <AgentSetupPage adapter={memory.adapter} agentId={SETUP_AGENT_ID} onReady={onReady} />
+      </QueryClientProvider>
+    );
+    const view = render(tree(first));
+    await settle();
+    expect(first).toHaveBeenCalledTimes(1);
+
+    // A new `onReady` identity retires the in-flight report's effect; the claim on this Agent stands,
+    // so the replacement is not invited to report the same ready stage again.
+    view.rerender(tree(second));
+    await settle();
+    expect(second).not.toHaveBeenCalled();
+
+    await act(async () => report.reject(new Error("refused")));
+    await settle();
+
+    // The retired attempt leaves the claim in place, so the refusal is swallowed rather than
+    // retried onto its successor: no second call, and no readiness failure to recover from.
+    expect(second).not.toHaveBeenCalled();
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 
@@ -371,27 +412,43 @@ describe("AgentSetupPage messaging recovery", () => {
     },
   );
 
-  it("shows a cross-Provider block without a binding to act on as copy only", async () => {
+  it("renders a cross-Provider block whose snapshot permits no action as copy only", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true },
     });
-    const currentBindingId = crypto.randomUUID();
+    const ready = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (ready.messaging.kind !== "ready") throw new Error("Expected a ready Slack binding to block");
+    const { bindingId, credentialGeneration } = ready.messaging;
     renderSetup(
-      patchedAdapter(memory, (snapshot) => ({
-        ...snapshot,
-        stage: "needs-messaging",
-        messaging: { kind: "blocked", provider: "slack", code: "unbind-required", errorCode: null },
-        blockers: [
-          {
-            code: "messaging-unbind-required",
-            currentProvider: "slack",
-            currentBindingId,
-            requestedProvider: "feishu",
+      // Parsed on the way out, so an illegal snapshot fails here rather than reaching the page.
+      patchedAdapter(memory, (snapshot) =>
+        AgentSetupSnapshotSchema.parse({
+          ...snapshot,
+          stage: "needs-messaging",
+          messaging: {
+            kind: "blocked",
+            provider: "slack",
+            bindingId,
+            credentialGeneration,
+            code: "unbind-required",
+            errorCode: null,
           },
-        ],
-        actions: [],
-      })),
+          blockers: [
+            { code: "messaging-not-ready", provider: "slack", bindingId, state: "blocked" },
+            {
+              code: "messaging-unbind-required",
+              currentProvider: "slack",
+              currentBindingId: bindingId,
+              requestedProvider: "feishu",
+            },
+          ],
+          // BlockedMessaging keys every control off a permitted action, so an empty list is what
+          // reduces the block to copy. Today's Server always offers `unbind-messaging` beside a
+          // bound binding, so this pins the component's contract, not a state it projects.
+          actions: [],
+        }),
+      ),
     );
     await settle();
 
@@ -400,6 +457,33 @@ describe("AgentSetupPage messaging recovery", () => {
     expect(screen.getByText("Disconnect Slack before connecting Lark.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Disconnect Slack/ })).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]')).toBeNull();
+  });
+
+  it("renders a blocked binding the snapshot names no identity for as copy only", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "slack", reachable: true },
+    });
+    renderSetup(
+      // A blocked Provider with no `bindingId` is the one shape that leaves `currentBindingOf`
+      // without a binding, so every control falls away even where an action would name one.
+      patchedAdapter(memory, (snapshot) =>
+        AgentSetupSnapshotSchema.parse({
+          ...snapshot,
+          stage: "needs-messaging",
+          messaging: { kind: "blocked", provider: "slack", code: "authorization-failed", errorCode: null },
+          blockers: [{ code: "messaging-not-ready", provider: "slack", state: "blocked" }],
+          actions: [],
+        }),
+      ),
+    );
+    await settle();
+
+    expect(screen.getByRole("heading", { name: "Restore your messaging connection" })).toBeTruthy();
+    expect(screen.getByText("Slack authorization didn't complete. Disconnect Slack, then reconnect it.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Disconnect Slack/ })).toBeNull();
+    expect(document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]')).toBeNull();
+    expect(document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]')).toBeNull();
   });
 
   it("keeps the messaging description when the snapshot offers no Provider to start", async () => {

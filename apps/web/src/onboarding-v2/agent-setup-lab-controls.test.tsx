@@ -34,12 +34,27 @@ function screenState(): string {
   return screen.getByRole("combobox", { name: "Screen state" }).textContent?.trim() ?? "";
 }
 
-function pageForState(optionName: string): string {
+function pageForState(
+  optionName: string,
+): "Choose location" | "Name & Runtime" | "Connect computer" | "Verify environment" | "Connect messaging" | "Ready" {
   if (["New computer", "Existing computer"].includes(optionName)) return "Choose location";
+  if (optionName === "Agent creation") return "Name & Runtime";
   if (["Connect computer", "Reconnect computer", "Replace computer"].includes(optionName)) return "Connect computer";
+  if (
+    [
+      "Runtime report missing",
+      "Runtime checking",
+      "Install Runtime",
+      "Sign in to Runtime",
+      "Fix messaging support",
+      "Ready to continue",
+    ].includes(optionName)
+  ) {
+    return "Verify environment";
+  }
   if (["Connect messaging", "Waiting for handoff", "Needs recovery"].includes(optionName)) return "Connect messaging";
   if (optionName === "Everything ready") return "Ready";
-  return "Verify environment";
+  throw new Error(`Unknown Screen state: ${optionName}`);
 }
 
 /** Opens the labelled Kumo select and picks the option by its visible label. */

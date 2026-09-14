@@ -437,6 +437,7 @@ describe("doctor Agent Runtime CLI observations", () => {
           source: "well-known",
           status: "installed" as const,
         },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" as const },
       ],
     ],
   ])("passes the aggregate when only %s is installed", async (_label, detection) => {
@@ -461,6 +462,7 @@ describe("doctor Agent Runtime CLI observations", () => {
       runtimeDetector: vi.fn().mockResolvedValue([
         { displayName: "Codex CLI", provider: "codex", status: "not-installed" },
         { displayName: "Claude Code CLI", provider: "claude-code", status: "not-installed" },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
       ]),
     });
 
@@ -485,6 +487,7 @@ describe("doctor Agent Runtime CLI observations", () => {
           provider: "claude-code",
           status: "unknown",
         },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
       ]),
     });
 
@@ -683,6 +686,7 @@ describe("doctor report and exit contract", () => {
       "runtime.any-installed",
       "runtime.codex.installation",
       "runtime.claude-code.installation",
+      "runtime.pi.installation",
       "provider-cli.feishu.installation",
       "provider-cli.slack.installation",
       "context-tree.target",
@@ -768,6 +772,7 @@ describe("doctor report and exit contract", () => {
       runtimeDetector: vi.fn().mockResolvedValue([
         { displayName: "Codex CLI", provider: "codex", status: "not-installed" },
         { displayName: "Claude Code CLI", provider: "claude-code", status: "not-installed" },
+        { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
       ]),
     });
 
@@ -833,6 +838,7 @@ function installedCodex() {
       status: "installed" as const,
     },
     { displayName: "Claude Code CLI", provider: "claude-code" as const, status: "not-installed" as const },
+    { displayName: "Pi CLI", provider: "pi" as const, status: "not-installed" as const },
   ];
 }
 

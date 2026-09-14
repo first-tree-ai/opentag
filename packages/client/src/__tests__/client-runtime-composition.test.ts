@@ -17,6 +17,7 @@ import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.j
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import {
   ComposedClientRuntime,
@@ -29,7 +30,9 @@ import {
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvePiHome,
 } from "../runtime/client-runtime-composition.js";
+import * as contextTreeModule from "../runtime/context-tree.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -50,6 +53,63 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("can initialize Pi without the optional packaged Context Tree skills", async () => {
+    const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(undefined);
+    cleanup.push(async () => {
+      packageResolver.mockRestore();
+    });
+    const home = await temporaryDirectory("opentag-pi-no-context-package-");
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+    });
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      expect((await runtime.runtimeManager.ensureRuntime("session-1")).binding?.providerId).toBe("pi");
+    } finally {
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("recovers a Pi binding when Client restarts before the first prompt", async () => {
+    const home = await temporaryDirectory("opentag-pi-unmaterialized-");
+    const connection = runtimeConnection();
+    const factory = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+    });
+    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+    const first = await createClientRuntime(connection, options);
+    let originalBinding: AgentRuntime["binding"];
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      originalBinding = (await first.runtimeManager.ensureRuntime("session-1")).binding;
+      expect(originalBinding?.providerId).toBe("pi");
+    } finally {
+      first.stop();
+      await first.run();
+    }
+    const restartedConnection = runtimeConnection(undefined, undefined, connection.installationId);
+    const restarted = await createClientRuntime(restartedConnection, options);
+    try {
+      await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
+      expect(recovered.binding?.providerId).toBe("pi");
+      expect(recovered.binding).not.toEqual(originalBinding);
+    } finally {
+      restarted.stop();
+      await restarted.run();
+    }
+  });
+
   it("hands managed Lark receipts into durable reporting before cleaning the run", async () => {
     const home = await temporaryDirectory("opentag-client-outgoing-composition-");
     const connection = runtimeConnection();
@@ -337,6 +397,15 @@ describe("createClientRuntime production composition", () => {
     expect(resolveCodexHome({})).toBe(resolve(homedir(), ".codex"));
   });
 
+  it("uses HOME when PI_CODING_AGENT_DIR is absent", () => {
+    expect(resolvePiHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.pi/agent"));
+    expect(resolvePiHome({ PI_CODING_AGENT_DIR: "/explicit-pi-home", HOME: "/ignored" })).toBe(
+      resolve("/explicit-pi-home"),
+    );
+    expect(resolvePiHome()).toEqual(expect.any(String));
+    expect(resolvePiHome({})).toBe(resolve(homedir(), ".pi", "agent"));
+  });
+
   it("fails closed for unregistered providers and caller cancellation during initial readiness", async () => {
     const home = await temporaryDirectory("opentag-client-composition-fences-");
     await expect(
@@ -344,7 +413,7 @@ describe("createClientRuntime production composition", () => {
         clientVersion: "0.0.1",
         codexHome: resolve(home, "wrong-provider-home"),
         environment: {},
-        factory: readyFactory("pi"),
+        factory: readyFactory("unreviewed"),
         home,
       }),
     ).rejects.toThrow("does not register the unreviewed provider");
@@ -1996,13 +2065,17 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
   });
 });
 
-function runtimeConnection(serverUrl = "http://127.0.0.1:3000", now?: () => number): RuntimeConnection {
+function runtimeConnection(
+  serverUrl = "http://127.0.0.1:3000",
+  now?: () => number,
+  computerId: string = randomUUID(),
+): RuntimeConnection {
   return new RuntimeConnection({
     arch: "arm64",
     clientVersion: "0.0.1",
     computer: {
       version: 2,
-      computerId: randomUUID(),
+      computerId,
       serverUrl,
     },
     displayName: "test",

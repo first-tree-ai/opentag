@@ -76,7 +76,7 @@ interface AgentSafeRow {
   computer: AgentComputer | null;
   name: string;
   displayName: string;
-  runtimeProvider: "codex" | "claude-code";
+  runtimeProvider: AgentRuntimeProvider;
   receiveMode: "all_message" | "mention_only";
   status: AgentRow["status"];
   createdAt: Date;
@@ -231,8 +231,7 @@ function deliveryUsageTokenCounts(
     cachedInputTokens: parse(cachedInputTokens),
     outputTokens: parse(outputTokens),
   };
-  const normalizedInputTokens =
-    (usage.inputTokens ?? 0) + (provider === "claude-code" ? (usage.cachedInputTokens ?? 0) : 0);
+  const normalizedInputTokens = (usage.inputTokens ?? 0) + (provider === "codex" ? 0 : (usage.cachedInputTokens ?? 0));
   return {
     inputTokens: normalizedInputTokens,
     cachedInputTokens: usage.cachedInputTokens ?? 0,

@@ -15,6 +15,7 @@ import {
   SettingsRow,
   Text,
 } from "../../../ui/design-system.js";
+import { runtimeProviderName } from "../agent-presentation.js";
 import { RuntimeTestAction } from "./runtime-test-action.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 
@@ -67,7 +68,7 @@ function RuntimeConfigurationEditor({
   }>();
   const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
-  const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const providerName = runtimeProviderName(config.runtimeProvider);
   const TroubleshootingHeading = section === "execution" ? "h2" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const hasHistoricalReasoningDraft =
@@ -322,6 +323,7 @@ function reasoningOptionLabel(value: string): string {
   if (value === PROVIDER_DEFAULT_OPTION) return m.agent_settings_provider_default();
   return (
     {
+      off: m.agent_settings_reasoning_off(),
       minimal: m.agent_settings_reasoning_minimal(),
       low: m.agent_settings_reasoning_low(),
       medium: m.agent_settings_reasoning_medium(),

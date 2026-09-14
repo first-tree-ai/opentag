@@ -288,6 +288,13 @@
       "when": 1788658011768,
       "tag": "0040_watery_electro",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1789395510958,
+      "tag": "0041_colossal_magdalene",
+      "breakpoints": true
     }
   ]
 }

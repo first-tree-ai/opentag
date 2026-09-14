@@ -16,6 +16,7 @@ import {
   agentStatusPresentation,
   messagingChannelLabel,
   platformLabel,
+  runtimeProviderName,
 } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
@@ -120,7 +121,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computer = agentComputerStatus(agent);
   const messaging = agentMessagingStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
-  const runtimeName = agent.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const runtimeName = runtimeProviderName(agent.runtimeProvider);
   return (
     <section
       className="grid rounded-lg bg-kumo-base p-4 ring ring-kumo-line"

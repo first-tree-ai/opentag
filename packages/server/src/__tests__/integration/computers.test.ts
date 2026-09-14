@@ -699,6 +699,7 @@ describe("Computer connection persistence", () => {
           providerReadiness: [
             { provider: "codex", status: "checking", observedAt: null },
             { provider: "claude-code", status: "checking", observedAt: null },
+            { provider: "pi", status: "checking", observedAt: null },
           ],
         });
       } finally {

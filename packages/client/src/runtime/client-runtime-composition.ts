@@ -31,6 +31,13 @@ import {
   codexBindingRequiresHostedToolReplacement,
 } from "../providers/codex/agent-runtime.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
+import {
+  PI_AGENT_RUNTIME_MANIFEST,
+  PiAgentRuntimeFactory,
+  piAgentRuntimeEnvironment,
+  piBindingRequiresUnmaterializedReplacement,
+} from "../providers/pi/agent-runtime.js";
+import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
@@ -51,7 +58,7 @@ import {
 import { type AgentTurnOutgoingReplyCollector, AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
-import { ContextTreeManager } from "./context-tree.js";
+import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
 import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
@@ -253,6 +260,8 @@ export interface CreateClientRuntimeOptions {
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
   readonly claudeCodeHome?: string;
+  readonly piCommand?: string;
+  readonly piHome?: string;
   readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
@@ -442,6 +451,93 @@ export class ComposedClientRuntime {
   }
 }
 
+async function materializeProductionProviderLayout(
+  options: CreateClientRuntimeOptions,
+  sourceEnvironment: NodeJS.ProcessEnv,
+): Promise<{
+  readonly claudeCodeHome: string;
+  readonly codexHome: string;
+  readonly defaultFactories: readonly AgentRuntimeFactory[];
+  readonly loginShellDiscovery: LoginShellDiscovery;
+  readonly piHome: string;
+  readonly providerArtifactIdentities: Readonly<Record<AgentRuntimeProvider, string>>;
+  readonly providerHomes: Readonly<Record<AgentRuntimeProvider, string>>;
+}> {
+  const defaultHome = sourceEnvironment.HOME ?? homedir();
+  const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
+  const configuredClaudeCodeHome = resolve(
+    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
+  );
+  const configuredPiHome = resolve(
+    options.piHome ?? sourceEnvironment.PI_CODING_AGENT_DIR ?? resolvePiHome(sourceEnvironment),
+  );
+  const configuredPiSessionDirectory = join(configuredPiHome, "sessions");
+  await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredPiHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredPiSessionDirectory, { recursive: true, mode: 0o700 });
+  const codexHome = await realpath(configuredCodexHome);
+  const claudeCodeHome = await realpath(configuredClaudeCodeHome);
+  const piHome = await realpath(configuredPiHome);
+  const piSessionDirectory = await realpath(configuredPiSessionDirectory);
+  const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
+  const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
+    prependPath(environment, contextTreeBin);
+  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
+  const loginShellDiscovery = createLoginShellDiscovery();
+  const discovery = loginShellDiscovery.options;
+  const contextTreeSkillsPath = resolveContextTreePackage()?.skillsPath;
+  return {
+    claudeCodeHome,
+    codexHome,
+    loginShellDiscovery,
+    piHome,
+    providerHomes: {
+      codex: codexHome,
+      "claude-code": claudeCodeHome,
+      pi: piHome,
+    },
+    providerArtifactIdentities: {
+      codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
+      "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
+      pi: createHash("sha256").update(piHome, "utf8").digest("hex"),
+    },
+    defaultFactories: [
+      resolvedCodexFactory({
+        clientVersion: options.clientVersion,
+        command: options.codexCommand ?? "codex",
+        codexHome,
+        discovery,
+        environment: withContextTreeOnPath(
+          codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
+        ),
+        sourceEnvironment,
+      }),
+      resolvedClaudeCodeFactory({
+        claudeCodeHome,
+        command: options.claudeCodeCommand ?? "claude",
+        discovery,
+        environment: withContextTreeOnPath(
+          claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
+        ),
+        sourceEnvironment,
+      }),
+      resolvedPiFactory({
+        command: options.piCommand ?? "pi",
+        discovery,
+        environment: withContextTreeOnPath(
+          piAgentRuntimeEnvironment({ ...sourceEnvironment, PI_CODING_AGENT_DIR: piHome }),
+        ),
+        piHome,
+        sessionDirectory: piSessionDirectory,
+        skillPaths: contextTreeSkillsPath ? [contextTreeSkillsPath] : [],
+        sourceEnvironment,
+      }),
+    ],
+  };
+}
+
 export async function createClientRuntime(
   connection: RuntimeConnection,
   options: CreateClientRuntimeOptions,
@@ -449,64 +545,10 @@ export async function createClientRuntime(
   const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
-  const defaultHome = sourceEnvironment.HOME ?? homedir();
-  const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
-  const defaultClaudeCodeHome = resolve(join(defaultHome, ".claude"));
-  const configuredClaudeCodeHome = resolve(
-    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? defaultClaudeCodeHome,
-  );
-  await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
-  await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
-  const codexHome = await realpath(configuredCodexHome);
-  const claudeCodeHome = await realpath(configuredClaudeCodeHome);
-  const codexCommand = options.codexCommand ?? "codex";
-  const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
+  const layout = await materializeProductionProviderLayout(options, sourceEnvironment);
+  const { codexHome, loginShellDiscovery, providerArtifactIdentities, providerHomes } = layout;
   options.signal?.throwIfAborted();
-  // The packaged Context Tree skills invoke `context-tree` by name, so the shim directory has to
-  // win the PATH lookup. This belongs to composition rather than the per-Session workspace
-  // environment: a Session-level PATH would replace the value the factory composes, including the
-  // discovered executable directory that lets `codex` and `claude` resolve at all.
-  const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
-  const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
-    prependPath(environment, contextTreeBin);
-  const codexEnvironment = withContextTreeOnPath(
-    codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome }),
-  );
-  const canonicalDefaultClaudeCodeHome = await realpath(defaultClaudeCodeHome).catch(() => defaultClaudeCodeHome);
-  const claudeCodeEnvironment = withContextTreeOnPath(
-    claudeCodeProcessEnvironment(sourceEnvironment, claudeCodeHome, canonicalDefaultClaudeCodeHome),
-  );
-  const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
-    codex: codexHome,
-    "claude-code": claudeCodeHome,
-  };
-  const providerArtifactIdentities: Readonly<Record<"codex" | "claude-code", string>> = {
-    codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
-    "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
-  };
-  const loginShellDiscovery = createLoginShellDiscovery();
-  const discovery = loginShellDiscovery.options;
-  const factories =
-    options.factories ??
-    (options.factory
-      ? [options.factory]
-      : [
-          resolvedCodexFactory({
-            clientVersion: options.clientVersion,
-            command: codexCommand,
-            codexHome,
-            discovery,
-            environment: codexEnvironment,
-            sourceEnvironment,
-          }),
-          resolvedClaudeCodeFactory({
-            claudeCodeHome,
-            command: claudeCodeCommand,
-            discovery,
-            environment: claudeCodeEnvironment,
-            sourceEnvironment,
-          }),
-        ]);
+  const factories = options.factories ?? (options.factory ? [options.factory] : layout.defaultFactories);
   const providers = new AgentRuntimeProviderRegistry(
     factories.map((factory) => productionProviderRegistration(factory, providerArtifactIdentities, providerHomes)),
   );
@@ -791,11 +833,11 @@ export function claudeCodeProcessEnvironment(
 
 function productionProviderRegistration(
   factory: AgentRuntimeFactory,
-  artifactIdentities: Readonly<Record<"codex" | "claude-code", string>>,
-  providerHomes: Readonly<Record<"codex" | "claude-code", string>>,
+  artifactIdentities: Readonly<Record<AgentRuntimeProvider, string>>,
+  providerHomes: Readonly<Record<AgentRuntimeProvider, string>>,
 ): AgentRuntimeProviderRegistration {
   const providerId = factory.manifest.providerId;
-  if (providerId !== "codex" && providerId !== "claude-code") {
+  if (providerId !== "codex" && providerId !== "claude-code" && providerId !== "pi") {
     throw new Error(`Production Client Runtime does not register the unreviewed provider: ${providerId}`);
   }
   const providerHome = providerHomes[providerId];
@@ -809,14 +851,23 @@ function productionProviderRegistration(
       }
     },
   };
-  return providerId === "codex"
-    ? {
-        ...common,
-        policy: codexRuntimePolicy,
-        requiresBindingReplacement: codexBindingRequiresHostedToolReplacement,
-        validate: validateCodexRuntimePolicy,
-      }
-    : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
+  if (providerId === "codex") {
+    return {
+      ...common,
+      policy: codexRuntimePolicy,
+      requiresBindingReplacement: codexBindingRequiresHostedToolReplacement,
+      validate: validateCodexRuntimePolicy,
+    };
+  }
+  if (providerId === "claude-code") {
+    return { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
+  }
+  return {
+    ...common,
+    policy: piRuntimePolicy,
+    requiresBindingReplacement: piBindingRequiresUnmaterializedReplacement,
+    validate: validatePiRuntimePolicy,
+  };
 }
 
 function prependPath(
@@ -1010,8 +1061,66 @@ function requireReadyClaudeCodeFactory(
   return factory;
 }
 
+export interface ResolvedPiFactoryOptions {
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly piHome: string;
+  readonly sessionDirectory: string;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly skillPaths?: readonly string[];
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => PiAgentRuntimeFactory;
+}
+
+export function resolvedPiFactory(options: ResolvedPiFactoryOptions): AgentRuntimeFactory {
+  let readyFactory: PiAgentRuntimeFactory | undefined;
+  const skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string, environment: NodeJS.ProcessEnv) =>
+      new PiAgentRuntimeFactory({
+        process: {
+          args: skillArgs,
+          command,
+          env: environment,
+          sessionDirectory: options.sessionDirectory,
+        },
+      }));
+  return {
+    manifest: PI_AGENT_RUNTIME_MANIFEST,
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "pi",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Pi CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
+    create(request: CreateAgentRuntimeRequest) {
+      return requireReadyPiFactory(readyFactory).create(request);
+    },
+    resume(request: ResumeAgentRuntimeRequest) {
+      return requireReadyPiFactory(readyFactory).resume(request);
+    },
+  };
+}
+
+function requireReadyPiFactory(factory: PiAgentRuntimeFactory | undefined): PiAgentRuntimeFactory {
+  if (!factory) throw new Error("Pi provider readiness has not been established");
+  return factory;
+}
+
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
+}
+
+export function resolvePiHome(environment: NodeJS.ProcessEnv = process.env): string {
+  return resolve(environment.PI_CODING_AGENT_DIR ?? join(environment.HOME ?? homedir(), ".pi", "agent"));
 }
 
 interface ClientRuntimePreflightDependencies {

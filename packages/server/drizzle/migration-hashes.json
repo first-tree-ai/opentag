@@ -205,6 +205,11 @@
       "idx": 40,
       "tag": "0040_watery_electro",
       "sha256": "9f0e919374569a7f309184c5e950a9cee9c2fd85052b60d7ca6f01fede69cb39"
+    },
+    {
+      "idx": 41,
+      "tag": "0041_colossal_magdalene",
+      "sha256": "31af6ccfbe9ffc88182ba3480e0775b3fb71a9bfd3d4555ff4d90d52c3e6267e"
     }
   ]
 }

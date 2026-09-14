@@ -195,7 +195,9 @@ function failureLabel(failure: LabObservationFailure): string {
 }
 
 function runtimeLabel(runtime: AgentRuntimeProvider): string {
-  return runtime === "codex" ? m.onboarding_v2_runtime_codex_title() : m.onboarding_v2_runtime_claude_code_title();
+  if (runtime === "codex") return m.onboarding_v2_runtime_codex_title();
+  if (runtime === "claude-code") return m.onboarding_v2_runtime_claude_code_title();
+  return m.onboarding_v2_runtime_pi_title();
 }
 
 function pendingLabel(event: LabPendingEvent | undefined): string {

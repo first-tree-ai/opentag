@@ -236,13 +236,20 @@ function AgentNameField({
   );
 }
 
+function runtimeTitle(runtime: Runtime): string {
+  if (runtime === "codex") return m.onboarding_v2_runtime_codex_title();
+  if (runtime === "claude-code") return m.onboarding_v2_runtime_claude_code_title();
+  return m.onboarding_v2_runtime_pi_title();
+}
+
+function runtimeDescription(runtime: Runtime): string {
+  if (runtime === "codex") return m.onboarding_v2_runtime_codex_description();
+  if (runtime === "claude-code") return m.onboarding_v2_runtime_claude_code_description();
+  return m.onboarding_v2_runtime_pi_description();
+}
+
 function RuntimeMark({ runtime }: { runtime: Runtime }) {
-  return (
-    <BrandMark
-      brand={runtime}
-      label={runtime === "codex" ? m.onboarding_v2_runtime_codex_title() : m.onboarding_v2_runtime_claude_code_title()}
-    />
-  );
+  return <BrandMark brand={runtime} label={runtimeTitle(runtime)} />;
 }
 
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
@@ -260,18 +267,7 @@ function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draf
               variant="ghost"
             >
               <RuntimeMark runtime={runtime} />
-              <CardCopy
-                description={
-                  runtime === "codex"
-                    ? m.onboarding_v2_runtime_codex_description()
-                    : m.onboarding_v2_runtime_claude_code_description()
-                }
-                title={
-                  runtime === "codex"
-                    ? m.onboarding_v2_runtime_codex_title()
-                    : m.onboarding_v2_runtime_claude_code_title()
-                }
-              />
+              <CardCopy description={runtimeDescription(runtime)} title={runtimeTitle(runtime)} />
             </Button>
           </li>
         ))}

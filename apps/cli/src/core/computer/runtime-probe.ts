@@ -6,9 +6,12 @@ import {
   type AgentRuntimeProbeResult,
   claudeCodeProcessEnvironment,
   codexAgentRuntimeEnvironment,
+  piAgentRuntimeEnvironment,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvedPiFactory,
+  resolvePiHome,
 } from "@opentag/client";
 import type { AgentRuntimeProvider, LocalPreparationComponent } from "@opentag/shared";
 import { CLI_VERSION } from "../../build-info.js";
@@ -16,11 +19,12 @@ import { channelConfig } from "../channel/config.js";
 import { redactSecrets } from "../command/policy.js";
 
 /**
- * Read-only probe of one Agent Runtime CLI for targeted Computer preparation. It reuses the same
+ * Probe of one Agent Runtime CLI for targeted Computer preparation. It reuses the same
  * resolved factories and environment filters the daemon runs. This is point-in-time local proof,
- * not daemon readiness: inspection never creates Runtime homes and uses fresh executable discovery,
+ * not daemon readiness: OpenTag does not create Runtime homes here and uses fresh executable discovery,
  * whereas daemon startup creates homes and shares a login-shell discovery cache. No model is ever
- * invoked and OpenTag never installs a Runtime CLI: the operator supplies it.
+ * invoked and OpenTag never installs a Runtime CLI: the operator supplies it. Provider commands
+ * may maintain their own configuration (for example, Pi can migrate its config during a probe).
  */
 
 /** Bounded probe budget; matches the daemon's default provider probe deadline. */
@@ -34,8 +38,9 @@ export interface ResolvedRuntimeProbeEnvironment {
 
 /**
  * Reuse the daemon's selected Runtime home rules and environment filter without creating homes:
- * Codex under `CODEX_HOME` (default `~/.codex`) and Claude Code under `CLAUDE_CONFIG_DIR`
- * (default `~/.claude`). `CLAUDE_CONFIG_DIR` is omitted when it resolves to Claude's own default,
+ * Codex under `CODEX_HOME` (default `~/.codex`), Claude Code under `CLAUDE_CONFIG_DIR`
+ * (default `~/.claude`), and Pi under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`).
+ * `CLAUDE_CONFIG_DIR` is omitted when it resolves to Claude's own default,
  * because setting it explicitly would change the credential record the daemon later reads.
  */
 export async function resolveRuntimeProbeEnvironment(
@@ -48,6 +53,14 @@ export async function resolveRuntimeProbeEnvironment(
       home,
       sourceEnvironment,
       environment: codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: home }),
+    };
+  }
+  if (provider === "pi") {
+    const home = await canonicalizeProviderHome(resolvePiHome(sourceEnvironment));
+    return {
+      home,
+      sourceEnvironment,
+      environment: piAgentRuntimeEnvironment({ ...sourceEnvironment, PI_CODING_AGENT_DIR: home }),
     };
   }
   const configuredHome = resolve(
@@ -83,6 +96,15 @@ function resolvedFactoryFor(
       codexHome: environment.home,
       command: "codex",
       environment: environment.environment,
+      sourceEnvironment: environment.sourceEnvironment,
+    });
+  }
+  if (provider === "pi") {
+    return resolvedPiFactory({
+      command: "pi",
+      environment: environment.environment,
+      piHome: environment.home,
+      sessionDirectory: resolve(environment.home, "sessions"),
       sourceEnvironment: environment.sourceEnvironment,
     });
   }
@@ -144,7 +166,9 @@ async function probeSelectedRuntime(
 }
 
 export function runtimeComponentLabel(provider: AgentRuntimeProvider): string {
-  return provider === "codex" ? "Codex CLI" : "Claude Code CLI";
+  if (provider === "codex") return "Codex CLI";
+  if (provider === "claude-code") return "Claude Code CLI";
+  return "Pi CLI";
 }
 
 export function runtimeComponentId(provider: AgentRuntimeProvider): `runtime:${AgentRuntimeProvider}` {

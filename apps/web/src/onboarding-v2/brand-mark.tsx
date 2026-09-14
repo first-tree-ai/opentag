@@ -8,7 +8,7 @@ import { OpenTagLogo } from "../ui/opentag-logo.js";
 /**
  * Vendor marks shown beside a runtime or messaging app.
  */
-export type BrandId = "opentag" | "feishu" | "slack" | "claude-code" | "codex";
+export type BrandId = "opentag" | "feishu" | "slack" | "claude-code" | "codex" | "pi";
 
 const ART: Partial<Record<BrandId, string>> = {
   feishu: feishuMark,

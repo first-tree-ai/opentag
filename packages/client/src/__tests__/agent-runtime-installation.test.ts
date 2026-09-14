@@ -167,6 +167,11 @@ describe("Agent Runtime CLI installation discovery", () => {
         source: "caller-path",
         status: "installed",
       },
+      {
+        displayName: "Pi CLI",
+        provider: "pi",
+        status: "not-installed",
+      },
     ]);
   });
 

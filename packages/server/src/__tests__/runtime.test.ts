@@ -159,7 +159,7 @@ describe("Computer runtime WebSocket", () => {
     expect(await frames.next()).toMatchObject({
       type: "server:welcome",
       protocolVersion: 1,
-      providerReadiness: { version: 1, providers: ["codex", "claude-code"] },
+      providerReadiness: { version: 1, providers: ["codex", "claude-code", "pi"] },
     });
 
     const register = {
@@ -520,7 +520,7 @@ describe("Computer runtime WebSocket", () => {
     socket.send(
       JSON.stringify({
         ...registerFrame(machineContext.installationId, randomUUID()),
-        providerReadiness: [{ provider: "pi", status: "ready" }],
+        providerReadiness: [{ provider: "unknown", status: "ready" }],
       }),
     );
 

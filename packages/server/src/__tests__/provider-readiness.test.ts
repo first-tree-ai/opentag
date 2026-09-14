@@ -20,6 +20,7 @@ describe("Computer provider readiness projection", () => {
     ).toEqual([
       { provider: "codex", status: "sign-in", observedAt: "2026-08-19T23:59:59.000Z" },
       { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "checking", observedAt: null },
     ]);
   });
 
@@ -31,6 +32,7 @@ describe("Computer provider readiness projection", () => {
     ).toEqual([
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "checking", observedAt: null },
     ]);
   });
 
@@ -47,6 +49,7 @@ describe("Computer provider readiness projection", () => {
     ).toEqual([
       { provider: "codex", status: "unavailable", observedAt: null },
       { provider: "claude-code", status: "unavailable", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
     ]);
   });
 });

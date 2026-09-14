@@ -887,6 +887,7 @@ describe("machine authentication and Computer services", () => {
     expect(projectComputerProviderReadiness("c", "offline", observed, source)).toEqual([
       { provider: "codex", status: "unavailable", observedAt: null },
       { provider: "claude-code", status: "unavailable", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
     ]);
     expect(projectComputerImCliReadiness("c", "offline", observed, source)).toEqual([
       { provider: "feishu", status: "unavailable", observedAt: null },
@@ -895,6 +896,7 @@ describe("machine authentication and Computer services", () => {
     expect(projectComputerProviderReadiness("c", "online", observed, source)).toMatchObject([
       { provider: "codex", status: "ready" },
       { provider: "claude-code", status: "checking" },
+      { provider: "pi", status: "checking" },
     ]);
     // A Provider without a report stays absent: nothing may present it as checking.
     expect(projectComputerImCliReadiness("c", "online", observed, source)).toEqual([

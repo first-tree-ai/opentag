@@ -319,7 +319,7 @@ describe("SessionRuntimeManager", () => {
 
       const created = factory.created[0];
       const cwd = await workspace.cwd(request.agentId);
-      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
+      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex");
       // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
       expect(created?.workspace.writableRoots).toEqual([
         cwd,

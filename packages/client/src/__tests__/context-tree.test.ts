@@ -188,6 +188,56 @@ describe("ContextTreeManager", () => {
     expect(calls).toEqual([]);
   });
 
+  it("connects a Pi Session without requiring Codex or overwriting user skills", async () => {
+    const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: skippedInstallReply("missing") });
+    const { cwd, home } = await computer({ execFile, target: managed });
+    const piHome = resolve(home, ".pi", "agent");
+    const userSkill = join(piHome, "skills", "context-tree-read", "SKILL.md");
+    await mkdir(resolve(userSkill, ".."), { recursive: true });
+    await writeFile(userSkill, "User-owned skill\n", "utf8");
+    const skillsRoot = resolve(home, "pkg", "skills", "context-tree-read");
+    await mkdir(skillsRoot, { recursive: true });
+    await writeFile(join(skillsRoot, "SKILL.md"), "# Context Tree Read\n", "utf8");
+    const piManager = new ContextTreeManager({
+      home,
+      environment: { ...process.env, HOME: home },
+      contextTreePackage: {
+        root: resolve(home, "pkg"),
+        cliPath: resolve(home, "pkg", "dist", "cli", "index.mjs"),
+        skillsPath: resolve(home, "pkg", "skills"),
+      },
+      execFile,
+      platform: "linux",
+    });
+
+    await expect(piManager.ensureAgent(cwd, "pi")).resolves.toEqual({ status: "ready", treePath: "/srv/t" });
+    expect(calls.map(([subcommand]) => subcommand)).toEqual(["connect"]);
+    expect(await readFile(userSkill, "utf8")).toBe("User-owned skill\n");
+  });
+
+  it("does not treat an unsupported Codex home as blocking for Pi", async () => {
+    const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: skippedInstallReply("missing") });
+    const { cwd, home } = await computer({ execFile, target: managed, codexHome: "/opt/opentag/codex-home" });
+    const skillsRoot = resolve(home, "pkg", "skills", "context-tree-read");
+    await mkdir(skillsRoot, { recursive: true });
+    await writeFile(join(skillsRoot, "SKILL.md"), "# Context Tree Read\n", "utf8");
+    const piManager = new ContextTreeManager({
+      home,
+      environment: { ...process.env, HOME: home },
+      contextTreePackage: {
+        root: resolve(home, "pkg"),
+        cliPath: resolve(home, "pkg", "dist", "cli", "index.mjs"),
+        skillsPath: resolve(home, "pkg", "skills"),
+      },
+      execFile,
+      platform: "linux",
+      codexHome: "/opt/opentag/codex-home",
+    });
+
+    await expect(piManager.ensureAgent(cwd, "pi")).resolves.toEqual({ status: "ready", treePath: "/srv/t" });
+    expect(calls.map(([subcommand]) => subcommand)).toEqual(["connect"]);
+  });
+
   it.each([
     // The CLI reports a missing host as a skipped entry with an explanatory reason.
     [

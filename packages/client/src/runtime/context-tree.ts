@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
+  type AgentRuntimeProvider,
   type ContextTreeConfig,
   ContextTreeConfigSchema,
   type ContextTreePreparation,
@@ -235,11 +236,11 @@ export class ContextTreeManager {
    * until the workspace layout state is schema-v3 `complete`. That ordering is what keeps the
    * connection from writing into a workspace still mid-migration.
    */
-  async ensureAgent(cwd: string): Promise<ContextTreeStatus> {
-    return this.#withinSessionStartBudget(this.#prepareAgent(cwd));
+  async ensureAgent(cwd: string, provider?: AgentRuntimeProvider): Promise<ContextTreeStatus> {
+    return this.#withinSessionStartBudget(this.#prepareAgent(cwd, provider));
   }
 
-  async #prepareAgent(cwd: string): Promise<ContextTreeStatus> {
+  async #prepareAgent(cwd: string, provider?: AgentRuntimeProvider): Promise<ContextTreeStatus> {
     const executableFailure = !this.#package
       ? "PACKAGE_MISSING"
       : (await this.#prepareShim())
@@ -263,7 +264,7 @@ export class ContextTreeManager {
     const cooling = this.#cooldown.get(cwd);
     if (cooling?.target === target && cooling.until > Date.now()) return cooling.status;
     if (cooling) this.#cooldown.delete(cwd);
-    return this.#joinPreparation(cwd, config, target, executableFailure);
+    return this.#joinPreparation(cwd, config, target, executableFailure, provider);
   }
 
   async readConfig(): Promise<ContextTreeConfig | undefined> {
@@ -277,8 +278,13 @@ export class ContextTreeManager {
     }
   }
 
-  async #ensureAgentOnce(cwd: string, config: ContextTreeConfig): Promise<ContextTreeStatus> {
+  async #ensureAgentOnce(
+    cwd: string,
+    config: ContextTreeConfig,
+    provider?: AgentRuntimeProvider,
+  ): Promise<ContextTreeStatus> {
     if (!this.#package) return this.#unavailable("PACKAGE_MISSING", config);
+    if (provider === "pi") return this.#ensurePiAgent(cwd, config);
     // The CLI never reads `CODEX_HOME`; `install --host codex` targets `<HOME>/.codex/skills`.
     // An unsupported home is diagnosed before any CLI work, so nothing can land in the wrong place.
     if (!this.#codexHomeIsDefaultNamed) return this.#unavailable("CODEX_HOME_UNSUPPORTED", config);
@@ -307,6 +313,27 @@ export class ContextTreeManager {
     } catch (error) {
       if (error instanceof ContextTreeCliFailure) return this.#unavailable(error.reason, config);
       this.#logger.warn({ err: describe(error) }, "Context Tree preparation failed");
+      return { status: "unavailable", reason: "CLI_FAILED" };
+    }
+  }
+
+  /**
+   * Pi receives the packaged skills through explicit `--skill` arguments in Client composition.
+   * Connecting its workspace does not install or overwrite skills in the user's Pi home.
+   */
+  async #ensurePiAgent(cwd: string, config: ContextTreeConfig): Promise<ContextTreeStatus> {
+    try {
+      const connected = await this.#run(connectArguments(config.target, cwd), cwd, config.target.kind === "github");
+      const treePath = (connected as { tree?: { path?: unknown } }).tree?.path;
+      if (typeof treePath !== "string" || treePath.length === 0) return this.#unavailable("CONNECT_FAILED", config);
+      this.#logger.info(
+        { target: formatContextTreeTarget(config.target), treePath },
+        "Context Tree connected for a Pi Agent workspace",
+      );
+      return { status: "ready", treePath };
+    } catch (error) {
+      if (error instanceof ContextTreeCliFailure) return this.#unavailable(error.reason, config);
+      this.#logger.warn({ err: describe(error) }, "Context Tree Pi preparation failed");
       return { status: "unavailable", reason: "CLI_FAILED" };
     }
   }
@@ -378,13 +405,14 @@ export class ContextTreeManager {
     config: ContextTreeConfig,
     target: string,
     executableFailure?: string,
+    provider?: AgentRuntimeProvider,
   ): Promise<ContextTreeStatus> {
     const current = this.#inFlight.get(cwd);
     if (current?.target === target) return current.promise;
     // The CLI's connection store has no cross-process lock, so background work remains serialized
     // even though Session callers stop waiting after their short budget.
     const prepared = this.#serialize(async () =>
-      executableFailure ? this.#unavailable(executableFailure, config) : this.#ensureAgentOnce(cwd, config),
+      executableFailure ? this.#unavailable(executableFailure, config) : this.#ensureAgentOnce(cwd, config, provider),
     ).catch((error: unknown) => {
       this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
       return { status: "unavailable", reason: "CLI_FAILED" } as const;

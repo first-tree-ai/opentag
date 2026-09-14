@@ -456,6 +456,7 @@ describe("runtime domain contract", () => {
     const usage = { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4 };
     expect(runtimeUsageTotalTokens("codex", usage)).toBe(14);
     expect(runtimeUsageTotalTokens("claude-code", usage)).toBe(16);
+    expect(runtimeUsageTotalTokens("pi", usage)).toBe(16);
     expect(runtimeUsageTotalTokens("codex", {})).toBe(0);
     expect(() =>
       runtimeUsageTotalTokens("claude-code", {

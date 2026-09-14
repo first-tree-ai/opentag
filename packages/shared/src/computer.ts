@@ -334,7 +334,7 @@ export const ComputerImCliReadinessCollectionSchema = z
 /**
  * Local computer preparation vocabulary. A single `connect`/`repair` run reports one Result whose
  * Components mirror the plan the run executed: the Computer itself, the targeted Runtime CLI
- * (`runtime:codex`, `runtime:claude-code`, or `runtime:unconfirmed` when the Server did not name
+ * (`runtime:codex`, `runtime:claude-code`, `runtime:pi`, or `runtime:unconfirmed` when the Server did not name
  * one), and the Provider CLIs (`im-cli:lark`, `im-cli:slack`). Components may carry child Checks
  * (for example the Computer's credential and daemon) with bounded ids of their own.
  *

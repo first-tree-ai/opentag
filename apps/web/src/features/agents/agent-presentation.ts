@@ -109,7 +109,7 @@ export function computerRecoveryMessage(agent: AgentDetailView): string {
   const computerName = agent.computer.displayName;
   if (agent.availability.reason === "runtime_unavailable") {
     const { provider, status } = agent.availability.dependencies.runtime;
-    const providerName = provider === "codex" ? "Codex" : "Claude Code";
+    const providerName = runtimeProviderName(provider);
     if (status === "install") {
       return m.agent_settings_computer_recovery_provider_not_installed({ computerName, providerName });
     }
@@ -170,7 +170,9 @@ export function platformLabel(platform: NonNullable<AgentSummary["computer"]>["p
 }
 
 export function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): string {
-  return provider === "codex" ? "Codex" : "Claude Code";
+  if (provider === "codex") return "Codex";
+  if (provider === "claude-code") return "Claude Code";
+  return "Pi";
 }
 
 /**

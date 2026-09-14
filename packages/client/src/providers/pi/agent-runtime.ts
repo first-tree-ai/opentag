@@ -52,6 +52,7 @@ const PI_RESOURCE_DISABLE_ARGUMENTS = [
   "--no-context-files",
   "--no-approve",
 ] as const;
+const PI_LIST_MODELS_COLUMNS = ["provider", "model", "context", "max-out", "thinking", "images"] as const;
 
 export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: PI_PROVIDER_ID,
@@ -821,7 +822,8 @@ async function probePi(
   const version = versionResult.stdout.trim();
   let help = "";
   try {
-    help = (await execFileAsync(command, ["--help"], execution)).stdout;
+    // Pi constructs resourceLoader before printing help, so disable resource discovery here too.
+    help = (await execFileAsync(command, [...PI_RESOURCE_DISABLE_ARGUMENTS, "--help"], execution)).stdout;
   } catch (error) {
     if (signal?.aborted) throw error;
     logger.debug({ code: "probe_help_failed", error: String(error) }, "Pi help probe failed");
@@ -843,13 +845,33 @@ async function probePi(
   let credential = false;
   try {
     const models = await execFileAsync(command, [...PI_RESOURCE_DISABLE_ARGUMENTS, "--list-models"], execution);
-    credential = models.stdout.trim().split(/\r?\n/).length > 1;
+    credential = piListModelsHaveAvailableRows(models.stdout);
   } catch (error) {
     if (signal?.aborted) throw error;
     logger.debug({ code: "probe_models_failed", error: String(error) }, "Pi model probe failed");
     credential = false;
   }
   return { credential, rpc, version };
+}
+
+function piListModelsHaveAvailableRows(stdout: string): boolean {
+  const [headerLine, ...rows] = stdout.trim().split(/\r?\n/);
+  if (!headerLine || rows.length === 0) return false;
+  const header = piListModelsColumns(headerLine);
+  if (
+    header.length !== PI_LIST_MODELS_COLUMNS.length ||
+    PI_LIST_MODELS_COLUMNS.some((column, index) => header[index] !== column)
+  ) {
+    return false;
+  }
+  return rows.every((line) => piListModelsColumns(line).length === PI_LIST_MODELS_COLUMNS.length);
+}
+
+function piListModelsColumns(line: string): readonly string[] {
+  return line
+    .trim()
+    .split(/\s+/)
+    .filter((column) => column.length > 0);
 }
 
 function supportsPiProtocol(version: string): boolean {
@@ -1021,6 +1043,11 @@ function parsePiBinding(binding: AgentRuntimeBinding): {
   }
 }
 
+export function piBindingRequiresUnmaterializedReplacement(binding: AgentRuntimeBinding): boolean {
+  assertBinding(binding, PI_AGENT_RUNTIME_MANIFEST);
+  return parsePiBinding(binding).sessionFileHash === undefined;
+}
+
 function parseModel(value: unknown): { readonly id: string; readonly provider: string } | undefined {
   if (value === undefined || value === null) return undefined;
   const model = requireRecord(value, "Pi get_state model is invalid");
@@ -1034,7 +1061,11 @@ function parseUsage(value: unknown): AgentUsage | undefined {
   const usage = record(value);
   if (!usage) return undefined;
   const result: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } = {};
-  if (isNonNegativeNumber(usage.input)) result.inputTokens = usage.input;
+  const input = isNonNegativeNumber(usage.input) ? usage.input : undefined;
+  const cacheWrite = isNonNegativeNumber(usage.cacheWrite) ? usage.cacheWrite : undefined;
+  if (input !== undefined || cacheWrite !== undefined) {
+    result.inputTokens = addTokenCounts(input, cacheWrite, "input");
+  }
   if (isNonNegativeNumber(usage.cacheRead)) result.cachedInputTokens = usage.cacheRead;
   if (isNonNegativeNumber(usage.output)) result.outputTokens = usage.output;
   return hasUsage(result) ? result : undefined;

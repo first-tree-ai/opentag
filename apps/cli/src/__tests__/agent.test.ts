@@ -567,8 +567,10 @@ describe("Agent CLI core", () => {
     );
     expect(create?.options.find((option) => option.long === "--workspace")).toBeUndefined();
     expect(list?.options.find((option) => option.long === "--workspace")).toBeUndefined();
-    expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
-    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");
+    expect(update?.options.find((option) => option.long === "--model")?.description).toContain("selected runtime");
+    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain(
+      "runtime manage model",
+    );
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
       "OpenTag default",
     );

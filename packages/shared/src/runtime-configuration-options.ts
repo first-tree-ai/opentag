@@ -14,6 +14,10 @@ const RUNTIME_CONFIGURATION_OPTIONS = {
     modelSuggestions: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
     reasoningEffortAllowedValues: ["low", "medium", "high", "xhigh", "max"],
   },
+  pi: {
+    modelSuggestions: ["claude-opus-4-7", "claude-sonnet-4", "gpt-5.6-sol"],
+    reasoningEffortAllowedValues: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  },
 } as const satisfies Record<AgentRuntimeProvider, RuntimeConfigurationOptions>;
 
 export function getRuntimeConfigurationOptions(provider: AgentRuntimeProvider): RuntimeConfigurationOptions {

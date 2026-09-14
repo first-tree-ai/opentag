@@ -187,6 +187,36 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain("Max");
   });
 
+  it("shows Pi model suggestions and the complete Pi reasoning list", async () => {
+    const piConfig: AgentAdminConfig = {
+      ...config,
+      runtimeProvider: "pi",
+      runtimeConfig: { ...config.runtimeConfig, model: "claude-sonnet-4", reasoningEffort: "off" },
+    };
+    render(<RuntimeConfigurationForm initialConfig={piConfig} save={vi.fn()} />);
+
+    expect(screen.getByText("Pi")).toBeTruthy();
+    expect(await optionLabels("Model")).toEqual([
+      "Provider default",
+      "claude-opus-4-7",
+      "claude-sonnet-4",
+      "gpt-5.6-sol",
+      "Custom model ID…",
+    ]);
+    expect(screen.getByRole("combobox", { name: "Model" }).textContent?.trim()).toContain("claude-sonnet-4");
+    expect(await optionLabels("Reasoning effort")).toEqual([
+      "Provider default",
+      "Off",
+      "Minimal",
+      "Low",
+      "Medium",
+      "High",
+      "Extra high",
+      "Max",
+    ]);
+    expect(screen.getByRole("combobox", { name: "Reasoning effort" }).textContent?.trim()).toContain("Off");
+  });
+
   it("maps Provider default to null while preserving expectedRevision", async () => {
     const configured: AgentAdminConfig = {
       ...config,

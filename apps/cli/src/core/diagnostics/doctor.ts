@@ -13,7 +13,7 @@ import {
   ServerHealthResponseError,
   ServerHealthTimeoutError,
 } from "@opentag/client";
-import type { ServerHealth } from "@opentag/shared";
+import { AGENT_RUNTIME_PROVIDERS, type AgentRuntimeProvider, type ServerHealth } from "@opentag/shared";
 import { CHANNEL, CLI_VERSION } from "../../build-info.js";
 import { channelConfig } from "../channel/config.js";
 import { wasChannelDefaultHomeApplied } from "../channel/home-source.js";
@@ -419,6 +419,12 @@ function serverCheck(
   };
 }
 
+const RUNTIME_CLI_LABELS = {
+  codex: "Codex CLI",
+  "claude-code": "Claude Code CLI",
+  pi: "Pi CLI",
+} as const satisfies Record<AgentRuntimeProvider, string>;
+
 function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[]>): DoctorCheck[] {
   if (result.status === "rejected") {
     return [
@@ -431,15 +437,15 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
         detail: safeErrorDetail(result.reason, "Runtime installation could not be determined"),
         observedFrom: "current CLI process environment",
       },
-      runtimeProviderUnknown("codex", "Codex CLI"),
-      runtimeProviderUnknown("claude-code", "Claude Code CLI"),
+      ...AGENT_RUNTIME_PROVIDERS.map((provider) => runtimeProviderUnknown(provider, RUNTIME_CLI_LABELS[provider])),
     ];
   }
   const byProvider = new Map(result.value.map((entry) => [entry.provider, entry]));
-  const codex = byProvider.get("codex") ?? unknownRuntime("codex", "Codex CLI");
-  const claude = byProvider.get("claude-code") ?? unknownRuntime("claude-code", "Claude Code CLI");
-  const installed = [codex, claude].filter((entry) => entry.status === "installed");
-  const hasUnknown = [codex, claude].some((entry) => entry.status === "unknown");
+  const runtimes = AGENT_RUNTIME_PROVIDERS.map(
+    (provider) => byProvider.get(provider) ?? unknownRuntime(provider, RUNTIME_CLI_LABELS[provider]),
+  );
+  const installed = runtimes.filter((entry) => entry.status === "installed");
+  const hasUnknown = runtimes.some((entry) => entry.status === "unknown");
   return [
     {
       code: "runtime.any-installed",
@@ -454,10 +460,9 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
             ? "no supported Runtime was found and at least one result is unknown"
             : "no supported Runtime is installed",
       observedFrom: "current CLI process environment",
-      ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI or Claude Code CLI" }),
+      ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI, Claude Code CLI, or Pi CLI" }),
     },
-    cliInstallationCheck(`runtime.${codex.provider}.installation`, "agent-runtime", codex),
-    cliInstallationCheck(`runtime.${claude.provider}.installation`, "agent-runtime", claude),
+    ...runtimes.map((entry) => cliInstallationCheck(`runtime.${entry.provider}.installation`, "agent-runtime", entry)),
   ];
 }
 
@@ -631,7 +636,7 @@ function providerFromCheckCode(code: string): "feishu" | "slack" {
   }
 }
 
-function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string, detail?: string): DoctorCheck {
+function runtimeProviderUnknown(provider: AgentRuntimeProvider, label: string, detail?: string): DoctorCheck {
   return cliInstallationCheck(`runtime.${provider}.installation`, "agent-runtime", {
     detail,
     displayName: label,
@@ -639,7 +644,7 @@ function runtimeProviderUnknown(provider: "codex" | "claude-code", label: string
   });
 }
 
-function unknownRuntime(provider: "codex" | "claude-code", displayName: string): AgentRuntimeCliInstallation {
+function unknownRuntime(provider: AgentRuntimeProvider, displayName: string): AgentRuntimeCliInstallation {
   return { provider, displayName, status: "unknown", detail: "Detector did not return a result" };
 }
 

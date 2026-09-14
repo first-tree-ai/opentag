@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
-import { PiAgentRuntime, PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
+import { AgentRuntimeError } from "../agent-runtime/errors.js";
+import type { AgentRuntimeBinding, AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
+import {
+  PiAgentRuntime,
+  PiAgentRuntimeFactory,
+  piAgentRuntimeEnvironment,
+  piBindingRequiresUnmaterializedReplacement,
+} from "../providers/pi/agent-runtime.js";
 import type { PiRpcClient } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -32,7 +38,7 @@ describe("PiAgentRuntime", () => {
     expect(result).toMatchObject({
       status: "completed",
       output: [{ type: "text", text: "final answer" }],
-      usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3 },
+      usage: { inputTokens: 15, cachedInputTokens: 2, outputTokens: 3 },
       providerDiagnostics: {
         providerSessionId: SESSION_ID,
         stopReason: "stop",
@@ -223,6 +229,42 @@ describe("PiAgentRuntime", () => {
       PI_CODING_AGENT_DIR: "/pi",
     });
   });
+
+  it("replaces only valid unmaterialized Pi bindings", () => {
+    expect(
+      piBindingRequiresUnmaterializedReplacement({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId: SESSION_ID },
+      }),
+    ).toBe(true);
+    expect(piBindingRequiresUnmaterializedReplacement(materializedBinding())).toBe(false);
+
+    const rejected: readonly AgentRuntimeBinding[] = [
+      { providerId: "codex", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+      { providerId: "pi", schemaVersion: 2, payload: { sessionId: SESSION_ID } },
+      { providerId: "pi", schemaVersion: 1, payload: { sessionId: "not-a-uuid" } },
+      {
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId: SESSION_ID, sessionFileHash: "invalid" },
+      },
+      {
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId: SESSION_ID, extra: true },
+      },
+    ];
+    for (const binding of rejected) {
+      try {
+        piBindingRequiresUnmaterializedReplacement(binding);
+        expect.unreachable("incompatible Pi bindings must not be replaceable");
+      } catch (error) {
+        expect(error).toBeInstanceOf(AgentRuntimeError);
+        expect(error).toMatchObject({ code: "binding_incompatible" });
+      }
+    }
+  });
 });
 
 type Scenario = "complete" | "error" | "failure" | "hold";
@@ -326,7 +368,7 @@ function assistantMessage(stopReason: "aborted" | "error" | "stop"): Readonly<Re
     content: [{ type: "text", text: "final answer" }],
     stopReason,
     ...(stopReason === "error" ? { errorMessage: "model unavailable" } : {}),
-    usage: { input: 10, output: 3, cacheRead: 2 },
+    usage: { input: 10, output: 3, cacheRead: 2, cacheWrite: 5 },
   };
 }
 

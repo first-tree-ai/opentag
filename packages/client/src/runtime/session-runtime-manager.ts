@@ -277,7 +277,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
     // caches per workspace, revalidates that entry against the Computer's recorded target, and
     // never throws, so a failure only changes what the prompt reports.
-    const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
+    const contextTree = await prepareContextTree(this.#contextTree, managed.cwd, managed.snapshot.provider);
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
     const common = {
       eventSink,
@@ -478,8 +478,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 async function prepareContextTree(
   manager: Pick<ContextTreeManager, "ensureAgent"> | undefined,
   cwd: string,
+  provider: EffectiveRuntimeSnapshot["provider"],
 ): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
-  const status = await manager?.ensureAgent(cwd);
+  const status = await manager?.ensureAgent(cwd, provider);
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },

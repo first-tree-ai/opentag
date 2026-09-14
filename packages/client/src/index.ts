@@ -192,9 +192,12 @@ export {
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
   type ResolvedCodexFactoryOptions,
+  type ResolvedPiFactoryOptions,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvedPiFactory,
+  resolvePiHome,
 } from "./runtime/client-runtime-composition.js";
 export {
   allocateComputerIdentity,

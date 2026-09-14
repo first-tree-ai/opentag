@@ -228,7 +228,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     ["suspended Agent", async () => authority({ agentStatus: "suspended" }), "AUTHORITY_INACTIVE"],
     ["deleted Agent", async () => authority({ agentStatus: "deleted" }), "AUTHORITY_INACTIVE"],
     ["missing config", async () => authority({ runtimeConfig: null }), "RUNTIME_CONFIG_MISSING"],
-    ["unsupported provider", async () => authority({ runtimeProvider: "pi" }), "UNSUPPORTED_PROVIDER"],
+    ["unsupported provider", async () => authority({ runtimeProvider: "unknown" as never }), "UNSUPPORTED_PROVIDER"],
     [
       "invalid stored config",
       async () =>

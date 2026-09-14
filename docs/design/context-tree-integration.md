@@ -264,8 +264,10 @@ own LaunchAgent or systemd user timer later runs **outside** the provider sandbo
 cannot express exclusions, and the in-session `context-tree` CLI has to write trees and connection
 records, so a Session that can use Context Tree can also rewrite an existing launcher. It cannot
 register a *new* schedule, because the plist or unit file lives outside this directory. This is the
-accepted trade: without the account directory the CLI's first in-session write fails. Deployments
-that cannot grant account-wide Context Tree write authority should not enable Context Tree.
+accepted trade: without the account directory the CLI's first in-session write fails. The grant is
+unconditional — OpenTag issues it for every Session whether or not a Context Tree target is
+configured, because Context Tree is a built-in part of OpenTag rather than an optional add-on. No
+configuration withholds it today; an explicit opt-out may be added later.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather

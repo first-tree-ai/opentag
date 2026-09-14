@@ -333,6 +333,42 @@ describe("SessionRuntimeManager", () => {
     },
   );
 
+  it("does not repeat a managed tree already covered by the shared directory grant", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-nested-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const treePath = resolve(process.env.HOME as string, ".context-tree", "trees", "team");
+    const contextTree = { ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })) };
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      contextTree,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+
+    const cwd = await workspace.cwd(request.agentId);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(process.env.HOME as string, ".context-tree"),
+    ]);
+    expect(factory.created[0]?.systemPrompt).toContain(`Context Tree: ${treePath}`);
+    await manager.close();
+  });
+
   it("starts a Session and says durable memory is inactive when Context Tree is unavailable", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-unavailable-"));
     homes.push(home);

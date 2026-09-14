@@ -1,3 +1,4 @@
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   EffectiveRuntimeSnapshot,
   InputRejectReason,
@@ -301,7 +302,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
               }
             : {}),
         },
-        writableRoots: [
+        writableRoots: deduplicateWritableRoots([
           ...visibleSlackWritableRoots(
             managed.sessionKind,
             managed.cwd,
@@ -310,7 +311,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ),
           ...configurationRoots,
           ...contextTree.writableRoots,
-        ],
+        ]),
       },
       policy: provider.policy(managed.snapshot),
       configuration: {
@@ -484,6 +485,22 @@ async function prepareContextTree(
     promptContext: { contextTree: status },
     writableRoots: status.status === "ready" ? [status.treePath] : [],
   };
+}
+
+/**
+ * Drop a root already covered by another. A managed Context Tree checkout lives under the shared
+ * account directory, so its resolved path is normally nested inside that grant.
+ */
+function deduplicateWritableRoots(roots: readonly string[]): string[] {
+  const resolved = roots.map((root) => resolve(root));
+  return resolved.filter((root, index) =>
+    resolved.every((other, otherIndex) => {
+      if (otherIndex === index) return true;
+      const suffix = relative(other, root);
+      if (suffix === "") return index < otherIndex;
+      return suffix.startsWith(`..${sep}`) || suffix === ".." || isAbsolute(suffix);
+    }),
+  );
 }
 
 function visibleSlackWritableRoots(

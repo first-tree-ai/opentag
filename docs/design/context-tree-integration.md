@@ -77,7 +77,16 @@ code has to be rendered twice.
 The target is recorded per OS account in `~/.context-tree/opentag.json`, mode
 `0600`, credential-free. The Server is not involved. The three target kinds mirror
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
-reinterpreting it.
+reinterpreting it. The file does not depend on `OPENTAG_HOME`, so every OpenTag channel on the
+account (`dev`, `staging`, `prod`) reads and writes the same selection.
+
+**Upgrade requires reconnecting.** Existing `<OPENTAG_HOME>/config/context-tree/config.json`
+files are ignored, so previously configured installations report unconfigured until reconnected.
+Run `opentag context-tree connect <managed-name>`, `opentag context-tree connect OWNER/REPO`, or
+`opentag context-tree connect --tree-path <path>` using the previous target. Restart the daemon
+and affected Sessions to pick up the Runtime changes, then verify the connection with
+`opentag doctor`. The old configuration and existing tree data remain on disk; there is no
+fallback or automatic migration.
 
 Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
 still applies when reading it, but direct edits bypass command-level target validation. Later
@@ -155,7 +164,8 @@ What this costs, stated rather than left implicit:
 - Agents on one Computer share one checkout, so one dirty checkout blocks all of them with
   `DIRTY_TREE`. Doctor names it distinctly; it is repaired by the user, never by discarding their
   edits.
-- The target is machine-local, so it is set once per Computer. Server propagation is deferred.
+- The target is account-local, so it is set once per OS account and is shared by every OpenTag
+  channel (`dev`, `staging`, `prod`) configured for that account. Server propagation is deferred.
 
 ## Reaching the Session
 
@@ -241,11 +251,21 @@ Writing one owned, reversible skill directory is the smaller intrusion.
 
 OpenTag creates `~/.context-tree` with mode `0700` before granting read/write access to visible
 and internal Sessions, including when no default is selected. The account home is canonicalized,
-and a symlink at the managed directory is rejected, matching the standalone CLI. This directory
-contains the shared trees, connections, and OpenTag default selection. Changing `OPENTAG_HOME`
-does not change the selected default; the shim and preparation diagnostics remain under
-`OPENTAG_HOME`. If directory preparation fails, OpenTag logs the failure and starts the provider
-without that grant, preserving workspace, Slack, and resolved external-tree grants.
+and a symlink at the managed directory is rejected, matching the standalone CLI. Changing
+`OPENTAG_HOME` does not change the selected default; the shim and preparation diagnostics remain
+under `OPENTAG_HOME`. If directory preparation fails, OpenTag logs the failure and starts the
+provider without that grant, preserving workspace, Slack, and resolved external-tree grants.
+
+The grant is the whole account directory, which is wider than the minimal tree grant it replaces.
+It holds the selected target, every checkout under `trees/`, `connections.json` (which maps every
+project on the account to a tree), and the standalone CLI's cleanup state. That last part includes
+the launcher executable at `cleanup/launchers/<schedule-id>/context-tree-cleanup`, which the user's
+own LaunchAgent or systemd user timer later runs **outside** the provider sandbox. `writableRoots`
+cannot express exclusions, and the in-session `context-tree` CLI has to write trees and connection
+records, so a Session that can use Context Tree can also rewrite an existing launcher. It cannot
+register a *new* schedule, because the plist or unit file lives outside this directory. This is the
+accepted trade: without the account directory the CLI's first in-session write fails. Deployments
+that cannot grant account-wide Context Tree write authority should not enable Context Tree.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather

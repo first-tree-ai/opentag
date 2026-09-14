@@ -136,7 +136,7 @@ export function assertWithin(root: string, target: string): void {
   throw new RuntimeStorageError("unsafe", "Runtime storage path escaped its root");
 }
 
-async function ensureOneDirectory(path: string): Promise<void> {
+export async function ensureOneDirectory(path: string): Promise<void> {
   try {
     await mkdir(path, { mode: 0o700 });
   } catch (error) {

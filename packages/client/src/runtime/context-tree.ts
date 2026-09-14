@@ -10,7 +10,7 @@ import {
   formatContextTreeTarget,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
-import { resolveContextTreeHome } from "../storage/context-tree-home.js";
+import { resolveAccountHome, resolveContextTreeHome } from "../storage/context-tree-home.js";
 import { ensurePrivateDirectory, readDurableJson, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
@@ -217,9 +217,7 @@ export class ContextTreeManager {
     this.#execFile = options.execFile;
     this.#platform = options.platform ?? process.platform;
     this.#nodePath = options.nodePath ?? process.execPath;
-    this.#codexHome = resolve(
-      options.codexHome ?? join(dirname(resolveContextTreeHome(this.#environment).directory), ".codex"),
-    );
+    this.#codexHome = resolve(options.codexHome ?? join(resolveAccountHome(this.#environment), ".codex"));
     this.#codexHomeIsDefaultNamed = basename(this.#codexHome) === ".codex";
     this.#sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
     this.#failureCooldownMs = options.failureCooldownMs ?? FAILURE_COOLDOWN_MS;

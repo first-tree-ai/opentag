@@ -1,11 +1,12 @@
-import { chmod, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   type ContextTreePackage,
   prepareContextTreeHome,
+  readDurableJson,
   resolveContextTreeHome,
   resolveContextTreePackage,
   resolveOpenTagHome,
+  writeDurableJson,
 } from "@opentag/client";
 import {
   CONTEXT_TREE_CONFIG_SCHEMA_VERSION,
@@ -46,21 +47,15 @@ export function resolveContextTreeAssets(deps: ContextTreeCommandDeps = {}): Con
 export async function readContextTreeConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ContextTreeConfig | undefined> {
-  let content: string;
-  try {
-    content = await readFile(resolveContextTreeHome(env).configFile, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  return ContextTreeConfigSchema.parse(JSON.parse(content));
+  return readDurableJson(resolveContextTreeHome(env).configFile, (value) => ContextTreeConfigSchema.parse(value));
 }
 
 export async function writeContextTreeConfig(env: NodeJS.ProcessEnv, target: ContextTreeTarget): Promise<string> {
   const configPath = resolveContextTreeHome(env).configFile;
   const config = ContextTreeConfigSchema.parse({ schemaVersion: CONTEXT_TREE_CONFIG_SCHEMA_VERSION, target });
   await prepareContextTreeHome(env);
-  await writeFile(configPath, `${JSON.stringify(config, undefined, 2)}\n`, { encoding: "utf8", mode: 0o600 });
-  await chmod(configPath, 0o600);
+  // `writeDurableJson` refuses a symlinked destination and replaces atomically at 0600, which a
+  // plain `writeFile` would follow through if a Session planted one first.
+  await writeDurableJson(configPath, config);
   return configPath;
 }

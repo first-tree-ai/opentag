@@ -60,7 +60,7 @@ function capture(): { deps: { stdout: (chunk: string) => void; stderr: (chunk: s
 const listing = (names: readonly string[]) => ({
   payload: { schemaVersion: 1, trees: names.map((name) => ({ name, tree: { kind: "local", path: `/t/${name}` } })) },
 });
-const configFile = (_home: string) => join(process.env.HOME as string, ".context-tree", "opentag.json");
+const configFile = () => join(process.env.HOME as string, ".context-tree", "opentag.json");
 beforeEach(async () => {
   vi.stubEnv("HOME", await realpath(await temporaryDirectory("opentag-ct-account-")));
 });
@@ -80,11 +80,11 @@ describe("opentag context-tree connect", () => {
     });
 
     expect(result).toEqual({ exitCode: 0 });
-    expect(JSON.parse(await readFile(configFile(home), "utf8"))).toEqual({
+    expect(JSON.parse(await readFile(configFile(), "utf8"))).toEqual({
       schemaVersion: 1,
       target: { kind: "managed", name: "team-context-tree" },
     });
-    expect((await stat(configFile(home))).mode & 0o777).toBe(0o600);
+    expect((await stat(configFile())).mode & 0o777).toBe(0o600);
     expect(text()).toContain("team-context-tree");
   });
 
@@ -115,7 +115,7 @@ describe("opentag context-tree connect", () => {
       exitCode: 1,
     });
     expect(text()).toContain(explains);
-    await expect(readFile(configFile(home), "utf8")).rejects.toThrow();
+    await expect(readFile(configFile(), "utf8")).rejects.toThrow();
   });
 
   it.each([
@@ -171,18 +171,18 @@ describe("readContextTreeState", () => {
     const home = await temporaryDirectory("opentag-ct-state-");
     if (target !== undefined) {
       await mkdir(join(process.env.HOME as string, ".context-tree"), { mode: 0o700, recursive: true });
-      await writeFile(configFile(home), JSON.stringify({ schemaVersion: 1, target }), "utf8");
+      await writeFile(configFile(), JSON.stringify({ schemaVersion: 1, target }), "utf8");
     }
 
     const { configPath, ...state } = await readContextTreeState({ home, contextTreePackage: await fakeCli(responses) });
-    expect(configPath).toBe(configFile(home));
+    expect(configPath).toBe(configFile());
     expect(state).toEqual(expected);
   });
 
   it("treats unreadable configuration as unknown rather than failing", async () => {
     const home = await temporaryDirectory("opentag-ct-state-bad-");
     await mkdir(join(process.env.HOME as string, ".context-tree"), { mode: 0o700, recursive: true });
-    await writeFile(configFile(home), "{ not json", "utf8");
+    await writeFile(configFile(), "{ not json", "utf8");
 
     await expect(readContextTreeState({ home, contextTreePackage: await fakeCli({}) })).resolves.toMatchObject({
       tree: "unknown",
@@ -196,7 +196,7 @@ describe("readContextTreeState", () => {
       await mkdir(join(process.env.HOME as string, ".context-tree"), { mode: 0o700, recursive: true });
       await mkdir(join(home, "state"), { mode: 0o700, recursive: true });
       await writeFile(
-        configFile(home),
+        configFile(),
         JSON.stringify({ schemaVersion: 1, target: { kind: "github", repository: "acme/missing" } }),
         "utf8",
       );
@@ -235,7 +235,7 @@ it("shares a real standalone tree, selection, and workspace connection across Op
   const otherHome = await temporaryDirectory("opentag-ct-second-");
   const otherEnv = { ...env, OPENTAG_HOME: otherHome };
   await expect(readContextTreeState({ env: otherEnv, contextTreePackage: assets })).resolves.toMatchObject({
-    configPath: configFile(home),
+    configPath: configFile(),
     target: treePath,
     tree: "valid",
   });

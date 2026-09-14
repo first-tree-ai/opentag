@@ -418,6 +418,7 @@ async function runtimeFixture(
         });
   const providers = await providerRegistry(factory);
   const runtimeManager = new SessionRuntimeManager({
+    environment: { ...process.env, HOME: home },
     home,
     bindingStore: store,
     ensureProviderReady: (providerId, signal) => providers.ensureReady(providerId, signal),
@@ -553,6 +554,7 @@ async function recoveryFixture(phase: "accepted" | "starting" | "running" | "rep
     codexFactory(seedClients, Promise.resolve(), "retained-thread-before-restart"),
   );
   const seedManager = new SessionRuntimeManager({
+    environment: { ...process.env, HOME: home },
     home,
     bindingStore: seedStore,
     ensureProviderReady: (providerId, signal) => seedProviders.ensureReady(providerId, signal),
@@ -618,6 +620,7 @@ async function recoveryFixture(phase: "accepted" | "starting" | "running" | "rep
   const providers = await providerRegistry(codexFactory(clients, Promise.resolve()));
   let providerReadyCalls = 0;
   const runtimeManager = new SessionRuntimeManager({
+    environment: { ...process.env, HOME: home },
     home,
     bindingStore: store,
     ensureProviderReady: (providerId, signal) => {

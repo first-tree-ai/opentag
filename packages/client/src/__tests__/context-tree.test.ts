@@ -9,6 +9,7 @@ import {
   contextTreeFailureCode,
   resolveContextTreePackage,
 } from "../runtime/context-tree.js";
+import { resolveContextTreeHome } from "../storage/context-tree-home.js";
 import * as durableFile from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
@@ -47,9 +48,9 @@ const skippedInstallReply = (reason: unknown) =>
 
 /** Record a Computer's Context Tree target, the way `opentag context-tree connect` does. */
 async function writeTarget(home: string, target: unknown): Promise<void> {
-  const layout = resolveOpenTagHomeLayout(home);
-  await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
-  await writeFile(layout.contextTreeConfigFile, `${JSON.stringify({ schemaVersion: 1, target })}\n`, "utf8");
+  const layout = resolveContextTreeHome({ HOME: home });
+  await mkdir(layout.directory, { mode: 0o700, recursive: true });
+  await writeFile(layout.configFile, `${JSON.stringify({ schemaVersion: 1, target })}\n`, "utf8");
 }
 
 /**
@@ -74,6 +75,7 @@ async function computer(
   const root = resolve(home, "pkg");
   const manager = new ContextTreeManager({
     home,
+    environment: { ...process.env, HOME: home },
     contextTreePackage:
       options.packaged === false
         ? null
@@ -129,26 +131,6 @@ describe("ContextTreeManager", () => {
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
   });
 
-  it("ignores the old configuration and activates a reconnected target while the old file remains", async () => {
-    const { execFile, calls } = recording({ connect: treeReply("/srv/trees/new"), install: installReply });
-    const { home, cwd, manager } = await computer({ execFile });
-    const oldFile = join(home, "config", "context-tree.json");
-    const oldConfig = JSON.stringify({ schemaVersion: 1, target: managed });
-    await mkdir(join(home, "config"), { recursive: true });
-    await writeFile(oldFile, oldConfig);
-
-    await expect(manager.readConfig()).resolves.toBeUndefined();
-    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
-    expect(calls).toEqual([]);
-
-    const target = { kind: "path", path: "/srv/trees/new" };
-    await writeTarget(home, target);
-    await expect(manager.readConfig()).resolves.toMatchObject({ target });
-    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: target.path });
-    expect(calls[0]).toEqual(["connect", "--tree-path", target.path, "--project-path", cwd, "--json"]);
-    await expect(readFile(oldFile, "utf8")).resolves.toBe(oldConfig);
-  });
-
   it("reports a missing package without running anything", async () => {
     const { cwd, manager } = await computer({ target: managed, packaged: false });
 
@@ -176,6 +158,21 @@ describe("ContextTreeManager", () => {
     // A second Session for the same Agent must not re-run the CLI.
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/trees/team" });
     expect(calls).toHaveLength(3);
+  });
+
+  it("uses the account environment for tree commands and redirects only Codex installation", async () => {
+    const environments: NodeJS.ProcessEnv[] = [];
+    const { home, cwd, manager } = await computer({
+      target: managed,
+      codexHome: "/custom/.codex",
+      execFile: async (_file, args, options) => {
+        environments.push(options.env ?? {});
+        return { stdout: JSON.stringify(args[1] === "connect" ? treeReply("/srv/tree") : installReply) };
+      },
+    });
+    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/tree" });
+    expect(environments.map((env) => env.HOME)).toEqual([home, home, "/custom"]);
+    expect(environments[2]).toEqual({ ...environments[0], HOME: "/custom" });
   });
 
   it("reports an unsupported Codex home instead of a misleading ready state", async () => {
@@ -427,7 +424,7 @@ describe("ContextTreeManager", () => {
 
     // A recorded target that has since been corrupted on disk.
     const corrupt = await computer({ target: managed });
-    await writeFile(resolveOpenTagHomeLayout(corrupt.home).contextTreeConfigFile, "{ not json", "utf8");
+    await writeFile(resolveContextTreeHome({ HOME: corrupt.home }).configFile, "{ not json", "utf8");
     await expect(corrupt.manager.readConfig()).resolves.toBeUndefined();
     await expect(corrupt.manager.ensureAgent(corrupt.cwd)).resolves.toEqual({ status: "unconfigured" });
   });

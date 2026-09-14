@@ -1,6 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { type ContextTreePackage, resolveContextTreePackage, resolveOpenTagHome } from "@opentag/client";
+import { chmod, readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import {
+  type ContextTreePackage,
+  prepareContextTreeHome,
+  resolveContextTreeHome,
+  resolveContextTreePackage,
+  resolveOpenTagHome,
+} from "@opentag/client";
 import {
   CONTEXT_TREE_CONFIG_SCHEMA_VERSION,
   type ContextTreeConfig,
@@ -13,7 +19,7 @@ export class ContextTreeUsageError extends Error {
 }
 
 export interface ContextTreeCommandDeps {
-  /** OPENTAG_HOME override; tests inject an isolated home. */
+  /** OPENTAG_HOME override for OpenTag preparation diagnostics. */
   readonly home?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly contextTreePackage?: ContextTreePackage;
@@ -37,14 +43,12 @@ export function resolveContextTreeAssets(deps: ContextTreeCommandDeps = {}): Con
   return deps.contextTreePackage ?? resolveContextTreePackage();
 }
 
-export function contextTreeConfigPath(home: string): string {
-  return join(home, "config", "context-tree", "config.json");
-}
-
-export async function readContextTreeConfig(home: string): Promise<ContextTreeConfig | undefined> {
+export async function readContextTreeConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ContextTreeConfig | undefined> {
   let content: string;
   try {
-    content = await readFile(contextTreeConfigPath(home), "utf8");
+    content = await readFile(resolveContextTreeHome(env).configFile, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
@@ -52,10 +56,11 @@ export async function readContextTreeConfig(home: string): Promise<ContextTreeCo
   return ContextTreeConfigSchema.parse(JSON.parse(content));
 }
 
-export async function writeContextTreeConfig(home: string, target: ContextTreeTarget): Promise<string> {
-  const configPath = contextTreeConfigPath(home);
+export async function writeContextTreeConfig(env: NodeJS.ProcessEnv, target: ContextTreeTarget): Promise<string> {
+  const configPath = resolveContextTreeHome(env).configFile;
   const config = ContextTreeConfigSchema.parse({ schemaVersion: CONTEXT_TREE_CONFIG_SCHEMA_VERSION, target });
-  await mkdir(dirname(configPath), { mode: 0o700, recursive: true });
+  await prepareContextTreeHome(env);
   await writeFile(configPath, `${JSON.stringify(config, undefined, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await chmod(configPath, 0o600);
   return configPath;
 }

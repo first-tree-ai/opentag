@@ -1,12 +1,6 @@
-import { readContextTreePreparation, runContextTreeCli } from "@opentag/client";
+import { readContextTreePreparation, resolveContextTreeHome, runContextTreeCli } from "@opentag/client";
 import { formatContextTreeTarget } from "@opentag/shared";
-import {
-  type ContextTreeCommandDeps,
-  contextTreeConfigPath,
-  readContextTreeConfig,
-  resolveContextTreeAssets,
-  resolveHome,
-} from "./shared.js";
+import { type ContextTreeCommandDeps, readContextTreeConfig, resolveContextTreeAssets, resolveHome } from "./shared.js";
 
 export interface ContextTreeState {
   configPath: string;
@@ -19,12 +13,13 @@ export interface ContextTreeState {
 /** Read-only view of this Computer's Context Tree wiring, for `opentag doctor`. */
 export async function readContextTreeState(deps: ContextTreeCommandDeps = {}): Promise<ContextTreeState> {
   const home = resolveHome(deps);
-  const configPath = contextTreeConfigPath(home);
+  const { env = process.env } = deps;
+  const configPath = resolveContextTreeHome(env).configFile;
   const assets = resolveContextTreeAssets(deps);
 
   let config: Awaited<ReturnType<typeof readContextTreeConfig>>;
   try {
-    config = await readContextTreeConfig(home);
+    config = await readContextTreeConfig(env);
   } catch {
     return { configPath, tree: "unknown", detail: "the configuration file is unreadable or invalid" };
   }
@@ -34,11 +29,15 @@ export async function readContextTreeState(deps: ContextTreeCommandDeps = {}): P
   if (!assets) return { configPath, target, tree: "unknown", detail: "the Context Tree package is missing" };
 
   if (configured.kind === "path") {
-    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", configured.path, "--json"]);
+    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", configured.path, "--json"], {
+      env,
+    });
     if (failureCode === undefined) return { configPath, target, tree: "valid" };
     return { configPath, target, tree: "invalid", detail: failureCode };
   }
-  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"]);
+  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"], {
+    env,
+  });
   if (failureCode !== undefined) return { configPath, target, tree: "unknown", detail: failureCode };
   const trees = (payload as { trees?: readonly { name?: unknown; tree?: { repository?: unknown } }[] }).trees ?? [];
   if (configured.kind === "managed") {

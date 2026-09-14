@@ -577,6 +577,7 @@ export async function createClientRuntime(
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const contextTree = new ContextTreeManager({
+    environment: sourceEnvironment,
     codexHome,
     home: options.home,
     logger: moduleLogger("context-tree"),
@@ -615,6 +616,7 @@ export async function createClientRuntime(
   await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
   const runtimeManager = new SessionRuntimeManager({
+    environment: sourceEnvironment,
     bindingStore,
     cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),

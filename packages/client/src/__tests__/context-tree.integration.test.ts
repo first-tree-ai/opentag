@@ -5,7 +5,7 @@ import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { ContextTreeManager, resolveContextTreePackage } from "../runtime/context-tree.js";
-import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { resolveContextTreeHome } from "../storage/context-tree-home.js";
 
 /** End-to-end against the real packaged CLI and a real Git tree, offline and under a redirected HOME. */
 
@@ -67,14 +67,15 @@ async function isolatedAccount(prefix: string): Promise<{
   process.env.HOME = accountHome;
 
   const openTagHome = await temporaryDirectory(`${prefix}-home-`);
-  const layout = resolveOpenTagHomeLayout(openTagHome);
-  await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
+  const layout = resolveContextTreeHome(environment);
+  await mkdir(layout.directory, { mode: 0o700, recursive: true });
   await writeFile(
-    layout.contextTreeConfigFile,
+    layout.configFile,
     `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
     "utf8",
   );
   const manager = new ContextTreeManager({
+    environment,
     home: openTagHome,
     ...(contextTreePackage ? { contextTreePackage } : {}),
   });
@@ -98,6 +99,9 @@ describe("Context Tree end-to-end", () => {
   it("provides the bundled command before configuration without connecting or creating a tree", async () => {
     const home = await temporaryDirectory("opentag-ct-unconfigured-");
     const cwd = await temporaryDirectory("opentag-ct-unconfigured-agent-");
+    previousHome = process.env.HOME;
+    homeWasSet = true;
+    process.env.HOME = home;
     const manager = new ContextTreeManager({ home });
     await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "unconfigured" });
     const { stdout } = await execFileAsync("/bin/sh", ["-c", "context-tree --version"], {
@@ -106,7 +110,7 @@ describe("Context Tree end-to-end", () => {
     });
     expect(stdout.trim()).not.toBe("");
     expect(await readdir(cwd)).toEqual([]);
-    await expect(readFile(resolveOpenTagHomeLayout(home).contextTreeConfigFile)).rejects.toMatchObject({
+    await expect(readFile(resolveContextTreeHome({ HOME: home }).configFile)).rejects.toMatchObject({
       code: "ENOENT",
     });
     expect(await readdir(home)).toEqual(["context-tree"]);

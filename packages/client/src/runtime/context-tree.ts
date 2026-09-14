@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -11,6 +10,7 @@ import {
   formatContextTreeTarget,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
+import { resolveContextTreeHome } from "../storage/context-tree-home.js";
 import { ensurePrivateDirectory, readDurableJson, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
@@ -156,6 +156,7 @@ export async function runContextTreeCli(
 
 export interface ContextTreeManagerOptions {
   home: string;
+  environment?: NodeJS.ProcessEnv;
   logger?: ClientLogger;
   /** Omit to resolve the installed package; pass `null` for a manager that has none. */
   contextTreePackage?: ContextTreePackage | null;
@@ -181,6 +182,7 @@ export interface ContextTreeManagerOptions {
  */
 export class ContextTreeManager {
   readonly #home: string;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #logger: ClientLogger;
   readonly #package: ContextTreePackage | undefined;
   readonly #execFile: ContextTreeExecFile | undefined;
@@ -206,6 +208,7 @@ export class ContextTreeManager {
 
   constructor(options: ContextTreeManagerOptions) {
     this.#home = resolve(options.home);
+    this.#environment = { ...(options.environment ?? process.env) };
     this.#logger = options.logger ?? createLogger("context-tree");
     this.#package =
       options.contextTreePackage === undefined
@@ -214,7 +217,9 @@ export class ContextTreeManager {
     this.#execFile = options.execFile;
     this.#platform = options.platform ?? process.platform;
     this.#nodePath = options.nodePath ?? process.execPath;
-    this.#codexHome = resolve(options.codexHome ?? join(homedir(), ".codex"));
+    this.#codexHome = resolve(
+      options.codexHome ?? join(dirname(resolveContextTreeHome(this.#environment).directory), ".codex"),
+    );
     this.#codexHomeIsDefaultNamed = basename(this.#codexHome) === ".codex";
     this.#sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
     this.#failureCooldownMs = options.failureCooldownMs ?? FAILURE_COOLDOWN_MS;
@@ -265,7 +270,7 @@ export class ContextTreeManager {
 
   async readConfig(): Promise<ContextTreeConfig | undefined> {
     try {
-      return await readDurableJson(resolveOpenTagHomeLayout(this.#home).contextTreeConfigFile, (value) =>
+      return await readDurableJson(resolveContextTreeHome(this.#environment).configFile, (value) =>
         ContextTreeConfigSchema.parse(value),
       );
     } catch (error) {
@@ -290,7 +295,7 @@ export class ContextTreeManager {
       // project`; Codex loads them from its own home, and only for a host that is present.
       await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false);
       const codexInstall = await this.#run(["install", "--host", "codex"], cwd, false, {
-        ...process.env,
+        ...this.#environment,
         HOME: dirname(this.#codexHome),
       });
       // A skipped Codex host is a diagnosable state, never a silent `ready`.
@@ -315,7 +320,7 @@ export class ContextTreeManager {
       cwd,
       network,
       nodePath: this.#nodePath,
-      ...(env ? { env } : {}),
+      env: env ?? this.#environment,
       ...(this.#execFile ? { execFile: this.#execFile } : {}),
     });
     if (failureCode !== undefined) throw new ContextTreeCliFailure(failureCode);

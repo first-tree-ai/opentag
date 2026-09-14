@@ -74,18 +74,10 @@ There is deliberately no `inspect` subcommand. `opentag doctor` already owns dia
 the injectable-inspector seam, and two surfaces over one piece of state means every future reason
 code has to be rendered twice.
 
-The target is recorded machine-locally in `<OPENTAG_HOME>/config/context-tree/config.json`, mode
+The target is recorded per OS account in `~/.context-tree/opentag.json`, mode
 `0600`, credential-free. The Server is not involved. The three target kinds mirror
 `context-tree connect`'s own argument shape, so OpenTag passes the target through rather than
 reinterpreting it.
-
-**Upgrade requires reconnecting.** Existing `<OPENTAG_HOME>/config/context-tree.json` files are
-ignored, so previously configured installations report unconfigured until reconnected. Run
-`opentag context-tree connect <managed-name>`, `opentag context-tree connect OWNER/REPO`, or
-`opentag context-tree connect --tree-path <path>` using the previous target. Restart the daemon
-and affected Sessions to pick up the Runtime changes, then verify the connection with
-`opentag doctor`. The old configuration and existing tree data remain on disk; there is no
-fallback or automatic migration.
 
 Visible and internal Agents can change this Computer-wide configuration directly. Schema validation
 still applies when reading it, but direct edits bypass command-level target validation. Later
@@ -247,12 +239,13 @@ a managed `CODEX_HOME`. That option was dropped because it changes provider arti
 invalidating existing bindings, and forces a visible one-time `codex login` in the managed home.
 Writing one owned, reversible skill directory is the smaller intrusion.
 
-OpenTag creates the Context Tree config leaf — `<OPENTAG_HOME>/config/context-tree/` — before
-granting access, on both platforms. The grant is that leaf directory, which contains exactly one
-file, so it carries no more authority on Linux than the macOS file grant and never touches
-`<OPENTAG_HOME>/config`, where the Computer's identity and machine credential live. If directory
-creation fails, OpenTag logs the failure and starts the provider without that grant, preserving
-workspace, Slack, and tree grants.
+OpenTag creates `~/.context-tree` with mode `0700` before granting read/write access to visible
+and internal Sessions, including when no default is selected. The account home is canonicalized,
+and a symlink at the managed directory is rejected, matching the standalone CLI. This directory
+contains the shared trees, connections, and OpenTag default selection. Changing `OPENTAG_HOME`
+does not change the selected default; the shim and preparation diagnostics remain under
+`OPENTAG_HOME`. If directory preparation fails, OpenTag logs the failure and starts the provider
+without that grant, preserving workspace, Slack, and resolved external-tree grants.
 
 Codex runs `workspace-write`, so a shared tree outside the workspace would be read-only to it.
 The resolved tree path is appended to `writableRoots`, composing with the Slack config root rather

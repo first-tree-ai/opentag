@@ -1,9 +1,16 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ContextTreePackage } from "@opentag/client";
+import { promisify } from "node:util";
+import {
+  ContextTreeManager,
+  type ContextTreePackage,
+  resolveContextTreePackage,
+  runContextTreeCli,
+} from "@opentag/client";
 import { Command } from "commander";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Real child-process Context Tree cases need headroom under parallel CI load.
 vi.setConfig({ testTimeout: 30_000 });
@@ -53,7 +60,11 @@ function capture(): { deps: { stdout: (chunk: string) => void; stderr: (chunk: s
 const listing = (names: readonly string[]) => ({
   payload: { schemaVersion: 1, trees: names.map((name) => ({ name, tree: { kind: "local", path: `/t/${name}` } })) },
 });
-const configFile = (home: string) => join(home, "config", "context-tree", "config.json");
+const configFile = (_home: string) => join(process.env.HOME as string, ".context-tree", "opentag.json");
+beforeEach(async () => {
+  vi.stubEnv("HOME", await realpath(await temporaryDirectory("opentag-ct-account-")));
+});
+afterEach(() => vi.unstubAllEnvs());
 const invalid = { findings: [{ code: "MISSING_ROOT" }], ok: false };
 
 describe("opentag context-tree connect", () => {
@@ -75,34 +86,6 @@ describe("opentag context-tree connect", () => {
     });
     expect((await stat(configFile(home))).mode & 0o777).toBe(0o600);
     expect(text()).toContain("team-context-tree");
-  });
-
-  it("requires reconnecting an old-only configuration and reads the new target afterward", async () => {
-    const home = await temporaryDirectory("opentag-ct-upgrade-");
-    const oldFile = join(home, "config", "context-tree.json");
-    const oldConfig = JSON.stringify({ schemaVersion: 1, target: { kind: "managed", name: "old-tree" } });
-    await mkdir(join(home, "config"), { recursive: true });
-    await writeFile(oldFile, oldConfig);
-    const contextTreePackage = await fakeCli({ list: listing(["new-tree"]) });
-
-    await expect(readContextTreeState({ home, contextTreePackage })).resolves.toEqual({
-      configPath: configFile(home),
-      tree: "unknown",
-    });
-    await expect(readFile(configFile(home))).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(
-      runContextTreeConnect({ ...capture().deps, home, contextTreePackage, target: "new-tree" }),
-    ).resolves.toEqual({ exitCode: 0 });
-    expect(JSON.parse(await readFile(configFile(home), "utf8"))).toEqual({
-      schemaVersion: 1,
-      target: { kind: "managed", name: "new-tree" },
-    });
-    await expect(readContextTreeState({ home, contextTreePackage })).resolves.toEqual({
-      configPath: configFile(home),
-      target: "new-tree",
-      tree: "valid",
-    });
-    await expect(readFile(oldFile, "utf8")).resolves.toBe(oldConfig);
   });
 
   it("accepts a GitHub target without network work, and says who clones it", async () => {
@@ -187,7 +170,7 @@ describe("readContextTreeState", () => {
   ])("reports %s", async (_label, target, responses, expected) => {
     const home = await temporaryDirectory("opentag-ct-state-");
     if (target !== undefined) {
-      await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
+      await mkdir(join(process.env.HOME as string, ".context-tree"), { mode: 0o700, recursive: true });
       await writeFile(configFile(home), JSON.stringify({ schemaVersion: 1, target }), "utf8");
     }
 
@@ -198,7 +181,7 @@ describe("readContextTreeState", () => {
 
   it("treats unreadable configuration as unknown rather than failing", async () => {
     const home = await temporaryDirectory("opentag-ct-state-bad-");
-    await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
+    await mkdir(join(process.env.HOME as string, ".context-tree"), { mode: 0o700, recursive: true });
     await writeFile(configFile(home), "{ not json", "utf8");
 
     await expect(readContextTreeState({ home, contextTreePackage: await fakeCli({}) })).resolves.toMatchObject({
@@ -210,7 +193,7 @@ describe("readContextTreeState", () => {
     "reports recorded %s preparation instead of not cloned",
     async (reason) => {
       const home = await temporaryDirectory("opentag-ct-state-preparation-");
-      await mkdir(join(home, "config", "context-tree"), { mode: 0o700, recursive: true });
+      await mkdir(join(process.env.HOME as string, ".context-tree"), { mode: 0o700, recursive: true });
       await mkdir(join(home, "state"), { mode: 0o700, recursive: true });
       await writeFile(
         configFile(home),
@@ -234,4 +217,40 @@ describe("readContextTreeState", () => {
       ).resolves.toMatchObject({ target: "acme/missing", tree: "invalid", detail: reason });
     },
   );
+});
+
+it("shares a real standalone tree, selection, and workspace connection across OpenTag homes", async () => {
+  const assets = resolveContextTreePackage();
+  if (!assets) throw new Error("Context Tree package is required");
+  const env = { ...process.env };
+  await mkdir(join(env.HOME as string, ".codex"));
+  const seed = await temporaryDirectory("opentag-ct-seed-");
+  const created = await runContextTreeCli(assets, ["create", "--project-path", seed, "--json"], { env });
+  expect(created.failureCode).toBeUndefined();
+  const treePath = (created.payload as { treePath: string }).treePath;
+  const home = await temporaryDirectory("opentag-ct-first-");
+  expect(await runContextTreeConnect({ home, env, treePath, contextTreePackage: assets, ...capture().deps })).toEqual({
+    exitCode: 0,
+  });
+  const otherHome = await temporaryDirectory("opentag-ct-second-");
+  const otherEnv = { ...env, OPENTAG_HOME: otherHome };
+  await expect(readContextTreeState({ env: otherEnv, contextTreePackage: assets })).resolves.toMatchObject({
+    configPath: configFile(home),
+    target: treePath,
+    tree: "valid",
+  });
+  const manager = new ContextTreeManager({
+    home: otherHome,
+    environment: otherEnv,
+    contextTreePackage: assets,
+    codexHome: join(env.HOME as string, ".codex"),
+    sessionStartBudgetMs: 30_000,
+  });
+  const workspace = await temporaryDirectory("opentag-ct-workspace-");
+  await expect(manager.ensureAgent(workspace)).resolves.toEqual({ status: "ready", treePath });
+  const args = ["resolve", "--project-path", workspace, "--json"];
+  const direct = await runContextTreeCli(assets, args, { env: otherEnv });
+  expect(direct.failureCode).toBeUndefined();
+  const { stdout } = await promisify(execFile)(join(manager.binDirectory(), "context-tree"), args, { env: otherEnv });
+  expect(JSON.parse(stdout)).toEqual(direct.payload);
 });

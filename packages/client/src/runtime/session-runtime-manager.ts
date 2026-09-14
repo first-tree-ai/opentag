@@ -1,4 +1,3 @@
-import { mkdir } from "node:fs/promises";
 import type {
   EffectiveRuntimeSnapshot,
   InputRejectReason,
@@ -7,7 +6,7 @@ import type {
 } from "@opentag/shared";
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
-import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { prepareContextTreeHome } from "../storage/context-tree-home.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
@@ -67,6 +66,7 @@ export interface SessionRuntimeManagerOptions {
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
   readonly home?: string;
+  readonly environment?: NodeJS.ProcessEnv;
   readonly providerEnvironmentPath: (sessionId: string) => string;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
@@ -86,6 +86,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
+  readonly #environment: NodeJS.ProcessEnv;
   readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
@@ -103,6 +104,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#bindingStore = options.bindingStore;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
+    this.#environment = { ...(options.environment ?? process.env) };
     if (options.contextTree) this.#contextTree = options.contextTree;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
@@ -275,8 +277,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // caches per workspace, revalidates that entry against the Computer's recorded target, and
     // never throws, so a failure only changes what the prompt reports.
     const contextTree = await prepareContextTree(this.#contextTree, managed.cwd);
-    const homeLayout = resolveOpenTagHomeLayout(this.#home);
-    const configurationRoots = await prepareConfigurationRoots(homeLayout);
+    const configurationRoots = await prepareConfigurationRoots(this.#environment);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -522,10 +523,9 @@ function visibleProviderCliPath(
   return managed.sessionKind === "visible" ? { pathPrepend: resolveLaunchPath?.(managed.binding.sessionId) } : {};
 }
 
-async function prepareConfigurationRoots(layout: ReturnType<typeof resolveOpenTagHomeLayout>): Promise<string[]> {
+async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promise<string[]> {
   try {
-    await mkdir(layout.contextTreeConfigDir, { mode: 0o700, recursive: true });
-    return [layout.contextTreeConfigDir];
+    return [await prepareContextTreeHome(environment)];
   } catch (error) {
     logger.warn(
       { code: (error as NodeJS.ErrnoException).code },

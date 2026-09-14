@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -46,6 +46,7 @@ beforeEach(async () => {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-runtime-env-"));
   homes.push(home);
   vi.stubEnv("OPENTAG_HOME", home);
+  vi.stubEnv("HOME", await realpath(home));
 });
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -56,7 +57,7 @@ describe("SessionRuntimeManager", () => {
   it.each([false, true])("starts internal Sessions with configuration directory failure=%s", async (configFailure) => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
     homes.push(home);
-    if (configFailure) await writeFile(resolve(home, "config"), "blocked");
+    if (configFailure) await writeFile(resolve(process.env.HOME as string, ".context-tree"), "blocked");
     const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
@@ -99,10 +100,10 @@ describe("SessionRuntimeManager", () => {
     });
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,
-      ...(configFailure ? [] : [resolve(home, "config/context-tree")]),
+      ...(configFailure ? [] : [resolve(process.env.HOME as string, ".context-tree")]),
     ]);
-    expect((await stat(resolve(home, "config"))).isDirectory()).toBe(!configFailure);
-    await expect(stat(resolve(home, "config/context-tree", "config.json"))).rejects.toMatchObject({
+    expect((await stat(resolve(process.env.HOME as string, ".context-tree"))).isDirectory()).toBe(!configFailure);
+    await expect(stat(resolve(process.env.HOME as string, ".context-tree", "opentag.json"))).rejects.toMatchObject({
       code: configFailure ? "ENOTDIR" : "ENOENT",
     });
     expect(factory.created[0]?.hostedTools).toBeUndefined();
@@ -159,7 +160,7 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,
       slackLeaf,
-      resolve(home, "config/context-tree"),
+      resolve(process.env.HOME as string, ".context-tree"),
     ]);
     expect(factory.created[0]?.workspace.writableRoots).not.toContain(parentCredentials);
     expect(factory.created[0]?.workspace.environment).toMatchObject({
@@ -196,7 +197,7 @@ describe("SessionRuntimeManager", () => {
     expect(internalResolved).toEqual([]);
     expect(internalFactory.created[0]?.workspace.writableRoots).toEqual([
       internalFactory.created[0]?.workspace.cwd,
-      resolve(home, "config/context-tree"),
+      resolve(process.env.HOME as string, ".context-tree"),
     ]);
     expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("OPENTAG_PROVIDER_ENV_FILE");
 
@@ -220,7 +221,7 @@ describe("SessionRuntimeManager", () => {
     await feishuManager.ensureRuntime(feishuRequest.sessionId);
     expect(feishuFactory.created[0]?.workspace.writableRoots).toEqual([
       feishuFactory.created[0]?.workspace.cwd,
-      resolve(home, "config/context-tree"),
+      resolve(process.env.HOME as string, ".context-tree"),
     ]);
 
     await manager.close();
@@ -284,43 +285,53 @@ describe("SessionRuntimeManager", () => {
     await internalManager.close();
   });
 
-  it("prepares Context Tree once per Agent workspace and names the tree as a writable root", async () => {
-    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-runtime-"));
-    homes.push(home);
-    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
-    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-    const factory = new FakeFactory();
-    const treePath = resolve(home, "shared-context-tree");
-    const contextTree = { ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })) };
-    const manager = new SessionRuntimeManager({
-      bindingStore: store,
-      cliCommand: "opentag-dev",
-      contextTree,
-      home,
-      providers: await providerRegistry(factory),
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const computerId = randomUUID();
-    const reconciler = new SessionReconciler({
-      installationId: computerId,
-      preparation: manager,
-      localPolicy: manager,
-    });
-    const request = reconcile(computerId, snapshot(1));
+  it.each([false, true])(
+    "preserves workspace, Slack, and tree grants with shared directory failure=%s",
+    async (configFailure) => {
+      const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-runtime-"));
+      homes.push(home);
+      if (configFailure) await writeFile(resolve(process.env.HOME as string, ".context-tree"), "blocked");
+      const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+      const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+      const factory = new FakeFactory();
+      const treePath = resolve(home, "shared-context-tree");
+      const contextTree = { ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath })) };
+      const manager = new SessionRuntimeManager({
+        bindingStore: store,
+        cliCommand: "opentag-dev",
+        contextTree,
+        slackConfigWritableRoot: () => resolve(home, "slack"),
+        home,
+        providers: await providerRegistry(factory),
+        providerEnvironmentPath: () => "/tmp/provider-env.sh",
+        workspace,
+      });
+      const computerId = randomUUID();
+      const reconciler = new SessionReconciler({
+        installationId: computerId,
+        preparation: manager,
+        localPolicy: manager,
+      });
+      const request = reconcile(computerId, snapshot(1));
 
-    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
-    await manager.ensureRuntime(request.sessionId);
+      await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+      await manager.ensureRuntime(request.sessionId);
 
-    const created = factory.created[0];
-    const cwd = await workspace.cwd(request.agentId);
-    expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
-    // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
-    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree"), treePath]);
-    expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
-    expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
-    await manager.close();
-  });
+      const created = factory.created[0];
+      const cwd = await workspace.cwd(request.agentId);
+      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd);
+      // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
+      expect(created?.workspace.writableRoots).toEqual([
+        cwd,
+        resolve(home, "slack"),
+        ...(configFailure ? [] : [resolve(process.env.HOME as string, ".context-tree")]),
+        treePath,
+      ]);
+      expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
+      expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
+      await manager.close();
+    },
+  );
 
   it("starts a Session and says durable memory is inactive when Context Tree is unavailable", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-unavailable-"));
@@ -352,7 +363,7 @@ describe("SessionRuntimeManager", () => {
 
     const created = factory.created[0];
     const cwd = await workspace.cwd(request.agentId);
-    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree")]);
+    expect(created?.workspace.writableRoots).toEqual([cwd, resolve(process.env.HOME as string, ".context-tree")]);
     expect(created?.systemPrompt).toContain("Context Tree unavailable (DIRTY_TREE)");
     expect(created?.systemPrompt).toContain("Do not assume earlier decisions were recorded");
     await manager.close();
@@ -422,8 +433,14 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created).toHaveLength(2);
     expect(factory.created[0]?.workspace.cwd).toBe(cwd);
     expect(factory.created[1]?.workspace.cwd).toBe(cwd);
-    expect(factory.created[0]?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree")]);
-    expect(factory.created[1]?.workspace.writableRoots).toEqual([cwd, resolve(home, "config/context-tree")]);
+    expect(factory.created[0]?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(process.env.HOME as string, ".context-tree"),
+    ]);
+    expect(factory.created[1]?.workspace.writableRoots).toEqual([
+      cwd,
+      resolve(process.env.HOME as string, ".context-tree"),
+    ]);
     expect(factory.created[0]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
     expect(factory.created[1]?.systemPrompt).toContain(`Your Agent Home is ${cwd}.`);
     expect(factory.created[0]?.systemPrompt).toContain("source-repos/<unique-repo-key>/");
@@ -484,9 +501,9 @@ describe("SessionRuntimeManager", () => {
     await manager.ensureRuntime("session-1");
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,
-      resolve(process.env.OPENTAG_HOME as string, "config/context-tree"),
+      resolve(process.env.HOME as string, ".context-tree"),
     ]);
-    expect((await stat(resolve(process.env.OPENTAG_HOME as string, "config"))).isDirectory()).toBe(true);
+    expect((await stat(resolve(process.env.HOME as string, ".context-tree"))).isDirectory()).toBe(true);
     await manager.ensureRuntime("session-1", new AbortController().signal);
     expect(manager.runtime("session-1")).toBe(factory.runtimes[0]);
     expect(factory.created).toHaveLength(1);

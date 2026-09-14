@@ -4,7 +4,6 @@ import {
   type ContextTreeCommandDeps,
   ContextTreeUsageError,
   resolveContextTreeAssets,
-  resolveHome,
   writeContextTreeConfig,
   writeStderr,
   writeStdout,
@@ -45,15 +44,16 @@ function parseConnectTarget(options: ContextTreeConnectOptions): ContextTreeTarg
 async function validateTarget(
   target: ContextTreeTarget,
   assets: ContextTreePackage,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ message: string } | undefined> {
   if (target.kind === "github") return undefined;
   if (target.kind === "path") {
-    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", target.path, "--json"]);
+    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", target.path, "--json"], { env });
     return failureCode === undefined
       ? undefined
       : { message: `${target.path} is not a usable Context Tree (${failureCode}).` };
   }
-  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"]);
+  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"], { env });
   if (failureCode !== undefined) return { message: `Could not list managed Context Trees (${failureCode}).` };
   const trees = (payload as { trees?: readonly { name?: unknown }[] }).trees ?? [];
   return trees.some((entry) => entry.name === target.name)
@@ -77,13 +77,13 @@ export async function runContextTreeConnect(options: ContextTreeConnectOptions):
     writeStderr(options, "The Context Tree package is missing from this installation.\n");
     return { exitCode: 1 };
   }
-  const rejected = await validateTarget(target, assets);
+  const rejected = await validateTarget(target, assets, options.env ?? process.env);
   if (rejected) {
     writeStderr(options, `${rejected.message}\n`);
     return { exitCode: 1 };
   }
 
-  const configPath = await writeContextTreeConfig(resolveHome(options), target);
+  const configPath = await writeContextTreeConfig(options.env ?? process.env, target);
   writeStdout(options, `Context Tree for this Computer: ${formatContextTreeTarget(target)}\n`);
   writeStdout(options, `Recorded in ${configPath}\n`);
   if (target.kind === "github") {

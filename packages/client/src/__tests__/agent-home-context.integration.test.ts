@@ -16,7 +16,7 @@ import {
 } from "../runtime/context-tree.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
-import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { resolveContextTreeHome } from "../storage/context-tree-home.js";
 
 /**
  * Offline regression of the shared Agent Home / Context Tree filesystem and CLI contract.
@@ -62,13 +62,14 @@ describe("shared Agent Home and Context Tree", () => {
     const treePath = readTreePath(created.payload);
     expect(treePath.startsWith(`${fixture.accountHome}/`)).toBe(true);
 
-    const layout = resolveOpenTagHomeLayout(openTagHome);
-    await mkdir(layout.contextTreeConfigDir, { recursive: true });
+    const layout = resolveContextTreeHome(environment);
+    await mkdir(layout.directory, { recursive: true });
     await writeFile(
-      layout.contextTreeConfigFile,
+      layout.configFile,
       `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
     );
     const treeManager = new ContextTreeManager({
+      environment,
       home: openTagHome,
       codexHome: join(fixture.accountHome, ".codex"),
       contextTreePackage,

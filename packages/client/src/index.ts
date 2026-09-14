@@ -506,6 +506,7 @@ export {
   type UpdaterStateName,
   type UpdaterStateSnapshot,
 } from "./runtime/update-manager.js";
+export { prepareContextTreeHome, resolveContextTreeHome } from "./storage/context-tree-home.js";
 export {
   assertRealDirectory,
   assertWithin,

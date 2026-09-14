@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolve, sep } from "node:path";
 import type {
   EffectiveRuntimeSnapshot,
   InputRejectReason,
@@ -302,7 +302,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
               }
             : {}),
         },
-        writableRoots: deduplicateWritableRoots([
+        writableRoots: [
           ...visibleSlackWritableRoots(
             managed.sessionKind,
             managed.cwd,
@@ -310,8 +310,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             this.#slackConfigWritableRoot,
           ),
           ...configurationRoots,
-          ...contextTree.writableRoots,
-        ]),
+          ...dropCoveredRoots(contextTree.writableRoots, configurationRoots),
+        ],
       },
       policy: provider.policy(managed.snapshot),
       configuration: {
@@ -488,19 +488,11 @@ async function prepareContextTree(
 }
 
 /**
- * Drop a root already covered by another. A managed Context Tree checkout lives under the shared
- * account directory, so its resolved path is normally nested inside that grant.
+ * Drop a Context Tree root already covered by the shared account directory grant. A managed
+ * checkout lives under `~/.context-tree`, so re-listing it would grant the same subtree twice.
  */
-function deduplicateWritableRoots(roots: readonly string[]): string[] {
-  const resolved = roots.map((root) => resolve(root));
-  return resolved.filter((root, index) =>
-    resolved.every((other, otherIndex) => {
-      if (otherIndex === index) return true;
-      const suffix = relative(other, root);
-      if (suffix === "") return index < otherIndex;
-      return suffix.startsWith(`..${sep}`) || suffix === ".." || isAbsolute(suffix);
-    }),
-  );
+function dropCoveredRoots(roots: readonly string[], parents: readonly string[]): string[] {
+  return roots.filter((root) => !parents.some((parent) => resolve(root).startsWith(`${resolve(parent)}${sep}`)));
 }
 
 function visibleSlackWritableRoots(

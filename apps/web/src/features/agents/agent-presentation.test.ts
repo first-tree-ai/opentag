@@ -1,10 +1,13 @@
 import type { AccountComputerSummary, AgentDetail, ImBindingSummary } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
-import type { AgentAvailability, AgentDetailView } from "./agent-model.js";
+import type { AgentAvailability, AgentDetailView, AgentListItem } from "./agent-model.js";
 import { projectAgentAvailability } from "./agent-model.js";
 import {
   agentAvailabilityRecovery,
+  agentAvailabilitySummary,
+  agentCardStatus,
   agentComputerStatus,
+  agentMessagingStatus,
   agentSetupContinuation,
   agentStatusPresentation,
   computerRecoveryMessage,
@@ -146,5 +149,60 @@ describe("Finishing setup, offered from the Agent list", () => {
     // the dependency that broke is named. Sending this reader back to setup would restate a flow
     // they have already been through, for a problem it does not describe.
     expect(agentSetupContinuation({ availability: bound("offline", "ready"), id: agentId })).toBeUndefined();
+  });
+});
+
+/** An active channel whose delivery the Computer is re-verifying, exactly as the pages receive it. */
+function reverifying(phase: "preparing_cli" | "checking_credentials" | "needs_attention"): AgentDetailView {
+  const agent = boundAgent();
+  const binding = messagingBinding("active");
+  return {
+    ...agent,
+    availability: projectAgentAvailability(
+      agent,
+      onlineComputer("ready"),
+      binding,
+      { bindingState: "active", handoffReady: false, providerCli: { phase } },
+      true,
+      true,
+    ),
+    messaging: { kind: "ready", value: binding },
+  };
+}
+
+function listed(agent: AgentDetailView): AgentListItem {
+  return { ...agent, evidenceConfirmed: true, usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 } };
+}
+
+describe("A messaging check still in progress, as the viewer reads it", () => {
+  /*
+   * The Server re-verifies delivery on demand and answers "not ready" until the Computer reports
+   * back, which takes seconds. Naming that as a failure sent readers to the settings page and to
+   * reloading; the check resolves on its own, so it is presented the way a runtime check is.
+   */
+  it("is named as a check on the list, with nothing to fix and no setup to continue", () => {
+    const agent = reverifying("checking_credentials");
+    expect(agentCardStatus(listed(agent))).toEqual({ label: "Checking messaging", tone: "info" });
+    expect(agentSetupContinuation(agent)).toBeUndefined();
+    expect(agentStatusPresentation(agent)).toEqual({ label: "Checking messaging", tone: "info" });
+    expect(agentAvailabilitySummary(agent)).toBe("Checking messaging");
+    expect(agentAvailabilityRecovery(agent)).toBeUndefined();
+  });
+
+  it.each([
+    ["preparing_cli", "Preparing CLI"],
+    ["checking_credentials", "Checking credentials"],
+  ] as const)("names the %s phase on the Messaging row without offering an action", (phase, label) => {
+    expect(agentMessagingStatus(reverifying(phase))).toEqual({ label, tone: "info" });
+  });
+
+  it("keeps the failure wording and its exits once the check ended in needs_attention", () => {
+    const agent = reverifying("needs_attention");
+    expect(agentCardStatus(listed(agent))).toEqual({ label: "Cannot receive messages", tone: "warning" });
+    expect(agentMessagingStatus(agent)).toMatchObject({ label: "Cannot receive messages", tone: "warning" });
+    expect(agentSetupContinuation(agent)).toEqual({
+      label: "Continue setup",
+      link: { search: { agentId }, to: "/agents/setup" },
+    });
   });
 });

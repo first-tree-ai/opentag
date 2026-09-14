@@ -256,6 +256,56 @@ describe("projectAgentAvailability", () => {
     expect(availability.dependencies.handoff.state).toBe("action_required");
   });
 
+  /*
+   * The Server answers `handoffReady: false` for two different situations: delivery is broken, and
+   * delivery is being re-verified right now. The second one resolves by itself within seconds, so
+   * it is reported as a check in progress rather than as something the viewer must fix.
+   */
+  it.each(["preparing_cli", "checking_credentials"] as const)(
+    "reports a check in progress, not a failure, while the handoff is %s",
+    (phase) => {
+      const availability = projectAgentAvailability(
+        agent(),
+        computer(),
+        binding(),
+        { bindingState: "active", handoffReady: false, providerCli: { phase } },
+        true,
+        true,
+      );
+      expect(availability).toMatchObject({
+        state: "setting_up",
+        reason: "handoff_checking",
+        lastConfirmedAt: "2026-08-20T00:00:45.000Z",
+      });
+      expect(availability.dependencies.handoff).toEqual({
+        state: "checking",
+        lastConfirmedAt: "2026-08-20T00:00:45.000Z",
+        providerCli: { phase },
+      });
+    },
+  );
+
+  it("still asks for action once the handoff check ended in needs_attention", () => {
+    const availability = projectAgentAvailability(
+      agent(),
+      computer(),
+      binding(),
+      {
+        bindingState: "active",
+        handoffReady: false,
+        providerCli: { phase: "needs_attention", reason: "credential_rejected" },
+      },
+      true,
+      true,
+    );
+    expect(availability).toMatchObject({ state: "action_required", reason: "handoff_unavailable" });
+    expect(availability.dependencies.handoff).toEqual({
+      state: "action_required",
+      lastConfirmedAt: "2026-08-20T00:00:45.000Z",
+      providerCli: { phase: "needs_attention", reason: "credential_rejected" },
+    });
+  });
+
   it("falls back to the last validation when no runtime observation was recorded", () => {
     const availability = projectAgentAvailability(
       agent(),

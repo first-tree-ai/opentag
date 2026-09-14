@@ -1,13 +1,26 @@
-import type { AccountComputerSummary, AgentDetail } from "@opentag/shared/browser";
-import { useQueryClient } from "@tanstack/react-query";
+import type {
+  AccountComputerSummary,
+  AgentDetail,
+  ImBindingHandoffStatus,
+  ImBindingSummary,
+} from "@opentag/shared/browser";
+import { focusManager, useQueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { ApiError, browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
+import { LIVE_REFETCH_INTERVAL_MS } from "../../query/live.js";
 import type { AgentDetailView } from "./agent-model.js";
 import { projectAgentAvailability } from "./agent-model.js";
-import { useAgentDetailView, useAgentIdentityList, useAgentListView } from "./agent-queries.js";
+import {
+  HANDOFF_CHECKING_POLL_WINDOW_MS,
+  HANDOFF_CHECKING_REFETCH_INTERVAL_MS,
+  useAgentDetailView,
+  useAgentIdentityList,
+  useAgentListView,
+  useImBindingHandoffQuery,
+} from "./agent-queries.js";
 
 const accountId = "0b9c8d7e-6f50-4a1b-8c2d-3e4f50617283";
 const agentId = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
@@ -343,5 +356,126 @@ describe("Agent views read from the cache", () => {
     await waitFor(() => expect(screen.getByTestId("kind").textContent).toBe("ready"));
     expect(screen.getByTestId("value").textContent).toBe("Reviewer");
     expect(detail).toHaveBeenCalled();
+  });
+});
+
+const activeBinding: ImBindingSummary = {
+  id: "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f",
+  agentId,
+  provider: "feishu",
+  bindingState: "active",
+  bot: { displayName: "Reviewer", avatarUrl: null },
+  receiveMode: "mention_only",
+  lastInboundAt: null,
+  lastValidatedAt: "2026-08-20T00:00:30.000Z",
+  lastRuntimeObservationAt: "2026-08-20T00:00:45.000Z",
+};
+const checkingHandoff: ImBindingHandoffStatus = {
+  bindingState: "active",
+  handoffReady: false,
+  providerCli: { phase: "checking_credentials" },
+};
+const readyHandoff: ImBindingHandoffStatus = { bindingState: "active", handoffReady: true };
+
+function HandoffProbe() {
+  const query = useImBindingHandoffQuery(agentId);
+  return <span data-testid="handoff">{query.data ? String(query.data.handoffReady) : "none"}</span>;
+}
+
+async function advance(ms: number) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
+describe("Handoff polling while the messaging check is in progress", () => {
+  afterEach(() => vi.useRealTimers());
+
+  /*
+   * A check the Server reports as in progress settles within seconds, and the ordinary 30-second
+   * cadence would leave the page saying "checking" long after it had. The fast cadence is only
+   * for that state: a settled answer, ready or failed, returns to the shared live cadence.
+   */
+  it("re-reads every two seconds until the check settles, then returns to the live cadence", async () => {
+    const read = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(checkingHandoff);
+    vi.useFakeTimers();
+    await renderInRouter(<HandoffProbe />);
+    await advance(50);
+    expect(read).toHaveBeenCalledTimes(1);
+    await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+    expect(read).toHaveBeenCalledTimes(2);
+    read.mockResolvedValue(readyHandoff);
+    await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId("handoff").textContent).toBe("true");
+    await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS * 2);
+    expect(read).toHaveBeenCalledTimes(3);
+    await advance(LIVE_REFETCH_INTERVAL_MS - HANDOFF_CHECKING_REFETCH_INTERVAL_MS * 2);
+    expect(read).toHaveBeenCalledTimes(4);
+  });
+
+  it("falls back to the live cadence after ninety seconds of an unsettled check", async () => {
+    const read = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(checkingHandoff);
+    vi.useFakeTimers();
+    await renderInRouter(<HandoffProbe />);
+    await advance(50);
+    await advance(HANDOFF_CHECKING_POLL_WINDOW_MS);
+    const fastReads = read.mock.calls.length;
+    expect(fastReads).toBe(1 + HANDOFF_CHECKING_POLL_WINDOW_MS / HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+    await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+    expect(read).toHaveBeenCalledTimes(fastReads);
+    await advance(LIVE_REFETCH_INTERVAL_MS - HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+    expect(read).toHaveBeenCalledTimes(fastReads + 1);
+  });
+
+  /*
+   * The window is a budget of checking answers, not wall-clock time. A hidden tab neither polls nor
+   * spends the budget, so a viewer who returns after minutes -- the very case this fix is for --
+   * still gets the fast cadence for whatever budget is left.
+   */
+  it("does not spend the fast-polling budget while the tab is hidden", async () => {
+    const read = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(checkingHandoff);
+    vi.useFakeTimers();
+    try {
+      await renderInRouter(<HandoffProbe />);
+      await advance(50);
+      await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS * 2);
+      expect(read).toHaveBeenCalledTimes(3);
+      focusManager.setFocused(false);
+      await advance(HANDOFF_CHECKING_POLL_WINDOW_MS * 2);
+      expect(read).toHaveBeenCalledTimes(3);
+      focusManager.setFocused(true);
+      await advance(50);
+      expect(read).toHaveBeenCalledTimes(4);
+      await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+      expect(read).toHaveBeenCalledTimes(5);
+    } finally {
+      focusManager.setFocused(undefined);
+    }
+  });
+
+  it("keeps the live cadence when the Agent has no handoff at all", async () => {
+    const read = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+    vi.useFakeTimers();
+    await renderInRouter(<HandoffProbe />);
+    await advance(50);
+    expect(read).toHaveBeenCalledTimes(1);
+    await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS * 3);
+    expect(read).toHaveBeenCalledTimes(1);
+    await advance(LIVE_REFETCH_INTERVAL_MS - HANDOFF_CHECKING_REFETCH_INTERVAL_MS * 3);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls the list's handoff evidence at the same fast cadence", async () => {
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [agentListItem] });
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computer] });
+    vi.spyOn(browserApi, "imBinding").mockResolvedValue(activeBinding);
+    const read = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(checkingHandoff);
+    vi.useFakeTimers();
+    await renderInRouter(<ListProbe />);
+    await advance(50);
+    expect(read).toHaveBeenCalledTimes(1);
+    await advance(HANDOFF_CHECKING_REFETCH_INTERVAL_MS);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });

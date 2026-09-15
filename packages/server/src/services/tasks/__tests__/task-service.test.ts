@@ -493,6 +493,41 @@ describe("TaskService", () => {
     );
   });
 
+  it("lets a topic's newest message decide once an overtaken delivery is still pending", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+    // Each root anchors a topic of its own; the follow-up joins it through the root's external id.
+    const topic = async (rootExternalId: string, outcome: "completed" | "failed") => {
+      const root = await createMessage(binding.id, { externalMessageId: rootExternalId, occurredAt: minutes(0) });
+      // The worker cannot place the root and keeps retrying it under its seven-day TTL.
+      await createDelivery(channel.id, root.id, { state: "pending" });
+      const followUp = await createMessage(binding.id, { threadKey: rootExternalId, occurredAt: minutes(2) });
+      await createDelivery(channel.id, followUp.id, { at: minutes(3), reported: true, outcome });
+      return root;
+    };
+    const overtakenByCompleted = await topic("om_done", "completed");
+    const overtakenByFailed = await topic("om_failed", "failed");
+
+    const result = await service.list(bootstrap.userId, { limit: 50 });
+    expect(new Map(result.tasks.map((task) => [task.id, task.status]))).toEqual(
+      new Map([
+        [overtakenByCompleted.id, "completed"],
+        [overtakenByFailed.id, "failed"],
+      ]),
+    );
+  });
+
+  it("stops counting a pending delivery as queued once its TTL has lapsed", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+    const lapsed = await createMessage(binding.id, { externalMessageId: "om_lapsed", occurredAt: minutes(0) });
+    // The janitor sweeps a row like this to expired; until it runs, the row is past its TTL and is
+    // no longer waiting its turn, so it must not hold the Task at queued.
+    await createDelivery(channel.id, lapsed.id, { state: "pending", expiresAt: minutes(-1) });
+
+    expect((await service.get(bootstrap.userId, lapsed.id, { limit: 5 })).task.status).toBe("expired");
+  });
+
   it("stops counting an accepted delivery as running once a later Turn ran in the same Session or its deadline passed", async () => {
     const { binding, bootstrap } = await fixture();
     const channel = await createSession(binding.id, { channelId: GROUP });

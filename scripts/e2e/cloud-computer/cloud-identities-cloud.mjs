@@ -139,6 +139,7 @@ export async function runAgentCases(ctx) {
   });
   record(assertions, "create-pi-cloud-agent", created.ok && created.body.runtimeProvider === "pi", created.status);
   ctx.agentA = created.body;
+  await verifyCloudSetupBoundary(ctx);
   for (const runtimeProvider of ["codex", "claude-code"]) {
     const rejected = await requestJson({
       baseUrl: fixture.baseUrl,
@@ -249,4 +250,24 @@ export async function runAgentCases(ctx) {
       JSON.stringify(refusalShape(rebindForeign)) === JSON.stringify(refusalShape(missingAgent)),
   );
   ctx.foreignRebind = rebindForeign;
+}
+
+async function verifyCloudSetupBoundary(ctx) {
+  for (const [method, path] of [
+    ["GET", ctx.shared.agentSetupPath(ctx.agentA.id)],
+    ["POST", ctx.shared.agentSetupRefreshPath(ctx.agentA.id)],
+  ]) {
+    const result = await requestJson({
+      baseUrl: ctx.fixture.baseUrl,
+      cookies: ctx.cookiesA,
+      method,
+      path,
+    });
+    record(
+      ctx.assertions,
+      `cloud-refuses-local-setup-${method.toLowerCase()}`,
+      result.status === 404 && result.body?.error?.code === "RESOURCE_NOT_FOUND",
+      result.status,
+    );
+  }
 }

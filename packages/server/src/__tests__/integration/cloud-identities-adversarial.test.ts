@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
-import { agents, computers, imBindings, sandboxes, sessionPlacements, users } from "../../db/schema/index.js";
+import { agents, computers, imBindings, sandboxes, sessionPlacements, sessions, users } from "../../db/schema/index.js";
+import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
 import { SandboxService } from "../../services/sandboxes/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 
@@ -89,6 +90,39 @@ async function fixture() {
 }
 
 describe("Cloud identity placement integrity", () => {
+  it("does not leave a live Session behind a binding disabled concurrently with Sandbox creation", async () => {
+    const value = await fixture();
+    let disableWasBlocked = false;
+    const disable = () =>
+      client.database.transaction(async (transaction) => {
+        // Bound the interleaving: a fenced disable retries after the identity transaction commits.
+        await transaction.execute(sql`set local lock_timeout = '500ms'`);
+        await disableImBindingInTransaction(transaction, value.input.imBindingId, new Date());
+      });
+    const service = new SandboxService(client.database, value.sessionService, {
+      cloudIdentities: { enabled: true, storageBase: "gs://opentag-e2-fixture/adversarial" },
+      afterSessionEnsured: async () => {
+        try {
+          await disable();
+        } catch (error) {
+          const cause = error instanceof Error ? error.cause : undefined;
+          if (typeof cause !== "object" || cause === null || !("code" in cause) || cause.code !== "55P03") {
+            throw error;
+          }
+          disableWasBlocked = true;
+        }
+      },
+    });
+    const created = await service.ensureForAccount(value.accountId, value.input);
+    if (disableWasBlocked) await disable();
+    const [session] = await client.database.select().from(sessions).where(eq(sessions.id, created.sessionId));
+    const [binding] = await client.database.select().from(imBindings).where(eq(imBindings.id, value.input.imBindingId));
+    expect(binding?.status).toBe("disabled");
+    expect(session?.endedAt).toBeInstanceOf(Date);
+    await expect(service.ensureForAccount(value.accountId, value.input)).rejects.toMatchObject({ statusCode: 404 });
+    expect(await service.getForAccount(value.accountId, created.sandboxId)).toEqual(created);
+  });
+
   it("refuses to create a Sandbox when persisted Session placement disagrees with the Cloud Agent", async () => {
     const value = await fixture();
     const { session } = await value.sessionService.ensureChatSession(value.input, "channel");

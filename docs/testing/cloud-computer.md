@@ -176,6 +176,12 @@ E2 does not allocate compute, write storage objects, run a Runner, call a model,
 Those belong to E3 (Runner), E4 (real IM), and E9 (default product UI). No customer-facing UI is added
 here. The disposable Postgres helper still names containers with the E1 prefix; summaries label E2.
 
+The existing Agent setup and preparation-refresh endpoints are Local-only during E2 and return 404
+for a Cloud-bound Agent. Cloud identity and Sandbox reads remain available; Cloud must not appear
+offline or offer a Local repair action while its product setup flow is deferred to E9.
+Sandbox creation locks the active IM binding until commit so a concurrent provider-driven disable
+can terminate the newly committed Session instead of leaving it active behind a disabled binding.
+
 | Variable | Meaning |
 | --- | --- |
 | `OPENTAG_E2_ARTIFACTS` | Artifact directory; defaults to a unique temporary directory |

@@ -84,11 +84,15 @@ export class SandboxService {
     if (!agent || agent.createdByUserId !== accountId || agent.status !== "active" || agent.runtimeProvider !== "pi") {
       throw sandboxNotFound();
     }
+    // Lock order stays Agent -> binding -> Computer. Provider-driven disable never takes the Agent lock, so
+    // without this FOR UPDATE it could commit between our Agent lock and Session insert and miss the still
+    // uncommitted newly created Session, leaving it live behind a disabled binding.
     const [binding] = await transaction
       .select({ id: imBindings.id })
       .from(imBindings)
       .where(and(eq(imBindings.id, imBindingId), eq(imBindings.agentId, agent.id), eq(imBindings.status, "active")))
-      .limit(1);
+      .limit(1)
+      .for("update");
     if (!binding || !agent.computerId) throw sandboxNotFound();
     const [computer] = await transaction
       .select({ id: computers.id })

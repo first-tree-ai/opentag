@@ -153,6 +153,11 @@ E2 不分配计算、不写存储对象、不运行 Runner、不调用模型、�
 E4（真实 IM）和 E9（默认产品 UI）。此处不增加面向客户的 UI。一次性 Postgres helper 的容器名仍使用
 E1 前缀；摘要中的标签为 E2。
 
+E2 期间既有 Agent setup 和 preparation-refresh 接口只用于 Local；Cloud Agent 调用时返回 404。
+Cloud 身份和 Sandbox 查询仍然可用；完整 setup 流程留在 E9，不能把 Cloud 展示为离线或提供 Local repair 操作。
+Sandbox 创建事务会锁住活跃 IM binding 直至提交，确保并发的 Provider 停用能结束刚提交的 Session，
+不会留下 binding 已停用但 Session 仍活跃的记录。
+
 | 变量 | 含义 |
 | --- | --- |
 | `OPENTAG_E2_ARTIFACTS` | 产物目录；默认使用唯一临时目录 |

@@ -1169,8 +1169,8 @@ export class AgentService {
     );
   }
 
-  async #computerKind(transaction: DatabaseTransaction, computerId: string): Promise<"local" | "cloud"> {
-    const [computer] = await transaction
+  async #computerKind(executor: QueryExecutor, computerId: string): Promise<"local" | "cloud"> {
+    const [computer] = await executor
       .select({ kind: computers.kind })
       .from(computers)
       .where(eq(computers.id, computerId))
@@ -1254,6 +1254,11 @@ export class AgentService {
   }): Promise<void> {
     if (!this.#onProviderCliPlacementChanged) return;
     try {
+      // A Cloud Computer has no Local registry connection to prepare, so notifying a placement
+      // targeting one would only fail spuriously; retirement-only inputs still notify.
+      if (input.computerId !== undefined && (await this.#computerKind(this.#database, input.computerId)) === "cloud") {
+        return;
+      }
       await this.#onProviderCliPlacementChanged(input);
     } catch {
       this.#onDiagnostic("PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED");

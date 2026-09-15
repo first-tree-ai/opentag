@@ -1,8 +1,9 @@
 /** Database decisions run on the embedded PostgreSQL engine; transport/concurrency acceptance stays in E2. */
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, computers, imBindings, sandboxes, sessionPlacements, sessions, users } from "../db/schema/index.js";
+import { AgentSetupService } from "../services/agents/agent-setup-service.js";
 import { AgentService } from "../services/agents/index.js";
 import { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import { SandboxService } from "../services/sandboxes/index.js";
@@ -72,6 +73,51 @@ async function binding() {
 }
 
 describe("Cloud identity database decisions", () => {
+  it("does not attempt Local runtime preparation when creating or reactivating a Cloud Agent", async () => {
+    const owner = await account();
+    const cloud = await computerService().ensureCloudComputerForAccount(owner);
+    const onDiagnostic = vi.fn();
+    const onProviderCliPlacementChanged = vi.fn(async (input: { computerId?: string }) => {
+      if (input.computerId) throw new Error("The Computer runtime is not connected");
+    });
+    const service = new AgentService(unit.database, {
+      cloudIdentitiesEnabled: true,
+      onDiagnostic,
+      onProviderCliPlacementChanged,
+    });
+    const agent = await service.createForAccount(owner, {
+      name: "cloud-preparation",
+      displayName: "Cloud preparation",
+      runtimeProvider: "pi",
+      computerId: cloud.computerId,
+    });
+    expect(onProviderCliPlacementChanged).not.toHaveBeenCalled();
+    await service.suspendById(owner, agent.id);
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledTimes(1);
+    await service.reactivateById(owner, agent.id);
+    expect(onProviderCliPlacementChanged).toHaveBeenCalledTimes(1);
+    expect(onDiagnostic).not.toHaveBeenCalled();
+  });
+
+  it("keeps Cloud identities out of the Local setup and preparation flow until Cloud setup is implemented", async () => {
+    const seeded = await binding();
+    const prepareComputer = vi.fn();
+    const setup = new AgentSetupService(
+      unit.database,
+      new AgentService(unit.database),
+      { getSetupBindingForAgent: async () => undefined },
+      { observeForAgent: async () => undefined },
+      { prepareComputer },
+    );
+    await expect(setup.getSetupById(seeded.accountId, seeded.agent.id)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(setup.refreshPreparationById(seeded.accountId, seeded.agent.id)).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect(prepareComputer).not.toHaveBeenCalled();
+    const capable = await computerService().listAccountComputers(seeded.accountId, true, true);
+    expect(capable.computers[0]).toMatchObject({ kind: "cloud", connectionStatus: "online" });
+  });
+
   it("keeps Account identity and installation metadata stable without inventing Local credentials", async () => {
     const owner = await account();
     const service = computerService();

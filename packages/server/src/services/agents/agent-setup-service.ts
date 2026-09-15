@@ -22,7 +22,7 @@ import {
 } from "../computers/index.js";
 import type { AgentSetupBindingState } from "../im-bindings/index.js";
 import type { AgentService } from "./agent-service.js";
-import { AgentServiceError } from "./errors.js";
+import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 class AgentSetupObservationError extends Error {}
 
@@ -169,6 +169,7 @@ export class AgentSetupService {
         409,
       );
     }
+    await this.#readSetupComputer(detail.computer.computerId);
     if (!this.#prepareComputer) {
       throw new AgentServiceError(
         "SERVICE_UNAVAILABLE",
@@ -191,6 +192,25 @@ export class AgentSetupService {
         503,
       );
     }
+  }
+
+  async #readSetupComputer(computerId: string) {
+    const [computer] = await this.#database
+      .select({
+        kind: computers.kind,
+        currentInstanceId: computers.currentInstanceId,
+        lastSeenAt: computers.lastSeenAt,
+      })
+      .from(computers)
+      .where(eq(computers.id, computerId))
+      .limit(1)
+      .catch((cause: unknown) => {
+        throw new AgentSetupObservationError("Computer observation failed", { cause });
+      });
+    if (!computer) throw new Error("Active Agent is missing its bound Computer");
+    // E2 exposes Cloud identities only; Local setup and preparation must not offer Cloud repair.
+    if (computer.kind === "cloud") throw resourceNotFound();
+    return computer;
   }
 
   async #observeComputer(agent: AgentSummary, observedAt: Date): Promise<AgentSetupComputerState> {
@@ -233,15 +253,7 @@ export class AgentSetupService {
       platform: agent.computer.platform,
     };
     if (agent.requiresComputerRebind === true) return { kind: "requires-rebind", ...identity };
-    const [computer] = await this.#database
-      .select({ currentInstanceId: computers.currentInstanceId, lastSeenAt: computers.lastSeenAt })
-      .from(computers)
-      .where(eq(computers.id, identity.computerId))
-      .limit(1)
-      .catch((cause: unknown) => {
-        throw new AgentSetupObservationError("Computer observation failed", { cause });
-      });
-    if (!computer) throw new Error("Active Agent is missing its bound Computer");
+    const computer = await this.#readSetupComputer(identity.computerId);
     const connectionStatus =
       computer.currentInstanceId !== null &&
       (computer.lastSeenAt?.getTime() ?? 0) >= observedAt.getTime() - this.#presenceTimeoutMs

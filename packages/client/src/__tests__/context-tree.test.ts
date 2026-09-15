@@ -1,7 +1,8 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { codexAgentRuntimeEnvironment } from "../providers/codex/agent-runtime.js";
 import {
   type ContextTreeExecFile,
   ContextTreeManager,
@@ -160,33 +161,24 @@ describe("ContextTreeManager", () => {
     expect(calls).toHaveLength(3);
   });
 
-  it("uses the account environment for tree commands and redirects only Codex installation", async () => {
-    const environments: NodeJS.ProcessEnv[] = [];
-    const { home, cwd, manager } = await computer({
-      target: managed,
-      codexHome: "/custom/.codex",
-      execFile: async (_file, args, options) => {
-        environments.push(options.env ?? {});
-        return { stdout: JSON.stringify(args[1] === "connect" ? treeReply("/srv/tree") : installReply) };
-      },
-    });
-    await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/tree" });
-    expect(environments.map((env) => env.HOME)).toEqual([home, home, "/custom"]);
-    expect(environments[2]).toEqual({ ...environments[0], HOME: "/custom" });
-  });
-
-  it("reports an unsupported Codex home instead of a misleading ready state", async () => {
-    const { execFile, calls } = recording({ connect: treeReply("/srv/t"), install: installReply });
-    const { cwd, manager } = await computer({ execFile, target: managed, codexHome: "/opt/opentag/codex-home" });
-
-    await expect(manager.ensureAgent(cwd)).resolves.toEqual({
-      status: "unavailable",
-      reason: "CODEX_HOME_UNSUPPORTED",
-    });
-    // The HOME redirect cannot express this home, so the CLI must not run at all: an install
-    // could otherwise land in a sibling `.codex` the Runtime is not launched against.
-    expect(calls).toEqual([]);
-  });
+  it.each(["/custom/.codex", "/custom/codex-home"])(
+    "uses the runtime account HOME for installation with %s",
+    async (codexHome) => {
+      const environments: NodeJS.ProcessEnv[] = [];
+      const { home, cwd, manager } = await computer({
+        target: managed,
+        codexHome,
+        execFile: async (_file, args, options) => {
+          environments.push(options.env ?? {});
+          return { stdout: JSON.stringify(args[1] === "connect" ? treeReply("/srv/tree") : installReply) };
+        },
+      });
+      await expect(manager.ensureAgent(cwd)).resolves.toEqual({ status: "ready", treePath: "/srv/tree" });
+      const runtimeEnvironment = codexAgentRuntimeEnvironment({ ...process.env, HOME: home, CODEX_HOME: codexHome });
+      expect(environments.map((env) => env.HOME)).toEqual([home, home, await realpath(runtimeEnvironment.HOME ?? "")]);
+      expect(environments[2]?.CODEX_HOME).toBe(runtimeEnvironment.CODEX_HOME);
+    },
+  );
 
   it.each([
     // The CLI reports a missing host as a skipped entry with an explanatory reason.

@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import {
   type ContextTreeConfig,
@@ -189,14 +189,6 @@ export class ContextTreeManager {
   readonly #platform: NodeJS.Platform;
   readonly #nodePath: string;
   readonly #codexHome: string;
-  /**
-   * The Context Tree CLI detects Codex from `<HOME>/.codex` and installs its skills into
-   * `<HOME>/.agents/skills`, so the `HOME` redirect below is correct exactly when the Codex
-   * home's basename is `.codex`. Any other home
-   * (for example `CODEX_HOME=/opt/opentag/codex-home`) cannot be expressed and is reported
-   * rather than silently misinstalled next to it.
-   */
-  readonly #codexHomeIsDefaultNamed: boolean;
   readonly #sessionStartBudgetMs: number;
   readonly #failureCooldownMs: number;
   readonly #ready = new Map<string, { target: string; status: ContextTreeStatus }>();
@@ -219,7 +211,6 @@ export class ContextTreeManager {
     this.#platform = options.platform ?? process.platform;
     this.#nodePath = options.nodePath ?? process.execPath;
     this.#codexHome = resolve(options.codexHome ?? join(resolveAccountHome(this.#environment), ".codex"));
-    this.#codexHomeIsDefaultNamed = basename(this.#codexHome) === ".codex";
     this.#sessionStartBudgetMs = options.sessionStartBudgetMs ?? SESSION_START_BUDGET_MS;
     this.#failureCooldownMs = options.failureCooldownMs ?? FAILURE_COOLDOWN_MS;
   }
@@ -280,9 +271,6 @@ export class ContextTreeManager {
 
   async #ensureAgentOnce(cwd: string, config: ContextTreeConfig): Promise<ContextTreeStatus> {
     if (!this.#package) return this.#unavailable("PACKAGE_MISSING", config);
-    // The CLI never reads `CODEX_HOME`; `install --host codex` targets `<HOME>/.codex/skills`.
-    // An unsupported home is diagnosed before any CLI work, so nothing can land in the wrong place.
-    if (!this.#codexHomeIsDefaultNamed) return this.#unavailable("CODEX_HOME_UNSUPPORTED", config);
 
     try {
       // `connect` is idempotent for an identical connection and already returns the resolved
@@ -291,11 +279,12 @@ export class ContextTreeManager {
       const treePath = (connected as { tree?: { path?: unknown } }).tree?.path;
       if (typeof treePath !== "string" || treePath.length === 0) return this.#unavailable("CONNECT_FAILED", config);
       // Claude Code loads skills from the workspace because OpenTag passes `--setting-sources
-      // project`; Codex loads them from its own home, and only for a host that is present.
+      // project`; Codex loads them from the account home's `.agents/skills` directory.
       await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false);
       const codexInstall = await this.#run(["install", "--host", "codex"], cwd, false, {
         ...this.#environment,
-        HOME: dirname(this.#codexHome),
+        HOME: resolveAccountHome(this.#environment),
+        CODEX_HOME: this.#codexHome,
       });
       // A skipped Codex host is a diagnosable state, never a silent `ready`.
       const skipReason = codexInstallSkipReason(codexInstall);

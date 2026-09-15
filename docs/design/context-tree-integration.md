@@ -235,12 +235,10 @@ Two consequences to hold in view:
 
 Codex reads skills from `$HOME/.agents/skills`, independently of the `plugins` and `hooks` features
 OpenTag disables, so no marketplace or feature change is required. For `install --host codex`,
-OpenTag sets `HOME` to the parent of the resolved Codex home. The package detects the sibling
-`.codex` configuration directory and writes its owned skills into the sibling `.agents/skills`
-directory. That mapping is exact only when the Codex home's basename is `.codex`. A home with any other name (for example
-`CODEX_HOME=/opt/opentag/codex-home`) cannot be expressed by the redirect, so preparation reports
-`unavailable: CODEX_HOME_UNSUPPORTED` before any CLI work rather than risking a misplaced
-install; a Codex host the CLI reports as `skipped` is likewise reported as `unavailable` with the
+OpenTag passes the account `HOME` and resolved `CODEX_HOME` used by the Codex runtime.
+The package detects Codex at `CODEX_HOME` and installs skills into `$HOME/.agents/skills`,
+including when the Codex home has a custom location or name.
+A Codex host the CLI reports as `skipped` is reported as `unavailable` with the
 CLI's own reason instead of a reassuring `ready`. OpenTag writes only
 `context-tree-*` directories there; the operation is idempotent and reversible.
 
@@ -399,11 +397,6 @@ the dependency from the published bundle.
 - Validating a GitHub target during `opentag context-tree connect`, for example with a cheap
   `git ls-remote` probe. That adds network work to a command deliberately kept read-only;
   background preparation plus durable doctor visibility removes the Session-start harm meanwhile.
-- Supporting an arbitrary `CODEX_HOME` whose basename is not `.codex`; the Context Tree CLI needs
-  an explicit skills-root flag because its host install detects only `<HOME>/.codex` and writes to
-  `<HOME>/.agents/skills`.
-  Until then the two guards above report the unsupported home and a skipped host as `unavailable`
-  with a specific reason, so the state is diagnosable through the prompt and `opentag doctor`.
 - Sanitizing Claude project inputs (`settings.json`, `settings.local.json`, `hooks/`, `agents/`,
   `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
   OpenTag-written content.

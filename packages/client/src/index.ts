@@ -147,6 +147,21 @@ export {
   type PiRpcSpawnOptions,
 } from "./providers/pi/rpc-wire.js";
 export {
+  assembleContextTreeSkills,
+  CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES,
+  copyIsolatedPiConfig,
+  createRunnerIdentity,
+  linuxAmd64ProviderCliPlans,
+  parseRunnerCliArgv,
+  parseRunnerIdentity,
+  probeRunnerTools,
+  RUNNER_CLI_NAME,
+  RUNNER_IDENTITY_SCHEMA_VERSION,
+  redactAcceptanceRecord,
+  runRunnerAcceptance,
+  runRunnerCli,
+} from "./runner/index.js";
+export {
   AdmissionController,
   type AdmissionDecision,
   type AdmissionLimits,

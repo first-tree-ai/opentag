@@ -5,6 +5,7 @@
  * Commands:
  *   local-pi          E1 real local Pi Computer (unchanged harness)
  *   cloud-identities  E2 Cloud Computer / Sandbox identity acceptance
+ *   runner-toolchain  Independent Linux image/toolchain acceptance
  *
  * Usage:
  *   node scripts/e2e/cloud-computer.mjs --help
@@ -24,10 +25,16 @@ Usage:
   node scripts/e2e/cloud-computer.mjs --help
   node scripts/e2e/cloud-computer.mjs local-pi [--help]
   node scripts/e2e/cloud-computer.mjs cloud-identities [--help]
+  node scripts/e2e/cloud-computer.mjs runner-toolchain [options]
 
 Commands:
   local-pi          E1 real local Pi Computer acceptance against a disposable Postgres.
   cloud-identities  E2 Cloud Computer and Sandbox identity acceptance. No Pi/model/GCP/IM.
+  runner-toolchain  Linux amd64 image/toolchain acceptance (offline or real Pi).
+
+Runner toolchain options:
+  node scripts/e2e/cloud-computer.mjs runner-toolchain --help
+  See docs/cloud-runner-toolchain.md for isolated model configuration and image reuse.
 
 Requirements for local-pi:
   - Docker, used only to start a disposable postgres:17-alpine container
@@ -93,30 +100,40 @@ function printHelp() {
 }
 
 const args = process.argv.slice(2);
-const unknownOption = args.find((value) => value.startsWith("-") && value !== "--help" && value !== "-h");
-if (unknownOption) {
-  process.stderr.write(`Unknown option: ${unknownOption}\n`);
-  process.exit(2);
-}
-const command = args.find((value) => !value.startsWith("-"));
-const wantsHelp = args.includes("--help") || args.includes("-h") || args.length === 0;
+if (args[0] === "runner-toolchain") {
+  const { main: runRunnerToolchain } = await import("./runner-toolchain/run.mjs");
+  try {
+    await runRunnerToolchain(args.slice(1));
+  } catch (error) {
+    process.stderr.write(`[runner-toolchain] ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+} else {
+  const unknownOption = args.find((value) => value.startsWith("-") && value !== "--help" && value !== "-h");
+  if (unknownOption) {
+    process.stderr.write(`Unknown option: ${unknownOption}\n`);
+    process.exit(2);
+  }
+  const command = args.find((value) => !value.startsWith("-"));
+  const wantsHelp = args.includes("--help") || args.includes("-h") || args.length === 0;
 
-if (!command && wantsHelp) {
-  printHelp();
-  process.exit(0);
-}
-
-if (command === "cloud-identities") {
-  const { runCloudIdentities } = await import("./cloud-computer/cloud-identities.mjs");
-  process.exitCode = await runCloudIdentities({ repositoryRoot, args });
-} else if (command === "local-pi") {
-  if (wantsHelp) {
+  if (!command && wantsHelp) {
     printHelp();
     process.exit(0);
   }
-  const { runLocalPi } = await import("./cloud-computer/local-pi.mjs");
-  process.exitCode = await runLocalPi({ repositoryRoot, args });
-} else if (command) {
-  process.stderr.write(`Unknown command: ${command}\n\n${HELP}\n`);
-  process.exit(2);
+
+  if (command === "cloud-identities") {
+    const { runCloudIdentities } = await import("./cloud-computer/cloud-identities.mjs");
+    process.exitCode = await runCloudIdentities({ repositoryRoot, args });
+  } else if (command === "local-pi") {
+    if (wantsHelp) {
+      printHelp();
+      process.exit(0);
+    }
+    const { runLocalPi } = await import("./cloud-computer/local-pi.mjs");
+    process.exitCode = await runLocalPi({ repositoryRoot, args });
+  } else if (command) {
+    process.stderr.write(`Unknown command: ${command}\n\n${HELP}\n`);
+    process.exit(2);
+  }
 }

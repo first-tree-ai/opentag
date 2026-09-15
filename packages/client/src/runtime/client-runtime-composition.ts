@@ -58,6 +58,7 @@ import { type AgentTurnOutgoingReplyCollector, AgentTurnRunner } from "./agent-t
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
+import { ContextTreeSettings } from "./context-tree-settings.js";
 import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
@@ -733,6 +734,12 @@ export async function createClientRuntime(
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
+    contextTreeSettings: new ContextTreeSettings({
+      home: options.home,
+      environment: sourceEnvironment,
+      hasAgentSessions: runtimeManager.hasAgentSessions.bind(runtimeManager),
+      exclusive: contextTree.runExclusive.bind(contextTree),
+    }),
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),

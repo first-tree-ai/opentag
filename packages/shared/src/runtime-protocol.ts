@@ -35,6 +35,7 @@ export const RUNTIME_V0_CAPABILITIES = {
 } as const;
 
 export const RUNTIME_CAPABILITY = {
+  contextTreeSettings: "runtime.contextTreeSettings",
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   channelTarget: "runtime.channelTarget",
@@ -49,6 +50,7 @@ export const RUNTIME_CAPABILITY = {
 } as const;
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
+  [RUNTIME_CAPABILITY.contextTreeSettings]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },

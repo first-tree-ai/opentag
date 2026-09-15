@@ -1,6 +1,6 @@
 {
-  "id": "04e101d3-4369-4f84-b343-6e173cfe60c0",
-  "prevId": "1b34599d-ffbb-4e51-a021-23a080c054a1",
+  "id": "3c834cac-3dd3-46c2-9e79-741d33c98847",
+  "prevId": "04e101d3-4369-4f84-b343-6e173cfe60c0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -58,6 +58,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "context_tree_repository": {
+          "name": "context_tree_repository",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},

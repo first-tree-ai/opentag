@@ -277,7 +277,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
     // caches per workspace, revalidates that entry against the Computer's recorded target, and
     // never throws, so a failure only changes what the prompt reports.
-    const contextTree = await prepareContextTree(this.#contextTree, managed.cwd, managed.snapshot.provider);
+    const contextTree = await prepareContextTree(
+      this.#contextTree,
+      managed.cwd,
+      managed.snapshot.provider,
+      managed.snapshot.contextTreeRepository ?? null,
+    );
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
     const common = {
       eventSink,
@@ -376,13 +381,17 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     }
   }
 
+  hasAgentSessions(agentId: string): boolean {
+    return [...this.#sessions.values()].some((session) => session.agentId === agentId);
+  }
+
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
     const sessionKind = this.#sessions.get(sessionId)?.sessionKind;
     try {
       const current = this.#sessions.get(sessionId);
       if (current) {
-        this.#sessions.delete(sessionId);
         await this.#closeManaged(current);
+        this.#sessions.delete(sessionId);
       }
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
@@ -479,8 +488,9 @@ async function prepareContextTree(
   manager: Pick<ContextTreeManager, "ensureAgent"> | undefined,
   cwd: string,
   provider: EffectiveRuntimeSnapshot["provider"],
+  repository: string | null,
 ): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
-  const status = await manager?.ensureAgent(cwd, provider);
+  const status = await manager?.ensureAgent(cwd, provider, repository);
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },

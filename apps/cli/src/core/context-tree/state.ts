@@ -1,62 +1,19 @@
-import { readContextTreePreparation, resolveContextTreeHome, runContextTreeCli } from "@opentag/client";
-import { formatContextTreeTarget } from "@opentag/shared";
-import { type ContextTreeCommandDeps, readContextTreeConfig, resolveContextTreeAssets, resolveHome } from "./shared.js";
+import { resolveContextTreeHome } from "@opentag/client";
+import type { ContextTreeCommandDeps } from "./shared.js";
 
 export interface ContextTreeState {
   configPath: string;
   target?: string;
-  /** `not-cloned` is a GitHub target the first Agent Session has yet to clone. */
   tree: "unknown" | "valid" | "invalid" | "not-cloned";
   detail?: string;
 }
 
-/** Read-only view of this Computer's Context Tree wiring, for `opentag doctor`. */
+/** Legacy data is retained on disk but never used as an Agent's selection. */
 export async function readContextTreeState(deps: ContextTreeCommandDeps = {}): Promise<ContextTreeState> {
-  const home = resolveHome(deps);
-  const { env = process.env } = deps;
-  const configPath = resolveContextTreeHome(env).configFile;
-  const assets = resolveContextTreeAssets(deps);
-
-  let config: Awaited<ReturnType<typeof readContextTreeConfig>>;
-  try {
-    config = await readContextTreeConfig(env);
-  } catch {
-    return { configPath, tree: "unknown", detail: "the configuration file is unreadable or invalid" };
-  }
-  if (!config) return { configPath, tree: "unknown" };
-  const configured = config.target;
-  const target = formatContextTreeTarget(configured);
-  if (!assets) return { configPath, target, tree: "unknown", detail: "the Context Tree package is missing" };
-
-  if (configured.kind === "path") {
-    const { failureCode } = await runContextTreeCli(assets, ["verify", "--tree-path", configured.path, "--json"], {
-      env,
-    });
-    if (failureCode === undefined) return { configPath, target, tree: "valid" };
-    return { configPath, target, tree: "invalid", detail: failureCode };
-  }
-  const { payload, failureCode } = await runContextTreeCli(assets, ["list", "--json"], {
-    env,
-  });
-  if (failureCode !== undefined) return { configPath, target, tree: "unknown", detail: failureCode };
-  const trees = (payload as { trees?: readonly { name?: unknown; tree?: { repository?: unknown } }[] }).trees ?? [];
-  if (configured.kind === "managed") {
-    return trees.some((entry) => entry.name === configured.name)
-      ? { configPath, target, tree: "valid" }
-      : { configPath, target, tree: "invalid", detail: "the named managed Context Tree does not exist" };
-  }
-  const repository = configured.repository.toLowerCase();
-  const cloned = trees.some(
-    (entry) => typeof entry.tree?.repository === "string" && entry.tree.repository.toLowerCase() === repository,
-  );
-  if (cloned) return { configPath, target, tree: "valid" };
-  try {
-    const preparation = await readContextTreePreparation(home);
-    if (preparation?.target === target && preparation.status === "unavailable") {
-      return { configPath, target, tree: "invalid", detail: preparation.reason };
-    }
-  } catch {
-    // The live CLI state remains authoritative when the optional diagnostic record is unreadable.
-  }
-  return { configPath, target, tree: "not-cloned" };
+  return {
+    configPath: resolveContextTreeHome(deps.env ?? process.env).configFile,
+    tree: "unknown",
+    detail:
+      "Context Tree is configured per Agent in Agent settings → Context Tree. Legacy computer-wide selections are ignored.",
+  };
 }

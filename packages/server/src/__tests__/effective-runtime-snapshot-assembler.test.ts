@@ -18,6 +18,7 @@ function authority(overrides: Record<string, unknown> = {}) {
     agentName,
     imBindingStatus: "active",
     runtimeConfig: {
+      contextTreeRepository: null,
       revision: 7,
       model: "gpt-5",
       reasoningEffort: "high",

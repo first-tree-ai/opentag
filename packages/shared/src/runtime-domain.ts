@@ -9,6 +9,8 @@ import {
   ProviderCliValidationResultReasonSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
+import { ContextTreeRepositorySchema } from "./context-tree.js";
+import { ContextTreeOperationFrameSchema, ContextTreeOperationResultFrameSchema } from "./context-tree-operation.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -132,6 +134,7 @@ export const RuntimeUsageSchema = z
 
 export const EffectiveRuntimeSnapshotSchema = z
   .object({
+    contextTreeRepository: ContextTreeRepositorySchema.nullable().optional(),
     revision: z
       .object({
         agent: RuntimeRevisionSchema,
@@ -1049,6 +1052,7 @@ export const ProviderCliValidationResultFrameSchema = z
   });
 
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  ContextTreeOperationFrameSchema,
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,
@@ -1064,6 +1068,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
+  ContextTreeOperationResultFrameSchema,
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
   RuntimeImSteerResultSchema,
@@ -1151,6 +1156,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,
+    ...(snapshot.contextTreeRepository ? [snapshot.contextTreeRepository] : []),
   ]);
   const sessionConfigHash = hashTuple([
     1,

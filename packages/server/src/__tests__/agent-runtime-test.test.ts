@@ -24,6 +24,7 @@ const agent = {
   status: "active" as const,
   revision: 4,
   runtimeConfig: {
+    contextTreeRepository: null,
     revision: 2,
     model: "gpt-5.6",
     reasoningEffort: "medium",

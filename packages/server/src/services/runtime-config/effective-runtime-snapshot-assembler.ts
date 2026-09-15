@@ -79,6 +79,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       // The exact rendered platform string, so a slug change produces a new Agent revision.
       platformInstructions,
       config.instructions,
+      ...(config.contextTreeRepository ? [config.contextTreeRepository] : []),
       authority.agentId,
       "empty_on_create",
       "agent",
@@ -114,6 +115,7 @@ export class EffectiveRuntimeSnapshotAssembler {
           id: sessionRevisionId,
         },
       },
+      ...(config.contextTreeRepository ? { contextTreeRepository: config.contextTreeRepository } : {}),
       agentId: authority.agentId,
       provider: authority.runtimeProvider,
       ...(model !== null ? { model } : {}),
@@ -151,6 +153,7 @@ async function loadAuthority(
       agentStatus: agents.status,
       runtimeProvider: agents.runtimeProvider,
       configRevision: agentRuntimeConfigs.revision,
+      configContextTreeRepository: agentRuntimeConfigs.contextTreeRepository,
       configModel: agentRuntimeConfigs.model,
       configReasoningEffort: agentRuntimeConfigs.reasoningEffort,
       configInstructions: agentRuntimeConfigs.instructions,
@@ -173,6 +176,7 @@ async function loadAuthority(
         ? null
         : {
             revision: row.configRevision,
+            contextTreeRepository: row.configContextTreeRepository,
             model: row.configModel,
             reasoningEffort: row.configReasoningEffort,
             instructions: row.configInstructions,

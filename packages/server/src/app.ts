@@ -28,12 +28,12 @@ import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
-
 import type { OpenTagBetterAuth } from "./auth/better-auth.js";
 import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import type { DatabaseClient } from "./db/client.js";
 import { currentTraceId } from "./observability/index.js";
+import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
   type AgentRuntimeTestService,
   type AgentService,
@@ -67,6 +67,7 @@ export interface CreateAppOptions {
   agentService?: AgentService;
   agentSetupService?: AgentSetupService;
   agentRuntimeTestService?: AgentRuntimeTestService;
+  contextTreeOperationService?: ContextTreeOperationService;
   computerService?: ComputerService;
   sandboxService?: SandboxService;
   machineAuthService?: MachineAuthService;
@@ -487,6 +488,7 @@ export function createApp(options: CreateAppOptions = {}) {
         authOptions,
         options.agentRuntimeTestService,
         options.agentSetupService,
+        options.contextTreeOperationService,
       );
     }
     registerAvailableAccountRoutes(app, authService, options, authOptions);

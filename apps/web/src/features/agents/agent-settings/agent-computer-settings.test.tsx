@@ -128,7 +128,14 @@ const boundConfig: AgentAdminConfig = {
   receiveMode: "mention_only",
   status: "active",
   revision: 2,
-  runtimeConfig: { revision: 1, model: null, reasoningEffort: null, instructions: "", maxDurationMs: null },
+  runtimeConfig: {
+    contextTreeRepository: null,
+    revision: 1,
+    model: null,
+    reasoningEffort: null,
+    instructions: "",
+    maxDurationMs: null,
+  },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };

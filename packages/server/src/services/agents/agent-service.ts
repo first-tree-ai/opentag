@@ -152,6 +152,7 @@ export interface AgentSessionStopTarget {
 function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   return AgentRuntimeConfigSchema.parse({
     revision: row.revision,
+    contextTreeRepository: row.contextTreeRepository,
     model: row.model,
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
@@ -275,6 +276,7 @@ function runtimeConfigsEqual(
   right: Readonly<Required<CreateAgentRuntimeConfig>>,
 ): boolean {
   return (
+    left.contextTreeRepository === right.contextTreeRepository &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
@@ -287,6 +289,7 @@ function creationIntentFingerprint(input: CreateAgentRequest): string {
   const explicitRuntimeConfig =
     runtimeConfig && Object.values(runtimeConfig).some((value) => value !== undefined)
       ? {
+          contextTreeRepository: runtimeConfig.contextTreeRepository,
           instructions: runtimeConfig.instructions,
           maxDurationMs: runtimeConfig.maxDurationMs,
           model: runtimeConfig.model,
@@ -385,6 +388,13 @@ export class AgentService {
   }
 
   async #create(callerUserId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    if (input.runtimeConfig?.contextTreeRepository)
+      throw new AgentServiceError(
+        "VALIDATION_ERROR",
+        "deterministic",
+        "Create the Agent, then select its Context Tree in settings",
+        409,
+      );
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
     const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;
     let result: { config: AgentAdminConfig; created: boolean };
@@ -808,8 +818,16 @@ export class AgentService {
     return toAgentAdminConfig(scope.agent, scope.runtimeConfig, scope.computerId);
   }
 
-  async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
+  async updateById(
+    callerUserId: string,
+    agentId: string,
+    rawInput: UpdateAgentRequest,
+    contextTreeValidated = false,
+  ): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
+    if (input.runtimeConfig?.contextTreeRepository !== undefined && !contextTreeValidated) {
+      throw new AgentServiceError("VALIDATION_ERROR", "deterministic", "Use the Context Tree settings operation", 409);
+    }
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
@@ -850,7 +868,23 @@ export class AgentService {
       }
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
+      if (
+        input.runtimeConfig?.contextTreeRepository !== undefined &&
+        currentRuntimeProjection.contextTreeRepository !== null &&
+        scope.agent.status !== "suspended"
+      ) {
+        throw new AgentServiceError(
+          "AGENT_LIFECYCLE_CONFLICT",
+          "deterministic",
+          "Pause the Agent before changing its Context Tree",
+          409,
+        );
+      }
       const nextRuntimeConfig = resolveAgentRuntimeConfig({
+        contextTreeRepository:
+          input.runtimeConfig?.contextTreeRepository !== undefined
+            ? input.runtimeConfig.contextTreeRepository
+            : currentRuntimeProjection.contextTreeRepository,
         model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
         reasoningEffort:
           input.runtimeConfig?.reasoningEffort !== undefined

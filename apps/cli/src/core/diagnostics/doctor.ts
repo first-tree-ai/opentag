@@ -588,7 +588,7 @@ function contextTreeChecks(result: PromiseSettledResult<ContextTreeState>): Doct
         label: "Computer target",
         detail: state.detail ?? "no Context Tree is configured, so Agent Sessions run without durable memory",
         path: state.configPath,
-        remediation: `Run ${channelConfig.binName} context-tree connect <name-or-repository>`,
+        remediation: "Select a repository in Agent settings → Context Tree",
       },
     ];
   }
@@ -621,7 +621,7 @@ function contextTreeStateCheck(state: ContextTreeState): DoctorCheck {
     ...base,
     status: state.tree === "invalid" ? "fail" : "unknown",
     detail: state.detail ?? "the configured Context Tree is not usable",
-    remediation: `Repair the tree, or point this Computer at another with ${channelConfig.binName} context-tree connect`,
+    remediation: "Repair the tree, or select another repository in Agent settings → Context Tree",
   };
 }
 

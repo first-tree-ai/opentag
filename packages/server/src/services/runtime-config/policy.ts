@@ -9,6 +9,7 @@ export { OPENTAG_PLATFORM_INSTRUCTIONS };
 export const DEFAULT_AGENT_INSTRUCTIONS = "";
 
 export const DEFAULT_AGENT_RUNTIME_CONFIG = Object.freeze({
+  contextTreeRepository: null,
   model: null,
   reasoningEffort: null,
   instructions: DEFAULT_AGENT_INSTRUCTIONS,

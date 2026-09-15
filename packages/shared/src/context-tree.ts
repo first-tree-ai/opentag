@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+export const ContextTreeRepositorySchema = z
+  .string()
+  .trim()
+  .max(140)
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}\/[a-zA-Z0-9_][a-zA-Z0-9._-]{0,99}$/)
+  .refine((value) => !value.endsWith(".git"), "Use OWNER/REPO without .git")
+  .transform((value) => value.toLowerCase());
+
 export const CONTEXT_TREE_CONFIG_SCHEMA_VERSION = 1;
 export const CONTEXT_TREE_PREPARATION_SCHEMA_VERSION = 1;
 

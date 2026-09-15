@@ -215,6 +215,11 @@
       "idx": 42,
       "tag": "0042_outgoing_jasper_sitwell",
       "sha256": "56517add5bc0daee07c86506aa4098518b2805548a848fb4deae4f36a6bb0418"
+    },
+    {
+      "idx": 43,
+      "tag": "0043_cultured_dark_beast",
+      "sha256": "04c7fd339804a28ec4844aeb1ea85fe449c691e6f81134ac2df82032dfdf37d8"
     }
   ]
 }

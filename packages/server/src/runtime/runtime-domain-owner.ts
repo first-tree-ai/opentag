@@ -536,7 +536,7 @@ export class RuntimeDomainOwner {
     return {
       parse: (input) => {
         const parsed = ClientRuntimeBusinessFrameSchema.safeParse(input);
-        return parsed.success ? parsed.data : undefined;
+        return parsed.success && parsed.data.type !== "context-tree:operation:result" ? parsed.data : undefined;
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
       handle: (frame, context) => this.handle(frame as ClientRuntimeBusinessFrame, context),
@@ -552,6 +552,7 @@ export class RuntimeDomainOwner {
     frame: ClientRuntimeBusinessFrame,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
+    if (frame.type === "context-tree:operation:result") return undefined;
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -1082,6 +1083,7 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
+  if (frame.type === "context-tree:operation:result") return `request:${frame.requestId}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
   if (frame.type === "im:steer:result") return `delivery:${frame.rootDeliveryId}`;

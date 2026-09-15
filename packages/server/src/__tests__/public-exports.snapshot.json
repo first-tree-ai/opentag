@@ -30,6 +30,8 @@
   "RuntimeDurableWorkStaleWriteError",
   "RuntimeDurableWorkTransitionError",
   "RuntimeRegistrySendError",
+  "SandboxService",
+  "SandboxServiceError",
   "SessionCliProofService",
   "SessionCollaborationService",
   "SessionService",

@@ -284,6 +284,7 @@ const originalExitCode = process.exitCode;
 function defaultConfig() {
   return {
     autoMigrate: true,
+    cloudIdentities: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",
       pollIntervalMs: 300_000,

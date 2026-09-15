@@ -1,30 +1,33 @@
 #!/usr/bin/env node
 /**
- * OpenTag E1 local Cloud Computer acceptance harness.
+ * OpenTag Cloud Computer acceptance harness.
  *
- * This entry is E1-only. It does not invent an E2–E9 framework. The only command
- * is `local-pi`: a real disposable Postgres, the real Server, the real Client
- * runtime composition, and a real Pi provider. Synthetic IM ingress and a local
- * Slack CLI substitute are E1-only seams; they are reported, not hidden.
+ * Commands:
+ *   local-pi          E1 real local Pi Computer (unchanged harness)
+ *   cloud-identities  E2 Cloud Computer / Sandbox identity acceptance
  *
  * Usage:
  *   node scripts/e2e/cloud-computer.mjs --help
  *   node scripts/e2e/cloud-computer.mjs local-pi
  *   node scripts/e2e/cloud-computer.mjs local-pi --help
+ *   node scripts/e2e/cloud-computer.mjs cloud-identities
+ *   node scripts/e2e/cloud-computer.mjs cloud-identities --help
  */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-const HELP = `OpenTag E1 local Cloud Computer acceptance
+const HELP = `OpenTag Cloud Computer acceptance
 
 Usage:
   node scripts/e2e/cloud-computer.mjs --help
   node scripts/e2e/cloud-computer.mjs local-pi [--help]
+  node scripts/e2e/cloud-computer.mjs cloud-identities [--help]
 
 Commands:
-  local-pi   Real local Pi Computer acceptance against a disposable Postgres.
+  local-pi          E1 real local Pi Computer acceptance against a disposable Postgres.
+  cloud-identities  E2 Cloud Computer and Sandbox identity acceptance. No Pi/model/GCP/IM.
 
 Requirements for local-pi:
   - Docker, used only to start a disposable postgres:17-alpine container
@@ -77,10 +80,12 @@ Artifacts:
   there.
 
 Environment:
-  OPENTAG_E1_ARTIFACTS     Artifact directory (created if missing)
-  OPENTAG_E1_PORT          Server port (default 8131)
-  OPENTAG_E1_KEEP          Set to "on" to keep the Postgres container
+  OPENTAG_E1_ARTIFACTS     Artifact directory for local-pi (created if missing)
+  OPENTAG_E1_PORT          local-pi Server port (default 8131)
+  OPENTAG_E1_KEEP          Set to "on" to keep the local-pi Postgres container
   PI_CODING_AGENT_DIR      Optional source of Pi config to copy silently
+  OPENTAG_E2_ARTIFACTS     Artifact directory for cloud-identities
+  OPENTAG_E2_PORT          cloud-identities Server port (optional; otherwise allocated)
 `;
 
 function printHelp() {
@@ -101,15 +106,17 @@ if (!command && wantsHelp) {
   process.exit(0);
 }
 
-if (command && command !== "local-pi") {
+if (command === "cloud-identities") {
+  const { runCloudIdentities } = await import("./cloud-computer/cloud-identities.mjs");
+  process.exitCode = await runCloudIdentities({ repositoryRoot, args });
+} else if (command === "local-pi") {
+  if (wantsHelp) {
+    printHelp();
+    process.exit(0);
+  }
+  const { runLocalPi } = await import("./cloud-computer/local-pi.mjs");
+  process.exitCode = await runLocalPi({ repositoryRoot, args });
+} else if (command) {
   process.stderr.write(`Unknown command: ${command}\n\n${HELP}\n`);
   process.exit(2);
 }
-
-if (command === "local-pi" && wantsHelp) {
-  printHelp();
-  process.exit(0);
-}
-
-const { runLocalPi } = await import("./cloud-computer/local-pi.mjs");
-process.exitCode = await runLocalPi({ repositoryRoot, args });

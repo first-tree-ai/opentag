@@ -31,7 +31,10 @@ export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`
 export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE = `${ACCOUNT_AGENTS_PATH}/creation-intents/:creationIntentId`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
+export const ACCOUNT_CLOUD_COMPUTER_PATH = `${ACCOUNT_COMPUTERS_PATH}/cloud`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
+export const ACCOUNT_SANDBOXES_PATH = `${API_V1_PREFIX}/sandboxes`;
+export const ACCOUNT_SANDBOX_TEMPLATE = `${ACCOUNT_SANDBOXES_PATH}/:sandboxId`;
 export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
@@ -42,8 +45,10 @@ export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
+  accountCloudComputer: ACCOUNT_CLOUD_COMPUTER_PATH,
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
+  accountSandboxes: ACCOUNT_SANDBOXES_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
   accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
   internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
@@ -84,6 +89,10 @@ export function taskCancelPath(sessionId: string): string {
 
 export function accountComputerConnectCodePath(connectCodeId: string): string {
   return `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/${encodeURIComponent(connectCodeId)}`;
+}
+
+export function accountSandboxPath(sandboxId: string): string {
+  return `${ACCOUNT_SANDBOXES_PATH}/${encodeURIComponent(sandboxId)}`;
 }
 
 export function agentByIdPath(agentId: string): string {

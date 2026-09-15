@@ -3,6 +3,7 @@ import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js"
 import { parseSemVer } from "./semver.js";
 
 export const ComputerPlatformSchema = z.enum(["darwin", "linux", "win32"]);
+export const ComputerKindSchema = z.enum(["local", "cloud"]);
 export const ComputerConnectionStatusSchema = z.enum(["online", "offline"]);
 export const ProviderReadinessStatusSchema = z.enum(["checking", "install", "sign-in", "ready", "unavailable"]);
 export const ImCliReadinessStatusSchema = z.enum(["checking", "install", "ready", "unavailable"]);
@@ -53,6 +54,9 @@ export type ProviderCliPublicFailureReason = z.infer<typeof ProviderCliPublicFai
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
 export const PROVIDER_READINESS_V2_HEADER = "x-opentag-provider-readiness-v2";
 export const PROVIDER_CLI_REASON_V2_HEADER = "x-opentag-provider-cli-reason";
+/** Independent of readiness v2: old Clients never see Cloud identity shapes. */
+export const CLOUD_IDENTITY_CAPABILITY_HEADER = "x-opentag-cloud-identity";
+export const CLOUD_IDENTITY_CAPABILITY_VERSION = "1";
 
 export function requestsProviderCliReasonV2(value: string | string[] | undefined): boolean {
   return headerValueEquals(value, "2");
@@ -64,6 +68,10 @@ export function requestsProviderReadinessV1(value: string | string[] | undefined
 
 export function requestsProviderReadinessV2(value: string | string[] | undefined): boolean {
   return headerValueEquals(value, "2");
+}
+
+export function requestsCloudIdentityV1(value: string | string[] | undefined): boolean {
+  return headerValueEquals(value, CLOUD_IDENTITY_CAPABILITY_VERSION);
 }
 
 function headerValueEquals(value: string | string[] | undefined, expected: string): boolean {
@@ -533,6 +541,7 @@ export type LocalPreparationCheck = z.infer<typeof LocalPreparationCheckSchema>;
 export type LocalPreparationComponent = z.infer<typeof LocalPreparationComponentSchema>;
 export type LocalComputerPreparationResult = z.infer<typeof LocalComputerPreparationResultSchema>;
 export type ComputerPlatform = z.infer<typeof ComputerPlatformSchema>;
+export type ComputerKind = z.infer<typeof ComputerKindSchema>;
 export type ComputerConnectCodeMode = z.infer<typeof ComputerConnectCodeModeSchema>;
 export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectCodeExchangeRequestSchema>;
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;

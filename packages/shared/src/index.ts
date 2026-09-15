@@ -1,4 +1,6 @@
 export {
+  type AccountCloudComputerEnsureResponse,
+  AccountCloudComputerEnsureResponseSchema,
   type AccountComputerSummary,
   AccountComputerSummarySchema,
   type AccountSetupCompletion,
@@ -124,6 +126,8 @@ export {
   AccountComputerConnectCodeIssueRequestSchema,
   type AccountComputerConnectCodeRepairRequest,
   AccountComputerConnectCodeRepairRequestSchema,
+  CLOUD_IDENTITY_CAPABILITY_HEADER,
+  CLOUD_IDENTITY_CAPABILITY_VERSION,
   COMPUTER_RUNTIME_PROVIDER_CAPABILITY,
   type ComputerConnectCodeExchangeRequest,
   ComputerConnectCodeExchangeRequestSchema,
@@ -143,6 +147,8 @@ export {
   type ComputerImCliReadinessCollection,
   ComputerImCliReadinessCollectionSchema,
   ComputerImCliReadinessSchema,
+  type ComputerKind,
+  ComputerKindSchema,
   type ComputerPlatform,
   ComputerPlatformSchema,
   type ComputerProviderReadiness,
@@ -188,6 +194,7 @@ export {
   ProviderReadinessStatusSchema,
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
+  requestsCloudIdentityV1,
   requestsProviderCliReasonV2,
   requestsProviderReadinessV1,
   requestsProviderReadinessV2,
@@ -221,9 +228,12 @@ export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_AGENTS_PATH,
+  ACCOUNT_CLOUD_COMPUTER_PATH,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
+  ACCOUNT_SANDBOX_TEMPLATE,
+  ACCOUNT_SANDBOXES_PATH,
   ACCOUNT_SETUP_COMPLETE_PATH,
   ACCOUNT_TASKS_PATH,
   AGENT_BY_ID_TEMPLATE,
@@ -245,6 +255,7 @@ export {
   API_V1_PREFIX,
   accountAgentCreationIntentPath,
   accountComputerConnectCodePath,
+  accountSandboxPath,
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
@@ -523,6 +534,7 @@ export {
   type ServerWelcomeV2Frame,
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
+export * from "./sandbox.js";
 export {
   compareSemVer,
   isSemVer,

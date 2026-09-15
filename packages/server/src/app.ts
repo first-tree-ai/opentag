@@ -5,7 +5,11 @@ import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
 import Fastify, { type FastifyLoggerOptions, type FastifyRequest, LogController } from "fastify";
-import { type InternalNavigationVisibilityService, registerAccountRoutes } from "./api/account.js";
+import {
+  type AccountRoutesOptions,
+  type InternalNavigationVisibilityService,
+  registerAccountRoutes,
+} from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import {
@@ -47,6 +51,7 @@ import {
 } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
+import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
@@ -63,6 +68,7 @@ export interface CreateAppOptions {
   agentSetupService?: AgentSetupService;
   agentRuntimeTestService?: AgentRuntimeTestService;
   computerService?: ComputerService;
+  sandboxService?: SandboxService;
   machineAuthService?: MachineAuthService;
   connectCode?: {
     issuer: ConnectCodeIssuer;
@@ -107,7 +113,8 @@ type AccountFacingError =
   | OnboardingResetError
   | TaskQueryError
   | SlackConfigurationServiceError
-  | AccountSetupServiceError;
+  | AccountSetupServiceError
+  | SandboxServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
@@ -117,7 +124,8 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof OnboardingResetError ||
     error instanceof TaskQueryError ||
     error instanceof SlackConfigurationServiceError ||
-    error instanceof AccountSetupServiceError
+    error instanceof AccountSetupServiceError ||
+    error instanceof SandboxServiceError
   );
 }
 
@@ -481,26 +489,7 @@ export function createApp(options: CreateAppOptions = {}) {
         options.agentSetupService,
       );
     }
-    if (
-      options.agentService ||
-      options.taskService ||
-      options.computerService ||
-      options.setupResetService ||
-      options.accountSetupService ||
-      (options.machineAuthService && options.computerConnectCode)
-    ) {
-      registerAccountRoutes(app, authService, {
-        ...(options.agentService ? { agentService: options.agentService } : {}),
-        ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
-        ...(options.computerService ? { computerService: options.computerService } : {}),
-        ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
-        ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
-        ...(options.taskService ? { taskService: options.taskService } : {}),
-        ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
-        internalNavigationService: options.internalNavigationService,
-        authOptions,
-      });
-    }
+    registerAvailableAccountRoutes(app, authService, options, authOptions);
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
@@ -617,4 +606,36 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   return app;
+}
+
+function registerAvailableAccountRoutes(
+  app: Parameters<typeof registerAccountRoutes>[0],
+  authService: UserAuthService,
+  options: CreateAppOptions,
+  authOptions: NonNullable<AccountRoutesOptions["authOptions"]>,
+): void {
+  if (
+    !(
+      options.agentService ||
+      options.taskService ||
+      options.computerService ||
+      options.sandboxService ||
+      options.setupResetService ||
+      options.accountSetupService ||
+      (options.machineAuthService && options.computerConnectCode)
+    )
+  )
+    return;
+  registerAccountRoutes(app, authService, {
+    ...(options.agentService ? { agentService: options.agentService } : {}),
+    ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
+    ...(options.computerService ? { computerService: options.computerService } : {}),
+    ...(options.sandboxService ? { sandboxService: options.sandboxService } : {}),
+    ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
+    ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
+    ...(options.taskService ? { taskService: options.taskService } : {}),
+    ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
+    internalNavigationService: options.internalNavigationService,
+    authOptions,
+  });
 }

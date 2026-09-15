@@ -101,3 +101,62 @@ Server 和 Client 均使用隔离 HOME；OPENTAG_HOME、Pi sessions、Codex home
 | `OPENTAG_E1_PORT` | 回环 Server 端口，默认 `8131` |
 | `OPENTAG_E1_KEEP` | `on` 时仅保留一次性 PostgreSQL 容器，用完后需手动删除 |
 | `PI_CODING_AGENT_DIR` | 可选的 Pi 配置源，复制到私有 fixture |
+
+# E2 Cloud 身份验收
+
+这是持续维护的 E2 验收入口，用真实 Server 和一次性 PostgreSQL 验证 Cloud Computer 与 Sandbox
+身份。它不启动 Pi、不调用模型、不分配 GCP、也不发送 Slack/飞书流量。
+
+```bash
+pnpm build
+node scripts/e2e/cloud-computer.mjs cloud-identities
+```
+
+`node scripts/e2e/cloud-computer.mjs cloud-identities --help` 列出前置条件。只有退出码为 0、全部
+断言通过且清理成功，才算该次运行完成。`summary.json` 记录精确 Git HEAD、dirty 标记、断言、
+替换项、PID/退出证据和实际清理结果。工作区有未提交改动时的运行属于探索证据，不能代替后续提交的验收。
+
+## 验证内容
+
+1. 空库启动应用 43 条迁移。另一路从合入 E1 的基线提交
+   `440dfed53c3bb22a8527cd731f82e9b9006bd9b5` 应用到 idx 41，再由当前 Server 升级；预先写入的
+   Local Computer、机器凭证、Pi Agent 与 runtime 配置以及迁移 hash 前缀均保留。
+2. 通过重启 `OPENTAG_DEV_AUTH_EMAIL` 完成两次真实开发登录，认证密钥保持不变。`/api/v1/me`
+   账户 ID 与 Cookie/CSRF 存在。未认证和缺少 CSRF 的写请求被拒绝，且不插入行。
+3. 同账户并发 Cloud ensure（`PUT /api/v1/computers/cloud`）只产生一个 ID 和一行。元数据为
+   linux/x64、已配置 CLI 版本、非空稳定安装 UUID。Cloud 行没有 `computer_credentials`、
+   `current_instance_id`、`connected_at`、`last_seen_at`。带 `x-opentag-cloud-identity: 1` 的列表
+   显示 `kind: cloud` 逻辑在线；同时请求 readiness 时，Pi 仍为不可用且无探测时间。未知 Cloud
+   能力版本、旧客户端、无该头或仅 readiness v2 的列表隐藏 Cloud，并保持
+   Local 旧形态。
+4. 通过 `POST /api/v1/agents` 创建 Pi Cloud Agent。插入带明确测试标记的 Slack installation/binding
+   SQL。并发 Sandbox ensure（`POST /api/v1/sandboxes`）幂等。不同 channel、thread、binding、用户得到
+   不同 Sandbox/Session/URI。SQL 校验 `sessions → im_bindings → agents` 归属和
+   `session_placements` Computer。Sandbox 初始为未分配、环境代次 0、资源字段为空。自报
+   `accountId`/`agentId` 以及错误 thread 范围被拒绝。
+5. 外部账户 ensure/查询/创建/rebind 得到不泄露信息的拒绝，形态与未知 ID 一致。没有半成品行。
+6. Server 重启使用新 PID，并记录旧进程退出。已认证 Cookie 以及 Cloud / Agent / Session / Sandbox
+   ID 和 `storage_uri` 保持不变。重启时更改存储前缀/版本不得覆盖已有行。
+   `OPENTAG_CLOUD_IDENTITIES_ENABLED=false` 阻止 Cloud ensure、已知 Cloud ID 的 Agent 创建（含
+   intent 重放）以及新的 Sandbox ensure；已有读取和 Local 路径仍然可用。
+7. Cloud 上创建 Codex/Claude-Code 被拒绝；不能改 runtime provider。Local↔Cloud rebind 被拒绝；
+   Local→Local 可用；Cloud 同一 ID rebind 幂等。
+8. Local 连接码创建/交换/注册/查询与 repair 保持 Computer ID，轮换凭证并拒绝旧 token。注册走生产
+   runtime WebSocket。旧的未标记 exchange 与 Local 列表形态保持不变。针对 Cloud 签发 repair 被拒绝。
+   伪造的 repair-code 行和假 Cloud 机器凭证只用于负例，随后删除。与 Cloud 安装身份冲突被拒绝。
+   身份不被覆盖。
+9. 事务写入重复的 Sandbox 资源名+UID 触发唯一约束并回滚。这是仅数据库所有权测试，不是 GCP 分配证据。
+
+## E2 边界
+
+E2 不分配计算、不写存储对象、不运行 Runner、不调用模型、不投递 IM。这些分别属于 E3（Runner）、
+E4（真实 IM）和 E9（默认产品 UI）。此处不增加面向客户的 UI。一次性 Postgres helper 的容器名仍使用
+E1 前缀；摘要中的标签为 E2。
+
+| 变量 | 含义 |
+| --- | --- |
+| `OPENTAG_E2_ARTIFACTS` | 产物目录；默认使用唯一临时目录 |
+| `OPENTAG_E2_PORT` | 回环 Server 端口；未设置时自动分配 |
+| `OPENTAG_CLOUD_IDENTITIES_ENABLED` | Server Cloud 创建开关（`true`/`false`，默认 `false`） |
+| `OPENTAG_CLOUD_STORAGE_BASE` | Sandbox 存储前缀；fixture 默认 `gs://opentag-e2-fixture/sandboxes` |
+| `OPENTAG_CLOUD_RUNNER_VERSION` | Cloud Computer `client_version`；fixture 使用 `apps/cli/package.json` |

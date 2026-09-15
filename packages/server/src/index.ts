@@ -55,6 +55,7 @@ import {
 import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
+import { SandboxService } from "./services/sandboxes/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { TaskService } from "./services/tasks/index.js";
@@ -117,6 +118,7 @@ export { AgentService, AgentServiceError, AgentSetupService } from "./services/a
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
+export { SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 export {
   SessionCliProofService,
   SessionCollaborationService,
@@ -225,7 +227,11 @@ export async function startServer(): Promise<void> {
         await registry.closeComputer(computerId);
       },
     });
-    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
+    const cloudIdentities = config.cloudIdentities;
+    const computerService = new ComputerService(database, authService, {
+      providerReadiness: registry,
+      cloudIdentities,
+    });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
@@ -295,6 +301,7 @@ export async function startServer(): Promise<void> {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
     });
     const sessionService = new SessionService(database, { logger: serviceLogger("session") });
+    const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
@@ -321,6 +328,7 @@ export async function startServer(): Promise<void> {
       logger: serviceLogger("session-collaboration"),
     });
     const agentService = new AgentService(database, {
+      cloudIdentitiesEnabled: cloudIdentities.enabled,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
@@ -429,6 +437,7 @@ export async function startServer(): Promise<void> {
         publicUrl: config.publicUrl,
       },
       computerService,
+      sandboxService,
       machineAuthService,
       imBindingService,
       feishuSetupService,

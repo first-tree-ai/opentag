@@ -8,6 +8,9 @@ import {
   SLACK_OAUTH_CALLBACK_PATH,
 } from "@opentag/shared";
 import { z } from "zod";
+import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
+
+export { parseCloudStorageBase } from "./cloud-identities-config.js";
 
 const booleanString = (defaultValue: "true" | "false") =>
   z
@@ -134,6 +137,13 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     /*
+     * Server-controlled Cloud Computer / Sandbox acceptance. Off by default; enabling requires a valid
+     * storage prefix and Runner SemVer release coordinate. This is not a UI-only gate.
+     */
+    OPENTAG_CLOUD_IDENTITIES_ENABLED: booleanString("false"),
+    OPENTAG_CLOUD_STORAGE_BASE: z.string().trim().optional(),
+    OPENTAG_CLOUD_RUNNER_VERSION: z.string().trim().optional(),
+    /*
      * Defaults to what the refresh token's lifetime was, because that is the number it replaced: how long a client
      * may be idle and still be signed in.
      */
@@ -221,6 +231,36 @@ const ServerEnvironmentSchema = z
         });
       }
     }
+  })
+  .superRefine((value, context) => {
+    const storage = value.OPENTAG_CLOUD_STORAGE_BASE;
+    const runnerVersion = value.OPENTAG_CLOUD_RUNNER_VERSION;
+    if (storage !== undefined && !parseCloudStorageBase(storage)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "OPENTAG_CLOUD_STORAGE_BASE must be a gs://bucket/prefix URI without credentials, query, fragment, or dot traversal",
+      });
+    }
+    if (runnerVersion !== undefined && !CloudRunnerVersionSchema.safeParse(runnerVersion).success) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_CLOUD_RUNNER_VERSION must be a Client/Runner SemVer release coordinate",
+      });
+    }
+    if (!value.OPENTAG_CLOUD_IDENTITIES_ENABLED) return;
+    if (!storage) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_CLOUD_STORAGE_BASE is required when Cloud identities are enabled",
+      });
+    }
+    if (!runnerVersion) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_CLOUD_RUNNER_VERSION is required when Cloud identities are enabled",
+      });
+    }
   });
 
 function isLoopbackHostname(value: string): boolean {
@@ -292,7 +332,14 @@ export interface ServerConfig {
    * Enabled on staging, or explicitly opted into on a loopback development server.
    */
   internalTools: boolean;
+  /**
+   * Server-controlled Cloud Computer / Sandbox acceptance. Metadata is the configured Runner
+   * target, never observed execution. Off by default.
+   */
+  cloudIdentities: CloudIdentitiesConfig;
 }
+
+export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
 
 export interface DatabaseConfig {
   databaseUrl: string;
@@ -345,6 +392,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
+    OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
+    OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
+    OPENTAG_CLOUD_RUNNER_VERSION: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_VERSION),
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
   });
 
@@ -395,7 +445,24 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     internalTools: offersInternalTools(parsed.OPENTAG_ENV, parsed.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED),
+    cloudIdentities: resolveCloudIdentitiesConfig(
+      parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED,
+      parsed.OPENTAG_CLOUD_STORAGE_BASE,
+      parsed.OPENTAG_CLOUD_RUNNER_VERSION,
+    ),
   };
+}
+
+function resolveCloudIdentitiesConfig(
+  enabled: boolean,
+  storageBase: string | undefined,
+  runnerVersion: string | undefined,
+): CloudIdentitiesConfig {
+  if (!enabled) return { enabled: false };
+  if (!storageBase || !runnerVersion) {
+    throw new Error("Cloud identities are enabled without a storage base or Runner version");
+  }
+  return { enabled: true, storageBase, runnerVersion };
 }
 
 function offersInternalTools(environment: ChannelName, localPreviewEnabled: boolean): boolean {

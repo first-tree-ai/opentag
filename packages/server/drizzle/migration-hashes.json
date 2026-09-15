@@ -210,6 +210,11 @@
       "idx": 41,
       "tag": "0041_colossal_magdalene",
       "sha256": "31af6ccfbe9ffc88182ba3480e0775b3fb71a9bfd3d4555ff4d90d52c3e6267e"
+    },
+    {
+      "idx": 42,
+      "tag": "0042_outgoing_jasper_sitwell",
+      "sha256": "56517add5bc0daee07c86506aa4098518b2805548a848fb4deae4f36a6bb0418"
     }
   ]
 }

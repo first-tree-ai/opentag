@@ -334,12 +334,14 @@ export class AgentService {
       }) => Promise<void> | void)
     | undefined;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
+  readonly #cloudIdentitiesEnabled: boolean;
 
   constructor(
     database: DatabaseClient,
     options: {
       afterAgentLocked?: () => Promise<void>;
       afterMembershipLocked?: () => Promise<void>;
+      cloudIdentitiesEnabled?: boolean;
       now?: () => Date;
       onDiagnostic?: (code: string) => void;
       onProviderCliPlacementChanged?: (input: {
@@ -353,6 +355,7 @@ export class AgentService {
   ) {
     this.#afterAgentLocked = options.afterAgentLocked;
     this.#afterMembershipLocked = options.afterMembershipLocked;
+    this.#cloudIdentitiesEnabled = options.cloudIdentitiesEnabled ?? false;
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
@@ -391,6 +394,7 @@ export class AgentService {
         const computer = input.computerId
           ? await this.#lockOwnedComputer(transaction, callerUserId, input.computerId)
           : undefined;
+        assertCloudAgentBinding(this.#cloudIdentitiesEnabled, input.runtimeProvider, computer?.kind);
         await transaction.execute(
           sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
         );
@@ -956,6 +960,7 @@ export class AgentService {
         throw this.#lifecycleConflict("Only an active Agent can be rebound to a Computer");
       }
       const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
+      await this.#assertRebindMode(transaction, scope.computerId, target, scope.agent.runtimeProvider);
       const active = await transaction
         .select({
           endedAt: sessions.endedAt,
@@ -1125,9 +1130,9 @@ export class AgentService {
     transaction: DatabaseTransaction,
     accountId: string,
     computerId: string,
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; kind: "local" | "cloud" }> {
     const [computer] = await transaction
-      .select({ id: computers.id })
+      .select({ id: computers.id, kind: computers.kind })
       .from(computers)
       .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId)))
       .limit(1)
@@ -1136,6 +1141,44 @@ export class AgentService {
       throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
     }
     return computer;
+  }
+
+  async #assertRebindMode(
+    transaction: DatabaseTransaction,
+    currentComputerId: string | null,
+    target: { id: string; kind: "local" | "cloud" },
+    runtimeProvider: AgentRuntimeProvider,
+  ): Promise<void> {
+    const currentKind =
+      currentComputerId === null
+        ? "local"
+        : currentComputerId === target.id
+          ? target.kind
+          : await this.#computerKind(transaction, currentComputerId);
+    if (currentKind === target.kind) {
+      if (target.kind === "cloud") {
+        assertCloudAgentBinding(this.#cloudIdentitiesEnabled, runtimeProvider, "cloud");
+      }
+      return;
+    }
+    throw new AgentServiceError(
+      "AGENT_LIFECYCLE_CONFLICT",
+      "deterministic",
+      "The Agent cannot switch between Local and Cloud Computers",
+      409,
+    );
+  }
+
+  async #computerKind(transaction: DatabaseTransaction, computerId: string): Promise<"local" | "cloud"> {
+    const [computer] = await transaction
+      .select({ kind: computers.kind })
+      .from(computers)
+      .where(eq(computers.id, computerId))
+      .limit(1);
+    if (!computer) {
+      throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+    }
+    return computer.kind;
   }
 
   async #resolveAgentScope(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentScope> {
@@ -1215,5 +1258,24 @@ export class AgentService {
     } catch {
       this.#onDiagnostic("PROVIDER_CLI_PLACEMENT_NOTIFY_FAILED");
     }
+  }
+}
+
+function assertCloudAgentBinding(
+  enabled: boolean,
+  runtimeProvider: AgentRuntimeProvider,
+  kind: "local" | "cloud" = "local",
+): void {
+  if (kind !== "cloud") return;
+  if (!enabled) {
+    throw new AgentServiceError("COMPUTER_NOT_FOUND", "deterministic", "The requested Computer was not found", 404);
+  }
+  if (runtimeProvider !== "pi") {
+    throw new AgentServiceError(
+      "AGENT_LIFECYCLE_CONFLICT",
+      "deterministic",
+      "Cloud Computers only support the Pi runtime",
+      409,
+    );
   }
 }

@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   ComputerConnectionStatusSchema,
   ComputerImCliReadinessCollectionSchema,
+  ComputerKindSchema,
   ComputerPlatformSchema,
   ComputerProviderReadinessCollectionSchema,
 } from "./computer.js";
@@ -19,6 +20,8 @@ export const InternalNavigationVisibilitySchema = z.object({ integrations: z.boo
 export const AccountComputerSummarySchema = z
   .object({
     computerId: z.string().uuid(),
+    /** Present only for explicitly Cloud-capable callers; absent from legacy Local responses. */
+    kind: ComputerKindSchema.optional(),
     displayName: z.string().min(1),
     platform: ComputerPlatformSchema,
     connectionStatus: ComputerConnectionStatusSchema,
@@ -36,6 +39,22 @@ export const ListAccountComputersResponseSchema = z
   .object({ computers: z.array(AccountComputerSummarySchema) })
   .strict();
 
+/**
+ * Dedicated Cloud Computer ensure body. `kind` is required here without changing the Local list DTO.
+ * `connectionStatus` is logical online of the Cloud identity, not daemon heartbeat evidence and not
+ * Sandbox allocation or Pi execution readiness.
+ */
+export const AccountCloudComputerEnsureResponseSchema = z
+  .object({
+    computerId: z.string().uuid(),
+    kind: z.literal("cloud"),
+    displayName: z.string().min(1),
+    platform: ComputerPlatformSchema,
+    connectionStatus: z.literal("online"),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
 export type CompleteAccountSetupRequest = z.infer<typeof CompleteAccountSetupRequestSchema>;
 export type AccountSetupCompletion = z.infer<typeof AccountSetupCompletionSchema>;
 export type AccountSetupResetMode = z.infer<typeof AccountSetupResetModeSchema>;
@@ -43,3 +62,4 @@ export type AccountSetupResetRequest = z.infer<typeof AccountSetupResetRequestSc
 export type InternalNavigationVisibility = z.infer<typeof InternalNavigationVisibilitySchema>;
 export type AccountComputerSummary = z.infer<typeof AccountComputerSummarySchema>;
 export type ListAccountComputersResponse = z.infer<typeof ListAccountComputersResponseSchema>;
+export type AccountCloudComputerEnsureResponse = z.infer<typeof AccountCloudComputerEnsureResponseSchema>;

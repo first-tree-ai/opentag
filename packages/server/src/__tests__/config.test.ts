@@ -4,7 +4,13 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { describe, expect, it, vi } from "vitest";
 import { parseRequest } from "../api/request-validation.js";
-import { isHostedEnvironment, parseDatabaseConfig, parseServerConfig, serverEnvironmentSummary } from "../config.js";
+import {
+  isHostedEnvironment,
+  parseCloudStorageBase,
+  parseDatabaseConfig,
+  parseServerConfig,
+  serverEnvironmentSummary,
+} from "../config.js";
 import { createDatabaseClient } from "../db/client.js";
 import {
   MIGRATION_ADVISORY_LOCK_ID,
@@ -70,6 +76,45 @@ describe("parseServerConfig", () => {
       logLevel: "info",
     });
     expect(parseServerConfig(required).devAuth).toBeUndefined();
+    expect(parseServerConfig(required).cloudIdentities).toEqual({ enabled: false });
+  });
+
+  it("enables Cloud identities only with a valid storage prefix and Runner SemVer", () => {
+    expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_IDENTITIES_ENABLED: "true" })).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+      }),
+    ).toThrow();
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+        OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+        OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      }).cloudIdentities,
+    ).toEqual({
+      enabled: true,
+      storageBase: "gs://opentag-sandbox/e2",
+      runnerVersion: "0.0.5",
+    });
+    for (const storageBase of [
+      "https://bucket/prefix",
+      "gs://user:pass@bucket/prefix",
+      "gs://bucket/prefix?x=1",
+      "gs://bucket/foo/../bar",
+      "gs://bucket/./secret",
+      "gs://bucket/prefix/",
+      "gs://bucket/",
+      "s3://bucket/prefix",
+    ]) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_STORAGE_BASE: storageBase })).toThrow();
+    }
+    expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_RUNNER_VERSION: "not-semver" })).toThrow();
+    expect(parseCloudStorageBase("gs://opentag-sandbox")).toBe("gs://opentag-sandbox");
+    expect(parseCloudStorageBase("gs://bucket/foo/../bar")).toBeUndefined();
   });
 
   it("offers Internal Tools only after an explicit loopback development opt-in", () => {

@@ -115,3 +115,71 @@ written to artifacts. Nonzero exits retain the failed phase and available saniti
 | `OPENTAG_E1_PORT` | Loopback Server port; default `8131` |
 | `OPENTAG_E1_KEEP` | `on` keeps only the disposable PostgreSQL container; remove it manually afterward |
 | `PI_CODING_AGENT_DIR` | Optional source of Pi configuration copied into the private fixture |
+
+# E2 Cloud identities acceptance
+
+This maintained E2 harness proves Cloud Computer and Sandbox identity against a real Server and
+disposable PostgreSQL. It does not start Pi, call models, allocate GCP, or send Slack/Feishu traffic.
+
+```bash
+pnpm build
+node scripts/e2e/cloud-computer.mjs cloud-identities
+```
+
+`node scripts/e2e/cloud-computer.mjs cloud-identities --help` lists requirements. Completion requires
+exit code 0, every assertion passing, and successful cleanup. `summary.json` records exact Git HEAD,
+dirty flag, assertions, substitutions, PID/exit evidence, and actual cleanup results. A dirty working
+tree is discovery evidence, not acceptance of a later commit.
+
+## What is verified
+
+1. Clean database boot applies 43 migrations. A separate E1 baseline from commit
+   `440dfed53c3bb22a8527cd731f82e9b9006bd9b5` through idx 41 upgrades into the current Server; a seeded
+   Local Computer, machine credential, Pi Agent, and runtime config are preserved, including migration
+   hash prefix.
+2. Two real development sign-ins by restarting `OPENTAG_DEV_AUTH_EMAIL`, keeping common auth secrets.
+   `/api/v1/me` account IDs and Cookie/CSRF are present. Unauthenticated and CSRF-free mutations are
+   rejected without creating rows.
+3. Concurrent Cloud ensure (`PUT /api/v1/computers/cloud`) yields one ID and one row per Account.
+   Metadata is linux/x64, configured CLI version, and a nonempty stable installation UUID. Cloud rows
+   have no `computer_credentials`, `current_instance_id`, `connected_at`, or `last_seen_at`.
+   `x-opentag-cloud-identity: 1` lists include `kind: cloud` logical online. Old, missing, or
+   readiness-v2-only headers hide Cloud and keep the legacy Local list shape. Unknown Cloud capability
+   versions also keep that shape. With both capability and readiness headers, Cloud remains logically
+   online while Pi is unavailable with no observation timestamp.
+4. Create a Pi Cloud Agent through `POST /api/v1/agents`. Insert labelled test-only Slack
+   installation/binding SQL. Concurrent Sandbox ensure (`POST /api/v1/sandboxes`) is idempotent.
+   Different channels, threads, bindings, and users get distinct Sandbox/Session/URI rows. SQL checks
+   `sessions → im_bindings → agents` ownership and `session_placements` Computer. Sandboxes start
+   unallocated, environment generation 0, resource fields null. Extra `accountId`/`agentId` and
+   malformed thread scope are rejected.
+5. Foreign Account ensure/query/create/rebind is a non-disclosing refusal matching unknown-ID errors.
+   No partial rows.
+6. Server restart uses a new PID and recorded old exit. Authenticated Cookie jars and Cloud / Agent /
+   Session / Sandbox IDs plus `storage_uri` stay the same. Changing storage prefix/version on restart
+   does not overwrite existing rows. `OPENTAG_CLOUD_IDENTITIES_ENABLED=false` blocks Cloud ensure,
+   known Cloud Agent create including intent replay, and new Sandbox ensure; existing reads and Local
+   paths remain available.
+7. Cloud Codex/Claude-Code create is rejected; runtime provider cannot be changed. Local↔Cloud rebind
+   is rejected; Local→Local works; Cloud same-ID rebind is idempotent.
+8. Local connect-code create/exchange/register/query and repair preserve Computer ID, rotate the
+   credential, and reject the prior token. Registration uses the production runtime WebSocket. Old
+   unmarked exchange and Local list shapes are preserved. Repair issuance targeting Cloud is rejected.
+   A forged repair-code row and a fake Cloud machine credential are disposable negative fixtures and
+   are removed. Installation collision with Cloud is rejected. Identity is not overwritten.
+9. A transaction that writes duplicate Sandbox resource name+UID hits the unique constraint and rolls
+   back. This is a DB-only ownership test, never GCP allocation.
+
+## E2 boundary
+
+E2 does not allocate compute, write storage objects, run a Runner, call a model, or deliver IM.
+Those belong to E3 (Runner), E4 (real IM), and E9 (default product UI). No customer-facing UI is added
+here. The disposable Postgres helper still names containers with the E1 prefix; summaries label E2.
+
+| Variable | Meaning |
+| --- | --- |
+| `OPENTAG_E2_ARTIFACTS` | Artifact directory; defaults to a unique temporary directory |
+| `OPENTAG_E2_PORT` | Loopback Server port; allocated if unset |
+| `OPENTAG_CLOUD_IDENTITIES_ENABLED` | Server Cloud creation flag (`true`/`false`, default `false`) |
+| `OPENTAG_CLOUD_STORAGE_BASE` | Sandbox storage prefix; fixture default `gs://opentag-e2-fixture/sandboxes` |
+| `OPENTAG_CLOUD_RUNNER_VERSION` | Cloud Computer `client_version`; fixture uses `apps/cli/package.json` |

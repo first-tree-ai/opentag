@@ -11,6 +11,7 @@ export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runt
 export * from "./runtime-configuration-options.js";
 export type { TurnFailureReason } from "./runtime-domain.js";
 export * from "./runtime-protocol.js";
+export * from "./sandbox.js";
 export * from "./sign-in-destination.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,

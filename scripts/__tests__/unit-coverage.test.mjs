@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_RUNTIME_COVERAGE_INCLUDE,
   assertCoverageArtifacts,
   COVERAGE_REPORTER_FLAGS,
   concatenateCoverageMaps,
@@ -12,6 +13,7 @@ import {
   ratchetCoverageFloors,
   summarizeTestResults,
   validateCoverageManifest,
+  validateRepositoryCoverageManifest,
   writeAggregateReports,
 } from "../unit-coverage.mjs";
 
@@ -154,6 +156,19 @@ test("coverage manifest validation reports source files without an intentional o
   });
   assert.deepEqual(result.missing, ["packages/client/src/runtime/missing.ts"]);
   assert.deepEqual(result.unmatchedPatterns, []);
+});
+
+test("Agent Runtime coverage include owns Pi runtime-policy like the other providers", () => {
+  for (const provider of ["claude-code", "codex", "pi"]) {
+    assert.equal(
+      AGENT_RUNTIME_COVERAGE_INCLUDE.includes(`src/providers/${provider}/runtime-policy.ts`),
+      true,
+      `missing src/providers/${provider}/runtime-policy.ts`,
+    );
+  }
+  const result = validateRepositoryCoverageManifest(repoRoot);
+  assert.deepEqual(result.agentRuntime.missing, []);
+  assert.deepEqual(result.agentRuntime.unmatchedPatterns, []);
 });
 
 test("coverage floor ratchets reject decreases and permit them only with an explicit override", () => {

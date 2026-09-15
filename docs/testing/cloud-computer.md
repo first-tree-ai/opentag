@@ -39,6 +39,20 @@ a later commit or build.
 7. Stop owned processes, delete the owned private workspace, and remove the disposable
    PostgreSQL container. Cleanup failures make the command fail.
 
+## Failure and recovery checks
+
+The Pi runtime regression suite also exercises incomplete model terminals, process teardown
+failure, crossed Session bindings, empty resumed history, malformed RPC events, and cancellation
+races. A successful run requires `agent_settled`, final assistant `stopReason=stop`, and successful
+process cleanup. Length-limited output and a terminal tool call are failed runs with partial output.
+
+A new Session can start empty. Once its binding is materialized, an empty history fails before
+another prompt is submitted; OpenTag must not silently treat it as a fresh conversation. This also
+applies if the first process dies after binding materialization but before saving any history.
+Restore the history or explicitly replace the Session. The binding checks Session identity and
+file path, not a content checksum: partial history corruption with remaining messages is not
+detected by these checks, and this increment does not implement automatic history repair.
+
 ## Requirements
 
 - Node and pnpm versions supported by this repository, plus a successful `pnpm build`.

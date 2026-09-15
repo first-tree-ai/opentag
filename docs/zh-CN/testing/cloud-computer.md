@@ -33,6 +33,17 @@ node scripts/e2e/cloud-computer.mjs local-pi
    记录 `outcome=cancelled`、`errorReason=client_shutdown`。
 7. 停止自有进程，删除私有工作目录，清理一次性 PostgreSQL 容器。清理失败会使命令失败。
 
+## 失败与恢复检查
+
+Pi runtime 回归测试还覆盖模型未完整结束、进程清理失败、Session 绑定串线、恢复的历史为空、
+RPC 事件异常和取消竞态。成功需要同时满足 `agent_settled`、最后一条 assistant 的
+`stopReason=stop` 和进程清理成功。长度限制导致的截断、以工具调用结束的运行均标为失败，保留部分输出。
+
+新 Session 可以从空历史开始。绑定一旦完成物化，空历史会在提交下一条 prompt 前失败，
+OpenTag 不会静默将其作为新对话。这也包括首个进程在绑定物化后、保存历史前退出的情况。
+需要恢复历史或显式更换 Session。绑定校验的是 Session 身份和文件路径，不是内容校验和：
+仍有消息留存的部分历史损坏无法由这些检查发现，本阶段也不实现历史自动修复。
+
 ## 前置条件
 
 - 符合本仓库要求的 Node、pnpm，以及成功的 `pnpm build`。

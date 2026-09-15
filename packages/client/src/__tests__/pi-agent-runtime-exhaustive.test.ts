@@ -651,6 +651,182 @@ describe("PiAgentRuntime exhaustive behavior", () => {
       error: { code: "provider_protocol_error", message: "Pi opened another session file" },
     });
     await vi.waitFor(() => expect(resumed.state.phase).toBe("closed"));
+
+    const emptyResumeEvents: AgentRuntimeEvent[] = [];
+    const emptyResumeClient = new ManualPiClient();
+    const emptyResume = await factory(emptyResumeClient).resume({
+      ...request((event) => {
+        emptyResumeEvents.push(event);
+      }),
+      binding: materializedBinding(),
+    });
+    await expect(emptyResume.prompt({ runId: "empty-resume", input: input("x") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi session has no conversation history" },
+    });
+    expect(emptyResumeClient.commands.some((command) => command.type === "prompt")).toBe(false);
+    expect(emptyResumeEvents.some((event) => event.type === "run_completed")).toBe(false);
+    await vi.waitFor(() => expect(emptyResume.state.phase).toBe("closed"));
+  });
+
+  it("fails length, toolUse, and error terminals without emitting completed", async () => {
+    const cases = [
+      {
+        stopReason: "stop",
+        status: "completed",
+        event: "run_completed",
+        error: undefined,
+      },
+      {
+        stopReason: "aborted",
+        status: "aborted",
+        event: "run_aborted",
+        error: { code: "run_aborted", message: "Pi run was aborted" },
+      },
+      {
+        stopReason: "error",
+        status: "failed",
+        event: "run_failed",
+        error: { code: "provider_error", message: "Pi model request failed" },
+      },
+      {
+        stopReason: "length",
+        status: "failed",
+        event: "run_failed",
+        error: { code: "provider_error", message: "Pi stopped because the model reached its output limit" },
+      },
+      {
+        stopReason: "toolUse",
+        status: "failed",
+        event: "run_failed",
+        error: { code: "provider_error", message: "Pi stopped with unfinished tool use" },
+      },
+    ] as const;
+
+    for (const item of cases) {
+      const events: AgentRuntimeEvent[] = [];
+      const client = new ManualPiClient();
+      const runtime = await factory(client).create(
+        request((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: `stop-${item.stopReason}`, input: input("partial") });
+      await client.called("prompt");
+      client.complete({
+        stopReason: item.stopReason,
+        content: [{ type: "text", text: "partial" }],
+        usage: { output: 1 },
+      });
+      await expect(run).resolves.toMatchObject({
+        status: item.status,
+        output: [{ type: "text", text: "partial" }],
+        ...(item.error ? { error: item.error } : {}),
+        providerDiagnostics: { stopReason: item.stopReason },
+      });
+      expect(events.some((event) => event.type === "run_completed")).toBe(item.event === "run_completed");
+      expect(events.some((event) => event.type === item.event)).toBe(true);
+      await runtime.close();
+    }
+  });
+
+  it("fails the run when process-tree cleanup rejects", async () => {
+    const successfulEvents: AgentRuntimeEvent[] = [];
+    const successfulClient = new ManualPiClient({ closeError: new Error("process tree still running") });
+    const successfulRuntime = await factory(successfulClient).create(
+      request((event) => {
+        successfulEvents.push(event);
+      }),
+    );
+    const successfulRun = successfulRuntime.prompt({ runId: "cleanup-after-stop", input: input("done") });
+    await successfulClient.called("prompt");
+    successfulClient.complete({ content: [{ type: "text", text: "ok" }] });
+    await expect(successfulRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "process tree still running" },
+    });
+    expect(successfulEvents.some((event) => event.type === "run_completed")).toBe(false);
+    expect(successfulEvents.some((event) => event.type === "run_failed")).toBe(true);
+    await expect(
+      successfulRuntime.prompt({ runId: "cleanup-after-stop-next", input: input("again") }),
+    ).rejects.toMatchObject({ code: "closed" });
+    await vi.waitFor(() => expect(successfulRuntime.state.phase).toBe("closed"));
+
+    const protocolEvents: AgentRuntimeEvent[] = [];
+    const protocolClient = new ManualPiClient({ closeError: new Error("process tree still running") });
+    const protocolRuntime = await factory(protocolClient).create(
+      request((event) => {
+        protocolEvents.push(event);
+      }),
+    );
+    const protocolRun = protocolRuntime.prompt({ runId: "cleanup-after-protocol", input: input("bad") });
+    await protocolClient.called("prompt");
+    protocolClient.emit({ type: "agent_settled" });
+    await expect(protocolRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi settled without an assistant result" },
+    });
+    expect(protocolEvents.some((event) => event.type === "run_completed")).toBe(false);
+    await expect(
+      protocolRuntime.prompt({ runId: "cleanup-after-protocol-next", input: input("again") }),
+    ).rejects.toMatchObject({ code: "closed" });
+    await vi.waitFor(() => expect(protocolRuntime.state.phase).toBe("closed"));
+  });
+
+  it("preserves a model failure and partial output when cleanup also fails", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const client = new ManualPiClient({ closeError: new Error("cleanup unavailable") });
+    const runtime = await factory(client).create(
+      request((event) => {
+        events.push(event);
+      }),
+    );
+    const run = runtime.prompt({ runId: "model-and-cleanup-failure", input: input("work") });
+    await client.called("prompt");
+    client.complete({ stopReason: "length", content: [{ type: "text", text: "partial answer" }] });
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      output: [{ type: "text", text: "partial answer" }],
+      error: { code: "provider_error", message: "Pi stopped because the model reached its output limit" },
+      providerDiagnostics: { stopReason: "length" },
+    });
+    expect(events.some((event) => event.type === "run_completed")).toBe(false);
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+  });
+
+  it("normalizes non-Error cleanup rejection and rejects further work", async () => {
+    const client = new ManualPiClient({ closeError: "untyped cleanup rejection" });
+    const runtime = await factory(client).create(request(() => undefined));
+    const run = runtime.prompt({ runId: "untyped-cleanup-failure", input: input("work") });
+    await client.called("prompt");
+    client.complete();
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "Pi provider close failed" },
+    });
+    await expect(runtime.prompt({ runId: "next-after-cleanup-failure", input: input("again") })).rejects.toMatchObject({
+      code: "closed",
+    });
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+  });
+
+  it("settles a synchronous process spawn failure without a client to clean up", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await new PiAgentRuntimeFactory({
+      createClient: () => {
+        throw new PiRpcError("spawn", "fixture process could not start");
+      },
+    }).create(
+      request((event) => {
+        events.push(event);
+      }),
+    );
+    await expect(runtime.prompt({ runId: "spawn-failure", input: input("work") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "fixture process could not start" },
+    });
+    expect(events.some((event) => event.type === "run_completed")).toBe(false);
+    await runtime.close();
   });
 
   it("runs the local probe against controlled CLI artifacts", async () => {
@@ -989,16 +1165,24 @@ class ManualPiClient implements PiRpcClient {
   readonly #requestFailure?: unknown;
   readonly #sessionId: string;
   readonly #sessionFile: string;
-  readonly #messageCount: number;
+  readonly #closeError?: unknown;
+  messageCount: number;
   model: unknown = { id: "fixture", provider: "fixture" };
 
   constructor(
-    options: { messageCount?: number; requestFailure?: unknown; sessionFile?: string; sessionId?: string } = {},
+    options: {
+      closeError?: unknown;
+      messageCount?: number;
+      requestFailure?: unknown;
+      sessionFile?: string;
+      sessionId?: string;
+    } = {},
   ) {
     this.#requestFailure = options.requestFailure;
     this.#sessionId = options.sessionId ?? SESSION_ID;
     this.#sessionFile = options.sessionFile ?? SESSION_FILE;
-    this.#messageCount = options.messageCount ?? 0;
+    this.#closeError = options.closeError;
+    this.messageCount = options.messageCount ?? 0;
   }
 
   async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
@@ -1008,7 +1192,7 @@ class ManualPiClient implements PiRpcClient {
       return {
         sessionId: this.#sessionId,
         sessionFile: this.#sessionFile,
-        messageCount: this.#messageCount,
+        messageCount: this.messageCount,
         model: this.model,
       };
     }
@@ -1020,7 +1204,9 @@ class ManualPiClient implements PiRpcClient {
     return () => this.#listeners.delete(listener);
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    if (this.#closeError !== undefined) throw this.#closeError;
+  }
 
   emit(message: Readonly<Record<string, unknown>>): void {
     for (const listener of this.#listeners) listener(message);

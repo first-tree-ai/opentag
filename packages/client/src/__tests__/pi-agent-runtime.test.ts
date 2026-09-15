@@ -88,29 +88,73 @@ describe("PiAgentRuntime", () => {
 
   it("resumes the exact binding in a new process and preserves non-prompt overrides", async () => {
     const client = new ScriptedPiClient("complete");
+    client.messageCount = 2;
     const runtime = await piFactory(client).resume({
       ...createRequest(() => undefined, { provider: { sessionName: "base" } }),
       binding: materializedBinding(),
     });
-    await runtime.prompt({
-      runId: "run-resume",
-      input: {
-        items: [
-          { type: "text", text: "one" },
-          { type: "text", text: "two" },
-        ],
-      },
-      configuration: {
-        reasoningEffort: "max",
-        provider: { sessionName: "resumed" },
-      },
-    });
+    await expect(
+      runtime.prompt({
+        runId: "run-resume",
+        input: {
+          items: [
+            { type: "text", text: "one" },
+            { type: "text", text: "two" },
+          ],
+        },
+        configuration: {
+          reasoningEffort: "max",
+          provider: { sessionName: "resumed" },
+        },
+      }),
+    ).resolves.toMatchObject({ status: "completed" });
     expect(client.args).toEqual(expect.arrayContaining(["--session-id", SESSION_ID, "--thinking", "max"]));
     expect(client.args).toEqual(
       expect.arrayContaining(["--append-system-prompt", "OpenTag managed system prompt", "--name", "resumed"]),
     );
     expect(client.commands.at(-1)).toEqual({ type: "prompt", message: "one\ntwo" });
     await runtime.close();
+  });
+
+  it("fails closed when a materialized session loses history before a later prompt", async () => {
+    const sameRuntime = new ScriptedPiClient("complete");
+    const sameRuntimeEvents: AgentRuntimeEvent[] = [];
+    const runtime = await piFactory(sameRuntime).create(
+      createRequest((event) => {
+        sameRuntimeEvents.push(event);
+      }),
+    );
+    await expect(runtime.prompt({ runId: "run-kept", input: input("hello") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(sameRuntime.messageCount).toBe(2);
+    sameRuntime.messageCount = 0;
+    await expect(runtime.prompt({ runId: "run-lost", input: input("again") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi session has no conversation history" },
+    });
+    expect(sameRuntime.commands.filter((command) => command.type === "prompt")).toHaveLength(1);
+    expect(sameRuntimeEvents.filter((event) => event.type === "run_completed")).toEqual([
+      expect.objectContaining({ type: "run_completed", runId: "run-kept" }),
+    ]);
+    expect(sameRuntimeEvents.some((event) => event.type === "run_completed" && event.runId === "run-lost")).toBe(false);
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+
+    const resumeClient = new ScriptedPiClient("complete");
+    const resumeEvents: AgentRuntimeEvent[] = [];
+    const resumed = await piFactory(resumeClient).resume({
+      ...createRequest((event) => {
+        resumeEvents.push(event);
+      }),
+      binding: materializedBinding(),
+    });
+    await expect(resumed.prompt({ runId: "run-empty-resume", input: input("hello") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Pi session has no conversation history" },
+    });
+    expect(resumeClient.commands).toEqual([{ type: "get_state" }]);
+    expect(resumeEvents.some((event) => event.type === "run_completed")).toBe(false);
+    await vi.waitFor(() => expect(resumed.state.phase).toBe("closed"));
   });
 
   it("supports same-Run steer only after Pi accepts the prompt", async () => {
@@ -276,6 +320,7 @@ class ScriptedPiClient implements PiRpcClient {
   readonly #scenario: Scenario;
   readonly #sessionId: string;
   closed = false;
+  messageCount = 0;
 
   constructor(scenario: Scenario, sessionId = SESSION_ID) {
     this.#scenario = scenario;
@@ -288,7 +333,7 @@ class ScriptedPiClient implements PiRpcClient {
       return {
         sessionId: this.#sessionId,
         sessionFile: SESSION_FILE,
-        messageCount: 0,
+        messageCount: this.messageCount,
         model: { id: "fixture-model", provider: "fixture" },
       };
     }
@@ -355,6 +400,7 @@ class ScriptedPiClient implements PiRpcClient {
     this.#emit({ type: "turn_end", message: assistant, toolResults: [] });
     this.#emit({ type: "agent_end", messages: [assistant], willRetry: false });
     this.#emit({ type: "agent_settled" });
+    this.messageCount = Math.max(this.messageCount, 2);
   }
 
   #emit(message: Readonly<Record<string, unknown>>): void {

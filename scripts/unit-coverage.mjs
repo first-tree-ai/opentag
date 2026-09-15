@@ -75,6 +75,7 @@ export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
   "src/providers/codex/runtime-policy.ts",
   "src/providers/pi/agent-runtime.ts",
   "src/providers/pi/rpc-wire.ts",
+  "src/providers/pi/runtime-policy.ts",
   "src/providers/process-owner.ts",
   "src/runtime/agent-runtime-availability-tester.ts",
   "src/runtime/agent-runtime-provider-registry.ts",

@@ -10,7 +10,7 @@ export function registerRuntimeInspectCommand(computer: Command): void {
   computer
     .command("runtime-inspect")
     .description("Check one preinstalled Runtime CLI, its required capabilities and credentials")
-    .requiredOption("--provider <provider>", "codex or claude-code (no default)")
+    .requiredOption("--provider <provider>", "codex, claude-code, or pi (no default)")
     .option("--json", "print JSON")
     .action(async (options: { provider: string; json?: boolean }) => {
       try {

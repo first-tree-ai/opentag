@@ -183,6 +183,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   ): Promise<AgentProviderRunResult> {
     this.#resetRun(context);
     let client: PiRpcClient | undefined;
+    let cleanupFailure: Error | undefined;
+    let result: AgentProviderRunResult;
     try {
       client = this.#createClient(this.#arguments(request));
       this.#client = client;
@@ -191,23 +193,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         await client.request({ type: "get_state" }, context.signal),
         "Pi get_state returned invalid data",
       );
-      const sessionId = requireUuid(state.sessionId, "Pi get_state sessionId");
-      if (sessionId !== this.#sessionId) throw protocolError("Pi opened another session");
-      const sessionFile = requireAbsolutePath(state.sessionFile, "Pi get_state sessionFile is not absolute");
-      const messageCount = requireNonNegativeSafeInteger(state.messageCount, "Pi get_state messageCount is invalid");
-      const sessionFileHash = fingerprint(sessionFile);
-      if (!this.#sessionExists && messageCount !== 0) {
-        throw protocolError("Pi create opened an existing conversation");
-      }
-      if (this.#sessionFileHash && this.#sessionFileHash !== sessionFileHash) {
-        throw protocolError("Pi opened another session file");
-      }
-      if (!this.#sessionFileHash) {
-        this.#sessionFileHash = sessionFileHash;
-        await context.updateBinding(piBinding(this.#sessionId, sessionFileHash));
-      }
-      this.#sessionExists = true;
-      this.#model = parseModel(state.model);
+      await this.#restoreSessionState(state, context);
       await client.request({ type: "prompt", message: piInput(request) }, context.signal);
       this.#promptAccepted?.resolve();
       const terminal = await this.#terminal?.promise;
@@ -215,7 +201,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (!terminal) throw protocolError("Pi run has no terminal state");
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
-      return this.#runResult(terminal);
+      result = this.#runResult(terminal);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Pi run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Pi provider run failed");
@@ -230,22 +216,60 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         causalFailure.message,
         { cause: causalFailure },
       );
-      /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
-      this.#unsubscribe?.();
-      this.#unsubscribe = undefined;
-      /* v8 ignore next -- client teardown in finally is best-effort. */
-      await client?.close().catch((error: unknown) => {
-        logger.debug({ code: "provider_close_failed", error: String(error) }, "Pi provider close failed");
-      });
-      this.#client = undefined;
-      this.#context = undefined;
-      this.#terminal = undefined;
-      this.#promptAccepted = undefined;
-      this.#currentTurnId = undefined;
-      this.#currentAssistant = undefined;
-      this.#tools.clear();
+      cleanupFailure = await this.#cleanupRun(client);
     }
+    if (cleanupFailure && result.status !== "failed") {
+      throw new AgentProviderError("provider_error", cleanupFailure.message, { cause: cleanupFailure });
+    }
+    return result;
+  }
+
+  async #restoreSessionState(
+    state: Readonly<Record<string, unknown>>,
+    context: AgentProviderRunContext,
+  ): Promise<void> {
+    const sessionId = requireUuid(state.sessionId, "Pi get_state sessionId");
+    if (sessionId !== this.#sessionId) throw protocolError("Pi opened another session");
+    const sessionFile = requireAbsolutePath(state.sessionFile, "Pi get_state sessionFile is not absolute");
+    const messageCount = requireNonNegativeSafeInteger(state.messageCount, "Pi get_state messageCount is invalid");
+    const sessionFileHash = fingerprint(sessionFile);
+    if (!this.#sessionExists && messageCount !== 0) {
+      throw protocolError("Pi create opened an existing conversation");
+    }
+    if (this.#sessionFileHash && this.#sessionFileHash !== sessionFileHash) {
+      throw protocolError("Pi opened another session file");
+    }
+    if (this.#sessionExists && messageCount === 0) {
+      throw protocolError("Pi session has no conversation history");
+    }
+    if (!this.#sessionFileHash) {
+      this.#sessionFileHash = sessionFileHash;
+      await context.updateBinding(piBinding(this.#sessionId, sessionFileHash));
+    }
+    this.#sessionExists = true;
+    this.#model = parseModel(state.model);
+  }
+
+  async #cleanupRun(client: PiRpcClient | undefined): Promise<Error | undefined> {
+    this.#unsubscribe?.();
+    this.#unsubscribe = undefined;
+    let failure: Error | undefined;
+    try {
+      await client?.close();
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error("Pi provider close failed");
+      logger.debug({ code: "provider_close_failed", error: failure.message }, "Pi provider close failed");
+    }
+    this.#client = undefined;
+    this.#context = undefined;
+    this.#terminal = undefined;
+    this.#promptAccepted = undefined;
+    this.#currentTurnId = undefined;
+    this.#currentAssistant = undefined;
+    this.#tools.clear();
+    if (failure) this.closeForProviderFailure();
+    return failure;
   }
 
   protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
@@ -557,7 +581,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     const stopReason = this.#lastStopReason;
     if (!stopReason) throw protocolError("Pi settled without an assistant result");
-    const status = stopReason === "aborted" ? "aborted" : stopReason === "error" ? "failed" : "completed";
+    const status = stopReason === "stop" ? "completed" : stopReason === "aborted" ? "aborted" : "failed";
     this.#terminal?.resolve({
       status,
       stopReason,
@@ -589,7 +613,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       status: "failed",
       output,
       ...(usage ? { usage } : {}),
-      error: { code: "provider_error", message: terminal.error ?? "Pi model request failed" },
+      error: { code: "provider_error", message: terminal.error ?? piFailedStopMessage(terminal.stopReason) },
       diagnostics,
     };
   }
@@ -1157,6 +1181,12 @@ function toJsonValue(value: unknown): JsonValue {
 
 function protocolError(message: string): AgentProviderError {
   return new AgentProviderError("provider_protocol_error", message);
+}
+
+function piFailedStopMessage(stopReason: string): string {
+  if (stopReason === "length") return "Pi stopped because the model reached its output limit";
+  if (stopReason === "toolUse") return "Pi stopped with unfinished tool use";
+  return "Pi model request failed";
 }
 
 function isNonNegativeNumber(value: unknown): value is number {

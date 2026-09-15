@@ -687,6 +687,72 @@ describe("resolved provider factories candidate fallback", () => {
     expect(() => factory.resume({} as never)).toThrow("Pi provider readiness has not been established");
   });
 
+  it.skipIf(process.platform === "win32")(
+    "forwards explicit packaged skill paths onto the Pi RPC spawn prefix",
+    async () => {
+      const root = await temporaryRoot();
+      const logPath = join(root, "pi-args.jsonl");
+      const command = await writeRecordingPiCommand(root, logPath);
+      const skillPath = join(root, "packaged-skills");
+      const factory = resolvedPiFactory({
+        command,
+        environment: {},
+        piHome: root,
+        sessionDirectory: root,
+        skillPaths: [skillPath],
+        sourceEnvironment: { PATH: root },
+        discovery: {
+          candidateAllowed: () => true,
+          home: root,
+          includeLoginShell: false,
+          platform: "linux",
+          wellKnownDirs: () => [],
+        },
+      });
+      await expect(factory.probe({})).resolves.toMatchObject({ ready: true, version: "0.84.2" });
+      const runtime = await factory.create(piCreateRequest(root));
+      // The recording executable exits after capturing argv; it never runs a model.
+      await expect(
+        runtime.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      await runtime.close();
+      expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillPath]);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "omits --skill from Pi RPC spawn when packaged skill paths are absent",
+    async () => {
+      const root = await temporaryRoot();
+      const logPath = join(root, "pi-args.jsonl");
+      const command = await writeRecordingPiCommand(root, logPath);
+      const factory = resolvedPiFactory({
+        command,
+        environment: {},
+        piHome: root,
+        sessionDirectory: root,
+        sourceEnvironment: { PATH: root },
+        discovery: {
+          candidateAllowed: () => true,
+          home: root,
+          includeLoginShell: false,
+          platform: "linux",
+          wellKnownDirs: () => [],
+        },
+      });
+      await expect(factory.probe({})).resolves.toMatchObject({ ready: true, version: "0.84.2" });
+      const runtime = await factory.create(piCreateRequest(root));
+      // The recording executable exits after capturing argv; it never runs a model.
+      await expect(
+        runtime.prompt({ runId: "no-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      await runtime.close();
+      const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
+      expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));
+      expect(rpcArgs?.includes("--skill")).toBe(false);
+    },
+  );
+
   it("does not prepend a search bin for an explicit command", async () => {
     const root = await temporaryRoot();
     const empty = join(root, "empty");
@@ -866,3 +932,69 @@ describe("resolved provider factories candidate fallback", () => {
     },
   );
 });
+
+const PI_HELP_TOKENS =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
+const PI_LIST_MODELS_TABLE = [
+  "provider  model            context  max-out  thinking  images",
+  "fixture   configured-model  128K     8K       no        no",
+].join("\n");
+
+async function writeRecordingPiCommand(root: string, logPath: string): Promise<string> {
+  const command = join(root, "pi");
+  await writeFile(
+    command,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + ${JSON.stringify("\n")});
+if (args[0] === "--version") {
+  console.log("0.84.2");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  console.log(${JSON.stringify(PI_HELP_TOKENS)});
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  console.log(${JSON.stringify(PI_LIST_MODELS_TABLE)});
+  process.exit(0);
+}
+process.exit(0);
+`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  return command;
+}
+
+async function readJsonlArgs(logPath: string): Promise<string[][]> {
+  try {
+    return (await readFile(logPath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function rpcLaunchArgs(launches: readonly (readonly string[])[]): string[] | undefined {
+  const match = launches.find((args) => args.includes("--mode") && args.includes("rpc"));
+  return match ? [...match] : undefined;
+}
+
+function piCreateRequest(cwd: string): CreateAgentRuntimeRequest {
+  return {
+    eventSink: async () => undefined,
+    systemPrompt: "OpenTag managed system prompt",
+    workspace: { cwd },
+    policy: {
+      approvals: "never",
+      fileSystem: "unrestricted",
+      network: "enabled",
+      tools: { mode: "provider-default" },
+    },
+  };
+}

@@ -79,6 +79,56 @@ describe("createClientRuntime production composition", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "forwards packaged Context Tree skills onto the default Pi RPC spawn",
+    async () => {
+      const home = await temporaryDirectory("opentag-pi-packaged-skills-");
+      const skillsPath = resolve(home, "context-tree-package", "skills");
+      const { connection, logPath, runtime } = await composePiRuntimeWithPackagedSkills({
+        home,
+        skillsPath,
+      });
+      try {
+        await expect(
+          runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+        ).resolves.toMatchObject({ status: "ready" });
+        const agent = await runtime.runtimeManager.ensureRuntime("session-1");
+        // The recording executable exits after capturing argv; it never runs a model.
+        await expect(
+          agent.prompt({ runId: "packaged-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        expect(rpcLaunchArgs(await readJsonlArgs(logPath))?.slice(0, 2)).toEqual(["--skill", skillsPath]);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not pass --skill when the packaged Context Tree is absent",
+    async () => {
+      const home = await temporaryDirectory("opentag-pi-absent-package-skills-");
+      const { connection, logPath, runtime } = await composePiRuntimeWithPackagedSkills({ home });
+      try {
+        await expect(
+          runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+        ).resolves.toMatchObject({ status: "ready" });
+        const agent = await runtime.runtimeManager.ensureRuntime("session-1");
+        // The recording executable exits after capturing argv; it never runs a model.
+        await expect(
+          agent.prompt({ runId: "absent-skills", input: { items: [{ type: "text", text: "hello" }] } }),
+        ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+        const rpcArgs = rpcLaunchArgs(await readJsonlArgs(logPath));
+        expect(rpcArgs).toEqual(expect.arrayContaining(["--mode", "rpc"]));
+        expect(rpcArgs?.includes("--skill")).toBe(false);
+      } finally {
+        runtime.stop();
+        await runtime.run();
+      }
+    },
+  );
+
   it("recovers a Pi binding when Client restarts before the first prompt", async () => {
     const home = await temporaryDirectory("opentag-pi-unmaterialized-");
     const connection = runtimeConnection();
@@ -2247,6 +2297,92 @@ async function composeClaudeCodeRuntime(options: {
     pathCapture: await readFile(pathCapturePath, "utf8"),
     runtime,
   };
+}
+
+const PI_HELP_TOKENS =
+  "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name";
+const PI_LIST_MODELS_TABLE = [
+  "provider  model            context  max-out  thinking  images",
+  "fixture   configured-model  128K     8K       no        no",
+].join("\n");
+
+async function writeRecordingPiCommand(home: string, logPath: string): Promise<string> {
+  const command = resolve(home, "pi-fixture");
+  await writeFile(
+    command,
+    `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + ${JSON.stringify("\n")});
+if (args[0] === "--version") {
+  console.log("0.84.2");
+  process.exit(0);
+}
+if (args.includes("--help")) {
+  console.log(${JSON.stringify(PI_HELP_TOKENS)});
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  console.log(${JSON.stringify(PI_LIST_MODELS_TABLE)});
+  process.exit(0);
+}
+process.exit(0);
+`,
+    "utf8",
+  );
+  await chmod(command, 0o755);
+  return command;
+}
+
+async function readJsonlArgs(logPath: string): Promise<string[][]> {
+  try {
+    return (await readFile(logPath, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as string[]);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function rpcLaunchArgs(launches: readonly (readonly string[])[]): string[] | undefined {
+  const match = launches.find((args) => args.includes("--mode") && args.includes("rpc"));
+  return match ? [...match] : undefined;
+}
+
+async function composePiRuntimeWithPackagedSkills(options: {
+  readonly home: string;
+  readonly skillsPath?: string;
+}): Promise<{
+  readonly connection: ReturnType<typeof runtimeConnection>;
+  readonly logPath: string;
+  readonly runtime: ComposedClientRuntime;
+}> {
+  const logPath = resolve(options.home, "pi-args.jsonl");
+  const command = await writeRecordingPiCommand(options.home, logPath);
+  const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(
+    options.skillsPath === undefined
+      ? undefined
+      : {
+          cliPath: resolve(options.home, "context-tree-package", "dist", "cli", "index.mjs"),
+          root: resolve(options.home, "context-tree-package"),
+          skillsPath: options.skillsPath,
+        },
+  );
+  cleanup.push(async () => {
+    packageResolver.mockRestore();
+  });
+  const connection = runtimeConnection();
+  const runtime = await createClientRuntime(connection, {
+    clientVersion: "0.0.1",
+    claudeCodeCommand: resolve(options.home, "missing-claude"),
+    codexCommand: resolve(options.home, "missing-codex"),
+    environment: { HOME: options.home, PATH: process.env.PATH },
+    home: options.home,
+    piCommand: command,
+  });
+  return { connection, logPath, runtime };
 }
 
 function readyFactory(

@@ -31,12 +31,12 @@ them by the conversation they came from.
 
 ## Executions and status
 
-The Task detail lists the deliveries of the topic's messages as its executions. Private chats read
-oldest to newest, with each inbound message before its Agent response and the newest exchange at
-the bottom. **Load earlier activity** sits above the conversation and prepends earlier executions
-while keeping the visible exchange in place. Group and channel topics retain newest-first execution
-history. The API still retrieves the newest page first for every conversation type; the Web reverses
-the full loaded collection for private chats. Task-list sorting is unchanged.
+The Task detail lists the deliveries of the topic's messages as its executions. All Task timelines
+read oldest to newest, including private chats, group chats, and channel topics. Each inbound message
+appears before its Agent response, with the newest exchange at the bottom. **Load earlier activity**
+sits above the conversation and prepends earlier executions while keeping the visible message in
+place. The API still retrieves the newest page first; the Web reverses the full loaded collection
+for display. Task-list sorting is unchanged.
 
 Two kinds of delivery are left out: the channel Session's `ambient` observer copy of a message that a
 thread Session owns, and a delivery expired because a newer revision of its message superseded it.

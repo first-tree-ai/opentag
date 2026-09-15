@@ -7,7 +7,7 @@ type Props = {
 
 type ScrollAnchor = { element: HTMLElement; top: number; viewport: Element };
 
-/** Keeps the visible message in place when earlier private-chat activity is prepended. */
+/** Keeps the visible message in place when earlier Task activity is prepended. */
 export class TaskActivityTimeline extends Component<Props, object, ScrollAnchor | null> {
   private readonly timeline = createRef<HTMLDivElement>();
 

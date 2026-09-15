@@ -127,10 +127,17 @@ function displayedExchanges() {
 }
 
 describe("Tasks view", () => {
-  it.each(["feishu", "slack"] as const)("reads %s private-chat exchanges oldest to newest", async (provider) => {
+  it.each([
+    ["feishu", "dm"],
+    ["feishu", "channel"],
+    ["feishu", "group_dm"],
+    ["slack", "dm"],
+    ["slack", "channel"],
+    ["slack", "group_dm"],
+  ] as const)("reads %s %s exchanges oldest to newest", async (provider, conversationKind) => {
     const page = {
       ...detail,
-      task: { ...task, source: { ...task.source, provider } },
+      task: { ...task, source: { ...task.source, provider, conversationKind } },
       turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)],
     };
     vi.spyOn(browserApi, "task").mockResolvedValue(page);
@@ -153,73 +160,66 @@ describe("Tasks view", () => {
     }
   });
 
-  it("prepends complete older pages and keeps a failed page retryable above the private conversation", async () => {
-    const request = vi
-      .spyOn(browserApi, "task")
-      .mockResolvedValueOnce({ ...detail, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" })
-      .mockRejectedValueOnce(new Error("Temporary history failure"))
-      .mockResolvedValueOnce({ ...detail, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" })
-      .mockResolvedValueOnce({ ...detail, turns: [timelineTurn(0)], nextCursor: null });
-    await renderInRouter(<TaskDetailPage taskId={sessionId} />);
-    const earlier = await screen.findByRole("button", { name: "Load earlier activity" });
-    expect(
-      earlier.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+  it.each(["dm", "channel", "group_dm"] as const)(
+    "prepends complete older pages and keeps a failed page retryable above the %s conversation",
+    async (conversationKind) => {
+      const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
+      const request = vi
+        .spyOn(browserApi, "task")
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(4), timelineTurn(3)], nextCursor: "older" })
+        .mockRejectedValueOnce(new Error("Temporary history failure"))
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)], nextCursor: "oldest" })
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(0)], nextCursor: null });
+      await renderInRouter(<TaskDetailPage taskId={sessionId} />);
+      const earlier = await screen.findByRole("button", { name: "Load earlier activity" });
+      expect(
+        earlier.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
 
-    fireEvent.click(earlier);
-    const error = await screen.findByRole("alert");
-    expect(error.textContent).toBe("Temporary history failure");
-    expect(
-      error.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(displayedExchanges()).toEqual([
-      ["Request 3", "Response 3"],
-      ["Request 4", "Response 4"],
-    ]);
+      fireEvent.click(earlier);
+      const error = await screen.findByRole("alert");
+      expect(error.textContent).toBe("Temporary history failure");
+      expect(
+        error.compareDocumentPosition(screen.getByText("Request 3")) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(displayedExchanges()).toEqual([
+        ["Request 3", "Response 3"],
+        ["Request 4", "Response 4"],
+      ]);
 
-    fireEvent.click(earlier);
-    await screen.findByText("Request 1");
-    expect(request).toHaveBeenLastCalledWith(sessionId, "older");
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(displayedExchanges()).toEqual([1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
+      fireEvent.click(earlier);
+      await screen.findByText("Request 1");
+      expect(request).toHaveBeenLastCalledWith(sessionId, "older");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(displayedExchanges()).toEqual([1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
 
-    fireEvent.click(screen.getByRole("button", { name: "Load earlier activity" }));
-    await screen.findByText("Request 0");
-    expect(request).toHaveBeenLastCalledWith(sessionId, "oldest");
-    expect(displayedExchanges()).toEqual([0, 1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
-    expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
-  });
+      fireEvent.click(screen.getByRole("button", { name: "Load earlier activity" }));
+      await screen.findByText("Request 0");
+      expect(request).toHaveBeenLastCalledWith(sessionId, "oldest");
+      expect(displayedExchanges()).toEqual([0, 1, 2, 3, 4].map((index) => [`Request ${index}`, `Response ${index}`]));
+      expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
+    },
+  );
 
-  it("places newly refreshed private-chat exchanges at the bottom", async () => {
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce({ ...detail, turns: [timelineTurn(2), timelineTurn(1)] })
-      .mockResolvedValueOnce({ ...detail, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] });
-    await renderInRouter(
-      <>
-        <TaskDetailPage taskId={sessionId} />
-        <RefreshTaskButton />
-      </>,
-    );
-    await screen.findByText("Request 2");
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Task" }));
-    await screen.findByText("Request 3");
-    expect(displayedExchanges()).toEqual([1, 2, 3].map((index) => [`Request ${index}`, `Response ${index}`]));
-  });
-
-  it("retains newest-first history and pagination below group exchanges", async () => {
-    const group = { ...task, source: { ...task.source, conversationKind: "channel" as const } };
-    vi.spyOn(browserApi, "task")
-      .mockResolvedValueOnce({ ...detail, task: group, turns: [timelineTurn(3), timelineTurn(2)], nextCursor: "older" })
-      .mockResolvedValueOnce({ ...detail, task: group, turns: [timelineTurn(1)], nextCursor: null });
-    await renderInRouter(<TaskDetailPage taskId={sessionId} />);
-    const earlier = await screen.findByRole("button", { name: "Load earlier activity" });
-    expect(
-      earlier.compareDocumentPosition(screen.getByText("Request 2")) & Node.DOCUMENT_POSITION_PRECEDING,
-    ).toBeTruthy();
-    fireEvent.click(earlier);
-    await screen.findByText("Request 1");
-    expect(displayedExchanges()).toEqual([3, 2, 1].map((index) => [`Request ${index}`, `Response ${index}`]));
-  });
+  it.each(["dm", "channel", "group_dm"] as const)(
+    "places newly refreshed %s exchanges at the bottom",
+    async (conversationKind) => {
+      const page = { ...detail, task: { ...task, source: { ...task.source, conversationKind } } };
+      vi.spyOn(browserApi, "task")
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(2), timelineTurn(1)] })
+        .mockResolvedValueOnce({ ...page, turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)] });
+      await renderInRouter(
+        <>
+          <TaskDetailPage taskId={sessionId} />
+          <RefreshTaskButton />
+        </>,
+      );
+      await screen.findByText("Request 2");
+      fireEvent.click(screen.getByRole("button", { name: "Refresh Task" }));
+      await screen.findByText("Request 3");
+      expect(displayedExchanges()).toEqual([1, 2, 3].map((index) => [`Request ${index}`, `Response ${index}`]));
+    },
+  );
 
   it("loads stored Tasks and filters them locally", async () => {
     const second = {

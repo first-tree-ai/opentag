@@ -379,12 +379,11 @@ export function TaskDetailPage({
     ...liveResourceQueryOptions,
   });
   const first = taskQuery.data?.pages[0];
-  const privateChat = first?.task.source.conversationKind === "dm";
   const turns = useMemo(() => {
     const loaded = taskQuery.data?.pages.flatMap((page) => page.turns) ?? [];
     // Reverse the complete collection, including each page's order and the API's timestamp ties.
-    return privateChat ? loaded.reverse() : loaded;
-  }, [privateChat, taskQuery.data]);
+    return loaded.reverse();
+  }, [taskQuery.data]);
   const taskError = asError(taskQuery.error);
   const persistedError = usePersistedSettledError(detailKey, {
     error: taskQuery.error ? taskError : null,
@@ -495,14 +494,13 @@ export function TaskDetailPage({
 }
 
 function TaskActivity({ task, turns, pagination }: { task: TaskSummary; turns: TaskTurn[]; pagination: ReactNode }) {
-  const privateChat = task.source.conversationKind === "dm";
   return (
     <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
       <Text as="h2" id="task-activity-title" variant="heading">
         {m.tasks_activity()}
       </Text>
-      <TaskActivityTimeline key={task.id} oldestDeliveryId={privateChat ? turns[0]?.deliveryId : undefined}>
-        {privateChat ? pagination : null}
+      <TaskActivityTimeline key={task.id} oldestDeliveryId={turns[0]?.deliveryId}>
+        {pagination}
         {turns.length > 0 ? (
           <div className="grid divide-y divide-kumo-line">
             {turns.map((turn) => (
@@ -512,7 +510,6 @@ function TaskActivity({ task, turns, pagination }: { task: TaskSummary; turns: T
         ) : (
           <TaskNotice heading={m.tasks_no_activity()} detail={m.tasks_no_activity_detail()} />
         )}
-        {!privateChat ? pagination : null}
       </TaskActivityTimeline>
     </section>
   );

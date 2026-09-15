@@ -7,7 +7,7 @@ type Props = {
 
 type ScrollAnchor = { element: HTMLElement; top: number; viewport: Element };
 
-/** Keeps the visible exchange in place when earlier private-chat activity is prepended. */
+/** Keeps the visible message in place when earlier private-chat activity is prepended. */
 export class TaskActivityTimeline extends Component<Props, object, ScrollAnchor | null> {
   private readonly timeline = createRef<HTMLDivElement>();
 
@@ -19,9 +19,12 @@ export class TaskActivityTimeline extends Component<Props, object, ScrollAnchor 
     const viewportTop = viewport === document.scrollingElement ? 0 : viewport.getBoundingClientRect().top;
     const viewportBottom =
       viewport === document.scrollingElement ? window.innerHeight : viewport.getBoundingClientRect().bottom;
-    const exchanges = [...timeline.querySelectorAll<HTMLElement>('[data-ui="task-exchange"]')];
-    const element = exchanges.find((exchange) => {
-      const bounds = exchange.getBoundingClientRect();
+    // Anchor message content: the previous first exchange gains top padding after a prepend.
+    const messages = [
+      ...timeline.querySelectorAll<HTMLElement>('[data-ui="task-message-request"], [data-ui="task-message-agent"]'),
+    ];
+    const element = messages.find((message) => {
+      const bounds = message.getBoundingClientRect();
       return bounds.bottom > viewportTop && bounds.top < viewportBottom;
     });
     return element ? { element, top: element.getBoundingClientRect().top, viewport } : null;

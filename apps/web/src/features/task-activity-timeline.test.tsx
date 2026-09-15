@@ -11,7 +11,7 @@ function history(ids: string[], { more = true, taskId = "task-a" } = {}) {
         {more ? <button type="button">Load earlier activity</button> : null}
         {ids.map((id) => (
           <section key={id} data-ui="task-exchange">
-            {id}
+            <article data-ui="task-message-request">{id}</article>
           </section>
         ))}
       </TaskActivityTimeline>
@@ -23,9 +23,13 @@ function measureHistory() {
   const viewport = screen.getByRole("main");
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this === viewport) return { top: 0, bottom: 400 } as DOMRect;
-    const index = [...viewport.querySelectorAll('[data-ui="task-exchange"]')].indexOf(this);
+    const exchange = this.closest('[data-ui="task-exchange"]') ?? this;
+    const index = [...viewport.querySelectorAll('[data-ui="task-exchange"]')].indexOf(exchange);
     const controlHeight = screen.queryByRole("button") ? 50 : 0;
-    const top = controlHeight + index * 200 - viewport.scrollTop;
+    // TaskTurnView removes top padding only from the first exchange. Once older history is
+    // prepended, its message gains that padding even when the exchange's outer edge is anchored.
+    const padding = this !== exchange && index > 0 ? 24 : 0;
+    const top = controlHeight + index * 200 + padding - viewport.scrollTop;
     return { top, bottom: top + 200 } as DOMRect;
   });
   return viewport;
@@ -42,6 +46,15 @@ it.each([true, false])("preserves the visible exchange when prepending history (
 
   expect(screen.getByText("4").getBoundingClientRect().top).toBe(before);
   expect(viewport.scrollTop).toBe(more ? 700 : 650);
+});
+
+it("preserves the message when the previous first exchange gains top padding", () => {
+  const view = render(history(["3", "4", "5"]));
+  const viewport = measureHistory();
+  viewport.scrollTop = 100;
+  const before = screen.getByText("3").getBoundingClientRect().top;
+  view.rerender(history(["1", "2", "3", "4", "5"]));
+  expect(screen.getByText("3").getBoundingClientRect().top).toBe(before);
 });
 
 it("keeps the reading position when a new exchange arrives at the bottom", () => {
@@ -65,7 +78,8 @@ it("does not jump when the conversation is below the viewport", () => {
   const viewport = screen.getByRole("main");
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this === viewport) return { top: 0, bottom: 400 } as DOMRect;
-    const index = [...viewport.querySelectorAll('[data-ui="task-exchange"]')].indexOf(this);
+    const exchange = this.closest('[data-ui="task-exchange"]') ?? this;
+    const index = [...viewport.querySelectorAll('[data-ui="task-exchange"]')].indexOf(exchange);
     const top = 700 + index * 200 - viewport.scrollTop;
     return { top, bottom: top + 200 } as DOMRect;
   });

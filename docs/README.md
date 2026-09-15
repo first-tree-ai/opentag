@@ -23,6 +23,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 - [Staging deployment guide](./deploying.md)
 - [Staging onboarding reset](./staging-onboarding-reset.md)
 - [Server observability](./observability.md)
+- [Client error reporting](./error-reporting.md)
 - [Release guide](./releasing.md)
 - [Portable release guide](./portable-release.md)
 - [Internationalization](./i18n.md)

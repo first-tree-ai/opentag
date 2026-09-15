@@ -14,6 +14,7 @@ import {
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
+import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/error-reports.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { registerMeRoutes } from "./api/me.js";
@@ -75,6 +76,8 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   browserAuth?: BrowserAuthRoutesOptions;
+  /** Relay for Web App and CLI failures. Always registered; without a reporter the relay only logs. */
+  errorReporting?: ErrorReportRoutesOptions;
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
@@ -396,6 +399,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const traceId = currentTraceId();
     if (traceId) reply.header("x-trace-id", traceId);
   });
+
+  // Anonymous by design: a failure before sign-in is still a failure worth seeing.
+  registerErrorReportRoutes(app, options.errorReporting);
 
   app.get("/healthz", async (_request, reply) => {
     const health = ServerHealthSchema.parse({

@@ -66,6 +66,8 @@ export const HTTP_PATHS = {
   authProviders: `${API_V1_PREFIX}/auth/providers`,
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,
   computerRuntimeWebSocket: `${API_V1_PREFIX}/computer/ws`,
+  /** Anonymous relay for client-side failures; see docs/error-reporting.md. */
+  errorReports: `${API_V1_PREFIX}/error-reports`,
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,

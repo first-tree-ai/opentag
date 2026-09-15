@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { withComputerRuntimeProviderSupport } from "@opentag/shared";
+import { type ComputerRegisterFrame, withComputerRuntimeProviderSupport } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -90,6 +90,24 @@ function exchangeInput(code: string, installationId = randomUUID(), version = "0
     platform: "linux" as const,
     arch: "x64",
     clientVersion: version,
+  };
+}
+
+/** One runtime registration for an installation, on a fresh instance each time. */
+function registerFrame(installationId: string): ComputerRegisterFrame {
+  return {
+    type: "computer:register",
+    requestId: randomUUID(),
+    installationId,
+    instanceId: randomUUID(),
+    displayName: "Desk",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "0.0.2",
+    capabilities: { imCredentialGrant: 0 },
+    protocolVersion: 2,
+    supportedCapabilities: { imCredentialGrant: { min: 1, max: 1 } },
+    requiredServerCapabilities: [],
   };
 }
 
@@ -666,20 +684,7 @@ describe("machine authentication and Computer services", () => {
     // No Agent is bound yet, and a missing Computer is never eligible.
     expect(await service.hasActiveAgentWithoutMessagingSetup(exchange.computerId)).toBe(false);
     expect(await service.hasActiveAgentWithoutMessagingSetup(randomUUID())).toBe(false);
-    const frame = {
-      type: "computer:register" as const,
-      requestId: randomUUID(),
-      installationId,
-      instanceId: randomUUID(),
-      displayName: "Desk",
-      platform: "linux" as const,
-      arch: "x64",
-      clientVersion: "0.0.2",
-      capabilities: { imCredentialGrant: 0 as const },
-      protocolVersion: 2,
-      supportedCapabilities: { imCredentialGrant: { min: 1, max: 1 } },
-      requiredServerCapabilities: [],
-    };
+    const frame = registerFrame(installationId);
     await expect(service.register(exchange, { ...frame, installationId: randomUUID() })).rejects.toMatchObject({
       code: "COMPUTER_IDENTITY_CONFLICT",
     });
@@ -729,6 +734,43 @@ describe("machine authentication and Computer services", () => {
       .where(eq(computerCredentials.id, exchange.credentialId));
     await expect(service.assertActiveCredential(exchange)).rejects.toMatchObject({ code: "COMPUTER_NOT_REGISTERED" });
     await expect(service.register(exchange, frame)).rejects.toMatchObject({ code: "COMPUTER_NOT_REGISTERED" });
+  });
+
+  it("keeps a Computer present across a reconnect, and offline once the grace window ends", async () => {
+    const value = await machineFixture();
+    const installationId = randomUUID();
+    const exchange = await value.machine.exchangeConnectCode(exchangeInput(value.issued.code, installationId));
+    const patient = new ComputerService(
+      unit.database,
+      { getActiveUserById: vi.fn() },
+      { now: () => NOW, disconnectGraceMs: 60_000 },
+    );
+    const connectionStatus = async (service: ComputerService) =>
+      (await service.listAccountComputers(value.bootstrap.userId)).computers[0]?.connectionStatus;
+    const frame = registerFrame(installationId);
+    await patient.register(exchange, frame);
+    expect(await connectionStatus(patient)).toBe("online");
+
+    // The runtime socket dropped. The client reconnects seconds later, so the Computer is not
+    // offline yet and never publishes the blip.
+    patient.releaseConnection(exchange.computerId, frame.instanceId);
+    expect(await connectionStatus(patient)).toBe("online");
+    await patient.register(exchange, registerFrame(installationId));
+    expect(await connectionStatus(patient)).toBe("online");
+    patient.close();
+
+    // Nothing reconnects this time, so the window ends in the offline the release was scheduled for.
+    const prompt = new ComputerService(
+      unit.database,
+      { getActiveUserById: vi.fn() },
+      { now: () => NOW, disconnectGraceMs: 0 },
+    );
+    const reconnected = registerFrame(installationId);
+    await prompt.register(exchange, reconnected);
+    expect(await connectionStatus(prompt)).toBe("online");
+    prompt.releaseConnection(exchange.computerId, reconnected.instanceId);
+    await vi.waitFor(async () => expect(await connectionStatus(prompt)).toBe("offline"));
+    prompt.close();
   });
 
   it("keeps a Computer eligible when its Account completed setup before the Computer connected", async () => {

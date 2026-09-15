@@ -5,6 +5,7 @@ import { agents, computerCredentials, computers, imBindings } from "../../db/sch
 import { AuthServiceError } from "../auth/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import { rejectUnsupportedClientVersion } from "./machine-auth-service.js";
+import { ComputerPresenceGrace } from "./presence-grace.js";
 import {
   type ProviderReadinessSource,
   projectComputerImCliReadiness,
@@ -16,6 +17,8 @@ export interface ActiveUserResolver {
 }
 
 export interface ComputerServiceOptions {
+  /** How long a dropped runtime connection keeps its presence before the Computer reads offline. */
+  disconnectGraceMs?: number;
   now?: () => Date;
   presenceTimeoutMs?: number;
   providerReadiness?: ProviderReadinessSource;
@@ -25,12 +28,17 @@ export class ComputerService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
+  readonly #presenceGrace: ComputerPresenceGrace;
   readonly #providerReadiness?: ProviderReadinessSource;
 
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
+    this.#presenceGrace = new ComputerPresenceGrace(
+      (computerId, instanceId) => this.disconnect(computerId, instanceId),
+      { ...(options.disconnectGraceMs === undefined ? {} : { graceMs: options.disconnectGraceMs }) },
+    );
     this.#providerReadiness = options.providerReadiness;
   }
 
@@ -152,6 +160,9 @@ export class ComputerService {
         .returning({ id: computers.id });
       if (updated.length !== 1) throw unavailableComputer();
     });
+    // The row now names this instance, so a release left over from the connection it replaced is
+    // both moot and fenced out of matching. Dropping it only saves the pointless update.
+    this.#presenceGrace.cancel(context.computerId);
   }
 
   async heartbeat(context: ComputerAuthContext, instanceId: string): Promise<boolean> {
@@ -177,6 +188,22 @@ export class ComputerService {
     await this.#database.transaction((transaction) => this.#lockActiveCredential(transaction, context));
   }
 
+  /**
+   * This instance's runtime connection ended. Presence is cleared after the grace window rather
+   * than now, so a reconnect that lands inside it never surfaces as an offline Computer. The caller
+   * has already dropped the socket from the ConnectionRegistry, which is what stops work being
+   * dispatched to it; see {@link ComputerPresenceGrace}.
+   */
+  releaseConnection(computerId: string, instanceId: string): void {
+    this.#presenceGrace.schedule(computerId, instanceId);
+  }
+
+  /** Drop every presence release still waiting out its grace window. */
+  close(): void {
+    this.#presenceGrace.close();
+  }
+
+  /** Clear this instance's presence now, and only while it is still the Computer's current one. */
   async disconnect(computerId: string, instanceId: string): Promise<boolean> {
     const now = this.#now();
     const updated = await this.#database

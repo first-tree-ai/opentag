@@ -154,7 +154,7 @@ export class RuntimeSession {
     startRuntimeConnectionSpan(this.#socket);
     this.#armTimeout(this.#options.authTimeoutMs, "RUNTIME_AUTH_TIMEOUT", "Authentication timed out");
     this.#socket.on("message", (data, isBinary) => this.#onMessage(data, isBinary));
-    this.#socket.on("close", (code) => void this.#onClose(code));
+    this.#socket.on("close", (code) => this.#onClose(code));
     this.#socket.on("error", (error) => {
       try {
         this.#logger?.error(
@@ -453,7 +453,7 @@ export class RuntimeSession {
       );
       if (this.#isClosing()) {
         if (this.#registry.remove(authContext.computerId, frame.instanceId, this.#socket)) {
-          await this.#computers.disconnect(authContext.computerId, frame.instanceId).catch(() => undefined);
+          this.#computers.releaseConnection(authContext.computerId, frame.instanceId);
         }
         return;
       }
@@ -623,7 +623,7 @@ export class RuntimeSession {
     this.#send(result);
   }
 
-  async #onClose(code?: number): Promise<void> {
+  #onClose(code?: number): void {
     if (this.#state === "closed") return;
     endRuntimeConnectionSpan(this.#socket, code);
     this.#state = "closed";
@@ -635,7 +635,9 @@ export class RuntimeSession {
       this.#instanceId &&
       this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
     ) {
-      await this.#computers.disconnect(this.#computerId, this.#instanceId).catch(() => undefined);
+      // The registry drop above is what fences the dead socket. Presence is released on a grace
+      // window so a reconnect within it never reads as an offline Computer.
+      this.#computers.releaseConnection(this.#computerId, this.#instanceId);
     }
   }
 

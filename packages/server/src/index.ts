@@ -489,6 +489,7 @@ export async function startServer(): Promise<void> {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
+      computerService.close();
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();

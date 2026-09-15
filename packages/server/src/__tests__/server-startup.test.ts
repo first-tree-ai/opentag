@@ -197,7 +197,9 @@ vi.mock("../services/channel-target/index.js", () => ({
   }),
 }));
 vi.mock("../services/computers/index.js", () => ({
-  ComputerService: class {},
+  ComputerService: class {
+    close() {}
+  },
   MachineAuthService: class {
     constructor(_database: unknown, options: unknown) {
       state.machineAuthOptions = options;

@@ -68,6 +68,7 @@ function computerService() {
     register: vi.fn().mockResolvedValue(undefined),
     heartbeat: vi.fn().mockResolvedValue(true),
     disconnect: vi.fn().mockResolvedValue(true),
+    releaseConnection: vi.fn(),
     listForUser: vi.fn().mockResolvedValue({ computers: [] }),
   };
 }
@@ -207,7 +208,7 @@ describe("Computer runtime WebSocket", () => {
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, register.instanceId),
+      expect(computers.releaseConnection).toHaveBeenCalledWith(machineContext.computerId, register.instanceId),
     );
   });
 
@@ -754,7 +755,7 @@ describe("Computer runtime WebSocket", () => {
     await expect(closed).resolves.toBe(4400);
     releaseRegister?.();
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, frame.instanceId),
+      expect(computers.releaseConnection).toHaveBeenCalledWith(machineContext.computerId, frame.instanceId),
     );
     expect(computers.register).toHaveBeenCalledTimes(1);
     expect(registry.currentInstanceId(machineContext.computerId)).toBeUndefined();
@@ -775,10 +776,11 @@ describe("Computer runtime WebSocket", () => {
       if (frame.instanceId === replacementInstanceId) await replacementBlocked;
       persistedInstanceId = frame.instanceId;
     });
-    computers.disconnect.mockImplementation(async (_computerId, instanceId) => {
-      if (persistedInstanceId !== instanceId) return false;
+    // Stand in for the grace window ending: the release clears presence only while the instance it
+    // was scheduled for is still the Computer's current one.
+    computers.releaseConnection.mockImplementation((_computerId: string, instanceId: string) => {
+      if (persistedInstanceId !== instanceId) return;
       persistedInstanceId = undefined;
-      return true;
     });
     const app = createRuntimeApp({
       authService: authService(),
@@ -807,7 +809,7 @@ describe("Computer runtime WebSocket", () => {
 
     await expect(oldClosed).resolves.toBe(4001);
     await vi.waitFor(() =>
-      expect(computers.disconnect).toHaveBeenCalledWith(machineContext.computerId, replacementInstanceId),
+      expect(computers.releaseConnection).toHaveBeenCalledWith(machineContext.computerId, replacementInstanceId),
     );
     expect(persistedInstanceId).toBeUndefined();
     expect(registry.currentInstanceId(machineContext.computerId)).toBeUndefined();
@@ -1380,6 +1382,7 @@ function directRuntimeSession(
       register: ReturnType<typeof vi.fn>;
       heartbeat: ReturnType<typeof vi.fn>;
       disconnect: ReturnType<typeof vi.fn>;
+      releaseConnection: ReturnType<typeof vi.fn>;
     }>;
     logger?: ServiceLogger;
   } = {},
@@ -1397,6 +1400,7 @@ function directRuntimeSession(
     register: input.computers?.register ?? vi.fn().mockResolvedValue(undefined),
     heartbeat: input.computers?.heartbeat ?? vi.fn().mockResolvedValue(true),
     disconnect: input.computers?.disconnect ?? vi.fn().mockResolvedValue(true),
+    releaseConnection: input.computers?.releaseConnection ?? vi.fn(),
   };
   const registry = new ConnectionRegistry();
   const session = new RuntimeSession(socket as never, auth as never, computers as never, registry, {

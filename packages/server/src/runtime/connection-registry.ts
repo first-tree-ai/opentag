@@ -191,6 +191,10 @@ export class ConnectionRegistry {
     return [];
   }
 
+  providerReadinessProviders(computerId: string): readonly AgentRuntimeProvider[] | undefined {
+    return this.#entries.get(computerId)?.providerReadinessProviders;
+  }
+
   supportsProvider(computerId: string, instanceId: string, provider: AgentRuntimeProvider, now = Date.now()): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.active === false) return false;

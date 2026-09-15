@@ -52,6 +52,69 @@ describe("Computer provider readiness projection", () => {
       { provider: "pi", status: "unavailable", observedAt: null },
     ]);
   });
+
+  it("keeps negotiated Providers checking and fences unnegotiated Pi as unavailable", () => {
+    expect(
+      projectComputerProviderReadiness("computer-1", "online", now, {
+        providerReadiness: () => [],
+        providerReadinessProviders: () => ["codex", "claude-code"],
+      }),
+    ).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
+    ]);
+    expect(
+      projectComputerProviderReadiness("computer-1", "online", now, {
+        providerReadiness: () => [],
+        providerReadinessProviders: () => ["codex", "claude-code", "pi"],
+      }),
+    ).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "checking", observedAt: null },
+    ]);
+  });
+
+  it("ignores a stale Pi observation when the current connection did not negotiate it", () => {
+    expect(
+      projectComputerProviderReadiness("computer-1", "online", now, {
+        providerReadiness: () => [
+          {
+            observation: { provider: "codex", status: "ready" },
+            observedAt: now.getTime(),
+          },
+          {
+            observation: { provider: "pi", status: "ready" },
+            observedAt: now.getTime(),
+          },
+        ],
+        providerReadinessProviders: () => ["codex", "claude-code"],
+      }),
+    ).toEqual([
+      { provider: "codex", status: "ready", observedAt: now.toISOString() },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
+    ]);
+  });
+
+  it("keeps offline Computers unavailable even when negotiation metadata is present", () => {
+    expect(
+      projectComputerProviderReadiness("computer-1", "offline", now, {
+        providerReadiness: () => [
+          {
+            observation: { provider: "pi", status: "ready" },
+            observedAt: now.getTime(),
+          },
+        ],
+        providerReadinessProviders: () => ["codex", "claude-code", "pi"],
+      }),
+    ).toEqual([
+      { provider: "codex", status: "unavailable", observedAt: null },
+      { provider: "claude-code", status: "unavailable", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
+    ]);
+  });
 });
 
 describe("Computer IM CLI readiness projection", () => {

@@ -5,6 +5,7 @@ import {
   taskCancelPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -558,6 +559,92 @@ describe("Account-native management collections", () => {
 
     await app.inject({ method: "GET", url: HTTP_PATHS.accountComputers, headers: authorization });
     expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
+  });
+
+  it("projects Account Computer provider readiness by HTTP v1/v2 opt-in", async () => {
+    const observedAt = "2026-08-19T00:00:00.000Z";
+    const fullReadiness = [
+      { provider: "codex" as const, status: "ready" as const, observedAt },
+      { provider: "claude-code" as const, status: "ready" as const, observedAt },
+      { provider: "pi" as const, status: "ready" as const, observedAt },
+    ];
+    const listed = { computers: [{ ...computerSummary, providerReadiness: fullReadiness }] };
+    const FrozenBaseProviderReadinessSchema = z.array(
+      z
+        .object({
+          provider: z.enum(["codex", "claude-code"]),
+          status: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
+          observedAt: z.string().datetime().nullable(),
+        })
+        .strict(),
+    );
+    const { app, service } = appWith({
+      computerService: { listAccountComputers: vi.fn().mockResolvedValue(listed) },
+    });
+
+    const v1 = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenCalledWith(userId, true);
+    expect(v1.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider)).toEqual([
+      "codex",
+      "claude-code",
+    ]);
+    expect(FrozenBaseProviderReadinessSchema.parse(v1.json().computers[0].providerReadiness)).toHaveLength(2);
+
+    const v2 = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, "x-opentag-provider-readiness-v2": "2" },
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, true);
+    expect(v2.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider)).toEqual([
+      "codex",
+      "claude-code",
+      "pi",
+    ]);
+    expect(() => FrozenBaseProviderReadinessSchema.parse(v2.json().computers[0].providerReadiness)).toThrow();
+
+    const both = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: {
+        ...authorization,
+        [PROVIDER_READINESS_V1_HEADER]: "1",
+        "x-opentag-provider-readiness-v2": "2",
+      },
+    });
+    expect(both.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider)).toContain("pi");
+
+    const absent = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: authorization,
+    });
+    expect(service.computerService.listAccountComputers).toHaveBeenLastCalledWith(userId, false);
+    expect(absent.json().computers[0].providerReadiness).toBeUndefined();
+
+    const unsupported = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: { ...authorization, "x-opentag-provider-readiness-v2": "1" },
+    });
+    expect(unsupported.json().computers[0].providerReadiness).toBeUndefined();
+
+    const v1WithBogusV2 = await app.inject({
+      method: "GET",
+      url: HTTP_PATHS.accountComputers,
+      headers: {
+        ...authorization,
+        [PROVIDER_READINESS_V1_HEADER]: "1",
+        "x-opentag-provider-readiness-v2": "bogus",
+      },
+    });
+    expect(
+      v1WithBogusV2.json().computers[0].providerReadiness.map((row: { provider: string }) => row.provider),
+    ).toEqual(["codex", "claude-code"]);
   });
 
   it("rejects a client-selected scope on every creation route", async () => {

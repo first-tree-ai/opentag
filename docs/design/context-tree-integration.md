@@ -2,7 +2,7 @@
 
 Status: implemented
 
-Last updated: 2026-09-03
+Last updated: 2026-09-15
 
 ## Purpose
 
@@ -195,7 +195,7 @@ resolve whatever `node` the Session's `PATH` happens to find.
 
 It is prepended at composition rather than through per-Session workspace environment because a
 Session-level `PATH` would replace the value the factory composes, including the discovered
-executable directory that lets `codex` and `claude` resolve at all.
+executable directory that lets `codex`, `claude`, and `pi` resolve at all.
 
 Visible Sessions supply their tool directory through workspace `pathPrepend`. Every Provider factory
 prepends it after composing its environment, preserving the Context Tree and executable directories.
@@ -206,6 +206,19 @@ as described in the upgrade instructions above.
 
 OpenTag's own invocations never rely on the shim: they exec the resolved CLI path directly, so a
 broken or shadowed shim cannot change what OpenTag executes.
+
+### Pi
+
+The production Pi factory passes each packaged Context Tree skill directory explicitly with
+`--skill <path>`. Automatic skill and context-file discovery remain disabled with `--no-skills`
+and `--no-context-files`; supplying the packaged skills does not enable user extensions, hooks,
+or ambient workspace instructions. When package assets are unavailable, the factory receives no
+skill arguments and memory preparation reports its existing unavailable state.
+
+Pi uses the same Context Tree CLI shim and managed Agent-slug/target instructions. No host skill
+installation into the user's Pi home is needed. Local Pi runs unrestricted, so access to the shared
+Tree is governed by the CLI's workflow and the user's OS permissions; this is not per-Session OS
+isolation. Cloud distribution and synchronization remain separate Cloud design work.
 
 ### Claude Code
 
@@ -359,12 +372,15 @@ which is why the failure reader honours both shapes.
 
 ## Verification
 
-Both delivery mechanisms were confirmed against the real CLIs before the surrounding work landed:
+The earlier host-install delivery mechanisms were confirmed against the real CLIs:
 
 - Claude Code under `--print --input-format stream-json --setting-sources project` discovers
   `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not.
 - Codex discovers `~/.codex/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
   `skip_host_skill_discovery` feature is separate from both.
+
+Pi production-composition tests cover explicit skill-present and skill-absent paths, inspect the
+actual spawned RPC arguments, and preserve disabled automatic discovery.
 
 Automated coverage: target routing and config round-trip; rendered platform string, revision
 identity, snapshot hash, and instruction budget; per-provider argv and `PATH` composition; the
@@ -410,4 +426,4 @@ the dependency from the published bundle.
 - Project-scoped trees, so several Agents share a tree without sharing all Computer memory.
 - Windows support, which needs Provider lifecycle, path, lock, and isolated-home CI coverage
   first. The shim is POSIX and reports `shim_unavailable` elsewhere.
-- Any Provider beyond Codex and Claude Code.
+- Any Provider beyond Codex, Claude Code, and Pi.

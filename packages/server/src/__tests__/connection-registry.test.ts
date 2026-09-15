@@ -402,8 +402,8 @@ describe("ConnectionRegistry", () => {
       ),
     ).toEqual([
       { provider: "codex", status: "checking", observedAt: null },
-      { provider: "claude-code", status: "checking", observedAt: null },
-      { provider: "pi", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "unavailable", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
     ]);
     expect(registry.remove(computerId, instanceId, currentSocket)).toBe(true);
     expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toEqual([]);
@@ -449,6 +449,115 @@ describe("ConnectionRegistry", () => {
     expect(registry.providerReadiness(computerId, 2)).toEqual([]);
     expect(registry.supportsProvider(computerId, oldInstanceId, "codex", 2)).toBe(false);
     expect(registry.supportsProvider(computerId, newInstanceId, "codex", 2)).toBe(false);
+  });
+
+  it("keeps v2 Providers checking until observed and fences v1 Pi through the registry", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const observedAt = new Date("2026-08-20T00:00:00.000Z");
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        providerReadinessProviders: ["codex", "claude-code", "pi"],
+        socket: socket(),
+      },
+      async () => undefined,
+    );
+    expect(projectComputerProviderReadiness(computerId, "online", observedAt, registry)).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "checking", observedAt: null },
+    ]);
+
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId: randomUUID(),
+        lastHeartbeatAt: 2,
+        providerReadinessProviders: ["codex", "claude-code"],
+        socket: socket(),
+      },
+      async () => undefined,
+    );
+    expect(projectComputerProviderReadiness(computerId, "online", observedAt, registry)).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
+    ]);
+  });
+
+  it("projects v1 vs v2 negotiation through the live registry and drops stale Pi on replacement", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const v2InstanceId = randomUUID();
+    const v1InstanceId = randomUUID();
+    const observedAt = new Date("2026-08-20T00:00:00.000Z");
+    const v2Socket = socket();
+    const v1Socket = socket();
+
+    expect(registry.providerReadinessProviders(computerId)).toBeUndefined();
+    expect(projectComputerProviderReadiness(computerId, "online", observedAt, registry)).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "checking", observedAt: null },
+    ]);
+
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId: v2InstanceId,
+        lastHeartbeatAt: 1,
+        providerReadiness: [
+          { provider: "codex", status: "ready" },
+          { provider: "claude-code", status: "ready" },
+          { provider: "pi", status: "ready" },
+        ],
+        providerReadinessObservedAt: observedAt.getTime(),
+        providerReadinessProviders: ["codex", "claude-code", "pi"],
+        socket: v2Socket,
+      },
+      async () => undefined,
+    );
+    expect(registry.providerReadinessProviders(computerId)).toEqual(["codex", "claude-code", "pi"]);
+    expect(projectComputerProviderReadiness(computerId, "online", observedAt, registry)).toEqual([
+      { provider: "codex", status: "ready", observedAt: observedAt.toISOString() },
+      { provider: "claude-code", status: "ready", observedAt: observedAt.toISOString() },
+      { provider: "pi", status: "ready", observedAt: observedAt.toISOString() },
+    ]);
+
+    await registry.register(
+      {
+        computerId,
+        installationId: randomUUID(),
+        instanceId: v1InstanceId,
+        lastHeartbeatAt: 2,
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        providerReadinessObservedAt: observedAt.getTime(),
+        providerReadinessProviders: ["codex", "claude-code"],
+        socket: v1Socket,
+      },
+      async () => undefined,
+    );
+    expect(v2Socket.close).toHaveBeenCalledWith(4001, "Replaced by a newer daemon instance");
+    expect(registry.providerReadinessProviders(computerId)).toEqual(["codex", "claude-code"]);
+    expect(projectComputerProviderReadiness(computerId, "online", observedAt, registry)).toEqual([
+      { provider: "codex", status: "ready", observedAt: observedAt.toISOString() },
+      { provider: "claude-code", status: "checking", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
+    ]);
+
+    expect(registry.remove(computerId, v1InstanceId, v1Socket)).toBe(true);
+    expect(registry.providerReadinessProviders(computerId)).toBeUndefined();
+    expect(projectComputerProviderReadiness(computerId, "offline", observedAt, registry)).toEqual([
+      { provider: "codex", status: "unavailable", observedAt: null },
+      { provider: "claude-code", status: "unavailable", observedAt: null },
+      { provider: "pi", status: "unavailable", observedAt: null },
+    ]);
   });
 
   it("tracks IM CLI readiness with freshness and active-instance fences", async () => {

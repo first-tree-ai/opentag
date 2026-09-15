@@ -26,7 +26,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentSetupSnapshotSchema } from "@opentag/shared/browser";
+import { AGENT_RUNTIME_PROVIDERS, type AgentRuntimeProvider, AgentSetupSnapshotSchema } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,7 +55,7 @@ interface FixtureRowExpectation {
 
 interface FixtureScenario {
   readonly id: string;
-  readonly runtimeProvider: "codex" | "claude-code";
+  readonly runtimeProvider: AgentRuntimeProvider;
   readonly local: {
     readonly facts: {
       readonly daemon: string;
@@ -67,6 +67,11 @@ interface FixtureScenario {
 }
 
 interface FixtureFile {
+  readonly identities: {
+    readonly runtimeProviders: readonly AgentRuntimeProvider[];
+    readonly runtimeLabels: Readonly<Record<AgentRuntimeProvider, string>>;
+  };
+  readonly coverage: { readonly success: readonly string[] };
   readonly scenarios: FixtureScenario[];
 }
 
@@ -144,7 +149,36 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+const WEB_READY_LABELS = {
+  codex: "Codex ready",
+  "claude-code": "Claude Code ready",
+  pi: "Pi ready",
+} as const satisfies Record<AgentRuntimeProvider, string>;
+
+const WEB_COMPACT_LABELS = {
+  codex: "Codex",
+  "claude-code": "Claude Code",
+  pi: "Pi",
+} as const satisfies Record<AgentRuntimeProvider, string>;
+
+function successScenarios(): FixtureScenario[] {
+  return fixture.coverage.success.map((id) => {
+    const scenario = fixture.scenarios.find((candidate) => candidate.id === id);
+    if (!scenario) throw new Error(`missing success scenario ${id}`);
+    return scenario;
+  });
+}
+
 describe("F6 shared preparation matrix, Web projection", () => {
+  it("covers every admitted runtime provider in the authoritative success matrix", () => {
+    expect(fixture.identities.runtimeProviders).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    expect(Object.keys(fixture.identities.runtimeLabels)).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    expect(successScenarios().map((scenario) => scenario.runtimeProvider)).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    for (const provider of AGENT_RUNTIME_PROVIDERS) {
+      expect(fixture.identities.runtimeLabels[provider]).toBe(WEB_COMPACT_LABELS[provider]);
+    }
+  });
+
   it.each(fixture.scenarios.map((scenario) => [scenario.id, scenario] as const))(
     "scenario %s projects its canonical snapshot through the real F5 page logic",
     (_id, scenario) => {
@@ -177,17 +211,17 @@ describe("F6 shared preparation matrix, Web projection", () => {
   );
 
   it("pins the selected Runtime identity per scenario in the ready label vocabulary", () => {
-    const codex = fixture.scenarios.find((scenario) => scenario.id === "success-codex");
-    const claude = fixture.scenarios.find((scenario) => scenario.id === "success-claude-code");
-    expect(codex).toBeDefined();
-    expect(claude).toBeDefined();
-    const codexRows = preparationReadinessRows(AgentSetupSnapshotSchema.parse(codex?.snapshot));
-    const claudeRows = preparationReadinessRows(AgentSetupSnapshotSchema.parse(claude?.snapshot));
-    expect(codexRows.runtime.label).toBe("Codex ready");
-    expect(claudeRows.runtime.label).toBe("Claude Code ready");
-    expect(codexRows.computer.label).toBe("Computer ready");
-    expect(codexRows.feishu.label).toBe("Lark CLI ready");
-    expect(codexRows.slack.label).toBe("Slack CLI ready");
+    for (const scenario of successScenarios()) {
+      const snapshot = AgentSetupSnapshotSchema.parse(scenario.snapshot);
+      expect(snapshot.agent.runtimeProvider).toBe(scenario.runtimeProvider);
+      expect(snapshot.runtime.provider).toBe(scenario.runtimeProvider);
+      const rows = preparationReadinessRows(snapshot);
+      expect(rows.runtime.label).toBe(WEB_READY_LABELS[scenario.runtimeProvider]);
+      expect(rows.computer.label).toBe("Computer ready");
+      expect(rows.feishu.label).toBe("Lark CLI ready");
+      expect(rows.slack.label).toBe("Slack CLI ready");
+      expect(preparationSummaryRows(snapshot).runtime.label).toBe(WEB_COMPACT_LABELS[scenario.runtimeProvider]);
+    }
   });
 
   it("keeps missing and expired observations identical fail-closed waiting rows, never Checking", () => {
@@ -367,6 +401,32 @@ describe("F6 cross-layer gating, page level", () => {
     await settle();
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
     expect(screen.getByText("Connected. Checking your agent can be reached…")).toBeTruthy();
+  });
+
+  it("opens the Messaging gate for a ready Pi snapshot with the actual Pi labels", async () => {
+    const scenario = fixture.scenarios.find((candidate) => candidate.id === "success-pi");
+    if (!scenario) throw new Error("missing success-pi scenario");
+    const { memory } = renderSetup({
+      agent: setupAgent({ runtimeProvider: "pi" }),
+      imCliReadiness: { feishu: "ready", slack: "ready" },
+    });
+    await settle();
+
+    const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    const rows = preparationReadinessRows(snapshot);
+    expect(snapshot.stage).toBe("needs-messaging");
+    expect(snapshot.agent.runtimeProvider).toBe("pi");
+    expect(rows.runtime.label).toBe("Pi ready");
+    expect(preparationSummaryRows(snapshot).runtime.label).toBe("Pi");
+    expectCompactRows();
+    expect(rowTitle("runtime")).toContain("Pi");
+    const continueButton = screen.getByRole("button", { name: "Continue" });
+    expect(continueButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(continueButton);
+    await settle();
+
+    expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
+    expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
   });
 
   it("renders the successful summary rows before Messaging starts and never fabricates progress", async () => {

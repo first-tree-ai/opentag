@@ -70,6 +70,7 @@ import {
   MeResponseSchema,
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
@@ -397,7 +398,11 @@ export class BrowserApi {
 
   computers(): Promise<ListAccountComputersResponse> {
     return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+      headers: {
+        [PROVIDER_READINESS_V1_HEADER]: "1",
+        [PROVIDER_READINESS_V2_HEADER]: "2",
+        [PROVIDER_CLI_REASON_V2_HEADER]: "2",
+      },
     });
   }
 

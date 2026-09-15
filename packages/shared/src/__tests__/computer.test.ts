@@ -15,9 +15,13 @@ import {
   LocalPreparationActionSchema,
   LocalPreparationCheckSchema,
   LocalPreparationComponentSchema,
+  PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
   requestsProviderCliReasonV2,
+  requestsProviderReadinessV1,
+  requestsProviderReadinessV2,
   withComputerRuntimeProviderSupport,
 } from "../computer.js";
 import { compareSemVer } from "../semver.js";
@@ -614,5 +618,13 @@ describe("computer contracts", () => {
     expect(requestsProviderCliReasonV2("1")).toBe(false);
     expect(requestsProviderCliReasonV2("3")).toBe(false);
     expect(requestsProviderCliReasonV2("v2")).toBe(false);
+    expect(PROVIDER_READINESS_V1_HEADER).toBe("x-opentag-provider-readiness");
+    expect(PROVIDER_READINESS_V2_HEADER).toBe("x-opentag-provider-readiness-v2");
+    expect(requestsProviderReadinessV1("1")).toBe(true);
+    expect(requestsProviderReadinessV1(["1"])).toBe(true);
+    expect(requestsProviderReadinessV1(undefined)).toBe(false);
+    expect(requestsProviderReadinessV2("2")).toBe(true);
+    expect(requestsProviderReadinessV2(["2"])).toBe(true);
+    expect(requestsProviderReadinessV2("1")).toBe(false);
   });
 });

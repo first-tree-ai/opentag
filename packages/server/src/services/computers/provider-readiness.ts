@@ -1,4 +1,5 @@
 import {
+  type AgentRuntimeProvider,
   type ComputerConnectionStatus,
   type ComputerImCliReadinessCollection,
   type ComputerProviderReadinessCollection,
@@ -20,6 +21,12 @@ export interface ProviderReadinessSource {
     computerId: string,
     now: number,
   ): readonly { observation: RuntimeProviderReadinessObservation; observedAt: number }[];
+  /**
+   * Providers the current Computer connection negotiated. Omitted or undefined keeps the
+   * historical checking fallback. A returned list fences unnegotiated Providers as unavailable
+   * with no probe timestamp, even if a stale observation is still present.
+   */
+  providerReadinessProviders?(computerId: string, now: number): readonly AgentRuntimeProvider[] | undefined;
   imCliReadiness?(
     computerId: string,
     now: number,
@@ -81,9 +88,15 @@ export function projectComputerProviderReadiness(
       observedAt: null,
     }));
   }
-  const snapshots = source?.providerReadiness(computerId, observedAt.getTime()) ?? [];
+  const now = observedAt.getTime();
+  const snapshots = source?.providerReadiness(computerId, now) ?? [];
   const byProvider = new Map(snapshots.map((snapshot) => [snapshot.observation.provider, snapshot]));
+  const negotiated = source?.providerReadinessProviders?.(computerId, now);
+  const negotiatedSet = negotiated ? new Set(negotiated) : undefined;
   return SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS.map((provider) => {
+    if (negotiatedSet && !negotiatedSet.has(provider)) {
+      return { provider, status: "unavailable" as const, observedAt: null };
+    }
     const snapshot = byProvider.get(provider);
     return snapshot
       ? {
@@ -91,6 +104,6 @@ export function projectComputerProviderReadiness(
           status: snapshot.observation.status,
           observedAt: new Date(snapshot.observedAt).toISOString(),
         }
-      : { provider, status: "checking", observedAt: null };
+      : { provider, status: "checking" as const, observedAt: null };
   });
 }

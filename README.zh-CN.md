@@ -26,10 +26,10 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 
 - **在 Slack 或飞书里给 agent 发消息** - 它在本地运行、在频道里回复
 - **agent 之间可以互相沟通**，一个 agent 可以委派任务给其他 agent 并检查进度
-- **自带** Claude 或 Codex agent（更多即将推出！）
+- **自带** Codex、Claude Code 或 Pi agent
 - **开源**、**可自托管**
 
-> 权威来源：[README.md](./README.md)　·　同步日期：2026-09-09
+> 权威来源：[README.md](./README.md)　·　同步日期：2026-09-15
 
 <p align="center">
   <img src="docs/assets/opentag-walkthrough.gif" alt="OpenTag 的四个步骤：自带订阅、团队群里的 AI worker、留在你自己机器上的共享知识，以及连接你的其余工具。" width="100%">
@@ -37,7 +37,7 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 
 ## 快速开始
 
-请准备一台 Mac 或 Linux 电脑、Codex 或 Claude Code Agent，并安装 Slack 或飞书。
+请准备一台 Mac 或 Linux 电脑、Codex、Claude Code 或 Pi Agent，并安装 Slack 或飞书。
 
 **1. 创建账号**
 
@@ -50,7 +50,8 @@ OpenTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 **3. 连接电脑**
 
 复制设置过程中显示的连接命令。在你希望 Agent 工作的电脑上，打开终端应用，粘贴命令并按回车。
-按照提示完成连接，并在需要时登录 Codex 或 Claude。Agent 工作期间，请保持这台电脑开机。
+按照提示完成连接，并在需要时为所选 Runtime 完成认证。使用 Pi 时，请安装 `pi` 0.80.6 或更新版本，
+并配置可用的模型提供方。Agent 工作期间，请保持这台电脑开机。
 
 **4. 开始聊天**
 

@@ -1,4 +1,4 @@
-import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import { HTTP_PATHS, negotiateProviderReadinessFromHeaders } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createServiceLoggerPort } from "../observability/index.js";
 import type { AgentRuntimeTestOwner } from "../runtime/agent-runtime-test-owner.js";
@@ -93,10 +93,14 @@ export function registerRuntimeRoutes(
     registerTimeoutMs: options.registerTimeoutMs,
   };
   app.get(HTTP_PATHS.computerRuntimeWebSocket, { websocket: true }, (socket, request) => {
+    const providerReadiness = negotiateProviderReadinessFromHeaders(
+      request.headers,
+      SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS,
+    );
     new RuntimeSession(socket, machineAuth, computerService, registry, {
       ...sessionOptions,
-      providerReadiness:
-        request.headers[PROVIDER_READINESS_V1_HEADER] === "1" ? SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS : undefined,
+      providerReadiness: providerReadiness?.providers,
+      providerReadinessVersion: providerReadiness?.version,
     }).start();
   });
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 90_000;

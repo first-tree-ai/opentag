@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type AgentRuntimeProvider,
   type AuthFrame,
+  advertisedProviderReadiness,
   ClientRuntimeFrameSchema,
   type ComputerRegisterFrame,
   type HeartbeatFrame,
@@ -11,6 +12,8 @@ import {
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
+  RUNTIME_PROVIDER_READINESS_V1,
+  RUNTIME_PROVIDER_READINESS_V2,
   RUNTIME_REQUIRED_CLIENT_CAPABILITIES,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
@@ -21,10 +24,13 @@ import {
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
+  type RuntimeProviderReadinessVersion,
   redactForLog,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,
+  type ServerWelcomeFrame,
   ServerWelcomeV1FrameSchema,
+  ServerWelcomeV2FrameSchema,
 } from "@opentag/shared";
 import WebSocket, { type RawData } from "ws";
 import {
@@ -80,6 +86,8 @@ export interface RuntimeSessionOptions {
   now?: () => Date;
   onRegistered?: (input: { computerId: string; installationId: string; instanceId: string }) => Promise<void> | void;
   providerReadiness?: readonly AgentRuntimeProvider[];
+  /** Defaults to v1. v2 is advertised only when the caller explicitly requests it. */
+  providerReadinessVersion?: RuntimeProviderReadinessVersion;
   registerTimeoutMs?: number;
 }
 
@@ -130,6 +138,11 @@ export class RuntimeSession {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
       heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 90_000,
     });
+    const providerReadinessVersion =
+      options.providerReadinessVersion === RUNTIME_PROVIDER_READINESS_V2
+        ? RUNTIME_PROVIDER_READINESS_V2
+        : RUNTIME_PROVIDER_READINESS_V1;
+    const advertised = advertisedProviderReadiness(providerReadinessVersion, options.providerReadiness ?? []);
     this.#options = {
       authTimeoutMs: positiveTimeout(options.authTimeoutMs ?? 5_000, "authTimeoutMs"),
       business: options.business,
@@ -138,7 +151,8 @@ export class RuntimeSession {
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
       onRegistered: options.onRegistered,
-      providerReadiness: Object.freeze([...(options.providerReadiness ?? [])]),
+      providerReadiness: Object.freeze([...(advertised?.providers ?? [])]),
+      providerReadinessVersion: advertised?.version ?? providerReadinessVersion,
       registerTimeoutMs: positiveTimeout(options.registerTimeoutMs ?? 5_000, "registerTimeoutMs"),
     };
     if (options.business) {
@@ -309,31 +323,7 @@ export class RuntimeSession {
         computerId: authenticated.computerId,
         installationId: authenticated.installationId,
       });
-      this.#send(
-        this.#protocolVersion === RUNTIME_PROTOCOL_V2
-          ? {
-              type: "server:welcome",
-              protocolVersion: RUNTIME_PROTOCOL_V2,
-              supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
-              supportedCapabilities: RUNTIME_SERVER_CAPABILITY_OFFERS,
-              requiredClientCapabilities: RUNTIME_REQUIRED_CLIENT_CAPABILITIES,
-              heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
-              heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
-              ...(this.#options.providerReadiness.length > 0
-                ? { providerReadiness: { version: 1 as const, providers: [...this.#options.providerReadiness] } }
-                : {}),
-            }
-          : {
-              type: "server:welcome",
-              protocolVersion: RUNTIME_PROTOCOL_V1,
-              capabilities: RUNTIME_V0_CAPABILITIES,
-              heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
-              heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
-              ...(this.#options.providerReadiness.length > 0
-                ? { providerReadiness: { version: 1 as const, providers: [...this.#options.providerReadiness] } }
-                : {}),
-            },
-      );
+      this.#send(this.#welcomeFrame());
     } catch (error) {
       this.#handleRequestError(error, frame.requestId);
     }
@@ -524,6 +514,33 @@ export class RuntimeSession {
       return undefined;
     }
     return this.#options.channelTarget?.();
+  }
+
+  #welcomeFrame(): ServerWelcomeFrame {
+    const providerReadiness = advertisedProviderReadiness(
+      this.#options.providerReadinessVersion,
+      this.#options.providerReadiness,
+    );
+    if (this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
+      return ServerWelcomeV2FrameSchema.parse({
+        type: "server:welcome",
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        supportedCapabilities: RUNTIME_SERVER_CAPABILITY_OFFERS,
+        requiredClientCapabilities: RUNTIME_REQUIRED_CLIENT_CAPABILITIES,
+        heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
+        heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
+        ...(providerReadiness ? { providerReadiness } : {}),
+      });
+    }
+    return ServerWelcomeV1FrameSchema.parse({
+      type: "server:welcome",
+      protocolVersion: RUNTIME_PROTOCOL_V1,
+      capabilities: RUNTIME_V0_CAPABILITIES,
+      heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
+      heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
+      ...(providerReadiness ? { providerReadiness } : {}),
+    });
   }
 
   #acceptsProviderReadiness(providerReadiness: RuntimeProviderReadinessCollection | undefined): boolean {

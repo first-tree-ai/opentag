@@ -5,6 +5,7 @@ import {
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
@@ -449,7 +450,7 @@ export class RuntimeConnection {
     const signal = this.#lifecycleAbort.signal;
     signal.throwIfAborted();
     const socketOptions: ClientOptions = {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1", [PROVIDER_READINESS_V2_HEADER]: "2" },
       maxPayload: RUNTIME_MAX_FRAME_BYTES,
     };
     const socketUrl = runtimeWebSocketUrl(this.#options.computer.serverUrl);

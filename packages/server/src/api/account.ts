@@ -15,10 +15,12 @@ import {
   HTTP_PATHS,
   type InternalNavigationVisibility,
   InternalNavigationVisibilitySchema,
+  type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
   ListTasksResponseSchema,
-  PROVIDER_READINESS_V1_HEADER,
+  negotiateProviderReadinessFromHeaders,
+  type RuntimeProviderReadinessNegotiation,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
   TaskCancelResponseSchema,
@@ -36,6 +38,7 @@ import {
   type ComputerService,
   type MachineAuthService,
 } from "../services/computers/index.js";
+import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import {
@@ -176,15 +179,16 @@ export function registerAccountRoutes(
 
     app.get(HTTP_PATHS.accountComputers, { preHandler }, async (request, reply) => {
       const account = accountId(request);
-      const listed = await computerService.listAccountComputers(
-        account,
-        request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
-      );
+      const readiness = negotiateProviderReadinessFromHeaders(request.headers, SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS);
+      const listed = await computerService.listAccountComputers(account, readiness !== undefined);
       return reply
         .code(200)
         .send(
           ListAccountComputersResponseSchema.parse(
-            projectListAccountComputersResponseForHttp(listed, requestIncludesProviderCliReasonV2(request)),
+            projectAccountComputerProviderReadinessForHttp(
+              projectListAccountComputersResponseForHttp(listed, requestIncludesProviderCliReasonV2(request)),
+              readiness,
+            ),
           ),
         );
     });
@@ -294,4 +298,21 @@ export function registerAccountRoutes(
 
 function resetNotOffered(): AuthServiceError {
   return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The requested resource was not found", 404);
+}
+
+function projectAccountComputerProviderReadinessForHttp(
+  response: ListAccountComputersResponse,
+  readiness: RuntimeProviderReadinessNegotiation | undefined,
+): ListAccountComputersResponse {
+  const providers = new Set(readiness?.providers);
+  return {
+    computers: response.computers.map((computer) => {
+      const { providerReadiness, ...rest } = computer;
+      if (!readiness || providerReadiness === undefined) return rest;
+      return {
+        ...rest,
+        providerReadiness: providerReadiness.filter((observation) => providers.has(observation.provider)),
+      };
+    }),
+  };
 }

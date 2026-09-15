@@ -1,6 +1,7 @@
 import {
   AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
   type AgentListItem,
+  type AgentRuntimeProvider,
   type AgentSetupComputerState,
   type AgentSetupMessagingState,
   type AgentSetupRuntimeState,
@@ -109,7 +110,7 @@ function setupProjectionOrThrow(
     readonly bound: boolean;
     readonly handoffReady: boolean;
     readonly provider: "feishu" | "slack";
-    readonly runtimeProvider: "codex" | "claude-code";
+    readonly runtimeProvider: AgentRuntimeProvider;
   },
 ): Response {
   const targetAgentId = setupTargetIdOrThrow(path, method);
@@ -357,7 +358,7 @@ export function installApi(
     computerEvidenceFails?: boolean;
     computerProviderReadiness?: readonly {
       observedAt: string | null;
-      provider: "codex" | "claude-code";
+      provider: AgentRuntimeProvider;
       status: "checking" | "install" | "sign-in" | "ready" | "unavailable";
     }[];
     computerStatus?: () => "online" | "offline";
@@ -369,7 +370,7 @@ export function installApi(
     internalNavigationVisibility?: { integrations: boolean; skills: boolean };
     internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
-    runtimeProvider?: "codex" | "claude-code";
+    runtimeProvider?: AgentRuntimeProvider;
     /*
      * Holds the post-save `/api/v1/me` refresh in flight until the test resolves it. This used to be
      * a wall-clock delay, which made the assertions a race: on a loaded machine the delay could

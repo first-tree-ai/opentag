@@ -4,14 +4,18 @@ import { setImmediate as waitImmediate } from "node:timers/promises";
 import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V2,
+  RUNTIME_PROVIDER_READINESS_V1_PROVIDERS,
+  RUNTIME_PROVIDER_READINESS_V2,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RuntimeCapabilitiesSchema,
   RuntimeHeartbeatIntervalMsSchema,
   RuntimeHeartbeatTimeoutMsSchema,
   ServerRuntimeFrameSchema,
+  ServerWelcomeFrameSchema,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -37,6 +41,14 @@ const machineContext = {
   computerId: randomUUID(),
   installationId: randomUUID(),
 };
+
+/** Exact pre-Pi readiness negotiation. A welcome that leaks `pi` under v1 fails here. */
+const FrozenBaseReadinessV1NegotiationSchema = z
+  .object({
+    version: z.literal(1),
+    providers: z.array(z.enum(["codex", "claude-code"])),
+  })
+  .strict();
 
 function machineAuthService() {
   return { verifyMachineToken: vi.fn().mockResolvedValue(machineContext) };
@@ -156,10 +168,17 @@ describe("Computer runtime WebSocket", () => {
       JSON.stringify({ type: "auth", requestId: authRequestId, protocolVersion: 1, machineToken: "machine" }),
     );
     expect(await frames.next()).toMatchObject({ type: "auth:result", requestId: authRequestId, ok: true });
-    expect(await frames.next()).toMatchObject({
+    const welcome = await frames.next();
+    expect(welcome).toMatchObject({
       type: "server:welcome",
       protocolVersion: 1,
-      providerReadiness: { version: 1, providers: ["codex", "claude-code", "pi"] },
+      providerReadiness: { version: 1, providers: [...RUNTIME_PROVIDER_READINESS_V1_PROVIDERS] },
+    });
+    expect(
+      FrozenBaseReadinessV1NegotiationSchema.parse(ServerWelcomeFrameSchema.parse(welcome).providerReadiness),
+    ).toEqual({
+      version: 1,
+      providers: ["codex", "claude-code"],
     });
 
     const register = {
@@ -501,6 +520,84 @@ describe("Computer runtime WebSocket", () => {
       })
       .strict();
     expect(legacyWelcomeSchema.parse(welcome)).toEqual(welcome);
+    socket.close();
+  });
+
+  it("keeps Pi off v1 readiness for an older readiness-aware Client", async () => {
+    const { frames, socket } = await connectRuntime({ [PROVIDER_READINESS_V1_HEADER]: "1" });
+    const welcome = await handshakeWelcome(socket, frames, 2);
+    expect(welcome).toMatchObject({
+      type: "server:welcome",
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      providerReadiness: { version: 1, providers: [...RUNTIME_PROVIDER_READINESS_V1_PROVIDERS] },
+    });
+    expect(
+      FrozenBaseReadinessV1NegotiationSchema.parse(ServerWelcomeFrameSchema.parse(welcome).providerReadiness),
+    ).toEqual({
+      version: 1,
+      providers: ["codex", "claude-code"],
+    });
+    expect(JSON.stringify(welcome)).not.toContain("pi");
+
+    socket.send(
+      JSON.stringify({
+        ...registerFrame(machineContext.installationId, randomUUID()),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        capabilities: { imCredentialGrant: 0 },
+        supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+        requiredServerCapabilities: [],
+        providerReadiness: [{ provider: "pi", status: "ready" }],
+      }),
+    );
+    expect(await frames.next()).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
+    await expect(closeCode(socket)).resolves.toBe(4400);
+  });
+
+  it("advertises Pi only when the Client explicitly opts into readiness v2", async () => {
+    const { frames, socket } = await connectRuntime({
+      [PROVIDER_READINESS_V1_HEADER]: "1",
+      [PROVIDER_READINESS_V2_HEADER]: "2",
+    });
+    const welcome = await handshakeWelcome(socket, frames, 2);
+    expect(welcome).toMatchObject({
+      type: "server:welcome",
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      providerReadiness: { version: RUNTIME_PROVIDER_READINESS_V2, providers: ["codex", "claude-code", "pi"] },
+    });
+    expect(() =>
+      FrozenBaseReadinessV1NegotiationSchema.parse(ServerWelcomeFrameSchema.parse(welcome).providerReadiness),
+    ).toThrow();
+
+    socket.send(
+      JSON.stringify({
+        ...registerFrame(machineContext.installationId, randomUUID()),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        capabilities: { imCredentialGrant: 0 },
+        supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+        requiredServerCapabilities: [],
+        providerReadiness: [
+          { provider: "codex", status: "ready" },
+          { provider: "claude-code", status: "ready" },
+          { provider: "pi", status: "ready" },
+        ],
+      }),
+    );
+    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+    socket.close();
+  });
+
+  it("ignores a malformed v2 readiness header and stays on frozen v1", async () => {
+    const { frames, socket } = await connectRuntime({
+      [PROVIDER_READINESS_V1_HEADER]: "1",
+      [PROVIDER_READINESS_V2_HEADER]: "bogus",
+    });
+    const welcome = await handshakeWelcome(socket, frames, 1);
+    expect(
+      FrozenBaseReadinessV1NegotiationSchema.parse(ServerWelcomeFrameSchema.parse(welcome).providerReadiness),
+    ).toEqual({
+      version: 1,
+      providers: ["codex", "claude-code"],
+    });
     socket.close();
   });
 
@@ -1503,6 +1600,31 @@ class RuntimeTestSocket extends EventEmitter {
     this.readyState = WebSocket.CLOSED;
     this.emit("close", code);
   }
+}
+
+async function connectRuntime(headers?: Record<string, string>) {
+  const app = createRuntimeApp({
+    authService: authService(),
+    computerService: computerService() as unknown as ComputerService,
+    runtime: { authTimeoutMs: 1_000, registerTimeoutMs: 1_000 },
+  });
+  apps.push(app);
+  const address = await app.listen({ host: "127.0.0.1", port: 0 });
+  const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`, {
+    headers,
+  });
+  return { frames: frameQueue(socket), socket };
+}
+
+async function handshakeWelcome(
+  socket: WebSocket,
+  frames: { next(): Promise<ReturnType<typeof ServerRuntimeFrameSchema.parse>> },
+  protocolVersion: 1 | 2,
+) {
+  await opened(socket);
+  socket.send(JSON.stringify(authFrame(protocolVersion)));
+  expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
+  return frames.next();
 }
 
 async function authenticate(socket: WebSocket, frames = frameQueue(socket)): Promise<void> {

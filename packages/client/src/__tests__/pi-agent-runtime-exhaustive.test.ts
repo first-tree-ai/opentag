@@ -584,12 +584,16 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: "bad" } },
       }),
     ).rejects.toMatchObject({ code: "binding_incompatible" });
-    await expect(
-      piFactory.resume({
-        ...request(() => undefined),
-        binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
-      }),
-    ).rejects.toMatchObject({ code: "binding_incompatible" });
+    const unmaterialized = await piFactory.resume({
+      ...request(() => undefined),
+      binding: { providerId: "pi", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+    });
+    expect(unmaterialized.binding).toEqual({
+      providerId: "pi",
+      schemaVersion: 1,
+      payload: { sessionId: SESSION_ID },
+    });
+    await unmaterialized.close();
     await expect(
       piFactory.resume({
         ...request(() => undefined),

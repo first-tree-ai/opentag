@@ -157,6 +157,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   #usage: AgentUsage = {};
   #sessionExists: boolean;
   #sessionFileHash?: string;
+  #pendingSessionFileHash = "";
   #terminalClaimed = false;
 
   constructor(options: PiRuntimeOptions) {
@@ -240,15 +241,24 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (this.#sessionFileHash && this.#sessionFileHash !== sessionFileHash) {
       throw protocolError("Pi opened another session file");
     }
-    if (this.#sessionExists && messageCount === 0) {
+    if (this.#sessionFileHash && messageCount === 0) {
       throw protocolError("Pi session has no conversation history");
     }
-    if (!this.#sessionFileHash) {
-      this.#sessionFileHash = sessionFileHash;
-      await context.updateBinding(piBinding(this.#sessionId, sessionFileHash));
-    }
+    this.#pendingSessionFileHash = sessionFileHash;
     this.#sessionExists = true;
     this.#model = parseModel(state.model);
+    if (!this.#sessionFileHash && messageCount !== 0) {
+      await this.#materializeSession(context, sessionFileHash);
+    }
+  }
+
+  // Pi 0.84.2 writes JSONL only after the first assistant message. --session-id
+  // keeps the UUID even when that file does not exist yet, so unmaterialized
+  // resume can recover history written before the binding hash is stored.
+  async #materializeSession(context: AgentProviderRunContext, sessionFileHash: string): Promise<void> {
+    if (this.#sessionFileHash) return;
+    await context.updateBinding(piBinding(this.#sessionId, sessionFileHash));
+    this.#sessionFileHash = sessionFileHash;
   }
 
   async #cleanupRun(client: PiRpcClient | undefined): Promise<Error | undefined> {
@@ -536,6 +546,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#requireContext().emit({ type: "usage_updated", usage: this.#usage });
     }
     this.#currentAssistant = undefined;
+    await this.#materializeSession(this.#requireContext(), this.#pendingSessionFileHash);
   }
 
   async #startTool(message: Readonly<Record<string, unknown>>): Promise<void> {
@@ -730,10 +741,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         ? request.binding
         : piBinding(requireUuid(this.#createSessionId(), "generated Pi session id"));
     assertBinding(binding, this.manifest);
-    const parsedBinding = parsePiBinding(binding);
-    if (mode === "resume" && !parsedBinding.sessionFileHash) {
-      throw new AgentRuntimeError("binding_incompatible", "Pi binding does not identify a materialized session");
-    }
+    parsePiBinding(binding);
     try {
       await request.eventSink({ type: "binding_changed", binding });
       return new PiAgentRuntime({
@@ -1065,11 +1073,6 @@ function parsePiBinding(binding: AgentRuntimeBinding): {
     logger.debug({ code: "binding_invalid", error: String(error) }, "Pi binding was rejected");
     throw new AgentRuntimeError("binding_incompatible", (error as Error).message, { cause: error });
   }
-}
-
-export function piBindingRequiresUnmaterializedReplacement(binding: AgentRuntimeBinding): boolean {
-  assertBinding(binding, PI_AGENT_RUNTIME_MANIFEST);
-  return parsePiBinding(binding).sessionFileHash === undefined;
 }
 
 function parseModel(value: unknown): { readonly id: string; readonly provider: string } | undefined {

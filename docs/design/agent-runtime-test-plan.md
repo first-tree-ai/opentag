@@ -141,13 +141,17 @@ A scripted `stream-json` process verifies:
 A scripted Pi RPC client verifies:
 
 - exact UUID session creation and resume with local-project `--session-id` lookup;
-- post-start session-file fingerprint binding without exposing the local path;
+- session-file fingerprint binding only after history materialization, without exposing the local path;
+- first-Turn interruption before the first assistant message, disk-backed binding reload in a new
+  Session manager, same-UUID unmaterialized recovery, and exact materialized-history resume;
 - process-per-Run operation, prompt, steer, abort, model, thinking, and Provider configuration mapping;
 - fail-closed policy mapping for Pi's no-sandbox and no-approval runtime;
 - fail-closed rejection of common hosted tools, which Pi RPC cannot register;
 - extension, skill, template, theme, context-file, and approval disabling;
 - ordered message, tool, usage, warning, Provider extension, and `agent_settled` terminal events;
 - hidden reasoning content, model errors, late process failures, and terminal ingress precedence;
+- incomplete `length`/`toolUse` terminals failing with partial output; cleanup failure closing the
+  runtime without a successful receipt or masking an earlier protocol/model failure;
 - malformed or crossed session state, parent/child turn ordering, invalid event transitions, and disabled extension UI requests;
 - probe outcomes, credential discovery, process environment allow-listing, and process-tree cleanup.
 
@@ -187,7 +191,9 @@ Code live test explicitly requests unrestricted filesystem and enabled network
 with `approvals: never`. The Provider rejects stricter common policies rather
 than claiming a boundary it cannot guarantee.
 
-The Pi test uses a temporary read-only workspace, disabled network policy,
+The Pi adapter smoke requests read-only tools and disabled tool network policy in a temporary workspace.
+These settings restrict available Pi tools; Pi supplies no OS filesystem or network sandbox.
+The model request still uses the network. It also uses
 `approvals: never`, no tool request, bounded Run timeouts, and an isolated
 temporary session directory. It proves conversation continuity by recalling a
 random project codename after exact resume. The live tests make real model
@@ -198,12 +204,19 @@ requests and are therefore intentionally excluded from the default test command.
 The production-path tests verify:
 
 - daemon composition constructs the provider-neutral `createClientRuntime`
-  entry point and registers Codex through the Provider Registry;
+  entry point and registers Codex, Claude Code, and Pi through the Provider Registry;
 - the registry owns per-Provider factory, readiness, artifact identity, policy
-  validation, and policy mapping while production remains Codex-only;
-- a new Session creates a Provider Runtime and durably writes an opaque v2
+  validation, and policy mapping for all three admitted Providers;
+- a new Session creates a Provider Runtime and durably writes its opaque Provider
   binding before Run admission;
+- an unmaterialized Pi binding retains its UUID across a first-Turn interruption; recovery
+  accepts a never-created file and preserves history saved before a binding update, while
+  a materialized binding still rejects missing or empty history;
 - legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
+- readiness v1 remains limited to Codex/Claude Code for old Clients; new peers explicitly
+  negotiate Pi through readiness v2, while new Clients still connect to old Servers;
+- the shared onboarding matrix covers successful CLI preparation, Server readiness projection,
+  and Web setup gating for Codex, Claude Code, and Pi;
 - effective configuration or tool-policy changes close the old Runtime and
   create a new Provider session instead of silently reusing stale definitions;
 - IM Turns receive only a temporary provider credential-file path, while the
@@ -215,6 +228,11 @@ The production-path tests verify:
   starting/running work as `turn_state_unknown`, without replaying the Run;
 - stop, shutdown, repeated reconcile, binding-write failures, and reporting
   failures do not admit an unbound Run or leak a Runtime owner.
+
+The maintained [Local Pi E1 acceptance](../testing/cloud-computer.md) adds real Server/CLI
+onboarding, file tools, conversation recall across a Client restart, foreground child shutdown,
+and durable cancellation receipts. It runs with the production unrestricted Pi policy and
+isolated credentials; it does not prove Cloud isolation or Server per-Session cancellation.
 
 Repository acceptance also audits that `CodexAdapter`, `CodexTurnRunner`,
 `createCodexClientRuntime`, and their old smoke path have no remaining source,

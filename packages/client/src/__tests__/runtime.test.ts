@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import {
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
@@ -687,6 +688,7 @@ describe("RuntimeConnection", () => {
     let connection: RuntimeConnection;
     server.wss.on("connection", (socket, request) => {
       expect(request.headers[PROVIDER_READINESS_V1_HEADER]).toBe("1");
+      expect(request.headers[PROVIDER_READINESS_V2_HEADER]).toBe("2");
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         frames.push(frame);
@@ -786,6 +788,127 @@ describe("RuntimeConnection", () => {
     await connection.run();
     expect(frames.find((frame) => frame.type === "computer:register")).not.toHaveProperty("providerReadiness");
     expect(frames.find((frame) => frame.type === "heartbeat")).not.toHaveProperty("providerReadiness");
+  });
+
+  it("reports only negotiated v1 providers to an older readiness-aware Server", async () => {
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const frames: Array<Record<string, unknown>> = [];
+    let connection: RuntimeConnection;
+    server.wss.on("connection", (socket, request) => {
+      expect(request.headers[PROVIDER_READINESS_V1_HEADER]).toBe("1");
+      expect(request.headers[PROVIDER_READINESS_V2_HEADER]).toBe("2");
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        frames.push(frame);
+        if (frame.type === "auth") {
+          completeAuth(socket, frame, {
+            ...welcome(),
+            providerReadiness: { version: 1, providers: ["codex", "claude-code"] },
+          });
+        } else if (frame.type === "computer:register") {
+          completeRegistration(socket, frame);
+        } else if (frame.type === "heartbeat") {
+          completeHeartbeat(socket, frame);
+          connection.stop();
+        }
+      });
+    });
+    connection = new RuntimeConnection({
+      arch: "x64",
+      clientVersion: "0.0.1",
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
+      displayName: "workstation",
+      instanceId: randomUUID(),
+      jitter: () => 0,
+      platform: "linux",
+      machineToken: "machine-token",
+    });
+    connection.setProviderReadiness({ provider: "codex", status: "ready" });
+    connection.setProviderReadiness({ provider: "claude-code", status: "ready" });
+    connection.setProviderReadiness({ provider: "pi", status: "ready" });
+
+    await connection.run();
+    const register = frames.find((frame) => frame.type === "computer:register");
+    expect(register).toMatchObject({
+      providerReadiness: [
+        { provider: "codex", status: "ready" },
+        { provider: "claude-code", status: "ready" },
+      ],
+    });
+    expect(register).not.toEqual(
+      expect.objectContaining({ providerReadiness: expect.arrayContaining([{ provider: "pi" }]) }),
+    );
+  });
+
+  it("reports Pi after a new Server advertises readiness v2", async () => {
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const frames: Array<Record<string, unknown>> = [];
+    let connection: RuntimeConnection;
+    server.wss.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        frames.push(frame);
+        if (frame.type === "auth") {
+          completeAuth(socket, frame, {
+            ...welcome(),
+            providerReadiness: { version: 2, providers: ["codex", "claude-code", "pi"] },
+          });
+        } else if (frame.type === "computer:register") {
+          completeRegistration(socket, frame);
+        } else if (frame.type === "heartbeat") {
+          completeHeartbeat(socket, frame);
+          connection.stop();
+        }
+      });
+    });
+    connection = new RuntimeConnection({
+      arch: "x64",
+      clientVersion: "0.0.1",
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
+      displayName: "workstation",
+      instanceId: randomUUID(),
+      jitter: () => 0,
+      platform: "linux",
+      machineToken: "machine-token",
+    });
+    connection.setProviderReadiness({ provider: "codex", status: "ready" });
+    connection.setProviderReadiness({ provider: "claude-code", status: "ready" });
+    connection.setProviderReadiness({ provider: "pi", status: "ready" });
+
+    await connection.run();
+    expect(frames.find((frame) => frame.type === "computer:register")).toMatchObject({
+      providerReadiness: [
+        { provider: "codex", status: "ready" },
+        { provider: "claude-code", status: "ready" },
+        { provider: "pi", status: "ready" },
+      ],
+    });
+  });
+
+  it("disconnects when a welcome leaks Pi under frozen v1 or uses an unsupported readiness version", async () => {
+    for (const providerReadiness of [
+      { version: 1, providers: ["codex", "claude-code", "pi"] },
+      { version: 3, providers: ["codex"] },
+    ]) {
+      const socket = new ControlledWebSocket();
+      const connection = controlledConnection(socket, { trace: 2 });
+      const running = connection.run();
+      await vi.waitFor(() => expect(socket.listenerCount("open")).toBeGreaterThan(0));
+      socket.open();
+      await vi.waitFor(() => expect(socket.frame("auth")).toBeDefined());
+      const auth = socket.frame("auth") ?? {};
+      socket.receive({
+        type: "auth:result",
+        requestId: auth.requestId,
+        ok: true,
+        computerId: randomUUID(),
+        installationId: randomUUID(),
+      });
+      socket.receive({ ...welcome(), providerReadiness });
+      await expect(running).rejects.toThrow("invalid runtime frame");
+    }
   });
 
   it("keeps negotiated readiness heartbeats fresh past the TTL while a lease owns admission", async () => {

@@ -35,7 +35,6 @@ import {
   PI_AGENT_RUNTIME_MANIFEST,
   PiAgentRuntimeFactory,
   piAgentRuntimeEnvironment,
-  piBindingRequiresUnmaterializedReplacement,
 } from "../providers/pi/agent-runtime.js";
 import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
@@ -862,12 +861,7 @@ function productionProviderRegistration(
   if (providerId === "claude-code") {
     return { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
   }
-  return {
-    ...common,
-    policy: piRuntimePolicy,
-    requiresBindingReplacement: piBindingRequiresUnmaterializedReplacement,
-    validate: validatePiRuntimePolicy,
-  };
+  return { ...common, policy: piRuntimePolicy, validate: validatePiRuntimePolicy };
 }
 
 function prependPath(

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -18,6 +18,7 @@ import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
+import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import {
   ComposedClientRuntime,
@@ -153,7 +154,76 @@ describe("createClientRuntime production composition", () => {
       await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
       const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
       expect(recovered.binding?.providerId).toBe("pi");
-      expect(recovered.binding).not.toEqual(originalBinding);
+      expect(recovered.binding).toEqual(originalBinding);
+    } finally {
+      restarted.stop();
+      await restarted.run();
+    }
+  });
+
+  it("resumes the same Pi UUID after Client restarts mid-first-prompt before an assistant", async () => {
+    const home = await temporaryDirectory("opentag-pi-interrupt-restart-");
+    const connection = runtimeConnection();
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const firstPath = `/sessions/${sessionId}-first.jsonl`;
+    const secondPath = `/sessions/${sessionId}-second.jsonl`;
+    const secondHash = createHash("sha256").update(secondPath).digest("hex");
+    let launches = 0;
+    const factory = new PiAgentRuntimeFactory({
+      createSessionId: () => sessionId,
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      createClient: () => {
+        launches += 1;
+        return launches === 1
+          ? new CompositionPiRpcClient(sessionId, firstPath, "interrupt")
+          : new CompositionPiRpcClient(sessionId, secondPath, "complete");
+      },
+    });
+    const options = { clientVersion: "0.0.1", environment: { HOME: home, PATH: process.env.PATH }, factory, home };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+
+    const first = await createClientRuntime(connection, options);
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const agent = await first.runtimeManager.ensureRuntime("session-1");
+      await expect(
+        agent.prompt({ runId: "interrupted", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "failed", error: { code: "provider_error" } });
+      expect((await first.bindingStore.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId },
+      });
+    } finally {
+      first.stop();
+      await first.run();
+    }
+
+    const restarted = await createClientRuntime(
+      runtimeConnection(undefined, undefined, connection.installationId),
+      options,
+    );
+    try {
+      await restarted.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      const recovered = await restarted.runtimeManager.ensureRuntime("session-1");
+      expect(recovered.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId },
+      });
+      await expect(
+        recovered.prompt({ runId: "recovered", input: { items: [{ type: "text", text: "hello" }] } }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(recovered.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId, sessionFileHash: secondHash },
+      });
+      expect((await restarted.bindingStore.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId, sessionFileHash: secondHash },
+      });
     } finally {
       restarted.stop();
       await restarted.run();
@@ -2383,6 +2453,56 @@ async function composePiRuntimeWithPackagedSkills(options: {
     piCommand: command,
   });
   return { connection, logPath, runtime };
+}
+
+class CompositionPiRpcClient implements PiRpcClient {
+  readonly #sessionId: string;
+  readonly #sessionFile: string;
+  readonly #mode: "complete" | "interrupt";
+  readonly #listeners = new Set<(message: Readonly<Record<string, unknown>>) => void>();
+
+  constructor(sessionId: string, sessionFile: string, mode: "complete" | "interrupt") {
+    this.#sessionId = sessionId;
+    this.#sessionFile = sessionFile;
+    this.#mode = mode;
+  }
+
+  async request(command: Readonly<Record<string, unknown>>): Promise<unknown> {
+    if (command.type === "get_state") {
+      return {
+        sessionId: this.#sessionId,
+        sessionFile: this.#sessionFile,
+        messageCount: 0,
+        model: { id: "fixture-model", provider: "fixture" },
+      };
+    }
+    if (command.type !== "prompt") return undefined;
+    if (this.#mode === "interrupt") throw new PiRpcError("command", "interrupted before assistant");
+    const assistant = {
+      role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      stopReason: "stop",
+    };
+    for (const message of [
+      { type: "agent_start" },
+      { type: "turn_start" },
+      { type: "message_start", message: { role: "assistant", content: [] } },
+      { type: "message_end", message: assistant },
+      { type: "turn_end" },
+      { type: "agent_end", willRetry: false },
+      { type: "agent_settled" },
+    ]) {
+      for (const listener of this.#listeners) listener(message);
+    }
+    return undefined;
+  }
+
+  subscribe(listener: (message: Readonly<Record<string, unknown>>) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  async close(): Promise<void> {}
 }
 
 function readyFactory(

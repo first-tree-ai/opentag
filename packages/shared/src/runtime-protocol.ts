@@ -1,12 +1,16 @@
 import { z } from "zod";
-import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
+import { AGENT_RUNTIME_PROVIDERS, type AgentRuntimeProvider, AgentRuntimeProviderSchema } from "./agent.js";
 import { ChannelNameSchema } from "./channel-name.js";
 import {
   ComputerPlatformSchema,
   IM_CLI_PROVIDERS,
   ImCliProviderSchema,
   ImCliReadinessStatusSchema,
+  PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   ProviderReadinessStatusSchema,
+  requestsProviderReadinessV1,
+  requestsProviderReadinessV2,
 } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 import { SemVerStringSchema } from "./semver.js";
@@ -15,6 +19,12 @@ export const RUNTIME_PROTOCOL_V1 = 1 as const;
 export const RUNTIME_PROTOCOL_V2 = 2 as const;
 export const RUNTIME_PROTOCOL_VERSION = RUNTIME_PROTOCOL_V2;
 export const RUNTIME_SUPPORTED_PROTOCOL_VERSIONS = { min: RUNTIME_PROTOCOL_V1, max: RUNTIME_PROTOCOL_V2 } as const;
+export const RUNTIME_PROVIDER_READINESS_V1 = 1 as const;
+export const RUNTIME_PROVIDER_READINESS_V2 = 2 as const;
+/** Frozen v1 wire vocabulary. Pi must never appear under version 1. */
+export const RUNTIME_PROVIDER_READINESS_V1_PROVIDERS = ["codex", "claude-code"] as const;
+/** Explicit v2 wire vocabulary. Opt-in only; never derived into v1. */
+export const RUNTIME_PROVIDER_READINESS_V2_PROVIDERS = ["codex", "claude-code", "pi"] as const;
 
 export const RUNTIME_V0_CAPABILITIES = {
   sessionReconcile: 1,
@@ -190,13 +200,33 @@ export const RuntimeImCliReadinessCollectionSchema = z
     ),
   );
 
-export const RuntimeProviderReadinessNegotiationSchema = z
+export const RuntimeProviderReadinessV1ProviderSchema = z.enum(RUNTIME_PROVIDER_READINESS_V1_PROVIDERS);
+export const RuntimeProviderReadinessV2ProviderSchema = z.enum(RUNTIME_PROVIDER_READINESS_V2_PROVIDERS);
+
+export const RuntimeProviderReadinessNegotiationV1Schema = z
   .object({
-    version: z.literal(1),
-    providers: z.array(AgentRuntimeProviderSchema).max(AGENT_RUNTIME_PROVIDERS.length),
+    version: z.literal(RUNTIME_PROVIDER_READINESS_V1),
+    providers: z.array(RuntimeProviderReadinessV1ProviderSchema).max(RUNTIME_PROVIDER_READINESS_V1_PROVIDERS.length),
   })
   .strict()
-  .superRefine((negotiation, context) => validateCanonicalProviderIds(negotiation.providers, context));
+  .superRefine((negotiation, context) =>
+    validateCanonicalProviderIds(negotiation.providers, context, RUNTIME_PROVIDER_READINESS_V1_PROVIDERS),
+  );
+
+export const RuntimeProviderReadinessNegotiationV2Schema = z
+  .object({
+    version: z.literal(RUNTIME_PROVIDER_READINESS_V2),
+    providers: z.array(RuntimeProviderReadinessV2ProviderSchema).max(RUNTIME_PROVIDER_READINESS_V2_PROVIDERS.length),
+  })
+  .strict()
+  .superRefine((negotiation, context) =>
+    validateCanonicalProviderIds(negotiation.providers, context, RUNTIME_PROVIDER_READINESS_V2_PROVIDERS),
+  );
+
+export const RuntimeProviderReadinessNegotiationSchema = z.discriminatedUnion("version", [
+  RuntimeProviderReadinessNegotiationV1Schema,
+  RuntimeProviderReadinessNegotiationV2Schema,
+]);
 
 const heartbeatPolicyShape = {
   heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
@@ -438,6 +468,11 @@ export const ServerRuntimeFrameSchema = z.union([
   RuntimeErrorFrameSchema,
 ]);
 
+export type RuntimeProviderReadinessVersion =
+  | typeof RUNTIME_PROVIDER_READINESS_V1
+  | typeof RUNTIME_PROVIDER_READINESS_V2;
+export type RuntimeProviderReadinessV1Provider = (typeof RUNTIME_PROVIDER_READINESS_V1_PROVIDERS)[number];
+export type RuntimeProviderReadinessV2Provider = (typeof RUNTIME_PROVIDER_READINESS_V2_PROVIDERS)[number];
 export type RuntimeProtocolVersion = typeof RUNTIME_PROTOCOL_V1 | typeof RUNTIME_PROTOCOL_V2;
 export type RuntimeProtocolRange = z.infer<typeof RuntimeProtocolRangeSchema>;
 export type RuntimeCapabilityRange = z.infer<typeof RuntimeCapabilityRangeSchema>;
@@ -464,6 +499,31 @@ export type RuntimeChannelTarget = z.infer<typeof RuntimeChannelTargetSchema>;
 export type RuntimeErrorFrame = z.infer<typeof RuntimeErrorFrameSchema>;
 export type ClientRuntimeFrame = z.infer<typeof ClientRuntimeFrameSchema>;
 export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;
+
+export function advertisedProviderReadiness(
+  version: RuntimeProviderReadinessVersion,
+  admitted: readonly AgentRuntimeProvider[],
+): RuntimeProviderReadinessNegotiation | undefined {
+  if (version === RUNTIME_PROVIDER_READINESS_V2) {
+    const providers = RUNTIME_PROVIDER_READINESS_V2_PROVIDERS.filter((provider) => admitted.includes(provider));
+    return providers.length === 0 ? undefined : { version: RUNTIME_PROVIDER_READINESS_V2, providers };
+  }
+  const providers = RUNTIME_PROVIDER_READINESS_V1_PROVIDERS.filter((provider) => admitted.includes(provider));
+  return providers.length === 0 ? undefined : { version: RUNTIME_PROVIDER_READINESS_V1, providers };
+}
+
+export function negotiateProviderReadinessFromHeaders(
+  headers: { readonly [header: string]: string | string[] | undefined },
+  admitted: readonly AgentRuntimeProvider[],
+): RuntimeProviderReadinessNegotiation | undefined {
+  if (requestsProviderReadinessV2(headers[PROVIDER_READINESS_V2_HEADER])) {
+    return advertisedProviderReadiness(RUNTIME_PROVIDER_READINESS_V2, admitted);
+  }
+  if (requestsProviderReadinessV1(headers[PROVIDER_READINESS_V1_HEADER])) {
+    return advertisedProviderReadiness(RUNTIME_PROVIDER_READINESS_V1, admitted);
+  }
+  return undefined;
+}
 
 export function negotiateRuntimeCapabilities(
   local: RuntimeCapabilityOffers,
@@ -523,10 +583,11 @@ function validateCanonicalProviders(
 }
 
 function validateCanonicalProviderIds(
-  providers: readonly (typeof AGENT_RUNTIME_PROVIDERS)[number][],
+  providers: readonly AgentRuntimeProvider[],
   context: z.RefinementCtx,
+  canonical: readonly AgentRuntimeProvider[] = AGENT_RUNTIME_PROVIDERS,
 ): void {
-  validateCanonicalIds(providers, AGENT_RUNTIME_PROVIDERS, "Provider readiness", context);
+  validateCanonicalIds(providers, canonical, "Provider readiness", context);
 }
 
 function validateCanonicalIds<T extends string>(

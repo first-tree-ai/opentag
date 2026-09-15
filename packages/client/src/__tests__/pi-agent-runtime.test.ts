@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type { AgentRuntimeBinding, AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
-import {
-  PiAgentRuntime,
-  PiAgentRuntimeFactory,
-  piAgentRuntimeEnvironment,
-  piBindingRequiresUnmaterializedReplacement,
-} from "../providers/pi/agent-runtime.js";
-import type { PiRpcClient } from "../providers/pi/rpc-wire.js";
+import { PiAgentRuntime, PiAgentRuntimeFactory, piAgentRuntimeEnvironment } from "../providers/pi/agent-runtime.js";
+import { type PiRpcClient, PiRpcError } from "../providers/pi/rpc-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
@@ -48,7 +46,6 @@ describe("PiAgentRuntime", () => {
     expect(events.map((event) => event.type)).toEqual([
       "binding_changed",
       "run_started",
-      "binding_changed",
       "model_turn_started",
       "provider_event",
       "message_started",
@@ -56,6 +53,7 @@ describe("PiAgentRuntime", () => {
       "message_completed",
       "provider_event",
       "usage_updated",
+      "binding_changed",
       "tool_started",
       "tool_updated",
       "tool_completed",
@@ -155,6 +153,166 @@ describe("PiAgentRuntime", () => {
     expect(resumeClient.commands).toEqual([{ type: "get_state" }]);
     expect(resumeEvents.some((event) => event.type === "run_completed")).toBe(false);
     await vi.waitFor(() => expect(resumed.state.phase).toBe("closed"));
+  });
+
+  it("keeps an interrupted first Turn unmaterialized so the next same-runtime Turn can persist", async () => {
+    const client = new ScriptedPiClient("complete");
+    client.promptError = new PiRpcError("command", "interrupted before assistant");
+    const runtime = await piFactory(client).create(createRequest(() => undefined));
+
+    await expect(runtime.prompt({ runId: "run-interrupted", input: input("hello") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "interrupted before assistant" },
+    });
+    expect(runtime.binding).toEqual(unmaterializedBinding());
+    expect(runtime.state.phase).toBe("idle");
+    expect(client.commands.filter((command) => command.type === "prompt")).toHaveLength(1);
+
+    client.promptError = undefined;
+    await expect(runtime.prompt({ runId: "run-recovered", input: input("hello") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(runtime.binding).toEqual(materializedBinding());
+    expect(client.messageCount).toBe(2);
+    await runtime.close();
+  });
+
+  it("keeps prior history on the same runtime after an interrupt following the first assistant", async () => {
+    const client = new ScriptedPiClient("complete");
+    client.promptError = new PiRpcError("command", "killed after assistant");
+    const runtime = await piFactory(client).create(createRequest(() => undefined));
+    await expect(runtime.prompt({ runId: "run-after-assistant", input: input("hello") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "killed after assistant" },
+    });
+    expect(runtime.binding).toEqual(unmaterializedBinding());
+    expect(runtime.state.phase).toBe("idle");
+
+    client.promptError = undefined;
+    client.messageCount = 2;
+    await expect(runtime.prompt({ runId: "run-kept-history", input: input("continue") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(runtime.binding).toEqual(materializedBinding());
+    await runtime.close();
+  });
+
+  it("resumes the same UUID after a disk-backed interrupt before the first assistant", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opentag-pi-binding-before-"));
+    try {
+      const sessionFile = join(directory, `${SESSION_ID}.jsonl`);
+      const sessionFileHash = createHash("sha256").update(sessionFile).digest("hex");
+      const bindingPath = join(directory, "binding.json");
+      const materialized = {
+        providerId: "pi" as const,
+        schemaVersion: 1,
+        payload: { sessionId: SESSION_ID, sessionFileHash },
+      };
+
+      const interrupted = new ScriptedPiClient("complete");
+      interrupted.sessionFile = sessionFile;
+      interrupted.promptError = new PiRpcError("command", "interrupted before assistant");
+      const first = await piFactory(interrupted).create(createRequest(() => undefined));
+      await expect(first.prompt({ runId: "run-interrupted", input: input("hello") })).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_error", message: "interrupted before assistant" },
+      });
+      expect(first.binding).toEqual(unmaterializedBinding());
+      expect(existsSync(sessionFile)).toBe(false);
+      await writeFile(bindingPath, JSON.stringify(first.binding));
+      await first.close();
+
+      const saved = JSON.parse(await readFile(bindingPath, "utf8")) as AgentRuntimeBinding;
+      const recovered = new ScriptedPiClient("complete");
+      recovered.sessionFile = sessionFile;
+      recovered.persistSession = true;
+      const second = await piFactory(recovered).resume({
+        ...createRequest(() => undefined),
+        binding: saved,
+      });
+      await expect(second.prompt({ runId: "run-recovered", input: input("hello") })).resolves.toMatchObject({
+        status: "completed",
+      });
+      expect(second.binding).toEqual(materialized);
+      expect(existsSync(sessionFile)).toBe(true);
+      await writeFile(bindingPath, JSON.stringify(second.binding));
+      await second.close();
+
+      const resumedBinding = JSON.parse(await readFile(bindingPath, "utf8")) as AgentRuntimeBinding;
+      const resumeClient = new ScriptedPiClient("complete");
+      resumeClient.sessionFile = sessionFile;
+      resumeClient.messageCount = 2;
+      resumeClient.persistSession = true;
+      const resumed = await piFactory(resumeClient).resume({
+        ...createRequest(() => undefined),
+        binding: resumedBinding,
+      });
+      await expect(resumed.prompt({ runId: "run-resumed", input: input("again") })).resolves.toMatchObject({
+        status: "completed",
+      });
+      expect(resumed.binding).toEqual(materialized);
+      await resumed.close();
+
+      const missing = new ScriptedPiClient("complete");
+      missing.sessionFile = sessionFile;
+      const rejected = await piFactory(missing).resume({
+        ...createRequest(() => undefined),
+        binding: materialized,
+      });
+      await expect(rejected.prompt({ runId: "run-missing-history", input: input("hello") })).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_protocol_error", message: "Pi session has no conversation history" },
+      });
+      await vi.waitFor(() => expect(rejected.state.phase).toBe("closed"));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps prior history when a disk-backed runtime restarts after the first assistant", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opentag-pi-binding-after-"));
+    try {
+      const sessionFile = join(directory, `${SESSION_ID}.jsonl`);
+      const sessionFileHash = createHash("sha256").update(sessionFile).digest("hex");
+      const history = `${JSON.stringify({ type: "session", id: SESSION_ID })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "tool history" }] },
+      })}\n`;
+      const interrupted = new ScriptedPiClient("complete");
+      interrupted.sessionFile = sessionFile;
+      interrupted.persistSession = true;
+      interrupted.historyBeforeError = history;
+      interrupted.promptError = new PiRpcError("exited", "killed after assistant");
+      const first = await piFactory(interrupted).create(createRequest(() => undefined));
+      await expect(first.prompt({ runId: "run-after-assistant", input: input("hello") })).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_error", message: "killed after assistant" },
+      });
+      expect(first.binding).toEqual(unmaterializedBinding());
+      expect(existsSync(sessionFile)).toBe(true);
+      expect(await readFile(sessionFile, "utf8")).toContain("tool history");
+      const saved = first.binding;
+      await first.close();
+
+      const recovered = new ScriptedPiClient("complete");
+      recovered.sessionFile = sessionFile;
+      recovered.messageCount = 2;
+      const second = await piFactory(recovered).resume({
+        ...createRequest(() => undefined),
+        binding: saved ?? unmaterializedBinding(),
+      });
+      await expect(second.prompt({ runId: "run-kept-history", input: input("continue") })).resolves.toMatchObject({
+        status: "completed",
+      });
+      expect(second.binding).toEqual({
+        providerId: "pi",
+        schemaVersion: 1,
+        payload: { sessionId: SESSION_ID, sessionFileHash },
+      });
+      await second.close();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("supports same-Run steer only after Pi accepts the prompt", async () => {
@@ -274,16 +432,20 @@ describe("PiAgentRuntime", () => {
     });
   });
 
-  it("replaces only valid unmaterialized Pi bindings", () => {
-    expect(
-      piBindingRequiresUnmaterializedReplacement({
-        providerId: "pi",
-        schemaVersion: 1,
-        payload: { sessionId: SESSION_ID },
-      }),
-    ).toBe(true);
-    expect(piBindingRequiresUnmaterializedReplacement(materializedBinding())).toBe(false);
+  it("resumes an unmaterialized Pi UUID and still rejects incompatible payloads", async () => {
+    const client = new ScriptedPiClient("complete");
+    const runtime = await piFactory(client).resume({
+      ...createRequest(() => undefined),
+      binding: unmaterializedBinding(),
+    });
+    expect(runtime.binding).toEqual(unmaterializedBinding());
+    await expect(runtime.prompt({ runId: "run-unmaterialized-resume", input: input("hello") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(runtime.binding).toEqual(materializedBinding());
+    await runtime.close();
 
+    const factory = piFactory(new ScriptedPiClient("complete"));
     const rejected: readonly AgentRuntimeBinding[] = [
       { providerId: "codex", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
       { providerId: "pi", schemaVersion: 2, payload: { sessionId: SESSION_ID } },
@@ -300,13 +462,9 @@ describe("PiAgentRuntime", () => {
       },
     ];
     for (const binding of rejected) {
-      try {
-        piBindingRequiresUnmaterializedReplacement(binding);
-        expect.unreachable("incompatible Pi bindings must not be replaceable");
-      } catch (error) {
-        expect(error).toBeInstanceOf(AgentRuntimeError);
-        expect(error).toMatchObject({ code: "binding_incompatible" });
-      }
+      await expect(factory.resume({ ...createRequest(() => undefined), binding })).rejects.toMatchObject({
+        code: "binding_incompatible",
+      });
     }
   });
 });
@@ -321,6 +479,10 @@ class ScriptedPiClient implements PiRpcClient {
   readonly #sessionId: string;
   closed = false;
   messageCount = 0;
+  persistSession = false;
+  historyBeforeError?: string;
+  promptError?: Error;
+  sessionFile = SESSION_FILE;
 
   constructor(scenario: Scenario, sessionId = SESSION_ID) {
     this.#scenario = scenario;
@@ -332,7 +494,7 @@ class ScriptedPiClient implements PiRpcClient {
     if (command.type === "get_state") {
       return {
         sessionId: this.#sessionId,
-        sessionFile: SESSION_FILE,
+        sessionFile: this.sessionFile,
         messageCount: this.messageCount,
         model: { id: "fixture-model", provider: "fixture" },
       };
@@ -343,6 +505,16 @@ class ScriptedPiClient implements PiRpcClient {
       return undefined;
     }
     if (command.type !== "prompt") throw new Error(`unexpected Pi command: ${String(command.type)}`);
+    if (this.promptError) {
+      if (this.persistSession) {
+        writeFileSync(
+          this.sessionFile,
+          this.historyBeforeError ?? `${JSON.stringify({ type: "session", id: this.#sessionId })}\n`,
+        );
+        this.messageCount = Math.max(this.messageCount, 2);
+      }
+      throw this.promptError;
+    }
     if (this.#scenario === "complete") this.#emitRun("stop", true);
     if (this.#scenario === "error") this.#emitRun("error");
     if (this.#scenario === "failure") this.#emit({ type: "opentag/process_error", error: new Error("process exited") });
@@ -401,6 +573,9 @@ class ScriptedPiClient implements PiRpcClient {
     this.#emit({ type: "agent_end", messages: [assistant], willRetry: false });
     this.#emit({ type: "agent_settled" });
     this.messageCount = Math.max(this.messageCount, 2);
+    if (this.persistSession) {
+      writeFileSync(this.sessionFile, `${JSON.stringify({ type: "session", id: this.#sessionId })}\n`);
+    }
   }
 
   #emit(message: Readonly<Record<string, unknown>>): void {
@@ -453,6 +628,14 @@ function basePolicy(): CreateAgentRuntimeRequest["policy"] {
 
 function input(text: string): { items: [{ type: "text"; text: string }] } {
   return { items: [{ type: "text", text }] };
+}
+
+function unmaterializedBinding() {
+  return {
+    providerId: "pi" as const,
+    schemaVersion: 1,
+    payload: { sessionId: SESSION_ID },
+  };
 }
 
 function materializedBinding() {

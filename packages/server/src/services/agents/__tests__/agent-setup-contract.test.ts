@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AGENT_RUNTIME_PROVIDERS,
   type AgentRuntimeProvider,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
@@ -74,6 +75,11 @@ interface Scenario {
 }
 
 interface FixtureFile {
+  readonly identities: {
+    readonly runtimeProviders: readonly AgentRuntimeProvider[];
+    readonly runtimeLabels: Readonly<Record<AgentRuntimeProvider, string>>;
+  };
+  readonly coverage: { readonly success: readonly string[] };
   readonly scenarios: Scenario[];
 }
 
@@ -303,7 +309,21 @@ function expectContractValid(snapshot: AgentSetupSnapshot): void {
   expect(AgentSetupSnapshotSchema.parse(snapshot)).toEqual(snapshot);
 }
 
+function successScenarios(): Scenario[] {
+  return fixture.coverage.success.map((id) => {
+    const scenario = fixture.scenarios.find((candidate) => candidate.id === id);
+    if (!scenario) throw new Error(`missing success scenario ${id}`);
+    return scenario;
+  });
+}
+
 describe("F6 shared preparation matrix, Server boundary", () => {
+  it("covers every admitted runtime provider in the authoritative success matrix", () => {
+    expect(fixture.identities.runtimeProviders).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    expect(Object.keys(fixture.identities.runtimeLabels)).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+    expect(successScenarios().map((scenario) => scenario.runtimeProvider)).toEqual([...AGENT_RUNTIME_PROVIDERS]);
+  });
+
   it.each(fixture.scenarios.map((scenario) => [scenario.id, scenario] as const))(
     "scenario %s: the real AgentSetupService emits exactly the fixture's canonical snapshot",
     async (_id, scenario) => {
@@ -351,21 +371,14 @@ describe("F6 shared preparation matrix, Server boundary", () => {
     }
   });
 
-  it("pins both Runtime identities through real bound Agents", async () => {
-    const codex = fixture.scenarios.find((scenario) => scenario.id === "success-codex");
-    const claude = fixture.scenarios.find((scenario) => scenario.id === "success-claude-code");
-    if (!codex || !claude) throw new Error("missing identity scenarios");
-    const codexRun = await runScenario(codex);
-    const claudeRun = await runScenario(claude);
-    expect(codexRun.snapshot.runtime.provider).toBe("codex");
-    expect(claudeRun.snapshot.runtime.provider).toBe("claude-code");
-    const codexRuntime = codexRun.snapshot.components.find((component) => component.kind === "runtime");
-    const claudeRuntime = claudeRun.snapshot.components.find((component) => component.kind === "runtime");
-    if (codexRuntime?.kind !== "runtime" || claudeRuntime?.kind !== "runtime") {
-      throw new Error("runtime component missing");
+  it("pins all admitted Runtime identities through real bound Agents", async () => {
+    for (const scenario of successScenarios()) {
+      const { snapshot } = await runScenario(scenario);
+      expect(snapshot.agent.runtimeProvider).toBe(scenario.runtimeProvider);
+      expect(snapshot.runtime.provider).toBe(scenario.runtimeProvider);
+      const runtime = snapshot.components.find((component) => component.kind === "runtime");
+      expect(runtime).toMatchObject({ kind: "runtime", provider: scenario.runtimeProvider, status: "ready" });
     }
-    expect(codexRuntime.provider).toBe("codex");
-    expect(claudeRuntime.provider).toBe("claude-code");
   });
 
   it("exposes no start-messaging action until required legs are freshly ready (Server stage is the gate)", async () => {
@@ -389,7 +402,7 @@ describe("F6 shared preparation matrix, Server boundary", () => {
       expect(snapshot.actions).not.toContainEqual(expect.objectContaining({ kind: "start-messaging" }));
     }
     for (const scenario of fixture.scenarios.filter((candidate) =>
-      ["success-codex", "success-claude-code", "warning-non-blocking"].includes(candidate.id),
+      [...fixture.coverage.success, "warning-non-blocking"].includes(candidate.id),
     )) {
       const { snapshot } = await runScenario(scenario);
       expectContractValid(snapshot);

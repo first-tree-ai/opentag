@@ -76,13 +76,48 @@ Provider implementation and production product support are separate claims:
 | Provider | Contract adapter | Local live smoke | Shared/Server/Client production composition |
 | --- | --- | --- | --- |
 | Codex | supported | supported | supported |
-| Claude Code | supported | supported | not registered |
-| Pi | supported | supported | not registered |
+| Claude Code | supported | supported | supported |
+| Pi | supported | supported | supported (Local E1) |
 
-Claude Code and Pi remain intentionally outside production composition until
-the Shared snapshot schema, Server assembly, Provider-specific policy mapping,
-artifact identity, and readiness ownership are reviewed as one end-to-end
-security boundary.
+All three providers participate in Shared snapshots, Server admission, Client
+readiness and policy mapping, and CLI/Web setup. Pi readiness requires the installed
+CLI's supported RPC surface and usable model configuration; a version check alone
+is insufficient. Provider readiness is observed availability, not authorization.
+The frozen readiness v1 vocabulary contains only Codex and Claude Code; Pi is
+advertised only after explicit readiness v2 negotiation. See
+[Runtime protocol compatibility](../runtime-protocol.md).
+
+Local Pi runs with unrestricted filesystem access, enabled network, and no approval
+gate. Unsupported stricter product settings are rejected. Pi's read-only adapter
+mode limits exposed tools; it is not an OS isolation boundary. Automatic extensions,
+ambient skills, prompt templates, themes, and context-file discovery are disabled.
+Packaged Context Tree skills are passed explicitly. Model credentials come from the
+operator's configured Pi environment; Local E1 does not introduce a hosted secret
+proxy or Cloud sandbox.
+
+### Pi binding lifecycle
+
+A new Pi binding records the provider Session UUID before Run admission. Its
+`sessionFileHash` is added only after Pi materializes conversation history. A
+pre-prompt `get_state` path is a prospective filename, not evidence that the file
+exists: Pi defers the first JSONL write until an assistant message is persisted.
+
+If the first Run is interrupted before materialization, a later Turn reopens the
+same Pi UUID with `--session-id`. Pi loads existing history if present, or starts
+an empty file for that UUID if the first file was never created. This also preserves
+history saved just before a crash that prevented OpenTag's binding update. An
+unmaterialized binding is not replaced merely because its file hash is absent.
+This does not automatically replay the interrupted Turn or claim its success.
+Once materialized, recovery must preserve both the Pi UUID and file-path fingerprint,
+and reject missing or empty history instead of silently resetting it.
+The fingerprint does not detect arbitrary partial corruption retaining messages.
+
+A completed Run requires `agent_settled`, final assistant `stopReason=stop`, and
+successful child-process cleanup. Length-limited or terminal tool-call output is
+failed with partial output retained. Cleanup failure closes the affected runtime;
+an earlier protocol or model failure remains the primary error. Server per-Session
+stop/status and Cloud lifecycle acceptance remain outside Local E1; see the
+[maintained acceptance harness](../testing/cloud-computer.md).
 
 ## Verification
 

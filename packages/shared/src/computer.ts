@@ -51,10 +51,23 @@ export const ProviderCliPublicFailureReasonSchema = z.enum(PROVIDER_CLI_PUBLIC_F
 export type ProviderCliArtifactPublicReason = z.infer<typeof ProviderCliArtifactPublicReasonSchema>;
 export type ProviderCliPublicFailureReason = z.infer<typeof ProviderCliPublicFailureReasonSchema>;
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
+export const PROVIDER_READINESS_V2_HEADER = "x-opentag-provider-readiness-v2";
 export const PROVIDER_CLI_REASON_V2_HEADER = "x-opentag-provider-cli-reason";
 
 export function requestsProviderCliReasonV2(value: string | string[] | undefined): boolean {
-  return (Array.isArray(value) ? value[0] : value) === "2";
+  return headerValueEquals(value, "2");
+}
+
+export function requestsProviderReadinessV1(value: string | string[] | undefined): boolean {
+  return headerValueEquals(value, "1");
+}
+
+export function requestsProviderReadinessV2(value: string | string[] | undefined): boolean {
+  return headerValueEquals(value, "2");
+}
+
+function headerValueEquals(value: string | string[] | undefined, expected: string): boolean {
+  return (Array.isArray(value) ? value[0] : value) === expected;
 }
 
 const PROVIDER_CLI_ALWAYS_MANUAL_ARTIFACT_REASONS = new Set<string>([

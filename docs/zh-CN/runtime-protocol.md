@@ -1,7 +1,7 @@
 # Runtime 协议兼容
 
 > Canonical source: [../runtime-protocol.md](../runtime-protocol.md)
-> Last synced with: 2026-09-01
+> Last synced with: 2026-09-15
 
 ## 范围
 
@@ -44,9 +44,36 @@ disconnected -> connecting -> authenticating -> welcoming -> registering -> regi
 
 发布顺序必须 Server v2 在先、Client v2 在后。v2 Client 遇到超时、传输失败、TLS 失败、畸形响应、不匹配错误或不兼容 welcome 时绝不回退。旧 Server 明确触发回退后，该 Client 进程在重启前保持 v1，避免拒绝循环；重启后会重新探测 v2。
 
+## Provider readiness 的 provider 范围
+
+Provider readiness 版本与传输协议 v1/v2 独立。Readiness v1 固定只包含 `codex` 和
+`claude-code`；v2 加入 `pi`。两个版本都使用明确列表，新增产品 provider 不能自动扩大已有协议版本。
+
+新 Client 同时发送 `x-opentag-provider-readiness: 1` 和
+`x-opentag-provider-readiness-v2: 2`。新 Server 只有收到明确的 v2 声明后才选择 v2，
+并在 welcome 中确认 `{version: 2, providers: [...]}`。旧 Server 仍能识别原有 v1 header，
+返回原有 provider 范围。Client 只上报本连接确认的 provider，Server 拒绝 register 或 heartbeat
+中未经协商的观测。
+
+| Client 声明 | 新 Server 响应 |
+| --- | --- |
+| 无可识别的 readiness header | 不返回 readiness 扩展 |
+| 仅 v1 | v1，Codex 和 Claude Code |
+| v1 加 v2，或仅 v2 | v2，Codex、Claude Code 和 Pi |
+| v2 值不支持，但 v1 有效 | v1，Codex 和 Claude Code |
+
+Account Computer 列表的 HTTP 投影也遵循相同 header：旧调用方保留 v1 provider 列表，
+明确声明 v2 的调用方可以收到 Pi，没有可识别声明的调用方不会收到 readiness 扩展。
+存储和实时观测仍保持完整；HTTP 兼容过滤不会改变 provider 准入。
+
+Computer 投影同时遵循当前 daemon 连接协商的 provider 范围。范围之外的 provider
+显示为 `unavailable`，不生成探测时间；已协商但尚未收到新观测的 provider 仍为 `checking`。
+因此，新 Web/CLI 查看仅支持 v1 的 daemon 时，Pi 会显示为不可用，不会无限等待。
+连接替换后，支持范围也随之替换。
+
 ## 解析与 fencing
 
-- 基础 v1 握手和控制 schema 保持严格且 byte-compatible。Client 通过 WebSocket header 提供可选 Provider readiness v1 扩展；只有明确确认的 Server 才能增加 welcome 字段，并接受 register/heartbeat 中的 readiness。
+- 基础 v1 握手和控制 schema 保持严格且 byte-compatible。Client 通过 WebSocket headers 提供独立协商版本的可选 Provider readiness 扩展；只有明确确认的 Server 才能增加 welcome 字段，并接受 register/heartbeat 中的 readiness。
 - v2 认证、注册、必需能力和 fence 字段严格解析并 fail closed。
 - v2 welcome 字段和 Capability offers 允许兼容扩展；未知可选字段和 offer 不会激活行为。
 - 未知必需能力、未知控制帧、已知帧格式错误、二进制帧、超大帧和未知业务帧均 fail closed。

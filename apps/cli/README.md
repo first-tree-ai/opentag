@@ -15,7 +15,8 @@ commands are `install`, `start`, `stop`, `restart`, `status`, and `uninstall`; v
 `opentag connect <code>` (also `opentag computer connect <code>`) binds the Computer named by the one-time setup flow.
 When the Server returns a target Agent, the foreground command checks only that Agent's selected Runtime CLI, including
 its required capabilities and credentials, and prepares both Lark and Slack through Provider CLI ensure. The operator
-must install and sign in to the Runtime CLI; OpenTag never installs a Runtime. A Runtime or daemon failure does not skip
+must install and authenticate the selected Codex, Claude Code, or Pi CLI; OpenTag never installs a Runtime.
+Pi requires version 0.80.6 or newer and a configured model provider with usable credentials. A Runtime or daemon failure does not skip
 Provider preparation. An untargeted code remains an ordinary Computer connection without an inferred Runtime.
 
 Human output and `--json` use the same local result, with four required rows: Computer (connection and daemon checks),
@@ -42,7 +43,8 @@ new credential was never saved, request a **new** connect/repair code in Web; ne
 the previous credential still works. Local repair alone does not assert Runtime, Provider, daemon, or Server readiness.
 
 After manually repairing a Runtime, run `opentag computer runtime-inspect --provider codex` or
-`opentag computer runtime-inspect --provider claude-code` (optionally `--json`). This explicitly selected, read-only
+`opentag computer runtime-inspect --provider claude-code`, or select `--provider pi` (optionally `--json`).
+This explicitly selected, read-only
 command performs the same full probe; neither `doctor` nor a version string alone substitutes for it. Transient probe
 failures use `retryability: backoff`; install, login, version, and configuration failures require manual repair first.
 The probe is point-in-time local evidence: it neither creates Runtime homes nor shares the daemon's discovery cache.
@@ -51,6 +53,11 @@ The exchange advertises support in its existing `clientVersion` SemVer build met
 New Servers omit `runtimeProvider` for unmarked Clients, preserving their strict response schema and version floor.
 A new CLI accepts an older Server's missing Runtime evidence but reports `runtime:unconfirmed`, keeps the connection,
 and requests an upgrade/recheck instead of guessing a provider or claiming local readiness.
+
+Pi runs with unrestricted filesystem access, enabled network access, and no approval prompts in Local mode.
+OpenTag rejects unsupported stricter Pi execution settings. Selecting Pi does not create an OS sandbox.
+Automatic extensions and ambient skills/context discovery are disabled; packaged Context Tree skills are explicit.
+See the [Agent Runtime contract](../../docs/design/agent-runtime-contract.md) for Session persistence and recovery.
 
 ## Command result and exit-code contract
 

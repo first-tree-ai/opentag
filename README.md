@@ -26,7 +26,7 @@ that run on your own machine and use your model provider of choice.
 
 - **Message an agent in Slack or Lark** - it runs locally and replies in the channel
 - **Agents can communicate with each other**, one agent can delegate to others and check progress
-- **Bring your own** Claude or Codex agents (more coming soon!)
+- **Bring your own** Codex, Claude Code, or Pi agents
 - **Open-source** and **self-hostable**
 
 <p align="center">
@@ -35,7 +35,7 @@ that run on your own machine and use your model provider of choice.
 
 ## Quick Start
 
-You'll need a Mac or Linux computer, a Codex or Claude Code agent, and Slack or Lark installed.
+You'll need a Mac or Linux computer, a Codex, Claude Code, or Pi agent, and Slack or Lark installed.
 
 **1. Create your account**
 
@@ -49,7 +49,8 @@ Go to **Agents** and follow the steps to choose your agent and messaging app.
 
 Copy the connection command shown during setup. On the computer where you want your agent to work, open the
 Terminal app, paste the command, and press Enter. Follow the prompts to finish connecting and sign in to
-Codex or Claude if asked. Keep this computer on while your agent is working.
+your selected Runtime if asked. For Pi, install `pi` 0.80.6 or newer and configure a usable model provider.
+Keep this computer on while your agent is working.
 
 **4. Start chatting**
 

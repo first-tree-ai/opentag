@@ -383,6 +383,27 @@ describe("runtime protocol refinements", () => {
     expect(() =>
       RuntimeProviderReadinessNegotiationSchema.parse({ version: 1, providers: ["codex", "codex"] }),
     ).toThrow("Provider readiness must be unique");
+    expect(() =>
+      RuntimeProviderReadinessNegotiationSchema.parse({
+        version: 1,
+        providers: ["codex", "claude-code", "pi"],
+      }),
+    ).toThrow();
+    expect(
+      RuntimeProviderReadinessNegotiationSchema.parse({
+        version: 2,
+        providers: ["codex", "claude-code", "pi"],
+      }),
+    ).toEqual({
+      version: 2,
+      providers: ["codex", "claude-code", "pi"],
+    });
+    expect(() =>
+      RuntimeProviderReadinessNegotiationSchema.parse({
+        version: 2,
+        providers: ["pi", "codex"],
+      }),
+    ).toThrow("Provider readiness must use canonical Provider order");
   });
 
   it("requires the heartbeat timeout to be at least twice the interval on every welcome", () => {

@@ -46,10 +46,13 @@ failure, crossed Session bindings, empty resumed history, malformed RPC events, 
 races. A successful run requires `agent_settled`, final assistant `stopReason=stop`, and successful
 process cleanup. Length-limited output and a terminal tool call are failed runs with partial output.
 
-A new Session can start empty. Once its binding is materialized, an empty history fails before
-another prompt is submitted; OpenTag must not silently treat it as a fresh conversation. This also
-applies if the first process dies after binding materialization but before saving any history.
-Restore the history or explicitly replace the Session. The binding checks Session identity and
+A new Session can start empty. Its binding remains unmaterialized until Pi saves conversation
+history. If the first Run stops before its first file exists, a later Turn reopens the same Pi UUID,
+including after a Client restart. Pi starts an empty file only when that UUID has no saved history;
+if history was saved before OpenTag could update the binding, it resumes that existing file.
+This is recovery for later work, not automatic replay of the interrupted Turn.
+Once materialized, missing or empty history fails before another prompt is submitted; OpenTag
+must not silently reset a saved conversation. Restore that history or explicitly replace the Session. The binding checks Session identity and
 file path, not a content checksum: partial history corruption with remaining messages is not
 detected by these checks, and this increment does not implement automatic history repair.
 

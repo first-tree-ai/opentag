@@ -54,6 +54,7 @@ import {
   MeResponseSchema,
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
+  PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
@@ -266,6 +267,7 @@ export class OpenTagApi {
         headers: {
           authorization: `Bearer ${accessToken}`,
           [PROVIDER_READINESS_V1_HEADER]: "1",
+          [PROVIDER_READINESS_V2_HEADER]: "2",
           [PROVIDER_CLI_REASON_V2_HEADER]: "2",
         },
       },

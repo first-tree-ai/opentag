@@ -111,7 +111,9 @@ async function waitOnlineComputer(api) {
   return waitFor(
     "the Computer to register as online with provider readiness",
     async () => {
-      const listed = await api.get("/api/v1/computers", { headers: { "x-opentag-provider-readiness": "1" } });
+      const listed = await api.get("/api/v1/computers", {
+        headers: { "x-opentag-provider-readiness": "1", "x-opentag-provider-readiness-v2": "2" },
+      });
       const computer = listed.computers?.[0];
       if (computer?.connectionStatus !== "online") return false;
       return computer;
@@ -124,7 +126,9 @@ async function waitPiReady(api) {
   return waitFor(
     "Pi provider readiness on the live Computer",
     async () => {
-      const listed = await api.get("/api/v1/computers", { headers: { "x-opentag-provider-readiness": "1" } });
+      const listed = await api.get("/api/v1/computers", {
+        headers: { "x-opentag-provider-readiness": "1", "x-opentag-provider-readiness-v2": "2" },
+      });
       const computer = listed.computers?.[0];
       const pi = computer?.providerReadiness?.find((entry) => entry.provider === "pi");
       if (pi?.status === "ready") return { computer, pi };
@@ -447,7 +451,7 @@ export async function runLocalPi({ repositoryRoot }) {
         "a new Computer instance after restart",
         async () => {
           const listed = await fixture.api.get("/api/v1/computers", {
-            headers: { "x-opentag-provider-readiness": "1" },
+            headers: { "x-opentag-provider-readiness": "1", "x-opentag-provider-readiness-v2": "2" },
           });
           const current = listed.computers?.[0];
           if (current?.connectionStatus !== "online") return false;

@@ -109,7 +109,7 @@ workspace once per recorded target, cached in memory:
 cwd = await workspace.cwd(agentId)
 connect <target> --project-path <cwd> --json  # clones on first use when the kind is github
 install --host claude --project <cwd>     # -> <cwd>/.claude/skills/context-tree-*
-install --host codex                      # -> $CODEX_HOME/skills/context-tree-*
+install --host codex                      # -> $HOME/.agents/skills/context-tree-*
 ```
 
 `connect` is idempotent for an identical connection, so this is the ensure operation. It also
@@ -246,14 +246,12 @@ Two consequences to hold in view:
 
 ### Codex
 
-Codex reads skills from `$CODEX_HOME/skills`, independently of the `plugins` and `hooks` features
+Codex reads skills from `$HOME/.agents/skills`, independently of the `plugins` and `hooks` features
 OpenTag disables, so no marketplace or feature change is required. For `install --host codex`,
-OpenTag sets `HOME` to the parent of the resolved Codex home, making the package install into the
-same `.codex/skills` directory from which the spawned Runtime reads. That mapping is exact only
-when the Codex home's basename is `.codex`. A home with any other name (for example
-`CODEX_HOME=/opt/opentag/codex-home`) cannot be expressed by the redirect, so preparation reports
-`unavailable: CODEX_HOME_UNSUPPORTED` before any CLI work rather than risking a misplaced
-install; a Codex host the CLI reports as `skipped` is likewise reported as `unavailable` with the
+OpenTag passes the account `HOME` and resolved `CODEX_HOME` used by the Codex runtime.
+The package detects Codex at `CODEX_HOME` and installs skills into `$HOME/.agents/skills`,
+including when the Codex home has a custom location or name.
+A Codex host the CLI reports as `skipped` is reported as `unavailable` with the
 CLI's own reason instead of a reassuring `ready`. OpenTag writes only
 `context-tree-*` directories there; the operation is idempotent and reversible.
 
@@ -376,7 +374,7 @@ The earlier host-install delivery mechanisms were confirmed against the real CLI
 
 - Claude Code under `--print --input-format stream-json --setting-sources project` discovers
   `<workspace>/.claude/skills/context-tree-*`; under `--setting-sources ""` it does not.
-- Codex discovers `~/.codex/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
+- Codex discovers `~/.agents/skills/context-tree-*` with `plugins` and `hooks` disabled. Its
   `skip_host_skill_discovery` feature is separate from both.
 
 Pi production-composition tests cover explicit skill-present and skill-absent paths, inspect the
@@ -390,10 +388,10 @@ outcome records; prompt rendering for ready, unconfigured, preparing, and unavai
 `writableRoots` composition alongside the Slack config root; and doctor's non-blocking behaviour
 in every state.
 
-Four end-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
+End-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
 and `OPENTAG_HOME` redirected: two Agent workspaces on one Computer resolving to the same checkout
-and invoking `context-tree` by name through the shim; Codex skills landing in a custom `.codex`
-home while the account home stays untouched; one Agent writing `members/<slug>/memory.md` through
+and invoking `context-tree` by name through the shim; Codex skills landing in the account
+home's `.agents/skills` independently of a custom Codex configuration home; one Agent writing `members/<slug>/memory.md` through
 the real isolated-worktree protocol while a second Agent in a different workspace reads it back;
 and a Session still starting after the configured tree is deleted from underneath it.
 
@@ -415,10 +413,6 @@ the dependency from the published bundle.
 - Validating a GitHub target during `opentag context-tree connect`, for example with a cheap
   `git ls-remote` probe. That adds network work to a command deliberately kept read-only;
   background preparation plus durable doctor visibility removes the Session-start harm meanwhile.
-- Supporting an arbitrary `CODEX_HOME` whose basename is not `.codex`; the Context Tree CLI needs
-  an explicit skills-root flag because its host install can target only `<HOME>/.codex/skills`.
-  Until then the two guards above report the unsupported home and a skipped host as `unavailable`
-  with a specific reason, so the state is diagnosable through the prompt and `opentag doctor`.
 - Sanitizing Claude project inputs (`settings.json`, `settings.local.json`, `hooks/`, `agents/`,
   `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
   OpenTag-written content.

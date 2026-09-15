@@ -83,7 +83,7 @@ describe("shared Agent Home and Context Tree", () => {
       readFile(join(agentHome, ".claude", "skills", "context-tree-read", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree sync");
     await expect(
-      readFile(join(fixture.accountHome, ".codex", "skills", "context-tree-write", "SKILL.md"), "utf8"),
+      readFile(join(fixture.accountHome, ".agents", "skills", "context-tree-write", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree prepare-write");
 
     const unanchored = await runCli(["resolve", "--project-path", taskA, "--json"], taskA);

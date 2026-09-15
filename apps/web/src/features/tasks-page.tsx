@@ -39,6 +39,7 @@ import {
   usePersistedSettledError,
 } from "./resource/resource-state.js";
 import { useRememberedState } from "./shell/shell-memory.js";
+import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskCancelControl } from "./task-cancel.js";
 import { TaskMessageBody } from "./task-message-body.js";
 import { TaskOutgoingReplies } from "./task-outgoing-replies.js";
@@ -378,7 +379,11 @@ export function TaskDetailPage({
     ...liveResourceQueryOptions,
   });
   const first = taskQuery.data?.pages[0];
-  const turns = useMemo(() => taskQuery.data?.pages.flatMap((page) => page.turns) ?? [], [taskQuery.data]);
+  const turns = useMemo(() => {
+    const loaded = taskQuery.data?.pages.flatMap((page) => page.turns) ?? [];
+    // Reverse the complete collection, including each page's order and the API's timestamp ties.
+    return loaded.reverse();
+  }, [taskQuery.data]);
   const taskError = asError(taskQuery.error);
   const persistedError = usePersistedSettledError(detailKey, {
     error: taskQuery.error ? taskError : null,
@@ -407,6 +412,26 @@ export function TaskDetailPage({
 
   const { task } = first;
   const status = statusPresentation[task.status];
+  const pagination = (
+    <>
+      {taskQuery.hasNextPage ? (
+        <Button
+          loading={taskQuery.isFetchingNextPage}
+          type="button"
+          variant="secondary"
+          disabled={taskQuery.isFetching}
+          onClick={() => void taskQuery.fetchNextPage({ cancelRefetch: false })}
+        >
+          {m.tasks_load_earlier_activity()}
+        </Button>
+      ) : null}
+      {loadMoreError ? (
+        <p className="text-sm text-kumo-danger" data-ui="task-activity-error" role="alert">
+          {loadMoreError.message}
+        </p>
+      ) : null}
+    </>
+  );
   return (
     <article className="grid gap-6" data-ui="task-conversation-page">
       <nav className="-ml-2" aria-label={m.tasks_back_to_tasks()}>
@@ -463,10 +488,19 @@ export function TaskDetailPage({
 
       {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void taskQuery.refetch()} /> : null}
 
-      <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
-        <Text as="h2" id="task-activity-title" variant="heading">
-          {m.tasks_activity()}
-        </Text>
+      <TaskActivity task={task} turns={turns} pagination={pagination} />
+    </article>
+  );
+}
+
+function TaskActivity({ task, turns, pagination }: { task: TaskSummary; turns: TaskTurn[]; pagination: ReactNode }) {
+  return (
+    <section className="grid gap-5" aria-labelledby="task-activity-title" data-ui="task-thread">
+      <Text as="h2" id="task-activity-title" variant="heading">
+        {m.tasks_activity()}
+      </Text>
+      <TaskActivityTimeline key={task.id} oldestDeliveryId={turns[0]?.deliveryId}>
+        {pagination}
         {turns.length > 0 ? (
           <div className="grid divide-y divide-kumo-line">
             {turns.map((turn) => (
@@ -476,24 +510,8 @@ export function TaskDetailPage({
         ) : (
           <TaskNotice heading={m.tasks_no_activity()} detail={m.tasks_no_activity_detail()} />
         )}
-      </section>
-      {taskQuery.hasNextPage ? (
-        <Button
-          loading={taskQuery.isFetchingNextPage}
-          type="button"
-          variant="secondary"
-          disabled={taskQuery.isFetching}
-          onClick={() => void taskQuery.fetchNextPage({ cancelRefetch: false })}
-        >
-          {m.tasks_load_earlier_activity()}
-        </Button>
-      ) : null}
-      {loadMoreError ? (
-        <p className="text-sm text-kumo-danger" data-ui="task-activity-error" role="alert">
-          {loadMoreError.message}
-        </p>
-      ) : null}
-    </article>
+      </TaskActivityTimeline>
+    </section>
   );
 }
 

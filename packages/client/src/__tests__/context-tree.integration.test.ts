@@ -141,7 +141,7 @@ describe("Context Tree end-to-end", () => {
       ).resolves.toContain("context-tree");
     }
     await expect(
-      readFile(join(accountHome, ".codex", "skills", "context-tree-write", "SKILL.md"), "utf8"),
+      readFile(join(accountHome, ".agents", "skills", "context-tree-write", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree");
 
     // Exactly what a Session does: run the bare command name with the shim directory on PATH.
@@ -152,12 +152,13 @@ describe("Context Tree end-to-end", () => {
     expect(JSON.parse(stdout.trim())).toMatchObject({ tree: { path: treePath } });
   });
 
-  it("installs Codex skills into a custom CODEX_HOME named .codex", async () => {
-    const { accountHome, openTagHome, treePath } = await isolatedAccount("opentag-ct-codex-home");
+  it.each([".codex", "codex-home"])("installs skills into account HOME with custom CODEX_HOME %s", async (name) => {
+    const { accountHome, openTagHome, treePath, environment } = await isolatedAccount("opentag-ct-codex-home");
     const customRoot = await temporaryDirectory("opentag-custom-codex-root-");
-    const codexHome = join(customRoot, ".codex");
+    const codexHome = join(customRoot, name);
     await mkdir(codexHome, { mode: 0o700, recursive: true });
     const manager = new ContextTreeManager({
+      environment,
       codexHome,
       home: openTagHome,
       ...(contextTreePackage ? { contextTreePackage } : {}),
@@ -167,41 +168,15 @@ describe("Context Tree end-to-end", () => {
       status: "ready",
       treePath,
     });
-    await expect(readFile(join(codexHome, "skills", "context-tree-read", "SKILL.md"), "utf8")).resolves.toContain(
-      "context-tree",
-    );
-    // The install lands in the custom home, never in the OS account home.
     await expect(
-      readFile(join(accountHome, ".codex", "skills", "context-tree-read", "SKILL.md"), "utf8"),
+      readFile(join(accountHome, ".agents", "skills", "context-tree-read", "SKILL.md"), "utf8"),
+    ).resolves.toContain("context-tree");
+    // Codex scans the account home, independently of where its configuration lives.
+    await expect(
+      readFile(join(customRoot, ".agents", "skills", "context-tree-read", "SKILL.md"), "utf8"),
     ).rejects.toMatchObject({
       code: "ENOENT",
     });
-  });
-
-  it("reports an unsupported CODE_HOME instead of misinstalling skills", async () => {
-    const { accountHome, openTagHome } = await isolatedAccount("opentag-ct-codex-home-unsupported");
-    const customRoot = await temporaryDirectory("opentag-custom-codex-root-");
-    // The supported configuration from the review: a Codex home whose basename is not `.codex`,
-    // with a sibling `.codex` that must never be written by the HOME redirect.
-    const codexHome = join(customRoot, "codex-home");
-    await mkdir(codexHome, { mode: 0o700, recursive: true });
-    await mkdir(join(customRoot, ".codex"), { mode: 0o700, recursive: true });
-    const manager = new ContextTreeManager({
-      codexHome,
-      home: openTagHome,
-      ...(contextTreePackage ? { contextTreePackage } : {}),
-    });
-
-    await expect(manager.ensureAgent(await temporaryDirectory("opentag-ct-custom-codex-agent-"))).resolves.toEqual({
-      status: "unavailable",
-      reason: "CODEX_HOME_UNSUPPORTED",
-    });
-    // Nothing may land in the configured Codex home, in the sibling `.codex`, or in the account home.
-    for (const root of [codexHome, join(customRoot, ".codex"), join(accountHome, ".codex")]) {
-      await expect(readFile(join(root, "skills", "context-tree-read", "SKILL.md"), "utf8")).rejects.toMatchObject({
-        code: "ENOENT",
-      });
-    }
   });
 
   it("lets one Agent record member memory that another Agent then reads", async () => {

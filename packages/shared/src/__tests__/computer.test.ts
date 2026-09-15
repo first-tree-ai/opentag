@@ -229,7 +229,7 @@ describe("computer contracts", () => {
 
   it("keeps the exchange response pair strict: runtimeProvider only next to its bound Agent", () => {
     const agentId = crypto.randomUUID();
-    for (const runtimeProvider of ["codex", "claude-code", "pi"] as const) {
+    for (const runtimeProvider of ["codex", "claude-code", "pi", "grok-bot"] as const) {
       const response = {
         agentId,
         runtimeProvider,

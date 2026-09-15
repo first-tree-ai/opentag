@@ -18,6 +18,10 @@ const RUNTIME_CONFIGURATION_OPTIONS = {
     modelSuggestions: ["claude-opus-4-7", "claude-sonnet-4", "gpt-5.6-sol"],
     reasoningEffortAllowedValues: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
   },
+  "grok-bot": {
+    modelSuggestions: ["grok-3", "grok-3-mini", "grok-vision-2"],
+    reasoningEffortAllowedValues: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+  },
 } as const satisfies Record<AgentRuntimeProvider, RuntimeConfigurationOptions>;
 
 export function getRuntimeConfigurationOptions(provider: AgentRuntimeProvider): RuntimeConfigurationOptions {

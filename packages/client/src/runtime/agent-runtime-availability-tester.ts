@@ -28,7 +28,9 @@ export interface AgentRuntimeAvailabilityTesterOptions {
   readonly timeoutMs?: number;
 }
 
-export function agentRuntimeAvailabilityPolicy(provider: "codex" | "claude-code" | "pi"): AgentRuntimePolicy {
+export function agentRuntimeAvailabilityPolicy(
+  provider: "codex" | "claude-code" | "pi" | "grok-bot",
+): AgentRuntimePolicy {
   if (provider === "claude-code") {
     return {
       fileSystem: "unrestricted",
@@ -37,7 +39,7 @@ export function agentRuntimeAvailabilityPolicy(provider: "codex" | "claude-code"
       tools: { mode: "allow-list", names: [] },
     };
   }
-  if (provider === "pi") {
+  if (provider === "pi" || provider === "grok-bot") {
     return {
       fileSystem: "read-only",
       network: "disabled",

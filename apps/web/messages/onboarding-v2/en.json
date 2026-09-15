@@ -192,6 +192,8 @@
   "onboarding_v2_runtime_claude_code_title": "Claude Code",
   "onboarding_v2_runtime_codex_description": "OpenAI",
   "onboarding_v2_runtime_codex_title": "Codex",
+  "onboarding_v2_runtime_grok_bot_description": "xAI Grok",
+  "onboarding_v2_runtime_grok_bot_title": "Grok Bot",
   "onboarding_v2_runtime_pi_description": "Multi-provider",
   "onboarding_v2_runtime_pi_title": "Pi",
   "onboarding_v2_setup_computer_rebind": "{computerName} belongs to another Account. Choose a Computer owned by this Account for {name}.",

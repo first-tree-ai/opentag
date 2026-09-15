@@ -404,6 +404,7 @@ const CLI_RUNTIME_LABELS = {
   codex: "Codex CLI",
   "claude-code": "Claude Code CLI",
   pi: "Pi CLI",
+  "grok-bot": "Grok Bot CLI",
 } as const satisfies Record<AgentRuntimeProvider, string>;
 
 function successScenarios(): Scenario[] {

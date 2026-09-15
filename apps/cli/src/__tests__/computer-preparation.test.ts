@@ -96,7 +96,7 @@ async function invoke(flags: string[] = []) {
 }
 
 describe("targeted local Computer preparation", () => {
-  it.each(["codex", "claude-code", "pi"] as const)(
+  it.each(["codex", "claude-code", "pi", "grok-bot"] as const)(
     "checks only the exact selected %s Runtime",
     async (runtimeProvider) => {
       vi.mocked(connect.runComputerConnect).mockResolvedValue({ ...connection, runtimeProvider });

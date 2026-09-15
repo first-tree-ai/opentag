@@ -4,6 +4,7 @@ export const RUNTIME_COPY: Record<Runtime, { readonly title: string; readonly de
   codex: { title: "Codex", description: "OpenAI" },
   "claude-code": { title: "Claude Code", description: "Anthropic" },
   pi: { title: "Pi", description: "Multi-provider" },
+  "grok-bot": { title: "Grok Bot", description: "xAI Grok" },
 };
 
 export const COPY = {

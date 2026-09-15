@@ -20,7 +20,7 @@ export const AgentNameSchema = z
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentCreationIntentIdSchema = z.string().uuid();
-export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code", "pi"] as const;
+export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code", "pi", "grok-bot"] as const;
 export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);

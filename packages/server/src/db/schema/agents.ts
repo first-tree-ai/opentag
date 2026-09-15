@@ -3,7 +3,7 @@ import { check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, u
 import { users } from "./auth.js";
 import { computers } from "./computers.js";
 
-export const agentRuntimeProvider = pgEnum("agent_runtime_provider", ["codex", "claude-code", "pi"]);
+export const agentRuntimeProvider = pgEnum("agent_runtime_provider", ["codex", "claude-code", "pi", "grok-bot"]);
 export const agentReceiveMode = pgEnum("agent_receive_mode", ["all_message", "mention_only"]);
 export const agentStatus = pgEnum("agent_status", ["active", "suspended", "deleted"]);
 

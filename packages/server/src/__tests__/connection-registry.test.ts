@@ -404,6 +404,7 @@ describe("ConnectionRegistry", () => {
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "unavailable", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
     expect(registry.remove(computerId, instanceId, currentSocket)).toBe(true);
     expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toEqual([]);
@@ -461,7 +462,7 @@ describe("ConnectionRegistry", () => {
         installationId: randomUUID(),
         instanceId: randomUUID(),
         lastHeartbeatAt: 1,
-        providerReadinessProviders: ["codex", "claude-code", "pi"],
+        providerReadinessProviders: ["codex", "claude-code", "pi", "grok-bot"],
         socket: socket(),
       },
       async () => undefined,
@@ -470,6 +471,7 @@ describe("ConnectionRegistry", () => {
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "checking", observedAt: null },
+      { provider: "grok-bot", status: "checking", observedAt: null },
     ]);
 
     await registry.register(
@@ -487,6 +489,7 @@ describe("ConnectionRegistry", () => {
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
   });
 
@@ -504,6 +507,7 @@ describe("ConnectionRegistry", () => {
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "checking", observedAt: null },
+      { provider: "grok-bot", status: "checking", observedAt: null },
     ]);
 
     await registry.register(
@@ -516,18 +520,20 @@ describe("ConnectionRegistry", () => {
           { provider: "codex", status: "ready" },
           { provider: "claude-code", status: "ready" },
           { provider: "pi", status: "ready" },
+          { provider: "grok-bot", status: "ready" },
         ],
         providerReadinessObservedAt: observedAt.getTime(),
-        providerReadinessProviders: ["codex", "claude-code", "pi"],
+        providerReadinessProviders: ["codex", "claude-code", "pi", "grok-bot"],
         socket: v2Socket,
       },
       async () => undefined,
     );
-    expect(registry.providerReadinessProviders(computerId)).toEqual(["codex", "claude-code", "pi"]);
+    expect(registry.providerReadinessProviders(computerId)).toEqual(["codex", "claude-code", "pi", "grok-bot"]);
     expect(projectComputerProviderReadiness(computerId, "online", observedAt, registry)).toEqual([
       { provider: "codex", status: "ready", observedAt: observedAt.toISOString() },
       { provider: "claude-code", status: "ready", observedAt: observedAt.toISOString() },
       { provider: "pi", status: "ready", observedAt: observedAt.toISOString() },
+      { provider: "grok-bot", status: "ready", observedAt: observedAt.toISOString() },
     ]);
 
     await registry.register(
@@ -549,6 +555,7 @@ describe("ConnectionRegistry", () => {
       { provider: "codex", status: "ready", observedAt: observedAt.toISOString() },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
 
     expect(registry.remove(computerId, v1InstanceId, v1Socket)).toBe(true);
@@ -557,6 +564,7 @@ describe("ConnectionRegistry", () => {
       { provider: "codex", status: "unavailable", observedAt: null },
       { provider: "claude-code", status: "unavailable", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
   });
 

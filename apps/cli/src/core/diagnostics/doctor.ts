@@ -423,6 +423,7 @@ const RUNTIME_CLI_LABELS = {
   codex: "Codex CLI",
   "claude-code": "Claude Code CLI",
   pi: "Pi CLI",
+  "grok-bot": "Grok Bot CLI",
 } as const satisfies Record<AgentRuntimeProvider, string>;
 
 function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[]>): DoctorCheck[] {
@@ -460,7 +461,7 @@ function runtimeChecks(result: PromiseSettledResult<AgentRuntimeCliInstallation[
             ? "no supported Runtime was found and at least one result is unknown"
             : "no supported Runtime is installed",
       observedFrom: "current CLI process environment",
-      ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI, Claude Code CLI, or Pi CLI" }),
+      ...(installed.length > 0 ? {} : { remediation: "Install Codex CLI, Claude Code CLI, Pi CLI, or Grok Bot CLI" }),
     },
     ...runtimes.map((entry) => cliInstallationCheck(`runtime.${entry.provider}.installation`, "agent-runtime", entry)),
   ];

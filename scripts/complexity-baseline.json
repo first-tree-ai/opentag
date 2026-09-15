@@ -351,6 +351,36 @@
       "complexity": 19
     },
     {
+      "id": "packages/client/src/providers/grok-bot/agent-runtime.ts##handleMessage",
+      "path": "packages/client/src/providers/grok-bot/agent-runtime.ts",
+      "symbol": "#handleMessage",
+      "complexity": 28
+    },
+    {
+      "id": "packages/client/src/providers/grok-bot/agent-runtime.ts##updateMessage",
+      "path": "packages/client/src/providers/grok-bot/agent-runtime.ts",
+      "symbol": "#updateMessage",
+      "complexity": 36
+    },
+    {
+      "id": "packages/client/src/providers/grok-bot/agent-runtime.ts#executeRun",
+      "path": "packages/client/src/providers/grok-bot/agent-runtime.ts",
+      "symbol": "executeRun",
+      "complexity": 17
+    },
+    {
+      "id": "packages/client/src/providers/grok-bot/rpc-wire.ts##onMessage",
+      "path": "packages/client/src/providers/grok-bot/rpc-wire.ts",
+      "symbol": "#onMessage",
+      "complexity": 16
+    },
+    {
+      "id": "packages/client/src/providers/grok-bot/rpc-wire.ts##onStdout",
+      "path": "packages/client/src/providers/grok-bot/rpc-wire.ts",
+      "symbol": "#onStdout",
+      "complexity": 17
+    },
+    {
       "id": "packages/client/src/providers/pi/agent-runtime.ts##handleMessage",
       "path": "packages/client/src/providers/pi/agent-runtime.ts",
       "symbol": "#handleMessage",

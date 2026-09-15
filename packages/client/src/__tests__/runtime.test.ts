@@ -853,7 +853,7 @@ describe("RuntimeConnection", () => {
         if (frame.type === "auth") {
           completeAuth(socket, frame, {
             ...welcome(),
-            providerReadiness: { version: 2, providers: ["codex", "claude-code", "pi"] },
+            providerReadiness: { version: 2, providers: ["codex", "claude-code", "pi", "grok-bot"] },
           });
         } else if (frame.type === "computer:register") {
           completeRegistration(socket, frame);
@@ -876,6 +876,7 @@ describe("RuntimeConnection", () => {
     connection.setProviderReadiness({ provider: "codex", status: "ready" });
     connection.setProviderReadiness({ provider: "claude-code", status: "ready" });
     connection.setProviderReadiness({ provider: "pi", status: "ready" });
+    connection.setProviderReadiness({ provider: "grok-bot", status: "ready" });
 
     await connection.run();
     expect(frames.find((frame) => frame.type === "computer:register")).toMatchObject({
@@ -883,13 +884,14 @@ describe("RuntimeConnection", () => {
         { provider: "codex", status: "ready" },
         { provider: "claude-code", status: "ready" },
         { provider: "pi", status: "ready" },
+        { provider: "grok-bot", status: "ready" },
       ],
     });
   });
 
-  it("disconnects when a welcome leaks Pi under frozen v1 or uses an unsupported readiness version", async () => {
+  it("disconnects when a welcome leaks Pi or Grok Bot under frozen v1 or uses an unsupported readiness version", async () => {
     for (const providerReadiness of [
-      { version: 1, providers: ["codex", "claude-code", "pi"] },
+      { version: 1, providers: ["codex", "claude-code", "pi", "grok-bot"] },
       { version: 3, providers: ["codex"] },
     ]) {
       const socket = new ControlledWebSocket();

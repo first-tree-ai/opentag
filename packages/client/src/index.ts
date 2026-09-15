@@ -130,6 +130,23 @@ export {
   type InteractiveCodexAppServerClient,
 } from "./providers/codex/app-server-wire.js";
 export {
+  GROK_BOT_AGENT_RUNTIME_MANIFEST,
+  GrokBotAgentRuntime,
+  GrokBotAgentRuntimeFactory,
+  type GrokBotAgentRuntimeFactoryOptions,
+  grokBotAgentRuntimeEnvironment,
+} from "./providers/grok-bot/agent-runtime.js";
+export {
+  GROK_BOT_RPC_MAX_LINE_BYTES,
+  GROK_BOT_RPC_MAX_STDERR_BYTES,
+  GROK_BOT_RPC_REQUEST_TIMEOUT_MS,
+  type GrokBotRpcClient,
+  GrokBotRpcError,
+  GrokBotRpcProcess,
+  type GrokBotRpcProcessSpawnOptions,
+  type GrokBotRpcSpawnOptions,
+} from "./providers/grok-bot/rpc-wire.js";
+export {
   PI_AGENT_RUNTIME_MANIFEST,
   PiAgentRuntime,
   PiAgentRuntimeFactory,
@@ -192,11 +209,14 @@ export {
   providerReadiness,
   type ResolvedClaudeCodeFactoryOptions,
   type ResolvedCodexFactoryOptions,
+  type ResolvedGrokBotFactoryOptions,
   type ResolvedPiFactoryOptions,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvedGrokBotFactory,
   resolvedPiFactory,
+  resolveGrokBotHome,
   resolvePiHome,
 } from "./runtime/client-runtime-composition.js";
 export {

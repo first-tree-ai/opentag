@@ -32,6 +32,12 @@ import {
 } from "../providers/codex/agent-runtime.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import {
+  GROK_BOT_AGENT_RUNTIME_MANIFEST,
+  GrokBotAgentRuntimeFactory,
+  grokBotAgentRuntimeEnvironment,
+} from "../providers/grok-bot/agent-runtime.js";
+import { grokBotRuntimePolicy, validateGrokBotRuntimePolicy } from "../providers/grok-bot/runtime-policy.js";
+import {
   PI_AGENT_RUNTIME_MANIFEST,
   PiAgentRuntimeFactory,
   piAgentRuntimeEnvironment,
@@ -261,6 +267,8 @@ export interface CreateClientRuntimeOptions {
   readonly claudeCodeHome?: string;
   readonly piCommand?: string;
   readonly piHome?: string;
+  readonly grokBotCommand?: string;
+  readonly grokBotHome?: string;
   readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
@@ -457,6 +465,7 @@ async function materializeProductionProviderLayout(
   readonly claudeCodeHome: string;
   readonly codexHome: string;
   readonly defaultFactories: readonly AgentRuntimeFactory[];
+  readonly grokBotHome: string;
   readonly loginShellDiscovery: LoginShellDiscovery;
   readonly piHome: string;
   readonly providerArtifactIdentities: Readonly<Record<AgentRuntimeProvider, string>>;
@@ -472,14 +481,22 @@ async function materializeProductionProviderLayout(
     options.piHome ?? sourceEnvironment.PI_CODING_AGENT_DIR ?? resolvePiHome(sourceEnvironment),
   );
   const configuredPiSessionDirectory = join(configuredPiHome, "sessions");
+  const configuredGrokBotHome = resolve(
+    options.grokBotHome ?? sourceEnvironment.GROK_BOT_HOME ?? resolveGrokBotHome(sourceEnvironment),
+  );
+  const configuredGrokBotSessionDirectory = join(configuredGrokBotHome, "sessions");
   await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
   await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
   await mkdir(configuredPiHome, { recursive: true, mode: 0o700 });
   await mkdir(configuredPiSessionDirectory, { recursive: true, mode: 0o700 });
+  await mkdir(configuredGrokBotHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredGrokBotSessionDirectory, { recursive: true, mode: 0o700 });
   const codexHome = await realpath(configuredCodexHome);
   const claudeCodeHome = await realpath(configuredClaudeCodeHome);
   const piHome = await realpath(configuredPiHome);
   const piSessionDirectory = await realpath(configuredPiSessionDirectory);
+  const grokBotHome = await realpath(configuredGrokBotHome);
+  const grokBotSessionDirectory = await realpath(configuredGrokBotSessionDirectory);
   const contextTreeBin = resolveOpenTagHomeLayout(options.home).contextTreeBin;
   const withContextTreeOnPath = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
     prependPath(environment, contextTreeBin);
@@ -490,17 +507,20 @@ async function materializeProductionProviderLayout(
   return {
     claudeCodeHome,
     codexHome,
+    grokBotHome,
     loginShellDiscovery,
     piHome,
     providerHomes: {
       codex: codexHome,
       "claude-code": claudeCodeHome,
       pi: piHome,
+      "grok-bot": grokBotHome,
     },
     providerArtifactIdentities: {
       codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
       "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
       pi: createHash("sha256").update(piHome, "utf8").digest("hex"),
+      "grok-bot": createHash("sha256").update(grokBotHome, "utf8").digest("hex"),
     },
     defaultFactories: [
       resolvedCodexFactory({
@@ -531,6 +551,16 @@ async function materializeProductionProviderLayout(
         piHome,
         sessionDirectory: piSessionDirectory,
         skillPaths: contextTreeSkillsPath ? [contextTreeSkillsPath] : [],
+        sourceEnvironment,
+      }),
+      resolvedGrokBotFactory({
+        command: options.grokBotCommand ?? "grok-bot",
+        discovery,
+        environment: withContextTreeOnPath(
+          grokBotAgentRuntimeEnvironment({ ...sourceEnvironment, GROK_BOT_HOME: grokBotHome }),
+        ),
+        grokBotHome,
+        sessionDirectory: grokBotSessionDirectory,
         sourceEnvironment,
       }),
     ],
@@ -836,7 +866,7 @@ function productionProviderRegistration(
   providerHomes: Readonly<Record<AgentRuntimeProvider, string>>,
 ): AgentRuntimeProviderRegistration {
   const providerId = factory.manifest.providerId;
-  if (providerId !== "codex" && providerId !== "claude-code" && providerId !== "pi") {
+  if (providerId !== "codex" && providerId !== "claude-code" && providerId !== "pi" && providerId !== "grok-bot") {
     throw new Error(`Production Client Runtime does not register the unreviewed provider: ${providerId}`);
   }
   const providerHome = providerHomes[providerId];
@@ -860,6 +890,9 @@ function productionProviderRegistration(
   }
   if (providerId === "claude-code") {
     return { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
+  }
+  if (providerId === "grok-bot") {
+    return { ...common, policy: grokBotRuntimePolicy, validate: validateGrokBotRuntimePolicy };
   }
   return { ...common, policy: piRuntimePolicy, validate: validatePiRuntimePolicy };
 }
@@ -1109,12 +1142,67 @@ function requireReadyPiFactory(factory: PiAgentRuntimeFactory | undefined): PiAg
   return factory;
 }
 
+export interface ResolvedGrokBotFactoryOptions {
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly grokBotHome: string;
+  readonly sessionDirectory: string;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+  readonly discovery?: ResolveAgentRuntimeExecutableOptions;
+  readonly createCandidateFactory?: (command: string, environment: NodeJS.ProcessEnv) => GrokBotAgentRuntimeFactory;
+}
+
+export function resolvedGrokBotFactory(options: ResolvedGrokBotFactoryOptions): AgentRuntimeFactory {
+  let readyFactory: GrokBotAgentRuntimeFactory | undefined;
+  const createCandidate =
+    options.createCandidateFactory ??
+    ((command: string, environment: NodeJS.ProcessEnv) =>
+      new GrokBotAgentRuntimeFactory({
+        process: {
+          command,
+          env: environment,
+          sessionDirectory: options.sessionDirectory,
+        },
+      }));
+  return {
+    manifest: GROK_BOT_AGENT_RUNTIME_MANIFEST,
+    probe: (request) =>
+      probeResolvedFactory(request, {
+        provider: "grok-bot",
+        command: options.command,
+        environment: options.environment,
+        sourceEnvironment: options.sourceEnvironment,
+        discovery: options.discovery,
+        createCandidate,
+        artifactMessage: "Grok Bot CLI could not be executed",
+        onReady: (factory) => {
+          readyFactory = factory;
+        },
+      }),
+    create(request: CreateAgentRuntimeRequest) {
+      return requireReadyGrokBotFactory(readyFactory).create(request);
+    },
+    resume(request: ResumeAgentRuntimeRequest) {
+      return requireReadyGrokBotFactory(readyFactory).resume(request);
+    },
+  };
+}
+
+function requireReadyGrokBotFactory(factory: GrokBotAgentRuntimeFactory | undefined): GrokBotAgentRuntimeFactory {
+  if (!factory) throw new Error("Grok Bot provider readiness has not been established");
+  return factory;
+}
+
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
 }
 
 export function resolvePiHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.PI_CODING_AGENT_DIR ?? join(environment.HOME ?? homedir(), ".pi", "agent"));
+}
+
+export function resolveGrokBotHome(environment: NodeJS.ProcessEnv = process.env): string {
+  return resolve(environment.GROK_BOT_HOME ?? join(environment.HOME ?? homedir(), ".grok-bot"));
 }
 
 interface ClientRuntimePreflightDependencies {

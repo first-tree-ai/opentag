@@ -63,7 +63,7 @@ const v1Welcome = {
   heartbeatTimeoutMs: 90_000,
 };
 
-const admitted = ["codex", "claude-code", "pi"] as const;
+const admitted = ["codex", "claude-code", "pi", "grok-bot"] as const;
 
 describe("provider readiness rolling-upgrade vocabulary", () => {
   it("freezes v1 negotiation to the pre-Pi exact vocabulary", () => {
@@ -158,7 +158,7 @@ describe("provider readiness rolling-upgrade vocabulary", () => {
     expect(advertisedProviderReadiness(RUNTIME_PROVIDER_READINESS_V1, ["pi"])).toBeUndefined();
     expect(advertisedProviderReadiness(RUNTIME_PROVIDER_READINESS_V2, admitted)).toEqual({
       version: RUNTIME_PROVIDER_READINESS_V2,
-      providers: ["codex", "claude-code", "pi"],
+      providers: ["codex", "claude-code", "pi", "grok-bot"],
     });
   });
 });

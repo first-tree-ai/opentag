@@ -562,7 +562,10 @@ describe("Computer runtime WebSocket", () => {
     expect(welcome).toMatchObject({
       type: "server:welcome",
       protocolVersion: RUNTIME_PROTOCOL_V2,
-      providerReadiness: { version: RUNTIME_PROVIDER_READINESS_V2, providers: ["codex", "claude-code", "pi"] },
+      providerReadiness: {
+        version: RUNTIME_PROVIDER_READINESS_V2,
+        providers: ["codex", "claude-code", "pi", "grok-bot"],
+      },
     });
     expect(() =>
       FrozenBaseReadinessV1NegotiationSchema.parse(ServerWelcomeFrameSchema.parse(welcome).providerReadiness),

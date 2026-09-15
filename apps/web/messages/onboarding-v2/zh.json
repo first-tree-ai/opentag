@@ -192,6 +192,8 @@
   "onboarding_v2_runtime_claude_code_title": "Claude Code",
   "onboarding_v2_runtime_codex_description": "由 OpenAI 提供",
   "onboarding_v2_runtime_codex_title": "Codex",
+  "onboarding_v2_runtime_grok_bot_description": "由 xAI 提供",
+  "onboarding_v2_runtime_grok_bot_title": "Grok Bot",
   "onboarding_v2_runtime_pi_description": "多供应商",
   "onboarding_v2_runtime_pi_title": "Pi",
   "onboarding_v2_setup_computer_rebind": "{computerName} 属于其他 Account。请为 {name} 选择一台属于当前 Account 的 Computer。",

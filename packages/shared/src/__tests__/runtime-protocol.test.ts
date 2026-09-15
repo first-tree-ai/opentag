@@ -386,17 +386,17 @@ describe("runtime protocol refinements", () => {
     expect(() =>
       RuntimeProviderReadinessNegotiationSchema.parse({
         version: 1,
-        providers: ["codex", "claude-code", "pi"],
+        providers: ["codex", "claude-code", "pi", "grok-bot"],
       }),
     ).toThrow();
     expect(
       RuntimeProviderReadinessNegotiationSchema.parse({
         version: 2,
-        providers: ["codex", "claude-code", "pi"],
+        providers: ["codex", "claude-code", "pi", "grok-bot"],
       }),
     ).toEqual({
       version: 2,
-      providers: ["codex", "claude-code", "pi"],
+      providers: ["codex", "claude-code", "pi", "grok-bot"],
     });
     expect(() =>
       RuntimeProviderReadinessNegotiationSchema.parse({

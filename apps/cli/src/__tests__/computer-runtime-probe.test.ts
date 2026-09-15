@@ -33,7 +33,10 @@ function mockFactories(
   const pi = vi
     .spyOn(client, "resolvedPiFactory")
     .mockReturnValue({ probe } as unknown as ReturnType<typeof client.resolvedPiFactory>);
-  return { codex, claude, pi, probe };
+  const grokBot = vi
+    .spyOn(client, "resolvedGrokBotFactory")
+    .mockReturnValue({ probe } as unknown as ReturnType<typeof client.resolvedGrokBotFactory>);
+  return { codex, claude, pi, grokBot, probe };
 }
 
 describe("selected Runtime full-probe adapter", () => {
@@ -74,22 +77,24 @@ describe("selected Runtime full-probe adapter", () => {
     expect(stdout).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(3);
   });
-  it.each(["codex", "claude-code", "pi"] as const)(
+  it.each(["codex", "claude-code", "pi", "grok-bot"] as const)(
     "reuses only the %s factory and does not create a Runtime Home or install anything",
     async (provider) => {
       const home = await isolatedHome();
-      const { codex, claude, pi, probe } = mockFactories();
+      const { codex, claude, pi, grokBot, probe } = mockFactories();
       const ensure = vi.spyOn(client.ProviderCliManager.prototype, "ensure");
       const result = await probeRuntimeComponent({ provider, environment: { HOME: home, PATH: "/test/bin" } });
       expect(result).toMatchObject({ id: `runtime:${provider}`, status: "ready", blocking: false });
       expect(codex).toHaveBeenCalledTimes(provider === "codex" ? 1 : 0);
       expect(claude).toHaveBeenCalledTimes(provider === "claude-code" ? 1 : 0);
       expect(pi).toHaveBeenCalledTimes(provider === "pi" ? 1 : 0);
+      expect(grokBot).toHaveBeenCalledTimes(provider === "grok-bot" ? 1 : 0);
       expect(probe).toHaveBeenCalledExactlyOnceWith({ signal: expect.any(AbortSignal) });
       expect(ensure).not.toHaveBeenCalled();
       await expect(access(join(home, ".codex"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(access(join(home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(access(join(home, ".pi"))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(join(home, ".grok-bot"))).rejects.toMatchObject({ code: "ENOENT" });
     },
   );
 

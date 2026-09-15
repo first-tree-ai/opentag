@@ -6,11 +6,14 @@ import {
   type AgentRuntimeProbeResult,
   claudeCodeProcessEnvironment,
   codexAgentRuntimeEnvironment,
+  grokBotAgentRuntimeEnvironment,
   piAgentRuntimeEnvironment,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
+  resolvedGrokBotFactory,
   resolvedPiFactory,
+  resolveGrokBotHome,
   resolvePiHome,
 } from "@opentag/client";
 import type { AgentRuntimeProvider, LocalPreparationComponent } from "@opentag/shared";
@@ -63,6 +66,14 @@ export async function resolveRuntimeProbeEnvironment(
       environment: piAgentRuntimeEnvironment({ ...sourceEnvironment, PI_CODING_AGENT_DIR: home }),
     };
   }
+  if (provider === "grok-bot") {
+    const home = await canonicalizeProviderHome(resolveGrokBotHome(sourceEnvironment));
+    return {
+      home,
+      sourceEnvironment,
+      environment: grokBotAgentRuntimeEnvironment({ ...sourceEnvironment, GROK_BOT_HOME: home }),
+    };
+  }
   const configuredHome = resolve(
     sourceEnvironment.CLAUDE_CONFIG_DIR ?? join(sourceEnvironment.HOME ?? homedir(), ".claude"),
   );
@@ -104,6 +115,15 @@ function resolvedFactoryFor(
       command: "pi",
       environment: environment.environment,
       piHome: environment.home,
+      sessionDirectory: resolve(environment.home, "sessions"),
+      sourceEnvironment: environment.sourceEnvironment,
+    });
+  }
+  if (provider === "grok-bot") {
+    return resolvedGrokBotFactory({
+      command: "grok-bot",
+      environment: environment.environment,
+      grokBotHome: environment.home,
       sessionDirectory: resolve(environment.home, "sessions"),
       sourceEnvironment: environment.sourceEnvironment,
     });
@@ -168,6 +188,7 @@ async function probeSelectedRuntime(
 export function runtimeComponentLabel(provider: AgentRuntimeProvider): string {
   if (provider === "codex") return "Codex CLI";
   if (provider === "claude-code") return "Claude Code CLI";
+  if (provider === "grok-bot") return "Grok Bot CLI";
   return "Pi CLI";
 }
 

@@ -138,7 +138,7 @@ describe("Agent persistence and authorization", () => {
         where pg_type.typname = 'agent_runtime_provider'
         order by enumsortorder
       `;
-      expect(enumValues.map(({ enumlabel }) => enumlabel)).toEqual(["codex", "claude-code", "pi"]);
+      expect(enumValues.map(({ enumlabel }) => enumlabel)).toEqual(["codex", "claude-code", "pi", "grok-bot"]);
 
       const [sequence] = await value.sql<{ max_value: string; min_value: string }[]>`
         select min_value::text, max_value::text

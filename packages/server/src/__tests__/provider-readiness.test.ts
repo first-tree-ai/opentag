@@ -21,6 +21,7 @@ describe("Computer provider readiness projection", () => {
       { provider: "codex", status: "sign-in", observedAt: "2026-08-19T23:59:59.000Z" },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "checking", observedAt: null },
+      { provider: "grok-bot", status: "checking", observedAt: null },
     ]);
   });
 
@@ -33,6 +34,7 @@ describe("Computer provider readiness projection", () => {
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "checking", observedAt: null },
+      { provider: "grok-bot", status: "checking", observedAt: null },
     ]);
   });
 
@@ -50,10 +52,11 @@ describe("Computer provider readiness projection", () => {
       { provider: "codex", status: "unavailable", observedAt: null },
       { provider: "claude-code", status: "unavailable", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
   });
 
-  it("keeps negotiated Providers checking and fences unnegotiated Pi as unavailable", () => {
+  it("keeps negotiated Providers checking and fences unnegotiated ones as unavailable", () => {
     expect(
       projectComputerProviderReadiness("computer-1", "online", now, {
         providerReadiness: () => [],
@@ -63,16 +66,18 @@ describe("Computer provider readiness projection", () => {
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
     expect(
       projectComputerProviderReadiness("computer-1", "online", now, {
         providerReadiness: () => [],
-        providerReadinessProviders: () => ["codex", "claude-code", "pi"],
+        providerReadinessProviders: () => ["codex", "claude-code", "pi", "grok-bot"],
       }),
     ).toEqual([
       { provider: "codex", status: "checking", observedAt: null },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "checking", observedAt: null },
+      { provider: "grok-bot", status: "checking", observedAt: null },
     ]);
   });
 
@@ -95,6 +100,7 @@ describe("Computer provider readiness projection", () => {
       { provider: "codex", status: "ready", observedAt: now.toISOString() },
       { provider: "claude-code", status: "checking", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
   });
 
@@ -107,12 +113,13 @@ describe("Computer provider readiness projection", () => {
             observedAt: now.getTime(),
           },
         ],
-        providerReadinessProviders: () => ["codex", "claude-code", "pi"],
+        providerReadinessProviders: () => ["codex", "claude-code", "pi", "grok-bot"],
       }),
     ).toEqual([
       { provider: "codex", status: "unavailable", observedAt: null },
       { provider: "claude-code", status: "unavailable", observedAt: null },
       { provider: "pi", status: "unavailable", observedAt: null },
+      { provider: "grok-bot", status: "unavailable", observedAt: null },
     ]);
   });
 });

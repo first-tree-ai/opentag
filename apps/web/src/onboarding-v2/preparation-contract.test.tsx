@@ -153,12 +153,14 @@ const WEB_READY_LABELS = {
   codex: "Codex ready",
   "claude-code": "Claude Code ready",
   pi: "Pi ready",
+  "grok-bot": "Grok Bot ready",
 } as const satisfies Record<AgentRuntimeProvider, string>;
 
 const WEB_COMPACT_LABELS = {
   codex: "Codex",
   "claude-code": "Claude Code",
   pi: "Pi",
+  "grok-bot": "Grok Bot",
 } as const satisfies Record<AgentRuntimeProvider, string>;
 
 function successScenarios(): FixtureScenario[] {

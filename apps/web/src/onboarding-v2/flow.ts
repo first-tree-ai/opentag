@@ -1,4 +1,4 @@
-export const RUNTIMES = ["codex", "claude-code", "pi"] as const;
+export const RUNTIMES = ["codex", "claude-code", "pi", "grok-bot"] as const;
 export type Runtime = (typeof RUNTIMES)[number];
 export type Destination = "local" | "cloud";
 

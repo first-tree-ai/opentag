@@ -31,6 +31,7 @@ const allowedUntranslatedValues = new Set([
   "Codex",
   "Claude Code",
   "Pi",
+  "Grok Bot",
   "Google",
   "Slack",
   "Feishu",

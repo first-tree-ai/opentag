@@ -1126,6 +1126,7 @@ export function runtimeUsageTotalTokens(provider: AgentRuntimeProvider, usage: R
     codex: 0,
     "claude-code": usage.cachedInputTokens ?? 0,
     pi: usage.cachedInputTokens ?? 0,
+    "grok-bot": usage.cachedInputTokens ?? 0,
   } satisfies Record<AgentRuntimeProvider, number>;
   const total = (usage.inputTokens ?? 0) + cachedInputTokens[provider] + (usage.outputTokens ?? 0);
   if (!Number.isSafeInteger(total)) throw new Error("Runtime usage token total exceeds the safe integer range");

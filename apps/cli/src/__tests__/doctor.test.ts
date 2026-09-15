@@ -463,6 +463,7 @@ describe("doctor Agent Runtime CLI observations", () => {
         { displayName: "Codex CLI", provider: "codex", status: "not-installed" },
         { displayName: "Claude Code CLI", provider: "claude-code", status: "not-installed" },
         { displayName: "Pi CLI", provider: "pi", status: "not-installed" },
+        { displayName: "Grok Bot CLI", provider: "grok-bot", status: "not-installed" },
       ]),
     });
 
@@ -687,6 +688,7 @@ describe("doctor report and exit contract", () => {
       "runtime.codex.installation",
       "runtime.claude-code.installation",
       "runtime.pi.installation",
+      "runtime.grok-bot.installation",
       "provider-cli.feishu.installation",
       "provider-cli.slack.installation",
       "context-tree.target",

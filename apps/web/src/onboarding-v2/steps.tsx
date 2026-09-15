@@ -239,12 +239,14 @@ function AgentNameField({
 function runtimeTitle(runtime: Runtime): string {
   if (runtime === "codex") return m.onboarding_v2_runtime_codex_title();
   if (runtime === "claude-code") return m.onboarding_v2_runtime_claude_code_title();
+  if (runtime === "grok-bot") return m.onboarding_v2_runtime_grok_bot_title();
   return m.onboarding_v2_runtime_pi_title();
 }
 
 function runtimeDescription(runtime: Runtime): string {
   if (runtime === "codex") return m.onboarding_v2_runtime_codex_description();
   if (runtime === "claude-code") return m.onboarding_v2_runtime_claude_code_description();
+  if (runtime === "grok-bot") return m.onboarding_v2_runtime_grok_bot_description();
   return m.onboarding_v2_runtime_pi_description();
 }
 

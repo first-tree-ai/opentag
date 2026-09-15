@@ -11,6 +11,7 @@ const SERVER_AGENT_RUNTIME_PROVIDER_POLICIES = {
   codex: { execution: { approvalPolicy: "never", networkAccess: true } },
   "claude-code": { execution: { approvalPolicy: "never", networkAccess: true } },
   pi: { execution: { approvalPolicy: "never", networkAccess: true } },
+  "grok-bot": { execution: { approvalPolicy: "never", networkAccess: true } },
 } as const satisfies Partial<Record<AgentRuntimeProvider, ServerAgentRuntimeProviderPolicy>>;
 
 export type ServerAdmittedAgentRuntimeProvider = keyof typeof SERVER_AGENT_RUNTIME_PROVIDER_POLICIES;

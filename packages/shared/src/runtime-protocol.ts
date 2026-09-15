@@ -24,7 +24,7 @@ export const RUNTIME_PROVIDER_READINESS_V2 = 2 as const;
 /** Frozen v1 wire vocabulary. Pi must never appear under version 1. */
 export const RUNTIME_PROVIDER_READINESS_V1_PROVIDERS = ["codex", "claude-code"] as const;
 /** Explicit v2 wire vocabulary. Opt-in only; never derived into v1. */
-export const RUNTIME_PROVIDER_READINESS_V2_PROVIDERS = ["codex", "claude-code", "pi"] as const;
+export const RUNTIME_PROVIDER_READINESS_V2_PROVIDERS = ["codex", "claude-code", "pi", "grok-bot"] as const;
 
 export const RUNTIME_V0_CAPABILITIES = {
   sessionReconcile: 1,

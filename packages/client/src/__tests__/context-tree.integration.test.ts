@@ -141,7 +141,7 @@ describe("Context Tree end-to-end", () => {
       ).resolves.toContain("context-tree");
     }
     await expect(
-      readFile(join(accountHome, ".codex", "skills", "context-tree-write", "SKILL.md"), "utf8"),
+      readFile(join(accountHome, ".agents", "skills", "context-tree-write", "SKILL.md"), "utf8"),
     ).resolves.toContain("context-tree");
 
     // Exactly what a Session does: run the bare command name with the shim directory on PATH.
@@ -167,12 +167,12 @@ describe("Context Tree end-to-end", () => {
       status: "ready",
       treePath,
     });
-    await expect(readFile(join(codexHome, "skills", "context-tree-read", "SKILL.md"), "utf8")).resolves.toContain(
-      "context-tree",
-    );
+    await expect(
+      readFile(join(customRoot, ".agents", "skills", "context-tree-read", "SKILL.md"), "utf8"),
+    ).resolves.toContain("context-tree");
     // The install lands in the custom home, never in the OS account home.
     await expect(
-      readFile(join(accountHome, ".codex", "skills", "context-tree-read", "SKILL.md"), "utf8"),
+      readFile(join(accountHome, ".agents", "skills", "context-tree-read", "SKILL.md"), "utf8"),
     ).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -197,7 +197,12 @@ describe("Context Tree end-to-end", () => {
       reason: "CODEX_HOME_UNSUPPORTED",
     });
     // Nothing may land in the configured Codex home, in the sibling `.codex`, or in the account home.
-    for (const root of [codexHome, join(customRoot, ".codex"), join(accountHome, ".codex")]) {
+    for (const root of [
+      codexHome,
+      join(customRoot, ".codex"),
+      join(customRoot, ".agents"),
+      join(accountHome, ".agents"),
+    ]) {
       await expect(readFile(join(root, "skills", "context-tree-read", "SKILL.md"), "utf8")).rejects.toMatchObject({
         code: "ENOENT",
       });

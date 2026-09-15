@@ -23,7 +23,7 @@ const installReply = {
   installed: [
     {
       host: "codex",
-      path: "/home/user/.codex/skills",
+      path: "/home/user/.agents/skills",
       skills: [
         "context-tree-connect",
         "context-tree-create",

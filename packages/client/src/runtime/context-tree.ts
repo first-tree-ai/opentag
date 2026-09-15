@@ -164,7 +164,7 @@ export interface ContextTreeManagerOptions {
   platform?: NodeJS.Platform;
   /** Absolute path to the Node.js runtime the generated shim should exec. */
   nodePath?: string;
-  /** Resolved home passed to Codex itself; host skill installation must use the same root. */
+  /** Resolved Codex config home; the Context Tree CLI installs skills beside it under `.agents`. */
   codexHome?: string;
   sessionStartBudgetMs?: number;
   failureCooldownMs?: number;
@@ -190,8 +190,9 @@ export class ContextTreeManager {
   readonly #nodePath: string;
   readonly #codexHome: string;
   /**
-   * The Context Tree CLI installs Codex skills only into `<HOME>/.codex/skills`, so the `HOME`
-   * redirect below is correct exactly when the Codex home's basename is `.codex`. Any other home
+   * The Context Tree CLI detects Codex from `<HOME>/.codex` and installs its skills into
+   * `<HOME>/.agents/skills`, so the `HOME` redirect below is correct exactly when the Codex
+   * home's basename is `.codex`. Any other home
    * (for example `CODEX_HOME=/opt/opentag/codex-home`) cannot be expressed and is reported
    * rather than silently misinstalled next to it.
    */

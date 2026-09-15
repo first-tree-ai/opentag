@@ -1,6 +1,6 @@
 # 技术文档
 
-> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-07
+> 权威来源：[docs/README.md](../README.md) · 同步日期：2026-09-11
 
 从[快速开始](../../README.zh-CN.md#快速开始)或[开发指南](../../DEVELOPMENT.zh-CN.md)开始。
 
@@ -35,3 +35,4 @@
 - [Agent Runtime contract](../design/agent-runtime-contract.md)
 - [Agent Runtime test plan](../design/agent-runtime-test-plan.md)
 - [Context Tree integration](../design/context-tree-integration.md)
+- [Skills 分发](../design/skills-distribution.md)

@@ -33,7 +33,8 @@ type ResidualBusinessFrame = Extract<
       | "provider-cli:cancel"
       | "agent-runtime:test"
       | "agent-runtime:test:cancel"
-      | "turn:report:result";
+      | "turn:report:result"
+      | "skills:changed";
   }
 >;
 

@@ -21,6 +21,8 @@ import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
+import { registerSkillRouteGroups } from "./api/skill-route-groups.js";
+import type { SkillRouteServices } from "./api/skill-routes-shared.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
@@ -49,6 +51,7 @@ import { SlackConfigurationServiceError } from "./services/im-bindings/slack/ind
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
+import { SkillServiceError } from "./services/skills/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
@@ -94,6 +97,11 @@ export interface CreateAppOptions {
   internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
+  /**
+   * Skill library services. The routes are always registered so the API surface is stable; without these they answer
+   * `SKILL_STORAGE_UNAVAILABLE`, which is how a deployment without object storage presents.
+   */
+  skills?: SkillRouteServices;
 }
 
 export function sanitizeRequestUrl(url: string): string {
@@ -107,7 +115,8 @@ type AccountFacingError =
   | OnboardingResetError
   | TaskQueryError
   | SlackConfigurationServiceError
-  | AccountSetupServiceError;
+  | AccountSetupServiceError
+  | SkillServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
@@ -117,7 +126,8 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof OnboardingResetError ||
     error instanceof TaskQueryError ||
     error instanceof SlackConfigurationServiceError ||
-    error instanceof AccountSetupServiceError
+    error instanceof AccountSetupServiceError ||
+    error instanceof SkillServiceError
   );
 }
 
@@ -129,6 +139,7 @@ function accountFacingErrorEnvelope(error: AccountFacingError, requestId: string
       message: error.message,
       requestId,
       ...(error instanceof ImBindingUnbindRequiredError ? { unbindRequired: error.unbindRequired } : {}),
+      ...(error instanceof SkillServiceError && error.details ? { details: error.details } : {}),
     },
   });
 }
@@ -501,6 +512,13 @@ export function createApp(options: CreateAppOptions = {}) {
         authOptions,
       });
     }
+    registerSkillRouteGroups(app, {
+      authService,
+      authOptions,
+      services: options.skills,
+      machineAuth: options.machineAuthService,
+      proofs: options.runtimeSessions?.proofs,
+    });
     if (options.imBindingService) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }

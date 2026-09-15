@@ -71,6 +71,24 @@ describe("runtime protocol", () => {
     ).toEqual({ [RUNTIME_CAPABILITY.imCredentialGrant]: 1 });
   });
 
+  it("offers skills sync at version 1 only and lets an old Client opt out by not offering it", () => {
+    expect(RUNTIME_CAPABILITY.skillsSync).toBe("runtime.skillsSync");
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.skillsSync]).toEqual({ min: 1, max: 1 });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.skillsSync]).toEqual({ min: 1, max: 1 });
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.skillsSync]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.skillsSync]: 1 });
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      )[RUNTIME_CAPABILITY.skillsSync],
+    ).toBeUndefined();
+  });
+
   it("negotiates observer-safe IM delivery and steer independently from owner-compatible v1", () => {
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imDelivery]).toEqual({ min: 1, max: 2 });
     expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imSteer]).toEqual({ min: 1, max: 2 });

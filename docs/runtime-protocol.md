@@ -57,6 +57,10 @@ Roll out Server v2 before Client v2. A v2 Client never falls back after a timeou
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.
 
+## Skills sync
+
+The optional `runtime.skillsSync` capability (version 1) lets the Server tell a connected Client which Agents' assigned skill sets changed. When it is negotiated, the Server may send a `skills:changed` business frame listing `{ agentId, digest }` pairs after an upload, replacement, deletion, or assignment change; the Client syncs only the Agents named. The same digest travels in the effective runtime snapshot as `skills.digest`, so a Client that never negotiated the capability, or missed a frame, still converges on its next reconcile. See [Skills distribution](./design/skills-distribution.md).
+
 ## Adversarial checks
 
 The implementation and tests cover downgrade attempts with unmatched errors, missing required capabilities, unknown optional capabilities, invalid ranges, unacknowledged or unadmitted Provider readiness, out-of-order control frames, stale connection IDs, replacement sockets, frame-size limits, and mismatched negotiated maps. Authentication happens before capability use; capability negotiation cannot grant authorization or readiness.

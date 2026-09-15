@@ -16,6 +16,7 @@ import {
   ImMessageDeliveryResultSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_OUTGOING_REPLY_SNAPSHOT_MAX_BYTES,
+  RUNTIME_SKILLS_CHANGED_MAX_AGENTS,
   RuntimeImCredentialGrantResultSchema,
   RuntimeImSteerRequestSchema,
   RuntimeImSteerResultSchema,
@@ -26,6 +27,7 @@ import {
   SessionMessageDeliveryResultSchema,
   SessionReconcileRequestSchema,
   SessionReconcileResultSchema,
+  SkillsChangedFrameSchema,
   type TurnOutgoingReplySnapshot,
   TurnOutgoingReplySnapshotSchema,
   type TurnReportHashInput,
@@ -609,6 +611,48 @@ describe("runtime domain contract", () => {
         status: "failed",
       }),
     ).toThrow(/requires a failure code/);
+  });
+
+  it("folds the assigned skills digest into the agent config hash without disturbing skill-less snapshots", () => {
+    const base = computeRuntimeSnapshotHashes(snapshot());
+    const digestA = "a".repeat(64);
+    const digestB = "b".repeat(64);
+    const withA = computeRuntimeSnapshotHashes({ ...snapshot(), skills: { digest: digestA } });
+    const withB = computeRuntimeSnapshotHashes({ ...snapshot(), skills: { digest: digestB } });
+    expect(withA.agentConfigHash).not.toBe(base.agentConfigHash);
+    expect(withA.effectiveSnapshotHash).not.toBe(base.effectiveSnapshotHash);
+    expect(withA.sessionConfigHash).toBe(base.sessionConfigHash);
+    expect(withA.agentConfigHash).not.toBe(withB.agentConfigHash);
+    expect(computeRuntimeSnapshotHashes({ ...snapshot(), skills: { digest: digestA } })).toEqual(withA);
+    expect(EffectiveRuntimeSnapshotSchema.safeParse({ ...snapshot(), skills: { digest: "nope" } }).success).toBe(false);
+    expect(EffectiveRuntimeSnapshotSchema.safeParse({ ...snapshot(), skills: {} }).success).toBe(false);
+  });
+
+  it("parses skills:changed frames through the server business union and bounds them", () => {
+    const frame = {
+      type: "skills:changed" as const,
+      agents: [
+        { agentId: "agent-1", digest: "c".repeat(64) },
+        { agentId: "agent-2", digest: "d".repeat(64) },
+      ],
+    };
+    expect(ServerRuntimeBusinessFrameSchema.parse(frame)).toEqual(frame);
+    expect(SkillsChangedFrameSchema.parse(frame)).toEqual(frame);
+    expect(SkillsChangedFrameSchema.safeParse({ type: "skills:changed", agents: [] }).success).toBe(false);
+    expect(
+      SkillsChangedFrameSchema.safeParse({
+        type: "skills:changed",
+        agents: Array.from({ length: RUNTIME_SKILLS_CHANGED_MAX_AGENTS + 1 }, (_, index) => ({
+          agentId: `agent-${index}`,
+          digest: "e".repeat(64),
+        })),
+      }).success,
+    ).toBe(false);
+    expect(
+      SkillsChangedFrameSchema.safeParse({ type: "skills:changed", agents: [{ agentId: "agent-1", digest: "x" }] })
+        .success,
+    ).toBe(false);
+    expect(ClientRuntimeBusinessFrameSchema.safeParse(frame).success).toBe(false);
   });
 });
 

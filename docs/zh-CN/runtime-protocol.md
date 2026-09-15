@@ -1,7 +1,7 @@
 # Runtime 协议兼容
 
 > Canonical source: [../runtime-protocol.md](../runtime-protocol.md)
-> Last synced with: 2026-09-01
+> Last synced with: 2026-09-11
 
 ## 范围
 
@@ -57,6 +57,10 @@ disconnected -> connecting -> authenticating -> welcoming -> registering -> regi
 ## Channel target 广播
 
 可选的 `runtime.channelTarget` capability（版本 1）让已连接的 Client 获知用于自动升级的 channel 精确最新目标。当该 capability 协商成功后，每个 v2 `heartbeat:result` 都可以携带可选的 `channelTarget` 字段：Server 自身的 release channel，以及它当前广播的精确 SemVer（从该 channel 已发布的 release 指针读取）。该字段是可选扩展且经过协商，因此使用严格 heartbeat schema 的旧 Client 永远不会收到它；连接旧 Server 的 Client 则只是看不到目标。Client 只有在 version 字符串完全一致时才视为已经是当前目标；SemVer precedence 只用于拒绝更旧的目标，而 precedence 相同但 build metadata 不同的目标仍会安装。属于其他 channel 的目标在任何升级决策之前就会被拒绝。
+
+## Skills 同步
+
+可选的 `runtime.skillsSync` capability（版本 1）让 Server 告知已连接的 Client 哪些 Agent 的 skill 分配集合发生了变化。协商成功后，Server 可以在上传、替换、删除或分配变更之后发送 `skills:changed` 业务帧，列出 `{ agentId, digest }` 对；Client 只同步帧中列出的 Agent。同一个 digest 也以 `skills.digest` 的形式随 effective runtime snapshot 下发，因此从未协商该 capability 或漏收帧的 Client 仍会在下一次 reconcile 时收敛。参见 [Skills 分发](../design/skills-distribution.md)。
 
 ## 对抗性检查
 

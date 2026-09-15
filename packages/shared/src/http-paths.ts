@@ -25,6 +25,9 @@ export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
 export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`;
+export const RUNTIME_SKILLS_PATH = `${API_V1_PREFIX}/runtime/skills`;
+export const RUNTIME_SKILL_ARCHIVE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/archive`;
+export const RUNTIME_SESSION_SKILLS_TEMPLATE = `${RUNTIME_SESSIONS_PATH}/:sessionId/skills`;
 /**
  * Account-native management collections. Ownership comes only from the authenticated Account.
  */
@@ -39,6 +42,16 @@ export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/na
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
+/**
+ * Skill library. Skills are owned by the authenticated Account and addressed by their frontmatter `name`; assignment
+ * to an agent lives under the agent resource.
+ */
+export const ACCOUNT_SKILLS_PATH = `${API_V1_PREFIX}/skills`;
+export const SKILL_BY_NAME_TEMPLATE = `${ACCOUNT_SKILLS_PATH}/:name`;
+export const SKILL_SKILL_MD_TEMPLATE = `${SKILL_BY_NAME_TEMPLATE}/skill-md`;
+export const SKILL_ARCHIVE_TEMPLATE = `${SKILL_BY_NAME_TEMPLATE}/archive`;
+export const SKILL_AGENTS_TEMPLATE = `${SKILL_BY_NAME_TEMPLATE}/agents`;
+export const AGENT_SKILLS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skills`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
@@ -48,6 +61,7 @@ export const HTTP_PATHS = {
   accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
   internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
+  accountSkills: ACCOUNT_SKILLS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
@@ -70,6 +84,7 @@ export const HTTP_PATHS = {
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
   runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
+  runtimeSkills: RUNTIME_SKILLS_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
 } as const;
@@ -192,4 +207,38 @@ export function runtimeWebSocketUrl(serverUrl: string): string {
 
 export function runtimeDurableWorkPath(kind: string, key: string): string {
   return `${RUNTIME_DURABLE_WORK_PATH}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`;
+}
+
+export function skillByNamePath(name: string): string {
+  return `${ACCOUNT_SKILLS_PATH}/${encodeURIComponent(name)}`;
+}
+
+export function skillSkillMdPath(name: string): string {
+  return `${skillByNamePath(name)}/skill-md`;
+}
+
+export function skillArchivePath(name: string): string {
+  return `${skillByNamePath(name)}/archive`;
+}
+
+export function skillAgentsPath(name: string): string {
+  return `${skillByNamePath(name)}/agents`;
+}
+
+export function agentSkillsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/skills`;
+}
+
+export function runtimeSkillsPath(agentId?: string): string {
+  if (agentId === undefined) return RUNTIME_SKILLS_PATH;
+  const query = new URLSearchParams({ agentId });
+  return `${RUNTIME_SKILLS_PATH}?${query.toString()}`;
+}
+
+export function runtimeSkillArchivePath(name: string): string {
+  return `${RUNTIME_SKILLS_PATH}/${encodeURIComponent(name)}/archive`;
+}
+
+export function runtimeSessionSkillsPath(sessionId: string): string {
+  return `${RUNTIME_SESSIONS_PATH}/${encodeURIComponent(sessionId)}/skills`;
 }

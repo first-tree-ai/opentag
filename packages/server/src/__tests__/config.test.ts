@@ -282,6 +282,70 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_OTEL_ENDPOINT: "https://user:pass@example.com" })).toThrow();
   });
 
+  it("parses skill storage as an optional group with GCS-friendly defaults", () => {
+    expect(parseServerConfig(required).skillStorage).toBeUndefined();
+    const configured = parseServerConfig({
+      ...required,
+      OPENTAG_SKILL_STORAGE_S3_BUCKET: "opentag-skills",
+      OPENTAG_SKILL_STORAGE_S3_ENDPOINT: "https://storage.googleapis.com/",
+      OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID: "GOOG1EXAMPLE",
+      OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY: "hmac-secret",
+      OPENTAG_SKILL_STORAGE_S3_PREFIX: "team/skills",
+    });
+    expect(configured.skillStorage).toEqual({
+      bucket: "opentag-skills",
+      endpoint: "https://storage.googleapis.com",
+      region: "auto",
+      accessKeyId: "GOOG1EXAMPLE",
+      secretAccessKey: "hmac-secret",
+      prefix: "team/skills/",
+      forcePathStyle: true,
+    });
+    const aws = parseServerConfig({
+      ...required,
+      OPENTAG_SKILL_STORAGE_S3_BUCKET: "b",
+      OPENTAG_SKILL_STORAGE_S3_REGION: "eu-west-1",
+      OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID: "id",
+      OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY: "secret",
+      OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE: "false",
+      OPENTAG_SKILL_STORAGE_S3_PREFIX: "",
+    });
+    expect(aws.skillStorage).toMatchObject({ region: "eu-west-1", forcePathStyle: false, prefix: "" });
+    expect(aws.skillStorage).not.toHaveProperty("endpoint");
+  });
+
+  it("rejects partial skill storage configuration and unsafe endpoints or prefixes", () => {
+    expect(() => parseServerConfig({ ...required, OPENTAG_SKILL_STORAGE_S3_BUCKET: "b" })).toThrow(
+      /configured together/,
+    );
+    expect(() =>
+      parseServerConfig({ ...required, OPENTAG_SKILL_STORAGE_S3_ENDPOINT: "https://storage.googleapis.com" }),
+    ).toThrow(/requires OPENTAG_SKILL_STORAGE_S3_BUCKET/);
+    const full = {
+      ...required,
+      OPENTAG_SKILL_STORAGE_S3_BUCKET: "b",
+      OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID: "id",
+      OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY: "secret",
+    };
+    expect(() => parseServerConfig({ ...full, OPENTAG_SKILL_STORAGE_S3_ENDPOINT: "ftp://x" })).toThrow(/HTTP\(S\)/);
+    expect(() =>
+      parseServerConfig({ ...full, OPENTAG_SKILL_STORAGE_S3_ENDPOINT: "https://user:pw@minio.local" }),
+    ).toThrow(/credentials/);
+    expect(() => parseServerConfig({ ...full, OPENTAG_SKILL_STORAGE_S3_PREFIX: "/absolute/" })).toThrow(/relative/);
+    expect(() => parseServerConfig({ ...full, OPENTAG_SKILL_STORAGE_S3_PREFIX: "a/../b" })).toThrow(/relative/);
+    expect(() =>
+      parseServerConfig({
+        ...full,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+        OPENTAG_SKILL_STORAGE_S3_ENDPOINT: "http://minio.internal:9000",
+      }),
+    ).toThrow(/HTTPS in hosted environments/);
+    expect(
+      parseServerConfig({ ...full, OPENTAG_SKILL_STORAGE_S3_ENDPOINT: "http://127.0.0.1:9000" }).skillStorage?.endpoint,
+    ).toBe("http://127.0.0.1:9000");
+  });
+
   it("allows migration commands to parse only their database dependency", () => {
     expect(parseDatabaseConfig({ OPENTAG_DATABASE_URL: required.OPENTAG_DATABASE_URL })).toMatchObject({
       databaseUrl: required.OPENTAG_DATABASE_URL,

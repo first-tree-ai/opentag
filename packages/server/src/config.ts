@@ -86,6 +86,33 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
+const OptionalEndpointUrlSchema = z
+  .string()
+  .trim()
+  .transform((value, context) => {
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      context.addIssue({ code: "custom", message: "Must be an HTTP(S) URL" });
+      return z.NEVER;
+    }
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      context.addIssue({ code: "custom", message: "Must be an HTTP(S) URL without credentials, query, or fragment" });
+      return z.NEVER;
+    }
+    return url.toString().replace(/\/+$/, "");
+  });
+
+const SkillStoragePrefixSchema = z
+  .string()
+  .trim()
+  .default("skills/")
+  .refine((value) => !value.startsWith("/") && !value.includes("//") && !value.includes(".."), {
+    message: "Must be a relative object key prefix",
+  })
+  .transform((value) => (value === "" || value.endsWith("/") ? value : `${value}/`));
+
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
 
@@ -142,8 +169,50 @@ const ServerEnvironmentSchema = z
       .int()
       .positive()
       .default(60 * 60 * 24 * 30),
+    /*
+     * Object storage for skill archives (S3-compatible; Google Cloud Storage through its XML interoperability API in
+     * production). Optional as a group: without a bucket the skill routes answer 503 and everything else is unaffected.
+     */
+    OPENTAG_SKILL_STORAGE_S3_BUCKET: z.string().trim().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_S3_ENDPOINT: OptionalEndpointUrlSchema.optional(),
+    OPENTAG_SKILL_STORAGE_S3_REGION: z.string().trim().min(1).default("auto"),
+    OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID: z.string().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_S3_PREFIX: SkillStoragePrefixSchema,
+    OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE: booleanString("true"),
   })
   .strict()
+  .superRefine((value, context) => {
+    const storageValues = [
+      value.OPENTAG_SKILL_STORAGE_S3_BUCKET,
+      value.OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID,
+      value.OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY,
+    ];
+    const configured = storageValues.filter(Boolean).length;
+    if (configured > 0 && configured < storageValues.length) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "OPENTAG_SKILL_STORAGE_S3_BUCKET, OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID, and OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY must be configured together",
+      });
+    }
+    if (value.OPENTAG_SKILL_STORAGE_S3_ENDPOINT && !value.OPENTAG_SKILL_STORAGE_S3_BUCKET) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_SKILL_STORAGE_S3_ENDPOINT requires OPENTAG_SKILL_STORAGE_S3_BUCKET",
+      });
+    }
+    if (
+      value.OPENTAG_SKILL_STORAGE_S3_ENDPOINT &&
+      isHostedEnvironment(value.OPENTAG_ENV) &&
+      !value.OPENTAG_SKILL_STORAGE_S3_ENDPOINT.startsWith("https://")
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_SKILL_STORAGE_S3_ENDPOINT must use HTTPS in hosted environments",
+      });
+    }
+  })
   .superRefine((value, context) => {
     if (!value.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED) return;
     if (!value.OPENTAG_ENV_EXPLICIT || value.OPENTAG_ENV !== "dev") {
@@ -250,6 +319,18 @@ export function parseSlackRedirectUrl(value: string, publicOrigin: string): stri
   }
 }
 
+export interface SkillStorageConfig {
+  bucket: string;
+  /** Custom S3-compatible endpoint; absent for AWS itself. */
+  endpoint?: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** Object key prefix, always empty or ending in `/`. */
+  prefix: string;
+  forcePathStyle: boolean;
+}
+
 export interface ServerConfig {
   autoMigrate: boolean;
   /** Signs every Account session and its cookies. */
@@ -287,6 +368,8 @@ export interface ServerConfig {
   publicUrl: string;
   /** Lifetime of an Account session, browser and CLI alike. */
   sessionTtlSeconds: number;
+  /** Object storage for skill archives; absent when the deployment does not distribute skills. */
+  skillStorage?: SkillStorageConfig;
   /**
    * Whether this deployment offers Internal Tools, including Account-owned setup resets.
    * Enabled on staging, or explicitly opted into on a loopback development server.
@@ -346,6 +429,15 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
+    OPENTAG_SKILL_STORAGE_S3_BUCKET: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_S3_BUCKET),
+    OPENTAG_SKILL_STORAGE_S3_ENDPOINT: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_S3_ENDPOINT),
+    OPENTAG_SKILL_STORAGE_S3_REGION: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_S3_REGION),
+    OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID),
+    OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY: emptyToUndefined(
+      environment.OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY,
+    ),
+    OPENTAG_SKILL_STORAGE_S3_PREFIX: environment.OPENTAG_SKILL_STORAGE_S3_PREFIX,
+    OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE: environment.OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE,
   });
 
   return {
@@ -394,7 +486,31 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
+    ...skillStorageConfig(parsed),
     internalTools: offersInternalTools(parsed.OPENTAG_ENV, parsed.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED),
+  };
+}
+
+function skillStorageConfig(
+  parsed: z.infer<typeof ServerEnvironmentSchema>,
+): { skillStorage?: SkillStorageConfig } | Record<string, never> {
+  if (
+    !parsed.OPENTAG_SKILL_STORAGE_S3_BUCKET ||
+    !parsed.OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID ||
+    !parsed.OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY
+  ) {
+    return {};
+  }
+  return {
+    skillStorage: {
+      bucket: parsed.OPENTAG_SKILL_STORAGE_S3_BUCKET,
+      ...(parsed.OPENTAG_SKILL_STORAGE_S3_ENDPOINT ? { endpoint: parsed.OPENTAG_SKILL_STORAGE_S3_ENDPOINT } : {}),
+      region: parsed.OPENTAG_SKILL_STORAGE_S3_REGION,
+      accessKeyId: parsed.OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID,
+      secretAccessKey: parsed.OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY,
+      prefix: parsed.OPENTAG_SKILL_STORAGE_S3_PREFIX,
+      forcePathStyle: parsed.OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE,
+    },
   };
 }
 

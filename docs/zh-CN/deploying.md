@@ -91,10 +91,19 @@ service，不会配置 CapRover 的 server container。
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
+| `OPENTAG_SKILL_STORAGE_S3_BUCKET` | 可选；存放 skill 压缩包的 S3 兼容桶。未设置时 skill 路由返回 `503 SKILL_STORAGE_UNAVAILABLE` |
+| `OPENTAG_SKILL_STORAGE_S3_ENDPOINT` | 与桶一起配置；Google Cloud Storage 填 `https://storage.googleapis.com`，AWS 留空。托管环境必须使用 HTTPS |
+| `OPENTAG_SKILL_STORAGE_S3_REGION` | 可选；默认 `auto` |
+| `OPENTAG_SKILL_STORAGE_S3_ACCESS_KEY_ID` / `OPENTAG_SKILL_STORAGE_S3_SECRET_ACCESS_KEY` | 与桶一起配置；GCS 使用服务账号的 HMAC 密钥 |
+| `OPENTAG_SKILL_STORAGE_S3_PREFIX` | 可选；默认 `skills/` |
+| `OPENTAG_SKILL_STORAGE_S3_FORCE_PATH_STYLE` | 可选；默认 `true` |
 
-这两个可选变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询下载
-base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继续广播最后一次已知的目标。dev channel 从不广播
+两个 channel target 变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询
+下载 base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继续广播最后一次已知的目标。dev channel 从不广播
 目标。
+
+skill 存储变量作为一组可选配置，指向保存已上传 skill 压缩包的桶；桶的创建步骤与 Google Cloud Storage 互操作说明见
+[Skills 分发](../design/skills-distribution.md)。每个环境使用独立的桶。
 
 设置 `OPENTAG_PUBLIC_URL` 之前，先在 App 上启用 HTTPS 并强制 HTTPS；在 hosted environment 中，public URL 不是 HTTPS
 时 server 会拒绝启动。Staging 的 secret 不得与任何其他环境共用。

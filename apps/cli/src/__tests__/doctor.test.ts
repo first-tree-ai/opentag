@@ -695,7 +695,7 @@ describe("doctor report and exit contract", () => {
 
   it("leaves per-Agent Context Tree visibility to settings and Session prompts", async () => {
     const result = await runHealthyDoctor(await createHome());
-    expect(result.checks.some((check) => check.scope === "context-tree")).toBe(false);
+    expect(renderDoctorReport(result)).not.toContain("Context Tree");
   });
 
   it("returns exit 1 for any blocking fail or unknown and reports the exact count", async () => {

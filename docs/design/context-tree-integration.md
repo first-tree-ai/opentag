@@ -75,8 +75,9 @@ The **Agent settings → Context Tree** section owns the selection:
 - **Disconnect**, which removes the selection without deleting the repository or its memory.
 
 Only GitHub repositories are selectable. The former Computer-wide `opentag context-tree connect`
-command is a tombstone that points at Agent settings and exits non-zero; existing trees,
-connections, and memory are preserved. `opentag doctor` remains the diagnostic surface.
+command is removed; existing trees, connections, and memory are preserved. Context Tree
+selection is visible in Agent settings, and preparation status is reported in Session prompts.
+`opentag doctor` does not report Context Tree diagnostics.
 
 **Upgrade requires re-selecting.** A previously configured Computer reports disabled until the
 user selects a repository again for each Agent. A Session prepared with no selection runs
@@ -85,7 +86,7 @@ workspace to the old tree. The old `~/.context-tree/opentag.json` target is igno
 no fallback or automatic migration.
 
 **A disabled Context Tree is a normal state, not an error.** Sessions start, the managed prompt
-says durable memory is inactive, and doctor reports the Agent's selection. Auto-creating a tree
+says durable memory is inactive, and Agent settings shows no repository selected. Auto-creating a tree
 outside the settings action is deferred.
 
 ### Settings operations
@@ -174,7 +175,7 @@ What this costs, stated rather than left implicit:
   `WRITE_OUTDATED` on a non-fast-forward push. The write skill retries once and then stops;
   OpenTag adds no retry loop.
 - Agents that select the same repository share one checkout, so one dirty checkout blocks all of
-  them with `DIRTY_TREE`. Doctor names it distinctly; it is repaired by the user, never by discarding their
+  them with `DIRTY_TREE`. The preparation result names it distinctly; it is repaired by the user, never by discarding their
   edits.
 - The selection lives on the Agent, so any OpenTag channel (`dev`, `staging`, `prod`) that serves
   that Agent sees the same repository. Agents that select the same repository share the tree;
@@ -354,7 +355,7 @@ plus OpenTag's own `PACKAGE_MISSING`, `SHIM_UNAVAILABLE`, `CONNECT_FAILED`, `TIM
 as the fallback, and `PREPARING` when the Session-start budget expires before background work.
 
 Passing the CLI's codes through rather than mapping them onto an OpenTag enum is deliberate.
-Nothing switches on the reason — it is rendered into a prompt line and a doctor detail — so a
+Nothing switches on the reason — it is rendered into a prompt line — so a
 translation layer could only lose information, and an earlier revision of this design did exactly
 that, collapsing a dirty shared checkout into a generic failure. The cost is that an upstream
 rename changes OpenTag's output text; that is worth less than naming the real fault.
@@ -376,10 +377,8 @@ which is why the failure reader honours both shapes.
   durable memory, and leaves the joined, serialized preparation running in the background.
 - The managed prompt tells the Agent durable memory is inactive and not to repair the tree or
   create one itself.
-- `opentag doctor` reports the Agent's selected repository and the tree's state under a
-  `context-tree` scope. Both checks are non-blocking, so neither can change the doctor exit code. There is no
-  separate package check: with a real dependency, a missing package is a broken installation that
-  fails far louder elsewhere.
+- `opentag doctor` excludes Context Tree checks; selection and preparation status belong to
+  Agent settings and Session prompts.
 - Tree contents, credentials, and full command output are never logged.
 
 ## Verification
@@ -399,7 +398,7 @@ identity, snapshot hash, and instruction budget; per-provider argv and `PATH` co
 failure reader against every CLI shape, including a zero-exit `ok: false` payload; shim contents
 and mode; joined background preparation, Session-start budgeting, failure cooldown, and durable
 outcome records; prompt rendering for ready, unconfigured, preparing, and unavailable;
-`writableRoots` composition alongside the Slack config root; and doctor's non-blocking behaviour
+`writableRoots` composition alongside the Slack config root; and non-blocking preparation failures
 in every state.
 
 End-to-end tests run offline against the real packaged CLI and a real Git tree, with `HOME`
@@ -409,11 +408,6 @@ home's `.agents/skills` independently of a custom Codex configuration home; one 
 the real isolated-worktree protocol while a second Agent in a different workspace reads it back;
 and a Session still starting after the configured tree is deleted from underneath it.
 
-Beyond the repository gates, the packaged CLI was installed from its own tarball into a throwaway
-consumer and driven through `connect`, `doctor` with a repository selected, with none selected, a
-deleted tree, and a usage error — confirming that ordinary Node.js resolution finds
-the dependency from the published bundle.
-
 ## Deferred
 
 - Auto-creating a tree outside the Agent settings action.
@@ -422,7 +416,7 @@ the dependency from the published bundle.
   selection changes is separate and is not deferred.
 - A cross-process advisory lock around the CLI's connection store.
 - A cheap connectivity probe before an operation dispatches, for example `git ls-remote`.
-  Background preparation plus durable doctor visibility removes the Session-start harm meanwhile.
+  Background preparation bounds the Session-start delay; the prompt reports inactive memory meanwhile.
 - Sanitizing Claude project inputs (`settings.json`, `settings.local.json`, `hooks/`, `agents/`,
   `commands/`, and `CLAUDE.md`) on every `prepareAgent`, so project settings contribute only
   OpenTag-written content.

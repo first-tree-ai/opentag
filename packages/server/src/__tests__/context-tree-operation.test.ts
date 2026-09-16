@@ -135,11 +135,24 @@ it("times out uncertain creation and releases admission", async () => {
   expect(await pending).toEqual({ status: "failed", code: "publication_uncertain" });
   const next = f.owner.start(f.start);
   f.owner.close();
-  expect(await next).toEqual({ status: "failed", code: "publication_uncertain" });
+  expect(await next).toEqual({ status: "failed", code: "computer_unavailable" });
 });
 it("rejects missing Computer capability before sending", async () => {
   const f = fixture();
   f.registry.supportsCapability.mockReturnValue(false);
   expect(await f.owner.start(f.start)).toEqual({ status: "failed", code: "capability_missing" });
   expect(f.registry.send).not.toHaveBeenCalled();
+});
+
+it.each(["create", "connect", "disconnect"] as const)("classifies shutdown during %s", async (action) => {
+  const f = fixture();
+  const pending = f.owner.start({
+    ...f.start,
+    input: { ...f.input, action, repository: action === "disconnect" ? null : f.input.repository },
+  });
+  f.owner.close();
+  expect(await pending).toEqual({
+    status: "failed",
+    code: action === "create" ? "publication_uncertain" : "computer_unavailable",
+  });
 });

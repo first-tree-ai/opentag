@@ -206,7 +206,7 @@ export class ClientRuntime {
           code: "capability_missing",
         };
       } catch {
-        result = { status: "failed", code: frame.input.action === "create" ? "publication_uncertain" : "failed" };
+        result = { status: "failed", code: "failed" };
       }
       await this.#connection.send(
         ContextTreeOperationResultFrameSchema.parse({

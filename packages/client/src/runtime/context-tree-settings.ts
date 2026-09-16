@@ -74,7 +74,7 @@ export class ContextTreeSettings {
     try {
       return await this.#execute(frame, signal, controller.signal);
     } catch {
-      return failed(frame.input.action === "create" ? "publication_uncertain" : "failed");
+      return failed("failed");
     } finally {
       clearTimeout(totalTimer);
       clearTimeout(workTimer);
@@ -110,11 +110,7 @@ export class ContextTreeSettings {
     if (frame.requireStopped && this.options.hasAgentSessions(frame.agentId)) return failed("busy");
     const run = this.#runner(frame, signal);
     if (!run) return failed("capability_missing");
-    try {
-      return await this.#executeRecorded(frame, run, cleanupSignal);
-    } catch {
-      return failed(frame.input.action === "create" ? "publication_uncertain" : "failed");
-    }
+    return this.#executeRecorded(frame, run, cleanupSignal);
   }
 
   async #executeRecorded(frame: ContextTreeOperationFrame, run: Run, cleanupSignal: AbortSignal): Promise<Result> {
@@ -175,12 +171,17 @@ export class ContextTreeSettings {
       if (created.failureCode) return classify(created.failureCode);
     }
     await writeDurableFile(publicationFile, JSON.stringify(failed("publication_uncertain")));
-    const published = await run(["publish", repository, ...project]);
-    const outcome: Result = published.failureCode
-      ? classify(published.failureCode, true)
-      : { status: "completed", repository };
-    await writeDurableFile(publicationFile, JSON.stringify(outcome));
-    return outcome.status === "failed" ? outcome : undefined;
+    try {
+      const published = await run(["publish", repository, ...project]);
+      const outcome: Result = published.failureCode
+        ? classify(published.failureCode, true)
+        : { status: "completed", repository };
+      await writeDurableFile(publicationFile, JSON.stringify(outcome));
+      return outcome.status === "failed" ? outcome : undefined;
+    } catch {
+      // Only failures after the durable publication fence can hide a remote publication.
+      return failed("publication_uncertain");
+    }
   }
 }
 

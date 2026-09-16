@@ -19,6 +19,37 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
 
 describe("ClientRuntime domain dispatch", () => {
+  it("returns failed when the Context Tree settings handler throws before publishing", async () => {
+    const request = {
+      type: "context-tree:operation",
+      requestId: randomUUID(),
+      computerId: randomUUID(),
+      agentId: randomUUID(),
+      requireStopped: false,
+      input: {
+        action: "create",
+        operationId: randomUUID(),
+        repository: "acme/memory",
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 1,
+      },
+    };
+    const connection = new FrameConnection([request]);
+    const run = vi.fn().mockRejectedValue(new Error("initialization failed"));
+    const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
+      contextTreeSettings: { run },
+    });
+    await runtime.run();
+    expect(run).toHaveBeenCalledOnce();
+    expect(connection.sent).toEqual([
+      {
+        type: "context-tree:operation:result",
+        requestId: request.requestId,
+        result: { status: "failed", code: "failed" },
+      },
+    ]);
+  });
+
   it("B-07 dispatches per-session reconcile before accepting delivery", async () => {
     const server = await runtimeServer();
     cleanup.push(server.close);

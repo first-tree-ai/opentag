@@ -11,7 +11,12 @@ import type { RuntimeBusinessOptions } from "./runtime-session.js";
 export class ContextTreeOperationOwner {
   readonly #pending = new Map<
     string,
-    { computerId: string; instanceId: string; finish: (result: ContextTreeOperationResponse) => void }
+    {
+      computerId: string;
+      instanceId: string;
+      action: ContextTreeOperationFrame["input"]["action"];
+      finish: (result: ContextTreeOperationResponse) => void;
+    }
   >();
   constructor(readonly registry: ConnectionRegistry) {}
 
@@ -60,7 +65,7 @@ export class ContextTreeOperationOwner {
         this.#pending.delete(requestId);
         resolve(result);
       };
-      this.#pending.set(requestId, { computerId: input.computerId, instanceId, finish });
+      this.#pending.set(requestId, { computerId: input.computerId, instanceId, action: input.input.action, finish });
       void this.registry
         .send(input.computerId, instanceId, { ...input, type: "context-tree:operation", requestId })
         .catch(() => finish({ status: "failed", code: "computer_unavailable" }));
@@ -68,6 +73,10 @@ export class ContextTreeOperationOwner {
   }
 
   close(): void {
-    for (const pending of this.#pending.values()) pending.finish({ status: "failed", code: "publication_uncertain" });
+    for (const pending of this.#pending.values())
+      pending.finish({
+        status: "failed",
+        code: pending.action === "create" ? "publication_uncertain" : "computer_unavailable",
+      });
   }
 }

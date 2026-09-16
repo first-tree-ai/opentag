@@ -166,3 +166,35 @@ it("fences operation replay by both revisions", async () => {
     code: "stale_configuration",
   });
 });
+
+it.each(["connect", "create"])("allows retry when %s throws before publication", async (command) => {
+  const { settings, run } = await fixture();
+  const original = run.getMockImplementation();
+  if (!original) throw new Error("Missing runner");
+  run.mockImplementationOnce(async (args) => {
+    if (command === "connect") throw new Error("staging failed");
+    return original(args);
+  });
+  if (command === "create") run.mockRejectedValueOnce(new Error("creation failed"));
+  const request = frame();
+  expect(await settings.run(request)).toEqual({ status: "failed", code: "failed" });
+  expect(run.mock.calls.some(([args]) => args[0] === "publish")).toBe(false);
+  expect(await settings.run(request)).toEqual({ status: "completed", repository: "acme/memory" });
+});
+it("reports a thrown publication failure as uncertain across restart", async () => {
+  const { settings, run } = await fixture();
+  const original = run.getMockImplementation();
+  if (!original) throw new Error("Missing runner");
+  run.mockImplementation(async (args) => {
+    if (args[0] === "publish") throw new Error("response lost");
+    return original(args);
+  });
+  const request = frame();
+  expect(await settings.run(request)).toEqual({ status: "failed", code: "publication_uncertain" });
+  const restarted = new ContextTreeSettings(settings.options);
+  expect(await restarted.run({ ...request, input: { ...request.input, operationId: randomUUID() } })).toEqual({
+    status: "failed",
+    code: "publication_uncertain",
+  });
+  expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
+});

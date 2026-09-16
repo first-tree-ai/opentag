@@ -29,8 +29,7 @@ export type DoctorCheckScope =
   | "daemon-service"
   | "server"
   | "agent-runtime"
-  | "provider-cli"
-  | "context-tree";
+  | "provider-cli";
 
 export interface DoctorCheck {
   code: string;
@@ -241,7 +240,6 @@ export function renderDoctorReport(report: DoctorReport): string {
     ["Server", "server"],
     ["Agent Runtime CLIs", "agent-runtime"],
     ["IM Provider CLIs", "provider-cli"],
-    ["Context Tree", "context-tree"],
   ] as const) {
     lines.push("", heading);
     for (const check of report.checks.filter((candidate) => candidate.scope === scope)) {

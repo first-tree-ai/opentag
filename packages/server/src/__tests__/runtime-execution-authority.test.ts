@@ -1,0 +1,305 @@
+import { randomUUID } from "node:crypto";
+import type { RuntimeExecutionSource } from "@opentag/shared";
+import { describe, expect, it } from "vitest";
+import type { DatabaseClient } from "../db/client.js";
+import { imMessageDeliveries, sessionMessages } from "../db/schema/index.js";
+import type { AcceptedDeliveryRecord, RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import {
+  PostgresRuntimeExecutionAuthority,
+  type RuntimeExecutionAuthorityContext,
+  validationProviderBinding,
+} from "../runtime-credentials/execution-authority.js";
+import { RuntimeValidationRunRegistry } from "../runtime-credentials/validation-runs.js";
+
+const SESSION = "session-1";
+const AGENT = "agent-1";
+const COMPUTER = "00000000-0000-4000-8000-0000000000c1";
+const INSTANCE = "00000000-0000-4000-8000-0000000000d1";
+const DELIVERY = "00000000-0000-4000-8000-0000000000e1";
+const MESSAGE = "00000000-0000-4000-8000-0000000000f1";
+const TURN = "turn-1";
+const PLACEMENT = 3;
+
+function deliverySource(overrides: Partial<Extract<RuntimeExecutionSource, { kind: "delivery" }>> = {}) {
+  return { kind: "delivery" as const, deliveryId: DELIVERY, turnId: TURN, ...overrides };
+}
+
+const sessionMessageSource: RuntimeExecutionSource = { kind: "session-message", messageId: MESSAGE };
+
+function context(overrides: Partial<RuntimeExecutionAuthorityContext> = {}): RuntimeExecutionAuthorityContext {
+  return {
+    agentId: AGENT,
+    computerId: COMPUTER,
+    instanceId: INSTANCE,
+    placementGeneration: PLACEMENT,
+    sessionId: SESSION,
+    ...overrides,
+  };
+}
+
+function acceptedDelivery(overrides: Partial<AcceptedDeliveryRecord> = {}): AcceptedDeliveryRecord {
+  return {
+    agentId: AGENT,
+    computerId: COMPUTER,
+    deliveryId: DELIVERY,
+    inputHash: "a".repeat(64),
+    instanceId: INSTANCE,
+    placementGeneration: PLACEMENT,
+    sessionId: SESSION,
+    turnId: TURN,
+    ...overrides,
+  };
+}
+
+class StubCustody {
+  accepted: AcceptedDeliveryRecord | undefined;
+  readonly queries: string[] = [];
+
+  async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
+    this.queries.push(deliveryId);
+    return this.accepted;
+  }
+}
+
+interface StubDatabaseRows {
+  readonly deliveries?: readonly Record<string, unknown>[];
+  readonly sessionMessages?: readonly Record<string, unknown>[];
+}
+
+interface StubDatabase {
+  readonly database: DatabaseClient;
+  readonly selects: () => number;
+}
+
+/**
+ * Query stub for the authority's two `select` shapes. Rows are returned exactly as the SQL query
+ * would return them; the WHERE predicates themselves (live-session, delivery-state, target-session
+ * filters) are exercised by the PostgreSQL integration suite, not here.
+ */
+function stubDatabase(rows: StubDatabaseRows = {}): StubDatabase {
+  let selects = 0;
+  const resultFor = (table: unknown): readonly Record<string, unknown>[] => {
+    if (table === imMessageDeliveries) return rows.deliveries ?? [];
+    if (table === sessionMessages) return rows.sessionMessages ?? [];
+    throw new Error("Unexpected table in the runtime execution authority query");
+  };
+  const database = {
+    select() {
+      selects += 1;
+      let table: unknown;
+      const query = {
+        from(value: unknown) {
+          table = value;
+          return query;
+        },
+        limit: () => Promise.resolve(resultFor(table)),
+        where: () => query,
+      };
+      return query;
+    },
+  };
+  return { database: database as unknown as DatabaseClient, selects: () => selects };
+}
+
+function makeAuthority(
+  options: {
+    custody?: AcceptedDeliveryRecord;
+    deliveries?: readonly Record<string, unknown>[];
+    sessionMessages?: readonly Record<string, unknown>[];
+    validationRuns?: RuntimeValidationRunRegistry;
+  } = {},
+) {
+  const custody = new StubCustody();
+  custody.accepted = options.custody;
+  const stub = stubDatabase({ deliveries: options.deliveries, sessionMessages: options.sessionMessages });
+  const validationRuns = options.validationRuns ?? new RuntimeValidationRunRegistry();
+  return {
+    authority: new PostgresRuntimeExecutionAuthority({
+      custody: custody as unknown as RuntimeCustodyStore,
+      database: stub.database,
+      validationRuns,
+    }),
+    custody,
+    selects: stub.selects,
+    validationRuns,
+  };
+}
+
+describe("PostgresRuntimeExecutionAuthority delivery admission", () => {
+  it("authorizes accepted custody matching identity and placement before trusting any database probe", async () => {
+    const { authority, custody, selects } = makeAuthority({
+      custody: acceptedDelivery(),
+      deliveries: [{ state: "pending", turnId: TURN }],
+    });
+
+    await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "authorized" });
+    expect(custody.queries).toEqual([DELIVERY]);
+    // Accepted custody is authoritative; a stray pending probe row cannot downgrade it.
+    expect(selects()).toBe(0);
+  });
+
+  it.each<[string, AcceptedDeliveryRecord | undefined]>([
+    ["no accepted custody", undefined],
+    ["a stale turn", acceptedDelivery({ turnId: "turn-stale" })],
+    ["a foreign session", acceptedDelivery({ sessionId: "session-foreign" })],
+    ["a foreign agent", acceptedDelivery({ agentId: "agent-foreign" })],
+    ["a foreign computer", acceptedDelivery({ computerId: "00000000-0000-4000-8000-0000000000c2" })],
+    ["a foreign instance", acceptedDelivery({ instanceId: "00000000-0000-4000-8000-0000000000d2" })],
+    ["a stale placement", acceptedDelivery({ placementGeneration: PLACEMENT - 1 })],
+  ])("refuses custody with %s", async (_case, custodyRow) => {
+    const { authority, selects } = makeAuthority({ custody: custodyRow });
+
+    await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "invalid" });
+    // Every mismatch falls through to the live dispatch/accept probe exactly once.
+    expect(selects()).toBe(1);
+  });
+
+  it.each(["pending", "expired"] as const)(
+    "keeps a live not-yet-accepted dispatch retryable while its row is %s",
+    async (state) => {
+      const { authority } = makeAuthority({ deliveries: [{ state, turnId: TURN }] });
+
+      await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "not_ready" });
+    },
+  );
+
+  it("refuses when the release probe finds no live dispatch for the delivery", async () => {
+    const { authority } = makeAuthority();
+
+    await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "invalid" });
+  });
+});
+
+describe("PostgresRuntimeExecutionAuthority Session message admission", () => {
+  it.each<[string, "authorized" | "not_ready" | "invalid"]>([
+    ["accepted", "authorized"],
+    ["unknown", "not_ready"],
+    ["unreachable", "invalid"],
+    ["rejected", "invalid"],
+  ])("maps Session message outcome %s to %s", async (lastOutcome, status) => {
+    const { authority, selects } = makeAuthority({ sessionMessages: [{ lastOutcome }] });
+
+    await expect(authority.authorize(sessionMessageSource, context())).resolves.toEqual({ status });
+    expect(selects()).toBe(1);
+  });
+
+  it("refuses a Session message the target Session has no recorded outcome for", async () => {
+    const { authority } = makeAuthority();
+
+    await expect(authority.authorize(sessionMessageSource, context())).resolves.toEqual({ status: "invalid" });
+  });
+});
+
+describe("PostgresRuntimeExecutionAuthority validation admission", () => {
+  function issue(registry: RuntimeValidationRunRegistry) {
+    return registry.issue({
+      agentId: AGENT,
+      bindingId: "binding-1",
+      computerId: COMPUTER,
+      instanceId: INSTANCE,
+      provider: "github",
+    });
+  }
+
+  it("consumes a Server-issued validation run exactly once and maps its provider binding", async () => {
+    const registry = new RuntimeValidationRunRegistry();
+    const run = issue(registry);
+    const { authority, selects } = makeAuthority({ validationRuns: registry });
+    const source: RuntimeExecutionSource = { kind: "validation", validationRunId: run.validationRunId };
+
+    await expect(authority.authorize(source, context())).resolves.toEqual({ status: "authorized", validation: run });
+    expect(validationProviderBinding(run)).toEqual({ bindingId: "binding-1", provider: "github" });
+    expect(registry.size).toBe(0);
+    // Single use: the consumed run can never authorize a second open.
+    await expect(authority.authorize(source, context())).resolves.toEqual({ status: "invalid" });
+    expect(selects()).toBe(0);
+  });
+
+  it("refuses an unknown validation run id", async () => {
+    const { authority } = makeAuthority();
+
+    await expect(
+      authority.authorize({ kind: "validation", validationRunId: randomUUID() }, context()),
+    ).resolves.toEqual({ status: "invalid" });
+  });
+
+  it("refuses an expired validation run", async () => {
+    let now = 1_000;
+    const registry = new RuntimeValidationRunRegistry({ now: () => now, ttlMs: 10 });
+    const run = issue(registry);
+    const { authority } = makeAuthority({ validationRuns: registry });
+    now = 1_010;
+
+    await expect(
+      authority.authorize({ kind: "validation", validationRunId: run.validationRunId }, context()),
+    ).resolves.toEqual({ status: "invalid" });
+  });
+
+  it.each<[string, Partial<RuntimeExecutionAuthorityContext>]>([
+    ["computer", { computerId: "00000000-0000-4000-8000-0000000000c2" }],
+    ["instance", { instanceId: "00000000-0000-4000-8000-0000000000d2" }],
+    ["agent", { agentId: "agent-foreign" }],
+  ])("refuses and burns a run issued for another %s", async (_case, override) => {
+    const registry = new RuntimeValidationRunRegistry();
+    const run = issue(registry);
+    const { authority } = makeAuthority({ validationRuns: registry });
+    const source: RuntimeExecutionSource = { kind: "validation", validationRunId: run.validationRunId };
+
+    await expect(authority.authorize(source, context(override))).resolves.toEqual({ status: "invalid" });
+    expect(registry.size).toBe(0);
+    // A mismatched attempt consumed the run, so the correct context cannot revive it either.
+    await expect(authority.authorize(source, context())).resolves.toEqual({ status: "invalid" });
+  });
+});
+
+describe("PostgresRuntimeExecutionAuthority live revalidation", () => {
+  const revalidationContext = {
+    agentId: AGENT,
+    computerId: COMPUTER,
+    instanceId: INSTANCE,
+    sessionId: SESSION,
+  };
+
+  it("keeps an accepted delivery valid while it is still the accepted turn", async () => {
+    const { authority, selects } = makeAuthority({ deliveries: [{ state: "accepted", turnId: TURN }] });
+
+    await expect(authority.revalidate(deliverySource(), revalidationContext)).resolves.toBe("valid");
+    expect(selects()).toBe(1);
+  });
+
+  it.each<[string, readonly Record<string, unknown>[]]>([
+    ["the delivery row is gone", []],
+    ["the delivery left the accepted state", [{ state: "steered", turnId: TURN }]],
+    ["the accepted turn was replaced", [{ state: "accepted", turnId: "turn-replaced" }]],
+  ])("invalidates a delivery when %s", async (_case, deliveries) => {
+    const { authority } = makeAuthority({ deliveries });
+
+    await expect(authority.revalidate(deliverySource(), revalidationContext)).resolves.toBe("invalid");
+  });
+
+  it.each<[string, "valid" | "invalid" | "not_ready"]>([
+    ["accepted", "valid"],
+    ["unknown", "not_ready"],
+    ["unreachable", "invalid"],
+    ["rejected", "invalid"],
+  ])("maps recorded Session message outcome %s to %s on revalidation", async (lastOutcome, expected) => {
+    const { authority } = makeAuthority({ sessionMessages: [{ lastOutcome }] });
+
+    await expect(authority.revalidate(sessionMessageSource, revalidationContext)).resolves.toBe(expected);
+  });
+
+  it("invalidates a Session message whose recorded row is gone", async () => {
+    const { authority } = makeAuthority();
+
+    await expect(authority.revalidate(sessionMessageSource, revalidationContext)).resolves.toBe("invalid");
+  });
+
+  it("keeps a validation source valid through revalidation without a database read", async () => {
+    const { authority, selects } = makeAuthority();
+
+    await expect(
+      authority.revalidate({ kind: "validation", validationRunId: randomUUID() }, revalidationContext),
+    ).resolves.toBe("valid");
+    expect(selects()).toBe(0);
+  });
+});

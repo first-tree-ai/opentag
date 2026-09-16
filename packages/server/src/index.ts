@@ -6,7 +6,7 @@ import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
-import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
+import { isHostedEnvironment, parseServerConfig, type ServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { agents, computers } from "./db/schema/index.js";
@@ -139,10 +139,43 @@ class InternalNavigationVisibilityService {
   }
 }
 
+/*
+ * The legacy key always stays configured for v1 reads; the optional ring turns on authenticated
+ * v2 envelopes and, when the deployment opted in, v2 IM credential writes.
+ */
+function createApplicationCipher(config: ServerConfig): ApplicationCipher {
+  if (!config.encryptionKeyRing) return new ApplicationCipher(config.encryptionKey);
+  return new ApplicationCipher({
+    legacyKey: config.encryptionKey,
+    keys: config.encryptionKeyRing.keys,
+    activeKeyId: config.encryptionKeyRing.activeKeyId,
+    writeVersion: config.imCredentialEncryptionWriteVersion,
+  });
+}
+
+/** Every configured value startup errors must never echo, including the raw key ring JSON. */
+function collectKnownSecrets(environment: NodeJS.ProcessEnv): string[] {
+  return [
+    environment.OPENTAG_DATABASE_URL ?? "",
+    environment.OPENTAG_JWT_SECRET ?? "",
+    environment.BETTER_AUTH_SECRET ?? "",
+    environment.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
+    environment.OPENTAG_ENCRYPTION_KEY ?? "",
+    environment.OPENTAG_ENCRYPTION_KEY_RING ?? "",
+    environment.OPENTAG_OTEL_HEADERS ?? "",
+    environment.OPENTAG_SLACK_CLIENT_SECRET ?? "",
+    environment.OPENTAG_SLACK_SIGNING_SECRET ?? "",
+  ];
+}
+
+function cipherKeySecrets(config: ServerConfig): string[] {
+  return Array.from(config.encryptionKeyRing?.keys.values() ?? [], (key) => Buffer.from(key).toString("base64"));
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
-  const knownSecrets: string[] = [];
+  const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
   const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
@@ -152,17 +185,8 @@ export async function startServer(): Promise<void> {
   });
 
   try {
-    knownSecrets.push(
-      process.env.OPENTAG_DATABASE_URL ?? "",
-      process.env.OPENTAG_JWT_SECRET ?? "",
-      process.env.BETTER_AUTH_SECRET ?? "",
-      process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
-      process.env.OPENTAG_ENCRYPTION_KEY ?? "",
-      process.env.OPENTAG_OTEL_HEADERS ?? "",
-      process.env.OPENTAG_SLACK_CLIENT_SECRET ?? "",
-      process.env.OPENTAG_SLACK_SIGNING_SECRET ?? "",
-    );
     const config = parseServerConfig(process.env);
+    knownSecrets.push(...cipherKeySecrets(config));
     const instanceId = randomUUID();
     await initTelemetry(config.observability.tracing, instanceId);
     readiness.complete("configuration");
@@ -232,7 +256,7 @@ export async function startServer(): Promise<void> {
       providerReadiness: registry,
       cloudIdentities,
     });
-    const applicationCipher = new ApplicationCipher(config.encryptionKey);
+    const applicationCipher = createApplicationCipher(config);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
         .select({ computerId: computers.id, runtimeProvider: agents.runtimeProvider })

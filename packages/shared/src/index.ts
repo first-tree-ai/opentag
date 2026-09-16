@@ -224,6 +224,7 @@ export {
   type ValidationIssue,
   ValidationIssueSchema,
 } from "./errors.js";
+export * from "./github-integration.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,

@@ -109,6 +109,7 @@ function expectedIdentity(
   if (!installation?.externalTeamId || !installation.externalBotId) return undefined;
   const credential = decodeSlackCredential(cipher, installation.encryptedCredential, {
     bindingId: binding.id,
+    slackInstallationId: installation.id,
     logger,
   });
   if (!credential) return undefined;
@@ -248,7 +249,11 @@ function slackValidationGrant(
   if (!installation || installation.status !== "active" || installation.credentialGeneration !== generation) {
     return undefined;
   }
-  const credential = decodeSlackCredential(cipher, installation.encryptedCredential, { bindingId, logger });
+  const credential = decodeSlackCredential(cipher, installation.encryptedCredential, {
+    bindingId,
+    slackInstallationId: installation.id,
+    logger,
+  });
   if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return undefined;
   return { expectedIdentity: identity, grant: { provider: "slack", botAccessToken: credential.botAccessToken } };
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   ErrorCategory,
   ImBindingAdminDetail,
@@ -24,7 +25,7 @@ import {
   ImBindingUnbindRequiredDetailSchema,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -43,12 +44,15 @@ import {
   decodeSlackCredential,
   type FeishuCredential,
   FeishuCredentialSchema,
+  feishuBindingCredentialContext,
   inspectBindingCredentials,
   inspectCredentialMaterial,
   type SlackCredential,
   SlackCredentialSchema,
+  slackInstallationCredentialContext,
   slackInstallationInspectionInput,
 } from "./credential-material.js";
+import { disableImBindingInTransaction } from "./disable-im-binding.js";
 import {
   ImBindingProviderCli,
   type ImBindingReadiness,
@@ -57,6 +61,8 @@ import {
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
+
+export { disableImBindingInTransaction } from "./disable-im-binding.js";
 
 export interface VerifiedFeishuBinding {
   agentId: string;
@@ -151,71 +157,6 @@ interface ActivatedBinding {
   botId: string;
   credentialGeneration: number;
 }
-export async function disableImBindingInTransaction(
-  transaction: DatabaseTransaction,
-  imBindingId: string,
-  now: Date,
-  expectedGeneration?: number,
-  releaseUnusedSlackInstallation = true,
-): Promise<boolean> {
-  const disabled = await transaction
-    .update(imBindings)
-    .set({
-      status: "disabled",
-      encryptedCredential: null,
-      encryptedSetupContext: null,
-      setupOwnerInstanceId: null,
-      setupOwnerHeartbeatAt: null,
-      setupExpiresAt: null,
-      connectionOwnerInstanceId: null,
-      connectionLeaseExpiresAt: null,
-      disabledAt: now,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(imBindings.id, imBindingId),
-        ne(imBindings.status, "disabled"),
-        ...(expectedGeneration === undefined ? [] : [eq(imBindings.credentialGeneration, expectedGeneration)]),
-      ),
-    )
-    .returning({ id: imBindings.id, slackInstallationId: imBindings.slackInstallationId });
-  if (disabled.length === 0) return false;
-  await transaction
-    .update(sessions)
-    .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
-    .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
-  const installationId = disabled[0]?.slackInstallationId;
-  if (installationId && releaseUnusedSlackInstallation) {
-    const [installation] = await transaction
-      .select({ id: slackInstallations.id, status: slackInstallations.status })
-      .from(slackInstallations)
-      .where(eq(slackInstallations.id, installationId))
-      .limit(1)
-      .for("update");
-    if (installation && installation.status !== "disabled") {
-      const [remainingRoute] = await transaction
-        .select({ id: imBindings.id })
-        .from(imBindings)
-        .where(
-          and(
-            eq(imBindings.slackInstallationId, installationId),
-            eq(imBindings.provider, "slack"),
-            ne(imBindings.status, "disabled"),
-          ),
-        )
-        .limit(1);
-      if (!remainingRoute) {
-        await transaction
-          .update(slackInstallations)
-          .set({ status: "disabled", encryptedCredential: null, disabledAt: now, updatedAt: now })
-          .where(and(eq(slackInstallations.id, installationId), ne(slackInstallations.status, "disabled")));
-      }
-    }
-  }
-  return true;
-}
-
 export class ImBindingServiceError extends Error {
   constructor(
     readonly code: string,
@@ -515,7 +456,7 @@ export class ImBindingService {
       ) {
         return rejected("credential_stale");
       }
-      const credential = this.#decodeSlackCredential(installation.encryptedCredential, binding.id);
+      const credential = this.#decodeSlackCredential(installation.encryptedCredential, binding.id, installation.id);
       if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
       return {
         type: "im:credential:result",
@@ -686,7 +627,11 @@ export class ImBindingService {
     }
     const ingress = this.#slackInstallationIngressFromRow(row.installation, row.imBinding.id, row.installation.id);
     if (!ingress) return undefined;
-    const credential = this.#decodeSlackCredential(row.installation.encryptedCredential, row.imBinding.id);
+    const credential = this.#decodeSlackCredential(
+      row.installation.encryptedCredential,
+      row.imBinding.id,
+      row.installation.id,
+    );
     if (!credential) return undefined;
     return {
       imBindingId,
@@ -1192,9 +1137,17 @@ export class ImBindingService {
     const now = this.#now();
     const lastErrorCode = errorCode.slice(0, 120);
     const result = await this.#database.transaction(async (transaction) => {
+      // active -> reauthorization_required is an authorization mutation: both the installation
+      // and its routes advance their authorization epoch in the same transaction, so grants,
+      // readiness, and signed expectations captured before the transition can no longer be used.
       const [updated] = await transaction
         .update(slackInstallations)
-        .set({ status: "reauthorization_required", lastErrorCode, updatedAt: now })
+        .set({
+          status: "reauthorization_required",
+          lastErrorCode,
+          credentialGeneration: sql`${slackInstallations.credentialGeneration} + 1`,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(slackInstallations.id, installationId),
@@ -1206,7 +1159,12 @@ export class ImBindingService {
       if (!updated) return { agentId: undefined, changed: false };
       await transaction
         .update(imBindings)
-        .set({ status: "reauthorization_required", lastErrorCode, updatedAt: now })
+        .set({
+          status: "reauthorization_required",
+          lastErrorCode,
+          credentialGeneration: sql`${imBindings.credentialGeneration} + 1`,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(imBindings.slackInstallationId, installationId),
@@ -1276,6 +1234,7 @@ export class ImBindingService {
 
   #withCredentialStatus<
     T extends {
+      id: string;
       provider: "feishu" | "slack";
       encryptedCredential: string | null;
       externalAppId: string | null;
@@ -1292,7 +1251,7 @@ export class ImBindingService {
     return { ...imBinding, credentialStatus };
   }
   #inspectCredentialMaterial(input: CredentialMaterialWithId, bindingId?: string): CredentialInspection {
-    const options = { bindingId, slackInstallationId: input.slackInstallationId ?? undefined };
+    const options = { bindingId: bindingId ?? input.id, slackInstallationId: input.slackInstallationId ?? undefined };
     return inspectCredentialMaterial(this.#cipher, input, { ...options, logger: this.#logger });
   }
   async notifyProviderCliRequirementChanged(agentId: string): Promise<void> {
@@ -1419,7 +1378,9 @@ export class ImBindingService {
         `The provider grant is missing required capabilities: ${missing.join(", ")}`,
       );
     }
-    const encryptedCredential = this.#cipher.encrypt(JSON.stringify(credential));
+    // Serialize once; encryption happens inside the transaction only after the stable
+    // installation row ID is known, so the v2 envelope can bind the record as AAD.
+    const credentialPayload = JSON.stringify(credential);
     const activate = async (transaction: DatabaseTransaction) => {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, id: agents.id })
@@ -1561,7 +1522,7 @@ export class ImBindingService {
               teamId: input.teamId,
               enterpriseId: input.enterpriseId ?? null,
               botUserId: input.botUserId,
-              encryptedCredential,
+              credentialPayload,
               grantedCapabilities: credential.grantedScopes,
             },
             now,
@@ -1587,7 +1548,10 @@ export class ImBindingService {
             externalBotId: input.botUserId,
             credentialSchemaVersion: 1,
             credentialGeneration: nextGeneration,
-            encryptedCredential,
+            encryptedCredential: this.#cipher.encryptCredential(
+              credentialPayload,
+              slackInstallationCredentialContext(existingInstallation.id),
+            ),
             grantedCapabilities: credential.grantedScopes,
             observedAt: null,
             observedConnectedAt: null,
@@ -1626,7 +1590,7 @@ export class ImBindingService {
           teamId: input.teamId,
           enterpriseId: input.enterpriseId ?? null,
           botUserId: input.botUserId,
-          encryptedCredential,
+          credentialPayload,
           grantedCapabilities: credential.grantedScopes,
         },
         now,
@@ -1650,7 +1614,7 @@ export class ImBindingService {
       teamId: string;
       enterpriseId: string | null;
       botUserId: string;
-      encryptedCredential: string;
+      credentialPayload: string;
       grantedCapabilities: string[];
     },
     now: Date,
@@ -1663,9 +1627,16 @@ export class ImBindingService {
     botId: string;
     credentialGeneration: number;
   }> {
+    // The row ID is fixed before encryption so the credential envelope can bind it as AAD.
+    const installationId = randomUUID();
+    const encryptedCredential = this.#cipher.encryptCredential(
+      input.credentialPayload,
+      slackInstallationCredentialContext(installationId),
+    );
     const [createdInstallation] = await transaction
       .insert(slackInstallations)
       .values({
+        id: installationId,
         agentId: input.agentId,
         status: "active",
         externalAppId: input.appId,
@@ -1674,7 +1645,7 @@ export class ImBindingService {
         externalBotId: input.botUserId,
         credentialSchemaVersion: 1,
         credentialGeneration: 1,
-        encryptedCredential: input.encryptedCredential,
+        encryptedCredential,
         grantedCapabilities: input.grantedCapabilities,
         observedAt: null,
         observedConnectedAt: null,
@@ -1818,6 +1789,7 @@ export class ImBindingService {
       .set({
         status: "disabled",
         encryptedCredential: null,
+        credentialGeneration: sql`${slackInstallations.credentialGeneration} + 1`,
         disabledAt: now,
         updatedAt: now,
       })
@@ -1863,7 +1835,11 @@ export class ImBindingService {
     },
     existingTransaction?: DatabaseTransaction,
   ): Promise<ActivatedBinding> {
-    const encryptedCredential = this.#cipher.encrypt(JSON.stringify(input.credential));
+    // Serialize once; encryption happens inside the transaction only after the stable binding
+    // row ID is known, so the v2 envelope can bind the record as AAD.
+    const credentialPayload = JSON.stringify(input.credential);
+    const encryptFor = (bindingId: string) =>
+      this.#cipher.encryptCredential(credentialPayload, feishuBindingCredentialContext(bindingId));
     const activate = async (transaction: DatabaseTransaction): Promise<ActivatedBinding> => {
       const [agent] = await transaction
         .select({ computerId: agents.computerId, id: agents.id })
@@ -1959,9 +1935,10 @@ export class ImBindingService {
       });
       if (current && current.status !== "provisioning" && !sameIdentity) {
         await disableImBindingInTransaction(transaction, current.id, now);
+        const replacementId = randomUUID();
         const [created] = await transaction
           .insert(imBindings)
-          .values(this.#activeValues(activationInput, encryptedCredential, 1, now))
+          .values({ id: replacementId, ...this.#activeValues(activationInput, encryptFor(replacementId), 1, now) })
           .returning({ id: imBindings.id });
         if (!created) throw new Error("Replacement IM binding insert did not return an id");
         await transaction
@@ -1975,7 +1952,7 @@ export class ImBindingService {
         const [updated] = await transaction
           .update(imBindings)
           .set({
-            ...this.#activeValues(activationInput, encryptedCredential, nextGeneration, now),
+            ...this.#activeValues(activationInput, encryptFor(current.id), nextGeneration, now),
             ...(input.provider === "feishu"
               ? {
                   setupAttemptId: current.setupAttemptId,
@@ -2001,9 +1978,10 @@ export class ImBindingService {
         if (!updated) throw new Error("IM binding activation update did not return an id");
         return activated(updated.id, nextGeneration);
       }
+      const createdId = randomUUID();
       const [created] = await transaction
         .insert(imBindings)
-        .values(this.#activeValues(activationInput, encryptedCredential, 1, now))
+        .values({ id: createdId, ...this.#activeValues(activationInput, encryptFor(createdId), 1, now) })
         .returning({ id: imBindings.id });
       if (!created) throw new Error("IM binding insert did not return an id");
       return activated(created.id, 1);

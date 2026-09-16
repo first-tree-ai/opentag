@@ -89,6 +89,48 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
+/*
+ * The v2 envelope key ring: a JSON object mapping stable key IDs to canonical base64-encoded
+ * 32-byte keys. Key IDs are printable slugs; the ApplicationCipher constructor re-validates them.
+ * Issues are reported without echoing any configured value, because the values are key material.
+ */
+const ENCRYPTION_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+const EncryptionKeyRingSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .transform((value, context) => {
+    if (value === undefined) return undefined;
+    const invalid = (message: string) => {
+      context.addIssue({ code: "custom", message });
+      return z.NEVER;
+    };
+    let raw: unknown;
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return invalid("Must be a JSON object mapping key IDs to canonical base64-encoded 32-byte keys");
+    }
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return invalid("Must be a JSON object mapping key IDs to canonical base64-encoded 32-byte keys");
+    }
+    const entries = Object.entries(raw);
+    if (entries.length === 0) return invalid("Must name at least one key");
+    const keys = new Map<string, Uint8Array>();
+    for (const [keyId, encoded] of entries) {
+      if (!ENCRYPTION_KEY_ID_PATTERN.test(keyId)) return invalid("Key IDs must be lowercase alphanumeric slugs");
+      if (typeof encoded !== "string") return invalid("Every ring key must be a base64-encoded 32-byte key");
+      const decoded = Buffer.from(encoded, "base64");
+      if (decoded.byteLength !== 32 || decoded.toString("base64") !== encoded) {
+        return invalid("Every ring key must be a canonical base64-encoded 32-byte key");
+      }
+      keys.set(keyId, new Uint8Array(decoded));
+    }
+    return keys;
+  });
+
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
 
@@ -102,6 +144,16 @@ const ServerEnvironmentSchema = z
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
+    OPENTAG_ENCRYPTION_KEY_RING: EncryptionKeyRingSchema,
+    OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1).optional(),
+    /*
+     * IM credential material writes stay on the legacy v1 envelope until a deployment opts into the
+     * authenticated v2 envelope; reads accept both envelopes regardless of this setting.
+     */
+    OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: z
+      .enum(["1", "2"])
+      .default("1")
+      .transform((value) => (value === "2" ? 2 : 1)),
     OPENTAG_ENV: ChannelNameSchema.default("dev"),
     OPENTAG_ENV_EXPLICIT: z.boolean(),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
@@ -233,6 +285,30 @@ const ServerEnvironmentSchema = z
     }
   })
   .superRefine((value, context) => {
+    const keyRing = value.OPENTAG_ENCRYPTION_KEY_RING;
+    const activeKeyId = value.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID;
+    if (Boolean(keyRing) !== Boolean(activeKeyId)) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_ENCRYPTION_KEY_RING and OPENTAG_ENCRYPTION_ACTIVE_KEY_ID must be configured together",
+      });
+      return;
+    }
+    if (keyRing && activeKeyId && !keyRing.has(activeKeyId)) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_ENCRYPTION_ACTIVE_KEY_ID must name a key in OPENTAG_ENCRYPTION_KEY_RING",
+      });
+    }
+    if (value.OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION === 2 && !keyRing) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION=2 requires OPENTAG_ENCRYPTION_KEY_RING and OPENTAG_ENCRYPTION_ACTIVE_KEY_ID",
+      });
+    }
+  })
+  .superRefine((value, context) => {
     const storage = value.OPENTAG_CLOUD_STORAGE_BASE;
     const runnerVersion = value.OPENTAG_CLOUD_RUNNER_VERSION;
     if (storage !== undefined && !parseCloudStorageBase(storage)) {
@@ -298,6 +374,14 @@ export interface ServerConfig {
   channelTarget: { downloadBaseUrl: string; pollIntervalMs: number };
   databaseUrl: string;
   encryptionKey: Uint8Array;
+  /**
+   * Authenticated v2 envelope key ring for credential material, with the active write key. Absent
+   * while a deployment runs the single legacy key; retired IDs stay present for reads until their
+   * ciphertexts rotate away.
+   */
+  encryptionKeyRing?: { keys: ReadonlyMap<string, Uint8Array>; activeKeyId: string };
+  /** IM credential material write envelope. Reads accept v1 and v2 regardless of this setting. */
+  imCredentialEncryptionWriteVersion: 1 | 2;
   channel: ChannelConfig;
   environment: ChannelName;
   devAuth?: { email: string };
@@ -369,6 +453,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
+    OPENTAG_ENCRYPTION_KEY_RING: emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING),
+    OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: emptyToUndefined(environment.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID),
+    OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: environment.OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION,
     OPENTAG_ENV: environment.OPENTAG_ENV,
     OPENTAG_ENV_EXPLICIT: environment.OPENTAG_ENV !== undefined,
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
@@ -408,6 +495,15 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
+    ...(parsed.OPENTAG_ENCRYPTION_KEY_RING && parsed.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID
+      ? {
+          encryptionKeyRing: {
+            keys: parsed.OPENTAG_ENCRYPTION_KEY_RING,
+            activeKeyId: parsed.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID,
+          },
+        }
+      : {}),
+    imCredentialEncryptionWriteVersion: parsed.OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION,
     environment: parsed.OPENTAG_ENV,
     ...(parsed.OPENTAG_DEV_AUTH_BYPASS_ENABLED && parsed.OPENTAG_DEV_AUTH_EMAIL
       ? { devAuth: { email: parsed.OPENTAG_DEV_AUTH_EMAIL } }

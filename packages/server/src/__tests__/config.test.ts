@@ -139,6 +139,68 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
   });
 
+  it("keeps the legacy encryption defaults and fully validates the v2 key ring opt-in", () => {
+    const ringKey = Buffer.alloc(32, 23).toString("base64");
+    const retiredKey = Buffer.alloc(32, 11).toString("base64");
+    // Defaults: no ring, v1 writes, and the single legacy key keeps working untouched.
+    const defaults = parseServerConfig(required);
+    expect(defaults.encryptionKeyRing).toBeUndefined();
+    expect(defaults.imCredentialEncryptionWriteVersion).toBe(1);
+    expect([...defaults.encryptionKey]).toEqual([...Buffer.alloc(32, 7)]);
+
+    const configured = parseServerConfig({
+      ...required,
+      OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ "im-2026-08": retiredKey, "im-2026-09": ringKey }),
+      OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "im-2026-09",
+      OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "2",
+    });
+    expect(configured.encryptionKeyRing?.activeKeyId).toBe("im-2026-09");
+    expect(configured.encryptionKeyRing?.keys.get("im-2026-09")).toEqual(new Uint8Array(Buffer.alloc(32, 23)));
+    expect(configured.imCredentialEncryptionWriteVersion).toBe(2);
+
+    // Ring and active key are coupled; the active key must be in the ring; v2 writes need a ring.
+    expect(() => parseServerConfig({ ...required, OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "im-2026-09" })).toThrow();
+    expect(() =>
+      parseServerConfig({ ...required, OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }) }),
+    ).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }),
+        OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "other",
+      }),
+    ).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "2" })).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }),
+        OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "main",
+        OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "3",
+      }),
+    ).toThrow();
+
+    // Malformed rings fail closed without echoing key material.
+    for (const ring of [
+      "not-json",
+      "[]",
+      "{}",
+      JSON.stringify({ "BAD ID": ringKey }),
+      JSON.stringify({ main: "not-base64" }),
+      JSON.stringify({ main: Buffer.alloc(16).toString("base64") }),
+      JSON.stringify({ main: `${ringKey}==` }),
+      JSON.stringify({ main: 42 }),
+    ]) {
+      expect(() =>
+        parseServerConfig({
+          ...required,
+          OPENTAG_ENCRYPTION_KEY_RING: ring,
+          OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "main",
+        }),
+      ).toThrow();
+    }
+  });
+
   it("defaults the channel target coordinates to the public release endpoint", () => {
     expect(parseServerConfig(required).channelTarget).toEqual({
       downloadBaseUrl: "https://dl.opentag.build/releases",

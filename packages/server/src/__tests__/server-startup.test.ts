@@ -276,6 +276,7 @@ const originalSecrets = {
   jwt: process.env.OPENTAG_JWT_SECRET,
   google: process.env.OPENTAG_GOOGLE_CLIENT_SECRET,
   encryption: process.env.OPENTAG_ENCRYPTION_KEY,
+  encryptionKeyRing: process.env.OPENTAG_ENCRYPTION_KEY_RING,
   slackClient: process.env.OPENTAG_SLACK_CLIENT_SECRET,
   slackSigning: process.env.OPENTAG_SLACK_SIGNING_SECRET,
 };
@@ -381,6 +382,7 @@ beforeEach(() => {
   process.env.OPENTAG_JWT_SECRET = "jwt-secret";
   process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
   process.env.OPENTAG_ENCRYPTION_KEY = "encryption-secret";
+  process.env.OPENTAG_ENCRYPTION_KEY_RING = "encryption-key-ring-secret";
   process.env.OPENTAG_SLACK_CLIENT_SECRET = "slack-client-secret";
   process.env.OPENTAG_SLACK_SIGNING_SECRET = "slack-signing-secret";
   process.exitCode = undefined;
@@ -395,6 +397,7 @@ afterEach(() => {
   restore("OPENTAG_JWT_SECRET", originalSecrets.jwt);
   restore("OPENTAG_GOOGLE_CLIENT_SECRET", originalSecrets.google);
   restore("OPENTAG_ENCRYPTION_KEY", originalSecrets.encryption);
+  restore("OPENTAG_ENCRYPTION_KEY_RING", originalSecrets.encryptionKeyRing);
   restore("OPENTAG_SLACK_CLIENT_SECRET", originalSecrets.slackClient);
   restore("OPENTAG_SLACK_SIGNING_SECRET", originalSecrets.slackSigning);
   process.exitCode = originalExitCode;
@@ -640,7 +643,7 @@ describe("Server startup", () => {
     };
     app.listen.mockRejectedValue(
       new Error(
-        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret",
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret encryption-key-ring-secret slack-client-secret slack-signing-secret",
       ),
     );
 
@@ -663,6 +666,7 @@ describe("Server startup", () => {
       "jwt-secret",
       "google-secret",
       "encryption-secret",
+      "encryption-key-ring-secret",
       "slack-client-secret",
       "slack-signing-secret",
     ]) {

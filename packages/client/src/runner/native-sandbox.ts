@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -139,6 +140,8 @@ export class NativeSandbox {
   readonly #binary: string;
   readonly #spawn: SpawnProcess;
   readonly #sleep: (ms: number) => Promise<void>;
+  // Retained across delete/relaunch, so readiness also proves the previous writable layer vanished.
+  readonly #rootfsCanary = `/tmp/opentag-rootfs-${randomUUID()}`;
 
   constructor(options: NativeSandboxOptions) {
     if (!/^[a-z][a-z0-9-]{0,62}$/.test(options.name))
@@ -210,6 +213,9 @@ export class NativeSandbox {
     try {
       await writeFile(canary, "parent", { mode: 0o600 });
       const code = `const fs=require('node:fs'); const p=${JSON.stringify(canary)};
+        const rootfsCanary=${JSON.stringify(this.#rootfsCanary)};
+        if(fs.existsSync(rootfsCanary))process.exit(12);
+        fs.writeFileSync(rootfsCanary,'sandbox-layer');
         if(fs.existsSync(p)||fs.existsSync('/opt/sandbox-root'))process.exit(10);
         for(const file of ['/proc/self/environ','/proc/1/environ']) {
           const value=fs.readFileSync(file,'utf8');
@@ -220,6 +226,15 @@ export class NativeSandbox {
       const isolation = await this.exec(SANDBOX_NODE, ["-e", code], { timeoutMs: 30_000 });
       if (isolation.code !== 0 || isolation.stdout !== "isolated" || (await readFile(canary, "utf8")) !== "parent") {
         throw new NativeSandboxError("probe_failed", "Native sandbox failed filesystem or credential isolation checks");
+      }
+      const lowerLayerCanary = await lstat(join(this.#rootfs, this.#rootfsCanary)).catch(
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        },
+      );
+      if (lowerLayerCanary) {
+        throw new NativeSandboxError("probe_failed", "Native sandbox modified the immutable root filesystem");
       }
     } finally {
       await rm(canaryRoot, { recursive: true, force: true });
@@ -276,8 +291,10 @@ export class NativeSandbox {
         reject(classifySpawnError(error));
         return;
       }
-      let stdout = "",
-        stderr = "";
+      const stdout: Buffer[] = [],
+        stderr: Buffer[] = [];
+      let stdoutBytes = 0,
+        stderrBytes = 0;
       let failure: NativeSandboxError | undefined;
       let settled = false;
       let escalation: ReturnType<typeof setTimeout> | undefined;
@@ -288,7 +305,12 @@ export class NativeSandbox {
         clearTimeout(escalation);
         options.signal?.removeEventListener("abort", onAbort);
         if (failure) reject(failure);
-        else resolve({ code, stdout, stderr });
+        else
+          resolve({
+            code,
+            stdout: Buffer.concat(stdout).toString("utf8"),
+            stderr: Buffer.concat(stderr).toString("utf8"),
+          });
       };
       const cancel = (message: string) => {
         if (settled || failure) return;
@@ -306,10 +328,14 @@ export class NativeSandbox {
       });
       child.once("close", (code) => finish(code ?? -1));
       child.stdout.on("data", (chunk: Buffer) => {
-        stdout = (stdout + chunk.toString("utf8")).slice(0, CAPTURE_LIMIT_BYTES);
+        const kept = chunk.subarray(0, Math.max(0, CAPTURE_LIMIT_BYTES - stdoutBytes));
+        if (kept.length > 0) stdout.push(Buffer.from(kept));
+        stdoutBytes += kept.length;
       });
       child.stderr.on("data", (chunk: Buffer) => {
-        stderr = (stderr + chunk.toString("utf8")).slice(0, CAPTURE_LIMIT_BYTES);
+        const kept = chunk.subarray(0, Math.max(0, CAPTURE_LIMIT_BYTES - stderrBytes));
+        if (kept.length > 0) stderr.push(Buffer.from(kept));
+        stderrBytes += kept.length;
       });
       child.stdin.on("error", () => cancel("Sandbox worker stdin failed"));
       options.signal?.addEventListener("abort", onAbort, { once: true });

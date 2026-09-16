@@ -217,7 +217,15 @@ function buildServerEnv(o) {
 }
 
 function spawnServer({ repositoryRoot, serverEntry, logPath, env, secrets, baseUrl }) {
-  const child = spawnLogged(process.execPath, [serverEntry], { cwd: repositoryRoot, logPath, secrets, env });
+  // Keep the cleanup API alive when Ctrl-C reaches the harness foreground process group.
+  // The fixture retains the child handle and stops it only after Cloud resources are removed.
+  const child = spawnLogged(process.execPath, [serverEntry], {
+    cwd: repositoryRoot,
+    logPath,
+    secrets,
+    env,
+    detached: true,
+  });
   const listening = new Promise((settle) => {
     let announced = "";
     child.stdout.on("data", (chunk) => {

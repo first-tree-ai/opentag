@@ -59,6 +59,12 @@ RUN /usr/sbin/groupadd --gid 10000 runner \
  && chmod 0700 /home/runner /workspace \
  && git --version | grep -F "git version 2.39.5"
 
+# setpriv is supplied by util-linux in the digest-pinned base image; nothing is downloaded or
+# installed here. Assert both its provenance and the exact drop the entrypoint performs.
+RUN /usr/bin/setpriv --version | grep -F "setpriv from util-linux" \
+ && test "$(/usr/bin/setpriv --reuid=10000 --regid=10000 --clear-groups -- id -u)" = "10000" \
+ && test "$(/usr/bin/setpriv --reuid=10000 --regid=10000 --clear-groups -- id -G)" = "10000"
+
 COPY --from=build /out/opt /opt
 COPY --from=build /out/usr /usr
 RUN chmod 0755 /usr/local/bin/runner-entrypoint /usr/local/bin/opentag-runner /usr/local/bin/opentag /usr/local/bin/opentag-init \
@@ -79,7 +85,11 @@ ENV NODE_ENV=production \
     PATH=/usr/local/bin:/opt/opentag/tools/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     PI_TELEMETRY=0
 
-USER runner
+# The image default user is root because the Cloud Run native sandbox launcher requires the
+# Instance parent process to run as root. runner-entrypoint immediately drops every non-serve
+# command to uid/gid 10000 with supplementary groups cleared; only the exact
+# `opentag-runner serve` invocation keeps root and runs under the source-owned opentag-init.
+USER root
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/runner-entrypoint"]
 CMD ["opentag-runner"]

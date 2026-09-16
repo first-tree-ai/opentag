@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import {
@@ -57,7 +57,10 @@ describe("resolveRunnerBackendUrl", () => {
     expect(resolveRunnerBackendUrl("ws://localhost:9000/ws")).toBe("ws://localhost:9000/ws");
     expect(() => resolveRunnerBackendUrl("ws://api.example.com/ws")).toThrow(/wss/);
     expect(() => resolveRunnerBackendUrl("http://api.example.com/ws")).toThrow();
-    expect(() => resolveRunnerBackendUrl("wss://user:pass@api.example.com/ws")).toThrow();
+    const credentialUrl = new URL("wss://api.example.com/ws");
+    credentialUrl.username = "synthetic-user";
+    credentialUrl.password = "synthetic-password";
+    expect(() => resolveRunnerBackendUrl(credentialUrl.toString())).toThrow();
     expect(() => resolveRunnerBackendUrl("wss://api.example.com/ws?token=abc")).toThrow();
     expect(() => resolveRunnerBackendUrl("not a url")).toThrow();
   });
@@ -289,6 +292,41 @@ describe("runRunnerWorker (in-sandbox worker)", () => {
     await expect(stat(observed.piHome as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("deletes the raw unfiltered Pi config before any model or user tool runs", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-worker-test-"));
+    cleanup.push(() => rm(workspace, { recursive: true, force: true }));
+    const output = io();
+    const observed: { filteredAuth?: string; rawGone?: boolean } = {};
+    const runAcceptance = vi.fn(async (options: { piHome: string }) => {
+      observed.filteredAuth = await readFile(join(options.piHome, "auth.json"), "utf8");
+      const rawHome = join(dirname(options.piHome), "pi-agent");
+      observed.rawGone = await stat(rawHome).then(
+        () => false,
+        () => true,
+      );
+      return passingReport;
+    });
+    const code = await runRunnerWorker(
+      {
+        stdin: stdinOf(
+          JSON.stringify({
+            kind: "acceptance",
+            mode: "real",
+            piConfig: { authJson: '{"deepseek":{"token":"unit-deepseek"},"other":{"token":"unit-other-secret"}}' },
+          }),
+        ),
+        ...output,
+      },
+      { workspace, runAcceptance: runAcceptance as never },
+    );
+    expect(code).toBe(0);
+    // Only the whitelisted provider survived filtering…
+    expect(observed.filteredAuth).toContain("unit-deepseek");
+    expect(observed.filteredAuth).not.toContain("unit-other-secret");
+    // …and the raw, unfiltered copy was already gone before the acceptance run started.
+    expect(observed.rawGone).toBe(true);
+  });
+
   it("rejects invalid or oversized stdin without running acceptance", async () => {
     const output = io();
     const runAcceptance = vi.fn(async () => passingReport);
@@ -422,9 +460,17 @@ interface WssHarness {
   waitFor(type: string, timeoutMs?: number): Promise<Record<string, unknown>>;
 }
 
+interface WssBehavior {
+  /** The first N connections receive no auth reply at all (a slow/stuck Server). */
+  dropAuthConnections?: number;
+  /** The first N connections get an out-of-turn error frame instead of an auth:result. */
+  errorAuthConnections?: number;
+}
+
 async function startWss(
   onAuth?: (frame: Record<string, unknown>) => boolean,
   timing = { interval: 50, timeout: 100_000 },
+  behavior: WssBehavior = {},
 ): Promise<WssHarness> {
   const port = await freePort();
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
@@ -457,8 +503,17 @@ async function startWss(
       socket.close(4401, "auth failed");
     }
   };
+  const replyByBehavior = (socket: WsSocket, frame: Record<string, unknown>, connectionIndex: number) => {
+    if (connectionIndex < (behavior.dropAuthConnections ?? 0)) return;
+    if (connectionIndex < (behavior.errorAuthConnections ?? 0)) {
+      socket.send(JSON.stringify({ type: "error", code: "SERVER_STUCK", message: "Server not ready" }));
+      return;
+    }
+    replyAuth(socket, frame);
+  };
   wss.on("connection", (socket) => {
     sockets.push(socket);
+    const connectionIndex = sockets.length - 1;
     socket.on("message", (raw) => {
       const frame = JSON.parse(String(raw)) as Record<string, unknown>;
       frames.push(frame);
@@ -468,7 +523,7 @@ async function startWss(
         waiter?.resolve(frame);
       }
       if (frame.type === "heartbeat") socket.send(JSON.stringify({ type: "server:heartbeat" }));
-      if (frame.type === "auth") replyAuth(socket, frame);
+      if (frame.type === "auth") replyByBehavior(socket, frame, connectionIndex);
     });
   });
   return {
@@ -605,6 +660,48 @@ describe("runRunnerServe", () => {
     expect(wss.frames.filter((frame) => frame.type === "auth")).toHaveLength(1);
     expect(state.destroys).toBe(1);
     expect(output.chunks.stderr.join("")).toMatch(/rejected/);
+  }, 30_000);
+
+  it("treats an authentication timeout as a transport failure and reconnects", async () => {
+    // The first connection never answers auth (a slow Server); only an explicit in-band
+    // auth:result ok:false may be terminal, so the Runner must back off and dial again.
+    const wss = await startWss(undefined, { interval: 50, timeout: 100_000 }, { dropAuthConnections: 1 });
+    const output = io();
+    const state = { destroys: 0, launches: 0, failDestroy: false };
+    const stop = new AbortController();
+    const running = runRunnerServe(serveConfig(wss.url), {
+      stderr: output.stderr,
+      installSignalHandlers: false,
+      sandboxFactory: fakeSandboxFactory([], state),
+      authTimeoutMs: 120,
+      sleep: () => Promise.resolve(),
+      randomJitter: () => 0,
+      signal: stop.signal,
+    });
+    await wss.waitFor("runner:ready");
+    expect(wss.frames.filter((frame) => frame.type === "auth").length).toBeGreaterThanOrEqual(2);
+    expect(output.chunks.stderr.join("")).toMatch(/timed out/);
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("reconnects when the server speaks out of turn before auth completes", async () => {
+    const wss = await startWss(undefined, { interval: 50, timeout: 100_000 }, { errorAuthConnections: 1 });
+    const output = io();
+    const state = { destroys: 0, launches: 0, failDestroy: false };
+    const stop = new AbortController();
+    const running = runRunnerServe(serveConfig(wss.url), {
+      stderr: output.stderr,
+      installSignalHandlers: false,
+      sandboxFactory: fakeSandboxFactory([], state),
+      sleep: () => Promise.resolve(),
+      randomJitter: () => 0,
+      signal: stop.signal,
+    });
+    await wss.waitFor("runner:ready");
+    expect(wss.frames.filter((frame) => frame.type === "auth").length).toBeGreaterThanOrEqual(2);
+    stop.abort();
+    expect(await running).toBe(143);
   }, 30_000);
 
   it("reconnects after a server-side close and re-reports readiness", async () => {

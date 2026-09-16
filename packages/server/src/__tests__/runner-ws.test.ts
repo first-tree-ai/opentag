@@ -14,12 +14,13 @@ import {
   RUNNER_WS_CLOSE,
   RUNNER_WS_MAX_FRAME_BYTES,
 } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import Fastify from "fastify";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { registerRunnerWebSocketRoute } from "../api/runner-ws.js";
 import { createApp } from "../app.js";
-import { imBindings, users } from "../db/schema/index.js";
+import { imBindings, sandboxes, users } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { ComputerService } from "../services/computers/index.js";
@@ -266,16 +267,24 @@ async function authenticatedRunner(address: string, token: string) {
   return { client, authResult };
 }
 
-const READY_FRAME = {
-  type: "runner:ready",
-  readiness: {
-    sandboxName: "ots-s-x-1",
-    rootfs: "/opt/sandbox-root",
-    nodeVersion: "v24.19.0",
-    piVersion: "0.84.2",
-    runnerVersion: RUNNER_VERSION,
-  },
-};
+const READY_READINESS = {
+  rootfs: "/opt/sandbox-root",
+  nodeVersion: "v24.19.0",
+  piVersion: "0.84.2",
+  runnerVersion: RUNNER_VERSION,
+} as const;
+
+/** A runner:ready frame whose native sandbox name matches the allocated Instance resource. */
+function readyFrame(resourceName: string, readinessOverrides: Record<string, unknown> = {}) {
+  return {
+    type: "runner:ready",
+    readiness: {
+      sandboxName: resourceName.split("/").at(-1) as string,
+      ...READY_READINESS,
+      ...readinessOverrides,
+    },
+  };
+}
 
 async function waitForLifecycle(
   service: SandboxRunnerService,
@@ -291,7 +300,7 @@ async function waitForLifecycle(
 describe("runner control channel authentication", () => {
   it("authenticates first-frame, welcomes with scope, and flips ready only after native readiness", async () => {
     const accountId = await account();
-    const { address, token, sandbox, service } = await startedSandbox(accountId);
+    const { address, token, sandbox, service, claims } = await startedSandbox(accountId);
     const { client, authResult } = await authenticatedRunner(address, token);
     expect(authResult.ok).toBe(true);
     const welcome = await client.waitFor("server:welcome");
@@ -303,7 +312,7 @@ describe("runner control channel authentication", () => {
     expect(String(welcome.resourceName)).toContain(`/locations/${FAKE_REGION}/instances/`);
     // Not ready before the native readiness report.
     expect((await service.statusForAccount(accountId, sandbox.sandboxId)).lifecycle).toBe("preparing");
-    client.send(READY_FRAME);
+    client.send(readyFrame(claims.resourceName));
     await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
     const ready = await service.statusForAccount(accountId, sandbox.sandboxId);
     expect(ready.runnerReady).toBe(true);
@@ -407,12 +416,14 @@ describe("runner control channel authentication", () => {
 
   it("rejects a readiness frame whose Runner version is not the configured one", async () => {
     const accountId = await account();
-    const { address, token, sandbox, service } = await startedSandbox(accountId);
+    const { address, token, sandbox, service, claims } = await startedSandbox(accountId);
     const { client } = await authenticatedRunner(address, token);
-    client.send({ ...READY_FRAME, readiness: { ...READY_FRAME.readiness, runnerVersion: "9.9.9" } });
+    client.send(readyFrame(claims.resourceName, { runnerVersion: "9.9.9" }));
     const error = await client.waitFor("error");
     expect(error.code).toBe("RUNNER_VERSION_MISMATCH");
-    expect((await service.statusForAccount(accountId, sandbox.sandboxId)).lifecycle).toBe("preparing");
+    const status = await service.statusForAccount(accountId, sandbox.sandboxId);
+    expect(status.lifecycle).toBe("preparing");
+    expect(status.runnerReady).toBe(false);
     client.socket.close();
     await client.closed;
   });
@@ -425,7 +436,7 @@ describe("runner control channel authentication", () => {
     expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.staleScope);
   });
 
-  it("replaces the same-scope connection on reconnect without disturbing another session", async () => {
+  it("rejects a live duplicate same-scope connection and reconnects after cleanup, without disturbing another session", async () => {
     const accountId = await account();
     const first = await startedSandbox(accountId);
     const secondSandbox = await ownedSandbox(accountId);
@@ -444,17 +455,109 @@ describe("runner control channel authentication", () => {
     expect(one.authResult.ok).toBe(true);
     expect(other.authResult.ok).toBe(true);
 
-    // Reconnect the first sandbox with the same scope: its old socket is replaced, the other
-    // session's runner stays untouched.
+    // A second connection for the same scope while the live one is current is rejected as a
+    // duplicate: no last-wins takeover, the heartbeating Runner keeps its channel, and the
+    // other Session's Runner is untouched.
+    const duplicate = await connectRunner(first.address);
+    duplicate.send({ type: "auth", requestId: randomUUID(), token: first.token });
+    expect((await duplicate.closed).code).toBe(RUNNER_WS_CLOSE.duplicate);
+    expect(
+      duplicate.frames.some((frame) => frame.type === "error" && frame.code === "RUNNER_DUPLICATE_CONNECTION"),
+    ).toBe(true);
+    expect(one.client.socket.readyState).toBe(WebSocket.OPEN);
+    expect(other.client.socket.readyState).toBe(WebSocket.OPEN);
+    one.client.send({ type: "heartbeat", requestId: randomUUID() });
+    await one.client.waitFor("server:heartbeat");
+    expect(first.hub.describe(first.sandbox.sandboxId).connected).toBe(true);
+
+    // Once the dead connection is cleaned up, a legitimate reconnect of the same scope lands.
+    one.client.socket.close();
+    await one.client.closed;
+    await vi.waitFor(() => {
+      expect(first.hub.describe(first.sandbox.sandboxId).connected).toBe(false);
+    });
     const reconnected = await authenticatedRunner(first.address, first.token);
     expect(reconnected.authResult.ok).toBe(true);
-    expect((await one.client.closed).code).toBe(RUNNER_WS_CLOSE.replaced);
     expect(other.client.socket.readyState).toBe(WebSocket.OPEN);
-    // The replacement can report readiness; the replaced socket is gone.
-    reconnected.client.send(READY_FRAME);
+    // The replacement can report readiness; the other Session's Runner stays untouched.
+    reconnected.client.send(readyFrame(first.claims.resourceName));
     await waitForLifecycle(first.service, accountId, first.sandbox.sandboxId, "ready");
     reconnected.client.socket.close();
     other.client.socket.close();
+  });
+
+  it("never evicts the live Runner when a same-scope socket closes before its attach completes", async () => {
+    const accountId = await account();
+    const ctx = await startedSandbox(accountId);
+    const live = await authenticatedRunner(ctx.address, ctx.token);
+    expect(live.authResult.ok).toBe(true);
+    // The ghost authenticates with a valid token but its socket is gone before the asynchronous
+    // verification settles; the attach path must leave the healthy connection alone.
+    const ghost = await connectRunner(ctx.address);
+    ghost.send({ type: "auth", requestId: "ghost", token: ctx.token });
+    ghost.socket.close();
+    await ghost.closed;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(live.client.socket.readyState).toBe(WebSocket.OPEN);
+    expect(ctx.hub.describe(ctx.sandbox.sandboxId).connected).toBe(true);
+    live.client.send({ type: "heartbeat", requestId: randomUUID() });
+    await live.client.waitFor("server:heartbeat");
+    live.client.socket.close();
+    await live.client.closed;
+  });
+});
+
+describe("runner readiness gating", () => {
+  it("rejects readiness whose native sandbox does not match the allocated Instance", async () => {
+    const accountId = await account();
+    const { address, token, sandbox, service, claims } = await startedSandbox(accountId);
+    const { client } = await authenticatedRunner(address, token);
+    client.send(readyFrame(claims.resourceName, { sandboxName: "ots-not-the-allocated-instance" }));
+    const error = await client.waitFor("error");
+    expect(error.code).toBe("RUNNER_READINESS_MISMATCH");
+    const mismatched = await service.statusForAccount(accountId, sandbox.sandboxId);
+    expect(mismatched.lifecycle).toBe("preparing");
+    expect(mismatched.runnerReady).toBe(false);
+    // The connection stays authenticated and unpoisoned: the corrected report becomes ready.
+    client.send(readyFrame(claims.resourceName));
+    await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
+    client.socket.close();
+    await client.closed;
+  });
+
+  it("never marks the hub ready from a wrong-version report, even on an already-ready row", async () => {
+    const accountId = await account();
+    const ctx = await startedSandbox(accountId);
+    const first = await authenticatedRunner(ctx.address, ctx.token);
+    first.client.send(readyFrame(ctx.claims.resourceName));
+    await waitForLifecycle(ctx.service, accountId, ctx.sandbox.sandboxId, "ready");
+    // A bad report on the good connection is rejected without touching the stored readiness.
+    first.client.send(readyFrame(ctx.claims.resourceName, { runnerVersion: "9.9.9" }));
+    expect((await first.client.waitFor("error")).code).toBe("RUNNER_VERSION_MISMATCH");
+    let status = await ctx.service.statusForAccount(accountId, ctx.sandbox.sandboxId);
+    expect(status.runnerReady).toBe(true);
+    expect(status.runnerReadiness?.runnerVersion).toBe(RUNNER_VERSION);
+    // The review scenario: a fresh connection on the ready row reports the wrong version. The
+    // hub must not flip ready before the version verdict, so acceptance stays 409.
+    first.client.socket.close();
+    await first.client.closed;
+    await vi.waitFor(() => {
+      expect(ctx.hub.describe(ctx.sandbox.sandboxId).connected).toBe(false);
+    });
+    const second = await authenticatedRunner(ctx.address, ctx.token);
+    second.client.send(readyFrame(ctx.claims.resourceName, { runnerVersion: "9.9.9" }));
+    expect((await second.client.waitFor("error")).code).toBe("RUNNER_VERSION_MISMATCH");
+    status = await ctx.service.statusForAccount(accountId, ctx.sandbox.sandboxId);
+    expect(status.runnerReady).toBe(false);
+    const acceptance = await ctx.app.inject({
+      method: "POST",
+      url: accountSandboxRunnerAcceptancePath(ctx.sandbox.sandboxId),
+      headers: { ...authorization, "content-type": "application/json" },
+      payload: { mode: "offline" },
+    });
+    expect(acceptance.statusCode).toBe(409);
+    second.client.socket.close();
+    await second.client.closed;
   });
 });
 
@@ -516,6 +619,30 @@ describe("runner control channel liveness and credential renewal", () => {
     client.socket.close();
     await client.closed;
     await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
+  });
+
+  it("closes the connection with staleScope when credential renewal finds the scope revoked", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, {
+      heartbeatIntervalMs: 15_000,
+      credentialRenewalIntervalMs: 120,
+    });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const token = await ctx.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    });
+    const { client } = await authenticatedRunner(ctx.address, token);
+    await client.waitFor("server:credential");
+    // A definitive revocation (the row no longer validates for this scope) must take effect on
+    // the live socket at the next renewal instead of silently staying active.
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.staleScope);
     expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
   });
 
@@ -602,9 +729,9 @@ describe("account runner HTTP endpoints", () => {
 
   it("acceptance over HTTP correlates to the runner frame and never echoes piConfig", async () => {
     const accountId = await account();
-    const { app, address, token, sandbox, service } = await startedSandbox(accountId);
+    const { app, address, token, sandbox, service, claims } = await startedSandbox(accountId);
     const { client } = await authenticatedRunner(address, token);
-    client.send(READY_FRAME);
+    client.send(readyFrame(claims.resourceName));
     await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
 
     const acceptancePromise = app.inject({
@@ -641,9 +768,9 @@ describe("account runner HTTP endpoints", () => {
 
   it("rejects an acceptance payload that exceeds document or aggregate byte budgets with HTTP 400", async () => {
     const accountId = await account();
-    const { app, address, token, sandbox, service } = await startedSandbox(accountId);
+    const { app, address, token, sandbox, service, claims } = await startedSandbox(accountId);
     const { client } = await authenticatedRunner(address, token);
-    client.send(READY_FRAME);
+    client.send(readyFrame(claims.resourceName));
     await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
 
     // Valid JSON: 11,012 characters but 33,012 UTF-8 bytes for the first; the second passes each
@@ -683,9 +810,9 @@ describe("account runner HTTP endpoints", () => {
 
   it("a normal HTTP POST does not self-cancel the acceptance run", async () => {
     const accountId = await account();
-    const { address, token, sandbox, service } = await startedSandbox(accountId);
+    const { address, token, sandbox, service, claims } = await startedSandbox(accountId);
     const { client } = await authenticatedRunner(address, token);
-    client.send(READY_FRAME);
+    client.send(readyFrame(claims.resourceName));
     await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
     const responsePromise = fetch(`${address}${accountSandboxRunnerAcceptancePath(sandbox.sandboxId)}`, {
       method: "POST",
@@ -704,9 +831,9 @@ describe("account runner HTTP endpoints", () => {
 
   it("a real client disconnect cancels the run on the Runner", async () => {
     const accountId = await account();
-    const { address, token, sandbox, service } = await startedSandbox(accountId);
+    const { address, token, sandbox, service, claims } = await startedSandbox(accountId);
     const { client } = await authenticatedRunner(address, token);
-    client.send(READY_FRAME);
+    client.send(readyFrame(claims.resourceName));
     await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
     const controller = new AbortController();
     const responsePromise = fetch(`${address}${accountSandboxRunnerAcceptancePath(sandbox.sandboxId)}`, {

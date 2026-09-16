@@ -199,7 +199,11 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   return result;
 }
 interface ConnectionOutcome {
-  kind: "closed" | "auth_failed";
+  /**
+   * "auth_failed" is the ONLY permanent outcome: an explicit in-band `auth:result ok:false`.
+   * "auth_timeout" and "closed" are transport failures and take the backoff reconnect path.
+   */
+  kind: "closed" | "auth_failed" | "auth_timeout";
   healthy: boolean;
 }
 async function serveOnce(
@@ -250,7 +254,10 @@ async function serveOnce(
     };
     const stop = () => finish();
     stopListeners.add(stop);
-    const authTimer = setTimeout(() => finish("auth_failed"), options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
+    // The handshake deadline spans TCP+TLS+upgrade AND the Server's token/database checks, so a
+    // slow connect (Server restart, cold ingress) is a transport failure, never a permanent
+    // rejection: finish with "auth_timeout" and let the backoff path reconnect.
+    const authTimer = setTimeout(() => finish("auth_timeout"), options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
     const ready = () =>
       send({
         type: "runner:ready",
@@ -306,7 +313,8 @@ async function serveOnce(
         onWelcome,
         onAcceptance,
         authResult: (ok) => {
-          if (authenticated || !ok) finish("auth_failed");
+          // Only an explicit in-band rejection is permanent; a duplicate grant is idempotent.
+          if (!ok) finish("auth_failed");
           else authenticated = true;
         },
         heartbeat: () => {
@@ -416,8 +424,13 @@ async function maintainConnections(
     await state.active?.done;
     if (state.stopping || state.fatal) break;
     if (outcome.kind === "auth_failed") {
+      // The Server explicitly rejected the credential in-band; retrying the same token is
+      // pointless, so the Runner exits for an operator or an Account stop/start to intervene.
       logLine(options.stderr, "Runner authentication rejected");
       break;
+    }
+    if (outcome.kind === "auth_timeout") {
+      logLine(options.stderr, "Runner authentication timed out; reconnecting");
     }
     failures = outcome.healthy ? 0 : failures + 1;
     if (failures >= (options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS)) break;
@@ -587,7 +600,9 @@ function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
     return;
   }
   if (!c.authenticated) {
-    c.finish("auth_failed");
+    // A server that speaks before completing authentication is a transport/protocol anomaly,
+    // not an explicit rejection: reconnect rather than exiting permanently.
+    c.finish();
     return;
   }
   if (data.type === "server:welcome") {

@@ -4,7 +4,7 @@ import type {
   AccountSandboxRunnerStatusResponse,
   RunnerReadiness,
 } from "@opentag/shared";
-import { and, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, notInArray, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { sandboxes } from "../../db/schema/index.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
@@ -30,7 +30,10 @@ import { RunnerAcceptanceUnavailableError, type RunnerHub, type RunnerScope } fr
  *   tracked: `cloud_create_pending` (submission committed), `cloud_create_uncertain` (unknown
  *   result), `cloud_create_rejected` / `cloud_create_failed` (definitive: retry or release is
  *   safe), `cloud_instance_unverified` (a resource answers at our name but failed policy
- *   verification: never retried and never deleted unverified).
+ *   verification: never retried and never deleted unverified). A delete-phase failure
+ *   (`cloud_delete_incomplete`) and the weak `cloud_create_uncertain` update are recorded only
+ *   when no create-phase marker exists, so a stop error can never erase the evidence a later
+ *   stop needs to release the row safely (a failed GET followed by a 404 must recover).
  * - Every mutation of the row is CAS-guarded on (id, generation, name), so a stale in-flight
  *   operation can never mutate a newer environment. A tracked resource reference is never erased
  *   while removal is uncertain: delete completes only when the read-back is 404 or the name is
@@ -66,6 +69,19 @@ type Marker =
   | (typeof MARKER_RETRYABLE)[number];
 const RETRYABLE_MARKER_LIST: string[] = [...MARKER_RETRYABLE];
 const RETRYABLE_MARKERS = new Set<string>(MARKER_RETRYABLE);
+/**
+ * Every durable create-phase marker. A delete-phase failure (`cloud_delete_incomplete`) or the
+ * weak `cloud_create_uncertain` update must never overwrite one of these: they are the only
+ * evidence distinguishing "release/retry is safe" from "create outcome still unknown", and the
+ * `cloud_instance_unverified` diagnostic.
+ */
+const CREATE_PHASE_MARKER_LIST: string[] = [
+  "cloud_create_pending",
+  "cloud_create_rejected",
+  "cloud_create_failed",
+  "cloud_create_uncertain",
+  "cloud_instance_unverified",
+];
 
 /** Evidence that no create for this generation can still materialize. */
 function isDefinitiveNoResourceMarker(marker: string | null): boolean {
@@ -122,9 +138,16 @@ export class SandboxRunnerService {
       return this.#reserveExistingAllocation(row);
     });
 
-    if (reservation.action === "allocate") await this.#submitCreate(reservation.row, { claimed: true });
-    else if (reservation.action === "retry") await this.#submitCreate(reservation.row, { claimed: false });
-    else if (reservation.action === "reconcile") {
+    if (reservation.action === "allocate" || reservation.action === "retry") {
+      try {
+        await this.#submitCreate(reservation.row, { claimed: reservation.action === "allocate" });
+      } catch (error) {
+        // A CloudRun failure escaping the submit path (pending-release cleanup after a late
+        // track, orphaned-resource removal) must surface the same 503 envelope as every other
+        // cloud failure, never a raw 500.
+        throw mapCloudError(error, "allocate the Sandbox environment");
+      }
+    } else if (reservation.action === "reconcile") {
       try {
         await this.#reconcileAllocation(reservation.row);
       } catch (error) {
@@ -217,9 +240,13 @@ export class SandboxRunnerService {
       try {
         await this.#releaseAllocation(transition.row);
       } catch (error) {
-        // Preserve an in-flight submission marker: `cloud_create_pending` is the only evidence
-        // that the winner may still POST, so a stop failure must never erase it.
-        await this.#recordError(transition.row, "cloud_delete_incomplete", error, { preservePending: true });
+        // A delete-phase failure must never erase create-phase evidence: `cloud_create_pending`
+        // is the only proof a winner may still POST, `cloud_create_rejected` /
+        // `cloud_create_failed` are the only definitive markers a later stop can release from,
+        // and `cloud_instance_unverified` is a diagnostic that must survive. Without this, one
+        // failed `getInstance` during stop strands the row in `releasing` forever: the next
+        // stop reads 404, finds no definitive marker, and can never clear.
+        await this.#recordError(transition.row, "cloud_delete_incomplete", error, { preserveCreateMarkers: true });
         throw mapCloudError(error, "release the Sandbox environment");
       }
     }
@@ -300,6 +327,11 @@ export class SandboxRunnerService {
     if (row.lifecycle !== "preparing" && row.lifecycle !== "ready") return undefined;
     if (row.environmentGeneration !== claims.environmentGeneration) return undefined;
     if (row.currentResourceName === null || row.currentResourceName !== claims.resourceName) return undefined;
+    // An early pending Runner may connect before the create caller tracks its UID, but a
+    // definitive failed/policy-rejected allocation must not authenticate or renew credentials.
+    if (row.lastErrorCode === "cloud_instance_unverified" || isDefinitiveNoResourceMarker(row.lastErrorCode)) {
+      return undefined;
+    }
     return {
       sandboxId: row.id,
       sessionId: row.sessionId,
@@ -309,12 +341,15 @@ export class SandboxRunnerService {
   }
 
   /**
-   * An authenticated Runner reported native sandbox/tool readiness. Readiness is accepted only
-   * for the current allocation AND the exact configured Runner version, and only once the Cloud
-   * resource for this generation has been policy-verified and its UID tracked. An early Runner
-   * whose report arrives before the create caller records the UID is DEFERRED: a bounded GET
-   * reconcile runs, and if the resource is not yet readable the connection stays authenticated.
-   * The create caller promotes the deferred report when tracking completes.
+   * An authenticated Runner reported native sandbox/tool readiness. Readiness handling is
+   * database CAS/promotion ONLY, driven by the validated persisted scope and the native
+   * readiness report: a Runner-originated frame must never drive cloud reconcile/create/release
+   * inline in the per-connection frame chain (heartbeats queue behind it and a healthy Runner
+   * could be swept mid-reconcile). Readiness is accepted only for the current allocation AND
+   * the exact configured Runner version, and only once the Cloud resource for this generation
+   * has been policy-verified and its UID tracked. An early Runner report is DEFERRED, not
+   * rejected: the connection stays authenticated, the create caller promotes the deferred
+   * report when tracking completes, and a later start reconciles the deterministic name.
    */
   async markRunnerReady(scope: RunnerScope, readiness: RunnerReadiness): Promise<RunnerReadyOutcome> {
     if (readiness.runnerVersion !== this.#expectedRunnerVersion) return "version_mismatch";
@@ -322,19 +357,8 @@ export class SandboxRunnerService {
     if (!current) return "stale";
     if (current.lifecycle === "ready") return "ready";
     if (current.lifecycle !== "preparing") return "stale";
-    if (current.currentResourceUid === null) {
-      try {
-        await this.#reconcileAllocation(current);
-      } catch {
-        // A transport/provider failure must not evict a legitimate Runner; readiness stays
-        // deferred and the next message or create completion reconciles again.
-        return "deferred";
-      }
-      const refreshed = await this.#currentScopeRow(scope);
-      if (!refreshed) return "stale";
-      if (refreshed.lifecycle === "ready") return "ready";
-      if (refreshed.lifecycle !== "preparing" || refreshed.currentResourceUid === null) return "deferred";
-    }
+    // No verified UID is tracked yet: stay deferred. Cloud I/O belongs to start/stop only.
+    if (current.currentResourceUid === null) return "deferred";
     return (await this.#promoteReadyIfReported(scope.sandboxId)) ? "ready" : "deferred";
   }
 
@@ -696,16 +720,20 @@ export class SandboxRunnerService {
   }
 
   /**
-   * The create result was never observed. A visible Instance is verified/tracked and deleted; a
-   * completed operation proves the outcome; anything still unknown keeps `releasing` plus the
-   * full reference and reports incomplete after the bounded window.
+   * The create result was never observed. A visible Instance is ownership-verified, tracked and
+   * deleted; a completed operation proves the outcome; anything still unknown keeps `releasing`
+   * plus the full reference and reports incomplete after the bounded window.
    */
   async #awaitUnknownAllocation(row: typeof sandboxes.$inferSelect, resourceName: string): Promise<void> {
     const deadline = this.#now().getTime() + this.#deleteVerifyTimeoutMs;
     for (;;) {
       const view = await this.#cloud.getInstance(resourceName);
       if (view) {
-        this.#cloud.verifyInstance(view, this.#identityFor(row, row.environmentGeneration));
+        // Deletion requires OWNERSHIP only: the deterministic name plus the allocation labels
+        // here, and the UID + etag inside the conditional delete itself. A policy failure must
+        // never protect our own resource from cleanup — full policy verification stays
+        // mandatory on the adopt/ready path, never on the delete path.
+        this.#cloud.verifyOwnership(view, this.#identityFor(row, row.environmentGeneration));
         await this.#trackResource(row, resourceName, view.uid, row.currentOperationName);
         await this.#deleteVerified(resourceName, view.uid);
         await this.#clearReleased(row, resourceName, view.uid);
@@ -918,15 +946,14 @@ export class SandboxRunnerService {
     await this.#recordError(row, code, error);
   }
 
-  async #marker(
-    row: { id: string; environmentGeneration: number },
-    code: Marker,
-    options: { preservePending?: boolean } = {},
-  ): Promise<void> {
+  async #marker(row: { id: string; environmentGeneration: number }, code: Marker): Promise<void> {
     const now = this.#now();
-    // `cloud_create_pending` is the only durable evidence that a winner is committed to POST. An
-    // unrelated uncertainty update must not erase it; explicit rejection evidence may replace it.
-    const preservePending = options.preservePending ?? code === "cloud_create_uncertain";
+    // `cloud_create_uncertain` is the weakest evidence: it must never erase any create-phase
+    // marker (`cloud_create_pending` is the only proof a winner may still POST; the definitive
+    // markers are the only release/retry evidence; `cloud_instance_unverified` is a diagnostic
+    // that must survive stop errors). Stronger evidence (explicit rejection, an unverified
+    // visible resource) may still replace them.
+    const preserveCreateMarkers = code === "cloud_create_uncertain";
     await this.#database
       .update(sandboxes)
       .set({ lastErrorCode: code, lastErrorAt: now, updatedAt: now })
@@ -935,19 +962,23 @@ export class SandboxRunnerService {
           eq(sandboxes.id, row.id),
           eq(sandboxes.environmentGeneration, row.environmentGeneration),
           inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
-          ...(preservePending
-            ? [or(isNull(sandboxes.lastErrorCode), ne(sandboxes.lastErrorCode, "cloud_create_pending"))]
+          ...(preserveCreateMarkers
+            ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, CREATE_PHASE_MARKER_LIST))]
             : []),
         ),
       );
   }
 
-  /** Persist the failure state. A failed write is itself surfaced, never swallowed. */
+  /**
+   * Persist the failure state. Guarded on the generation AND an active lifecycle so a late
+   * failure from an in-flight operation can never stamp a stale error onto an `unallocated`
+   * (or superseded) row. A failed write is itself surfaced, never swallowed.
+   */
   async #recordError(
     row: { id: string; environmentGeneration: number },
     code: string,
     original: unknown,
-    options: { preservePending?: boolean } = {},
+    options: { preserveCreateMarkers?: boolean } = {},
   ): Promise<void> {
     try {
       const now = this.#now();
@@ -958,8 +989,9 @@ export class SandboxRunnerService {
           and(
             eq(sandboxes.id, row.id),
             eq(sandboxes.environmentGeneration, row.environmentGeneration),
-            ...(options.preservePending
-              ? [or(isNull(sandboxes.lastErrorCode), ne(sandboxes.lastErrorCode, "cloud_create_pending"))]
+            inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
+            ...(options.preserveCreateMarkers
+              ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, CREATE_PHASE_MARKER_LIST))]
               : []),
           ),
         );

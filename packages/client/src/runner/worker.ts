@@ -103,13 +103,18 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
     let piHome = join(scratch, "pi-agent");
     const sessionDirectory = join(scratch, "sessions");
     if (parsed.piConfig) {
-      await mkdir(piHome, { recursive: true, mode: 0o700 });
-      await writeDisposablePiConfig(piHome, parsed.piConfig);
+      const rawPiHome = piHome;
+      await mkdir(rawPiHome, { recursive: true, mode: 0o700 });
+      await writeDisposablePiConfig(rawPiHome, parsed.piConfig);
       piHome = await copyIsolatedPiConfig({
-        source: piHome,
+        source: rawPiHome,
         destination: join(scratch, "filtered-pi"),
         providers: ["deepseek"],
       });
+      // The raw directory holds every provider credential the caller sent, but the run may only
+      // ever see the filtered copy: delete the raw one BEFORE any model or user tool runs —
+      // never leave it readable for the whole run and rely on process teardown.
+      await rm(rawPiHome, { recursive: true, force: true });
     }
     // Defensive: nothing in the run should see the sandbox container's ambient HOME.
 

@@ -56,7 +56,8 @@ export interface CloudRunAdminOptions {
 }
 // A 400 rejected before allocation may use the equivalent regional v1 representation. No other
 // error retries POST: a timeout/5xx may already have created the deterministic resource.
-const VPC_REJECTION = /network[-_ ]?interfaces|vpc[-_ ]?access|vpcAccess/i;
+const VPC_REJECTION =
+  "metadata.annotations[run.googleapis.com/vpc-access-egress]: The run.googleapis.com/vpc-access-egress annotation cannot be set without also setting the run.googleapis.com/vpc-access-connector annotation or the run.googleapis.com/network-interfaces annotation.";
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -104,7 +105,7 @@ export class CloudRunAdmin {
     if (response.status === 400) {
       const body = record(await readBoundedJson(response));
       const message = record(body.error).message;
-      if (typeof message === "string" && VPC_REJECTION.test(message)) return this.#createV1(spec, id, name);
+      if (message === VPC_REJECTION) return this.#createV1(spec, id, name);
     }
     if (!response.ok) throw this.#httpError(response, "create");
     const operation = record(await readBoundedJson(response));
@@ -210,7 +211,8 @@ export class CloudRunAdmin {
       );
     }
   }
-  verifyInstance(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
+  /** Ownership gates conditional cleanup even when the owned Instance violates execution policy. */
+  verifyOwnership(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
     if (
       view.name !== this.resourceNameFor(runnerInstanceId(identity)) ||
       !runnerInstanceLabelsMatch(view.labels, identity)
@@ -219,6 +221,9 @@ export class CloudRunAdmin {
         "ownership_mismatch",
         "Cloud Run Instance ownership does not match this Sandbox allocation",
       );
+  }
+  verifyInstance(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
+    this.verifyOwnership(view, identity);
     this.verifyNetworkAttachment(view);
     const p = view.policy;
     const containers = Array.isArray(p?.containers) ? p.containers : [];
@@ -239,6 +244,10 @@ export class CloudRunAdmin {
       c.name !== "runner" ||
       c.image !== this.#config.image ||
       c.sandboxLauncher !== true ||
+      (c.command !== undefined && JSON.stringify(c.command) !== "[]") ||
+      (c.volumeMounts !== undefined && JSON.stringify(c.volumeMounts) !== "[]") ||
+      // Protobuf JSON omits false; an explicit true would enable request-only CPU.
+      (record(c.resources).cpuIdle !== undefined && record(c.resources).cpuIdle !== false) ||
       JSON.stringify(c.args) !== JSON.stringify(["opentag-runner", "serve"]) ||
       ports.length !== 1 ||
       containerPort !== 8080 ||
@@ -270,12 +279,15 @@ export class CloudRunAdmin {
             "run.googleapis.com/invoker-iam-disabled": "false",
             "run.googleapis.com/network-interfaces": JSON.stringify(this.#nics()),
             "run.googleapis.com/vpc-access-egress": "all-traffic",
+            "run.googleapis.com/cpu-throttling": "false",
           },
         },
         spec: { serviceAccountName: this.#config.serviceAccount, restartPolicy: "Never", containers: [c] },
       },
     );
     if (!r.ok && r.status !== 409) throw this.#httpError(r, "create-v1");
+    // The regional v1 create API returns an Instance, not a long-running Operation. Do not
+    // fabricate an operation name: preserve the deterministic resource until a UID is read.
     await r.body?.cancel();
     return { outcome: r.status === 409 ? "adopted" : "created", instance: await this.#adopt(name, spec, true) };
   }

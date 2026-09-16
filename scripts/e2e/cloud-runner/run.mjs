@@ -35,7 +35,6 @@ import {
   gitState,
   loadShared,
   readCliVersion,
-  SUBSTITUTIONS,
 } from "../cloud-computer/cloud-identities-data.mjs";
 import { createCloudIdentitiesFixture } from "../cloud-computer/cloud-identities-fixture.mjs";
 import { cloudIdentityHeaders, record, requestJson } from "../cloud-computer/cloud-identities-net.mjs";
@@ -82,6 +81,24 @@ const REQUIRED_INPUTS = [
   "vpcSubnet",
   "executionTag",
 ];
+
+/**
+ * Only substitutions this harness actually performs. The shared E2 list also describes forged
+ * repair codes, fake machine credentials and db-only resource ownership; E3 never injects those,
+ * and its Instances are real Cloud allocations, so importing that list would forge the receipt.
+ */
+export const E3_SUBSTITUTIONS = Object.freeze([
+  {
+    name: "fixture-slack-binding",
+    scope: "E3 acceptance",
+    detail: "SQL-inserted Slack installation + IM binding with dummy encrypted credentials. No OAuth or Slack HTTP.",
+  },
+  {
+    name: "local-channel-target-url",
+    scope: "E3 acceptance",
+    detail: "OPENTAG_PORTABLE_DOWNLOAD_BASE_URL points at loopback so the Server never polls dl.opentag.build.",
+  },
+]);
 
 function parseArgs(argv, env) {
   const values = {
@@ -137,6 +154,10 @@ export async function main(argv, { createFixture = createCloudIdentitiesFixture 
   const accessToken = process.env.OPENTAG_E3_GCP_ACCESS_TOKEN;
   const invalid = invalidInputs(values, accessToken);
   if (invalid) return failUsage(invalid);
+  const readyTimeout = Number(process.env.OPENTAG_E3_READY_TIMEOUT_MS ?? 600_000);
+  if (!Number.isSafeInteger(readyTimeout) || readyTimeout < 1 || readyTimeout > 1_800_000) {
+    return failUsage("OPENTAG_E3_READY_TIMEOUT_MS must be an integer between 1 and 1800000");
+  }
   const repositoryRoot = process.cwd(),
     shared = await loadShared(repositoryRoot),
     cliVersion = await readCliVersion(repositoryRoot);
@@ -150,8 +171,9 @@ export async function main(argv, { createFixture = createCloudIdentitiesFixture 
   const summary = {
     command: "cloud-runner",
     mode: values.mode,
+    cloud: { project: values.project, region: values.region, image: values.image },
     git: await gitState(repositoryRoot),
-    substitutions: SUBSTITUTIONS.map((e) => e.name),
+    substitutions: E3_SUBSTITUTIONS.map((e) => e.name),
     steps,
     assertions,
     allocations,
@@ -234,7 +256,15 @@ export async function main(argv, { createFixture = createCloudIdentitiesFixture 
         conversationKind: "channel",
         kind: "channel",
       });
-      allocations.push({ sandboxId: sandbox.sandboxId, sessionId: sandbox.sessionId, cleanup: "pending" });
+      // This fixture is always dev and each newly-created Sandbox starts at generation zero.
+      // Record the expected target BEFORE start can allocate it, even if the response is lost.
+      const expectedId = `ot-d-${sandbox.sandboxId.replaceAll("-", "")}-1`;
+      allocations.push({
+        sandboxId: sandbox.sandboxId,
+        sessionId: sandbox.sessionId,
+        expectedResourceName: `projects/${values.project}/locations/${values.region}/instances/${expectedId}`,
+        cleanup: "pending",
+      });
     }
     await receipt();
     await step("allocate two Session-owned Cloud Instances", () =>
@@ -255,7 +285,6 @@ export async function main(argv, { createFixture = createCloudIdentitiesFixture 
       "distinct-session-instances",
       allocations[0].resourceName !== allocations[1].resourceName && allocations.every((a) => a.resourceUid),
     );
-    const readyTimeout = Number(process.env.OPENTAG_E3_READY_TIMEOUT_MS ?? 600_000);
     await step("native readiness for both Sessions", () =>
       allComplete(
         allocations.map(async (allocation) => {

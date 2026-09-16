@@ -60,6 +60,17 @@ export class FakeCloudRunAdmin {
     return runnerInstanceResourceName(PROJECT, REGION, instanceId);
   }
   verifyNetworkAttachment(): void {}
+  verifyOwnership(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
+    if (
+      view.name !== this.resourceNameFor(this.instanceIdFor(identity)) ||
+      !runnerInstanceLabelsMatch(view.labels, identity)
+    ) {
+      throw new CloudRunAdminError(
+        "ownership_mismatch",
+        "Cloud Run Instance ownership does not match this Sandbox allocation",
+      );
+    }
+  }
   verifyInstance(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
     if (this.failVerifyWith && this.failVerifyCount !== 0) {
       if (this.failVerifyCount > 0) this.failVerifyCount -= 1;

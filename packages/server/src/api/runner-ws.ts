@@ -16,7 +16,7 @@ import type {
   RunnerBootstrapTokenService,
 } from "../services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerControlSocket, RunnerHub, RunnerScope } from "../services/sandboxes/runner-hub.js";
-import type { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
+import type { RunnerReadyOutcome, SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 
 /**
  * Runner control channel. Runners dial OUT from their Cloud Run Instance to this route; the
@@ -25,8 +25,10 @@ import type { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-
  * claims are validated against the CURRENT database allocation AND current authority chain on
  * every connect. Frames are handled strictly serially per connection with a bounded queue, the
  * authentication deadline spans the asynchronous verification, and every awaited step re-checks
- * that the connection is still open and still the hub's current socket for its scope. No
- * credential, token, or acceptance config is ever written to logs from this module.
+ * that the connection is still open and still the hub's current socket for its scope. A second
+ * connection for an already-live scope is rejected as a duplicate rather than taking over the
+ * heartbeating Runner's channel. No credential, token, or acceptance config is ever written to
+ * logs from this module.
  */
 
 export interface RunnerWebSocketRouteOptions {
@@ -128,15 +130,27 @@ export function registerRunnerWebSocketRoute(app: FastifyInstance, options: Runn
     }, authTimeoutMs);
     authTimer.unref?.();
 
+    const issueRenewedCredential = async (current: RunnerScope, stillCurrent: RunnerScope) => {
+      if (!options.hub.isCurrent(current.sandboxId, adapter)) return;
+      const token = await options.tokens.issue(claimsFromScope(stillCurrent));
+      if (closed || !options.hub.isCurrent(current.sandboxId, adapter)) return;
+      options.hub.sendToCurrent(current.sandboxId, adapter, { type: "server:credential", token });
+    };
+
     const renewCredential = async (current: RunnerScope) => {
       if (closed || !options.hub.isCurrent(current.sandboxId, adapter)) return;
       // Revalidate the database allocation before minting anything; a stale connection must
       // never receive a fresh credential.
       const stillCurrent = await options.service.validateRunnerScope(claimsFromScope(current));
-      if (closed || !stillCurrent || !options.hub.isCurrent(current.sandboxId, adapter)) return;
-      const token = await options.tokens.issue(claimsFromScope(stillCurrent));
-      if (closed || !options.hub.isCurrent(current.sandboxId, adapter)) return;
-      options.hub.sendToCurrent(current.sandboxId, adapter, { type: "server:credential", token });
+      if (closed) return;
+      if (!stillCurrent) {
+        // A definitive miss is a revocation (Agent/binding deactivated, Session ended, Account
+        // suspended, allocation released): it must take effect on the live socket, not leave
+        // the Runner connected and spending its credential until some later sweep.
+        closeWith(RUNNER_WS_CLOSE.staleScope, "runner scope is no longer current");
+        return;
+      }
+      await issueRenewedCredential(current, stillCurrent);
     };
 
     const handleAuth = async (token: string, requestId: string | undefined) => {
@@ -195,14 +209,24 @@ export function registerRunnerWebSocketRoute(app: FastifyInstance, options: Runn
     };
 
     const attachAuthenticatedRunner = async (validated: RunnerScope, requestId: string | undefined) => {
-      // No await between the closed check and the hub mutation, so a socket that closed during
-      // verification can never become a ghost entry.
-      scope = validated;
-      options.hub.attach(validated, adapter);
-      if (closed) {
-        options.hub.detach(validated.sandboxId, adapter);
+      // A socket that closed during the asynchronous verification must never disturb the live
+      // connection for its scope. No await between this check and the hub mutation, so a socket
+      // that closed mid-verification can never evict a healthy Runner or become a ghost entry.
+      if (closed) return;
+      const outcome = options.hub.attach(validated, adapter, { liveWindowMs: heartbeatTimeoutMs });
+      if (outcome === "duplicate") {
+        // A live, heartbeating connection already owns this scope. Rejecting the newcomer —
+        // without an auth:result — keeps this retriable on the Runner side: after the dead
+        // connection is swept, a legitimate reconnect attaches.
+        send({
+          type: "error",
+          code: "RUNNER_DUPLICATE_CONNECTION",
+          message: "A live Runner connection already exists for this Sandbox environment",
+        });
+        closeWith(RUNNER_WS_CLOSE.duplicate, "a live Runner connection already exists for this scope");
         return;
       }
+      scope = validated;
       if (authTimer) clearTimeout(authTimer);
       authTimer = undefined;
       sendAuthResult(true, requestId);
@@ -240,8 +264,11 @@ export function registerRunnerWebSocketRoute(app: FastifyInstance, options: Runn
       return Boolean(stillCurrent && options.hub.isCurrent(current.sandboxId, adapter));
     };
 
-    const settleReadiness = async (current: RunnerScope, reported: RunnerReadiness) => {
-      const outcome = await options.service.markRunnerReady(current, reported);
+    /** The reported native sandbox must be the exact Instance this scope allocated. */
+    const readinessMatchesResource = (current: RunnerScope, readiness: Omit<RunnerReadiness, "reportedAt">) =>
+      current.resourceName.endsWith(`/instances/${readiness.sandboxName}`);
+
+    const settleReadyOutcome = async (current: RunnerScope, reported: RunnerReadiness, outcome: RunnerReadyOutcome) => {
       if (closed) return;
       if (outcome === "stale") {
         closeWith(RUNNER_WS_CLOSE.staleScope, "runner scope is stale");
@@ -255,6 +282,19 @@ export function registerRunnerWebSocketRoute(app: FastifyInstance, options: Runn
           code: "RUNNER_VERSION_MISMATCH",
           message: "The Runner build does not match the version this Server requires",
         });
+        return;
+      }
+      // The hub only ever holds readiness the service accepted (correct pinned version, current
+      // allocation); a mismatch must never flip snapshot.ready ahead of that verdict.
+      if (!options.hub.markReady(current, reported, adapter)) {
+        closeWith(RUNNER_WS_CLOSE.staleScope, "this Runner connection was replaced");
+        return;
+      }
+      if (outcome === "deferred") {
+        // The service defers until the verified UID is tracked. With readiness now held by the
+        // hub, an already-tracked row promotes immediately; an in-flight create caller promotes
+        // the rest when its tracking completes.
+        await options.service.promoteDeferredReadiness(current.sandboxId);
       }
     };
 
@@ -265,12 +305,19 @@ export function registerRunnerWebSocketRoute(app: FastifyInstance, options: Runn
         closeWith(RUNNER_WS_CLOSE.staleScope, "environment allocation changed");
         return;
       }
-      const reported: RunnerReadiness = { ...readiness, reportedAt: new Date(now()).toISOString() };
-      if (!options.hub.markReady(current, reported, adapter)) {
-        closeWith(RUNNER_WS_CLOSE.staleScope, "this Runner connection was replaced");
+      // The Runner must prove native execution on the exact Instance this scope allocated: the
+      // reported sandbox name must match the scope resource before anything may become ready.
+      if (!readinessMatchesResource(current, readiness)) {
+        send({
+          type: "error",
+          code: "RUNNER_READINESS_MISMATCH",
+          message: "The reported native sandbox does not match the allocated Instance",
+        });
         return;
       }
-      await settleReadiness(current, reported);
+      const reported: RunnerReadiness = { ...readiness, reportedAt: new Date(now()).toISOString() };
+      const outcome = await options.service.markRunnerReady(current, reported);
+      await settleReadyOutcome(current, reported, outcome);
     };
 
     const handleResult = async (current: RunnerScope, frame: RunnerAcceptanceResultFrame) => {

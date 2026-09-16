@@ -66,8 +66,10 @@ export async function inspectRunnerContainer(name) {
 }
 
 export function assertFixedResources(inspect) {
-  if (inspect.architecture !== "amd64" || inspect.os !== "linux" || inspect.user !== "runner") {
-    throw new Error("expected a Linux amd64 image running as runner");
+  // The image default user is root so the exact `opentag-runner serve` path can launch the native
+  // sandbox; the entrypoint still drops every other command to uid/gid 10000.
+  if (inspect.architecture !== "amd64" || inspect.os !== "linux" || inspect.user !== "root") {
+    throw new Error("expected a Linux amd64 image whose default user is root for the native sandbox launcher");
   }
   const limits = RUNNER_DOCKER_LIMITS;
   if (inspect.nanoCpus !== limits.nanoCpus) {
@@ -112,8 +114,15 @@ export async function startGuardContainer({ image, name }) {
   await docker(["run", "--detach", "--init", "--name", name, ...LIMITED_ARGS, image, "sleep", "infinity"]);
 }
 
+/**
+ * docker exec does not run the image entrypoint, so the caller must select the runtime user
+ * explicitly. Default to the unprivileged runner uid 10000 to preserve the pre-root-image
+ * behavior; callers that must write runner-owned paths pass `user` at the docker level (or use
+ * a dedicated root exec) instead of silently running as root.
+ */
 export async function execInContainer(name, args, options = {}) {
-  return docker(["exec", name, ...args], options);
+  const user = options.user ?? "10000:10000";
+  return docker(["exec", "-u", user, name, ...args], options);
 }
 
 /** Removal is proven, not assumed: `docker rm` succeeds, the container is verifiably gone. */

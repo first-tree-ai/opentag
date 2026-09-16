@@ -5,8 +5,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { agents, imBindings, sandboxes, sessions, users } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import type { RunnerInstanceSpec } from "../services/cloud-run/index.js";
-import { CloudRunAdminError } from "../services/cloud-run/index.js";
-import { runnerInstanceId } from "../services/cloud-run/instance-identity.js";
+import { CloudRunAdminError, type CloudRunInstanceView } from "../services/cloud-run/index.js";
+import { type RunnerInstanceIdentityInput, runnerInstanceId } from "../services/cloud-run/instance-identity.js";
 import { ComputerService } from "../services/computers/index.js";
 import { SandboxService } from "../services/sandboxes/index.js";
 import {
@@ -18,6 +18,27 @@ import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../servic
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { FAKE_PROJECT, FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
+
+/**
+ * Fake with call counters proving which flows touch Cloud. `verifyOwnership` itself (name +
+ * allocation labels only; NO policy checks — policy failures must never block deletion of an
+ * owned resource) comes from the shared fake, mirroring `CloudRunAdmin.verifyOwnership`.
+ */
+class RunnerFakeCloudRunAdmin extends FakeCloudRunAdmin {
+  getCalls = 0;
+  ownershipChecks = 0;
+
+  override async getInstance(name: string): Promise<CloudRunInstanceView | undefined> {
+    this.getCalls += 1;
+    return super.getInstance(name);
+  }
+
+  override verifyOwnership(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
+    this.ownershipChecks += 1;
+    super.verifyOwnership(view, identity);
+  }
+}
+
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 let unit: UnitDatabase;
@@ -81,7 +102,7 @@ async function sandboxRow(sandboxId: string) {
 }
 
 function makeService(
-  fake: FakeCloudRunAdmin,
+  fake: RunnerFakeCloudRunAdmin,
   options: {
     acceptanceTimeoutMs?: number;
     createConvergeTimeoutMs?: number;
@@ -264,7 +285,7 @@ describe("SandboxRunnerService ownership and authority", () => {
     const owner = await account();
     const stranger = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     for (const act of [
       () => service.startForAccount(stranger, sandbox.sandboxId),
@@ -281,7 +302,7 @@ describe("SandboxRunnerService ownership and authority", () => {
   it("keeps status/stop ownership access but denies start/connect/execute for a suspended Agent", async () => {
     const owner = await account();
     const { sandbox, agent } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     await service.startForAccount(owner, sandbox.sandboxId);
     await unit.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, agent.id));
@@ -308,7 +329,7 @@ describe("SandboxRunnerService ownership and authority", () => {
   it("denies start for a non-active binding, an ended Session and a suspended Account", async () => {
     const owner = await account();
     const { sandbox, bindingId } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     await unit.database.update(imBindings).set({ status: "error" }).where(eq(imBindings.id, bindingId));
     await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 404 });
@@ -327,7 +348,7 @@ describe("SandboxRunnerService start", () => {
   it("persists the deterministic name and submission marker BEFORE cloud I/O", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     let open!: () => void;
     fake.createGate = {
       promise: new Promise<void>((resolve) => {
@@ -362,7 +383,7 @@ describe("SandboxRunnerService start", () => {
   it("is idempotent for a second start of the same allocation", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     const first = await service.startForAccount(owner, sandbox.sandboxId);
     const second = await service.startForAccount(owner, sandbox.sandboxId);
@@ -375,7 +396,7 @@ describe("SandboxRunnerService start", () => {
   it("concurrent starts submit exactly one create", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     const [left, right] = await Promise.all([
       service.startForAccount(owner, sandbox.sandboxId),
@@ -393,7 +414,7 @@ describe("SandboxRunnerService start", () => {
   it("keeps an operation that finished without a resource uncertain, never rejected", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     await service.startForAccount(owner, sandbox.sandboxId);
     const row = await sandboxRow(sandbox.sandboxId);
@@ -415,7 +436,7 @@ describe("SandboxRunnerService start", () => {
   it("an unknown create result preserves the name and never POSTs twice for the generation", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     fake.createUnknownOnce = true;
     const { service } = makeService(fake);
     const first = await service.startForAccount(owner, sandbox.sandboxId);
@@ -435,7 +456,7 @@ describe("SandboxRunnerService start", () => {
   it("a definitive create rejection is retryable; a transport failure is not", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     fake.failNextCreateWith = new CloudRunAdminError("unavailable", "backend exploded", { status: 500 });
     const { service } = makeService(fake);
     const uncertain = await service.startForAccount(owner, sandbox.sandboxId);
@@ -443,7 +464,7 @@ describe("SandboxRunnerService start", () => {
     await service.startForAccount(owner, sandbox.sandboxId);
     expect(fake.createCalls).toHaveLength(1); // 5xx is not a definitive failure
 
-    const rejected = new FakeCloudRunAdmin();
+    const rejected = new RunnerFakeCloudRunAdmin();
     rejected.failNextCreateWith = new CloudRunAdminError("invalid", "image refused", {
       status: 400,
       createRejected: true,
@@ -466,7 +487,7 @@ describe("SandboxRunnerService start", () => {
   it("an invalid/ownership error WITHOUT createRejected never retries or clears (a resource may exist)", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     // Adapter's post-POST GET+policy verification failures carry createRejected=false.
     fake.failNextCreateWith = new CloudRunAdminError("ownership_mismatch", "adopted resource failed verification");
     const { service } = makeService(fake, { deleteVerifyTimeoutMs: 150 });
@@ -489,7 +510,7 @@ describe("SandboxRunnerService start", () => {
   it("an early Runner readiness report is deferred until the create caller records the verified UID", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     let open!: () => void;
     fake.createGate = {
       promise: new Promise<void>((resolve) => {
@@ -525,7 +546,7 @@ describe("SandboxRunnerService start", () => {
   it("requires the exact configured Runner version before readiness", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service, hub } = makeService(fake);
     await service.startForAccount(owner, sandbox.sandboxId);
     const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
@@ -545,7 +566,7 @@ describe("SandboxRunnerService start", () => {
   it("a deferred create that lands while releasing finishes the pending release automatically", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     let open!: () => void;
     fake.createGate = {
       promise: new Promise<void>((resolve) => {
@@ -580,7 +601,7 @@ describe("SandboxRunnerService retry races", () => {
   /** Reach a definitive-rejected generation: retryable marker, persisted name, no UID or LRO. */
   async function rejectedSandbox(owner: string, options: { deleteVerifyTimeoutMs?: number } = {}) {
     const fixture = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     fake.failNextCreateWith = new CloudRunAdminError("invalid", "rejected", { status: 400, createRejected: true });
     const made = makeService(fake, { deleteVerifyTimeoutMs: options.deleteVerifyTimeoutMs ?? 150 });
     await expect(made.service.startForAccount(owner, fixture.sandbox.sandboxId)).rejects.toMatchObject({
@@ -634,7 +655,7 @@ describe("SandboxRunnerService retry races", () => {
   it("a delayed LRO rejection cannot overwrite a newer pending submission or trigger another retry", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     await service.startForAccount(owner, sandbox.sandboxId);
     const initial = await sandboxRow(sandbox.sandboxId);
@@ -733,12 +754,84 @@ describe("SandboxRunnerService retry races", () => {
     expect(retried.currentResourceUid).toMatch(/^uid-/);
     expect(fake.createCalls).toHaveLength(2);
   });
+
+  it("preserves a definitive create marker across a failed stop read so a later 404 releases the row", async () => {
+    const owner = await account();
+    const { sandbox, fake, service } = await rejectedSandbox(owner, { deleteVerifyTimeoutMs: 150 });
+    const rejected = await sandboxRow(sandbox.sandboxId);
+    expect(rejected.lastErrorCode).toBe("cloud_create_rejected");
+    expect(rejected.currentOperationName).toBeNull();
+    // The stop-phase GET fails (the same IAM/transient problem that rejected the create): the
+    // delete-phase failure must NOT overwrite the definitive create marker. Previously this
+    // wrote `cloud_delete_incomplete`, after which no stop could ever clear the row.
+    fake.getInstanceFailures = 1;
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const afterFailure = await sandboxRow(sandbox.sandboxId);
+    expect(afterFailure.lifecycle).toBe("releasing");
+    expect(afterFailure.lastErrorCode).toBe("cloud_create_rejected");
+    expect(afterFailure.currentResourceName).toBe(rejected.currentResourceName);
+    // The read recovers and returns 404: the preserved marker is definitive evidence, so this
+    // stop clears the row instead of timing out into uncertainty again.
+    const recovered = await service.stopForAccount(owner, sandbox.sandboxId);
+    expect(recovered.lifecycle).toBe("unallocated");
+    expect(recovered.currentResourceName).toBeNull();
+    expect(recovered.lastErrorCode).toBeNull();
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("preserves a local pre-submission failure marker across a failed stop read", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const tokens = new FlakyTokens({ failAt: 1 });
+    const { service } = makeService(fake, { tokens, deleteVerifyTimeoutMs: 150 });
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toThrow("signing unavailable");
+    expect((await sandboxRow(sandbox.sandboxId)).lastErrorCode).toBe("cloud_create_failed");
+    fake.getInstanceFailures = 1;
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const afterFailure = await sandboxRow(sandbox.sandboxId);
+    expect(afterFailure.lifecycle).toBe("releasing");
+    expect(afterFailure.lastErrorCode).toBe("cloud_create_failed");
+    const recovered = await service.stopForAccount(owner, sandbox.sandboxId);
+    expect(recovered.lifecycle).toBe("unallocated");
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("preserves the unverified diagnostic across a failed stop read and never clears on 404 alone", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    // Post-POST adoption failure WITHOUT createRejected: a resource may exist, so the row is
+    // never retried and never cleared — and this fake never landed one, so reads stay 404.
+    fake.failNextCreateWith = new CloudRunAdminError("ownership_mismatch", "adopted resource failed verification");
+    const { service } = makeService(fake, { deleteVerifyTimeoutMs: 150 });
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect((await sandboxRow(sandbox.sandboxId)).lastErrorCode).toBe("cloud_instance_unverified");
+    // The stop-phase GET fails: the diagnostic must survive the delete-phase failure (it was
+    // previously erased by `cloud_delete_incomplete`).
+    fake.getInstanceFailures = 1;
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const afterFailure = await sandboxRow(sandbox.sandboxId);
+    expect(afterFailure.lifecycle).toBe("releasing");
+    expect(afterFailure.lastErrorCode).toBe("cloud_instance_unverified");
+    // 404 alone is still NOT definitive for an unverified row (a late create may materialize):
+    // the uncertainty window's own marker write must not erase the diagnostic either, and the
+    // reference is kept — no relaxed unknown-create cleanup.
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const stillHeld = await sandboxRow(sandbox.sandboxId);
+    expect(stillHeld.lifecycle).toBe("releasing");
+    expect(stillHeld.currentResourceName).not.toBeNull();
+    expect(stillHeld.lastErrorCode).toBe("cloud_instance_unverified");
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
 });
 
 describe("SandboxRunnerService stop", () => {
   async function startedSandbox(owner: string) {
     const fixture = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service, hub, tokens } = makeService(fake);
     await service.startForAccount(owner, fixture.sandbox.sandboxId);
     return { ...fixture, fake, service, hub, tokens };
@@ -759,7 +852,7 @@ describe("SandboxRunnerService stop", () => {
   it("is idempotent for an already unallocated sandbox", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake);
     const status = await service.stopForAccount(owner, sandbox.sandboxId);
     expect(status.lifecycle).toBe("unallocated");
@@ -826,7 +919,7 @@ describe("SandboxRunnerService stop", () => {
   it("treats a completed operation that reports success as allocated, keeping releasing until visible", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service } = makeService(fake, { deleteVerifyTimeoutMs: 120 });
     await service.startForAccount(owner, sandbox.sandboxId);
     const row = await sandboxRow(sandbox.sandboxId);
@@ -854,7 +947,7 @@ describe("SandboxRunnerService stop", () => {
   it("keeps releasing and the reference when an unknown create is still unreadable", async () => {
     const owner = await account();
     const { sandbox } = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     fake.createUnknownWithoutResourceOnce = true;
     const { service } = makeService(fake, { deleteVerifyTimeoutMs: 120 });
     await service.startForAccount(owner, sandbox.sandboxId);
@@ -872,12 +965,37 @@ describe("SandboxRunnerService stop", () => {
     expect(stopped.lifecycle).toBe("unallocated");
     expect(fake.liveInstanceCount()).toBe(0);
   });
+
+  it("deletes an owned Instance whose policy fails verification instead of stranding it", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    // A persistent POLICY failure with intact ownership (deterministic name + labels match):
+    // adoption and readiness stay blocked, but stop must still delete our own resource — a
+    // policy failure must never protect a billable Instance from cleanup.
+    fake.failVerifyWith = new CloudRunAdminError("invalid", "egress is not ALL_TRAFFIC");
+    fake.failVerifyCount = -1;
+    const { service } = makeService(fake);
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const blocked = await sandboxRow(sandbox.sandboxId);
+    expect(blocked.lastErrorCode).toBe("cloud_instance_unverified");
+    expect(blocked.currentResourceUid).toBeNull();
+    expect(fake.liveInstanceCount()).toBe(1);
+    // Ownership (name + labels) gates the delete; the UID + etag are enforced by the
+    // conditional delete itself. Full policy verification stays off the delete path.
+    const stopped = await service.stopForAccount(owner, sandbox.sandboxId);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(stopped.currentResourceName).toBeNull();
+    expect(fake.liveInstanceCount()).toBe(0);
+    expect(fake.deleteCalls).toHaveLength(1);
+    expect(fake.ownershipChecks).toBeGreaterThan(0);
+  });
 });
 
 describe("SandboxRunnerService runner scope + readiness", () => {
   async function started(owner: string) {
     const fixture = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const made = makeService(fake);
     const status = await made.service.startForAccount(owner, fixture.sandbox.sandboxId);
     return { ...fixture, fake, ...made, status };
@@ -899,6 +1017,29 @@ describe("SandboxRunnerService runner scope + readiness", () => {
     ).toBeUndefined();
     expect(await service.validateRunnerScope({ ...base, sessionId: randomUUID() })).toBeUndefined();
     expect(await service.validateRunnerScope({ ...base, sandboxId: randomUUID() })).toBeUndefined();
+  });
+
+  it("denies credential renewal for rejected allocations while allowing early pending runners", async () => {
+    const owner = await account();
+    const { sandbox, service, status } = await started(owner);
+    const scope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    for (const lastErrorCode of ["cloud_instance_unverified", "cloud_create_rejected", "cloud_create_failed"]) {
+      await unit.database
+        .update(sandboxes)
+        .set({ currentResourceUid: null, lastErrorCode, lastErrorAt: new Date() })
+        .where(eq(sandboxes.id, sandbox.sandboxId));
+      expect(await service.validateRunnerScope(scope)).toBeUndefined();
+    }
+    await unit.database
+      .update(sandboxes)
+      .set({ lastErrorCode: "cloud_create_pending" })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.validateRunnerScope(scope)).toMatchObject({ sandboxId: sandbox.sandboxId });
   });
 
   it("marks ready only for the current scope with a verified UID; a stale runner cannot mutate", async () => {
@@ -952,12 +1093,47 @@ describe("SandboxRunnerService runner scope + readiness", () => {
       code: "SANDBOX_RUNNER_CONFLICT",
     });
   });
+
+  it("readiness performs no cloud I/O: an untracked generation stays deferred until a start reconciles it", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    // The create outcome is unknown and nothing readable landed: no UID is tracked.
+    fake.createUnknownWithoutResourceOnce = true;
+    const { service, hub } = makeService(fake);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(status.lastErrorCode).toBe("cloud_create_uncertain");
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    const getsBefore = fake.getCalls;
+    // Readiness is database CAS/promotion only: a Runner-originated frame must never reconcile,
+    // create or release inline — the report stays deferred and the connection stays up.
+    expect(await service.markRunnerReady(scope, READINESS)).toBe("deferred");
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("preparing");
+    expect(fake.getCalls).toBe(getsBefore);
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+    // Cloud I/O belongs to start/stop: a later start reconciles the materialized resource
+    // (policy-verified, UID tracked) and promotes the deferred report in the same request.
+    fake.materialize(fake.createCalls[0] as RunnerInstanceSpec);
+    const reconciled = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(reconciled.lifecycle).toBe("ready");
+    expect(reconciled.runnerReady).toBe(true);
+    expect(fake.createCalls).toHaveLength(1); // the reconcile was GET-only
+  });
 });
 
 describe("SandboxRunnerService acceptance", () => {
   async function readySandbox(owner: string, options: { acceptanceTimeoutMs?: number } = {}) {
     const fixture = await ownedSandbox(owner);
-    const fake = new FakeCloudRunAdmin();
+    const fake = new RunnerFakeCloudRunAdmin();
     const { service, hub } = makeService(fake, options);
     const status = await service.startForAccount(owner, fixture.sandbox.sandboxId);
     const scope: RunnerScope = {

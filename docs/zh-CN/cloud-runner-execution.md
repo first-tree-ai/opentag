@@ -38,11 +38,23 @@ offline / DeepSeek 验收任务，不是通用任务提交 API；同一 Sandbox 
 E3 的连接和待返回验收结果保存在对应 Server 进程内，使用单个测试 Server。多副本路由、持久化任务
 重放与可靠 IM 投递尚未由这些接口解决；Server 重启需要 Runner 重连，不会可靠重放进行中的验收请求。
 
+Bootstrap 令牌保存在 Instance 的环境变量中，有权读取实例配置的主体也能读取它，因此 E3 必须使用
+可信运维项目。拒绝抢占活跃连接不能防止有权限的读取者抢先建立首次连接。同一分配存在仍在发送心跳的
+连接时，新连接不能替换它；续期时发现权限已明确撤销则关闭连接，已知配置校验失败的分配不能认证或续期。
+就绪状态是经过认证的 Runner 基于本地探测给出的报告，不是远程可信证明。处理就绪帧只检查数据库，
+不执行 Cloud Admin 写操作。
+
 ## 原生隔离与取消
 
 镜像内单独构建 /opt/sandbox-root，启动时显式指定，避免默认挂载父容器根目录。
 仅挂载 Session 的 /workspace 与平台只读 /etc/resolv.conf，不挂载父容器 HOME、运行时状态或
 bootstrap 凭证目录。父容器和原生 Sandbox 均使用源码维护的 Linux init 回收被收养的子进程。
+
+Instance 父进程需要特权：原生 sandbox launcher 要求 root，因此精确的 `opentag-runner serve`
+进程由源码自有的 init 以 root 运行。其余镜像命令（identity、probe、skills、accept、worker）
+都通过基础镜像自带的 `setpriv` 以 uid/gid 10000 执行并清空附加组；容器若本身以非 root 启动，
+entrypoint 绝不提权。worker 仍只作为原生 Sandbox 子进程运行——父进程绝不亲自执行用户任务，
+挂载集合仍严格是每 Session 的 workspace 加只读 /etc/resolv.conf。
 
 worker 通过有大小限制的 stdin 获取参数。Pi 配置筛选为 DeepSeek，拒绝 shell 凭证间接执行，
 写入私有临时目录；不向 worker 下发控制令牌。验收脚本验证本地原配置未变。

@@ -92,9 +92,9 @@ export async function assertPortAvailable(port) {
   });
 }
 
-export function spawnLogged(command, args, { cwd, env, logPath, secrets = [] }) {
+export function spawnLogged(command, args, { cwd, env, logPath, secrets = [], detached = false }) {
   const log = createWriteStream(logPath, { flags: "a", mode: 0o600 });
-  const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, args, { cwd, env, detached, stdio: ["ignore", "pipe", "pipe"] });
   let openStreams = 2;
   for (const stream of [child.stdout, child.stderr]) {
     let pending = "";

@@ -12,8 +12,13 @@ Client `0.0.0` 不是 Runner 版本。
 
 ## 镜像内容
 
-`PATH` 上的二进制由 root 拥有；进程以非 root 的 `runner` 用户运行，并使用独立的 `HOME`、`/workspace`
-和 `/tmp`：
+镜像默认用户是 `root`，因为 Cloud Run 原生 Sandbox launcher 要求 Instance 父进程以 root 运行。
+`runner-entrypoint` 只对精确的 `opentag-runner serve` 保留 root，并由源码自有的 `opentag-init`
+运行；其余所有命令都通过基础镜像自带的 `setpriv` 降为 uid/gid 10000，并清空附加组。`setpriv`
+不安装、不下载：按 digest 固定的 Node bookworm 镜像自带（util-linux），构建期同时断言版本横幅与
+精确的 uid/gid/组降权结果。
+
+`PATH` 上的二进制仍由 root 拥有；非特权的 `runner` 用户保有独立的 `HOME`、`/workspace` 和 `/tmp`：
 
 | 命令 | 锁定 |
 | --- | --- |
@@ -95,7 +100,9 @@ shell 命令间接寻址），生成过滤后的暂存副本，并只把该副�
 `models` 与 `providers` 重建，未知字段绝不进入容器；畸形结构以固定消息失败。
 guard 容器以 Docker `--init` 运行，由 PID 1 回收孤儿子进程，并以
 `sleep infinity` 保活，直到 harness 清理时删除。镜像入口使用源码自有的 `opentag-init` 转发信号、
-回收孤儿进程；offline 验收会在不使用 Docker `--init` 的条件下验证它。真实验收命令单独设置 30 分钟超时。
+回收孤儿进程；offline 验收会在不使用 Docker `--init` 的条件下验证它。同一次 offline 验收还会
+断言权限边界：普通命令报告 uid 10000、gid 10000 且 `id -G` 为 10000，而精确的 `serve` 路径保持
+root 并交给源码自有的 init。真实验收命令单独设置 30 分钟超时。
 验收断言一个存活 Bash fixture 子进程被确认取消（共享的 Pi PID 跟踪集），随后删除
 容器并以 daemon 确认删除结果。
 

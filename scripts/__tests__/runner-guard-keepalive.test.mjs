@@ -27,6 +27,9 @@ test("guard outlives the real accept budget, starts through the entrypoint, and 
     await writeFile(join(dir, "docker"), dockerStub(log));
     await chmod(join(dir, "docker"), 0o755);
     await writeFile(join(dir, "sleep"), '#!/bin/sh\nprintf "%s" "$1"\n', { mode: 0o755 });
+    // runner-entrypoint queries `id -u` before deciding whether to drop privileges; PATH is
+    // replaced in this test, so provide a deterministic non-root answer.
+    await writeFile(join(dir, "id"), '#!/bin/sh\nprintf "10000"\n', { mode: 0o755 });
     process.env.PATH = dir;
     await runWithCleanup(async () => {
       const { startGuardContainer, removeContainer } = await import("../e2e/runner-toolchain/harness.mjs");

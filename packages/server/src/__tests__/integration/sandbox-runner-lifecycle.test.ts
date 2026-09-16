@@ -10,6 +10,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { agents, imBindings, sandboxes, sessions, users } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
+import { CloudRunAdminError } from "../../services/cloud-run/index.js";
 import { ComputerService } from "../../services/computers/index.js";
 import { SandboxService } from "../../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../../services/sandboxes/runner-bootstrap-token.js";
@@ -235,6 +236,53 @@ describe("SandboxRunnerService real-PostgreSQL lifecycle", () => {
     expect(stopped.lifecycle).toBe("unallocated");
     expect(stopped.currentResourceUid).toBeNull();
     expect(fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("preserves a definitive create marker across a failed stop read so a later 404 releases the row", async () => {
+    const { accountId, sandbox } = await fixture();
+    const fake = new FakeCloudRunAdmin();
+    fake.failNextCreateWith = new CloudRunAdminError("invalid", "rejected", { status: 400, createRejected: true });
+    const { service } = makeService(fake, { deleteVerifyTimeoutMs: 300 });
+    await expect(service.startForAccount(accountId, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const rejected = await sandboxRow(sandbox.sandboxId);
+    expect(rejected?.lastErrorCode).toBe("cloud_create_rejected");
+    expect(rejected?.currentOperationName).toBeNull();
+    // The stop-phase GET fails (the same IAM/transient problem that rejected the create): the
+    // delete-phase failure must NOT overwrite the definitive create marker. Previously this
+    // wrote `cloud_delete_incomplete` and stranded the row in `releasing` with no API recovery.
+    fake.getInstanceFailures = 1;
+    await expect(service.stopForAccount(accountId, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const afterFailure = await sandboxRow(sandbox.sandboxId);
+    expect(afterFailure?.lifecycle).toBe("releasing");
+    expect(afterFailure?.lastErrorCode).toBe("cloud_create_rejected");
+    expect(afterFailure?.currentResourceName).toBe(rejected?.currentResourceName);
+    // The read recovers and returns 404: the preserved marker is definitive evidence, so this
+    // stop clears the row instead of timing out into uncertainty again.
+    const recovered = await service.stopForAccount(accountId, sandbox.sandboxId);
+    expect(recovered.lifecycle).toBe("unallocated");
+    expect(recovered.currentResourceName).toBeNull();
+    expect(recovered.lastErrorCode).toBeNull();
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("deletes an owned Instance whose policy fails verification instead of stranding it", async () => {
+    const { accountId, sandbox } = await fixture();
+    const fake = new FakeCloudRunAdmin();
+    // A persistent POLICY failure with intact ownership: adoption/readiness stay blocked, but
+    // stop must still delete our own resource (ownership gates delete, policy never does).
+    fake.failVerifyWith = new CloudRunAdminError("invalid", "egress is not ALL_TRAFFIC");
+    fake.failVerifyCount = -1;
+    const { service } = makeService(fake);
+    await expect(service.startForAccount(accountId, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const blocked = await sandboxRow(sandbox.sandboxId);
+    expect(blocked?.lastErrorCode).toBe("cloud_instance_unverified");
+    expect(blocked?.currentResourceUid).toBeNull();
+    expect(fake.liveInstanceCount()).toBe(1);
+    const stopped = await service.stopForAccount(accountId, sandbox.sandboxId);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(fake.liveInstanceCount()).toBe(0);
+    expect(fake.deleteCalls).toHaveLength(1);
   });
 
   it("keeps status/stop ownership access but denies start and Runner connect for a disabled chain", async () => {

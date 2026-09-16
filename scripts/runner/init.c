@@ -20,6 +20,8 @@ static void forward_signal(int sig) {
 static void cleanup_alarm(int sig) {
   (void)sig;
   force_cleanup = 1;
+  /* If this signal arrived before waitpid, another wakeup must still interrupt that wait. */
+  alarm(1);
 }
 
 /* Only signal our own adopted children, including children that created another process group. */

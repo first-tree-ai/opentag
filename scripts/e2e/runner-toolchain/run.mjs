@@ -78,6 +78,7 @@ export async function runRunnerToolchain(options) {
       daemonArch: smoke.daemonArch,
       platform: RUNNER_PINS.image.platform,
       offline: smoke.offline,
+      privilege: smoke.privilege,
       model: "passed",
       real: { report: real.report, startupMs: real.startupMs },
       cleanup: { ...smoke.cleanup, realRemoved: true },
@@ -94,6 +95,7 @@ export async function runRunnerToolchain(options) {
     daemonArch: smoke.daemonArch,
     platform: RUNNER_PINS.image.platform,
     offline: smoke.offline,
+    privilege: smoke.privilege,
     model: "skipped",
     cleanup: smoke.cleanup,
   };

@@ -368,5 +368,7 @@ export const RUNNER_WS_CLOSE = {
   protocolError: 4400,
   staleScope: 4409,
   replaced: 4412,
+  /** A live, heartbeating connection already owns this scope; the newcomer is rejected. */
+  duplicate: 4413,
   shuttingDown: 1001,
 } as const;

@@ -15,7 +15,11 @@ import {
  * replaced or superseded connection can never publish readiness, resolve a result, or mutate a
  * newer allocation's entry.
  * Reconnect rules:
- * - same scope replaces the old connection safely (the Runner re-established its channel);
+ * - a same-scope reconnect while the current connection is still live (activity inside the
+ *   caller-provided window) is rejected as a duplicate, so a second holder of the bootstrap
+ *   token can never take over a heartbeating Runner's channel; once the dead connection has
+ *   been cleaned up — or has gone silent past the window — the reconnect attaches and the stale
+ *   socket is closed;
  * - a new scope (a newer environment generation) closes the superseded connection as stale;
  * - a connection for one Sandbox can never touch another Sandbox's entry, so a reconnecting
  *   Session's Runner can never evict a different Session's Runner.
@@ -69,6 +73,8 @@ export class RunnerAcceptanceUnavailableError extends Error {
   }
 }
 
+export type RunnerAttachOutcome = "attached" | "replaced" | "duplicate";
+
 export class RunnerHub {
   readonly #entries = new Map<string, HubEntry>();
   readonly #now: () => number;
@@ -93,12 +99,29 @@ export class RunnerHub {
     return this.#entries.get(sandboxId)?.socket === socket;
   }
 
-  /** Register an authenticated connection for an already DB-validated scope. */
-  attach(scope: RunnerScope, socket: RunnerControlSocket): void {
+  /**
+   * Register an authenticated connection for an already DB-validated scope. Returns "duplicate"
+   * — without touching the current entry — when a SAME-scope connection is still live (activity
+   * within `options.liveWindowMs`): unconditional last-wins would let a second token holder
+   * evict a healthy, heartbeating Runner. A same-scope connection silent past the window is
+   * dead weight: it is closed and replaced so a legitimate reconnect after a dead connection
+   * always lands. Callers that omit the window keep unconditional last-wins replacement.
+   */
+  attach(
+    scope: RunnerScope,
+    socket: RunnerControlSocket,
+    options: { liveWindowMs?: number } = {},
+  ): RunnerAttachOutcome {
     const existing = this.#entries.get(scope.sandboxId);
+    let outcome: RunnerAttachOutcome = "attached";
     if (existing) {
+      const sameScope = this.#sameScope(existing.scope, scope);
+      if (sameScope && options.liveWindowMs !== undefined && this.#now() - existing.lastSeenAt < options.liveWindowMs) {
+        return "duplicate";
+      }
+      outcome = "replaced";
       this.#rejectAllPending(existing, new RunnerAcceptanceUnavailableError("The Runner connection was replaced"));
-      if (this.#sameScope(existing.scope, scope)) {
+      if (sameScope) {
         existing.socket.close(RUNNER_WS_CLOSE.replaced, "replaced by a reconnect of the same Runner");
       } else {
         existing.socket.close(RUNNER_WS_CLOSE.staleScope, "superseded by a new environment generation");
@@ -112,6 +135,7 @@ export class RunnerHub {
       pending: new Map(),
       activeAcceptanceId: null,
     });
+    return outcome;
   }
 
   /** Detach only if this exact socket is still the current connection. */

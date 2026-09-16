@@ -216,6 +216,8 @@ describe("CloudRunAdmin create", () => {
       { network: "opentag-net", subnetwork: "opentag-subnet", tags: ["opentag-runner"] },
     ]);
     expect(body.metadata.annotations["run.googleapis.com/vpc-access-egress"]).toBe("all-traffic");
+    expect(body.metadata.annotations["run.googleapis.com/cpu-throttling"]).toBe("false");
+    expect(result.operationName).toBeUndefined(); // v1 returns an Instance, not an LRO
     expect(body.spec.containers[0]).toMatchObject({
       sandboxLauncher: true,
       image: CONFIG.image,
@@ -230,6 +232,37 @@ describe("CloudRunAdmin create", () => {
     }));
     await expect(admin(fetchImpl).createInstance(SPEC)).rejects.toMatchObject({ kind: "invalid" });
     expect(calls.filter((call) => call.url.includes("/apis/run.googleapis.com/v1/"))).toHaveLength(0);
+  });
+
+  it.each([
+    "Invalid networkInterfaces: subnetwork was not found",
+    "vpcAccess: IP address capacity exhausted",
+    "run.googleapis.com/network-interfaces tag rejected",
+  ])("does not retry a real VPC policy error through v1: %s", async (message) => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: 400, body: { error: { message } } }));
+    await expect(admin(fetchImpl).createInstance(SPEC)).rejects.toMatchObject({ kind: "invalid" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("permits ownership verification for cleanup but rejects unsafe execution policy", async () => {
+    const [container] = instanceBody().containers as Record<string, unknown>[];
+    for (const override of [
+      { command: ["/bin/sh"] },
+      { volumeMounts: [{ name: "unexpected", mountPath: "/opt/opentag" }] },
+      { resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: true } },
+    ]) {
+      const { fetchImpl } = fakeFetch(() => ({
+        status: 200,
+        body: instanceBody({ containers: [{ ...container, ...override }] }),
+      }));
+      const api = admin(fetchImpl);
+      const view = await api.getInstance(instanceBody().name);
+      expect(view).toBeDefined();
+      if (!view) throw new Error("Missing test Instance");
+      expect(() => api.verifyOwnership(view, IDENTITY)).not.toThrow();
+      expect(() => api.verifyInstance(view, IDENTITY)).toThrow(CloudRunAdminError);
+      expect(() => api.verifyOwnership(view, { ...IDENTITY, environmentGeneration: 4 })).toThrow(CloudRunAdminError);
+    }
   });
 
   it("fails verification unless exactly the declared startup-probe port is present", async () => {

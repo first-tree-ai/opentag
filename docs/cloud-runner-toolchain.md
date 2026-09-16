@@ -11,7 +11,15 @@ The Runner is owned by `@opentag/client`. It shares the **CLI release coordinate
 
 ## What the image contains
 
-Root-owned binaries on `PATH`, running as a non-root `runner` user with dedicated `HOME`,
+The image default user is `root` because the Cloud Run native sandbox launcher requires the
+Instance parent process to run as root. `runner-entrypoint` keeps root only for the exact
+`opentag-runner serve` invocation, which it runs under the source-owned `opentag-init`; every
+other command is dropped to uid/gid 10000 with supplementary groups cleared through the
+base-image `setpriv`. Nothing installs or downloads `setpriv`: the digest-pinned Node bookworm
+image ships it (util-linux), and the build asserts both the version banner and the exact
+uid/gid/group drop before any image is produced.
+
+Binaries on `PATH` stay root-owned and the unprivileged `runner` user keeps dedicated `HOME`,
 `/workspace`, and `/tmp`:
 
 | Command | Pin |
@@ -104,8 +112,10 @@ never a whole `HOME` mount. `models.json` is rebuilt from the recognized top-lev
 with fixed messages. The guard runs with Docker `--init` so PID 1 is an init that reaps orphaned
 children (a zombie is not a gone process), keeping `sleep infinity` alive until harness cleanup
 removes it. The image entrypoint uses the source-owned `opentag-init` to forward signals and
-reap orphaned children; offline acceptance tests this init without Docker `--init`. The
-real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
+reap orphaned children; offline acceptance tests this init without Docker `--init`. The same
+offline pass asserts the privilege boundary: a normal command reports uid 10000, gid 10000 and
+`id -G` 10000, while the exact `serve` path keeps root and delegates to the source-owned init.
+The real acceptance command has a separate 30-minute timeout. It asserts a confirmed cancellation of a live Bash fixture child
 (shared tracked Pi PID set), and removes the container afterwards with daemon-confirmed removal.
 
 Timing fields are distinct: `startupMs` measures a fresh container plus Runner CLI startup

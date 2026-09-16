@@ -178,23 +178,59 @@ describe("withProviderCliLock", () => {
     let active = 0;
     let overlap = 0;
     const order: string[] = [];
+    // Explicit signals instead of sleeps: the second operation only starts once the
+    // first callback owns the lock, and the first only finishes once told to.
+    let firstStarted!: () => void;
+    const firstHolderStarted = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    let releaseFirst!: () => void;
+    const releaseFirstSignal = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let contentionSeen!: () => void;
+    const secondSawContention = new Promise<void>((resolve) => {
+      contentionSeen = resolve;
+    });
     const run = (name: string) => async () => {
       active += 1;
       overlap = Math.max(overlap, active);
       order.push(`${name}:start`);
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (name === "first") {
+        firstStarted();
+        await releaseFirstSignal;
+      }
       order.push(`${name}:end`);
       active -= 1;
       return name;
     };
-    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-    const results = await Promise.all([
-      withProviderCliLock(layout, "feishu", run("first"), { sleep, retryDelayMs: 1 }),
-      withProviderCliLock(layout, "feishu", run("second"), { sleep, retryDelayMs: 1 }),
-    ]);
-    expect(results.sort()).toEqual(["first", "second"]);
-    expect(overlap).toBe(1);
-    expect(order).toHaveLength(4);
+    // The first operation takes the real filesystem lock without contention.
+    const first = withProviderCliLock(layout, "feishu", run("first"));
+    let second: Promise<string> | undefined;
+    try {
+      // Launch the second operation only once the first callback owns the lock.
+      await Promise.race([firstHolderStarted, first]);
+      second = withProviderCliLock(layout, "feishu", run("second"), {
+        sleep: async () => {
+          // The contended acquire saw the live holder; retry only after the first
+          // operation has finished and released the lock.
+          contentionSeen();
+          await first;
+        },
+      });
+      await Promise.race([secondSawContention, second]);
+      // The second callback cannot run while the first operation holds the lock.
+      expect(order).toEqual(["first:start"]);
+      releaseFirst();
+      const results = await Promise.all([first, second]);
+      expect(results).toEqual(["first", "second"]);
+      expect(overlap).toBe(1);
+      expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+    } finally {
+      // Unblock and settle every launched operation so afterEach cannot race them.
+      releaseFirst();
+      await Promise.allSettled(second === undefined ? [first] : [first, second]);
+    }
   });
 
   it("keeps providers independent", async () => {

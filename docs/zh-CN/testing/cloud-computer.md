@@ -165,3 +165,8 @@ Sandbox 创建事务会锁住活跃 IM binding 直至提交，确保并发的 Pr
 | `OPENTAG_CLOUD_IDENTITIES_ENABLED` | Server Cloud 创建开关（`true`/`false`，默认 `false`） |
 | `OPENTAG_CLOUD_STORAGE_BASE` | Sandbox 存储前缀；fixture 默认 `gs://opentag-e2-fixture/sandboxes` |
 | `OPENTAG_CLOUD_RUNNER_VERSION` | Cloud Computer `client_version`；fixture 使用 `apps/cli/package.json` |
+
+## E3 原生执行
+
+配置、原生 Sandbox 验收、资源清单、取消和删除确认见 [Cloud Runner 执行](../cloud-runner-execution.md)。
+入口为 `node scripts/e2e/cloud-computer.mjs cloud-runner --help`；它会创建真实 Cloud 资源。

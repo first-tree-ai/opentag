@@ -32,11 +32,21 @@ async function parseBody(response, cookies) {
   }
 }
 
-export async function requestJson({ baseUrl, cookies, method, path, body, headers, csrf = true }) {
+export async function requestJson({
+  baseUrl,
+  cookies,
+  method,
+  path,
+  body,
+  headers,
+  csrf = true,
+  timeoutMs = 30_000,
+  signal,
+}) {
   const response = await fetch(new URL(path, baseUrl), {
     method,
     redirect: "manual",
-    signal: AbortSignal.timeout(30_000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
     headers: headerBag(baseUrl, cookies, method, body, headers, csrf),
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });

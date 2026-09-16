@@ -31,7 +31,22 @@ RUN if [ "${RUNNER_CHANNEL}" != "dev" ]; then \
  && pnpm --filter @opentag/client build \
  && pnpm --filter ./apps/cli build \
  && mkdir -p /out \
- && node /src/scripts/runner/assemble-runtime.mjs
+ && node /src/scripts/runner/assemble-runtime.mjs \
+ && cc -O2 -Wall -Wextra -Werror -o /out/usr/local/bin/opentag-init /src/scripts/runner/init.c
+
+# Clean room for the native sandbox: the same runtime filesystem, assembled at IMAGE BUILD time
+# as a self-contained rootfs. The Runner never copies the runtime host / at run time, and the
+# default sandbox behavior (host root exposed read-only) is never used.
+FROM ${NODE_IMAGE} AS runtime-rootfs
+
+COPY --from=build /out/opt /opt
+COPY --from=build /out/usr /usr
+RUN mkdir -p /workspace /tmp \
+ && chmod 1777 /tmp \
+ && chmod 0755 /workspace \
+ && chmod 0755 /usr/local/bin/runner-entrypoint /usr/local/bin/opentag-runner /usr/local/bin/opentag /usr/local/bin/opentag-init \
+ && chmod -R a-w /opt/opentag /usr/local/bin \
+ && chmod -R a+rX /opt/opentag /usr/local/bin
 
 FROM ${NODE_IMAGE} AS runtime
 
@@ -46,9 +61,16 @@ RUN /usr/sbin/groupadd --gid 10000 runner \
 
 COPY --from=build /out/opt /opt
 COPY --from=build /out/usr /usr
-RUN chmod 0755 /usr/local/bin/runner-entrypoint /usr/local/bin/opentag-runner /usr/local/bin/opentag \
+RUN chmod 0755 /usr/local/bin/runner-entrypoint /usr/local/bin/opentag-runner /usr/local/bin/opentag /usr/local/bin/opentag-init \
  && chmod -R a-w /opt/opentag /usr/local/bin \
  && chmod -R a+rX /opt/opentag /usr/local/bin
+
+# Immutable, clean native-sandbox root filesystem: a build-time copy of the runtime-rootfs stage
+# (which carries no user setup, no HOME, no workspace, no runtime state). Read-only to the runner
+# user; the bootstrap token and parent state are not in it.
+COPY --from=runtime-rootfs / /opt/sandbox-root
+RUN touch /opt/sandbox-root/etc/resolv.conf \
+ && chmod 0555 /opt/sandbox-root
 
 ENV NODE_ENV=production \
     HOME=/home/runner \

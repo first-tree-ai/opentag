@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
-import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
 import { DrizzleQueryError, sql } from "drizzle-orm";
@@ -18,11 +17,12 @@ import {
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
+import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
-import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
@@ -52,6 +52,9 @@ import {
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
+import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
+import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
+import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
@@ -70,6 +73,12 @@ export interface CreateAppOptions {
   contextTreeOperationService?: ContextTreeOperationService;
   computerService?: ComputerService;
   sandboxService?: SandboxService;
+  sandboxRunnerService?: SandboxRunnerService;
+  /** E3 Runner control channel; present exactly when Cloud Runner allocation is enabled. */
+  runnerChannel?: {
+    tokens: RunnerBootstrapTokenService;
+    hub: RunnerHub;
+  };
   machineAuthService?: MachineAuthService;
   connectCode?: {
     issuer: ConnectCodeIssuer;
@@ -154,6 +163,7 @@ export function ignoreHttpTraceRoute(path: string): boolean {
     pathname === "/healthz" ||
     pathname === "/readyz" ||
     pathname === HTTP_PATHS.computerRuntimeWebSocket ||
+    pathname === HTTP_PATHS.sandboxRunnerWebSocket ||
     pathname.startsWith("/assets/") ||
     pathname.startsWith("/fonts/")
   );
@@ -500,14 +510,9 @@ export function createApp(options: CreateAppOptions = {}) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }
     if (options.computerService && options.machineAuthService) {
-      const computerService = options.computerService;
-      const machineAuthService = options.machineAuthService;
-      registerComputerRoutes(app, machineAuthService);
-      app.register(async (runtimeApp) => {
-        await runtimeApp.register(websocket, { options: { maxPayload: 64 * 1024 } });
-        registerRuntimeRoutes(runtimeApp, machineAuthService, computerService, options.runtime);
-      });
+      registerComputerRoutes(app, options.machineAuthService);
     }
+    registerExecutionWebSocketRoutes(app, options);
   }
 
   if (options.webAppRoot) registerWebApp(app, options.webAppRoot);
@@ -622,6 +627,7 @@ function registerAvailableAccountRoutes(
       options.taskService ||
       options.computerService ||
       options.sandboxService ||
+      options.sandboxRunnerService ||
       options.setupResetService ||
       options.accountSetupService ||
       (options.machineAuthService && options.computerConnectCode)
@@ -633,6 +639,7 @@ function registerAvailableAccountRoutes(
     ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
     ...(options.computerService ? { computerService: options.computerService } : {}),
     ...(options.sandboxService ? { sandboxService: options.sandboxService } : {}),
+    ...(options.sandboxRunnerService ? { sandboxRunnerService: options.sandboxRunnerService } : {}),
     ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
     ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
     ...(options.taskService ? { taskService: options.taskService } : {}),

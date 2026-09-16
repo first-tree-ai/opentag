@@ -1,8 +1,8 @@
 import { RUNNER_DEEPSEEK_PROVIDER } from "./acceptance.js";
 import { RUNNER_CLI_NAME, type RunnerCliParseResult, type RunnerCommand, type RunnerMode } from "./types.js";
 
-const COMMANDS = new Set<RunnerCommand>(["probe", "accept", "identity", "skills"]);
-const USAGE = `Usage: ${RUNNER_CLI_NAME} <probe|accept|identity|skills> [options]
+const COMMANDS = new Set<RunnerCommand>(["probe", "accept", "identity", "skills", "serve", "worker"]);
+const USAGE = `Usage: ${RUNNER_CLI_NAME} <probe|accept|identity|skills|serve|worker> [options]
 
 Options:
   --mode <offline|real>     Acceptance mode (default: offline)
@@ -10,6 +10,15 @@ Options:
   --provider <name>         Provider key whitelist when copying Pi config
   --workspace <path>        Workspace directory
   --json                    Machine-readable output
+
+serve runs the long-lived Cloud Runner: outbound WSS control channel plus native sandbox.
+serve configuration arrives through the environment (never argv):
+  OPENTAG_RUNNER_BACKEND_URL      wss:// control channel URL (required)
+  OPENTAG_RUNNER_BOOTSTRAP_TOKEN  Server-minted bootstrap token (required, env only)
+  OPENTAG_RUNNER_SANDBOX_NAME     Native sandbox name
+  OPENTAG_RUNNER_WORKSPACE        Per-sandbox workspace host path
+
+worker runs INSIDE the native sandbox and reads exactly one bounded JSON request from stdin.
 `;
 
 function invalid(error: string, exitCode = 2): RunnerCliParseResult {
@@ -73,6 +82,9 @@ function parseOptions(argv: readonly string[]): RunnerCliParseResult | { json: b
 }
 
 function validateInvocation(command: string, current: OptionState): string | undefined {
+  if ((command === "serve" || command === "worker") && (current.piConfigDir || current.provider)) {
+    return `${command} takes no Pi config options; real-mode credentials arrive via stdin inside the sandbox`;
+  }
   if (current.mode === "real" && command === "accept" && !current.piConfigDir) {
     return "real mode requires --pi-config-dir";
   }

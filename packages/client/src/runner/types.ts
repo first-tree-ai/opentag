@@ -2,7 +2,7 @@ export const RUNNER_IDENTITY_SCHEMA_VERSION = 1;
 export const RUNNER_CLI_NAME = "opentag-runner";
 
 export type RunnerChannel = "dev" | "staging" | "prod";
-export type RunnerCommand = "probe" | "accept" | "identity" | "skills";
+export type RunnerCommand = "probe" | "accept" | "identity" | "skills" | "serve" | "worker";
 export type RunnerMode = "offline" | "real";
 
 export interface RunnerToolLock {

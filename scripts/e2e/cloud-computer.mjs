@@ -6,6 +6,7 @@
  *   local-pi          E1 real local Pi Computer (unchanged harness)
  *   cloud-identities  E2 Cloud Computer / Sandbox identity acceptance
  *   runner-toolchain  Independent Linux image/toolchain acceptance
+ *   cloud-runner      E3 Cloud Runner acceptance (real Cloud Run Instance + native sandbox)
  *
  * Usage:
  *   node scripts/e2e/cloud-computer.mjs --help
@@ -26,11 +27,15 @@ Usage:
   node scripts/e2e/cloud-computer.mjs local-pi [--help]
   node scripts/e2e/cloud-computer.mjs cloud-identities [--help]
   node scripts/e2e/cloud-computer.mjs runner-toolchain [options]
+  node scripts/e2e/cloud-computer.mjs cloud-runner [--help]
 
 Commands:
   local-pi          E1 real local Pi Computer acceptance against a disposable Postgres.
   cloud-identities  E2 Cloud Computer and Sandbox identity acceptance. No Pi/model/GCP/IM.
   runner-toolchain  Linux amd64 image/toolchain acceptance (offline or real Pi).
+  cloud-runner      E3 Cloud Runner acceptance: Session Sandbox -> real Cloud Run Instance ->
+                    native sandbox -> Pi acceptance. Fails closed without parent-supplied
+                    GCP inputs; never treats local Docker as the native Cloud path.
 
 Runner toolchain options:
   node scripts/e2e/cloud-computer.mjs runner-toolchain --help
@@ -50,7 +55,7 @@ Product admission that this harness does not implement:
     admission, and production createClientRuntime. Missing admission or
     unusable live Pi readiness fails the run.
 
-What this harness will not do:
+What the local-pi harness will not do:
   - Mock Pi, hardcode token responses, or fake RuntimeConnection
   - Count a direct PiAgentRuntimeFactory smoke as product acceptance
   - Read or write the canonical Context Tree
@@ -100,7 +105,15 @@ function printHelp() {
 }
 
 const args = process.argv.slice(2);
-if (args[0] === "runner-toolchain") {
+if (args[0] === "cloud-runner") {
+  const { main: runCloudRunner } = await import("./cloud-runner/run.mjs");
+  try {
+    process.exitCode = await runCloudRunner(args.slice(1));
+  } catch (error) {
+    process.stderr.write(`[cloud-runner] ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
+} else if (args[0] === "runner-toolchain") {
   const { main: runRunnerToolchain } = await import("./runner-toolchain/run.mjs");
   try {
     await runRunnerToolchain(args.slice(1));

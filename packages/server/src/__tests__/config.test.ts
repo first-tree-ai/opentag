@@ -77,6 +77,85 @@ describe("parseServerConfig", () => {
     });
     expect(parseServerConfig(required).devAuth).toBeUndefined();
     expect(parseServerConfig(required).cloudIdentities).toEqual({ enabled: false });
+    expect(parseServerConfig(required).cloudRunner).toEqual({ enabled: false });
+  });
+
+  it("keeps the Cloud Runner disabled by default and requires every coordinate when enabled", () => {
+    const identities = {
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+      OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e2",
+      OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+    };
+    const runnerEnv = {
+      ...identities,
+      OPENTAG_CLOUD_RUNNER_ENABLED: "true",
+      OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+      OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+      OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+      OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+      OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+      OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+      OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+      OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+    };
+    // Every coordinate is mandatory.
+    for (const key of Object.keys(runnerEnv).filter(
+      (key) =>
+        key.startsWith("OPENTAG_CLOUD_RUNNER_") &&
+        key !== "OPENTAG_CLOUD_RUNNER_ENABLED" &&
+        key !== "OPENTAG_CLOUD_RUNNER_VERSION",
+    )) {
+      const incomplete = { ...runnerEnv } as Record<string, string>;
+      delete incomplete[key];
+      expect(() => parseServerConfig({ ...required, ...incomplete }), key).toThrow(/Cloud Runner/);
+    }
+    // Runner requires Cloud identities (Sandbox identity is its allocation unit).
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...runnerEnv,
+        OPENTAG_CLOUD_IDENTITIES_ENABLED: "false",
+      }),
+    ).toThrow(/Cloud Runner requires/);
+    const parsed = parseServerConfig({ ...required, ...runnerEnv });
+    expect(parsed.cloudRunner).toMatchObject({
+      enabled: true,
+      project: "opentag-test",
+      region: "us-west1",
+      backendOrigin: "https://api.example.com",
+      vpc: { network: "opentag-net", subnetwork: "opentag-subnet", executionTag: "opentag-runner" },
+    });
+    expect((parsed.cloudRunner as { staticAccessToken?: string }).staticAccessToken).toBeUndefined();
+    // A tag-only image is never accepted; the pin must be an exact digest.
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...runnerEnv,
+        OPENTAG_CLOUD_RUNNER_IMAGE: "us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner:0.0.5",
+      }),
+    ).toThrow();
+    // Backend origin rejects credentials, paths, and plain http.
+    for (const origin of [
+      "https://user:pass@api.example.com",
+      "https://api.example.com/path",
+      "http://api.example.com",
+    ]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: origin }),
+      ).toThrow();
+    }
+    // The acceptance-harness static token is honored only when explicitly set.
+    expect(
+      parseServerConfig({
+        ...required,
+        ...runnerEnv,
+        OPENTAG_ENV: "dev",
+        OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN: "unit-token",
+      }).cloudRunner,
+    ).toMatchObject({ staticAccessToken: "unit-token" });
+    expect(() =>
+      parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN: "unit-token" }),
+    ).toThrow(/explicit OPENTAG_ENV=dev/);
   });
 
   it("enables Cloud identities only with a valid storage prefix and Runner SemVer", () => {

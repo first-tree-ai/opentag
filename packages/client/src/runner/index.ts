@@ -9,9 +9,32 @@ export {
   createRunnerIdentity,
   parseRunnerIdentity,
 } from "./identity.js";
+export {
+  buildSandboxDeleteArgv,
+  buildSandboxExecArgv,
+  buildSandboxRunArgv,
+  NativeSandbox,
+  NativeSandboxError,
+  SANDBOX_BINARY,
+  SANDBOX_NODE,
+  SANDBOX_PATH,
+  SANDBOX_PI,
+  SANDBOX_ROOTFS,
+  SANDBOX_WORKER_ENTRY,
+  SANDBOX_WORKSPACE_DESTINATION,
+  type SandboxExecResult,
+  type SandboxProbeResult,
+} from "./native-sandbox.js";
 export { type ProbeRunnerToolsOptions, probeRunnerTools, type RunnerToolProbe, runnerToolsReady } from "./probe.js";
 export { collectDescendantPids, processExists, waitForProcessTreeGone } from "./processes.js";
 export { redactAcceptanceRecord } from "./redact.js";
+export {
+  loadRunnerServeConfig,
+  type RunnerServeConfig,
+  type RunnerServeOptions,
+  resolveRunnerBackendUrl,
+  runRunnerServe,
+} from "./serve.js";
 export {
   type AssembledContextTreeSkill,
   type AssembledContextTreeSkills,
@@ -31,3 +54,4 @@ export {
   type RunnerMode,
   type RunnerToolLock,
 } from "./types.js";
+export { runRunnerWorker, WORKER_STDIN_MAX_BYTES, type WorkerIo, type WorkerOptions } from "./worker.js";

@@ -35,6 +35,15 @@ export const ACCOUNT_CLOUD_COMPUTER_PATH = `${ACCOUNT_COMPUTERS_PATH}/cloud`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_SANDBOXES_PATH = `${API_V1_PREFIX}/sandboxes`;
 export const ACCOUNT_SANDBOX_TEMPLATE = `${ACCOUNT_SANDBOXES_PATH}/:sandboxId`;
+export const ACCOUNT_SANDBOX_RUNNER_TEMPLATE = `${ACCOUNT_SANDBOX_TEMPLATE}/runner`;
+export const ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE = `${ACCOUNT_SANDBOX_RUNNER_TEMPLATE}/start`;
+export const ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE = `${ACCOUNT_SANDBOX_RUNNER_TEMPLATE}/stop`;
+export const ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE = `${ACCOUNT_SANDBOX_RUNNER_TEMPLATE}/acceptance`;
+/**
+ * Outbound control channel a Cloud Runner dials from inside its Cloud Run Instance. No token ever
+ * travels in the URL; authentication is a first-frame bootstrap bearer credential.
+ */
+export const SANDBOX_RUNNER_WEBSOCKET_PATH = `${API_V1_PREFIX}/sandbox-runners/ws`;
 export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
@@ -49,6 +58,7 @@ export const HTTP_PATHS = {
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSandboxes: ACCOUNT_SANDBOXES_PATH,
+  sandboxRunnerWebSocket: SANDBOX_RUNNER_WEBSOCKET_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
   accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
   internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
@@ -93,6 +103,29 @@ export function accountComputerConnectCodePath(connectCodeId: string): string {
 
 export function accountSandboxPath(sandboxId: string): string {
   return `${ACCOUNT_SANDBOXES_PATH}/${encodeURIComponent(sandboxId)}`;
+}
+
+export function accountSandboxRunnerPath(sandboxId: string): string {
+  return `${accountSandboxPath(sandboxId)}/runner`;
+}
+
+export function accountSandboxRunnerStartPath(sandboxId: string): string {
+  return `${accountSandboxRunnerPath(sandboxId)}/start`;
+}
+
+export function accountSandboxRunnerStopPath(sandboxId: string): string {
+  return `${accountSandboxRunnerPath(sandboxId)}/stop`;
+}
+
+export function accountSandboxRunnerAcceptancePath(sandboxId: string): string {
+  return `${accountSandboxRunnerPath(sandboxId)}/acceptance`;
+}
+
+/** The exact WSS URL a Runner dials, derived from the configured backend origin (never caller input). */
+export function sandboxRunnerWebSocketUrl(backendOrigin: string): string {
+  const url = new URL(SANDBOX_RUNNER_WEBSOCKET_PATH, backendOrigin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }
 
 export function agentByIdPath(agentId: string): string {

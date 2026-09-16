@@ -285,6 +285,7 @@ function defaultConfig() {
   return {
     autoMigrate: true,
     cloudIdentities: { enabled: false },
+    cloudRunner: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",
       pollIntervalMs: 300_000,

@@ -189,3 +189,9 @@ can terminate the newly committed Session instead of leaving it active behind a 
 | `OPENTAG_CLOUD_IDENTITIES_ENABLED` | Server Cloud creation flag (`true`/`false`, default `false`) |
 | `OPENTAG_CLOUD_STORAGE_BASE` | Sandbox storage prefix; fixture default `gs://opentag-e2-fixture/sandboxes` |
 | `OPENTAG_CLOUD_RUNNER_VERSION` | Cloud Computer `client_version`; fixture uses `apps/cli/package.json` |
+
+## E3 native execution
+
+See [Cloud Runner execution](../cloud-runner-execution.md) for configuration, native Sandbox
+acceptance, resource receipts, cancellation, and verified teardown. The command is
+`node scripts/e2e/cloud-computer.mjs cloud-runner --help`; it creates real Cloud resources.

@@ -9,9 +9,23 @@ describe("runner CLI argv", () => {
       expect(missing.exitCode).toBe(2);
       expect(missing.error).toMatch(/missing command/);
     }
-    const unknown = parseRunnerCliArgv(["serve"]);
+    const unknown = parseRunnerCliArgv(["spawn-something"]);
     expect(unknown.ok).toBe(false);
     if (!unknown.ok) expect(unknown.error).toMatch(/unknown command/);
+  });
+
+  it("parses serve and worker, and keeps Pi config options out of them", () => {
+    expect(parseRunnerCliArgv(["serve"])).toEqual({
+      ok: true,
+      invocation: { command: "serve", json: false, mode: "offline" },
+    });
+    expect(parseRunnerCliArgv(["worker"])).toEqual({
+      ok: true,
+      invocation: { command: "worker", json: false, mode: "offline" },
+    });
+    const configured = parseRunnerCliArgv(["serve", "--pi-config-dir", "/tmp/pi", "--provider", "deepseek"]);
+    expect(configured.ok).toBe(false);
+    if (!configured.ok) expect(configured.error).toMatch(/stdin/);
   });
 
   it("parses offline probe and rejects real accept without a config directory", () => {

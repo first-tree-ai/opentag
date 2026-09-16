@@ -2,17 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { AccountSandboxEnsureRequest, AccountSandboxResponse } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, imBindings, sandboxes, sessionPlacements, sessions } from "../../db/schema/index.js";
+import { agents, computers, imBindings, sandboxes } from "../../db/schema/index.js";
 import { type SessionService, SessionServiceError } from "../sessions/index.js";
 import { sandboxNotFound, sandboxScopeInvalid } from "./errors.js";
+import { loadOwnedSandbox, type OwnedSandboxRow } from "./owned-sandbox.js";
 import { sandboxStorageUri } from "./storage-uri.js";
 
-type OwnedSandboxRow = {
-  sandbox: typeof sandboxes.$inferSelect;
-  sessionId: string;
-  computerId: string;
-  conversationKind: string;
-};
+export type { OwnedSandboxRow } from "./owned-sandbox.js";
 
 export interface SandboxServiceOptions {
   now?: () => Date;
@@ -158,30 +154,7 @@ export class SandboxService {
     accountId: string,
     sandboxId: string,
   ): Promise<OwnedSandboxRow | undefined> {
-    const [row] = await executor
-      .select({
-        sandbox: sandboxes,
-        sessionId: sessions.id,
-        computerId: computers.id,
-        conversationKind: sessions.conversationKind,
-      })
-      .from(sandboxes)
-      .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
-      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, agents.computerId))
-      .where(
-        and(
-          eq(sandboxes.id, sandboxId),
-          eq(agents.createdByUserId, accountId),
-          eq(computers.ownerAccountId, accountId),
-          eq(computers.kind, "cloud"),
-          eq(sessionPlacements.computerId, computers.id),
-        ),
-      )
-      .limit(1);
-    return row;
+    return loadOwnedSandbox(executor, accountId, sandboxId);
   }
 }
 

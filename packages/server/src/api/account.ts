@@ -1,11 +1,18 @@
 import {
   ACCOUNT_AGENT_CREATION_INTENT_TEMPLATE,
   ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE,
+  ACCOUNT_SANDBOX_RUNNER_TEMPLATE,
   ACCOUNT_SANDBOX_TEMPLATE,
   AccountCloudComputerEnsureResponseSchema,
   AccountComputerConnectCodeIssueRequestSchema,
   AccountSandboxEnsureRequestSchema,
   AccountSandboxResponseSchema,
+  AccountSandboxRunnerAcceptanceRequestSchema,
+  AccountSandboxRunnerAcceptanceResponseSchema,
+  AccountSandboxRunnerStatusResponseSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
@@ -46,6 +53,7 @@ import {
 } from "../services/computers/index.js";
 import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../services/runtime-config/index.js";
 import type { SandboxService } from "../services/sandboxes/index.js";
+import type { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
 import {
@@ -79,6 +87,7 @@ export interface AccountRoutesOptions {
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   sandboxService?: SandboxService;
+  sandboxRunnerService?: SandboxRunnerService;
   machineAuthService?: MachineAuthService;
   authOptions?: UserAuthPreHandlerOptions;
   /**
@@ -231,6 +240,72 @@ export function registerAccountRoutes(
       const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
       const sandbox = await sandboxService.getForAccount(accountId(request), sandboxId);
       return reply.header("Cache-Control", "no-store").code(200).send(AccountSandboxResponseSchema.parse(sandbox));
+    });
+  }
+
+  if (options.sandboxRunnerService) {
+    const sandboxRunnerService = options.sandboxRunnerService;
+
+    app.post(ACCOUNT_SANDBOX_RUNNER_START_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      parseRequest(EmptyBodySchema, request.body ?? {});
+      const status = await sandboxRunnerService.startForAccount(accountId(request), sandboxId);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountSandboxRunnerStatusResponseSchema.parse(status));
+    });
+
+    app.get(ACCOUNT_SANDBOX_RUNNER_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      const status = await sandboxRunnerService.statusForAccount(accountId(request), sandboxId);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountSandboxRunnerStatusResponseSchema.parse(status));
+    });
+
+    app.post(ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      parseRequest(EmptyBodySchema, request.body ?? {});
+      const status = await sandboxRunnerService.stopForAccount(accountId(request), sandboxId);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(200)
+        .send(AccountSandboxRunnerStatusResponseSchema.parse(status));
+    });
+
+    /*
+     * Explicit bounded acceptance. The caller's disconnect cancels the run on the Runner; the
+     * response is the correlated structured report only — request piConfig is never echoed,
+     * logged, or persisted.
+     */
+    app.post(ACCOUNT_SANDBOX_RUNNER_ACCEPTANCE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
+      const input = parseRequest(AccountSandboxRunnerAcceptanceRequestSchema, request.body);
+      /*
+       * Cancellation is driven by the RESPONSE closing before it finished, not by the request.
+       * Node fires IncomingMessage 'close' when a normal request body completes, so hooking the
+       * request would cancel every successful POST; the response only closes early on a real
+       * client disconnect. Listeners are always removed, and a finished response never aborts.
+       */
+      const abort = new AbortController();
+      const response = reply.raw;
+      const onResponseClose = () => {
+        if (!response.writableFinished) abort.abort();
+      };
+      response.on("close", onResponseClose);
+      try {
+        const result = await sandboxRunnerService.runAcceptanceForAccount(accountId(request), sandboxId, input, {
+          signal: abort.signal,
+        });
+        return reply
+          .header("Cache-Control", "no-store")
+          .code(200)
+          .send(AccountSandboxRunnerAcceptanceResponseSchema.parse(result));
+      } finally {
+        response.off("close", onResponseClose);
+      }
     });
   }
 

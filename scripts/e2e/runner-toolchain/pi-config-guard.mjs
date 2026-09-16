@@ -103,7 +103,7 @@ function filterDocument(name, raw, provider) {
  * Validates the supplied directory and returns a fresh filtered staging copy. The staging dir is
  * registered for harness cleanup; the source directory itself is never copied.
  */
-export function stageFilteredPiConfig({ source, provider }) {
+export function stageFilteredPiConfig({ source, provider, registerStaging = registerTempDir }) {
   if (!source || !provider) fail("staging Pi config requires source and provider");
   if (!/^[a-z0-9][a-z0-9-]*$/.test(provider)) fail(`invalid provider name: ${provider}`);
   const stats = lstatSync(source);
@@ -118,7 +118,7 @@ export function stageFilteredPiConfig({ source, provider }) {
   if (!names.has("auth.json")) fail("Pi config directory is missing auth.json");
   const staging = mkdtempSync(join(tmpdir(), "opentag-runner-pi-stage-"));
   chmodSync(staging, 0o700);
-  registerTempDir(staging);
+  registerStaging(staging);
   for (const entry of entries) {
     if (entry.isSymbolicLink() || !entry.isFile()) fail(`Pi config entry is not a regular file: ${entry.name}`);
     const raw = readFileSync(join(canonical, entry.name), "utf8");

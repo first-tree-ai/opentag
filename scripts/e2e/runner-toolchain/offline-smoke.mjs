@@ -7,6 +7,7 @@ import {
   removeContainer,
   runLimitedContainer,
 } from "./harness.mjs";
+import { runInitSmoke } from "./init-smoke.mjs";
 
 function requireZero(result, label) {
   if (result.status !== 0) throw new Error(`${label} failed:\n${result.stdout}\n${result.stderr}`);
@@ -23,6 +24,7 @@ function parseMarker(stdout, name) {
 
 export async function runOfflineSmoke({ image, prefix }) {
   const imageInfo = await inspectImage(image);
+  const init = await runInitSmoke({ image, name: `${prefix}-init` });
 
   // Fresh container + Runner CLI startup, measured separately from the full probe/acceptance.
   const startup = await measureRunnerStartup({ image, name: `${prefix}-startup` });
@@ -116,7 +118,7 @@ export async function runOfflineSmoke({ image, prefix }) {
       daemonArch !== "amd64"
         ? "docker daemon is not amd64; linux/amd64 ran under emulation and does not prove native Cloud Run/Sandbox"
         : "linux/amd64 native on this docker daemon; still does not prove Cloud Run, Sandbox, or IM",
-    offline: { probe: probe.stdout, skills: skills.stdout, accept: acceptJson },
+    offline: { init, probe: probe.stdout, skills: skills.stdout, accept: acceptJson },
     cleanup: { containersRemoved: true },
   };
 }

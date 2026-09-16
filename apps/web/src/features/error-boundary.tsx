@@ -1,6 +1,7 @@
 import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
 import { Component, type ErrorInfo, type HTMLAttributes, type ReactNode } from "react";
 import { createDiagnosticEnvelope, normalizeError as normalizeDiagnosticError } from "../observability/diagnostics.js";
+import { forwardErrorReport } from "../observability/error-reporting.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Text } from "../ui/design-system.js";
 import { OpenTagLogo } from "../ui/opentag-logo.js";
@@ -126,8 +127,17 @@ export function normalizeError(value: unknown): BoundaryError {
   return normalizeDiagnosticError(value);
 }
 
-/** Logs diagnostics without copying credential-shaped values into the browser console. */
+/** Logs diagnostics without copying credential-shaped values into the browser console, and relays the failure. */
 export function reportBoundaryError(boundary: BoundaryName, error: unknown, errorInfo?: BoundaryErrorInfo) {
+  const normalized = logBoundaryError(boundary, error, errorInfo);
+  forwardErrorReport({
+    code: normalized.code,
+    message: redactErrorMessage(normalized.error.message),
+    ...(normalized.error.stack ? { stack: redactErrorMessage(normalized.error.stack) } : {}),
+  });
+}
+
+function logBoundaryError(boundary: BoundaryName, error: unknown, errorInfo?: BoundaryErrorInfo): BoundaryError {
   const normalized = normalizeError(error);
   const diagnostic = createDiagnosticEnvelope({
     source: "ui",
@@ -145,12 +155,19 @@ export function reportBoundaryError(boundary: BoundaryName, error: unknown, erro
     componentStack: errorInfo?.componentStack ? redactErrorMessage(errorInfo.componentStack) : undefined,
     diagnostic,
   });
+  return normalized;
 }
 
-/** Replaces React 19's default root reporting so caught and uncaught errors stay sanitized. */
+/**
+ * Replaces React 19's default root reporting so caught and uncaught errors stay sanitized. A
+ * recoverable error (a hydration mismatch, for one) is something React already repaired, so it is
+ * logged but not relayed as a defect.
+ */
 export const rootErrorHandlers = {
   onCaughtError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
-  onRecoverableError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
+  onRecoverableError: (error: unknown, errorInfo: BoundaryErrorInfo) => {
+    logBoundaryError("root", error, errorInfo);
+  },
   onUncaughtError: (error: unknown, errorInfo: BoundaryErrorInfo) => reportBoundaryError("root", error, errorInfo),
 };
 

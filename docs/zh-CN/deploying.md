@@ -91,6 +91,7 @@ service，不会配置 CapRover 的 server container。
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 可选；默认 `https://dl.opentag.build/releases` |
 | `OPENTAG_CHANNEL_TARGET_POLL_INTERVAL_MS` | 可选；默认 `300000` |
+| `GOOGLE_CLOUD_PROJECT` | 可选；将中继的 Web App 与 CLI 错误转发到 Google Cloud Error Reporting，参见 [客户端错误上报](./error-reporting.md) |
 
 这两个可选变量控制 Server 如何获知它向已连接 Client 广播的 channel 精确最新目标（用于自动升级）：它轮询下载
 base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继续广播最后一次已知的目标。dev channel 从不广播
@@ -101,6 +102,10 @@ base URL 下该 channel 已发布的 `latest.json`，并在任何故障期间继
 
 配置在 server 开始监听之前校验，因此新增的必需变量要**先**加到 App 上，再部署需要它的 revision。缺少变量时，
 CapRover 会不断重启一个在启动阶段就退出的容器，而不是以降级状态提供服务。
+
+镜像工作流会把 commit SHA 作为 `OPENTAG_WEB_VERSION` 构建参数传入，Web App 会把它写进中继的错误报告（参见
+[客户端错误上报](./error-reporting.md)）。自行构建的镜像应以同样方式传入自己的发布标识，例如
+`docker build --build-arg OPENTAG_WEB_VERSION=$(git rev-parse HEAD) .`，否则报告中只会带有占位的 manifest 版本。
 
 GHCR package 是公开的，因此 CapRover 匿名拉取镜像即可。如果该 package 之后被改为私有，需要在
 **CapRover → Cluster → Docker Registries** 中用带 `read:packages` 的 GitHub token 添加 registry 凭据，否则每次部署都会

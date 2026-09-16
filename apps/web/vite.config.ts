@@ -4,6 +4,8 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin, Rollup } from "vite";
 import { defineConfig } from "vitest/config";
+import packageManifest from "./package.json" with { type: "json" };
+import { resolveWebVersion } from "./src/observability/web-version.js";
 
 const ENTRY_CHUNK_BUDGET_BYTES = 600 * 1024;
 const ECHARTS_CHUNK_BUDGET_BYTES = 600 * 1024;
@@ -46,8 +48,12 @@ const bundleBudgetPlugin: Plugin = {
  */
 const generateRoutes = !process.env.VITEST;
 
+/** The release identity error reports carry; see `resolveWebVersion` for where it comes from. */
+const webVersion = resolveWebVersion(process.env, packageManifest.version);
+
 export default defineConfig({
   base: "/",
+  define: { __OPENTAG_WEB_VERSION__: JSON.stringify(webVersion) },
   // The route generator must run before the React plugin so the generated tree is transformed too.
   plugins: [
     // Paraglide fills a gitignored directory and must run in Vitest; pin the structure because its development default differs.

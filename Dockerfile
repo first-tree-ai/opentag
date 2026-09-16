@@ -13,6 +13,11 @@ RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts 
 
 FROM deps AS build
 
+# The release identity the Web App stamps into error reports: the image workflows pass the commit SHA,
+# and a self-built image should pass its own tag or SHA. Empty falls back to the manifest version.
+ARG OPENTAG_WEB_VERSION=""
+ENV OPENTAG_WEB_VERSION=${OPENTAG_WEB_VERSION}
+
 COPY tsconfig.json ./
 COPY packages/shared packages/shared
 COPY packages/server packages/server

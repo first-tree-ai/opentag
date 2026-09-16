@@ -53,6 +53,8 @@ export interface DaemonRuntimeOptions {
   signals?: NodeJS.Process;
   /** Automatic-upgrade control: `false` disables it; overrides exist for deterministic tests. */
   autoUpdate?: false | DaemonAutoUpdateOverrides;
+  /** Relays an unexpected terminal failure before the entry point turns it into exit code 1. */
+  reportFailure?: (error: unknown) => Promise<unknown>;
 }
 
 interface DaemonRuntime {
@@ -305,7 +307,9 @@ export async function runDaemonServiceEntry(options: DaemonRuntimeOptions = {}):
     const result = await runDaemonService(options);
     return result.supervisorRestartRequested ? SUPERVISOR_RESTART_EXIT_CODE : 0;
   } catch (error) {
-    return isExpectedDaemonStop(error) ? 0 : 1;
+    if (isExpectedDaemonStop(error)) return 0;
+    if (options.reportFailure) await options.reportFailure(error).catch(() => undefined);
+    return 1;
   }
 }
 

@@ -1,7 +1,7 @@
 import type { ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -280,6 +280,84 @@ function command(
   return { image, workspace, command: args as [string, ...string[]] };
 }
 
+const RUNNER_CONTAINER_TMPFS = "/home/runner:rw,nosuid,nodev,size=64m,uid=10000,gid=10000,mode=700";
+
+interface DockerMount {
+  readonly destination: string;
+  readonly readonly: boolean;
+  readonly source: string;
+  readonly type: string;
+}
+
+/**
+ * Parse `--mount` specifications so host sources are inspected separately from container
+ * destinations. On CI the runner HOME (`/home/runner`) legitimately equals the empty container
+ * tmpfs destination, but must never appear as a host bind source.
+ */
+function dockerMounts(args: readonly string[]): DockerMount[] {
+  const mounts: DockerMount[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--mount") continue;
+    const fields = (args[index + 1] ?? "").split(",");
+    const value = (key: string): string =>
+      fields.find((field) => field.startsWith(`${key}=`))?.slice(key.length + 1) ?? "";
+    mounts.push({
+      destination: value("dst"),
+      readonly: fields.includes("readonly"),
+      source: value("src"),
+      type: value("type"),
+    });
+  }
+  return mounts;
+}
+
+function volumeBypassViolations(args: readonly string[]): string[] {
+  const violations: string[] = [];
+  for (const arg of args) {
+    if (arg === "-v" || arg === "--volume") violations.push(`volume bypass: ${arg}`);
+  }
+  return violations;
+}
+
+function forbiddenBindViolation(
+  source: string,
+  input: { readonly hostHome: string; readonly privateDirectory: string },
+): string | undefined {
+  if (source === input.hostHome || source.startsWith(`${input.hostHome}${sep}`)) {
+    return `host HOME bind: ${source}`;
+  }
+  if (source === input.privateDirectory || source.startsWith(`${input.privateDirectory}${sep}`)) {
+    return `private control bind: ${source}`;
+  }
+  if (basename(source) === "docker.sock") return `docker socket bind: ${source}`;
+  return undefined;
+}
+
+/**
+ * Empty violations mean the argument vector keeps host material outside the container boundary.
+ * This inspects bind sources and volume flags structurally instead of matching the whole argv, so
+ * a legitimate container destination equal to the runner HOME cannot mask a real host bind.
+ */
+function hardenedArgvViolations(input: {
+  readonly args: readonly string[];
+  readonly hostHome: string;
+  readonly privateDirectory: string;
+  readonly publicMount: string;
+  readonly workspace: string;
+}): string[] {
+  const violations = volumeBypassViolations(input.args);
+  const allowedSources = new Set([input.workspace, input.publicMount]);
+  for (const mount of dockerMounts(input.args)) {
+    if (mount.type !== "bind") violations.push(`non-bind mount: ${mount.type || "unspecified"}`);
+    if (!allowedSources.has(mount.source)) violations.push(`bind source outside the allowlist: ${mount.source}`);
+    if (mount.source === input.publicMount && !mount.readonly) violations.push("public directory must stay readonly");
+    const forbidden = forbiddenBindViolation(mount.source, input);
+    if (forbidden) violations.push(forbidden);
+  }
+  if (!input.args.includes(RUNNER_CONTAINER_TMPFS)) violations.push("container runner tmpfs is missing");
+  return violations;
+}
+
 describe("CloudSandboxCredentialBridge trust boundary", () => {
   it("publishes only public per-execution material and keeps the private CA outside it", async () => {
     const harness = await openBridge();
@@ -391,10 +469,16 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
     const harness = await openBridge();
     const args = await harness.bridge.dockerArguments(command(harness.workspace));
     expect(args[0]).toBe("run");
-    const mounts = args.flatMap((arg, index) => (arg === "--mount" ? [args[index + 1] as string] : []));
-    expect(mounts).toEqual([
-      `type=bind,src=${await realpath(harness.workspace)},dst=/workspace`,
-      `type=bind,src=${harness.bridge.publicMountPath},dst=/run/opentag-execution,readonly`,
+    const workspace = await realpath(harness.workspace);
+    const privateDirectory = join(dirname(harness.bridge.publicMountPath), "private");
+    expect(dockerMounts(args)).toEqual([
+      { destination: "/workspace", readonly: false, source: workspace, type: "bind" },
+      {
+        destination: "/run/opentag-execution",
+        readonly: true,
+        source: harness.bridge.publicMountPath,
+        type: "bind",
+      },
     ]);
     expect(args).toContain("-i");
     expect(args[args.indexOf("--network") + 1]).toBe("none");
@@ -406,10 +490,64 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
     expect(args[args.indexOf("--entrypoint") + 1]).toBe("node");
     expect(args[args.indexOf("--entrypoint") + 2]).toBe("node:24-slim");
     expect(args.at(-1)).toBe("check");
-    expect(args.join("\n")).not.toContain(join(dirname(harness.bridge.publicMountPath), "private"));
-    expect(args.join("\n")).not.toContain(process.env.HOME ?? "/nonexistent-home");
+    expect(args.join("\n")).not.toContain(privateDirectory);
+    // Only host bind sources must exclude the runner HOME and control material; the empty
+    // container tmpfs destination is allowed to equal it.
+    expect(
+      hardenedArgvViolations({
+        args,
+        hostHome: process.env.HOME ?? "/nonexistent-home",
+        privateDirectory,
+        publicMount: harness.bridge.publicMountPath,
+        workspace,
+      }),
+    ).toEqual([]);
+    // The intended empty container HOME is present as a tmpfs, not as a host mount.
+    expect(args).toContain(RUNNER_CONTAINER_TMPFS);
     expect(args.join("\n")).not.toContain("docker.sock");
   });
+
+  it.each(["/home/runner", "/root"])(
+    "keeps host HOME %s out of bind sources when it equals the container tmpfs destination",
+    async (hostHome) => {
+      const harness = await openBridge();
+      const args = await harness.bridge.dockerArguments(command(harness.workspace));
+      const boundary = {
+        args,
+        hostHome,
+        privateDirectory: join(dirname(harness.bridge.publicMountPath), "private"),
+        publicMount: harness.bridge.publicMountPath,
+        workspace: await realpath(harness.workspace),
+      };
+      // `/home/runner` is both the CI runner HOME and the empty container tmpfs destination, so
+      // the equality alone must not be treated as a leak.
+      expect(hardenedArgvViolations(boundary)).toEqual([]);
+      expect(args).toContain(RUNNER_CONTAINER_TMPFS);
+
+      // A real host HOME bind, a volume bypass, control material, or the Docker socket still fail.
+      expect(
+        hardenedArgvViolations({
+          ...boundary,
+          args: [...args, "--mount", `type=bind,src=${hostHome}/.ssh,dst=/home/runner/.ssh,readonly`],
+        }),
+      ).toContain(`host HOME bind: ${hostHome}/.ssh`);
+      expect(
+        hardenedArgvViolations({ ...boundary, args: [...args, "--volume", `${hostHome}/.ssh:/home/runner/.ssh`] }),
+      ).toContainEqual(expect.stringContaining("volume bypass"));
+      expect(
+        hardenedArgvViolations({
+          ...boundary,
+          args: [...args, "--mount", `type=bind,src=${boundary.privateDirectory},dst=/private,readonly`],
+        }),
+      ).toContain(`private control bind: ${boundary.privateDirectory}`);
+      expect(
+        hardenedArgvViolations({
+          ...boundary,
+          args: [...args, "--mount", "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock"],
+        }),
+      ).toContain("docker socket bind: /var/run/docker.sock");
+    },
+  );
 
   it("rejects images, workspaces, and mount paths that would widen the boundary", async () => {
     const harness = await openBridge();

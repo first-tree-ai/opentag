@@ -127,7 +127,7 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import { readFileSync } from "node:fs";
-          import { spawnSync } from "node:child_process";
+          import { captureMergeBaseDiff } from "./scripts/patch-diff.mjs";
           import { evaluatePatchCoverage } from "./scripts/unit-coverage-gate.mjs";
 
           const repositoryRoot = process.cwd();
@@ -137,14 +137,9 @@ jobs:
             throw new Error("BASE_SHA and PATCH_COVERAGE_THRESHOLD are required");
           }
 
-          const diff = spawnSync(
-            "git",
-            ["diff", "--unified=0", "--no-color", "--find-renames", `${baseSha}...HEAD`],
-            { encoding: "utf8" },
-          );
-          if (diff.error || diff.status !== 0) {
-            throw new Error(diff.stderr || "Unable to read the pull-request diff");
-          }
+          // Stream the patch to a private temporary file to avoid the spawn buffer limit.
+          // Git errors fail closed inside the helper, and the temporary file is cleaned up.
+          const diff = captureMergeBaseDiff({ baseSha, repositoryRoot });
 
           const coverage = JSON.parse(readFileSync(`${repositoryRoot}/coverage/unit/coverage-final.json`, "utf8"));
           const result = evaluatePatchCoverage({ coverage, diff: diff.stdout, repositoryRoot, threshold });

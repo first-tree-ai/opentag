@@ -563,7 +563,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     },
   );
 
-  it("runs the default process adapter and the default local readiness probe against controlled artifacts", async () => {
+  it("runs the default process adapter against a controlled artifact", async () => {
     const runtime = await new ClaudeCodeAgentRuntimeFactory({
       createSessionId: () => SESSION_ID,
       process: {
@@ -576,7 +576,9 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const defaultProcessResult = await runtime.prompt({ runId: "run-default-process", input: input("hello") });
     expect(defaultProcessResult.status, JSON.stringify(defaultProcessResult)).toBe("completed");
     await runtime.close();
+  });
 
+  it("checks local readiness and environment credentials against controlled artifacts", async () => {
     const directory = await temporaryDirectory("opentag-claude-probe-");
     const command = join(directory, "claude-fixture");
     await writeFile(
@@ -625,30 +627,34 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       });
       await expect(environmentCredential.probe({})).resolves.toMatchObject({ ready: true });
     }
+  });
 
-    for (const mode of ["logged-out", "invalid", "empty"]) {
-      const missingCommand = join(directory, `claude-${mode}`);
-      const authResponse =
-        mode === "logged-out"
-          ? "printf '{\"loggedIn\":false}\\n'; exit 1"
-          : mode === "invalid"
-            ? "printf 'not-json\\n'; exit 0"
-            : "exit 1";
-      await writeFile(
-        missingCommand,
-        `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
-        "utf8",
-      );
-      await chmod(missingCommand, 0o755);
-      const missingCredential = new ClaudeCodeAgentRuntimeFactory({
-        process: { command: missingCommand, env: { PATH: process.env.PATH } },
-      });
-      await expect(missingCredential.probe({})).resolves.toMatchObject({
-        ready: false,
-        issues: [{ code: "credential_missing" }],
-      });
-    }
+  it.each(["logged-out", "invalid", "empty"])("rejects %s local credentials", async (mode) => {
+    const directory = await temporaryDirectory("opentag-claude-probe-");
+    const missingCommand = join(directory, `claude-${mode}`);
+    const authResponse =
+      mode === "logged-out"
+        ? "printf '{\"loggedIn\":false}\\n'; exit 1"
+        : mode === "invalid"
+          ? "printf 'not-json\\n'; exit 0"
+          : "exit 1";
+    await writeFile(
+      missingCommand,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
+      "utf8",
+    );
+    await chmod(missingCommand, 0o755);
+    const missingCredential = new ClaudeCodeAgentRuntimeFactory({
+      process: { command: missingCommand, env: { PATH: process.env.PATH } },
+    });
+    await expect(missingCredential.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "credential_missing" }],
+    });
+  });
 
+  it("handles a disappearing CLI and an empty version response", async () => {
+    const directory = await temporaryDirectory("opentag-claude-probe-");
     const vanishingCommand = join(directory, "claude-vanishing");
     await writeFile(
       vanishingCommand,
@@ -674,7 +680,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         {},
       ),
     ).rejects.toThrow("Claude Code CLI returned no version");
+  });
 
+  it("aborts a hanging local credential probe", async () => {
+    const directory = await temporaryDirectory("opentag-claude-probe-");
     const authStarted = join(directory, "auth-started");
     const hangingAuthCommand = join(directory, "claude-hanging-auth");
     await writeFile(

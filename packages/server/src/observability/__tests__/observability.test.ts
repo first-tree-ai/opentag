@@ -7,6 +7,9 @@ import {
   type EffectiveRuntimeSnapshot,
   FEISHU_REQUIRED_TENANT_SCOPES,
   HTTP_PATHS,
+  RUNTIME_CLIENT_CAPABILITY_OFFERS,
+  RUNTIME_PROTOCOL_V2,
+  RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { context as otelContext, trace } from "@opentelemetry/api";
@@ -783,11 +786,22 @@ describe("background and WebSocket tracing", () => {
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const frames = websocketFrames(socket);
     await websocketOpened(socket);
-    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, machineToken: "token" }));
+    socket.send(
+      JSON.stringify({
+        type: "auth",
+        requestId: randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        machineToken: "token",
+      }),
+    );
     expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
     expect(await frames.next()).toMatchObject({ type: "server:welcome" });
     const registration = {
       type: "computer:register",
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+      requiredServerCapabilities: [],
       requestId: randomUUID(),
       installationId: machine.installationId,
       instanceId: randomUUID(),
@@ -797,12 +811,14 @@ describe("background and WebSocket tracing", () => {
       clientVersion: "0.0.1",
     };
     socket.send(JSON.stringify(registration));
-    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+    const registered = await frames.next();
+    expect(registered).toMatchObject({ type: "computer:register:result", ok: true });
+    const connectionId = registered.connectionId;
 
-    socket.send(JSON.stringify({ type: "test:work", requestId: randomUUID(), key: "fail" }));
+    socket.send(JSON.stringify({ type: "test:work", connectionId, requestId: randomUUID(), key: "fail" }));
     expect(await frames.next()).toMatchObject({ type: "test:result", status: "failed" });
 
-    socket.send(JSON.stringify({ type: "test:work", requestId: randomUUID(), key: "fallback-fail" }));
+    socket.send(JSON.stringify({ type: "test:work", connectionId, requestId: randomUUID(), key: "fallback-fail" }));
     await vi.waitFor(() => {
       expect(
         exporter
@@ -815,11 +831,11 @@ describe("background and WebSocket tracing", () => {
       ).toHaveLength(2);
     });
 
-    socket.send(JSON.stringify({ type: "test:work", requestId: randomUUID(), key: "slow" }));
+    socket.send(JSON.stringify({ type: "test:work", connectionId, requestId: randomUUID(), key: "slow" }));
     await slowStarted;
-    socket.send(JSON.stringify({ type: "test:work", requestId: randomUUID(), key: "slow" }));
+    socket.send(JSON.stringify({ type: "test:work", connectionId, requestId: randomUUID(), key: "slow" }));
     const overloadedRequestId = randomUUID();
-    socket.send(JSON.stringify({ type: "test:work", requestId: overloadedRequestId, key: "slow" }));
+    socket.send(JSON.stringify({ type: "test:work", connectionId, requestId: overloadedRequestId, key: "slow" }));
     expect(await frames.next()).toMatchObject({ type: "test:result", requestId: overloadedRequestId, status: "busy" });
     expect(registry.currentInstanceId(machine.computerId)).toBe(registration.instanceId);
     socket.close();

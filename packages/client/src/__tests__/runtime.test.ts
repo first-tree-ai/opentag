@@ -571,7 +571,7 @@ describe("RuntimeConnection", () => {
     }
   });
 
-  it("rejects unmatched, failed, and legacy-mismatched registration results", async () => {
+  it("rejects unmatched and failed registration results", async () => {
     for (const scenario of [
       {
         build: (frame: Record<string, unknown>) => ({ ...registrationResult(frame), requestId: randomUUID() }),
@@ -607,56 +607,6 @@ describe("RuntimeConnection", () => {
       socket.receive(scenario.build(socket.frame("computer:register") ?? {}));
       await expect(running).rejects.toThrow(scenario.message);
     }
-
-    const firstSocket = new ControlledWebSocket();
-    const secondSocket = new ControlledWebSocket();
-    let connection!: RuntimeConnection;
-    let attempts = 0;
-    connection = new RuntimeConnection({
-      ...controlledOptions(firstSocket),
-      webSocketFactory: () => {
-        attempts += 1;
-        return (attempts === 1 ? firstSocket : secondSocket) as unknown as WebSocket;
-      },
-      waitForRetry: async () => connection.stop(),
-    });
-    const running = connection.run();
-    await vi.waitFor(() => expect(firstSocket.listenerCount("open")).toBeGreaterThan(0));
-    firstSocket.open();
-    await vi.waitFor(() => expect(firstSocket.frame("auth")).toBeDefined());
-    const auth = firstSocket.frame("auth");
-    firstSocket.receive({
-      type: "error",
-      requestId: auth?.requestId,
-      code: "PROTOCOL_VERSION_UNSUPPORTED",
-      message: "v1 fallback",
-    });
-    await vi.waitFor(() => expect(secondSocket.listenerCount("open")).toBeGreaterThan(0));
-    secondSocket.open();
-    await vi.waitFor(() => expect(secondSocket.frame("auth")).toBeDefined());
-    const legacyAuth = secondSocket.frame("auth");
-    secondSocket.receive({
-      type: "auth:result",
-      requestId: legacyAuth?.requestId,
-      ok: true,
-      computerId: randomUUID(),
-      installationId: randomUUID(),
-    });
-    secondSocket.receive(welcome(1_000, 2_000, RUNTIME_PROTOCOL_V1));
-    await vi.waitFor(() => expect(secondSocket.frame("computer:register")).toBeDefined());
-    secondSocket.receive({
-      type: "computer:register:result",
-      requestId: secondSocket.frame("computer:register")?.requestId,
-      ok: true,
-      protocolVersion: RUNTIME_PROTOCOL_V2,
-      connectionId: randomUUID(),
-      negotiatedCapabilities: negotiateRuntimeCapabilities(
-        RUNTIME_CLIENT_CAPABILITY_OFFERS,
-        RUNTIME_SERVER_CAPABILITY_OFFERS,
-      ),
-    });
-    await expect(running).rejects.toThrow("legacy registration");
-    expect(attempts).toBe(2);
   });
 
   it("rejects stale and failed heartbeat results", async () => {
@@ -734,7 +684,7 @@ describe("RuntimeConnection", () => {
     expect(frames[2]).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
   });
 
-  it("keeps readiness fields off v1 frames when an older Server does not acknowledge them", async () => {
+  it("keeps readiness fields off frames when the Server does not acknowledge them", async () => {
     const server = await runtimeServer();
     cleanup.push(server.close);
     const frames: Array<Record<string, unknown>> = [];
@@ -744,32 +694,13 @@ describe("RuntimeConnection", () => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         frames.push(frame);
         if (frame.type === "auth") {
-          if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
-            socket.send(
-              JSON.stringify({
-                type: "error",
-                requestId: frame.requestId,
-                code: "PROTOCOL_VERSION_UNSUPPORTED",
-                message: "The test Server supports runtime protocol v1 only",
-              }),
-            );
-            socket.close(4400, "Protocol version unsupported");
-            return;
-          }
-          completeAuth(socket, frame, welcome(10, 1_000, RUNTIME_PROTOCOL_V1));
+          completeAuth(socket, frame);
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          completeRegistration(socket, frame);
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          completeHeartbeat(socket, frame);
           connection.stop();
         }
       });
@@ -921,19 +852,21 @@ describe("RuntimeConnection", () => {
     server.wss.on("connection", (socket) => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
-        if (frame.type === "auth") {
-          completeAuth(socket, frame, { ...welcome(), providerReadiness: { version: 1, providers: ["codex"] } });
-        }
-        if (frame.type === "computer:register") {
-          expect(frame).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
-          currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
-          completeRegistration(socket, frame);
-        }
-        if (frame.type === "heartbeat") {
-          heartbeats.push(frame);
-          if (heartbeats.length === 1) releaseReadiness();
-          completeHeartbeat(socket, frame);
-          if (heartbeats.length === 2) connection.stop();
+        switch (frame.type) {
+          case "auth":
+            completeAuth(socket, frame, { ...welcome(), providerReadiness: { version: 1, providers: ["codex"] } });
+            break;
+          case "computer:register":
+            expect(frame).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
+            currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
+            completeRegistration(socket, frame);
+            break;
+          case "heartbeat":
+            heartbeats.push(frame);
+            if (heartbeats.length === 1) releaseReadiness();
+            completeHeartbeat(socket, frame);
+            if (heartbeats.length === 2) connection.stop();
+            break;
         }
       });
     });
@@ -1111,17 +1044,22 @@ describe("RuntimeConnection", () => {
     server.wss.on("connection", (socket) => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
-        if (frame.type === "auth") {
-          completeAuth(socket, frame, welcome(10, 500));
-        } else if (frame.type === "computer:register") {
-          completeRegistration(socket, frame);
-        } else if (frame.type === "heartbeat") {
-          heartbeatCount += 1;
-          const sendResult = () => completeHeartbeat(socket, frame);
-          if (heartbeatCount === 1) releaseFirstHeartbeat?.(sendResult);
-          else {
-            connection.stop();
-            finishSecondHeartbeat?.();
+        switch (frame.type) {
+          case "auth":
+            completeAuth(socket, frame, welcome(10, 500));
+            break;
+          case "computer:register":
+            completeRegistration(socket, frame);
+            break;
+          case "heartbeat": {
+            heartbeatCount += 1;
+            const sendResult = () => completeHeartbeat(socket, frame);
+            if (heartbeatCount === 1) releaseFirstHeartbeat?.(sendResult);
+            else {
+              connection.stop();
+              finishSecondHeartbeat?.();
+            }
+            break;
           }
         }
       });
@@ -1183,7 +1121,7 @@ describe("RuntimeConnection", () => {
     await expect(connection.run()).rejects.toThrow("unmatched heartbeat result");
   });
 
-  it("falls back once only after an explicit matching v2 rejection", async () => {
+  it("requires a Server update after an explicit matching v2 rejection without falling back", async () => {
     const server = await runtimeServer();
     cleanup.push(server.close);
     const authVersions: unknown[] = [];
@@ -1222,8 +1160,8 @@ describe("RuntimeConnection", () => {
       machineToken: "machine-token",
     });
 
-    await connection.run();
-    expect(authVersions).toEqual([RUNTIME_PROTOCOL_V2, RUNTIME_PROTOCOL_V1]);
+    await expect(connection.run()).rejects.toThrow("Update the Server: required Context Tree support is unavailable");
+    expect(authVersions).toEqual([RUNTIME_PROTOCOL_V2]);
   });
 
   it("does not downgrade for an unmatched version rejection", async () => {

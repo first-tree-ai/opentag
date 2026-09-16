@@ -54,6 +54,39 @@ afterEach(async () => {
 });
 
 describe("SessionRuntimeManager", () => {
+  it("keeps Context Tree changes blocked until the Agent's last prepared Session stops", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-agent-sessions-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(new FakeFactory()),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const first = reconcile(computerId, snapshot(1));
+    const second = { ...first, requestId: randomUUID(), sessionId: "session-2" };
+
+    expect(manager.hasAgentSessions(first.agentId)).toBe(false);
+    await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
+    await expect(reconciler.reconcile(second)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.hasAgentSessions(first.agentId)).toBe(true);
+    expect(manager.hasAgentSessions("another-agent")).toBe(false);
+
+    await manager.stopSession(first.sessionId, first.placementGeneration);
+    expect(manager.hasAgentSessions(first.agentId)).toBe(true);
+    await manager.stopSession(second.sessionId, second.placementGeneration);
+    expect(manager.hasAgentSessions(first.agentId)).toBe(false);
+    await manager.close();
+  });
+
   it.each([false, true])("starts internal Sessions with configuration directory failure=%s", async (configFailure) => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
     homes.push(home);
@@ -319,7 +352,7 @@ describe("SessionRuntimeManager", () => {
 
       const created = factory.created[0];
       const cwd = await workspace.cwd(request.agentId);
-      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex");
+      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", null);
       // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
       expect(created?.workspace.writableRoots).toEqual([
         cwd,

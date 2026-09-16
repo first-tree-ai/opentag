@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import type { EffectiveRuntimeSnapshot, SessionReconcileRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -61,11 +61,24 @@ describe("shared Agent Home and Context Tree", () => {
     let treePath = readTreePath(created.payload);
     expect(treePath.startsWith(`${fixture.accountHome}/`)).toBe(true);
 
-    await isolatedExecFile(
-      "git",
-      ["config", "--global", `url.file://${treePath}.insteadOf`, "https://github.com/acme/memory.git"],
-      { cwd: runRoot, timeout: 20_000, maxBuffer: 1024 * 1024, windowsHide: true, env: environment },
+    await git(environment, treePath, "config", "receive.denyCurrentBranch", "updateInstead");
+    // Rewrite transport operations only: remote get-url must retain the GitHub identity.
+    const gitBin = join(runRoot, "git-bin");
+    await mkdir(gitBin);
+    const gitShim = join(gitBin, "git");
+    await writeFile(
+      gitShim,
+      `#!/bin/sh
+case " $* " in
+  *" clone "*|*" fetch "*|*" push "*|*" pull "*)
+    exec /usr/bin/git -c 'url.file://${treePath}.insteadOf=https://github.com/acme/memory.git' "$@"
+    ;;
+esac
+exec /usr/bin/git "$@"
+`,
     );
+    await chmod(gitShim, 0o700);
+    environment.PATH = `${gitBin}${delimiter}${environment.PATH}`;
     await isolatedExecFile("git", ["config", "--global", "protocol.file.allow", "always"], {
       cwd: runRoot,
       timeout: 20_000,
@@ -74,7 +87,8 @@ describe("shared Agent Home and Context Tree", () => {
       env: environment,
     });
     const connected = await runCli(["connect", "acme/memory", "--project-path", treeSeed, "--json"]);
-    treePath = (connected.payload as { tree: { path: string } }).tree.path;
+    expect(connected.failureCode).toBeUndefined();
+    treePath = readTreePath(connected.payload);
     const treeManager = new ContextTreeManager({
       environment,
       home: openTagHome,

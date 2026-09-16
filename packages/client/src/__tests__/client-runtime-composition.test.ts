@@ -12,7 +12,7 @@ import {
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
@@ -43,6 +43,7 @@ import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-ma
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -1028,24 +1029,17 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
           observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1104,28 +1098,21 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, true);
+          completeAuth(socket, frame, true);
           return;
         }
         if (frame.type === "computer:register") {
           for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
             observed.push(item.status);
           }
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
             observed.push(item.status);
           }
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1208,22 +1195,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1264,11 +1244,11 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           registered();
         }
       });
@@ -1391,23 +1371,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex", "claude-code"]);
+          completeAuth(socket, frame, ["codex", "claude-code"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           heartbeats.push(frame);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1509,22 +1482,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1578,22 +1544,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1659,23 +1618,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           heartbeats.push(frame);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -2204,45 +2156,6 @@ function runtimeConnection(
     platform: "darwin",
     machineToken: "machine-token",
   });
-}
-
-function completeLegacyAuth(
-  socket: WebSocket,
-  frame: Record<string, unknown>,
-  providerReadiness: boolean | readonly string[] = false,
-): void {
-  if (frame.protocolVersion !== 1) {
-    socket.send(
-      JSON.stringify({
-        type: "error",
-        requestId: frame.requestId,
-        code: "PROTOCOL_VERSION_UNSUPPORTED",
-        message: "The test Server supports runtime protocol v1 only",
-      }),
-    );
-    socket.close(4400, "Protocol version unsupported");
-    return;
-  }
-  socket.send(
-    JSON.stringify({
-      type: "auth:result",
-      requestId: frame.requestId,
-      ok: true,
-      computerId: randomUUID(),
-      installationId: randomUUID(),
-    }),
-  );
-  const providers = Array.isArray(providerReadiness) ? providerReadiness : providerReadiness ? ["codex"] : undefined;
-  socket.send(
-    JSON.stringify({
-      type: "server:welcome",
-      protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
-      ...(providers ? { providerReadiness: { version: 1, providers } } : {}),
-      heartbeatIntervalMs: 10,
-      heartbeatTimeoutMs: 100,
-    }),
-  );
 }
 
 async function writeReadyImClis(home: string): Promise<{ lark: string; slack: string }> {

@@ -9,10 +9,11 @@ import type {
   SessionReconcileResult,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
+import { completeAuth, registrationResult } from "./support/runtime-server.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
@@ -25,6 +26,7 @@ describe("ClientRuntime domain dispatch", () => {
     const reconcileRequestId = randomUUID();
     const earlyDeliveryId = randomUUID();
     const readyDeliveryId = randomUUID();
+    const connectionId = randomUUID();
     const results: Array<Record<string, unknown>> = [];
     let runtime: ClientRuntime;
 
@@ -32,19 +34,19 @@ describe("ClientRuntime domain dispatch", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
-          socket.send(JSON.stringify(delivery(earlyDeliveryId, randomUUID(), computerId)));
+          socket.send(JSON.stringify(registrationResult(frame, connectionId)));
+          socket.send(JSON.stringify({ ...delivery(earlyDeliveryId, randomUUID(), computerId), connectionId }));
           return;
         }
         results.push(frame);
         if (frame.type === "im:deliver:result" && frame.deliveryId === earlyDeliveryId) {
-          socket.send(JSON.stringify(reconcile(computerId, reconcileRequestId)));
+          socket.send(JSON.stringify({ ...reconcile(computerId, reconcileRequestId), connectionId }));
         } else if (frame.type === "session:reconcile:result") {
-          socket.send(JSON.stringify(delivery(readyDeliveryId, randomUUID(), computerId)));
+          socket.send(JSON.stringify({ ...delivery(readyDeliveryId, randomUUID(), computerId), connectionId }));
         } else if (frame.type === "im:deliver:result" && frame.deliveryId === readyDeliveryId) {
           runtime.stop();
         }
@@ -490,39 +492,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
     execution: { approvalPolicy: "never", networkAccess: true },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
-}
-
-function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): void {
-  if (frame.protocolVersion !== 1) {
-    socket.send(
-      JSON.stringify({
-        type: "error",
-        requestId: frame.requestId,
-        code: "PROTOCOL_VERSION_UNSUPPORTED",
-        message: "The test Server supports runtime protocol v1 only",
-      }),
-    );
-    socket.close(4400, "Protocol version unsupported");
-    return;
-  }
-  socket.send(
-    JSON.stringify({
-      type: "auth:result",
-      requestId: frame.requestId,
-      ok: true,
-      computerId: randomUUID(),
-      installationId: randomUUID(),
-    }),
-  );
-  socket.send(
-    JSON.stringify({
-      type: "server:welcome",
-      protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
-      heartbeatIntervalMs: 1_000,
-      heartbeatTimeoutMs: 2_000,
-    }),
-  );
 }
 
 async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; wss: WebSocketServer }> {

@@ -13,7 +13,7 @@ import { WebSocketServer } from "ws";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
-import { completeAuth, registrationResult } from "./support/runtime-server.js";
+import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
@@ -33,14 +33,17 @@ describe("ClientRuntime domain dispatch", () => {
     server.wss.on("connection", (socket) => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
-        if (frame.type === "auth") {
-          completeAuth(socket, frame);
-          return;
-        }
-        if (frame.type === "computer:register") {
-          socket.send(JSON.stringify(registrationResult(frame, connectionId)));
-          socket.send(JSON.stringify({ ...delivery(earlyDeliveryId, randomUUID(), computerId), connectionId }));
-          return;
+        switch (frame.type) {
+          case "auth":
+            completeAuth(socket, frame);
+            return;
+          case "computer:register":
+            socket.send(JSON.stringify(registrationResult(frame, connectionId)));
+            socket.send(JSON.stringify({ ...delivery(earlyDeliveryId, randomUUID(), computerId), connectionId }));
+            return;
+          case "heartbeat":
+            socket.send(JSON.stringify(heartbeatResult(frame)));
+            return;
         }
         results.push(frame);
         if (frame.type === "im:deliver:result" && frame.deliveryId === earlyDeliveryId) {

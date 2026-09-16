@@ -216,6 +216,7 @@ describe("PostgresRuntimeDurableWorkStore", () => {
 
 function snapshot(agentId: string, workspaceId: string): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
     agentId,
     provider: "codex",

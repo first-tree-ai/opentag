@@ -847,7 +847,10 @@ describe("Agent persistence and authorization", () => {
         displayName: "Profile only",
         expectedRevision: 1,
       });
-      expect(profileOnly).toMatchObject({ revision: 2, runtimeConfig: { revision: initialRuntimeRevision } });
+      expect(profileOnly).toMatchObject({
+        revision: 2,
+        runtimeConfig: { contextTreeRepository: null, revision: initialRuntimeRevision },
+      });
 
       const cleared = await value.service.updateById(value.bootstrap.userId, created.id, {
         expectedRevision: 2,

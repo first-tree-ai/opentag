@@ -28,7 +28,11 @@ import {
 const MAX_INSTALLATION_PAGES = Math.ceil(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS / 100);
 /** One installation's repositories are searched at most ten pages deep (1000 repositories). */
 const MAX_REPOSITORY_PAGES_PER_INSTALLATION = 10;
-/** A full verification never walks more than this many repository pages in total. */
+/**
+ * A full verification never walks more than this many repository pages in total. The budget is
+ * hard: a configuration that cannot be verified inside it is rejected with a controlled error —
+ * never silently half-verified, and never granted an unbounded upstream walk.
+ */
 const MAX_TOTAL_REPOSITORY_PAGES_PER_VERIFICATION = 64;
 
 const PERMISSION_LEVELS: Readonly<Record<string, number>> = { read: 1, write: 2 };
@@ -85,7 +89,7 @@ function decodeCursor(raw: string): DiscoveryCursor {
     (value as DiscoveryCursor).i > GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS ||
     !Number.isSafeInteger((value as DiscoveryCursor).p) ||
     (value as DiscoveryCursor).p < 1 ||
-    (value as DiscoveryCursor).p > MAX_REPOSITORY_PAGES_PER_INSTALLATION + 1
+    (value as DiscoveryCursor).p > MAX_REPOSITORY_PAGES_PER_INSTALLATION
   ) {
     throw new GitHubConnectionServiceError(GITHUB_CONNECTION_ERROR_CODES.INPUT_INVALID, 400, "The cursor is invalid");
   }
@@ -120,6 +124,9 @@ export class GitHubRepositoryAdmissionService {
   /**
    * One page of the repository discovery stream. Each call re-reads the bounded installation list
    * (so install state is always current) and one repository page; the opaque cursor continues.
+   * One installation is walked at most ten pages deep; when it holds more repositories than the
+   * bound can list, the stream moves on to the next installation and names the truncation in
+   * `truncatedInstallations` — discovery never silently claims an exhaustive listing.
    */
   async discoverRepositories(input: {
     accessToken: string;
@@ -130,7 +137,7 @@ export class GitHubRepositoryAdmissionService {
     const cursor = input.cursor === undefined ? { v: 1 as const, i: 0, p: 1 } : decodeCursor(input.cursor);
     const summaries = installations.map(toDiscoveredInstallation);
     if (installations.length === 0 || cursor.i >= installations.length) {
-      return { installations: summaries, repositories: [], nextCursor: null };
+      return { installations: summaries, repositories: [], nextCursor: null, truncatedInstallations: [] };
     }
     const installation = installations[cursor.i] as GitHubUserInstallation;
     const page = await this.#api.listInstallationRepositories({
@@ -150,14 +157,22 @@ export class GitHubRepositoryAdmissionService {
         push: repository.permissions.push || repository.permissions.admin,
       },
     }));
-    const hasMoreRepositories = cursor.p * GITHUB_INSTALLATION_REPOSITORIES_PER_PAGE < page.totalCount;
+    const unlistedBeyondBound = cursor.p * GITHUB_INSTALLATION_REPOSITORIES_PER_PAGE < page.totalCount;
+    const canAdvanceWithinBound = cursor.p < MAX_REPOSITORY_PAGES_PER_INSTALLATION;
+    const truncated = unlistedBeyondBound && !canAdvanceWithinBound;
     const hasMoreInstallations = cursor.i + 1 < installations.length;
-    const nextCursor = hasMoreRepositories
-      ? encodeCursor({ v: 1, i: cursor.i, p: cursor.p + 1 })
-      : hasMoreInstallations
-        ? encodeCursor({ v: 1, i: cursor.i + 1, p: 1 })
-        : null;
-    return { installations: summaries, repositories, nextCursor };
+    const nextCursor =
+      unlistedBeyondBound && canAdvanceWithinBound
+        ? encodeCursor({ v: 1, i: cursor.i, p: cursor.p + 1 })
+        : hasMoreInstallations
+          ? encodeCursor({ v: 1, i: cursor.i + 1, p: 1 })
+          : null;
+    return {
+      installations: summaries,
+      repositories,
+      nextCursor,
+      truncatedInstallations: truncated ? [installation.installationId] : [],
+    };
   }
 
   /**
@@ -195,13 +210,21 @@ export class GitHubRepositoryAdmissionService {
       let repositories = repositoriesByInstallation.get(binding.installationId);
       if (!repositories) {
         const remainingBudget = MAX_TOTAL_REPOSITORY_PAGES_PER_VERIFICATION - repositoryPagesRead;
-        repositories = await this.#listReachableRepositories(
+        if (remainingBudget < 1) {
+          throw new GitHubConnectionServiceError(
+            GITHUB_CONNECTION_ERROR_CODES.INPUT_INVALID,
+            400,
+            "The requested bindings span more GitHub repository pages than one admission verification can cover",
+          );
+        }
+        const listed = await this.#listReachableRepositories(
           input.accessToken,
           installation.installationId,
-          Math.min(MAX_REPOSITORY_PAGES_PER_INSTALLATION, Math.max(1, remainingBudget)),
+          Math.min(MAX_REPOSITORY_PAGES_PER_INSTALLATION, remainingBudget),
           input.signal,
         );
-        repositoryPagesRead += Math.min(MAX_REPOSITORY_PAGES_PER_INSTALLATION, Math.max(1, remainingBudget));
+        repositoryPagesRead += listed.pagesRead;
+        repositories = listed.repositories;
         repositoriesByInstallation.set(binding.installationId, repositories);
       }
       const repository = repositories.get(binding.repositoryId);
@@ -251,7 +274,7 @@ export class GitHubRepositoryAdmissionService {
       pullRequestsWrite: input.access === "write" && input.publish === "pull_request",
       userAccess: input.access,
     });
-    const repositories = await this.#listReachableRepositories(
+    const { repositories } = await this.#listReachableRepositories(
       input.accessToken,
       installation.installationId,
       MAX_REPOSITORY_PAGES_PER_INSTALLATION,
@@ -300,18 +323,24 @@ export class GitHubRepositoryAdmissionService {
     return installations;
   }
 
+  /** Lists up to `maxPages` of one installation's reachable repositories, reporting the actual walk depth. */
   async #listReachableRepositories(
     accessToken: string,
     installationId: string,
     maxPages: number,
     signal?: AbortSignal,
-  ): Promise<
-    Map<string, Awaited<ReturnType<GitHubApiClient["listInstallationRepositories"]>>["repositories"][number]>
-  > {
+  ): Promise<{
+    repositories: Map<
+      string,
+      Awaited<ReturnType<GitHubApiClient["listInstallationRepositories"]>>["repositories"][number]
+    >;
+    pagesRead: number;
+  }> {
     const repositories = new Map<
       string,
       Awaited<ReturnType<GitHubApiClient["listInstallationRepositories"]>>["repositories"][number]
     >();
+    let pagesRead = 0;
     for (let page = 1; page <= maxPages; page += 1) {
       const result = await this.#api.listInstallationRepositories({
         accessToken,
@@ -319,12 +348,13 @@ export class GitHubRepositoryAdmissionService {
         page,
         ...(signal ? { signal } : {}),
       });
+      pagesRead += 1;
       for (const repository of result.repositories) {
         repositories.set(repository.repositoryId, repository);
       }
       if (repositories.size >= result.totalCount || result.repositories.length === 0) break;
     }
-    return repositories;
+    return { repositories, pagesRead };
   }
 
   #assertInstallationPermissions(installation: GitHubUserInstallation, requirement: GitHubBindingRequirement): void {

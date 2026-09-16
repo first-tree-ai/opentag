@@ -197,7 +197,7 @@ describe("OpenTag Web App Shell", () => {
     const setup = await screen.findByRole("region", { name: "Agent setup" });
     expect(
       [...setup.querySelectorAll('[data-ui="agent-settings-entry"] strong')].map((entry) => entry.textContent),
-    ).toEqual(["Name", "Messaging", "Computer", "Instructions", "Model"]);
+    ).toEqual(["Name", "Messaging", "Computer", "Context Tree", "Instructions", "Model"]);
     const dangerZone = screen.getByRole("region", { name: "Danger zone" });
     expect(within(dangerZone).getByRole("heading", { name: "Danger zone" })).toBeTruthy();
     expect(dangerZone.className).not.toContain("border-t");

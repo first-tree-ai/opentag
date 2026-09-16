@@ -50,7 +50,7 @@ afterEach(async () => {
 });
 
 describe("pinned trusted Context Tree verifier", () => {
-  it("validates the actual committed Tree with the installed 0.1.14 CLI", async () => {
+  it("validates the actual committed Tree with the installed pinned CLI", async () => {
     await expect(
       verifyPublishedContextTree(bare, await git(tree, ["rev-parse", "HEAD"]), options),
     ).resolves.toBeUndefined();

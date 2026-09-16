@@ -13,7 +13,6 @@ import {
   type AgentUsageWindowDays,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
-  type CreateAgentRuntimeConfig,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
   RUNTIME_MAX_DURATION_MS,
@@ -152,6 +151,7 @@ export interface AgentSessionStopTarget {
 function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   return AgentRuntimeConfigSchema.parse({
     revision: row.revision,
+    contextTreeRepository: row.contextTreeRepository,
     model: row.model,
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
@@ -272,9 +272,10 @@ function addUsageTokenCounts(
 
 function runtimeConfigsEqual(
   left: AgentRuntimeConfigRow,
-  right: Readonly<Required<CreateAgentRuntimeConfig>>,
+  right: ReturnType<typeof resolveAgentRuntimeConfig>,
 ): boolean {
   return (
+    left.contextTreeRepository === right.contextTreeRepository &&
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
@@ -851,6 +852,7 @@ export class AgentService {
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
       const nextRuntimeConfig = resolveAgentRuntimeConfig({
+        contextTreeRepository: currentRuntimeProjection.contextTreeRepository,
         model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
         reasoningEffort:
           input.runtimeConfig?.reasoningEffort !== undefined
@@ -897,6 +899,52 @@ export class AgentService {
       );
     });
     return result.config;
+  }
+
+  async updateContextTreeSelection(
+    callerUserId: string,
+    agentId: string,
+    expected: Pick<AgentAdminConfig, "revision" | "computerId" | "status"> & { runtimeConfigRevision: number },
+    repository: string | null,
+  ): Promise<AgentAdminConfig> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
+      this.#requireManagePermission(scope);
+      const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
+      if (
+        scope.agent.revision !== expected.revision ||
+        runtimeConfig.revision !== expected.runtimeConfigRevision ||
+        scope.computerId !== expected.computerId ||
+        scope.agent.status !== expected.status
+      ) {
+        throw new AgentServiceError(
+          "AGENT_REVISION_CONFLICT",
+          "deterministic",
+          "The Agent changed since it was read",
+          409,
+        );
+      }
+      if (runtimeConfig.contextTreeRepository !== null && scope.agent.status !== "suspended") {
+        throw this.#lifecycleConflict("Pause the Agent before changing its Context Tree");
+      }
+      const now = this.#now();
+      const [updated] = await transaction
+        .update(agents)
+        .set({ revision: sql`${agents.revision} + 1`, updatedAt: now })
+        .where(eq(agents.id, agentId))
+        .returning();
+      const [updatedRuntimeConfig] = await transaction
+        .update(agentRuntimeConfigs)
+        .set({
+          contextTreeRepository: repository,
+          revision: sql`nextval('runtime_config_revision_sequence')`,
+          updatedAt: now,
+        })
+        .where(eq(agentRuntimeConfigs.agentId, agentId))
+        .returning();
+      if (!updated || !updatedRuntimeConfig) throw new Error("Context Tree selection update did not return a row");
+      return toAgentAdminConfig(updated, updatedRuntimeConfig, scope.computerId);
+    });
   }
 
   async suspendById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {

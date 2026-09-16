@@ -19,7 +19,6 @@ describe("shared Context Tree account home", () => {
     await symlink(home, alias);
     const expected = {
       directory: join(home, ".context-tree"),
-      configFile: join(home, ".context-tree", "opentag.json"),
     };
     expect(resolveContextTreeHome({ HOME: alias, OPENTAG_HOME: "/one" })).toEqual(expected);
     expect(resolveContextTreeHome({ HOME: home, OPENTAG_HOME: "/two" })).toEqual(expected);

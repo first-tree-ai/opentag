@@ -30,6 +30,7 @@ import type { DatabaseClient } from "../../db/client.js";
 import { githubConnections } from "../../db/schema/index.js";
 import type { GitHubCredentialCipher } from "../github-credential-material.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "./errors.js";
+import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "./github-api-client.js";
 import type { GitHubBindingsService } from "./github-bindings-service.js";
 import type { GitHubConnectionService } from "./github-connection-service.js";
 import type { GitHubOAuthCallbackResult, GitHubOAuthService } from "./github-oauth-service.js";
@@ -167,10 +168,14 @@ export class GitHubManagementService {
   async discoverRepositories(accountId: string, cursor?: string): Promise<GitHubRepositoryDiscoveryPage> {
     const current = await this.#requireActiveConnection(accountId);
     const credential = await this.#openUserCredential(current.id);
-    return this.#admission.discoverRepositories({
-      accessToken: credential.accessToken,
-      ...(cursor !== undefined ? { cursor } : {}),
-    });
+    try {
+      return await this.#admission.discoverRepositories({
+        accessToken: credential.accessToken,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+    } catch (error) {
+      throw mapManagementApiFailure(error);
+    }
   }
 
   /**
@@ -192,13 +197,17 @@ export class GitHubManagementService {
       );
     }
     const credential = await this.#openUserCredential(current.id);
-    const admissionProof = await this.#admission.verifyAdmission({
-      accessToken: credential.accessToken,
-      connectionId: current.id,
-      authorizationVersion: expected,
-      githubUserId: current.githubUserId,
-      bindings: input.bindings,
-    });
+    const admissionProof = await this.#admission
+      .verifyAdmission({
+        accessToken: credential.accessToken,
+        connectionId: current.id,
+        authorizationVersion: expected,
+        githubUserId: current.githubUserId,
+        bindings: input.bindings,
+      })
+      .catch((error: unknown) => {
+        throw mapManagementApiFailure(error);
+      });
     return this.#bindings.updateBindings(accountId, current.id, {
       expectedAuthorizationVersion: expected,
       bindings: input.bindings,
@@ -407,4 +416,53 @@ function parseVersion(value: string): bigint {
       "A row version is a nonnegative decimal string",
     );
   }
+}
+
+/**
+ * Maps an upstream transport failure from discovery/admission to the bounded public management
+ * codes, mirroring the OAuth callback mapping. Controlled connection errors pass through; unknown
+ * errors rethrow unchanged so programming faults stay 500s; upstream detail never crosses.
+ */
+function mapManagementApiFailure(error: unknown): unknown {
+  if (!(error instanceof GitHubApiClientError)) return error;
+  if (error.code === GITHUB_API_CLIENT_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED) {
+    return new GitHubConnectionServiceError(
+      GITHUB_CONNECTION_ERROR_CODES.TOKEN_LIFETIME_UNSUPPORTED,
+      502,
+      "The GitHub App does not issue expiring user access tokens; enable them on the App and retry",
+      "deterministic",
+    );
+  }
+  if (error.code === GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED) {
+    return new GitHubConnectionServiceError(
+      GITHUB_CONNECTION_ERROR_CODES.RATE_LIMITED,
+      429,
+      "GitHub rate-limited the request; retry shortly",
+      "rate_limit",
+    );
+  }
+  if (error.code === GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE) {
+    return new GitHubConnectionServiceError(
+      GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      503,
+      "GitHub is unavailable; retry shortly",
+      "transient",
+    );
+  }
+  if (error.code === GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID) {
+    // The current credential was rejected: token maintenance or the recheck worker converges the
+    // row; the caller only ever learns a bounded transient code, never provider detail.
+    return new GitHubConnectionServiceError(
+      GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_ERROR,
+      502,
+      "GitHub rejected the current credential; retry shortly or reauthorize the connection",
+      "transient",
+    );
+  }
+  return new GitHubConnectionServiceError(
+    GITHUB_CONNECTION_ERROR_CODES.UPSTREAM_ERROR,
+    502,
+    "The GitHub request could not be completed",
+    "transient",
+  );
 }

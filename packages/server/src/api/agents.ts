@@ -2,6 +2,7 @@ import {
   AGENT_BY_ID_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
+  AGENT_CONTEXT_TREE_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SETUP_REFRESH_TEMPLATE,
@@ -16,12 +17,15 @@ import {
   AgentSetupSnapshotSchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
+  ContextTreeOperationRequestSchema,
+  ContextTreeOperationResponseSchema,
   RebindAgentComputerRequestSchema,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { projectAgentSetupSnapshotForHttp, requestIncludesProviderCliReasonV2 } from "./provider-cli-reason.js";
@@ -66,6 +70,7 @@ export function registerAgentRoutes(
   authOptions?: UserAuthPreHandlerOptions,
   runtimeTest?: AgentRuntimeTestService,
   agentSetup?: AgentSetupService,
+  contextTree?: ContextTreeOperationService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
@@ -151,6 +156,16 @@ export function registerAgentRoutes(
       return reply.header("Cache-Control", "no-store").code(204).send();
     });
   }
+
+  if (contextTree)
+    app.post(AGENT_CONTEXT_TREE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const input = parseRequest(ContextTreeOperationRequestSchema, request.body);
+      const response = ContextTreeOperationResponseSchema.parse(
+        await contextTree.run(authenticatedUserId(request), agentId, input),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
 
   if (!runtimeTest) return;
 

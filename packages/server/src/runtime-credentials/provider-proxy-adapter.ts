@@ -5,6 +5,7 @@ import { decodeBufferedBody, requestQuery, slackBufferedBodyKind } from "./buffe
 import type { RuntimeProxyAuthorization } from "./credential-broker.js";
 import {
   bufferProxyBody,
+  operationRequiresSourceRecord,
   type ProviderOperation,
   type ProviderOperationMatch,
   type ProviderOperationRegistry,
@@ -200,14 +201,24 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     authorization: RuntimeProxyAuthorization,
   ): Promise<void> {
     const query = requestQuery(request.path);
-    const resource = journalSafeResource(
-      operation.resource?.(params, parsed, query) ?? `operation:${operation.operationId}`,
-    );
+    const resource = operation.resource?.(params, parsed, query) ?? `operation:${operation.operationId}`;
+    await this.#recordResource(resource, request, authorization);
+  }
+
+  /**
+   * Durable source metadata for one protected output. Records only the bounded resource id and
+   * never payloads, URLs, or credentials; a failing recorder fails the response.
+   */
+  async #recordResource(
+    resource: string,
+    request: ProviderProxyRequest,
+    authorization: RuntimeProxyAuthorization,
+  ): Promise<void> {
     try {
       await this.#sourceRecorder.recordSource({
         sessionId: authorization.sessionId,
         provider: request.provider,
-        resource,
+        resource: journalSafeResource(resource),
         policyRevision: authorization.authorizationRevision,
         recordedAt: this.#now().toISOString(),
       });
@@ -294,7 +305,8 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     response: Response,
     journalContext?: WriteReceiptContext,
   ): Promise<ProviderProxyResponse> {
-    if (match.operation.kind === "read") {
+    if (operationRequiresSourceRecord(match.operation)) {
+      // Durable audit before the first protected byte reaches the caller.
       await this.#recordSource(match.operation, match.params, prepared.parsed, request, authorization);
     }
     if (journalContext) {
@@ -335,7 +347,9 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       createUploadHandle: (target, resource) =>
         this.#createHandle(request, material.origin, "upload", target, resource),
     });
-    if (operation.kind === "read" && rewritten.handles > 0) {
+    if (operationRequiresSourceRecord(operation)) {
+      // Every protected read records durable metadata before its output is exposed, whether or
+      // not the response happened to contain a protected URL to rewrite.
       await this.#recordSource(operation, match.params, prepared.parsed, request, authorization);
     }
     return {
@@ -380,6 +394,10 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
         request,
       });
     }
+    // Every protected download records durable metadata before its body is exposed, including
+    // handles minted by write responses that only have a write receipt. The handle resource is
+    // the file identity; the bounded opaque fallback never contains the upstream URL.
+    await this.#recordResource(handle.resource ?? `handle:${handle.handleId}`, request, authorization);
     // Every handle use re-runs the current fence before touching the upstream URL.
     await authorization.recheck(request.signal);
     return this.#proxyDownload(request, handle.url, authorization);

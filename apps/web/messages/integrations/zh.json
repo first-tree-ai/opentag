@@ -22,6 +22,7 @@
   "integrations_agent_github_delegation_senders_description": "添加消息平台为该成员提供的发送者 ID。",
   "integrations_agent_github_delegation_title": "谁可以请求 {agent} 使用此仓库",
   "integrations_agent_github_description": "选择 {agent} 可以使用的仓库，以及谁可以请求这类工作。",
+  "integrations_agent_github_discovery_truncated": "每个安装最多列出前 1,000 个仓库。部分仓库未显示，已有访问配置会保留。",
   "integrations_agent_github_error": "仓库权限未能保存。",
   "integrations_agent_github_installation_label": "安装：{account}",
   "integrations_agent_github_load_more": "加载更多仓库",

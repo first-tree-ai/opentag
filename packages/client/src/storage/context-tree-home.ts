@@ -17,10 +17,9 @@ export function resolveAccountHome(environment: NodeJS.ProcessEnv = process.env)
 /** Account storage shared with the standalone Context Tree CLI, independent of OPENTAG_HOME. */
 export function resolveContextTreeHome(environment: NodeJS.ProcessEnv = process.env): {
   directory: string;
-  configFile: string;
 } {
   const directory = join(resolveAccountHome(environment), ".context-tree");
-  return { directory, configFile: join(directory, "opentag.json") };
+  return { directory };
 }
 
 export async function prepareContextTreeHome(environment: NodeJS.ProcessEnv = process.env): Promise<string> {

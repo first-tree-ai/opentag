@@ -150,6 +150,11 @@ export class GitHubCredentialRefreshStore {
         accessExpiresAt: input.credential.accessExpiresAt,
         refreshExpiresAt: input.credential.refreshExpiresAt,
         credentialGeneration: input.expectedCredentialGeneration + 1n,
+        // A successful rotation installs a new credential while the row stays active: every recheck
+        // fenced before this commit evaluated the OLD credential, so its verdict — healthy or
+        // unauthorized — must never land on the new pair. The recheck generation advances with the
+        // credential generation; the authorization version does not (runtime grants stay alive).
+        recheckGeneration: sql`${githubConnections.recheckGeneration} + 1`,
         refreshAttemptId: null,
         refreshClaimUntil: null,
         refreshStatus: "idle",

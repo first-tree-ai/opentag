@@ -57,7 +57,7 @@ function stores() {
   };
 }
 
-function workerFor(api: GitHubApiClient) {
+function workerFor(api: GitHubApiClient, options: { batchLimit?: number } = {}) {
   const { refreshStore, recheckStore } = stores();
   return new GitHubMaintenanceWorker({
     refreshStore,
@@ -66,6 +66,7 @@ function workerFor(api: GitHubApiClient) {
     api,
     admission: new GitHubRepositoryAdmissionService({ api, appId: GITHUB_TEST_APP_ID, now: () => clock }),
     now: () => clock,
+    ...(options.batchLimit !== undefined ? { batchLimit: options.batchLimit } : {}),
   });
 }
 
@@ -228,6 +229,110 @@ describe("GitHubMaintenanceWorker refresh pass", () => {
     api.refreshUserToken.mockResolvedValue(tokenMaterial());
     const second = await workerFor(api.asClient()).runTickOnce();
     expect(second.refresh.completed).toBe(1);
+  });
+
+  it("releases the claim without destroying the credential when the envelope fails local authentication", async () => {
+    const { accountId, connectionId } = await activeConnection();
+    const before = await rowOf(connectionId);
+    // The stored envelope no longer authenticates against the row's binding (here: sealed for a
+    // different connection ID). GitHub is never contacted, so the still-valid credential pair must
+    // survive and the claim must release for a later retry — never a blind reauthorization.
+    const foreign = cipher.encryptUserCredential(
+      {
+        connectionId: crypto.randomUUID(),
+        accountId,
+        githubHost: "github.com",
+        appId: GITHUB_TEST_APP_ID,
+        githubUserId: "42",
+      },
+      { accessToken: "ghu_current", refreshToken: "ghr_current" },
+    );
+    await unit.database
+      .update(githubConnections)
+      .set({ credentialCiphertext: foreign.ciphertext })
+      .where(eq(githubConnections.id, connectionId));
+
+    const api = stubGitHubApi();
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.refresh.released).toBe(1);
+    expect(summary.refresh.failed).toBe(0);
+    expect(api.refreshUserToken).not.toHaveBeenCalled();
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("active");
+    expect(row?.refreshStatus).toBe("idle");
+    expect(row?.credentialCiphertext).toBe(foreign.ciphertext);
+    expect(row?.authorizationVersion).toBe(before?.authorizationVersion);
+
+    // Once the envelope authenticates again, the next claim completes normally.
+    const repaired = cipher.encryptUserCredential(
+      {
+        connectionId,
+        accountId,
+        githubHost: "github.com",
+        appId: GITHUB_TEST_APP_ID,
+        githubUserId: "42",
+      },
+      { accessToken: "ghu_current", refreshToken: "ghr_current" },
+    );
+    await unit.database
+      .update(githubConnections)
+      .set({ credentialCiphertext: repaired.ciphertext })
+      .where(eq(githubConnections.id, connectionId));
+    api.refreshUserToken.mockResolvedValue(tokenMaterial({ accessToken: "ghu_next", refreshToken: "ghr_next" }));
+    api.getAuthenticatedUser.mockResolvedValue({ id: "42", login: "octocat" });
+    api.listUserInstallations.mockResolvedValue(installationsPage([]));
+    const second = await workerFor(api.asClient()).runTickOnce();
+    expect(second.refresh.completed).toBe(1);
+  });
+
+  it("keeps the refreshed pair when a verdict against the old credential lands late", async () => {
+    const { accountId, connectionId } = await activeConnection();
+    await makeRecheckDue(connectionId);
+    // The recheck fencing captured here evaluates the pre-refresh credential.
+    const { recheckStore } = stores();
+    const [stale] = await recheckStore.listDueForRecheck({ limit: 10 });
+    if (!stale) throw new Error("expected a due recheck");
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockResolvedValue(tokenMaterial({ accessToken: "ghu_next", refreshToken: "ghr_next" }));
+    api.getAuthenticatedUser.mockResolvedValue({ id: "42", login: "octocat" });
+    api.listUserInstallations.mockResolvedValue(installationsPage([]));
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.refresh.completed).toBe(1);
+    // The tick's recheck pass fenced after the rotation and verified the new pair healthy.
+    expect(summary.recheck.healthy).toBe(1);
+
+    // The delayed verdict against the old credential must be dropped, not applied.
+    const staleCommit = await recheckStore.commitRecheckResult({
+      connectionId,
+      expectedAuthorizationVersion: stale.authorizationVersion,
+      expectedRecheckGeneration: stale.recheckGeneration,
+      outcome: { kind: "unauthorized", errorCode: "GITHUB_CREDENTIAL_INVALID" },
+    });
+    expect(staleCommit).toEqual({ applied: false, reason: "stale" });
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("active");
+    expect(row?.refreshStatus).toBe("idle");
+    expect(row?.credentialGeneration).toBe(2n);
+    expect(row?.authorizationVersion).toBe(stale.authorizationVersion);
+    expect(row?.lastErrorCode).toBeNull();
+    expect(row?.recheckRequired).toBe(false);
+    expect(row?.nextRecheckAt?.getTime()).toBe(clock.getTime() + 5 * 60_000);
+    const opened = cipher.decryptUserCredential(
+      {
+        connectionId,
+        accountId,
+        githubHost: "github.com",
+        appId: GITHUB_TEST_APP_ID,
+        githubUserId: "42",
+      },
+      { ciphertext: row?.credentialCiphertext as string, keyId: row?.credentialKeyId as string },
+    );
+    expect(opened).toEqual({ accessToken: "ghu_next", refreshToken: "ghr_next" });
+
+    // The next scheduled recheck evaluates the current credential normally.
+    await makeRecheckDue(connectionId);
+    const second = await workerFor(api.asClient()).runTickOnce();
+    expect(second.recheck.healthy).toBe(1);
   });
 
   it("keeps the OAuth proof bound while a refresh runs against the same row", async () => {
@@ -397,6 +502,126 @@ describe("GitHubMaintenanceWorker recheck pass", () => {
     expect(row?.status).toBe("reauthorization_required");
     expect(row?.credentialCiphertext).toBeNull();
     expect(row?.lastErrorCode).toBe("GITHUB_CREDENTIAL_INVALID");
+  });
+
+  it("defers a recheck whose access token is expired instead of clearing the recoverable credential", async () => {
+    // Both connections expired beyond the access-token lifetime while their refresh tokens remain
+    // valid. A one-row batch leaves the second connection unrefreshed when its recheck runs; the
+    // recheck must defer to the refresh pass rather than read the expected 401 as a dead credential.
+    const first = await activeConnection();
+    const second = await activeConnection();
+    await unit.database
+      .update(githubConnections)
+      .set({
+        accessExpiresAt: new Date(clock.getTime() - 2 * 3_600_000),
+        nextRecheckAt: new Date(clock.getTime() - 1_000),
+      })
+      .where(eq(githubConnections.id, first.connectionId));
+    await unit.database
+      .update(githubConnections)
+      .set({
+        accessExpiresAt: new Date(clock.getTime() - 1 * 3_600_000),
+        nextRecheckAt: new Date(clock.getTime() - 2_000),
+      })
+      .where(eq(githubConnections.id, second.connectionId));
+    const secondBefore = await rowOf(second.connectionId);
+
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockResolvedValue(tokenMaterial());
+    // GitHub rejects the expired access token but accepts the refreshed one.
+    api.getAuthenticatedUser.mockImplementation(({ accessToken }: { accessToken: string }) =>
+      accessToken === "ghu_current"
+        ? Promise.reject(
+            new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID, "401", { status: 401 }),
+          )
+        : Promise.resolve({ id: "42", login: "octocat" }),
+    );
+    api.listUserInstallations.mockResolvedValue(installationsPage([]));
+    const summary = await workerFor(api.asClient(), { batchLimit: 1 }).runTickOnce();
+    expect(summary.refresh.completed).toBe(1);
+    expect(summary.recheck.transient).toBe(1);
+    expect(summary.recheck.unauthorized).toBe(0);
+    // The deferred recheck never presented the expired token to GitHub.
+    expect(api.getAuthenticatedUser).not.toHaveBeenCalled();
+    const deferred = await rowOf(second.connectionId);
+    expect(deferred?.status).toBe("active");
+    expect(deferred?.credentialCiphertext).toBe(secondBefore?.credentialCiphertext);
+    expect(deferred?.lastErrorCode).toBe("GITHUB_ACCESS_TOKEN_EXPIRED");
+    expect(deferred?.recheckRequired).toBe(true);
+
+    // The refresh pass then recovers the credential and the following recheck verifies healthy.
+    clock = new Date(clock.getTime() + 6 * 60_000);
+    const recovery = await workerFor(api.asClient()).runTickOnce();
+    expect(recovery.refresh.completed).toBe(1);
+    expect(recovery.recheck.healthy).toBe(2);
+    const recovered = await rowOf(second.connectionId);
+    expect(recovered?.status).toBe("active");
+    expect(recovered?.refreshStatus).toBe("idle");
+    const opened = cipher.decryptUserCredential(
+      {
+        connectionId: second.connectionId,
+        accountId: recovered?.accountId as string,
+        githubHost: "github.com",
+        appId: GITHUB_TEST_APP_ID,
+        githubUserId: "42",
+      },
+      { ciphertext: recovered?.credentialCiphertext as string, keyId: recovered?.credentialKeyId as string },
+    );
+    expect(opened).toEqual({ accessToken: "ghu_access", refreshToken: "ghr_refresh" });
+  });
+
+  it("defers when the access token expires while the credential check is in flight", async () => {
+    // The first connection absorbs the single refresh slot; the second is still unrefreshed when
+    // its recheck runs. Its token is live at the snapshot but expires before the 401 arrives.
+    const first = await activeConnection();
+    const second = await activeConnection();
+    await unit.database
+      .update(githubConnections)
+      .set({
+        accessExpiresAt: new Date(clock.getTime() + 60_000),
+        nextRecheckAt: new Date(clock.getTime() - 1_000),
+      })
+      .where(eq(githubConnections.id, first.connectionId));
+    await unit.database
+      .update(githubConnections)
+      .set({
+        accessExpiresAt: new Date(clock.getTime() + 5 * 60_000),
+        nextRecheckAt: new Date(clock.getTime() - 2_000),
+      })
+      .where(eq(githubConnections.id, second.connectionId));
+    const secondBefore = await rowOf(second.connectionId);
+
+    const api = stubGitHubApi();
+    api.refreshUserToken.mockResolvedValue(tokenMaterial());
+    api.getAuthenticatedUser.mockImplementation(() => {
+      // The credential check is slow: the rejection arrives after the presented token expired.
+      clock = new Date(clock.getTime() + 10 * 60_000);
+      return Promise.reject(
+        new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID, "401", { status: 401 }),
+      );
+    });
+    const summary = await workerFor(api.asClient(), { batchLimit: 1 }).runTickOnce();
+    expect(summary.refresh.completed).toBe(1);
+    expect(summary.recheck.transient).toBe(1);
+    expect(summary.recheck.unauthorized).toBe(0);
+    const row = await rowOf(second.connectionId);
+    expect(row?.status).toBe("active");
+    expect(row?.credentialCiphertext).toBe(secondBefore?.credentialCiphertext);
+    expect(row?.lastErrorCode).toBe("GITHUB_ACCESS_TOKEN_EXPIRED");
+    expect(row?.recheckRequired).toBe(true);
+  });
+
+  it("still invalidates fail-closed on a true identity mismatch with an unexpired token", async () => {
+    const { connectionId } = await activeConnection({ accessExpiresInMs: 8 * 3_600_000 });
+    await makeRecheckDue(connectionId);
+    const api = stubGitHubApi();
+    api.getAuthenticatedUser.mockResolvedValue({ id: "77", login: "someone-else" });
+    const summary = await workerFor(api.asClient()).runTickOnce();
+    expect(summary.recheck.unauthorized).toBe(1);
+    const row = await rowOf(connectionId);
+    expect(row?.status).toBe("reauthorization_required");
+    expect(row?.credentialCiphertext).toBeNull();
+    expect(row?.lastErrorCode).toBe("GITHUB_IDENTITY_MISMATCH");
   });
 
   it("keeps the row active and retries on a transient upstream failure", async () => {

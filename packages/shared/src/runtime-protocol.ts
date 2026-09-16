@@ -18,7 +18,7 @@ import { SemVerStringSchema } from "./semver.js";
 export const RUNTIME_PROTOCOL_V1 = 1 as const;
 export const RUNTIME_PROTOCOL_V2 = 2 as const;
 export const RUNTIME_PROTOCOL_VERSION = RUNTIME_PROTOCOL_V2;
-export const RUNTIME_SUPPORTED_PROTOCOL_VERSIONS = { min: RUNTIME_PROTOCOL_V1, max: RUNTIME_PROTOCOL_V2 } as const;
+export const RUNTIME_SUPPORTED_PROTOCOL_VERSIONS = { min: RUNTIME_PROTOCOL_V2, max: RUNTIME_PROTOCOL_V2 } as const;
 export const RUNTIME_PROVIDER_READINESS_V1 = 1 as const;
 export const RUNTIME_PROVIDER_READINESS_V2 = 2 as const;
 /** Frozen v1 wire vocabulary. Pi must never appear under version 1. */
@@ -35,6 +35,7 @@ export const RUNTIME_V0_CAPABILITIES = {
 } as const;
 
 export const RUNTIME_CAPABILITY = {
+  contextTreeSettings: "runtime.contextTreeSettings",
   agentRuntimeTest: "runtime.agentRuntimeTest",
   agentTrace: "runtime.agentTrace",
   channelTarget: "runtime.channelTarget",
@@ -51,6 +52,7 @@ export const RUNTIME_CAPABILITY = {
 } as const;
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
+  [RUNTIME_CAPABILITY.contextTreeSettings]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentRuntimeTest]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.channelTarget]: { min: 1, max: 1 },
@@ -67,8 +69,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
 } as const;
 
 export const RUNTIME_CLIENT_CAPABILITY_OFFERS = RUNTIME_SERVER_CAPABILITY_OFFERS;
-export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [];
-export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [];
+export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
+export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [RUNTIME_CAPABILITY.contextTreeSettings];
 
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;

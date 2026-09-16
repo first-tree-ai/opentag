@@ -3,6 +3,8 @@ export * from "./agent.js";
 export * from "./agent-setup.js";
 export * from "./auth.js";
 export * from "./computer.js";
+export { ContextTreeRepositorySchema } from "./context-tree.js";
+export * from "./context-tree-operation.js";
 export * from "./errors.js";
 export * from "./github-integration.js";
 export * from "./github-management.js";

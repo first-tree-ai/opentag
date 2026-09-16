@@ -18,7 +18,7 @@ Root-owned binaries on `PATH`, running as a non-root `runner` user with dedicate
 | --- | --- |
 | `node` | `v24.19.0` (`scripts/portable/node-version.txt`), image digest-pinned |
 | `pi` | `@earendil-works/pi-coding-agent@0.84.2` (locked under `scripts/runner/pi/`) |
-| `context-tree` | `@first-tree-ai/context-tree@0.1.14` from `apps/cli` (not a second pin) |
+| `context-tree` | `@first-tree-ai/context-tree@0.1.15` from `apps/cli` (not a second pin) |
 | `git` | inherited from the digest-pinned Node image (`2.39.5`, asserted at build; no apt download) |
 | `gh` | GitHub CLI `2.100.0`, checksum-verified linux/amd64 release |
 | `slack` / `lark-cli` | Reviewed Provider CLI catalog (Slack `4.7.0`, Lark `1.0.92`) with skip-update env/args |

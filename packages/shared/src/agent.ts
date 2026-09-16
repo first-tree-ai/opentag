@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ContextTreeRepositorySchema } from "./context-tree.js";
 import {
   AGENT_SLUG_MAX_LENGTH,
   RuntimeInstructionSchema,
@@ -47,6 +48,7 @@ export const AgentRuntimeConfigSchema = z
     reasoningEffort: RuntimeReasoningEffortSchema.nullable(),
     instructions: AgentInstructionsSchema,
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable(),
+    contextTreeRepository: ContextTreeRepositorySchema.nullable(),
   })
   .strict();
 

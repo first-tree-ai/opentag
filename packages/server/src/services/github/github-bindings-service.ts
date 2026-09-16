@@ -5,8 +5,8 @@ import {
   GitHubRepositoryBindingsSchema,
 } from "@opentag/shared";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
-import { agents, githubConnections } from "../../db/schema/index.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
+import { agents, githubConnections, imBindings } from "../../db/schema/index.js";
 import {
   GITHUB_ADMISSION_PROOF_MAX_AGE_MS,
   type GitHubRepositoryAdmissionProof,
@@ -63,16 +63,8 @@ export class GitHubBindingsService {
       const agentIds = [
         ...new Set(bindings.flatMap((binding) => binding.agentScopes.map((scope) => scope.agentId))),
       ].sort();
-      for (const agentId of agentIds) {
-        const [agent] = await transaction.select().from(agents).where(eq(agents.id, agentId)).for("update");
-        if (!agent || agent.createdByUserId !== accountId || agent.status === "deleted") {
-          throw new GitHubConnectionServiceError(
-            GITHUB_CONNECTION_ERROR_CODES.AGENT_OWNERSHIP_INVALID,
-            403,
-            "Every binding Agent must exist and belong to the connection's Account",
-          );
-        }
-      }
+      await assertAgentsOwned(transaction, agentIds, accountId);
+      await assertDelegatedImBindingsOwned(transaction, bindings, accountId);
       const [row] = await transaction
         .select()
         .from(githubConnections)
@@ -154,6 +146,70 @@ export class GitHubBindingsService {
       }
       return toGitHubConnectionStatus(updated);
     });
+  }
+}
+
+/** Every binding Agent must exist and belong to the connection's Account; locked in sorted ID order. */
+async function assertAgentsOwned(
+  transaction: DatabaseTransaction,
+  agentIds: string[],
+  accountId: string,
+): Promise<void> {
+  for (const agentId of agentIds) {
+    const [agent] = await transaction.select().from(agents).where(eq(agents.id, agentId)).for("update");
+    if (!agent || agent.createdByUserId !== accountId || agent.status === "deleted") {
+      throw new GitHubConnectionServiceError(
+        GITHUB_CONNECTION_ERROR_CODES.AGENT_OWNERSHIP_INVALID,
+        403,
+        "Every binding Agent must exist and belong to the connection's Account",
+      );
+    }
+  }
+}
+
+/**
+ * Owner task delegation names exact Account-owned IM bindings. Ownership (the binding's Agent's
+ * creator) never changes, so a plain read inside this transaction is authoritative; a binding the
+ * Account does not own — or one already disabled — can never be delegated to.
+ */
+async function assertDelegatedImBindingsOwned(
+  transaction: DatabaseTransaction,
+  bindings: GitHubRepositoryBinding[],
+  accountId: string,
+): Promise<void> {
+  const delegatedImBindingIds = [
+    ...new Set(
+      bindings.flatMap((binding) =>
+        binding.agentScopes.flatMap((scope) =>
+          (scope.taskDelegation?.imSenders ?? []).map((sender) => sender.bindingId),
+        ),
+      ),
+    ),
+  ].sort();
+  for (const delegatedBindingId of delegatedImBindingIds) {
+    const [delegated] = await transaction
+      .select({
+        id: imBindings.id,
+        bindingStatus: imBindings.status,
+        ownerAccountId: agents.createdByUserId,
+        agentStatus: agents.status,
+      })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(eq(imBindings.id, delegatedBindingId))
+      .limit(1);
+    if (
+      !delegated ||
+      delegated.ownerAccountId !== accountId ||
+      delegated.bindingStatus === "disabled" ||
+      delegated.agentStatus === "deleted"
+    ) {
+      throw new GitHubConnectionServiceError(
+        GITHUB_CONNECTION_ERROR_CODES.DELEGATED_IM_BINDING_INVALID,
+        403,
+        "Every delegated messaging identity must reference a current IM binding of the connection's Account",
+      );
+    }
   }
 }
 

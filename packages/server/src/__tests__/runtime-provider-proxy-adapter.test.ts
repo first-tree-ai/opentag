@@ -14,7 +14,7 @@ import {
 } from "../runtime-credentials/provider-proxy-adapter.js";
 import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
 import type { RuntimeSourceRecorder } from "../runtime-credentials/source-recorder.js";
-import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
+import { RUNTIME_URL_HANDLE_PATH_PREFIX, RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
 import type { RuntimeWriteJournal } from "../runtime-credentials/write-journal.js";
 import { RuntimeWriteJournalUnavailableError } from "../runtime-credentials/write-journal.js";
 import { FileSessionControlStore } from "../services/session-control-store/index.js";
@@ -354,7 +354,8 @@ describe("ImProviderProxyAdapter protected handles", () => {
       return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "text/plain" } });
     }) as typeof fetch;
     const recheck = vi.fn(async () => undefined);
-    const { instance, urlHandles } = adapter({ fetchImpl });
+    const source = recorder();
+    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: source });
     const handleId = urlHandles.create({
       executionId: EXECUTION,
       provider: "slack",
@@ -377,6 +378,9 @@ describe("ImProviderProxyAdapter protected handles", () => {
     ]);
     expect((calls[0]?.init.headers as Record<string, string> | undefined)?.authorization).toBe("Bearer real-token");
     expect(recheck).toHaveBeenCalledTimes(2);
+    expect(source.records).toHaveLength(1);
+    expect(source.records[0]).toMatchObject({ provider: "slack", resource: `handle:${handleId}`, sessionId: SESSION });
+    expect(JSON.stringify(source.records)).not.toContain("files.slack.com");
     expect(await readBody(response.body)).toBe(Buffer.from([1, 2, 3]).toString("utf8"));
   });
 
@@ -386,7 +390,8 @@ describe("ImProviderProxyAdapter protected handles", () => {
         status: 302,
         headers: { location: "https://evil.example.com/steal" },
       })) as typeof fetch;
-    const { instance, urlHandles } = adapter({ fetchImpl });
+    // A durable recorder keeps this test on the redirect policy rather than the recorder gate.
+    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: recorder() });
     const handleId = urlHandles.create({
       executionId: EXECUTION,
       provider: "slack",
@@ -399,6 +404,79 @@ describe("ImProviderProxyAdapter protected handles", () => {
         authorization(),
       ),
     ).rejects.toMatchObject({ code: "handle_invalid" });
+  });
+
+  it("requires a durable source record for a download handle minted by a write response", async () => {
+    const file = { id: "F1", thumb_360: "https://files.slack.com/files-tmb/T-F/thumb.png" };
+    const { instance, urlHandles } = adapter({
+      fetchImpl: (async () => jsonResponse({ ok: true, message: { files: [file] } })) as typeof fetch,
+    });
+    const write = await instance.handle(request({ body: jsonBody({ channel: "C1", text: "hi" }) }), authorization());
+    const payload = JSON.parse(await readBody(write.body)) as { message: { files: Array<{ thumb_360: string }> } };
+    const handlePath = new URL(payload.message.files[0]?.thumb_360 ?? "").pathname;
+    const handleId = handlePath.slice(RUNTIME_URL_HANDLE_PATH_PREFIX.length);
+    expect(
+      urlHandles.resolve(handleId, { executionId: EXECUTION, provider: "slack", kind: "download" })?.resource,
+    ).toBe("F1");
+
+    // The write only produced a write receipt, so the download still needs its own source record.
+    const downloads: string[] = [];
+    const strict = adapter({
+      fetchImpl: (async (input: Parameters<typeof fetch>[0]) => {
+        downloads.push(String(input));
+        return new Response("downloaded", { status: 200, headers: { "content-type": "text/plain" } });
+      }) as typeof fetch,
+      urlHandles,
+    });
+    await expect(
+      strict.instance.handle(request({ method: "GET", path: handlePath, body: bodyOf() }), authorization()),
+    ).rejects.toMatchObject({ code: "source_record_unavailable" });
+    expect(downloads).toHaveLength(0);
+  });
+
+  it("records handle.resource before exposing a write-created download", async () => {
+    const file = { id: "F1", thumb_360: "https://files.slack.com/files-tmb/T-F/thumb.png" };
+    const source = recorder();
+    const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
+      const url = String(input);
+      if (url.endsWith("/api/chat.postMessage")) return jsonResponse({ ok: true, message: { files: [file] } });
+      return new Response("downloaded body", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as typeof fetch;
+    const { instance } = adapter({ fetchImpl, sourceRecorder: source });
+    const write = await instance.handle(request({ body: jsonBody({ channel: "C1", text: "hi" }) }), authorization());
+    const payload = JSON.parse(await readBody(write.body)) as { message: { files: Array<{ thumb_360: string }> } };
+    const handlePath = new URL(payload.message.files[0]?.thumb_360 ?? "").pathname;
+
+    const response = await instance.handle(
+      request({ method: "GET", path: handlePath, body: bodyOf() }),
+      authorization(),
+    );
+    expect(response.status).toBe(200);
+    expect(source.records).toHaveLength(1);
+    expect(source.records[0]).toMatchObject({ provider: "slack", resource: "F1", sessionId: SESSION });
+    expect(JSON.stringify(source.records)).not.toContain("files.slack.com");
+    expect(await readBody(response.body)).toBe("downloaded body");
+  });
+
+  it("uses a bounded opaque fallback resource when a handle has no metadata", async () => {
+    const source = recorder();
+    const fetchImpl = (async () =>
+      new Response("data", { status: 200, headers: { "content-type": "text/plain" } })) as typeof fetch;
+    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: source });
+    const handleId = urlHandles.create({
+      executionId: EXECUTION,
+      provider: "slack",
+      kind: "download",
+      url: "https://files.slack.com/files-pri/T-F/report",
+    });
+    const response = await instance.handle(
+      request({ method: "GET", path: `${RUNTIME_URL_HANDLE_PATH_PREFIX}${handleId}`, body: bodyOf() }),
+      authorization(),
+    );
+    expect(response.status).toBe(200);
+    expect(source.records[0]).toMatchObject({ provider: "slack", resource: `handle:${handleId}`, sessionId: SESSION });
+    expect(JSON.stringify(source.records)).not.toContain("files.slack.com");
+    expect(await readBody(response.body)).toBe("data");
   });
 
   it("binds handles to the exact execution, provider, and kind", async () => {

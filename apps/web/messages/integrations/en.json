@@ -22,6 +22,7 @@
   "integrations_agent_github_delegation_senders_description": "Add the sender ID the messaging provider reports for this person.",
   "integrations_agent_github_delegation_title": "Who can ask {agent} to use this repository",
   "integrations_agent_github_description": "Choose which repositories {agent} may use, and who may ask for that work.",
+  "integrations_agent_github_discovery_truncated": "Only the first 1,000 repositories per installation can be listed. Some repositories are omitted; existing access is preserved.",
   "integrations_agent_github_error": "Repository access could not be saved.",
   "integrations_agent_github_installation_label": "Installation: {account}",
   "integrations_agent_github_load_more": "Load more repositories",

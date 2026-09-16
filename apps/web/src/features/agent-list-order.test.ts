@@ -463,7 +463,14 @@ describe("Agent availability model and presentation", () => {
       receiveMode: agent.receiveMode,
       status: agent.status,
       revision: 1,
-      runtimeConfig: { revision: 1, instructions: "Custom", model: null, reasoningEffort: null, maxDurationMs: null },
+      runtimeConfig: {
+        contextTreeRepository: null,
+        revision: 1,
+        instructions: "Custom",
+        model: null,
+        reasoningEffort: null,
+        maxDurationMs: null,
+      },
       createdAt: agent.updatedAt,
       updatedAt: agent.updatedAt,
     } satisfies AgentAdminConfig;

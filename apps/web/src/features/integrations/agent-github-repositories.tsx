@@ -49,6 +49,7 @@ type View =
       installations: GitHubDiscoveredInstallation[];
       repositories: GitHubDiscoveredRepository[];
       nextCursor: string | null;
+      truncated: boolean;
     };
 
 interface Draft {
@@ -248,6 +249,7 @@ async function resolveAgentGitHub(agentId: string): Promise<AgentGitHubLoaded> {
       installations: page.installations,
       repositories: page.repositories,
       nextCursor: page.nextCursor,
+      truncated: (page.truncatedInstallations?.length ?? 0) > 0,
     },
     workspaceAgents: agentsResponse.agents
       .filter((entry) => entry.id !== agentId)
@@ -301,6 +303,7 @@ export function AgentGitHubRepositories({ agentId }: { agentId: string }) {
         installations: page.installations,
         repositories: [...view.repositories, ...page.repositories],
         nextCursor: page.nextCursor,
+        truncated: view.truncated || (page.truncatedInstallations?.length ?? 0) > 0,
       });
     } catch (cause) {
       setError(errorMessage(cause, m.integrations_github_error_generic()));
@@ -537,6 +540,9 @@ function ReadyRepositories({
   return (
     <>
       <InstallationSummary installations={view.installations} repositories={view.repositories} />
+      {view.truncated ? (
+        <Banner role="status" title={m.integrations_agent_github_discovery_truncated()} variant="alert" />
+      ) : null}
       {view.repositories.length === 0 ? (
         <Text as="p" data-ui="agent-github-no-repositories" variant="secondary">
           {m.integrations_agent_github_no_repositories()}
@@ -801,7 +807,7 @@ function DelegationEditor({
         </Text>
       ) : null}
 
-      <fieldset className="grid gap-1">
+      <fieldset className="grid min-w-0 grid-cols-1 gap-1">
         <legend className="text-sm font-medium">{m.integrations_agent_github_delegation_agents()}</legend>
         {workspaceAgents.length === 0 ? (
           <Text as="p" variant="secondary">
@@ -832,7 +838,7 @@ function DelegationEditor({
         )}
       </fieldset>
 
-      <fieldset className="grid gap-2">
+      <fieldset className="grid min-w-0 grid-cols-1 gap-2">
         <legend className="text-sm font-medium">{m.integrations_agent_github_delegation_senders()}</legend>
         {imBindingId === undefined ? (
           <Text as="p" variant="secondary">
@@ -874,9 +880,10 @@ function DelegatedSenders({
       {draft.imSenders.length > 0 ? (
         <ul className="flex flex-wrap gap-2" data-ui="agent-github-delegation-senders">
           {draft.imSenders.map((sender) => (
-            <li key={`${sender.bindingId}:${sender.senderId}`}>
+            <li className="min-w-0 max-w-full" key={`${sender.bindingId}:${sender.senderId}`}>
               <Button
                 aria-label={m.integrations_agent_github_delegation_remove_sender({ sender: sender.senderId })}
+                className="max-w-full"
                 onClick={() =>
                   onChange((current) => ({
                     ...current,
@@ -889,7 +896,7 @@ function DelegatedSenders({
                 type="button"
                 variant="ghost"
               >
-                {`${sender.senderId} ×`}
+                <span className="min-w-0 truncate" title={sender.senderId}>{`${sender.senderId} ×`}</span>
               </Button>
             </li>
           ))}

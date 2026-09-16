@@ -77,11 +77,13 @@ function planRead(fullName: string, suffix: string, url: URL): GitHubRestPlan {
     suffix === "" ||
     /^\/pulls(?:\/[1-9]\d{0,9}(?:\/(?:files|commits|comments|reviews))?)?$/.test(suffix) ||
     /^\/issues\/[1-9]\d{0,9}\/comments$/.test(suffix);
-  const code = /^\/(?:branches(?:\/[^/]+)?|commits(?:\/[^/]+(?:\/(?:status|statuses))?)?|contents(?:\/.*)?)$/.test(
-    suffix,
-  );
+  // Branch names and commit refs may contain raw slashes (`/branches/feature/x`), which GitHub
+  // resolves verbatim; the safeRequestUrl guards (no `..`, no encoded separators, no backslash)
+  // still run first, so multi-segment captures cannot escape the registered route families.
+  // Encoded `%2F` slashes remain rejected — refs must be sent raw.
+  const code = /^\/(?:branches(?:\/.+)?|commits(?:\/.+)?|contents(?:\/.*)?)$/.test(suffix);
   const checks =
-    /^\/commits\/[^/]+\/(?:check-runs|check-suites)$/.test(suffix) ||
+    /^\/commits\/.+\/(?:check-runs|check-suites)$/.test(suffix) ||
     /^\/(?:check-runs|check-suites)\/[1-9]\d{0,19}$/.test(suffix);
   const actions = /^\/actions\/(?:runs(?:\/[1-9]\d{0,19}(?:\/jobs)?)?|jobs\/[1-9]\d{0,19})$/.test(suffix);
   if (!normal && !code && !checks && !actions) throw new GitPublicationError("scope_denied");

@@ -1,8 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ContextTreeManager, resolveContextTreePackage, runContextTreeCli } from "../runtime/context-tree.js";
-import { resolveContextTreeHome } from "../storage/context-tree-home.js";
 import { type AssembledContextTreeSkills, assembleContextTreeSkills } from "./skills.js";
 
 export interface DisposableContextTree {
@@ -43,18 +42,13 @@ export async function prepareDisposableContextTree(options: {
     // The CLI reports a flat payload: { created, branch, commitSha, treePath, ... }.
     const treePath = (created.payload as { treePath?: string } | undefined)?.treePath;
     if (!treePath) throw new Error("context-tree create did not return a tree path");
-    const layout = resolveContextTreeHome(environment);
-    await mkdir(layout.directory, { mode: 0o700, recursive: true });
-    await writeFile(
-      layout.configFile,
-      `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
-    );
     const manager = new ContextTreeManager({
       environment,
       home: options.home,
       contextTreePackage: assembled.package,
     });
-    const status = await manager.ensureAgent(options.workspace, "pi");
+    // The disposable account owns this managed tree; production Agents pass OWNER/REPO instead.
+    const status = await manager.ensureAgent(options.workspace, "pi", basename(treePath));
     if (status.status !== "ready") throw new Error(`Context Tree Pi ensure failed: ${JSON.stringify(status)}`);
     const verified = await runContextTreeCli(assembled.package, ["verify", "--tree-path", treePath, "--json"], {
       env: environment,

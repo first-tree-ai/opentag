@@ -29,6 +29,8 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
+type DomainBusinessFrame = Exclude<ClientRuntimeBusinessFrame, { type: "context-tree:operation:result" }>;
+
 type ProviderCliResultFrame = Extract<
   ClientRuntimeBusinessFrame,
   { type: "provider-cli:artifact:status" | "provider-cli:prewarm:result" | "provider-cli:validation:result" }
@@ -536,10 +538,10 @@ export class RuntimeDomainOwner {
     return {
       parse: (input) => {
         const parsed = ClientRuntimeBusinessFrameSchema.safeParse(input);
-        return parsed.success ? parsed.data : undefined;
+        return parsed.success && parsed.data.type !== "context-tree:operation:result" ? parsed.data : undefined;
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
-      handle: (frame, context) => this.handle(frame as ClientRuntimeBusinessFrame, context),
+      handle: (frame, context) => this.handle(frame as DomainBusinessFrame, context),
       failureResult: (frame) => businessFailureResult(frame),
       overloadResult: (frame) => businessFailureResult(frame),
       maxConcurrent: 32,
@@ -549,7 +551,7 @@ export class RuntimeDomainOwner {
   }
 
   async handle(
-    frame: ClientRuntimeBusinessFrame,
+    frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
@@ -1082,6 +1084,7 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
+  if (frame.type === "context-tree:operation:result") return `request:${frame.requestId}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
   if (frame.type === "im:steer:result") return `delivery:${frame.rootDeliveryId}`;

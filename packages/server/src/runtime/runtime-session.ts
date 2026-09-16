@@ -209,14 +209,10 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "A runtime handshake request is already in progress", 4400);
         return;
       }
-      if (
-        envelope.data.type === "auth" &&
-        envelope.data.protocolVersion !== RUNTIME_PROTOCOL_V1 &&
-        envelope.data.protocolVersion !== RUNTIME_PROTOCOL_V2
-      ) {
+      if (envelope.data.type === "auth" && envelope.data.protocolVersion !== RUNTIME_PROTOCOL_V2) {
         this.#fail(
           "PROTOCOL_VERSION_UNSUPPORTED",
-          "The runtime protocol version is unsupported",
+          "Update this Computer: Context Tree support requires runtime protocol v2",
           4400,
           envelope.data.requestId,
         );

@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
@@ -32,11 +32,16 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 
 async function runCli(args: readonly string[], environment: NodeJS.ProcessEnv): Promise<unknown> {
   if (!contextTreePackage) throw new Error("the Context Tree package must resolve");
-  const { stdout } = await execFileAsync(process.execPath, [contextTreePackage.cliPath, ...args], {
-    encoding: "utf8",
-    env: environment,
-  });
-  return JSON.parse(stdout.trim());
+  try {
+    const { stdout } = await execFileAsync(process.execPath, [contextTreePackage.cliPath, ...args], {
+      encoding: "utf8",
+      env: environment,
+    });
+    return JSON.parse(stdout.trim());
+  } catch (error) {
+    const detail = error as { stderr?: string; stdout?: string; message?: string };
+    throw new Error(`Context Tree CLI failed: ${detail.stderr || detail.stdout || detail.message || "no output"}`);
+  }
 }
 
 /**
@@ -50,36 +55,73 @@ async function isolatedAccount(prefix: string): Promise<{
   environment: NodeJS.ProcessEnv;
   manager: ContextTreeManager;
 }> {
-  const accountHome = await temporaryDirectory(`${prefix}-account-`);
+  const accountHome = await realpath(await temporaryDirectory(`${prefix}-account-`));
   await writeFile(
     join(accountHome, ".gitconfig"),
     "[user]\n\tname = OpenTag Test\n\temail = opentag-test@localhost\n[init]\n\tdefaultBranch = master\n",
     "utf8",
   );
-  const environment: NodeJS.ProcessEnv = { HOME: accountHome, PATH: process.env.PATH };
+  const gitBin = await temporaryDirectory(`${prefix}-git-bin-`);
+  const gitShim = join(gitBin, "git");
+  const environment: NodeJS.ProcessEnv = { HOME: accountHome, PATH: `${gitBin}${delimiter}${process.env.PATH ?? ""}` };
   const seed = await temporaryDirectory(`${prefix}-seed-`);
   const { treePath } = (await runCli(["create", "--project-path", seed, "--json"], environment)) as {
     treePath: string;
   };
+  await execFileAsync("/usr/bin/git", ["-C", treePath, "config", "receive.denyCurrentBranch", "updateInstead"]);
 
   previousHome = process.env.HOME;
   homeWasSet = true;
   process.env.HOME = accountHome;
 
   const openTagHome = await temporaryDirectory(`${prefix}-home-`);
-  const layout = resolveContextTreeHome(environment);
-  await mkdir(layout.directory, { mode: 0o700, recursive: true });
+  // The real CLI verifies the clone's origin remains GitHub-shaped. Intercept just this fixture's
+  // clone, then restore the requested origin so its production identity check still executes.
   await writeFile(
-    layout.configFile,
-    `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
+    gitShim,
+    `#!/bin/sh
+root=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-C" ]; then root="$argument"; fi
+  previous="$argument"
+done
+case " $* " in
+  *" clone "*)
+    set -- $@
+    for argument in "$@"; do destination="$argument"; done
+    /usr/bin/git -C "$root" clone --quiet --origin origin -- "file://${treePath}" "$destination" || exit $?
+    /usr/bin/git -C "$destination" remote set-url origin "https://github.com/acme/memory.git"
+    exit $?
+    ;;
+  *" fetch "*|*" push "*|*" pull "*)
+    exec /usr/bin/git -c "url.file://${treePath}.insteadOf=https://github.com/acme/memory.git" "$@"
+    ;;
+esac
+if [ "$1" = "-C" ]; then
+  shift 2
+fi
+if [ "$1" = clone ]; then
+  for argument in "$@"; do destination="$argument"; done
+  /usr/bin/git -C "$root" clone --quiet --origin origin -- "file://${treePath}" "$destination" || exit $?
+  /usr/bin/git -C "$destination" remote set-url origin "https://github.com/acme/memory.git"
+  exit $?
+fi
+if [ -n "$root" ]; then exec /usr/bin/git -C "$root" "$@"; fi
+exec /usr/bin/git "$@"
+`,
     "utf8",
   );
+  await chmod(gitShim, 0o700);
+  const connected = (await runCli(["connect", "acme/memory", "--project-path", seed, "--json"], environment)) as {
+    tree: { path: string };
+  };
   const manager = new ContextTreeManager({
     environment,
     home: openTagHome,
     ...(contextTreePackage ? { contextTreePackage } : {}),
   });
-  return { accountHome, openTagHome, treePath, environment, manager };
+  return { accountHome, openTagHome, treePath: connected.tree.path, environment, manager };
 }
 
 /** Write one member memory node through the real isolated-worktree protocol. */
@@ -110,10 +152,12 @@ describe("Context Tree end-to-end", () => {
     });
     expect(stdout.trim()).not.toBe("");
     expect(await readdir(cwd)).toEqual([]);
-    await expect(readFile(resolveContextTreeHome({ HOME: home }).configFile)).rejects.toMatchObject({
+    await expect(
+      readFile(join(resolveContextTreeHome({ HOME: home }).directory, "opentag.json")),
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
-    expect(await readdir(home)).toEqual(["context-tree"]);
+    expect(await readdir(home)).toContain("context-tree");
   });
 
   it("connects two Agent workspaces on one Computer to the same shared tree", async () => {
@@ -123,10 +167,10 @@ describe("Context Tree end-to-end", () => {
     const workspaceA = await temporaryDirectory("opentag-ct-agent-a-");
     const workspaceB = await temporaryDirectory("opentag-ct-agent-b-");
 
-    const first = await manager.ensureAgent(workspaceA);
+    const first = await manager.ensureAgent(workspaceA, "codex", "acme/memory");
     expect(first).toEqual({ status: "ready", treePath });
     // Sharing one tree across Agents is the point of the feature, so both must land on it.
-    await expect(manager.ensureAgent(workspaceB)).resolves.toEqual(first);
+    await expect(manager.ensureAgent(workspaceB, "codex", "acme/memory")).resolves.toEqual(first);
 
     for (const workspace of [workspaceA, workspaceB]) {
       for (const file of ["AGENTS.md", "CLAUDE.md"]) {
@@ -164,7 +208,9 @@ describe("Context Tree end-to-end", () => {
       ...(contextTreePackage ? { contextTreePackage } : {}),
     });
 
-    await expect(manager.ensureAgent(await temporaryDirectory("opentag-ct-custom-codex-agent-"))).resolves.toEqual({
+    await expect(
+      manager.ensureAgent(await temporaryDirectory("opentag-ct-custom-codex-agent-"), "codex", "acme/memory"),
+    ).resolves.toEqual({
       status: "ready",
       treePath,
     });
@@ -186,8 +232,8 @@ describe("Context Tree end-to-end", () => {
     await mkdir(join(accountHome, ".codex"), { mode: 0o700, recursive: true });
     const writer = await temporaryDirectory("opentag-ct-writer-");
     const reader = await temporaryDirectory("opentag-ct-reader-");
-    await expect(manager.ensureAgent(writer)).resolves.toMatchObject({ status: "ready" });
-    await expect(manager.ensureAgent(reader)).resolves.toMatchObject({ status: "ready" });
+    await expect(manager.ensureAgent(writer, "codex", "acme/memory")).resolves.toMatchObject({ status: "ready" });
+    await expect(manager.ensureAgent(reader, "codex", "acme/memory")).resolves.toMatchObject({ status: "ready" });
 
     const { worktreePath } = (await runCli(["prepare-write", "--project-path", writer], environment)) as {
       worktreePath: string;
@@ -198,6 +244,10 @@ describe("Context Tree end-to-end", () => {
       ["finish-write", "--worktree-path", worktreePath, "--message", message, "--project-path", writer],
       environment,
     );
+    if (!contextTreePackage) throw new Error("the Context Tree package must resolve");
+    await execFileAsync(process.execPath, [contextTreePackage.cliPath, "sync", "--project-path", reader], {
+      env: environment,
+    });
 
     // Agent B, in a different workspace, reads it from the shared tree.
     const read = (await runCli(
@@ -209,10 +259,14 @@ describe("Context Tree end-to-end", () => {
 
   it("keeps a Session startable when the configured tree has been removed", async () => {
     const { treePath, manager } = await isolatedAccount("opentag-ct-gone");
-    await rm(treePath, { force: true, recursive: true });
+    await writeFile(join(treePath, "NODE.md"), "invalid tree");
 
     // Optional memory: a destroyed tree is reported, never thrown.
-    const status = await manager.ensureAgent(await temporaryDirectory("opentag-ct-agent-gone-"));
+    const status = await manager.ensureAgent(
+      await temporaryDirectory("opentag-ct-agent-gone-"),
+      "codex",
+      "acme/memory",
+    );
     expect(status.status).toBe("unavailable");
   });
 });

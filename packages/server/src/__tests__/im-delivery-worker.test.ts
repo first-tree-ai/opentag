@@ -1644,6 +1644,7 @@ async function workerFixture(unit: UnitDatabase) {
     expiresAt: new Date(now.getTime() + 60_000),
   });
   const runtime = {
+    contextTreeRepository: null,
     revision: { agent: { sequence: 1, id: agentId }, session: { sequence: 1, id: sessionId } },
     agentId,
     provider: "codex" as const,

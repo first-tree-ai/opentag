@@ -21,6 +21,7 @@ import {
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
+  agentContextTreePath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
@@ -37,6 +38,9 @@ import {
   ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
   ComputerConnectCodeStatusSchema,
+  type ContextTreeOperationRequest,
+  type ContextTreeOperationResponse,
+  ContextTreeOperationResponseSchema,
   type CreateAgentRequest,
   type EmailSignInRequest,
   type EmailSignUpRequest,
@@ -298,6 +302,14 @@ export class BrowserApi {
   updateAgent(agentId: string, input: UpdateAgentRequest): Promise<AgentAdminConfig> {
     return this.request(agentByIdPath(agentId), AgentAdminConfigSchema, {
       method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  contextTreeOperation(agentId: string, input: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
+    return this.request(agentContextTreePath(agentId), ContextTreeOperationResponseSchema, {
+      method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });

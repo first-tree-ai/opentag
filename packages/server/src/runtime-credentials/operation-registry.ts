@@ -19,6 +19,12 @@ export interface ProviderOperation {
   response: ProviderOperationResponse;
   /** Read-only identity operations a validation-purpose capability may call. */
   validationAllowed?: boolean;
+  /**
+   * Durable source-recording requirement for reads. Reads default to `"required"`: protected
+   * output must be recorded before it is exposed, and a failing recorder fails the response.
+   * `"exempt"` is reserved for identity/public operations that return no protected resource.
+   */
+  sourceRecord?: "required" | "exempt";
   maxBodyBytes?: number;
   maxResponseBytes?: number;
   resource?(params: Record<string, string>, body: unknown, query: URLSearchParams): string | undefined;
@@ -135,6 +141,14 @@ export class ProviderProxyBodyTooLargeError extends Error {
     super("The provider request body exceeds the registered bound");
     this.name = "ProviderProxyBodyTooLargeError";
   }
+}
+
+/**
+ * True when a read must durably record its protected output before returning it. Reads default
+ * to required; only explicit identity/public operation metadata opts out.
+ */
+export function operationRequiresSourceRecord(operation: ProviderOperation): boolean {
+  return operation.kind === "read" && operation.sourceRecord !== "exempt";
 }
 
 /** Bounded body buffering used only for operations registered with a parsed body kind. */

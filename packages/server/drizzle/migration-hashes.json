@@ -218,7 +218,12 @@
     },
     {
       "idx": 43,
-      "tag": "0043_wet_xorn",
+      "tag": "0043_cultured_dark_beast",
+      "sha256": "04c7fd339804a28ec4844aeb1ea85fe449c691e6f81134ac2df82032dfdf37d8"
+    },
+    {
+      "idx": 44,
+      "tag": "0044_wet_xorn",
       "sha256": "c9a72fc1ac64d504466bf2994af4e9323e0f2f101589c01c65e4b8f0ce268fe6"
     }
   ]

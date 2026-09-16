@@ -261,6 +261,7 @@ function directDelivery(): DirectImMessageDeliveryRequest {
     attention: "direct",
     content: { kind: "text", text: "hello", providerRef: providerRef() },
     runtime: {
+      contextTreeRepository: null,
       revision: {
         agent: { sequence: 1, id: "agent-revision" },
         session: { sequence: 1, id: "session-revision" },
@@ -285,6 +286,7 @@ function collaborationDelivery(targetSessionId: string): SessionMessageDeliveryR
     agentId,
     placementGeneration: 1,
     runtime: {
+      contextTreeRepository: null,
       revision: { agent: { sequence: 1, id: "a".repeat(64) }, session: { sequence: 1, id: "b".repeat(64) } },
       agentId,
       provider: "codex",

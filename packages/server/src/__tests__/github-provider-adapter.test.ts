@@ -179,6 +179,20 @@ describe("production GitHub provider adapter", () => {
     ).rejects.toThrow();
     expect(writeCount).toBe(1);
   });
+  it("passes through ordinary response text that merely resembles an https URL", async () => {
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/repositories/123") return (original as typeof fetch)(url, init);
+      return Response.json({
+        body: "https://",
+        note: "https://exa mple.com/not-a-url",
+        nested: [{ text: "https://" }],
+      });
+    });
+    const response = await adapter.handle(request("/repos/owner/repository"), authorization);
+    expect(await responseJson(response)).toMatchObject({ body: "https://", note: "https://exa mple.com/not-a-url" });
+  });
   it("does not return a token-bearing URL from a provider response", async () => {
     writeBehavior = "secret";
     await expect(
@@ -269,6 +283,32 @@ describe("production GitHub provider adapter", () => {
       }),
     ).toThrow();
   });
+  it("plans raw multi-segment branch and commit refs while encoded separators stay denied", async () => {
+    for (const path of [
+      "/repos/owner/repository/branches/feature/topic",
+      "/repos/owner/repository/commits/feature/topic",
+      "/repos/owner/repository/commits/feature/topic/status",
+      "/repos/owner/repository/commits/feature/topic/statuses",
+    ])
+      expect(planGitHubRest("GET", new URL(`https://api.github.com${path}`))).toMatchObject({
+        operation: "read",
+        codeOnly: true,
+      });
+    expect(
+      planGitHubRest("GET", new URL("https://api.github.com/repos/owner/repository/commits/feature/topic/check-runs")),
+    ).toMatchObject({ operation: "read", extraPermission: "checks" });
+    // Empty ref segments and encoded or dot-segment escapes never reach the planner.
+    expect(() => planGitHubRest("GET", new URL("https://api.github.com/repos/owner/repository/branches/"))).toThrow();
+    mint.mockClear();
+    for (const path of [
+      "/repos/owner/repository/branches/feature%2Ftopic",
+      "/repos/owner/repository/branches/..%2f..",
+      "/repos/owner/repository/commits/../main",
+    ])
+      await expect(adapter.handle(request(path), authorization)).rejects.toThrow();
+    expect(mint).not.toHaveBeenCalled();
+  });
+
   it("registers bounded CI reads and rejects authentication or administrative operations", () => {
     expect(
       planGitHubRest("GET", new URL("https://api.github.com/repos/owner/repository/actions/runs?per_page=100")),

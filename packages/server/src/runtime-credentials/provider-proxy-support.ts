@@ -36,7 +36,6 @@ export const REQUEST_HEADER_REJECT = new Set([
 ]);
 export const RESPONSE_HEADER_ALLOWLIST = new Set([
   "content-type",
-  "content-length",
   "content-disposition",
   "cache-control",
   "retry-after",

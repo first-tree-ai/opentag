@@ -166,12 +166,21 @@ export const GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE = 100;
  * One page of the repository discovery stream. `installations` repeats the current installation
  * list on every page so a late reader can render install state without a second call; `nextCursor`
  * is an opaque server-owned continuation — callers treat it as unreadable and never construct one.
+ * One installation is listed at most ten pages deep; `truncatedInstallations` names every
+ * installation whose repositories exceed that bound, so a partial listing is always explicit and
+ * never presented as exhaustive.
  */
 export const GitHubRepositoryDiscoveryPageSchema = z
   .object({
     installations: z.array(GitHubDiscoveredInstallationSchema).max(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS),
     repositories: z.array(GitHubDiscoveredRepositorySchema).max(GITHUB_REPOSITORY_DISCOVERY_PAGE_SIZE),
     nextCursor: z.string().min(1).max(512).nullable(),
+    // The server always emits this; it is optional so readers and fixtures keep accepting a
+    // server that predates explicit truncation marking.
+    truncatedInstallations: z
+      .array(GitHubDecimalIdSchema)
+      .max(GITHUB_REPOSITORY_DISCOVERY_MAX_INSTALLATIONS)
+      .optional(),
   })
   .strict();
 export type GitHubRepositoryDiscoveryPage = z.infer<typeof GitHubRepositoryDiscoveryPageSchema>;

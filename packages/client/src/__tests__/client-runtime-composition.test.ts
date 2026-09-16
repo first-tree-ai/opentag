@@ -6,13 +6,14 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type ContextTreeOperationFrame,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
@@ -47,6 +48,7 @@ import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-ma
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -81,6 +83,161 @@ describe("createClientRuntime production composition", () => {
     } finally {
       runtime.stop();
       await runtime.run();
+    }
+  });
+
+  it("passes a caller-supplied host Context Tree environment into runtime preparation", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-host-environment-");
+    const ensureAgent = vi
+      .spyOn(contextTreeModule.ContextTreeManager.prototype, "ensureAgent")
+      .mockResolvedValue({ status: "unconfigured" });
+    cleanup.push(async () => {
+      ensureAgent.mockRestore();
+    });
+    const trustedEnvironment: Readonly<Record<string, string | undefined>> = {
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/context-tree", role: "context_tree" }]),
+      HTTPS_PROXY: "http://127.0.0.1:43119",
+    };
+    const requestedSessions: string[] = [];
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+      runtimeCredentials: {
+        contextTreeEnvironment: (sessionId) => {
+          requestedSessions.push(sessionId);
+          return trustedEnvironment;
+        },
+      },
+    });
+    const executionEnvironment = vi.spyOn(runtime.credentialEnvironment, "executionEnvironmentForSession");
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(requestedSessions).toEqual(["session-1"]);
+      expect(ensureAgent).toHaveBeenCalledTimes(1);
+      const [cwd, provider, repository, environment] = ensureAgent.mock.calls[0] ?? [];
+      expect(cwd).toBe(await runtime.workspace.cwd("agent-1"));
+      expect(provider).toBe("pi");
+      expect(repository).toBeNull();
+      expect(environment).toBe(trustedEnvironment);
+      // The trusted host mapping must win before the proxy execution environment is consulted.
+      expect(executionEnvironment).not.toHaveBeenCalled();
+    } finally {
+      executionEnvironment.mockRestore();
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("does not reuse the Sandbox execution environment when Cloud has no host Context Tree mapping", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-cloud-absent-mapping-");
+    const ensureAgent = vi
+      .spyOn(contextTreeModule.ContextTreeManager.prototype, "ensureAgent")
+      .mockResolvedValue({ status: "unconfigured" });
+    cleanup.push(async () => {
+      ensureAgent.mockRestore();
+    });
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+      runtimeCredentials: {
+        sandboxForSession: () => ({
+          sandboxId: randomUUID(),
+          resourceUid: "runtime-sandbox-resource",
+          environmentGeneration: 1,
+        }),
+      },
+    });
+    const executionEnvironment = vi.spyOn(runtime.credentialEnvironment, "executionEnvironmentForSession");
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(ensureAgent).toHaveBeenCalledTimes(1);
+      // Cloud keeps the Sandbox loopback out of Context Tree preparation until a trusted
+      // Runner-side mapping exists, so no execution environment argument is passed.
+      expect(ensureAgent.mock.calls[0]).toHaveLength(3);
+      expect(executionEnvironment).not.toHaveBeenCalled();
+    } finally {
+      executionEnvironment.mockRestore();
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("dispatches the caller-supplied managed environment to Context Tree settings operations", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-management-environment-");
+    const connection = runtimeConnection();
+    const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+    const subscribe = connection.subscribeBusinessFrames.bind(connection);
+    const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+      listeners.push(listener);
+      return subscribe(listener);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+      sent.push(frame as Record<string, unknown>);
+    });
+    const managementEnvironments = vi.fn(() => ({
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/other", role: "context_tree" }]),
+      HTTPS_PROXY: "http://127.0.0.1:43119",
+    }));
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      runtimeCredentials: { contextTreeManagementEnvironment: managementEnvironments },
+    });
+    let running: Promise<void> | undefined;
+    try {
+      running = runtime.run().catch(() => undefined);
+      const frame: ContextTreeOperationFrame = {
+        type: "context-tree:operation",
+        requestId: randomUUID(),
+        agentId: randomUUID(),
+        computerId: connection.installationId,
+        requireStopped: false,
+        input: {
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          expectedRuntimeConfigRevision: 1,
+          action: "connect",
+          repository: "acme/trusted",
+        },
+      };
+      for (const listener of listeners) await listener(frame);
+      // `permission_denied` proves the managed environment reached the settings gate: without the
+      // composition injection the managed operation would fail `authentication_required` instead.
+      expect(managementEnvironments).toHaveBeenCalled();
+      expect(sent).toContainEqual({
+        type: "context-tree:operation:result",
+        requestId: frame.requestId,
+        result: { status: "failed", code: "permission_denied" },
+      });
+      runtime.stop();
+      await running;
+    } finally {
+      runtime.stop();
+      await running;
+      send.mockRestore();
+      businessFrames.mockRestore();
     }
   });
 
@@ -1032,24 +1189,17 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
           observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1108,28 +1258,21 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, true);
+          completeAuth(socket, frame, true);
           return;
         }
         if (frame.type === "computer:register") {
           for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
             observed.push(item.status);
           }
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
             observed.push(item.status);
           }
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1212,22 +1355,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1268,11 +1404,11 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame);
+          completeAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           registered();
         }
       });
@@ -1395,23 +1531,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex", "claude-code"]);
+          completeAuth(socket, frame, ["codex", "claude-code"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           heartbeats.push(frame);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1513,22 +1642,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1582,22 +1704,15 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -1663,23 +1778,16 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeLegacyAuth(socket, frame, ["codex"]);
+          completeAuth(socket, frame, ["codex"]);
           return;
         }
         if (frame.type === "computer:register") {
-          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(registrationResult(frame)));
           return;
         }
         if (frame.type === "heartbeat") {
           heartbeats.push(frame);
-          socket.send(
-            JSON.stringify({
-              type: "heartbeat:result",
-              requestId: frame.requestId,
-              ok: true,
-              serverTime: new Date().toISOString(),
-            }),
-          );
+          socket.send(JSON.stringify(heartbeatResult(frame)));
         }
       });
     });
@@ -2210,45 +2318,6 @@ function runtimeConnection(
   });
 }
 
-function completeLegacyAuth(
-  socket: WebSocket,
-  frame: Record<string, unknown>,
-  providerReadiness: boolean | readonly string[] = false,
-): void {
-  if (frame.protocolVersion !== 1) {
-    socket.send(
-      JSON.stringify({
-        type: "error",
-        requestId: frame.requestId,
-        code: "PROTOCOL_VERSION_UNSUPPORTED",
-        message: "The test Server supports runtime protocol v1 only",
-      }),
-    );
-    socket.close(4400, "Protocol version unsupported");
-    return;
-  }
-  socket.send(
-    JSON.stringify({
-      type: "auth:result",
-      requestId: frame.requestId,
-      ok: true,
-      computerId: randomUUID(),
-      installationId: randomUUID(),
-    }),
-  );
-  const providers = Array.isArray(providerReadiness) ? providerReadiness : providerReadiness ? ["codex"] : undefined;
-  socket.send(
-    JSON.stringify({
-      type: "server:welcome",
-      protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
-      ...(providers ? { providerReadiness: { version: 1, providers } } : {}),
-      heartbeatIntervalMs: 10,
-      heartbeatTimeoutMs: 100,
-    }),
-  );
-}
-
 async function writeReadyImClis(home: string): Promise<{ lark: string; slack: string }> {
   const lark = resolve(home, "lark-cli");
   const slack = resolve(home, "slack");
@@ -2306,6 +2375,7 @@ function reconcileRequest(computerId: string, runtime: EffectiveRuntimeSnapshot)
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

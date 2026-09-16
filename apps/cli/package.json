@@ -51,7 +51,7 @@
     "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {
-    "@first-tree-ai/context-tree": "0.1.14"
+    "@first-tree-ai/context-tree": "0.1.15"
   },
   "devDependencies": {
     "@opentag/client": "workspace:*",

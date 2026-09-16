@@ -10,7 +10,7 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 
 用户凭证只用于控制面的仓库准入证明，Git 与仓库操作使用 App installation access token（IAT）。IAT 客户端只请求单个仓库与明确权限，校验实际令牌范围并支持撤销。调用者必须先确认 Account、Agent、仓库和执行权限；管理响应与 Sandbox 都不能收到真实平台令牌。仓库名仅用于展示，授权使用稳定 repository/installation ID。Code 与 Context Tree 使用不同角色和发布策略，Tree 必须指定完整分支 ref。配置写入重新核验 Agent 所有权与预期授权版本。
 
-授权版本与凭证代次不同：范围变更、断开连接和权限丢失使运行期授权失效；正常用户令牌刷新只推进凭证代次。刷新和 OAuth 完成均比较捕获的身份与版本，晚到响应不能恢复已断开的连接。刷新结果不确定时需要重新授权，不能自动重复消费 refresh token。
+授权版本与凭证代次不同：范围变更、断开连接和权限丢失使运行期授权失效；正常用户令牌刷新只推进凭证代次。刷新和 OAuth 完成均比较捕获的身份与版本，晚到响应不能恢复已断开的连接。刷新结果不确定时需要重新授权，不能自动重复消费 refresh token。本地凭证信封认证失败不属于结果不确定：请求从未发送到 GitHub，刷新 claim 原样释放，凭证保留待后续重试。定期复查发现 access token 已过期时按 transient 推迟，由刷新流程负责过期恢复，预期的 401 不会清除仍可恢复的 refresh 凭证。在 access token 过期之时或之后返回的凭证失效响应同样按 transient 推迟。刷新成功同时推进复查代次（不推进授权版本），针对旧凭证得出的判定永远不能落到新凭证上，运行期授权保持有效。
 
 健康连接默认每五分钟复查；webhook 仅提前复查时间，每次 GitHub 运行期请求仍证明当前用户准入。worker 和过期 OAuth 清理每批最多 100 行，过期清理先锁定候选行。没有 webhook 的活跃连接也会复查。IM 继续用 generation 作为保守授权版本，同时校验 Slack 安装、绑定、Agent revision 和 placement。
 
@@ -22,7 +22,7 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 
 ## 管理与执行
 
-按 `.env.example` 完整配置 GitHub App，OAuth 回调必须准确匹配 `OPENTAG_PUBLIC_URL` 下的回调路径。Account 页面连接或重新授权 GitHub；Agent 集成页面选择仓库、角色、权限、发布模式、Tree 分支与所有者设定的任务委托。Server 执行 CSRF、PKCE、App 身份校验、webhook 签名验证和维护 worker；未配置 App 时界面显示不可用。
+按 `.env.example` 完整配置 GitHub App，OAuth 回调必须准确匹配 `OPENTAG_PUBLIC_URL` 下的回调路径。Account 页面连接或重新授权 GitHub；Agent 集成页面选择仓库、角色、权限、发布模式、Tree 分支与所有者设定的任务委托。Server 执行 CSRF、PKCE、App 身份校验、webhook 签名验证和维护 worker；未配置 App 时界面显示不可用。仓库发现每个 installation 最多列出十页（1000 个仓库），未能完整列出的 installation 在 `truncatedInstallations` 中显式标注。绑定写入对请求的每个绑定执行 GitHub 实时准入验证，超出单次验证可覆盖页数的配置会被拒绝；委托的 IM 绑定必须是当前 Account 持有的有效绑定，在同一事务中校验。管理路由将 GitHub 上游失败映射为有界的公开错误码。
 
 运行期协商 `runtime.runtimeCredential` 与 `runtime.providerProxy`。开启 execution 绑定 Account、Agent revision、已接受任务来源、Session placement、当前 Computer 连接，以及 Cloud Sandbox generation。猜到 Session ID 或来自无关 IM 发送者都不足以取得权限。签发、续期、每次请求和长流均重新核验。
 
@@ -38,7 +38,11 @@ Agent 继续使用 `git`、`gh`、`slack api`、`lark-cli` 原生命令名与参
 
 Git smart HTTP 在可信 Server 网关终止，读取来自有资源上限的临时仓库快照。写入先完整暂存 receive-pack，校验旧 ref、对象完整性、快进关系、允许引用及资源限制，再用预期引用 lease 原子发布并确认远端 SHA。IAT 仅授权单仓库和明确权限，按请求持有，在请求结束及 execution 关闭时撤销。撤销接口成功和另一次请求证明令牌失效是不同验收证据。
 
-Code 写入使用 `refs/heads/opentag/<session-id>/code/`；Tree direct 只能写配置分支，Tree PR 使用 `refs/heads/opentag/<session-id>/context_tree/`。Code 读取覆盖所选仓库的全部分支；Tree-only 读取只暴露配置分支和本 Session 工作分支。发布 Tree commit 或创建/更新其 PR 时，在 Agent 容器外用固定版本 `@first-tree-ai/context-tree` 验证实际提交 SHA。拒绝 gitlink 和任意软链接，仅允许工具生成的根目录 `CLAUDE.md -> AGENTS.md`。
+Code 写入使用 `refs/heads/opentag/<session-id>/code/`；Tree direct 只能写配置分支，Tree PR 使用 `refs/heads/opentag/<session-id>/context_tree/`。Code 读取覆盖所选仓库的全部分支；Tree-only 读取只暴露配置分支和本 Session 工作分支。快照注入不把远端 ref 模式匹配当作权威：远端返回的每个 ref 在抓取前都按已授权的确切 ref 与 Session 任务前缀在本地重新过滤。发布 Tree commit 或创建/更新其 PR 时，在 Agent 容器外用固定版本 `@first-tree-ai/context-tree` 验证实际提交 SHA。拒绝 gitlink 和任意软链接，仅允许工具生成的根目录 `CLAUDE.md -> AGENTS.md`。
+
+托管 Context Tree 准备使用当前 execution 环境，返回缓存的 ready 状态前也必须确认具有 `context_tree` 仓库授权。设置页的 connect/create 还需要可信管理环境；当前设置帧没有已接受的任务来源，不会自行创建这项授权。代理模式缺少该环境时明确返回需要认证，不会使用主机已有 Git 凭证；Local legacy 设置保持可用。Cloud 主机必须提供 Runner 侧的可信 Context Tree 环境，因为命令容器内的 loopback 地址不能直接在 Runner 上使用。
+
+**资源限制。** 读取快照与发布暂存使用有固定默认值上限的 Server 工作区：最多 4 个并发读取快照和 4 个并发发布，每次操作 120 秒预算，各自 512 MiB 工作区上限。receive-pack 请求的 pack 数据最多 64 MiB；upload-pack 请求体最多 1 MiB，流式响应最多 512 MiB。暂存后的对象校验覆盖整个暂存仓库——已注入历史加收到的 pack——而非仅针对传入 pack：对象总数上限 100 000，单个对象上限 64 MiB，未压缩对象总大小上限 512 MiB；`git fsck --strict` 同样覆盖包含注入历史在内的整个暂存仓库。已注入历史超出这些总量的仓库无法通过该网关发布。这是有边界暂存设计有意为之的当前约束，对注入历史、传入 pack 与接收对象一致适用。
 
 GitHub 代理解析 REST 路由与 GraphQL AST，处理 alias、fragment、variable 和 node identity。PR 修改核验仓库、本 Session head 与允许 base；Tree-only 查询固定在配置 base。没有任意 GitHub API 转发、任意 Git 对象写入、合并权限或分支保护绕过。
 

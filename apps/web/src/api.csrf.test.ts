@@ -77,6 +77,10 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],
+  contextTreeOperation: [
+    ID,
+    { action: "disconnect", operationId: ID, expectedRevision: 1, expectedRuntimeConfigRevision: 1, repository: null },
+  ],
   internalToolsOffered: [],
   githubIntegration: [],
   startGitHubAuthorization: [{ intent: "create", returnSurface: "account-integrations", agentId: null }],

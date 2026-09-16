@@ -12,7 +12,7 @@ import type { GitRefUpdate } from "../services/github-proxy/git-packets.js";
 import type { GitProcessOptions } from "../services/github-proxy/git-process.js";
 import { GitPublicationGuard } from "../services/github-proxy/git-publication.js";
 import { GitReadTransport } from "../services/github-proxy/git-read-transport.js";
-import type { PublicationRemote } from "../services/github-proxy/git-remote.js";
+import { type PublicationRemote, seedRefspecsForAllowedRefs } from "../services/github-proxy/git-remote.js";
 import { FileSessionControlStore } from "../services/session-control-store/index.js";
 
 const exec = promisify(execFile);
@@ -26,11 +26,14 @@ async function git(cwd: string, args: string[]) {
 class FixtureRemote implements PublicationRemote {
   async seed(repository: string, _options: GitProcessOptions, refs?: readonly string[]) {
     const lines = await git(root, ["ls-remote", "--heads", upstream, ...(refs ?? [])]);
-    const names = lines
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => line.split("\t")[1] as string);
-    if (names.length) await git(repository, ["fetch", upstream, ...names.map((ref) => `+${ref}:${ref}`)]);
+    // The fixture shares the production filter: remote pattern matching is never the authority.
+    const refspecs = refs
+      ? seedRefspecsForAllowedRefs(lines, refs)
+      : lines
+          .split("\n")
+          .filter(Boolean)
+          .map((line) => `+${line.split("\t")[1] as string}:${line.split("\t")[1] as string}`);
+    if (refspecs.length) await git(repository, ["fetch", upstream, ...refspecs]);
   }
   async publish(repository: string, updates: GitRefUpdate[]) {
     await git(repository, ["push", "--atomic", upstream, ...updates.map((update) => `${update.newSha}:${update.ref}`)]);
@@ -149,6 +152,36 @@ describe("native Git over trusted smart HTTP", () => {
     expect(await git(upstream, ["rev-parse", "opentag/topic"])).toBe(await git(checkout, ["rev-parse", "HEAD"]));
     await git(checkout, ["fetch", "origin"]);
     await expect(git(checkout, ["push", "origin", "HEAD:main"])).rejects.toThrow();
+  });
+  it("pushes a client pinned to protocol v2 (receive-pack advertisement stays v0)", async () => {
+    const checkout = join(root, "checkout");
+    await git(root, ["clone", baseUrl, checkout]);
+    await git(checkout, ["config", "user.name", "Fixture"]);
+    await git(checkout, ["config", "user.email", "fixture@example.invalid"]);
+    await git(checkout, ["checkout", "-b", "opentag/topic"]);
+    await writeFile(join(checkout, "file.txt"), "updated\n");
+    await git(checkout, ["commit", "-am", "update"]);
+    // Probe: with the client pinned to v2, the receive-pack advertisement is still v0
+    // (receive-pack does not speak v2), so the client must fall back and succeed.
+    await git(checkout, ["-c", "protocol.version=2", "push", "origin", "HEAD"]);
+    expect(await git(upstream, ["rev-parse", "opentag/topic"])).toBe(await git(checkout, ["rev-parse", "HEAD"]));
+  });
+  it("never exposes planted refs that tail-match an authorized Tree branch", async () => {
+    // A writer with push access plants refs/heads/x/refs/heads/main. git's documented ls-remote
+    // tail-glob semantics return it for the exact pattern refs/heads/main, so the snapshot
+    // filter — never the remote's pattern matching — decides what a Tree-only read may see.
+    await git(upstream, ["branch", "x/refs/heads/main", "private-branch"]);
+    allowedRefs = ["refs/heads/main"];
+    const listed = await git(root, ["ls-remote", baseUrl]);
+    expect(listed).toContain("refs/heads/main");
+    expect(listed).not.toContain("x/refs/heads/main");
+    expect(listed).not.toContain("private-branch");
+    const checkout = join(root, "checkout");
+    await git(root, ["clone", baseUrl, checkout]);
+    const decoy = await git(upstream, ["rev-parse", "x/refs/heads/main"]);
+    await expect(git(checkout, ["fetch", "origin", decoy])).rejects.toThrow();
+    await expect(git(checkout, ["rev-parse", "--verify", "refs/remotes/origin/x/refs/heads/main"])).rejects.toThrow();
+    await expect(readFile(join(checkout, "private.txt"))).rejects.toThrow();
   });
   it("hides ungranted refs and denies fetching their SHA even when the caller knows it", async () => {
     allowedRefs = ["refs/heads/main"];

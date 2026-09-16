@@ -346,12 +346,7 @@ export class RuntimeConnection {
         } catch (error) {
           if (this.#stopped || isAbortError(error)) break;
           if (error instanceof RuntimeProtocolFallbackError && this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
-            this.#protocolVersion = RUNTIME_PROTOCOL_V1;
-            this.#logger.info(
-              { protocolVersion: RUNTIME_PROTOCOL_V1, state: this.#state },
-              "Runtime protocol fallback selected",
-            );
-            continue;
+            throw new RuntimeConnectionError("Update the Server: required Context Tree support is unavailable", true);
           }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(

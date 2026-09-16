@@ -59,6 +59,7 @@ import { type AgentTurnOutgoingReplyCollector, AgentTurnRunner } from "./agent-t
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
+import { ContextTreeSettings } from "./context-tree-settings.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
@@ -271,6 +272,7 @@ export interface CreateClientRuntimeOptions {
    * capabilities and local handles; it never falls back to raw materials. Default
    * `"legacy"` preserves the existing Local behavior.
    */
+  readonly credentialMode?: RuntimeCredentialMode;
   /**
    * Proxy mode injection seam for Cloud host composition. Local proxy mode uses the
    * production defaults (loopback TLS, openssl CA, real WSS client).
@@ -282,8 +284,15 @@ export interface CreateClientRuntimeOptions {
     readonly openBudgetMs?: number;
     readonly sandboxForSession?: (sessionId: string) => RuntimeExecutionSandbox | undefined;
     readonly scheduler?: RuntimeRelayScheduler;
+    /**
+     * Host-side managed environment for the Context Tree CLI (`undefined` entries unset). Local
+     * proxy mode defaults to the live execution environment; Cloud must supply a trusted
+     * Runner-side mapping because the execution environment targets the Sandbox loopback.
+     */
+    readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
+    /** Trusted host-side environment for Context Tree settings operations, when one exists. */
+    readonly contextTreeManagementEnvironment?: () => NodeJS.ProcessEnv | undefined;
   };
-  readonly credentialMode?: RuntimeCredentialMode;
   /**
    * Proxy mode only: opens the Server-issued validation execution for CLI readiness.
    * The Server issues `validationRunId`; the client never invents one. Without this the
@@ -655,11 +664,13 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
+  const credentialMode = options.credentialMode ?? "legacy";
   const contextTree = new ContextTreeManager({
     environment: sourceEnvironment,
     codexHome,
     home: options.home,
     logger: moduleLogger("context-tree"),
+    managedCredentials: credentialMode === "proxy",
   });
   const durabilityStore =
     options.durabilityStore ??
@@ -686,7 +697,7 @@ export async function createClientRuntime(
     validation: new ProviderCliValidationRunner({
       home: options.home,
       openProxyValidation: resolveProxyValidationOpener(options, credentialEnvironment),
-      proxyCredentialMode: (options.credentialMode ?? "legacy") === "proxy",
+      proxyCredentialMode: credentialMode === "proxy",
     }),
   });
   await mkdir(options.home, { recursive: true, mode: 0o700 });
@@ -704,6 +715,14 @@ export async function createClientRuntime(
     cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
+    contextTreeEnvironment: (sessionId) => {
+      const hostSide = options.runtimeCredentials?.contextTreeEnvironment?.(sessionId);
+      if (hostSide) return hostSide;
+      // Cloud: the session execution environment targets the Sandbox-side loopback, so only a
+      // trusted Runner-side mapping from the parent composition can reach the Relay.
+      if (options.runtimeCredentials?.sandboxForSession) return undefined;
+      return credentialEnvironment.executionEnvironmentForSession(sessionId);
+    },
     ensureProviderReady,
     home: options.home,
     providers,
@@ -780,6 +799,16 @@ export async function createClientRuntime(
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
   const runtime = new ClientRuntime(connection, {
+    contextTreeSettings: new ContextTreeSettings({
+      home: options.home,
+      environment: sourceEnvironment,
+      hasAgentSessions: runtimeManager.hasAgentSessions.bind(runtimeManager),
+      exclusive: contextTree.runExclusive.bind(contextTree),
+      managedCredentials: credentialMode === "proxy",
+      ...(options.runtimeCredentials?.contextTreeManagementEnvironment
+        ? { managedEnvironment: options.runtimeCredentials.contextTreeManagementEnvironment }
+        : {}),
+    }),
     logger: moduleLogger("client-runtime"),
     reconciler,
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),

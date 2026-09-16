@@ -88,7 +88,15 @@ export function sanitizeGitHubResponse(value: unknown, token: string): unknown {
   if (typeof value === "string") {
     if (value.includes(token)) throw new GitPublicationError("unavailable");
     if (/^https:\/\//.test(value)) {
-      const url = new URL(value);
+      // Ordinary text (a PR body, a commit message) may merely start with "https://" without
+      // being a parseable URL; it cannot carry URL-addressable credentials and passes through.
+      // The token-content guard above remains the first and authoritative credential check.
+      let url: URL | undefined;
+      try {
+        url = new URL(value);
+      } catch {
+        return value;
+      }
       if (
         url.username ||
         url.password ||

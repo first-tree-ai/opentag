@@ -1,6 +1,8 @@
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { ENSURE_SERVICE_DEFERRED_EXIT_CODE, executeDaemonEnsureService } from "../commands/daemon/ensure-service.js";
+import * as daemonReconcile from "../core/daemon/reconcile-service.js";
+import * as daemonService from "../core/daemon/service/index.js";
 
 const service = {
   currentHome: "/home/user/.opentag-dev",
@@ -88,6 +90,14 @@ describe("daemon ensure-service command", () => {
   });
 
   it("dispatches the hidden Commander wrapper", async () => {
+    const createManager = vi
+      .spyOn(daemonService, "createDaemonServiceManager")
+      .mockRejectedValue(new Error("The command wrapper test must not access the host daemon service"));
+    const reconcile = vi.spyOn(daemonReconcile, "reconcileDaemonService").mockResolvedValue({
+      reason: "credentials-missing",
+      service: { ...service, state: "not-installed" },
+      status: "deferred",
+    });
     const program = new Command().name("opentag");
     const { registerDaemonEnsureServiceCommand } = await import("../commands/daemon/ensure-service.js");
     registerDaemonEnsureServiceCommand(program.command("daemon"));
@@ -96,8 +106,12 @@ describe("daemon ensure-service command", () => {
     try {
       await program.parseAsync(["node", "opentag", "daemon", "ensure-service", "--json"]);
       expect(process.exitCode).toBe(3);
+      expect(reconcile).toHaveBeenCalledOnce();
+      expect(createManager).not.toHaveBeenCalled();
     } finally {
       process.exitCode = previousExitCode;
+      reconcile.mockRestore();
+      createManager.mockRestore();
     }
   });
 });

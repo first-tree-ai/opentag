@@ -13,7 +13,7 @@ import {
   parseGitReceiveCommands,
 } from "./git-packets.js";
 import { type GitProcessOptions, runTrustedGit, runTrustedProcess } from "./git-process.js";
-import type { PublicationRemote } from "./git-remote.js";
+import { GitPushRejectedError, type PublicationRemote } from "./git-remote.js";
 import { verifyPublishedContextTree } from "./tree-verifier.js";
 
 export interface GitPublicationScope {
@@ -195,9 +195,13 @@ export class GitPublicationGuard {
       await input.revalidate();
       options.signal.throwIfAborted();
       sent = true;
+      let remoteRejected: readonly string[] | undefined;
       try {
         await input.remote.publish(repository, commands.updates, options);
-      } catch {
+      } catch (error) {
+        // Only git's own complete all-refs rejection report is definitive non-application
+        // evidence; every other failure stays ambiguous until the remote refs answer.
+        if (error instanceof GitPushRejectedError) remoteRejected = error.rejectedRefs;
         /* Confirm actual refs before classifying an ambiguous Git exit. */
       }
       await input.revalidate();
@@ -206,17 +210,15 @@ export class GitPublicationGuard {
         commands.updates.map((update) => update.ref),
         options,
       );
-      const published = commands.updates.every((update) => refs.get(update.ref) === update.newSha);
-      const unchanged = commands.updates.every((update) => (refs.get(update.ref) ?? GIT_ZERO_SHA) === update.oldSha);
-      const state = published ? "succeeded" : unchanged ? "rejected" : "unknown";
+      const { state, resultCode } = classifyPublication(commands.updates, refs, remoteRejected);
       await this.#options.controlStore.completeWrite(input.sessionId, {
         operationId: input.operationId,
         intentHash,
         state,
-        resultCode: published ? "remote_sha_confirmed" : "remote_conflict",
+        resultCode,
         completedAt: new Date().toISOString(),
       });
-      return published ? success : gitReceiveFailure(commands);
+      return state === "succeeded" ? success : gitReceiveFailure(commands);
     } catch {
       await this.#options.controlStore.completeWrite(input.sessionId, {
         operationId: input.operationId,
@@ -228,6 +230,31 @@ export class GitPublicationGuard {
       return gitReceiveFailure(commands);
     }
   }
+}
+
+/**
+ * Terminal classification of one published push from the confirmed remote refs. Only git's own
+ * complete all-refs rejection report (typed evidence) proves non-application when another writer
+ * has since moved the target refs; every other ambiguous observation stays unknown.
+ */
+function classifyPublication(
+  updates: GitRefUpdate[],
+  refs: Map<string, string>,
+  remoteRejected: readonly string[] | undefined,
+): { state: "succeeded" | "rejected" | "unknown"; resultCode: string } {
+  const published = updates.every((update) => refs.get(update.ref) === update.newSha);
+  const unchanged = updates.every((update) => (refs.get(update.ref) ?? GIT_ZERO_SHA) === update.oldSha);
+  const evidenceRejected =
+    remoteRejected !== undefined &&
+    updates.every((update) => remoteRejected.includes(update.ref)) &&
+    updates.every((update) => refs.get(update.ref) !== update.newSha);
+  if (published) return { state: "succeeded", resultCode: "remote_sha_confirmed" };
+  if (unchanged || evidenceRejected)
+    return {
+      state: "rejected",
+      resultCode: evidenceRejected && !unchanged ? "remote_push_rejected" : "remote_conflict",
+    };
+  return { state: "unknown", resultCode: "remote_conflict" };
 }
 
 function trustedGitEnvironment(home: string): NodeJS.ProcessEnv {

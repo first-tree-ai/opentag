@@ -29,6 +29,7 @@ import { createApp } from "../app.js";
 import { githubConnections } from "../db/schema/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
+import { GITHUB_API_CLIENT_ERROR_CODES, GitHubApiClientError } from "../services/github/github-api-client.js";
 import { GitHubBindingsService } from "../services/github/github-bindings-service.js";
 import { GitHubConnectionService } from "../services/github/github-connection-service.js";
 import { GitHubManagementService } from "../services/github/github-management-service.js";
@@ -252,6 +253,30 @@ async function createAgent(accountId: string, name = "reviewer") {
     .returning();
   if (!agent) throw new Error("The test Agent was not inserted");
   return agent;
+}
+
+/** A Feishu IM binding row owned through its Agent by the given Account, for delegation fixtures. */
+async function createImBinding(accountId: string, options: { disabled?: boolean } = {}) {
+  const { imBindings } = await import("../db/schema/index.js");
+  const agent = await createAgent(accountId, `im-${randomUUID().slice(0, 8)}`);
+  const disabled = options.disabled === true;
+  const [binding] = await unit.database
+    .insert(imBindings)
+    .values({
+      agentId: agent.id,
+      provider: "feishu",
+      status: disabled ? "disabled" : "active",
+      externalAppId: `cli_${randomUUID().replaceAll("-", "").slice(0, 20)}`,
+      externalBotId: "ou_bot",
+      credentialSchemaVersion: 1,
+      credentialGeneration: 1,
+      encryptedCredential: disabled ? null : "v1.test-credential",
+      activatedAt: new Date(),
+      disabledAt: disabled ? new Date() : null,
+    })
+    .returning();
+  if (!binding) throw new Error("The test IM binding was not inserted");
+  return binding;
 }
 
 function bindingDocument(agentId: string, overrides: Partial<GitHubRepositoryBinding> = {}): GitHubRepositoryBinding[] {
@@ -507,6 +532,7 @@ describe("GitHub repository discovery and bindings", () => {
     const connection = await activeConnection(fixture);
     const agent = await createAgent(fixture.owner.id);
     const delegatedAgent = await createAgent(fixture.owner.id, "collaborator");
+    const imBinding = await createImBinding(fixture.owner.id);
     fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
     fixture.api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository()]));
 
@@ -520,7 +546,7 @@ describe("GitHub repository discovery and bindings", () => {
             access: "write",
             publish: "pull_request",
             taskDelegation: {
-              imSenders: [{ bindingId: randomUUID(), senderId: "ou_delegated" }],
+              imSenders: [{ bindingId: imBinding.id, senderId: "ou_delegated" }],
               sessionAgents: [delegatedAgent.id],
             },
           },
@@ -605,6 +631,149 @@ describe("GitHub repository discovery and bindings", () => {
       .from(githubConnections)
       .where(eq(githubConnections.id, connection.id));
     expect(ownerStillThere[0]?.status).toBe("active");
+  });
+
+  it("rejects task delegation naming a foreign, unknown, or disabled IM binding", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const connection = await activeConnection(fixture);
+    const agent = await createAgent(fixture.owner.id);
+    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
+    fixture.api.listInstallationRepositories.mockResolvedValue(repositoriesPage([repository()]));
+    const foreign = await createImBinding(fixture.other.id);
+    const disabled = await createImBinding(fixture.owner.id, { disabled: true });
+
+    for (const bindingId of [foreign.id, randomUUID(), disabled.id]) {
+      const response = await fixture.app.inject({
+        method: "PUT",
+        url: GITHUB_INTEGRATION_BINDINGS_PATH,
+        headers: ownerHeaders(),
+        payload: {
+          expectedAuthorizationVersion: connection.authorizationVersion.toString(),
+          bindings: bindingDocument(agent.id, {
+            agentScopes: [
+              {
+                agentId: agent.id,
+                role: "code",
+                access: "write",
+                publish: "pull_request",
+                taskDelegation: { imSenders: [{ bindingId, senderId: "ou_sender" }], sessionAgents: [] },
+              },
+            ],
+          }),
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe("GITHUB_DELEGATED_IM_BINDING_INVALID");
+    }
+
+    // The connection is untouched by the rejected writes: the same version still writes cleanly.
+    const own = await createImBinding(fixture.owner.id);
+    const accepted = await fixture.app.inject({
+      method: "PUT",
+      url: GITHUB_INTEGRATION_BINDINGS_PATH,
+      headers: ownerHeaders(),
+      payload: {
+        expectedAuthorizationVersion: connection.authorizationVersion.toString(),
+        bindings: bindingDocument(agent.id, {
+          agentScopes: [
+            {
+              agentId: agent.id,
+              role: "code",
+              access: "write",
+              publish: "pull_request",
+              taskDelegation: { imSenders: [{ bindingId: own.id, senderId: "ou_sender" }], sessionAgents: [] },
+            },
+          ],
+        }),
+      },
+    });
+    expect(accepted.statusCode).toBe(200);
+  });
+
+  it("maps upstream management failures to bounded public codes instead of a generic 500", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const connection = await activeConnection(fixture);
+    const agent = await createAgent(fixture.owner.id);
+
+    fixture.api.listUserInstallations.mockRejectedValue(
+      new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED, "limited", { status: 429 }),
+    );
+    const limited = await fixture.app.inject({
+      method: "GET",
+      url: GITHUB_INTEGRATION_REPOSITORIES_PATH,
+      headers: ownerHeaders(),
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json().error.code).toBe("GITHUB_RATE_LIMITED");
+
+    fixture.api.listUserInstallations.mockRejectedValue(
+      new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.UPSTREAM_UNAVAILABLE, "down", { status: 503 }),
+    );
+    const unavailable = await fixture.app.inject({
+      method: "GET",
+      url: GITHUB_INTEGRATION_REPOSITORIES_PATH,
+      headers: ownerHeaders(),
+    });
+    expect(unavailable.statusCode).toBe(503);
+    expect(unavailable.json().error.code).toBe("GITHUB_UPSTREAM_UNAVAILABLE");
+
+    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
+    fixture.api.listInstallationRepositories.mockRejectedValue(
+      new GitHubApiClientError(GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID, "401", { status: 401 }),
+    );
+    const rejected = await fixture.app.inject({
+      method: "PUT",
+      url: GITHUB_INTEGRATION_BINDINGS_PATH,
+      headers: ownerHeaders(),
+      payload: {
+        expectedAuthorizationVersion: connection.authorizationVersion.toString(),
+        bindings: bindingDocument(agent.id),
+      },
+    });
+    expect(rejected.statusCode).toBe(502);
+    expect(rejected.json().error.code).toBe("GITHUB_UPSTREAM_ERROR");
+    expect(rejected.body).not.toContain("ghu_");
+    const [row] = await unit.database.select().from(githubConnections).where(eq(githubConnections.id, connection.id));
+    expect(row?.status).toBe("active");
+    expect(row?.credentialCiphertext).toBe(connection.credentialCiphertext);
+  });
+
+  it("caps per-installation discovery at the page bound and marks the truncation explicitly", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    await activeConnection(fixture);
+    fixture.api.listUserInstallations.mockResolvedValue(installationsPage([installation()]));
+    // One installation holding 1500 repositories: beyond the ten-page per-installation bound.
+    fixture.api.listInstallationRepositories.mockImplementation(({ page }: { page: number }) =>
+      Promise.resolve(repositoriesPage([repository({ repositoryId: String(900_000 + page) })], 1_500)),
+    );
+
+    const seen: string[] = [];
+    let truncatedInstallations: string[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < 15; page += 1) {
+      const response = await fixture.app.inject({
+        method: "GET",
+        url:
+          cursor === null
+            ? GITHUB_INTEGRATION_REPOSITORIES_PATH
+            : `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?cursor=${encodeURIComponent(cursor)}`,
+        headers: ownerHeaders(),
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as {
+        repositories: { repositoryId: string }[];
+        nextCursor: string | null;
+        truncatedInstallations: string[];
+      };
+      seen.push(...body.repositories.map((entry) => entry.repositoryId));
+      truncatedInstallations = body.truncatedInstallations;
+      cursor = body.nextCursor;
+      if (cursor === null) break;
+    }
+    // The stream ends at the bound without a hard error, and says exactly what it did not list.
+    expect(cursor).toBeNull();
+    expect(seen).toHaveLength(10);
+    expect(truncatedInstallations).toEqual(["55123456"]);
   });
 });
 

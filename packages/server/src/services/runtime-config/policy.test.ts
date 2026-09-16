@@ -5,6 +5,7 @@ describe("runtime configuration policy", () => {
   it("keeps the default configuration immutable", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toBe("");
     expect(DEFAULT_AGENT_RUNTIME_CONFIG).toEqual({
+      contextTreeRepository: null,
       model: null,
       reasoningEffort: null,
       instructions: DEFAULT_AGENT_INSTRUCTIONS,
@@ -19,6 +20,7 @@ describe("runtime configuration policy", () => {
     [
       { model: "gpt-5", reasoningEffort: "high", maxDurationMs: 10_000 },
       {
+        contextTreeRepository: null,
         model: "gpt-5",
         reasoningEffort: "high",
         instructions: DEFAULT_AGENT_INSTRUCTIONS,
@@ -28,6 +30,7 @@ describe("runtime configuration policy", () => {
     [
       { instructions: "Use the managed tools.", model: null },
       {
+        contextTreeRepository: null,
         model: null,
         reasoningEffort: null,
         instructions: "Use the managed tools.",

@@ -4,7 +4,9 @@ import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
+  RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_PROTOCOL_V2,
+  RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   withComputerRuntimeProviderSupport,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
@@ -75,7 +77,7 @@ function registerFrame(installationId: string, instanceId: string) {
     clientVersion: "0.0.2",
     capabilities: { imCredentialGrant: 0 as const },
     protocolVersion: RUNTIME_PROTOCOL_V2,
-    supportedCapabilities: { imCredentialGrant: { min: 1, max: 1 } },
+    supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
     requiredServerCapabilities: [],
   };
 }
@@ -370,7 +372,8 @@ describe("Computer connection persistence", () => {
         JSON.stringify({
           type: "auth",
           requestId: crypto.randomUUID(),
-          protocolVersion: 1,
+          protocolVersion: 2,
+          supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
           machineToken: first.machineToken,
         }),
       );
@@ -380,7 +383,7 @@ describe("Computer connection persistence", () => {
       const rotatedInstallationId = crypto.randomUUID();
       const rotated = await repair(value, first.computerId, value.bootstrap.userId, rotatedInstallationId);
       const oldClose = closeCode(oldSocket);
-      oldSocket.send(JSON.stringify(webSocketRegisterFrame(computerId, crypto.randomUUID())));
+      oldSocket.send(JSON.stringify(registerFrame(computerId, crypto.randomUUID())));
       expect(await oldFrames.next()).toMatchObject({ type: "error", code: "COMPUTER_NOT_REGISTERED" });
       await expect(oldClose).resolves.toBe(4409);
       expect(value.registry.currentInstanceId(first.computerId)).toBeUndefined();
@@ -397,14 +400,15 @@ describe("Computer connection persistence", () => {
         JSON.stringify({
           type: "auth",
           requestId: crypto.randomUUID(),
-          protocolVersion: 1,
+          protocolVersion: 2,
+          supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
           machineToken: rotated.machineToken,
         }),
       );
       expect(await newFrames.next()).toMatchObject({ type: "auth:result", ok: true });
       expect(await newFrames.next()).toMatchObject({ type: "server:welcome" });
       const newInstanceId = crypto.randomUUID();
-      newSocket.send(JSON.stringify(webSocketRegisterFrame(rotatedInstallationId, newInstanceId)));
+      newSocket.send(JSON.stringify(registerFrame(rotatedInstallationId, newInstanceId)));
       expect(await newFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
       expect(value.registry.currentInstanceId(first.computerId)).toBe(newInstanceId);
       newSocket.close();
@@ -959,16 +963,6 @@ function opened(socket: WebSocket): Promise<void> {
     socket.once("open", resolve);
     socket.once("error", reject);
   });
-}
-
-function webSocketRegisterFrame(computerId: string, instanceId: string) {
-  const {
-    protocolVersion: _protocolVersion,
-    requiredServerCapabilities: _required,
-    supportedCapabilities: _supported,
-    ...frame
-  } = registerFrame(computerId, instanceId);
-  return frame;
 }
 
 function frameQueue(socket: WebSocket): { next(): Promise<Record<string, unknown>> } {

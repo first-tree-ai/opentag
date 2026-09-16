@@ -10,10 +10,15 @@
  * reauthorization_required; a rate limit releases the claim untouched because the platform
  * provably did not consume the refresh token; any other unknown outcome — timeout, network, 5xx,
  * unreadable response — also fails into reauthorization_required, because a consumed refresh token
- * must never be replayed. Recheck semantics: /user proves the credential and identity, then live
- * admission re-verifies every current binding; revoked permissions bump the authorization version
- * (issued runtime access dies) while the row stays active for reconfiguration, and a dead
- * credential invalidates fail-closed.
+ * must never be replayed. A local credential-envelope failure is different again: nothing was ever
+ * sent to GitHub, so the claim releases untouched and the still-valid credential survives for a
+ * later retry — a local integrity problem must never masquerade as a provider verdict.
+ * Recheck semantics: /user proves the credential and identity, then live admission re-verifies
+ * every current binding; revoked permissions bump the authorization version (issued runtime access
+ * dies) while the row stays active for reconfiguration, and a dead credential invalidates
+ * fail-closed. A recheck that finds the access token already expired defers with a transient
+ * outcome instead: the refresh pass owns expiry recovery, and the expected 401 must never clear a
+ * refresh credential that routine maintenance can still recover.
  */
 
 import type { GitHubCredentialCipher } from "../github-credential-material.js";
@@ -74,6 +79,19 @@ const GITHUB_IDENTITY_MISMATCH_CODE = "GITHUB_IDENTITY_MISMATCH";
 const GITHUB_RATE_LIMITED_CODE = "GITHUB_RATE_LIMITED";
 const GITHUB_UPSTREAM_UNAVAILABLE_CODE = "GITHUB_UPSTREAM_UNAVAILABLE";
 const GITHUB_UPSTREAM_ERROR_CODE = "GITHUB_UPSTREAM_ERROR";
+const GITHUB_ACCESS_TOKEN_EXPIRED_CODE = "GITHUB_ACCESS_TOKEN_EXPIRED";
+
+/**
+ * The claimed credential envelope could not be opened locally (AAD/key mismatch or an unsupported
+ * binding). Nothing was ever presented to GitHub, so this is provably not an exchange outcome: the
+ * caller must release the claim untouched rather than destroy a credential that may still be valid.
+ */
+class GitHubCredentialEnvelopeError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("The claimed GitHub credential envelope could not be authenticated locally", options);
+    this.name = "GitHubCredentialEnvelopeError";
+  }
+}
 
 export class GitHubMaintenanceWorker {
   readonly #refreshStore: GitHubCredentialRefreshStore;
@@ -219,13 +237,17 @@ export class GitHubMaintenanceWorker {
   }
 
   /**
-   * Classifies a failed exchange and reports it through the store. A rate limit provably never
-   * consumed the refresh token, so the claim is released untouched; everything else — including an
-   * unconfirmed outcome — fails the row into reauthorization_required, because a possibly consumed
+   * Classifies a failed claim and reports it through the store. Two provably-unconsumed outcomes
+   * release the claim untouched: a rate limit (GitHub never processed the grant) and a local
+   * envelope failure (the grant was never sent). Everything else — including an unconfirmed
+   * exchange outcome — fails the row into reauthorization_required, because a possibly consumed
    * refresh token must never be replayed.
    */
   async #reportRefreshFailure(claim: ClaimedGitHubRefresh, error: unknown): Promise<"released" | "failed" | "skipped"> {
-    if (error instanceof GitHubApiClientError && error.code === GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED) {
+    const provablyUnsent =
+      error instanceof GitHubCredentialEnvelopeError ||
+      (error instanceof GitHubApiClientError && error.code === GITHUB_API_CLIENT_ERROR_CODES.RATE_LIMITED);
+    if (provablyUnsent) {
       const applied = await this.#refreshStore.releaseRefresh({
         connectionId: claim.connectionId,
         attemptId: claim.attemptId,
@@ -305,6 +327,13 @@ export class GitHubMaintenanceWorker {
   }
 
   async #verifyAdmission(snapshot: GitHubActiveConnectionSnapshot, accessToken: string): Promise<GitHubRecheckOutcome> {
+    if (snapshot.accessExpiresAt.getTime() <= this.#now().getTime()) {
+      // The access token is expired: /user would return the 401 the refresh pass is there to
+      // recover from. Defer with a transient outcome instead of clearing a refresh credential
+      // that routine maintenance can still exchange — the refresh pass owns expiry recovery and
+      // itself fails the row closed when GitHub definitively rejects the grant.
+      return { kind: "transient_failure", errorCode: GITHUB_ACCESS_TOKEN_EXPIRED_CODE };
+    }
     try {
       const user = await this.#api.getAuthenticatedUser({ accessToken });
       if (user.id !== snapshot.githubUserId) {
@@ -320,12 +349,27 @@ export class GitHubMaintenanceWorker {
       });
       return { kind: "healthy" };
     } catch (error) {
+      // The token was live when the snapshot was taken but expired while /user or admission was
+      // awaited: a 401 arriving at or after the expiry proves nothing about the credential — the
+      // refresh pass owns expiry recovery, so defer instead of clearing a recoverable pair.
+      if (
+        error instanceof GitHubApiClientError &&
+        error.code === GITHUB_API_CLIENT_ERROR_CODES.CREDENTIAL_INVALID &&
+        snapshot.accessExpiresAt.getTime() <= this.#now().getTime()
+      ) {
+        return { kind: "transient_failure", errorCode: GITHUB_ACCESS_TOKEN_EXPIRED_CODE };
+      }
       return classifyRecheckFailure(error);
     }
   }
 
+  /** Opens the claimed envelope; any local failure is typed so it can never be read as an exchange outcome. */
   #decryptClaimed(claim: ClaimedGitHubRefresh): { refreshToken: string } {
-    return this.#cipher.decryptUserCredential(bindingOf(claim), claim.credential);
+    try {
+      return this.#cipher.decryptUserCredential(bindingOf(claim), claim.credential);
+    } catch (error) {
+      throw new GitHubCredentialEnvelopeError({ cause: error });
+    }
   }
 }
 

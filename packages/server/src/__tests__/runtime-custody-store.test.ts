@@ -414,6 +414,7 @@ async function createFixture(unit: UnitDatabase, options: { withRoot?: boolean }
       },
     },
     runtime: {
+      contextTreeRepository: null,
       revision: { agent: { sequence: 1, id: agentId }, session: { sequence: 1, id: sessionId } },
       agentId,
       provider: "codex",

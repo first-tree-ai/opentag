@@ -20,6 +20,10 @@ P0 的核心决策是：
 这一区分是规范性要求。P0 成功只表示本文定义的所有 blocking 检查均已通过。
 输出不得将其表述为“OpenTag 已就绪”“handoff 已就绪”或“所有必要检查均已通过”。
 
+Context Tree diagnostics are outside the doctor contract. Per-Agent repository selection is
+shown in Agent settings, and preparation status is reported in Session prompts. Doctor emits
+no Context Tree checks or section heading.
+
 ## 2. 通用 CLI Doctor 契约
 
 ### 2.1 产品职责

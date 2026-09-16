@@ -289,7 +289,7 @@ describe("runner acceptance disposable Context Tree", () => {
       workspace,
       probeTools: async () => [{ name: "git", ok: true, detail: "git version 2.39.5" }],
     });
-    expect(report.offline).toBe("passed");
+    expect(report.offline, JSON.stringify(report.events)).toBe("passed");
     expect(report.model).toBe("skipped");
     expect(report.failed).toBe(false);
 

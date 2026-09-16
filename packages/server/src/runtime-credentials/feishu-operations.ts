@@ -36,6 +36,7 @@ interface FeishuOperationShape {
   response?: ProviderOperation["response"];
   validationAllowed?: boolean;
   resource?: ProviderOperation["resource"];
+  sourceRecord?: ProviderOperation["sourceRecord"];
   localResponse?: ProviderOperation["localResponse"];
 }
 
@@ -51,6 +52,7 @@ function op(shape: FeishuOperationShape): ProviderOperation {
     pathTemplate: shape.pathTemplate,
     kind: shape.kind,
     ...(shape.validationAllowed ? { validationAllowed: true } : {}),
+    ...(shape.sourceRecord ? { sourceRecord: shape.sourceRecord } : {}),
     ...(shape.resource ? { resource: shape.resource } : {}),
     ...(shape.localResponse ? { localResponse: shape.localResponse } : {}),
   };
@@ -84,6 +86,8 @@ export const FEISHU_OPERATIONS: readonly ProviderOperation[] = [
     pathTemplate: "/open-apis/bot/v3/info",
     kind: "read",
     validationAllowed: true,
+    // Read-only identity probe: no protected resource output to record.
+    sourceRecord: "exempt",
     resource: () => "self",
   }),
   op({
@@ -91,6 +95,8 @@ export const FEISHU_OPERATIONS: readonly ProviderOperation[] = [
     method: "GET",
     pathTemplate: "/api/tools/open/api_definition",
     kind: "read",
+    // Public CLI schema discovery: no protected resource output to record.
+    sourceRecord: "exempt",
     resource: () => "metadata",
   }),
   op({

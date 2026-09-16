@@ -238,3 +238,8 @@ export function runtimeWebSocketUrl(serverUrl: string): string {
 export function runtimeDurableWorkPath(kind: string, key: string): string {
   return `${RUNTIME_DURABLE_WORK_PATH}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`;
 }
+
+export const AGENT_CONTEXT_TREE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/context-tree`;
+export function agentContextTreePath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/context-tree`;
+}

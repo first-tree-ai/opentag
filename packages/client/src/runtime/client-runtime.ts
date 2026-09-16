@@ -2,6 +2,9 @@ import {
   type AgentRuntimeTestRequestFrame,
   type AgentRuntimeTestResultFrame,
   AgentRuntimeTestResultFrameSchema,
+  type ContextTreeOperationFrame,
+  type ContextTreeOperationResponse,
+  ContextTreeOperationResultFrameSchema,
   type DirectImMessageDeliveryRequest,
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
@@ -32,6 +35,7 @@ type ResidualBusinessFrame = Extract<
       | "provider-cli:validation:grant"
       | "provider-cli:validation:run"
       | "provider-cli:cancel"
+      | "context-tree:operation"
       | "agent-runtime:test"
       | "agent-runtime:test:cancel"
       | "turn:report:result";
@@ -44,6 +48,10 @@ export interface DeliveryDecision {
 }
 
 export interface ClientRuntimeOptions {
+  contextTreeSettings?: {
+    run(frame: ContextTreeOperationFrame): Promise<ContextTreeOperationResponse>;
+    close?(): void;
+  };
   logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
@@ -97,6 +105,7 @@ export class ClientRuntime {
   }
 
   stop(): void {
+    this.#options.contextTreeSettings?.close?.();
     this.#abort.abort();
     this.#connection.stop();
   }
@@ -190,6 +199,26 @@ export class ClientRuntime {
 
   async #handleResidualFrame(frame: ResidualBusinessFrame): Promise<void> {
     if (frame.type.startsWith("provider-cli:")) return;
+    if (frame.type === "context-tree:operation") {
+      let result: ContextTreeOperationResponse;
+      try {
+        result = (await this.#options.contextTreeSettings?.run(frame)) ?? {
+          status: "failed",
+          code: "capability_missing",
+        };
+      } catch {
+        result = { status: "failed", code: "failed" };
+      }
+      await this.#connection.send(
+        ContextTreeOperationResultFrameSchema.parse({
+          type: "context-tree:operation:result",
+          requestId: frame.requestId,
+          result,
+        }),
+        { priority: "result", signal: this.#abort.signal },
+      );
+      return;
+    }
     if (frame.type === "agent-runtime:test") {
       await this.#runAgentRuntimeTest(frame);
       return;

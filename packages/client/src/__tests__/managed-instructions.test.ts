@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type ManagedSessionContext, renderManagedSystemPrompt } from "../runtime/managed-instructions.js";
 
 const snapshot: EffectiveRuntimeSnapshot = {
+  contextTreeRepository: null,
   revision: {
     agent: { sequence: 1, id: "agent-revision-1" },
     session: { sequence: 1, id: "session-revision-1" },
@@ -67,7 +68,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
       agentHome: "/tmp/agent-home",
       contextTree: { status: "unconfigured" },
     });
-    expect(unconfigured).toContain("Context Tree: not configured on this Computer (opentag-dev context-tree connect).");
+    expect(unconfigured).toContain(
+      "Context Tree: disabled for this Agent. Configure it in Agent settings → Context Tree.",
+    );
     expect(unconfigured).toContain("do not attempt to create a tree yourself");
 
     const unavailable = renderManagedSystemPrompt(snapshot, {

@@ -204,7 +204,7 @@ async function setup(
   server.on("connection", (socket) => transport.attach(socket));
   await once(server, "listening");
   const port = (server.address() as AddressInfo).port;
-  return { port, record, grant, tickets, executions, capabilities, transport, server };
+  return { port, record, grant, tickets, executions, capabilities, transport, server, broker };
 }
 
 async function connect(port: number, ticket: string): Promise<{ socket: WebSocket; queue: MessageQueue }> {
@@ -803,4 +803,27 @@ describe("RuntimeProviderProxyTransport completion and credit accounting", () =>
     expect(echoed.creditFrames).toBeGreaterThan(16);
     socket.close();
   }, 20_000);
+});
+
+describe("RuntimeProviderProxyTransport execution fence", () => {
+  it("rejects a sibling execution capability on an authenticated data connection", async () => {
+    const adapter = { handle: vi.fn(echoAdapter().handle) };
+    const state = await setup(adapter);
+    const sibling = state.executions.open({ ...state.record, runId: randomUUID() });
+    const siblingGrant = await state.broker.acquire({ execution: sibling, provider: "slack", bindingId: BINDING });
+    if (siblingGrant.status !== "succeeded") throw new Error("Sibling setup failed");
+    const ticket = state.tickets.issue({
+      executionId: state.record.executionId,
+      computerId: COMPUTER,
+      instanceId: "instance-1",
+      connectionId: "connection-1",
+    }).ticket;
+    const { socket, queue } = await connect(state.port, ticket);
+    expect(await queue.nextJson()).toMatchObject({ type: "ready", executionId: state.record.executionId });
+    socket.send(openFrame(1, siblingGrant.token));
+    socket.send(JSON.stringify({ type: "end", streamId: 1 }));
+    expect(await queue.nextJson()).toMatchObject({ type: "error", code: "credential_scope_denied" });
+    expect(adapter.handle).not.toHaveBeenCalled();
+    socket.close();
+  });
 });

@@ -71,6 +71,7 @@ function stubDiscovery() {
     installations: [installation],
     repositories: [repository],
     nextCursor: null,
+    truncatedInstallations: [],
   });
   vi.spyOn(browserApi, "agents").mockResolvedValue({
     agents: [
@@ -107,6 +108,24 @@ afterEach(() => {
 });
 
 describe("AgentGitHubRepositories", () => {
+  it("explains a bounded repository discovery page instead of claiming an exhaustive list", async () => {
+    stubCommon(activeConnection());
+    stubDiscovery();
+    vi.mocked(browserApi.githubRepositories).mockResolvedValue({
+      installations: [installation],
+      repositories: [repository],
+      nextCursor: null,
+      truncatedInstallations: [installation.installationId],
+    });
+    render(<AgentGitHubRepositories agentId={AGENT_ID} />);
+    expect(
+      await screen.findByText(
+        "Only the first 1,000 repositories per installation can be listed. Some repositories are omitted; existing access is preserved.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(repository.fullName)).toBeTruthy();
+  });
+
   it("explains an unavailable deployment", async () => {
     vi.spyOn(browserApi, "agent").mockResolvedValue({ id: AGENT_ID, displayName: "Reviewer" } as never);
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue({
@@ -287,6 +306,7 @@ describe("AgentGitHubRepositories", () => {
       installations: [installation],
       repositories: [repository, { ...repository, repositoryId: "987654322", fullName: "octocat/second" }],
       nextCursor: null,
+      truncatedInstallations: [],
     });
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] } as never);
     vi.spyOn(browserApi, "imBinding").mockResolvedValue({
@@ -355,11 +375,17 @@ describe("AgentGitHubRepositories", () => {
     stubCommon(activeConnection());
     const repositories = vi
       .spyOn(browserApi, "githubRepositories")
-      .mockResolvedValueOnce({ installations: [installation], repositories: [repository], nextCursor: "cursor-1" })
+      .mockResolvedValueOnce({
+        installations: [installation],
+        repositories: [repository],
+        nextCursor: "cursor-1",
+        truncatedInstallations: [],
+      })
       .mockResolvedValueOnce({
         installations: [installation],
         repositories: [{ ...repository, repositoryId: "987654322", fullName: "octocat/second" }],
         nextCursor: null,
+        truncatedInstallations: [],
       });
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] } as never);
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);
@@ -377,6 +403,7 @@ describe("AgentGitHubRepositories", () => {
       installations: [installation],
       repositories: [{ ...repository, permissions: { pull: true, push: false } }],
       nextCursor: null,
+      truncatedInstallations: [],
     });
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] } as never);
     vi.spyOn(browserApi, "imBinding").mockResolvedValue(undefined);

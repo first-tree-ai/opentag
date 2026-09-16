@@ -54,6 +54,39 @@ afterEach(async () => {
 });
 
 describe("SessionRuntimeManager", () => {
+  it("keeps Context Tree changes blocked until the Agent's last prepared Session stops", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-agent-sessions-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(new FakeFactory()),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const first = reconcile(computerId, snapshot(1));
+    const second = { ...first, requestId: randomUUID(), sessionId: "session-2" };
+
+    expect(manager.hasAgentSessions(first.agentId)).toBe(false);
+    await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
+    await expect(reconciler.reconcile(second)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.hasAgentSessions(first.agentId)).toBe(true);
+    expect(manager.hasAgentSessions("another-agent")).toBe(false);
+
+    await manager.stopSession(first.sessionId, first.placementGeneration);
+    expect(manager.hasAgentSessions(first.agentId)).toBe(true);
+    await manager.stopSession(second.sessionId, second.placementGeneration);
+    expect(manager.hasAgentSessions(first.agentId)).toBe(false);
+    await manager.close();
+  });
+
   it.each([false, true])("starts internal Sessions with configuration directory failure=%s", async (configFailure) => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
     homes.push(home);
@@ -385,7 +418,7 @@ describe("SessionRuntimeManager", () => {
 
       const created = factory.created[0];
       const cwd = await workspace.cwd(request.agentId);
-      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex");
+      expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", null);
       // Codex is workspace-write, so the shared tree is unreachable unless it is named here.
       expect(created?.workspace.writableRoots).toEqual([
         cwd,
@@ -398,6 +431,40 @@ describe("SessionRuntimeManager", () => {
       await manager.close();
     },
   );
+
+  it("passes the managed Context Tree environment into trusted CLI preparation", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-managed-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const contextTree = {
+      ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath: resolve(home, "tree") })),
+    };
+    const environment = { GITHUB_TOKEN: undefined, HTTPS_PROXY: "http://127.0.0.1:43123" };
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      cliCommand: "opentag-dev",
+      contextTree,
+      contextTreeEnvironment: (sessionId) => (sessionId === "session-1" ? environment : undefined),
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+    const cwd = await workspace.cwd(request.agentId);
+    expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", null, environment);
+    await manager.close();
+  });
 
   it("does not repeat a managed tree already covered by the shared directory grant", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-nested-"));
@@ -1394,6 +1461,7 @@ function reconcile(computerId: string, runtime: EffectiveRuntimeSnapshot): Sessi
 
 function snapshot(revision: number): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: revision, id: `agent-revision-${revision}` },
       session: { sequence: revision, id: `session-revision-${revision}` },

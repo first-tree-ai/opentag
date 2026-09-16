@@ -14,7 +14,11 @@ import {
 } from "../services/github-proxy/git-packets.js";
 import { type GitProcessOptions, runTrustedProcess } from "../services/github-proxy/git-process.js";
 import { GitPublicationGuard, type GitPublicationInput } from "../services/github-proxy/git-publication.js";
-import type { PublicationRemote } from "../services/github-proxy/git-remote.js";
+import {
+  GitPushRejectedError,
+  type PublicationRemote,
+  parseRejectedPushRefs,
+} from "../services/github-proxy/git-remote.js";
 import { FileSessionControlStore } from "../services/session-control-store/index.js";
 
 const execute = promisify(execFile);
@@ -71,15 +75,25 @@ class LocalRemote implements PublicationRemote {
   }
   async publish(repository: string, updates: GitRefUpdate[]) {
     this.publishCalls++;
-    await git(repository, [
-      "push",
-      "--atomic",
-      ...updates.map(
-        (update) => `--force-with-lease=${update.ref}:${update.oldSha === GIT_ZERO_SHA ? "" : update.oldSha}`,
-      ),
-      remote,
-      ...updates.map((update) => `${update.newSha}:${update.ref}`),
-    ]);
+    try {
+      await git(repository, [
+        "push",
+        "--atomic",
+        "--porcelain",
+        ...updates.map(
+          (update) => `--force-with-lease=${update.ref}:${update.oldSha === GIT_ZERO_SHA ? "" : update.oldSha}`,
+        ),
+        remote,
+        ...updates.map((update) => `${update.newSha}:${update.ref}`),
+      ]);
+    } catch (error) {
+      // The fixture shares the production evidence path: only git's own complete all-refs
+      // rejection report becomes a typed rejection; every other failure stays ambiguous.
+      const failure = error as { stdout?: unknown };
+      const rejected = parseRejectedPushRefs(typeof failure.stdout === "string" ? failure.stdout : "", updates);
+      if (rejected) throw new GitPushRejectedError(rejected);
+      throw new GitPublicationError("remote_conflict");
+    }
   }
   async refs(_repository: string, refs: string[]) {
     const lines = await git(root, ["ls-remote", "--heads", remote, ...refs]);
@@ -190,6 +204,94 @@ describe("trusted Git publication", () => {
     expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
       outcome: { state: "unknown" },
     });
+  });
+
+  it("classifies git's definitive all-refs rejection as rejected even when the remote moved", async () => {
+    const upstream = new LocalRemote();
+    const baseSeed = upstream.seed.bind(upstream);
+    let moved = false;
+    upstream.seed = async (repository, options) => {
+      await baseSeed(repository, options);
+      // A concurrent writer creates the target branch after the snapshot but before the push,
+      // so the create lease fails and the confirmation read observes a third value.
+      if (!moved) {
+        moved = true;
+        await git(remote, ["update-ref", ref, "main"]);
+      }
+    };
+    const operation = input(await request(), upstream);
+    expect((await guard().receive(operation)).toString()).toContain(`ng ${ref}`);
+    expect(upstream.publishCalls).toBe(1);
+    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
+      outcome: { state: "rejected", resultCode: "remote_push_rejected" },
+    });
+    // The rejection is terminal: the no-replay fence does not block the Session's fresh push,
+    // which retries against the moved ref and completes.
+    expect(await journal.listUnresolvedWrites(operation.sessionId)).toEqual([]);
+    const retry = { ...input(await request(initialSha), upstream), sessionId: operation.sessionId };
+    expect((await guard().receive(retry)).toString()).toContain(`ok ${ref}`);
+    expect(await journal.readWrite(operation.sessionId, retry.operationId)).toMatchObject({
+      outcome: { state: "succeeded" },
+    });
+  });
+
+  it("keeps transport-failure outcomes unknown when the observed refs moved elsewhere", async () => {
+    const upstream = new LocalRemote();
+    upstream.publish = async () => {
+      throw new Error("socket hangup before report-status");
+    };
+    upstream.refs = async (_repository, refs) => new Map(refs.map((name) => [name, initialSha]));
+    const operation = input(await request(), upstream);
+    expect((await guard().receive(operation)).toString()).toContain(`ng ${ref}`);
+    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
+      outcome: { state: "unknown" },
+    });
+    expect((await journal.listUnresolvedWrites(operation.sessionId)).length).toBe(1);
+  });
+
+  it("keeps unknown when the push landed but another writer advanced the ref before confirmation", async () => {
+    const upstream = new LocalRemote();
+    const baseRefs = upstream.refs.bind(upstream);
+    upstream.refs = async (repository: string, refs: string[]) => {
+      const current = await baseRefs(repository, refs);
+      for (const name of current.keys()) current.set(name, initialSha);
+      return current;
+    };
+    const operation = input(await request(), upstream);
+    expect((await guard().receive(operation)).toString()).toContain(`ng ${ref}`);
+    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
+      outcome: { state: "unknown" },
+    });
+  });
+
+  it("rejects a pack that exceeds the staged object budget, which includes seeded history", async () => {
+    // The staged snapshot holds the full seeded history plus the received pack; the object
+    // budget applies to that total inventory, not to the incoming pack alone.
+    const upstream = new LocalRemote();
+    const operation = input(await request(), upstream);
+    const limited = new GitPublicationGuard({
+      root: join(root, "staging-budget"),
+      controlStore: journal,
+      maxObjects: 2,
+    });
+    expect((await limited.receive(operation)).toString()).toContain("publication rejected");
+    expect(upstream.publishCalls).toBe(0);
+  });
+
+  it("enforces the pack spool limit at the exact byte boundary", async () => {
+    const body = await request();
+    const over = new GitPublicationGuard({
+      root: join(root, "staging-over"),
+      controlStore: journal,
+      maxPackBytes: body.length - 1,
+    });
+    await expect(over.receive(input(body))).rejects.toThrow(/resource_limit/);
+    const exact = new GitPublicationGuard({
+      root: join(root, "staging-exact"),
+      controlStore: journal,
+      maxPackBytes: body.length,
+    });
+    expect((await exact.receive(input(body))).toString()).toContain(`ok ${ref}`);
   });
 
   it("rejects duplicate ref commands and malformed framing", async () => {

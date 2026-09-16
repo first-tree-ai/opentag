@@ -52,6 +52,7 @@ const PERSISTED_ERROR_CODES = new Set<string>([
   "GITHUB_PERMISSION_REVOKED",
   "GITHUB_RATE_LIMITED",
   "GITHUB_UPSTREAM_ERROR",
+  "GITHUB_ACCESS_TOKEN_EXPIRED",
 ]);
 
 export function boundedGitHubErrorCode(errorCode: string): string {

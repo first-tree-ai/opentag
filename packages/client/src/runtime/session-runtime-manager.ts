@@ -74,6 +74,11 @@ export interface SessionRuntimeManagerOptions {
    * environment (visible Sessions). Proxy mode returns the execution env map.
    */
   readonly providerEnvironment?: (sessionId: string) => Readonly<Record<string, string>> | undefined;
+  /**
+   * Optional. Managed Context Tree environment for the trusted CLI child. `undefined` entries
+   * unset inherited variables; legacy mode leaves it undefined and keeps ambient Local behavior.
+   */
+  readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
    * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
@@ -96,6 +101,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #providerEnvironment?: SessionRuntimeManagerOptions["providerEnvironment"];
+  readonly #contextTreeEnvironment?: SessionRuntimeManagerOptions["contextTreeEnvironment"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
@@ -118,6 +124,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#home = options.home;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
     this.#providerEnvironment = options.providerEnvironment;
+    this.#contextTreeEnvironment = options.contextTreeEnvironment;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
     this.#proofManager =
@@ -282,9 +289,16 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     // Context Tree is prepared here rather than in workspace preparation because `verifyAgent`
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
-    // caches per workspace, revalidates that entry against the Computer's recorded target, and
+    // caches per workspace, snapshot repository, and Provider, and
     // never throws, so a failure only changes what the prompt reports.
-    const contextTree = await prepareContextTree(this.#contextTree, managed.cwd, managed.snapshot.provider);
+    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
+    const contextTree = await prepareContextTree(
+      this.#contextTree,
+      managed.cwd,
+      managed.snapshot.provider,
+      managed.snapshot.contextTreeRepository,
+      contextTreeEnvironment,
+    );
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
     const common = {
       eventSink,
@@ -384,13 +398,17 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     }
   }
 
+  hasAgentSessions(agentId: string): boolean {
+    return [...this.#sessions.values()].some((session) => session.agentId === agentId);
+  }
+
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
     const sessionKind = this.#sessions.get(sessionId)?.sessionKind;
     try {
       const current = this.#sessions.get(sessionId);
       if (current) {
-        this.#sessions.delete(sessionId);
         await this.#closeManaged(current);
+        this.#sessions.delete(sessionId);
       }
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
@@ -487,8 +505,14 @@ async function prepareContextTree(
   manager: Pick<ContextTreeManager, "ensureAgent"> | undefined,
   cwd: string,
   provider: EffectiveRuntimeSnapshot["provider"],
+  repository: string | null,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
-  const status = await manager?.ensureAgent(cwd, provider);
+  // Keep the legacy call shape when no managed environment exists so existing tests and prompts
+  // observe identical arguments.
+  const status = environment
+    ? await manager?.ensureAgent(cwd, provider, repository, environment)
+    : await manager?.ensureAgent(cwd, provider, repository);
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },

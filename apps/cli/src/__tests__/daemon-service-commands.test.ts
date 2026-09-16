@@ -11,8 +11,10 @@ import { executeDaemonServiceCommand } from "../commands/daemon/shared.js";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { resolveDaemonPaths } from "../core/daemon/paths.js";
+import * as daemonReconcile from "../core/daemon/reconcile-service.js";
 import * as daemonRuntime from "../core/daemon/runtime.js";
 import { runDaemonServiceEntry } from "../core/daemon/runtime.js";
+import * as daemonService from "../core/daemon/service/index.js";
 import { createDaemonServiceManager, type DaemonServiceManager } from "../core/daemon/service/index.js";
 import type { ServiceRunner } from "../core/daemon/service/types.js";
 
@@ -33,8 +35,16 @@ describe("daemon service commands", () => {
   });
 
   it("dispatches every daemon lifecycle wrapper to its shared executor", async () => {
+    const createManager = vi
+      .spyOn(daemonService, "createDaemonServiceManager")
+      .mockRejectedValue(new Error("The command wrapper test must not access the host daemon service"));
     const execute = vi.spyOn(daemonShared, "executeDaemonServiceCommand").mockResolvedValue(0);
     const serviceRun = vi.spyOn(daemonRuntime, "runDaemonServiceEntry").mockResolvedValue(0);
+    const ensure = vi.spyOn(daemonReconcile, "reconcileDaemonService").mockResolvedValue({
+      reason: "credentials-missing",
+      service: await fakeManager("inactive").status(),
+      status: "deferred",
+    });
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
     try {
@@ -54,11 +64,15 @@ describe("daemon service commands", () => {
       await createProgram().parseAsync(["node", "opentag", "daemon", "service-run"]);
       await createProgram().parseAsync(["node", "opentag", "daemon", "ensure-service"]);
       expect(serviceRun).toHaveBeenCalledOnce();
+      expect(ensure).toHaveBeenCalledOnce();
+      expect(createManager).not.toHaveBeenCalled();
       expect(process.exitCode).toBe(3);
     } finally {
       process.exitCode = previousExitCode;
       execute.mockRestore();
       serviceRun.mockRestore();
+      ensure.mockRestore();
+      createManager.mockRestore();
     }
   });
 

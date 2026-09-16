@@ -200,18 +200,8 @@ export {
   requestsProviderReadinessV2,
   withComputerRuntimeProviderSupport,
 } from "./computer.js";
-export {
-  CONTEXT_TREE_CONFIG_SCHEMA_VERSION,
-  CONTEXT_TREE_PREPARATION_SCHEMA_VERSION,
-  type ContextTreeConfig,
-  ContextTreeConfigSchema,
-  type ContextTreePreparation,
-  ContextTreePreparationSchema,
-  type ContextTreeTarget,
-  ContextTreeTargetSchema,
-  formatContextTreeTarget,
-  parseContextTreeTarget,
-} from "./context-tree.js";
+export { ContextTreeRepositorySchema } from "./context-tree.js";
+export * from "./context-tree-operation.js";
 export {
   type ErrorCategory,
   ErrorCategorySchema,
@@ -241,6 +231,7 @@ export {
   AGENT_BY_ID_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
+  AGENT_CONTEXT_TREE_TEMPLATE,
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
@@ -261,6 +252,7 @@ export {
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
+  agentContextTreePath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingHandoffPath,

@@ -109,6 +109,7 @@ describe("GitHubIntegrationSettings", () => {
       ],
       repositories: [],
       nextCursor: null,
+      truncatedInstallations: [],
     });
     render(<GitHubIntegrationSettings />);
 
@@ -152,6 +153,7 @@ describe("GitHubIntegrationSettings", () => {
       installations: [],
       repositories: [],
       nextCursor: null,
+      truncatedInstallations: [],
     });
     const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection({ status: "revoked" }));
     render(<GitHubIntegrationSettings />);
@@ -169,6 +171,7 @@ describe("GitHubIntegrationSettings", () => {
       installations: [],
       repositories: [],
       nextCursor: null,
+      truncatedInstallations: [],
     });
     vi.spyOn(browserApi, "startGitHubAuthorization").mockRejectedValue(
       new ApiError(409, "The connection changed", "GITHUB_CONNECTION_CONFLICT"),

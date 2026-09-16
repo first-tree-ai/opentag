@@ -192,6 +192,7 @@ function sessionRecord(keySuffix: string = randomUUID()): RuntimeDurableWorkReco
     placementGeneration: 1,
     content: { kind: "text", text: "hello" },
     runtime: {
+      contextTreeRepository: null,
       revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
       agentId,
       provider: "codex",

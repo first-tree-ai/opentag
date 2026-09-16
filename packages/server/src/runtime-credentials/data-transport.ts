@@ -281,6 +281,10 @@ class ProxyDataConnection {
         bindingId: frame.bindingId,
         signal: stream.abort.signal,
       });
+      // A capability must belong to the execution authenticated by this data connection's ticket.
+      if (authorization.executionId !== this.#executionId) {
+        throw new RuntimeCredentialError("credential_scope_denied");
+      }
       stream.authorization = authorization;
       if (stream.state === "closed") return;
       stream.state = "open";

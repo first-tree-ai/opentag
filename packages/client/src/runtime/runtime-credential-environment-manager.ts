@@ -189,6 +189,17 @@ export class RuntimeCredentialEnvironmentManager {
     );
   }
 
+  /**
+   * Raw execution environment for trusted host-side CLI children. Unlike
+   * `environmentForSession`, `undefined` entries are preserved so a caller can unset inherited
+   * ambient credentials (for example a daemon-level `GITHUB_TOKEN`). Legacy mode returns
+   * `undefined`; the returned map is the live execution environment and remains valid only for
+   * the current execution.
+   */
+  executionEnvironmentForSession(sessionId: string): Readonly<Record<string, string | undefined>> | undefined {
+    return this.#proxyExecutions.get(sessionId)?.environment;
+  }
+
   /** Current execution id for a Session, when a proxy execution is active. */
   executionIdForSession(sessionId: string): string | undefined {
     return this.#proxyExecutions.get(sessionId)?.executionId;

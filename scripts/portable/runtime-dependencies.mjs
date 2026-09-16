@@ -596,10 +596,9 @@ export function runContextTreeRuntimeProbe({ appDir, nodePath, homeDir, probeOpe
     fail("embedded Context Tree list did not report the expected empty tree listing");
   }
   if (probeOpenTag) {
-    const target = "otqa-portable-nonexistent";
-    const result = runNode(nodePath, [entryPath, "context-tree", "connect", target], cleanEnv, 1);
-    if (!result.stderr.includes(`No managed Context Tree named "${target}" exists`)) {
-      fail(`OpenTag could not use its embedded Context Tree runtime: ${result.stdout}\n${result.stderr}`);
+    const result = runNode(nodePath, [entryPath, "--help"], cleanEnv);
+    if (!result.stdout.includes("OpenTag command-line interface") || result.stdout.includes("context-tree")) {
+      fail(`OpenTag did not expose the expected Agent-managed CLI surface: ${result.stdout}\n${result.stderr}`);
     }
   }
   const leftovers = readdirSync(homeDir).filter((name) => name !== "." && name !== "..");

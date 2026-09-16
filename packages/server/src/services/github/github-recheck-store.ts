@@ -1,3 +1,4 @@
+import type { GitHubRepositoryBinding } from "@opentag/shared";
 import { and, asc, eq, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { githubConnections } from "../../db/schema/index.js";
@@ -15,9 +16,32 @@ export interface GitHubRecheckDueConnection {
   credentialGeneration: bigint;
 }
 
+/** Internal: the full active row state a recheck verifies, including the sealed credential. */
+export interface GitHubActiveConnectionSnapshot {
+  connectionId: string;
+  accountId: string;
+  githubHost: string;
+  appId: string;
+  githubUserId: string;
+  bindings: GitHubRepositoryBinding[];
+  authorizationVersion: bigint;
+  recheckGeneration: bigint;
+  credentialGeneration: bigint;
+  accessExpiresAt: Date;
+  refreshExpiresAt: Date;
+  credential: { ciphertext: string; keyId: string };
+}
+
 export type GitHubRecheckOutcome =
   | { kind: "healthy" }
   | { kind: "transient_failure"; errorCode: string }
+  /**
+   * The credential still authenticates, but live admission no longer covers the current bindings
+   * (scope reduction, removed repository or installation). The authorization version bumps so
+   * previously issued runtime access dies, the row stays active for reconfiguration, and the
+   * recheck stays required until a bindings update re-proves admission.
+   */
+  | { kind: "permission_revoked"; errorCode: string }
   | { kind: "unauthorized"; errorCode: string };
 
 export type GitHubRecheckCommitResult =
@@ -102,6 +126,106 @@ export class GitHubConnectionRecheckStore {
     return updated.length;
   }
 
+  /** Active connections whose current bindings reference one installation; bounded, IDs only. */
+  async listActiveConnectionIdsByInstallation(installationId: string): Promise<string[]> {
+    const rows = await this.database
+      .select({ id: githubConnections.id })
+      .from(githubConnections)
+      .where(
+        and(
+          eq(githubConnections.status, "active"),
+          sql`${githubConnections.repositoryBindings} @> ${JSON.stringify([{ installationId }])}::jsonb`,
+        ),
+      )
+      .orderBy(asc(githubConnections.id))
+      .limit(1000);
+    return rows.map((row) => row.id);
+  }
+
+  /** Active connections of one GitHub user, found for an authorization-revoked event; bounded. */
+  async listActiveConnectionIdsByGitHubUser(githubUserId: string): Promise<string[]> {
+    const rows = await this.database
+      .select({ id: githubConnections.id })
+      .from(githubConnections)
+      .where(and(eq(githubConnections.status, "active"), eq(githubConnections.githubUserId, githubUserId)))
+      .orderBy(asc(githubConnections.id))
+      .limit(1000);
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Fail-closed invalidation for a provider-attested revocation (for example a
+   * `github_app_authorization` revoked webhook): every listed active row moves to
+   * reauthorization_required with its authorization version bumped and every secret cleared. The
+   * transition is monotonic — it can never resurrect a disconnected row or clear a pending one.
+   */
+  async invalidateActiveConnections(input: { connectionIds: string[]; errorCode: string }): Promise<number> {
+    if (input.connectionIds.length === 0) return 0;
+    const now = this.now();
+    const updated = await this.database
+      .update(githubConnections)
+      .set({
+        status: "reauthorization_required" as const,
+        authorizationVersion: sql`${githubConnections.authorizationVersion} + 1`,
+        credentialCiphertext: null,
+        credentialKeyId: null,
+        accessExpiresAt: null,
+        refreshExpiresAt: null,
+        oauthStateHash: null,
+        oauthContext: null,
+        oauthContextCiphertext: null,
+        oauthContextKeyId: null,
+        refreshAttemptId: null,
+        refreshClaimUntil: null,
+        refreshStatus: "idle" as const,
+        nextRecheckAt: null,
+        recheckRequired: false,
+        recheckGeneration: sql`${githubConnections.recheckGeneration} + 1`,
+        lastErrorCode: boundedGitHubErrorCode(input.errorCode),
+        updatedAt: now,
+      })
+      .where(and(inArray(githubConnections.id, input.connectionIds), eq(githubConnections.status, "active")))
+      .returning({ id: githubConnections.id });
+    return updated.length;
+  }
+
+  /**
+   * The full active snapshot a recheck worker needs after the due scan: bindings to re-verify and
+   * the sealed credential to verify with. Fencing versions travel with it so a commit can only
+   * land on the exact row state the scan observed. Never logged.
+   */
+  async getActiveRecheckSnapshot(connectionId: string): Promise<GitHubActiveConnectionSnapshot | null> {
+    const [row] = await this.database
+      .select()
+      .from(githubConnections)
+      .where(and(eq(githubConnections.id, connectionId), eq(githubConnections.status, "active")))
+      .limit(1);
+    if (!row) return null;
+    if (
+      row.githubUserId === null ||
+      row.credentialCiphertext === null ||
+      row.credentialKeyId === null ||
+      row.accessExpiresAt === null ||
+      row.refreshExpiresAt === null
+    ) {
+      throw new Error("An active GitHub connection is missing its credential identity");
+    }
+    return {
+      connectionId: row.id,
+      accountId: row.accountId,
+      githubHost: row.githubHost,
+      appId: row.appId,
+      githubUserId: row.githubUserId,
+      bindings: row.repositoryBindings,
+      authorizationVersion: row.authorizationVersion,
+      recheckGeneration: row.recheckGeneration,
+      credentialGeneration: row.credentialGeneration,
+      accessExpiresAt: row.accessExpiresAt,
+      refreshExpiresAt: row.refreshExpiresAt,
+      credential: { ciphertext: row.credentialCiphertext, keyId: row.credentialKeyId },
+    };
+  }
+
   /**
    * OAuth expiry cleanup: pending rows whose only flow expired carry no secrets and are deleted so
    * the Account can reconnect; current rows keep their connection and only the dead flow slot clears.
@@ -159,6 +283,18 @@ export class GitHubConnectionRecheckStore {
     }
     if (outcome.kind === "transient_failure") {
       return {
+        nextRecheckAt: new Date(now.getTime() + this.retryDelayMs),
+        recheckRequired: true,
+        recheckGeneration,
+        lastErrorCode: boundedGitHubErrorCode(outcome.errorCode),
+        updatedAt: now,
+      };
+    }
+    if (outcome.kind === "permission_revoked") {
+      // The credential is still valid and stays; issued runtime access dies with the version bump,
+      // and the required recheck keeps the row dirty until a bindings update re-proves admission.
+      return {
+        authorizationVersion: sql`${githubConnections.authorizationVersion} + 1`,
         nextRecheckAt: new Date(now.getTime() + this.retryDelayMs),
         recheckRequired: true,
         recheckGeneration,

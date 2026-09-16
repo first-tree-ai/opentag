@@ -16,10 +16,7 @@ import {
 import type { AgentInput, AgentRunResult, AgentRuntime, AgentRuntimeEvent } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
-import {
-  ImCredentialEnvironmentError,
-  type ImCredentialEnvironmentManager,
-} from "./im-credential-environment-manager.js";
+import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
   budgetTurnReportHashInput,
@@ -31,8 +28,12 @@ import {
 import type { ProviderCliOutgoingReplyCollectResult } from "./provider-cli/outgoing-reply-store.js";
 import { ProviderCliTurnPlanError } from "./provider-cli/turn-plan.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
-import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
+import { buildProviderOutboxInstructions, GITHUB_NATIVE_CLI_INSTRUCTIONS } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import type {
+  PreparedRuntimeCredentialEnvironment,
+  RuntimeCredentialEnvironmentManager,
+} from "./runtime-credential-environment-manager.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import {
   ClientRuntimeProviderStartError,
@@ -63,7 +64,7 @@ export interface AgentTurnRunnerOptions {
   readonly reportOwner: TurnReportOwner;
   readonly resourceFetcher?: ImResourceFetcher;
   readonly runtimeManager: SessionRuntimeManager;
-  readonly credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
+  readonly credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare">;
   readonly turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
@@ -237,26 +238,14 @@ export class AgentTurnRunner {
     let terminalObserved = false;
     let releaseObserver: () => void = () => undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
+    let preparedExecutionId: string | undefined;
     try {
-      await this.#bindingStore.updateUnresolved(
-        owner.request.agentId,
-        owner.request.sessionId,
-        owner.turnId,
-        "starting",
-      );
-      const credentials = await this.#credentialEnvironment.prepare(owner.request, signal);
-      if (this.#turnPlan && this.#runtimeManager.sessionKind(owner.request.sessionId) === "visible") {
-        turnPlanInput = {
-          provider: credentials.provider,
-          sessionId: owner.request.sessionId,
-          runId: owner.turnId,
-          ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
-          ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
-        };
-        await this.#turnPlan.prepare(turnPlanInput, signal);
-      }
-      signal.throwIfAborted();
-      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
+      const started = await this.#startTurn(owner, turn, signal);
+      preparedExecutionId = started.preparedExecutionId;
+      turnPlanInput = started.turnPlanInput;
+      const runSignal = started.runSignal;
+      runSignal.throwIfAborted();
+      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, runSignal);
       turn.runtime = runtime;
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
       const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
@@ -284,7 +273,7 @@ export class AgentTurnRunner {
       const result = await runtime.prompt({
         runId: owner.turnId,
         input: buildAgentInput(owner.request, supplementalContext),
-        signal,
+        signal: runSignal,
       });
       turn.phase = "reporting";
       completion = completionForResult(result, signal.reason);
@@ -310,7 +299,7 @@ export class AgentTurnRunner {
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
       }
       /* v8 ignore next -- credential teardown is best-effort. */
-      await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
+      await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
       clearTimeout(timer);
     }
 
@@ -357,6 +346,63 @@ export class AgentTurnRunner {
           "Turn Report submission failed",
         );
       });
+  }
+
+  /**
+   * Marks the Turn as starting, prepares the trusted execution, and links revocation /
+   * control-owner replacement into the Run abort signal. The provider prompt only starts
+   * after this returns (or after an accepted delivery the Server already holds).
+   */
+  async #startTurn(
+    owner: LiveTurnOwner,
+    turn: RunningTurn,
+    signal: AbortSignal,
+  ): Promise<{
+    preparedExecutionId?: string;
+    runSignal: AbortSignal;
+    turnPlanInput?: ProviderCliTurnPlanPrepareInput;
+  }> {
+    await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, owner.turnId, "starting");
+    const credentials = await this.#credentialEnvironment.prepare(
+      {
+        agentId: owner.request.agentId,
+        placementGeneration: owner.request.placementGeneration,
+        sessionId: owner.request.sessionId,
+        run: {
+          runId: owner.turnId,
+          source: { kind: "delivery", deliveryId: owner.request.deliveryId, turnId: owner.turnId },
+        },
+      },
+      signal,
+    );
+    const runSignal = credentials.signal ? AbortSignal.any([signal, credentials.signal]) : signal;
+    const turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, credentials, signal);
+    return {
+      ...(credentials.executionId ? { preparedExecutionId: credentials.executionId } : {}),
+      runSignal,
+      ...(turnPlanInput ? { turnPlanInput } : {}),
+    };
+  }
+
+  async #prepareTurnPlanForRun(
+    owner: LiveTurnOwner,
+    turn: RunningTurn,
+    credentials: PreparedRuntimeCredentialEnvironment,
+    signal: AbortSignal,
+  ): Promise<ProviderCliTurnPlanPrepareInput | undefined> {
+    if (!this.#turnPlan || this.#runtimeManager.sessionKind(owner.request.sessionId) !== "visible") return undefined;
+    if (!credentials.provider) throw new ImCredentialEnvironmentError("credential_provider_missing");
+    const turnPlanInput: ProviderCliTurnPlanPrepareInput = {
+      provider: credentials.provider,
+      sessionId: owner.request.sessionId,
+      runId: owner.turnId,
+      ...outgoingReplyCapturePlan(credentials.provider, turn.captureInReport),
+      ...(credentials.slackConfigDir ? { configDir: credentials.slackConfigDir } : {}),
+      ...(credentials.environmentManifest ? { environmentManifest: credentials.environmentManifest } : {}),
+      ...(credentials.slackApiHost ? { slackApiHost: credentials.slackApiHost } : {}),
+    };
+    await this.#turnPlan.prepare(turnPlanInput, signal);
+    return turnPlanInput;
   }
 
   async #collectOutgoingReplies(
@@ -423,6 +469,7 @@ export function buildAgentInput(
   const context = [
     '<opentag-im-context source="managed">',
     "OpenTag managed runtime context (not user-authored).",
+    GITHUB_NATIVE_CLI_INSTRUCTIONS,
     `Agent: ${request.agentId}`,
     `Session: ${request.sessionId}`,
     `Agent revision: ${runtime.revision.agent.sequence}/${runtime.revision.agent.id}`,

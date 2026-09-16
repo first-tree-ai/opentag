@@ -4,7 +4,11 @@ import type { DatabaseTransaction } from "../../db/client.js";
 import { githubConnections } from "../../db/schema/index.js";
 import { sealUserCredential } from "./credentials.js";
 import { GITHUB_CONNECTION_ERROR_CODES, GitHubConnectionServiceError } from "./errors.js";
-import type { GitHubAuthorizationCompletion, GitHubOAuthCompletionProof } from "./github-connection-service.js";
+import type {
+  GitHubAuthorizationCompletion,
+  GitHubClaimedFlowFence,
+  GitHubOAuthCompletionProof,
+} from "./github-connection-service.js";
 import { oauthFlowIsExpired, parseOAuthFlowContext } from "./oauth-flow.js";
 import { type GitHubConnectionRow, toGitHubConnectionStatus } from "./rows.js";
 
@@ -93,7 +97,7 @@ export async function completeClaimedFlow(
 /** All guards binding a completion to the exact claimed flow, session, and observed version. */
 export function requireClaimedFlow(
   row: GitHubConnectionRow,
-  proof: GitHubOAuthCompletionProof,
+  proof: GitHubClaimedFlowFence,
   now: Date,
 ): GitHubOAuthContext {
   if (row.oauthStateHash !== proof.stateHash) {

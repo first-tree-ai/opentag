@@ -10,6 +10,8 @@ import { GITHUB_REFRESH_CLAIM_TTL_MS, githubWorkerBatchLimit } from "./timing.js
 export interface GitHubRefreshCandidate {
   connectionId: string;
   accountId: string;
+  githubHost: string;
+  appId: string;
   githubUserId: string;
   credentialGeneration: bigint;
   accessExpiresAt: Date;
@@ -190,6 +192,39 @@ export class GitHubCredentialRefreshStore {
     return this.staleReason(input.connectionId);
   }
 
+  /**
+   * Releases a claim back to idle, consumed by exactly one caller: the worker after GitHub
+   * provably never consumed the refresh token (a rate-limited exchange). The credential is
+   * untouched and the row stays due, so the next tick retries with the same, still-valid token.
+   */
+  async releaseRefresh(input: {
+    connectionId: string;
+    attemptId: string;
+    expectedCredentialGeneration: bigint;
+  }): Promise<GitHubRefreshWriteResult> {
+    const now = this.now();
+    const [updated] = await this.database
+      .update(githubConnections)
+      .set({
+        refreshAttemptId: null,
+        refreshClaimUntil: null,
+        refreshStatus: "idle",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(githubConnections.id, input.connectionId),
+          eq(githubConnections.status, "active"),
+          eq(githubConnections.refreshStatus, "claimed"),
+          eq(githubConnections.refreshAttemptId, input.attemptId),
+          eq(githubConnections.credentialGeneration, input.expectedCredentialGeneration),
+        ),
+      )
+      .returning({ id: githubConnections.id });
+    if (updated) return { applied: true };
+    return this.staleReason(input.connectionId);
+  }
+
   /** Explains a rejected CAS without ever modifying the row. */
   private async staleReason(connectionId: string): Promise<GitHubRefreshWriteResult> {
     const [row] = await this.database
@@ -210,6 +245,8 @@ function toRefreshCandidate(row: GitHubConnectionRow): GitHubRefreshCandidate {
   return {
     connectionId: row.id,
     accountId: row.accountId,
+    githubHost: row.githubHost,
+    appId: row.appId,
     githubUserId: row.githubUserId,
     credentialGeneration: row.credentialGeneration,
     accessExpiresAt: row.accessExpiresAt,

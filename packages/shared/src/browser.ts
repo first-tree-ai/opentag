@@ -5,6 +5,7 @@ export * from "./auth.js";
 export * from "./computer.js";
 export * from "./errors.js";
 export * from "./github-integration.js";
+export * from "./github-management.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";

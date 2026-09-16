@@ -6,6 +6,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 
 ## Runtime and messaging
 
+- [Platform integrations and credential delivery](./platform-integrations-foundation.md)
 - [Runtime protocol](./runtime-protocol.md)
 - [IM Channel and Thread Sessions](./thread-sessions.md)
 - [Direct provider CLI messaging](./direct-provider-cli.md)

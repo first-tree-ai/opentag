@@ -37,6 +37,10 @@ const SHARED_PLAN_KEYS = [
   "runId",
 ] as const;
 
+/** Optional plan keys every selection kind may carry. */
+const OPTIONAL_SHARED_PLAN_KEYS = ["captureOutgoingReplies", "environmentManifest"] as const;
+const OPTIONAL_SLACK_PLAN_KEYS = [...OPTIONAL_SHARED_PLAN_KEYS, "slackApiHost"] as const;
+
 const MANAGED_PLAN_KEYS = [...SHARED_PLAN_KEYS, "artifactId"] as const;
 const EXTERNAL_PLAN_KEYS = SHARED_PLAN_KEYS;
 const MANAGED_SLACK_PLAN_KEYS = [...MANAGED_PLAN_KEYS, "configDir"] as const;
@@ -86,6 +90,11 @@ type ProviderCliTurnPlanShared = {
   readonly sessionId: string;
   readonly runId: string;
   readonly captureOutgoingReplies?: boolean;
+  /**
+   * Runtime proxy mode: absolute path of the current execution environment manifest.
+   * The Turn runner merges it into the CLI subprocess environment (null unsets).
+   */
+  readonly environmentManifest?: string;
 };
 
 type ProviderCliTurnPlanSelection =
@@ -100,6 +109,8 @@ export type ProviderCliTurnPlan =
         readonly provider: "slack";
         readonly command: "slack";
         readonly configDir: string;
+        /** Runtime proxy mode: loopback HTTPS endpoint pinned through `--apihost`. */
+        readonly slackApiHost?: string;
       });
 
 export function providerCliCommandForProvider(provider: ProviderCliProvider): ProviderCliTurnPlanCommand {
@@ -261,8 +272,13 @@ type ParsedTurnPlanIdentity = {
 function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
   const configDir = assertProviderCliSlackConfigDir(record.configDir);
   assertSlackCaptureOutgoingReplies(record);
+  const environmentManifest = parseEnvironmentManifest(record);
+  const slackApiHost = parseSlackApiHost(record);
   if (record.selectionKind === "managed") {
-    if (!hasPlanKeys(record, MANAGED_SLACK_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
+    if (
+      !hasPlanKeys(record, MANAGED_SLACK_PLAN_KEYS, OPTIONAL_SLACK_PLAN_KEYS) ||
+      !isNonEmptyString(record.artifactId)
+    ) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
     }
     return {
@@ -272,19 +288,30 @@ function parseSlackTurnPlan(record: Record<string, unknown>, shared: ParsedTurnP
       selectionKind: "managed",
       artifactId: record.artifactId,
       configDir,
+      ...(environmentManifest ? { environmentManifest } : {}),
+      ...(slackApiHost ? { slackApiHost } : {}),
     };
   }
   if (record.selectionKind === "external") {
-    if (!hasPlanKeys(record, EXTERNAL_SLACK_PLAN_KEYS)) {
+    if (!hasPlanKeys(record, EXTERNAL_SLACK_PLAN_KEYS, OPTIONAL_SLACK_PLAN_KEYS)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn external plan is malformed");
     }
-    return { ...shared, provider: "slack", command: "slack", selectionKind: "external", configDir };
+    return {
+      ...shared,
+      provider: "slack",
+      command: "slack",
+      selectionKind: "external",
+      configDir,
+      ...(environmentManifest ? { environmentManifest } : {}),
+      ...(slackApiHost ? { slackApiHost } : {}),
+    };
   }
   throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
 }
 
 function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurnPlanIdentity): ProviderCliTurnPlan {
   const captureOutgoingReplies = parseCaptureOutgoingReplies(record);
+  const environmentManifest = parseEnvironmentManifest(record);
   if (record.selectionKind === "managed") {
     if (!hasPlanKeys(record, MANAGED_PLAN_KEYS) || !isNonEmptyString(record.artifactId)) {
       throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn managed plan is malformed");
@@ -296,6 +323,7 @@ function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurn
       selectionKind: "managed",
       artifactId: record.artifactId,
       ...(captureOutgoingReplies ? { captureOutgoingReplies: true } : {}),
+      ...(environmentManifest ? { environmentManifest } : {}),
     };
   }
   if (record.selectionKind === "external") {
@@ -308,9 +336,34 @@ function parseFeishuTurnPlan(record: Record<string, unknown>, shared: ParsedTurn
       command: "lark-cli",
       selectionKind: "external",
       ...(captureOutgoingReplies ? { captureOutgoingReplies: true } : {}),
+      ...(environmentManifest ? { environmentManifest } : {}),
     };
   }
   throw new ProviderCliTurnPlanError("plan_invalid", "Provider CLI Turn plan selection kind is unknown");
+}
+
+function parseEnvironmentManifest(record: Record<string, unknown>): string | undefined {
+  if (!Object.hasOwn(record, "environmentManifest")) return undefined;
+  const value = record.environmentManifest;
+  if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value) {
+    throw new ProviderCliTurnPlanError(
+      "plan_invalid",
+      "Provider CLI Turn environment manifest must be an absolute canonical path",
+    );
+  }
+  return assertIdentity("environmentManifest", value);
+}
+
+function parseSlackApiHost(record: Record<string, unknown>): string | undefined {
+  if (!Object.hasOwn(record, "slackApiHost")) return undefined;
+  const value = record.slackApiHost;
+  if (typeof value !== "string" || !/^https:\/\/127\.0\.0\.1:\d{1,5}$/.test(value)) {
+    throw new ProviderCliTurnPlanError(
+      "plan_invalid",
+      "Provider CLI Turn Slack API host must be a loopback HTTPS endpoint",
+    );
+  }
+  return value;
 }
 
 function parsePlanSharedIdentity(value: Record<string, unknown>): ParsedTurnPlanIdentity {
@@ -541,14 +594,14 @@ function isFingerprint(value: unknown): value is string {
   return typeof value === "string" && FINGERPRINT_PATTERN.test(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+function hasPlanKeys(
+  value: Record<string, unknown>,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[] = OPTIONAL_SHARED_PLAN_KEYS,
+): boolean {
+  const allowed = new Set<string>([...requiredKeys, ...optionalKeys]);
   const actual = Object.keys(value);
-  if (actual.length !== keys.length) return false;
-  return keys.every((key) => Object.hasOwn(value, key));
-}
-
-function hasPlanKeys(value: Record<string, unknown>, requiredKeys: readonly string[]): boolean {
-  return hasExactKeys(value, requiredKeys) || hasExactKeys(value, [...requiredKeys, "captureOutgoingReplies"]);
+  return actual.every((key) => allowed.has(key)) && requiredKeys.every((key) => Object.hasOwn(value, key));
 }
 
 function parseCaptureOutgoingReplies(record: Record<string, unknown>): boolean {

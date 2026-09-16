@@ -14,6 +14,7 @@ export interface RuntimeRoutesOptions extends RuntimeSessionOptions {
   domainOwner?: RuntimeDomainOwner;
   providerCliReconcileOwner?: ProviderCliReconcileOwner;
   registry?: ConnectionRegistry;
+  runtimeCredentialOwner?: { businessOptions(): RuntimeBusinessOptions };
 }
 
 export function composeRuntimeBusinessOptions(
@@ -80,6 +81,7 @@ export function registerRuntimeRoutes(
         providerCliReconcileOwner?.businessOptions(),
         agentRuntimeTestOwner?.businessOptions(),
         domainOwner?.businessOptions(),
+        options.runtimeCredentialOwner?.businessOptions(),
       ),
     channelTarget: options.channelTarget,
     heartbeatIntervalMs: options.heartbeatIntervalMs,

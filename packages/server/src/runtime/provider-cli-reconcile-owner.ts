@@ -18,6 +18,7 @@ import {
   ProviderCliValidationResultFrameSchema,
   type ProviderCliValidationResultReason,
   type ProviderCliValidationRetryReason,
+  type ProviderCliValidationRunFrame,
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
   RUNTIME_CAPABILITY,
@@ -51,6 +52,21 @@ export interface ProviderCliReconcileBindingSource {
     provider: ImCliProvider;
   }): Promise<IntegrationCliValidationGrantMaterial | undefined>;
   listActiveProviderCliRequirements(computerId: string): Promise<readonly ProviderCliRequirementSnapshot[]>;
+  /**
+   * Server-issued runtime-credential validation run for proxy-mode connections. Absent means the
+   * deployment cannot issue validation authority, so proxy-mode validation stays needs_attention.
+   */
+  issueRuntimeValidationRun?(input: {
+    agentId: string;
+    computerId: string;
+    instanceId: string;
+    connectionId?: string;
+    credentialGeneration: number;
+    integrationId: string;
+    provider: ImCliProvider;
+  }): Promise<{ validationRunId: string; expiresAt: number } | undefined>;
+  /** Cloud connections never receive legacy raw grant material. Defaults to `local` when absent. */
+  computerKind?(computerId: string): Promise<"local" | "cloud" | undefined>;
   /**
    * First-setup eligibility for the exact Computer: true while at least one active bound Agent has
    * no current messaging setup. Evaluated once per (re)registration; a missing or rejected
@@ -872,36 +888,20 @@ export class ProviderCliReconcileOwner {
     if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     if (this.#shouldSkipGrant(current)) return;
     if (!this.#artifactIsReady(current)) return;
-    const material = await this.#bindings.issueIntegrationCliValidationGrant({
-      agentId: current.agentId,
-      computerId: current.computerId,
-      installationId: current.installationId,
-      credentialGeneration: current.credentialGeneration,
-      integrationId: current.integrationId,
-      provider: current.provider,
-    });
-    const stillCurrent = this.#requests.get(requestKey(current.computerId, current.integrationId));
-    if (!material || stillCurrent !== current) return;
-    if (!this.#artifactIsReady(current)) return;
-    if (!expectedIdentitiesMatch(current.expectedIdentity, material.expectedIdentity)) {
-      current.grantRepairStopped = true;
-      this.#registry.setProviderCliCredentialObservation(
-        current.computerId,
-        current.instanceId,
-        {
-          agentId: current.agentId,
-          integrationId: current.integrationId,
-          provider: current.provider,
-          credentialGeneration: current.credentialGeneration,
-          requestId: current.requestId,
-          status: "needs_attention",
-        },
-        this.#now(),
-      );
+    const computerKind = (await this.#bindings.computerKind?.(current.computerId)) ?? "local";
+    const proxyMode = this.#proxyMode(current.computerId, current.instanceId);
+    if (computerKind === "cloud" && !proxyMode) {
+      // Cloud never falls back to raw provider material; without proxy negotiation there is no
+      // safe validation path, so the credential execution stays needs_attention.
+      this.#stopGrantRepair(current, "upgrade_required");
       return;
     }
+    const frame = proxyMode
+      ? await this.#issueProxyValidationRun(current)
+      : await this.#issueLegacyValidationGrant(current);
+    if (!frame) return;
     const requestId = randomUUID();
-    const expiresAt = this.#now() + this.#grantTtlMs;
+    const expiresAt = Date.parse(frame.expiresAt);
     current.grantRequestId = requestId;
     current.grantExpiresAt = expiresAt;
     current.grantConsumed = false;
@@ -918,24 +918,109 @@ export class ProviderCliReconcileOwner {
       },
       this.#now(),
     );
-    const frame: ProviderCliValidationGrantFrame = {
-      type: "provider-cli:validation:grant",
-      requestId,
+    const outbound = { ...frame, requestId };
+    try {
+      await this.#registry.send(current.computerId, current.instanceId, outbound);
+    } catch {
+      current.grantConsumed = true;
+      this.#scheduleGrantRetry(current, "provider_unreachable");
+    }
+  }
+
+  #proxyMode(computerId: string, instanceId: string): boolean {
+    return (
+      this.#registry.capabilityVersion(computerId, instanceId, RUNTIME_CAPABILITY.runtimeCredential, this.#now()) ===
+        1 &&
+      this.#registry.capabilityVersion(computerId, instanceId, RUNTIME_CAPABILITY.providerProxy, this.#now()) === 1
+    );
+  }
+
+  /** Proxy mode: the Server issues a single-use validation run; no material crosses the wire. */
+  async #issueProxyValidationRun(
+    current: CurrentRequest,
+  ): Promise<Omit<ProviderCliValidationRunFrame, "requestId"> | undefined> {
+    const issueRun = this.#bindings.issueRuntimeValidationRun;
+    if (!issueRun) {
+      this.#stopGrantRepair(current, "upgrade_required");
+      return undefined;
+    }
+    const connectionId = this.#registry.currentConnectionId(current.computerId, current.instanceId);
+    const run = await issueRun({
+      agentId: current.agentId,
+      computerId: current.computerId,
+      instanceId: current.instanceId,
+      ...(connectionId ? { connectionId } : {}),
+      credentialGeneration: current.credentialGeneration,
+      integrationId: current.integrationId,
+      provider: current.provider,
+    });
+    if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return undefined;
+    if (!this.#artifactIsReady(current)) return undefined;
+    if (!run) {
+      this.#stopGrantRepair(current, "identity_mismatch");
+      return undefined;
+    }
+    return {
+      type: "provider-cli:validation:run",
       requirementRequestId: current.requestId,
       provider: current.provider,
       agentId: current.agentId,
       integrationId: current.integrationId,
       credentialGeneration: current.credentialGeneration,
-      expiresAt: new Date(expiresAt).toISOString(),
+      expectedIdentity: current.expectedIdentity,
+      validationRunId: run.validationRunId,
+      expiresAt: new Date(Math.min(run.expiresAt, this.#now() + this.#grantTtlMs)).toISOString(),
+    };
+  }
+
+  /** Legacy Local-only path: raw material for a non-proxy connection that explicitly allows it. */
+  async #issueLegacyValidationGrant(
+    current: CurrentRequest,
+  ): Promise<Omit<ProviderCliValidationGrantFrame, "requestId"> | undefined> {
+    const material = await this.#bindings.issueIntegrationCliValidationGrant({
+      agentId: current.agentId,
+      computerId: current.computerId,
+      installationId: current.installationId,
+      credentialGeneration: current.credentialGeneration,
+      integrationId: current.integrationId,
+      provider: current.provider,
+    });
+    if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return undefined;
+    if (!material) return undefined;
+    if (!this.#artifactIsReady(current)) return undefined;
+    if (!expectedIdentitiesMatch(current.expectedIdentity, material.expectedIdentity)) {
+      this.#stopGrantRepair(current, "identity_mismatch");
+      return undefined;
+    }
+    return {
+      type: "provider-cli:validation:grant",
+      requirementRequestId: current.requestId,
+      provider: current.provider,
+      agentId: current.agentId,
+      integrationId: current.integrationId,
+      credentialGeneration: current.credentialGeneration,
       expectedIdentity: material.expectedIdentity,
       grant: material.grant,
+      expiresAt: new Date(this.#now() + this.#grantTtlMs).toISOString(),
     };
-    try {
-      await this.#registry.send(current.computerId, current.instanceId, frame);
-    } catch {
-      current.grantConsumed = true;
-      this.#scheduleGrantRetry(current, "provider_unreachable");
-    }
+  }
+
+  #stopGrantRepair(current: CurrentRequest, reason: "upgrade_required" | "identity_mismatch"): void {
+    current.grantRepairStopped = true;
+    this.#registry.setProviderCliCredentialObservation(
+      current.computerId,
+      current.instanceId,
+      {
+        agentId: current.agentId,
+        integrationId: current.integrationId,
+        provider: current.provider,
+        credentialGeneration: current.credentialGeneration,
+        requestId: current.requestId,
+        status: "needs_attention",
+        reason,
+      },
+      this.#now(),
+    );
   }
 
   #shouldSkipGrant(current: CurrentRequest): boolean {

@@ -39,7 +39,7 @@ const PERMISSION_LEVELS = new Map<string, number>([
   ["read", 1],
   ["write", 2],
 ]);
-const PERMISSION_KEYS = new Set(["contents", "pull_requests"]);
+const PERMISSION_KEYS = new Set(["contents", "pull_requests", "checks", "actions"]);
 
 type RequestDeadline = {
   signal: AbortSignal;
@@ -96,6 +96,20 @@ function parseRepositoryId(value: unknown): number {
 }
 
 function validatePermissions(input: unknown): GitHubInstallationTokenPermissions {
+  const record = requirePermissionRecord(input);
+  const contents = requirePermissionLevel(record.contents, "permissions.contents");
+  const pullRequests = optionalPermissionLevel(record.pull_requests, "permissions.pull_requests");
+  const checks = optionalReadOnlyPermission(record.checks, "checks");
+  const actions = optionalReadOnlyPermission(record.actions, "actions");
+  return {
+    contents,
+    ...(pullRequests === undefined ? {} : { pull_requests: pullRequests }),
+    ...(checks === undefined ? {} : { checks }),
+    ...(actions === undefined ? {} : { actions }),
+  };
+}
+
+function requirePermissionRecord(input: unknown): Record<string, unknown> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw requestError("permissions must be an object with an explicit contents level");
   }
@@ -103,15 +117,22 @@ function validatePermissions(input: unknown): GitHubInstallationTokenPermissions
   for (const key of Object.keys(record)) {
     if (!PERMISSION_KEYS.has(key)) throw requestError("permissions contains an unsupported key");
   }
-  const contents = record.contents;
-  if (contents !== "read" && contents !== "write") {
-    throw requestError("permissions.contents must be read or write");
-  }
-  const pullRequests = record.pull_requests;
-  if (pullRequests !== undefined && pullRequests !== "read" && pullRequests !== "write") {
-    throw requestError("permissions.pull_requests must be read or write");
-  }
-  return pullRequests === undefined ? { contents } : { contents, pull_requests: pullRequests };
+  return record;
+}
+
+function requirePermissionLevel(value: unknown, field: string): "read" | "write" {
+  if (value !== "read" && value !== "write") throw requestError(`${field} must be read or write`);
+  return value;
+}
+
+function optionalPermissionLevel(value: unknown, field: string): "read" | "write" | undefined {
+  return value === undefined ? undefined : requirePermissionLevel(value, field);
+}
+
+function optionalReadOnlyPermission(value: unknown, field: string): "read" | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "read") throw requestError(`${field} only supports read access`);
+  return "read";
 }
 
 function parsePrivateKey(pem: string): KeyObject {
@@ -288,6 +309,8 @@ export class GitHubInstallationTokenClient {
     if (permissions.pull_requests !== undefined) {
       requestedLevels.pull_requests = PERMISSION_LEVELS.get(permissions.pull_requests) ?? 0;
     }
+    if (permissions.checks) requestedLevels.checks = 1;
+    if (permissions.actions) requestedLevels.actions = 1;
 
     const payload = await this.#send({
       method: "POST",

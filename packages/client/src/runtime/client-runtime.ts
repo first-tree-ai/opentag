@@ -30,6 +30,7 @@ type ResidualBusinessFrame = Extract<
       | "provider-cli:prewarm"
       | "provider-cli:requirement"
       | "provider-cli:validation:grant"
+      | "provider-cli:validation:run"
       | "provider-cli:cancel"
       | "agent-runtime:test"
       | "agent-runtime:test:cancel"

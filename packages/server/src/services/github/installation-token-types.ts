@@ -35,6 +35,8 @@ export type GitHubInstallationPermissionLevel = "read" | "write";
 export type GitHubInstallationTokenPermissions = {
   contents: GitHubInstallationPermissionLevel;
   pull_requests?: GitHubInstallationPermissionLevel;
+  checks?: "read";
+  actions?: "read";
 };
 
 export type MintGitHubInstallationTokenInput = {

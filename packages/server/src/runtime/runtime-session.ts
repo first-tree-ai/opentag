@@ -45,7 +45,7 @@ import {
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerAuthContext, ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
-import type { ConnectionRegistry } from "./connection-registry.js";
+import type { ConnectionRegistry, RuntimeControlIdentity } from "./connection-registry.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 
 const CLIENT_CONTROL_FRAME_TYPES = new Set(["auth", "computer:register", "heartbeat", "error"]);
@@ -383,6 +383,7 @@ export class RuntimeSession {
           computerId: authContext.computerId,
           installationId: frame.installationId,
           connectionId,
+          control: runtimeControlIdentity(authContext),
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
           protocolVersion: this.#protocolVersion ?? RUNTIME_PROTOCOL_V1,
@@ -769,6 +770,15 @@ export class RuntimeSession {
   #isClosing(): boolean {
     return this.#state === "closing" || this.#state === "closed";
   }
+}
+
+function runtimeControlIdentity(authContext: ComputerAuthContext): RuntimeControlIdentity {
+  return {
+    credentialId: authContext.credentialId,
+    computerId: authContext.computerId,
+    installationId: authContext.installationId,
+    kind: authContext.kind ?? "local",
+  };
 }
 
 function runtimeBusinessFrameAttrs(

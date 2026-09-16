@@ -13,6 +13,7 @@ import {
   exchangeFeishuTenantToken,
   extractBoundedJson,
   FeishuTokenExchangeError,
+  type ProviderCliValidationRequest,
   ProviderCliValidationRunner,
 } from "../index.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -590,5 +591,84 @@ exit 1
       status: "retrying",
       reason: "provider_unreachable",
     });
+  });
+
+  it("runs proxy readiness through the Server-authorized validation session and always cleans it up", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-validation-proxy-"));
+    const cleaned: string[] = [];
+    const execFile = vi.fn(async (_file, args, options) => {
+      expect(args).toEqual([
+        "--skip-update",
+        "--config-dir",
+        expect.any(String),
+        "--apihost",
+        "https://127.0.0.1:9",
+        "api",
+        "auth.test",
+      ]);
+      expect(options.env.SLACK_BOT_TOKEN).toBe("otrh_local_handle");
+      expect(options.env.SLACK_BOT_TOKEN).not.toContain("secret");
+      return { stdout: '{"ok":true,"team_id":"T1","user_id":"U1","bot_id":"B1"}', stderr: "" };
+    });
+    const openProxyValidation = vi.fn(async (_request: ProviderCliValidationRequest) => ({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_local_handle", SLACK_USER_TOKEN: undefined },
+      cleanup: async () => {
+        cleaned.push("cleanup");
+      },
+    }));
+    const runner = new ProviderCliValidationRunner({
+      home,
+      execFile,
+      openProxyValidation,
+      proxyCredentialMode: true,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.7.0",
+          agentId: fence.agentId,
+          validationRunId: "77777777-7777-4777-8777-777777777777",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "ready" });
+    expect(openProxyValidation.mock.calls[0]?.[0]).toMatchObject({
+      agentId: fence.agentId,
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    });
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(cleaned).toEqual(["cleanup"]);
+  });
+
+  it("clearly rejects proxy readiness without a validation run instead of using raw material", async () => {
+    const execFile = vi.fn();
+    const runner = new ProviderCliValidationRunner({
+      home: await mkdtemp(join(tmpdir(), "opentag-validation-proxy-none-")),
+      execFile,
+      proxyCredentialMode: true,
+      verifyTarget: async () => true,
+    });
+    await expect(
+      runner.run(
+        {
+          expectedFingerprint: "v1:test",
+          expectedIdentity: slackIdentity,
+          expiresAt: new Date(Date.now() + 15_000).toISOString(),
+          grant: { provider: "slack", botAccessToken: "xoxb-secret-token" },
+          requestId: fence.requestId,
+          targetPath: "/bin/true",
+          version: "4.7.0",
+        },
+        fence,
+      ),
+    ).resolves.toEqual({ ...fence, status: "needs_attention" });
+    expect(execFile).not.toHaveBeenCalled();
   });
 });

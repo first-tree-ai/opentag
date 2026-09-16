@@ -14,6 +14,10 @@ const state = vi.hoisted(() => ({
   verifyDatabaseMigrations: vi.fn(),
   createDatabaseClient: vi.fn(),
   createApp: vi.fn(),
+  platformAuth: { verifyMachineToken: vi.fn() },
+  credentialOwner: { issueValidationRun: vi.fn() },
+  proxyTransport: { attach: vi.fn() },
+  platformRuntimeOptions: undefined as unknown,
   registryCurrentInstanceId: vi.fn(),
   registrySupportsProvider: vi.fn(),
   registryProviderReadiness: vi.fn(),
@@ -41,6 +45,19 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../app.js", () => ({ createApp: state.createApp }));
+vi.mock("../platform-runtime.js", () => ({
+  createPlatformRuntime: async (options: unknown) => {
+    state.platformRuntimeOptions = options;
+    return {
+      auth: state.platformAuth,
+      credentials: { owner: state.credentialOwner, transport: state.proxyTransport },
+      assertCloudControlCredential: vi.fn(),
+      close: async () => {
+        state.events.push("platform:close");
+      },
+    };
+  },
+}));
 vi.mock("../admin/bootstrap.js", () => ({ bootstrapInitialAdmin: vi.fn() }));
 vi.mock("../bootstrap-readiness.js", () => ({
   BootstrapReadiness: class {
@@ -430,6 +447,12 @@ describe("Server startup", () => {
     // Google sign-in is a flag now: the whole flow lives in Better Auth, so there is no service to hand a route.
     expect(appOptions.browserAuth.googleSignIn).toBe(true);
     expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
+    expect(state.appOptions).toMatchObject({
+      runtimeAuthService: state.platformAuth,
+      runtimeProviderProxy: { transport: state.proxyTransport },
+      runtime: { runtimeCredentialOwner: state.credentialOwner },
+    });
+    expect(state.platformRuntimeOptions).toMatchObject({ database: state.database, config: state.config });
 
     const slackBinding = {
       botAccessToken: "xoxb-current",
@@ -531,9 +554,10 @@ describe("Server startup", () => {
     const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };
     expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
     await app.close();
-    expect(state.events.slice(-5)).toEqual([
+    expect(state.events.slice(-6)).toEqual([
       "app:close",
       "worker:stop",
+      "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
       "sql:end",
@@ -652,9 +676,10 @@ describe("Server startup", () => {
     expect(process.exitCode).toBe(1);
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
-    expect(state.events.slice(-5)).toEqual([
+    expect(state.events.slice(-6)).toEqual([
       "app:close",
       "worker:stop",
+      "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
       "sql:end",

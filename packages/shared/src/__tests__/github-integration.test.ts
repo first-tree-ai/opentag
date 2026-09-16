@@ -3,23 +3,30 @@ import {
   BeginGitHubAuthorizationRequestSchema,
   CreateGitHubConnectionRequestSchema,
   canonicalizeGitHubRepositoryBindings,
+  GITHUB_AGENT_SCOPE_MAX_DELEGATED_IM_SENDERS,
+  GITHUB_AGENT_SCOPE_MAX_DELEGATED_SESSION_AGENTS,
   GITHUB_REPOSITORY_BINDINGS_MAX_AGENT_SCOPES,
   GITHUB_REPOSITORY_BINDINGS_MAX_BYTES,
   GITHUB_REPOSITORY_BINDINGS_MAX_REPOSITORIES,
   GitBranchRefSchema,
   GitHubAgentScopeSchema,
+  GitHubAgentScopeTaskDelegationSchema,
   GitHubConnectionStatusSchema,
   GitHubDecimalIdSchema,
+  GitHubDelegatedImSenderIdSchema,
   GitHubOAuthContextSchema,
   GitHubRepositoryBindingSchema,
   GitHubRepositoryBindingsSchema,
   GitHubVersionStringSchema,
+  githubAgentScopeAllowsTaskDelegation,
   isValidGitRefName,
   UpdateGitHubConnectionBindingsRequestSchema,
 } from "../github-integration.js";
 
 const AGENT_ONE = "3f6c8f8e-2f4c-4b7e-9f9d-9a3f4f0a0001";
 const AGENT_TWO = "3f6c8f8e-2f4c-4b7e-9f9d-9a3f4f0a0002";
+const BINDING_ONE = "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f000001";
+const BINDING_TWO = "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f000002";
 
 function codeBinding(overrides: Record<string, unknown> = {}) {
   return {
@@ -141,6 +148,154 @@ describe("GitHubAgentScopeSchema", () => {
     expect(
       GitHubAgentScopeSchema.safeParse({ agentId: AGENT_ONE, role: "code", access: "read", token: "x" }).success,
     ).toBe(false);
+  });
+
+  it("preserves older scopes without task delegation: the property stays absent", () => {
+    const scope = GitHubAgentScopeSchema.parse({ agentId: AGENT_ONE, role: "code", access: "read" });
+    expect("taskDelegation" in scope).toBe(false);
+    expect(githubAgentScopeAllowsTaskDelegation(scope, { sourceAgentId: AGENT_TWO })).toBe(false);
+  });
+});
+
+describe("GitHubAgentScopeTaskDelegationSchema", () => {
+  it("accepts explicit sender and session-Agent lists and normalizes their UUID case", () => {
+    const delegation = GitHubAgentScopeTaskDelegationSchema.parse({
+      imSenders: [{ bindingId: BINDING_ONE.toUpperCase(), senderId: "ou_human_1" }],
+      sessionAgents: [AGENT_TWO.toUpperCase()],
+    });
+    expect(delegation).toEqual({
+      imSenders: [{ bindingId: BINDING_ONE, senderId: "ou_human_1" }],
+      sessionAgents: [AGENT_TWO],
+    });
+  });
+
+  it("accepts the explicit empty delegation that denies execution", () => {
+    expect(GitHubAgentScopeTaskDelegationSchema.safeParse({ imSenders: [], sessionAgents: [] }).success).toBe(true);
+  });
+
+  it("requires both lists, so a partial delegation is not silently defaulted", () => {
+    expect(GitHubAgentScopeTaskDelegationSchema.safeParse({ imSenders: [] }).success).toBe(false);
+    expect(GitHubAgentScopeTaskDelegationSchema.safeParse({ sessionAgents: [] }).success).toBe(false);
+  });
+
+  it("rejects duplicate sender pairs and duplicate session Agents", () => {
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: [
+          { bindingId: BINDING_ONE, senderId: "ou_human" },
+          { bindingId: BINDING_ONE.toUpperCase(), senderId: "ou_human" },
+        ],
+        sessionAgents: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: [],
+        sessionAgents: [AGENT_ONE, AGENT_ONE.toUpperCase()],
+      }).success,
+    ).toBe(false);
+    // The same sender identity through two different Account-owned bindings is a distinct entry.
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: [
+          { bindingId: BINDING_ONE, senderId: "ou_human" },
+          { bindingId: BINDING_TWO, senderId: "ou_human" },
+        ],
+        sessionAgents: [],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("enforces both list bounds", () => {
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: Array.from({ length: GITHUB_AGENT_SCOPE_MAX_DELEGATED_IM_SENDERS + 1 }, (_, index) => ({
+          bindingId: BINDING_ONE,
+          senderId: `ou_sender_${index}`,
+        })),
+        sessionAgents: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: [],
+        sessionAgents: Array.from(
+          { length: GITHUB_AGENT_SCOPE_MAX_DELEGATED_SESSION_AGENTS + 1 },
+          (_, index) => `3f6c8f8e-2f4c-4b7e-9f9d-${String(index).padStart(12, "0")}`,
+        ),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unknown fields, unbounded sender shapes, and a non-UUID binding", () => {
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({ imSenders: [], sessionAgents: [], all: true }).success,
+    ).toBe(false);
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: [{ bindingId: BINDING_ONE, senderId: "ou human" }],
+        sessionAgents: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      GitHubAgentScopeTaskDelegationSchema.safeParse({
+        imSenders: [{ bindingId: "not-a-uuid", senderId: "ou_human" }],
+        sessionAgents: [],
+      }).success,
+    ).toBe(false);
+    expect(GitHubDelegatedImSenderIdSchema.safeParse("").success).toBe(false);
+    expect(GitHubDelegatedImSenderIdSchema.safeParse("U12345").success).toBe(true);
+  });
+
+  it("keeps the scope byte budget as the only overall bound", () => {
+    const delegation = {
+      imSenders: Array.from({ length: GITHUB_AGENT_SCOPE_MAX_DELEGATED_IM_SENDERS }, (_, index) => ({
+        bindingId: BINDING_ONE,
+        senderId: `ou_sender_${index}`,
+      })),
+      sessionAgents: [AGENT_ONE],
+    };
+    const binding = GitHubRepositoryBindingSchema.parse(
+      codeBinding({ agentScopes: [{ agentId: AGENT_ONE, role: "code", access: "read", taskDelegation: delegation }] }),
+    );
+    expect(binding.agentScopes[0]?.taskDelegation?.imSenders).toHaveLength(GITHUB_AGENT_SCOPE_MAX_DELEGATED_IM_SENDERS);
+    expect(GitHubRepositoryBindingsSchema.safeParse([binding]).success).toBe(true);
+  });
+});
+
+describe("githubAgentScopeAllowsTaskDelegation", () => {
+  const scope = GitHubAgentScopeSchema.parse({
+    agentId: AGENT_ONE,
+    role: "code",
+    access: "read",
+    taskDelegation: {
+      imSenders: [{ bindingId: BINDING_ONE, senderId: "ou_human" }],
+      sessionAgents: [AGENT_TWO],
+    },
+  });
+
+  it("allows only the exact delegated messaging identity", () => {
+    expect(
+      githubAgentScopeAllowsTaskDelegation(scope, { imSender: { bindingId: BINDING_ONE, senderId: "ou_human" } }),
+    ).toBe(true);
+    expect(
+      githubAgentScopeAllowsTaskDelegation(scope, { imSender: { bindingId: BINDING_TWO, senderId: "ou_human" } }),
+    ).toBe(false);
+    expect(
+      githubAgentScopeAllowsTaskDelegation(scope, { imSender: { bindingId: BINDING_ONE, senderId: "ou_other" } }),
+    ).toBe(false);
+  });
+
+  it("allows only the exact delegated source Agent, case-insensitively", () => {
+    expect(githubAgentScopeAllowsTaskDelegation(scope, { sourceAgentId: AGENT_TWO })).toBe(true);
+    expect(githubAgentScopeAllowsTaskDelegation(scope, { sourceAgentId: AGENT_TWO.toUpperCase() })).toBe(true);
+    expect(githubAgentScopeAllowsTaskDelegation(scope, { sourceAgentId: AGENT_ONE })).toBe(false);
+  });
+
+  it("denies when the runtime has no trusted identity to match", () => {
+    expect(githubAgentScopeAllowsTaskDelegation(scope, {})).toBe(false);
+    const scopeWithoutDelegation = GitHubAgentScopeSchema.parse({ agentId: AGENT_ONE, role: "code", access: "read" });
+    expect(githubAgentScopeAllowsTaskDelegation(scopeWithoutDelegation, { sourceAgentId: AGENT_TWO })).toBe(false);
   });
 });
 
@@ -314,6 +469,21 @@ describe("GitHubOAuthContextSchema", () => {
     expect(GitHubOAuthContextSchema.safeParse({ ...base, returnSurface: "evil.example.com" }).success).toBe(false);
     expect(GitHubOAuthContextSchema.safeParse({ ...base, loginSessionHash: "not-hex" }).success).toBe(false);
   });
+
+  it("defaults a missing return Agent to null and fences the Agent deep link by surface", () => {
+    expect(GitHubOAuthContextSchema.parse(base).agentId).toBeNull();
+    expect(
+      GitHubOAuthContextSchema.parse({
+        ...base,
+        returnSurface: "agent-integrations",
+        agentId: "9F0F2F6C-2F5C-4D43-A9FB-9A1C9F0000DD",
+      }).agentId,
+    ).toBe("9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000dd");
+    expect(
+      GitHubOAuthContextSchema.safeParse({ ...base, agentId: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000dd" }).success,
+    ).toBe(false);
+    expect(GitHubOAuthContextSchema.safeParse({ ...base, returnSurface: "agent-integrations" }).success).toBe(false);
+  });
 });
 
 describe("GitHubConnectionStatusSchema", () => {
@@ -355,8 +525,19 @@ describe("management request DTOs", () => {
       githubHost: "github.com",
       appId: "1234",
       returnSurface: "account-integrations",
+      agentId: null,
     });
     expect(CreateGitHubConnectionRequestSchema.safeParse({ appId: "1234", clientSecret: "x" }).success).toBe(false);
+    expect(
+      CreateGitHubConnectionRequestSchema.safeParse({
+        appId: "1234",
+        returnSurface: "agent-integrations",
+        agentId: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000dd",
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateGitHubConnectionRequestSchema.safeParse({ appId: "1234", returnSurface: "agent-integrations" }).success,
+    ).toBe(false);
   });
 
   it("fences bindings updates with the observed authorization version", () => {

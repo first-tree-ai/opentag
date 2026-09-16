@@ -69,6 +69,11 @@ export interface SessionRuntimeManagerOptions {
   readonly home?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly providerEnvironmentPath: (sessionId: string) => string;
+  /**
+   * Optional. Current CLI environment for automatic injection into the provider spawn
+   * environment (visible Sessions). Proxy mode returns the execution env map.
+   */
+  readonly providerEnvironment?: (sessionId: string) => Readonly<Record<string, string>> | undefined;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
    * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
@@ -90,6 +95,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #environment: NodeJS.ProcessEnv;
   readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
+  readonly #providerEnvironment?: SessionRuntimeManagerOptions["providerEnvironment"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
@@ -111,6 +117,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#providers = options.providers;
     this.#home = options.home;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
+    this.#providerEnvironment = options.providerEnvironment;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
     this.#proofManager =
@@ -299,6 +306,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ...(managed.sessionKind === "visible"
             ? {
                 OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId),
+                ...this.#providerEnvironment?.(managed.binding.sessionId),
               }
             : {}),
         },

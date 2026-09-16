@@ -7,6 +7,7 @@ import {
   type AgentSetupRuntimeState,
   type AgentSummary,
   type AgentUsageDetail,
+  type GitHubIntegrationOverview,
   projectAgentSetupComponents,
 } from "@opentag/shared/browser";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -309,6 +310,7 @@ function setupProjectionOrThrow(
 
 function internalToolsFixtureResponse(input: {
   body: BodyInit | null | undefined;
+  githubIntegration: GitHubIntegrationOverview | undefined;
   method: string | undefined;
   offered: boolean | undefined;
   path: string;
@@ -316,6 +318,15 @@ function internalToolsFixtureResponse(input: {
   resetSetup: () => void;
   writeNavigation: (value: { integrations: boolean; skills: boolean }) => void;
 }): Response | undefined {
+  // The Account GitHub overview: unavailable unless a test installs a real one.
+  if (input.path === "/api/v1/integrations/github") {
+    return json(
+      input.githubIntegration ?? {
+        availability: { available: false, githubHost: "github.com", appId: null },
+        connection: null,
+      },
+    );
+  }
   if (input.path === "/api/v1/me/setup/reset" && input.method === undefined) {
     return input.offered ? new Response(null, { status: 204 }) : new Response(null, { status: 404 });
   }
@@ -363,6 +374,8 @@ export function installApi(
     }[];
     computerStatus?: () => "online" | "offline";
     computerReadStatus?: (connected: boolean) => number | undefined;
+    /** The Account GitHub overview the management endpoint answers with; unavailable by default. */
+    githubIntegration?: GitHubIntegrationOverview;
     handoffReady?: boolean;
     /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
     handoffEvidenceFails?: boolean;
@@ -513,6 +526,7 @@ export function installApi(
     }
     const internalToolsResponse = internalToolsFixtureResponse({
       body: init?.body,
+      githubIntegration: options.githubIntegration,
       method: init?.method,
       offered: options.internalToolsOffered,
       path,

@@ -229,6 +229,72 @@ describe("SessionRuntimeManager", () => {
     await feishuManager.close();
   });
 
+  it("injects the active proxy execution environment into visible Sessions only", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-proxy-env-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerCliLaunchPath: (sessionId) =>
+        `${resolve(home, "proxy", sessionId, "bin")}:${resolve(home, "plans", sessionId)}`,
+      providerEnvironment: (sessionId) =>
+        sessionId === "session-1"
+          ? { GH_TOKEN: "otrh_handle", HTTPS_PROXY: "http://127.0.0.1:3128", NO_PROXY: "127.0.0.1,localhost" }
+          : undefined,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    await expect(
+      new SessionReconciler({ installationId: computerId, preparation: manager, localPolicy: manager }).reconcile(
+        reconcile(computerId, snapshot(1)),
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime("session-1");
+    expect(factory.created[0]?.workspace.environment).toMatchObject({
+      OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
+      GH_TOKEN: "otrh_handle",
+      HTTPS_PROXY: "http://127.0.0.1:3128",
+      NO_PROXY: "127.0.0.1,localhost",
+    });
+    expect(factory.created[0]?.workspace.pathPrepend).toBe(
+      `${resolve(home, "proxy", "session-1", "bin")}:${resolve(home, "plans", "session-1")}`,
+    );
+
+    const internalFactory = new FakeFactory();
+    const internalManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(internalFactory),
+      providerCliLaunchPath: () => resolve(home, "proxy", "session-internal", "bin"),
+      providerEnvironment: () => ({ GH_TOKEN: "otrh_internal_leak" }),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: internalManager,
+        localPolicy: internalManager,
+      }).reconcile({
+        ...reconcile(computerId, snapshot(1)),
+        sessionId: "session-internal",
+        sessionKind: "internal",
+        creatorSessionId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await internalManager.ensureRuntime("session-internal");
+    expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("GH_TOKEN");
+    expect(internalFactory.created[0]?.workspace.pathPrepend).toBeUndefined();
+
+    await manager.close();
+    await internalManager.close();
+  });
+
   it("prepends the visible launch bin ahead of ambient PATH and never does so for internal Sessions", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-launch-path-"));
     homes.push(home);

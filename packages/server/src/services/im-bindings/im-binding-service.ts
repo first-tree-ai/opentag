@@ -37,7 +37,13 @@ import {
   slackInstallations,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import {
+  type ImBindingValidationRunRequest,
+  issueImBindingValidationRun,
+  type RuntimeValidationRunIssuer,
+} from "../../runtime-credentials/runtime-validation-execution.js";
 import type { ApplicationCipher } from "../crypto.js";
+import { computerKindFor, localRawGrantAllowed } from "./computer-kind.js";
 import {
   type CredentialMaterialInput,
   decodeFeishuCredential,
@@ -281,6 +287,7 @@ export class ImBindingService {
   readonly #now: () => Date;
   readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
   readonly #providerCli: ImBindingProviderCli;
+  readonly #runtimeCredentialValidation: RuntimeValidationRunIssuer | undefined;
   readonly #onActiveBindingChanged:
     | ((input: { agentId: string; computerId: string }) => Promise<void> | void)
     | undefined;
@@ -292,6 +299,7 @@ export class ImBindingService {
     options: {
       afterMutationAuthorityLocked?: () => Promise<void> | void;
       now?: () => Date;
+      runtimeCredentialValidation?: RuntimeValidationRunIssuer;
       agentRuntimeReadiness?: (agentId: string) => Promise<ProviderReadinessStatus> | ProviderReadinessStatus;
       imCliReadiness?: (
         agentId: string,
@@ -330,6 +338,7 @@ export class ImBindingService {
       logger: this.#logger,
     });
     this.#onActiveBindingChanged = options.onActiveBindingChanged;
+    this.#runtimeCredentialValidation = options.runtimeCredentialValidation;
   }
 
   async getAgentComputerId(agentId: string): Promise<string | undefined> {
@@ -348,6 +357,16 @@ export class ImBindingService {
 
   async issueIntegrationCliValidationGrant(input: Parameters<ImBindingProviderCli["issueValidationGrant"]>[0]) {
     return this.#providerCli.issueValidationGrant(input);
+  }
+
+  /** Server-issued validation run; the injected port re-verifies every fence. */
+  issueRuntimeValidationRun(input: ImBindingValidationRunRequest) {
+    return issueImBindingValidationRun(this.#runtimeCredentialValidation, input);
+  }
+
+  /** Exact Computer kind; `undefined` for unknown rows so Cloud is never mistaken for Local. */
+  computerKind(computerId: string): Promise<"local" | "cloud" | undefined> {
+    return computerKindFor(computerId, this.#database);
   }
 
   async issueRuntimeCredentialGrant(
@@ -413,6 +432,18 @@ export class ImBindingService {
       row.placementGeneration !== request.placementGeneration
     ) {
       return rejected("placement_stale");
+    }
+    if (!(await localRawGrantAllowed(computerAuth.computerId, this.#database))) {
+      this.#logger?.warn(
+        { code: "raw_grant_unsupported", computerId: computerAuth.computerId, requestId: request.requestId },
+        "Legacy raw credential grant denied",
+      );
+      return {
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "rejected",
+        code: "credential_stale",
+      };
     }
     const binding = row.binding;
     const sessionKind = row.sessionKind;

@@ -23,15 +23,19 @@ import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-
 import {
   ComposedClientRuntime,
   codexProviderReadiness,
+  composeProviderCliLaunchPath,
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  createCredentialEnvironment,
   createLoginShellDiscovery,
+  createProxyValidationOpener,
   createRuntimeProviderReadinessRefresher,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
   resolvePiHome,
+  resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
 import * as contextTreeModule from "../runtime/context-tree.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
@@ -2504,6 +2508,110 @@ class CompositionPiRpcClient implements PiRpcClient {
 
   async close(): Promise<void> {}
 }
+
+describe("proxy CLI launch path composition", () => {
+  it("prepends the execution shim directory only when proxy material is active", () => {
+    expect(composeProviderCliLaunchPath("/execution/session-1/bin", "/plans/session-1")).toBe(
+      `/execution/session-1/bin${delimiter}/plans/session-1`,
+    );
+    expect(composeProviderCliLaunchPath(undefined, "/plans/session-1")).toBe("/plans/session-1");
+  });
+});
+
+describe("proxy validation opener", () => {
+  it("opens the Server-issued validation execution and exposes only execution-local material", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const prepareValidationSession = vi.fn(async () => ({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_handle" },
+      executionId: "exec-1",
+      signal: new AbortController().signal,
+      cleanup,
+    }));
+    const open = createProxyValidationOpener({ prepareValidationSession } as never);
+    await expect(
+      open({
+        agentId: "agent-1",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        validationRunId: "77777777-7777-4777-8777-777777777777",
+      } as never),
+    ).resolves.toMatchObject({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_handle" },
+    });
+    expect(prepareValidationSession).toHaveBeenCalledWith(
+      { agentId: "agent-1", placementGeneration: 1, validationRunId: "77777777-7777-4777-8777-777777777777" },
+      undefined,
+    );
+    // No Server-issued validation run or Agent fence: explicit rejection, never raw material.
+    await expect(open({ requestId: "x" } as never)).resolves.toBeUndefined();
+    await expect(open({ agentId: "agent-1" } as never)).resolves.toBeUndefined();
+    expect(prepareValidationSession).toHaveBeenCalledTimes(1);
+
+    const session = await open({
+      agentId: "agent-1",
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    } as never);
+    await session?.cleanup();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("prefers an explicit opener and disables proxy readiness outside proxy mode", () => {
+    const injected = vi.fn(async () => undefined);
+    expect(resolveProxyValidationOpener({ credentialMode: "legacy", openProxyValidation: injected }, {} as never)).toBe(
+      injected,
+    );
+    const prepareValidationSession = vi.fn(async () => undefined);
+    expect(
+      resolveProxyValidationOpener({ credentialMode: "legacy" }, { prepareValidationSession } as never),
+    ).toBeUndefined();
+    const opener = resolveProxyValidationOpener({ credentialMode: "proxy" }, { prepareValidationSession } as never);
+    expect(opener).toBeTypeOf("function");
+  });
+});
+
+describe("credential environment composition", () => {
+  it("keeps legacy mode by default and forwards the Cloud injection seam in proxy mode", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-credential-mode-"));
+    directories.push(home);
+    const legacy = createCredentialEnvironment(
+      { clientVersion: "0.0.0", home } as never,
+      {
+        send: async () => undefined,
+        subscribeBusinessFrames: () => () => undefined,
+      } as never,
+      createLogger("test"),
+    );
+    expect(legacy.mode).toBe("legacy");
+    await legacy.close();
+
+    const proxy = createCredentialEnvironment(
+      {
+        clientVersion: "0.0.0",
+        credentialMode: "proxy",
+        home,
+        runtimeCredentials: {
+          dataConnectionFactory: async () =>
+            ({
+              closed: false,
+              close: async () => undefined,
+              openStream: async () => ({ status: 200, headers: {}, body: (async function* () {})() }),
+              settled: async () => undefined,
+            }) as never,
+          generateCa: async () => ({ certPath: resolve(home, "ca.pem"), keyPath: resolve(home, "ca-key.pem") }),
+          now: () => 0,
+          openBudgetMs: 100,
+          sandboxForSession: () => undefined,
+          scheduler: { schedule: () => ({ cancel: () => undefined }) },
+        },
+      } as never,
+      { serverUrl: "https://runtime.example" } as never,
+      createLogger("test"),
+    );
+    expect(proxy.mode).toBe("proxy");
+    await proxy.close();
+  });
+});
 
 function readyFactory(
   providerId = "codex",

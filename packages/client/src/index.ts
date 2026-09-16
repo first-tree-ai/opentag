@@ -75,6 +75,11 @@ export {
 } from "./auth/machine-credentials.js";
 export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
 export {
+  type CloudSandboxCommandOptions,
+  CloudSandboxCredentialBridge,
+  type CloudSandboxCredentialBridgeOpenOptions,
+} from "./cloud-runtime/sandbox-credential-bridge.js";
+export {
   checkServerHealth,
   SERVER_HEALTH_TIMEOUT_MS,
   ServerHealthConfigurationError,
@@ -424,6 +429,50 @@ export {
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export {
+  type PreparedRuntimeCredentialEnvironment,
+  RuntimeCredentialEnvironmentManager,
+  type RuntimeCredentialEnvironmentManagerOptions,
+  type RuntimeCredentialMode,
+  type RuntimeCredentialPrepareSubject,
+  type RuntimeCredentialRunSubject,
+} from "./runtime/runtime-credential-environment-manager.js";
+export {
+  parseRuntimeCredentialServerFrame,
+  RUNTIME_CREDENTIAL_CAPABILITY,
+  RUNTIME_EXECUTION_MAX_LIFETIME_MS,
+  RUNTIME_PROVIDER_PROXY_CAPABILITY,
+  RUNTIME_PROVIDER_PROXY_PATH,
+  RUNTIME_PROXY_DATA_BINARY_FRAME_MAX_BYTES,
+  RUNTIME_PROXY_DATA_CHUNK_BYTES,
+  RUNTIME_PROXY_DATA_HEADER_MAX_BYTES,
+  RUNTIME_PROXY_DATA_INITIAL_CREDIT_BYTES,
+  RUNTIME_PROXY_DATA_MAX_STREAMS,
+  RUNTIME_PROXY_PROVIDERS,
+  RUNTIME_PROXY_TICKET_TTL_MS,
+  type RuntimeCredentialGrant,
+  type RuntimeCredentialResult,
+  type RuntimeCredentialRevoked,
+  type RuntimeCredentialServerFrame,
+  type RuntimeExecutionOpenRequest,
+  type RuntimeExecutionOpenResult,
+  type RuntimeExecutionProvider,
+  type RuntimeExecutionSandbox,
+  type RuntimeExecutionSource,
+  type RuntimeProxyCliMetadata,
+  type RuntimeProxyProvider,
+} from "./runtime/runtime-credential-frames.js";
+export {
+  defaultRuntimeProxyDataConnectionFactory,
+  RuntimeCredentialRelay,
+  RuntimeCredentialRelayError,
+  type RuntimeCredentialRelayErrorCode,
+  type RuntimeCredentialRelayOptions,
+  type RuntimeProxyDataConnectInput,
+  type RuntimeProxyDataConnectionFactory,
+  type RuntimeProxyDataConnectionLike,
+  type RuntimeRelayScheduler,
+} from "./runtime/runtime-credential-relay.js";
+export {
   DEFAULT_RUNTIME_RETRY_POLICY,
   type DurableFailure,
   type DurableRetryability,
@@ -449,6 +498,36 @@ export {
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
+export {
+  RuntimeProxyDataConnection,
+  type RuntimeProxyDataConnectionOptions,
+  RuntimeProxyDataError,
+  type RuntimeProxyDataErrorCode,
+  type RuntimeProxyOpenStreamRequest,
+  type RuntimeProxyStreamResponse,
+} from "./runtime/runtime-proxy-data-client.js";
+export {
+  generateExecutionCa,
+  RUNTIME_PROVIDER_ORIGIN_HEADER,
+  RUNTIME_PROXY_ALLOWED_CONNECT_HOSTS,
+  RUNTIME_PROXY_HANDLE_PATH_PREFIX,
+  type RuntimeProxyAdapterStreamRequest,
+  RuntimeProxyLoopbackAdapter,
+  type RuntimeProxyLoopbackAdapterOptions,
+  type RuntimeProxyLoopbackCaMaterial,
+  RuntimeProxyLoopbackError,
+} from "./runtime/runtime-proxy-loopback-adapter.js";
+export {
+  buildRuntimeProxyEnvironment,
+  RUNTIME_PROXY_GIT_HELPER_MARKER,
+  RUNTIME_PROXY_SHIM_MARKER,
+  type RuntimeProxyEnvironment,
+  type RuntimeProxyEnvironmentInput,
+  type RuntimeProxyExecutionLayout,
+  RuntimeProxyMaterialStore,
+  renderRuntimeProxyGitCredentialHelper,
+  renderRuntimeProxyShim,
+} from "./runtime/runtime-proxy-material.js";
 export {
   ServerRuntimeDurabilityStore,
   type ServerRuntimeDurabilityStoreOptions,

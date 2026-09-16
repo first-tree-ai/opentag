@@ -10,6 +10,8 @@ export interface BeginOAuthFlowInput {
   intent: GitHubOAuthFlowIntent;
   loginSessionHash: string;
   returnSurface: GitHubOAuthReturnSurface;
+  /** The exact Agent an agent-integrations round trip returns to; null on the account surface. */
+  agentId?: string | null;
   expiresAt: Date;
 }
 
@@ -20,6 +22,7 @@ export function newOAuthFlowContext(input: BeginOAuthFlowInput): GitHubOAuthCont
     phase: "awaiting_callback",
     loginSessionHash: input.loginSessionHash,
     returnSurface: input.returnSurface,
+    agentId: input.agentId ?? null,
     expiresAt: input.expiresAt.toISOString(),
     claimedAt: null,
   };

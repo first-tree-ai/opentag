@@ -89,8 +89,9 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
     fireEvent.click(await screen.findByRole("link", { name: "Integrations" }));
-    expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
-    expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
+    // The real GitHub repository surface now owns this route; the demo table is gone.
+    expect(await screen.findByRole("heading", { name: "GitHub repositories" })).toBeTruthy();
+    expect(screen.getByText("GitHub integration unavailable")).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/integrations`);
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   });

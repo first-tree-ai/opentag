@@ -45,6 +45,17 @@ import {
   FeishuSetupAttemptSchema,
   feishuSetupAttemptCancelPath,
   feishuSetupAttemptPath,
+  GITHUB_INTEGRATION_AUTHORIZATION_PATH,
+  GITHUB_INTEGRATION_BINDINGS_PATH,
+  GITHUB_INTEGRATION_DISCONNECT_PATH,
+  GITHUB_INTEGRATION_PATH,
+  type GitHubConnectionStatus,
+  GitHubConnectionStatusSchema,
+  type GitHubIntegrationOverview,
+  GitHubIntegrationOverviewSchema,
+  type GitHubRepositoryDiscoveryPage,
+  GitHubRepositoryDiscoveryPageSchema,
+  githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
   ImBindingAdminDetailSchema,
@@ -72,6 +83,9 @@ import {
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
+  type StartGitHubAuthorizationRequest,
+  type StartGitHubAuthorizationResponse,
+  StartGitHubAuthorizationResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -84,6 +98,7 @@ import {
   taskCancelPath,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
+  type UpdateGitHubConnectionBindingsRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
   UserProfileSchema,
@@ -448,6 +463,42 @@ export class BrowserApi {
       method: "PUT",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  /*
+   * Account GitHub integration. These are the only GitHub management calls the browser makes: the
+   * Server authors every authorize URL and admission proof, and the browser never sees a token,
+   * an OAuth state, or a PKCE value. `undefined` means there is no current connection to disconnect.
+   */
+  githubIntegration(): Promise<GitHubIntegrationOverview> {
+    return this.request(GITHUB_INTEGRATION_PATH, GitHubIntegrationOverviewSchema);
+  }
+
+  startGitHubAuthorization(input: StartGitHubAuthorizationRequest): Promise<StartGitHubAuthorizationResponse> {
+    return this.request(GITHUB_INTEGRATION_AUTHORIZATION_PATH, StartGitHubAuthorizationResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  githubRepositories(cursor?: string): Promise<GitHubRepositoryDiscoveryPage> {
+    return this.request(githubIntegrationRepositoriesPath(cursor), GitHubRepositoryDiscoveryPageSchema);
+  }
+
+  updateGitHubBindings(input: UpdateGitHubConnectionBindingsRequest): Promise<GitHubConnectionStatus> {
+    return this.request(GITHUB_INTEGRATION_BINDINGS_PATH, GitHubConnectionStatusSchema, {
+      method: "PUT",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {
+    return this.requestOptional(GITHUB_INTEGRATION_DISCONNECT_PATH, GitHubConnectionStatusSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
     });
   }
 

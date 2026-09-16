@@ -1,23 +1,11 @@
-import type { ErrorCategory } from "@opentag/shared";
+import { type ErrorCategory, GITHUB_CONNECTION_ERROR_CODES, type GitHubConnectionErrorCode } from "@opentag/shared";
 
-export const GITHUB_CONNECTION_ERROR_CODES = {
-  ADMISSION_PROOF_INVALID: "GITHUB_ADMISSION_PROOF_INVALID",
-  ADMISSION_PROOF_STALE: "GITHUB_ADMISSION_PROOF_STALE",
-  AGENT_OWNERSHIP_INVALID: "GITHUB_AGENT_OWNERSHIP_INVALID",
-  AUTHORIZATION_VERSION_CONFLICT: "GITHUB_AUTHORIZATION_VERSION_CONFLICT",
-  CONNECTION_CONFLICT: "GITHUB_CONNECTION_CONFLICT",
-  CONNECTION_NOT_FOUND: "GITHUB_CONNECTION_NOT_FOUND",
-  CONNECTION_STATE_INVALID: "GITHUB_CONNECTION_STATE_INVALID",
-  CREDENTIAL_INPUT_INVALID: "GITHUB_CREDENTIAL_INPUT_INVALID",
-  IDENTITY_MISMATCH: "GITHUB_IDENTITY_MISMATCH",
-  INPUT_INVALID: "GITHUB_INPUT_INVALID",
-  OAUTH_FLOW_EXPIRED: "GITHUB_OAUTH_FLOW_EXPIRED",
-  OAUTH_FLOW_INVALID: "GITHUB_OAUTH_FLOW_INVALID",
-  OAUTH_SESSION_MISMATCH: "GITHUB_OAUTH_SESSION_MISMATCH",
-} as const;
-
-export type GitHubConnectionErrorCode =
-  (typeof GITHUB_CONNECTION_ERROR_CODES)[keyof typeof GITHUB_CONNECTION_ERROR_CODES];
+/*
+ * The controlled GitHub failure vocabulary lives in @opentag/shared so the Account HTTP error
+ * envelope accepts exactly the codes these services report; this module re-exports it and adds the
+ * persistence-side bounds.
+ */
+export { GITHUB_CONNECTION_ERROR_CODES, type GitHubConnectionErrorCode };
 
 /**
  * A controlled failure of the GitHub connection persistence services. Messages never carry secret

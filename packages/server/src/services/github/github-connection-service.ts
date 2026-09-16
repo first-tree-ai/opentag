@@ -5,8 +5,8 @@ import {
   GitHubLoginSessionHashSchema,
   type GitHubOAuthContext,
   type GitHubOAuthFlowIntent,
-  GitHubOAuthFlowIntentSchema,
-  GitHubOAuthReturnSurfaceSchema,
+  type GitHubOAuthReturnSurface,
+  StartGitHubAuthorizationRequestSchema,
 } from "@opentag/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -48,11 +48,25 @@ export interface GitHubAuthorizationFlowHandle {
 export interface ClaimedGitHubOAuthFlow {
   connectionId: string;
   accountId: string;
+  githubHost: string;
+  appId: string;
   flowId: string;
   intent: GitHubOAuthFlowIntent;
+  returnSurface: GitHubOAuthReturnSurface;
+  /** The exact Agent an agent-integrations round trip returns to; null on the account surface. */
+  agentId: string | null;
   expectedAuthorizationVersion: bigint;
   oauthSecret: GitHubOAuthSecretSlot | null;
 }
+
+/**
+ * The fencing fields any claimed-flow transition must match: the exact flow identity, the one-time
+ * state hash, the login session binding, and the authorization version observed at claim time.
+ */
+export type GitHubClaimedFlowFence = Pick<
+  GitHubOAuthCompletionProof,
+  "connectionId" | "flowId" | "stateHash" | "loginSessionHash" | "expectedAuthorizationVersion"
+>;
 
 /**
  * The proof the internal OAuth transport brings back after claiming a callback: the flow identity it
@@ -129,6 +143,7 @@ export class GitHubConnectionService {
       githubHost?: string;
       appId: string;
       returnSurface?: string;
+      agentId?: string | null;
       loginSessionHash: string;
       oauthSecret?: GitHubOAuthSecretFactory;
     },
@@ -137,6 +152,7 @@ export class GitHubConnectionService {
       githubHost: input.githubHost,
       appId: input.appId,
       returnSurface: input.returnSurface,
+      agentId: input.agentId ?? null,
     });
     const loginSessionHash = GitHubLoginSessionHashSchema.parse(input.loginSessionHash);
     const connectionId = randomUUID();
@@ -146,6 +162,7 @@ export class GitHubConnectionService {
       intent: "create",
       loginSessionHash,
       returnSurface: request.returnSurface,
+      agentId: request.agentId,
       expiresAt: new Date(now.getTime() + this.oauthFlowTtlMs),
     });
     const oauthSecret = sealOAuthSecret(input.oauthSecret, {
@@ -195,12 +212,18 @@ export class GitHubConnectionService {
     input: {
       intent: GitHubOAuthFlowIntent;
       returnSurface?: string;
+      agentId?: string | null;
       loginSessionHash: string;
       oauthSecret?: GitHubOAuthSecretFactory;
     },
   ): Promise<GitHubAuthorizationFlowHandle> {
-    const intent = GitHubOAuthFlowIntentSchema.parse(input.intent);
-    const returnSurface = GitHubOAuthReturnSurfaceSchema.parse(input.returnSurface ?? "account-integrations");
+    const request = StartGitHubAuthorizationRequestSchema.parse({
+      intent: input.intent,
+      returnSurface: input.returnSurface ?? "account-integrations",
+      agentId: input.agentId ?? null,
+    });
+    const intent = request.intent;
+    const returnSurface = request.returnSurface;
     const loginSessionHash = GitHubLoginSessionHashSchema.parse(input.loginSessionHash);
     const now = this.now();
     const { state, stateHash } = generateOAuthState();
@@ -208,6 +231,7 @@ export class GitHubConnectionService {
       intent,
       loginSessionHash,
       returnSurface,
+      agentId: request.agentId,
       expiresAt: new Date(now.getTime() + this.oauthFlowTtlMs),
     });
     return this.database.transaction(async (transaction) => {
@@ -298,14 +322,55 @@ export class GitHubConnectionService {
       return {
         connectionId: row.id,
         accountId: row.accountId,
+        githubHost: row.githubHost,
+        appId: row.appId,
         flowId: context.flowId,
         intent: context.intent,
+        returnSurface: context.returnSurface,
+        agentId: context.agentId,
         expectedAuthorizationVersion: row.authorizationVersion,
         oauthSecret:
           row.oauthContextCiphertext !== null && row.oauthContextKeyId !== null
             ? { ciphertext: row.oauthContextCiphertext, keyId: row.oauthContextKeyId }
             : null,
       };
+    });
+  }
+
+  /**
+   * Voids a claimed flow whose exchange can no longer complete honestly: GitHub denied the
+   * authorization, or the code exchange/user read failed before activation. The same claimed-flow
+   * fencing applies, and only the OAuth slot clears — a pending row stays pending so the Account
+   * can start a fresh flow, and an active row keeps its current credential untouched.
+   */
+  async voidOAuthFlow(accountId: string, fence: GitHubClaimedFlowFence): Promise<void> {
+    const now = this.now();
+    await this.database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select()
+        .from(githubConnections)
+        .where(eq(githubConnections.id, fence.connectionId))
+        .for("update");
+      const ownedRow = requireOwnedConnection(row, accountId);
+      requireClaimedFlow(ownedRow, fence, now);
+      const [updated] = await transaction
+        .update(githubConnections)
+        .set({
+          oauthStateHash: null,
+          oauthContext: null,
+          oauthContextCiphertext: null,
+          oauthContextKeyId: null,
+          updatedAt: now,
+        })
+        .where(and(eq(githubConnections.id, ownedRow.id), eq(githubConnections.oauthStateHash, fence.stateHash)))
+        .returning({ id: githubConnections.id });
+      if (!updated) {
+        throw new GitHubConnectionServiceError(
+          GITHUB_CONNECTION_ERROR_CODES.OAUTH_FLOW_INVALID,
+          409,
+          "The OAuth flow is no longer current on this connection",
+        );
+      }
     });
   }
 

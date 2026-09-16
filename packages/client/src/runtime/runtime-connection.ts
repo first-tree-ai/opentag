@@ -198,6 +198,10 @@ export class RuntimeConnection {
     return this.#options.computer.computerId;
   }
 
+  get serverUrl(): string {
+    return this.#options.computer.serverUrl;
+  }
+
   get instanceId(): string {
     return this.#options.instanceId;
   }

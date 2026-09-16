@@ -64,10 +64,12 @@ attestation. Readiness frame handling performs database checks only, never Cloud
 ## Native isolation and cancellation
 
 The image includes a separate, image-built `/opt/sandbox-root`. Native launches explicitly select
-it: the CLI's default parent-root mount is never used. Only the per-Session `/workspace` and the
-platform's read-only `/etc/resolv.conf` are bind-mounted. No host HOME, runtime state or bootstrap
-credential directory is mounted. A source-owned Linux init runs in both parent and native Sandbox
-and reaps adopted children.
+it: the CLI's default parent-root mount is never used. The platform resolver is never mounted
+directly: the Runner validates a bounded snapshot of `/etc/resolv.conf` bytes, writes it into a
+fresh private directory outside the workspace and rootfs, and bind-mounts that copy read-only at
+`/etc/resolv.conf`. Only the per-Session `/workspace` and that resolver copy are mounted. No host
+HOME, runtime state or bootstrap credential directory is mounted. A source-owned Linux init runs
+in both parent and native Sandbox and reaps adopted children.
 
 The Instance parent is privileged because the native sandbox launcher requires root: the exact
 `opentag-runner serve` process runs as root under the source-owned init. Every other image command
@@ -75,7 +77,7 @@ The Instance parent is privileged because the native sandbox launcher requires r
 groups cleared through the base image's `setpriv`; when the container is already started non-root,
 the entrypoint never elevates. The worker still only ever runs as a native sandbox child — the
 parent never executes the user task itself and the mount set stays exactly the per-Session
-workspace plus read-only `/etc/resolv.conf`.
+workspace plus the read-only resolver copy.
 
 `worker` accepts a bounded stdin document. Pi configuration is scoped to DeepSeek, rejects shell
 credential indirection, and is written into a private disposable directory. Control credentials

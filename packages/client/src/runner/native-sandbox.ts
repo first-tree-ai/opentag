@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,7 +13,8 @@ import { join } from "node:path";
  * - The sandbox root filesystem is the clean, immutable image-built `/opt/sandbox-root` copy.
  *   The default (no --rootfs) sandbox exposes the host instance root read-only, which would
  *   expose parent runtime files; that default is never used.
- * - Only the workspace and read-only platform DNS configuration are mounted; parent HOME is never exposed.
+ * - Only the per-Session workspace and a read-only private copy of the platform resolver are
+ *   mounted; the sensitive platform path is never a mount source and parent HOME is never exposed.
  * - The parent bootstrap token lives in the parent process env only and is never placed in the
  *   sandbox env, argv, or mounts.
  */
@@ -26,6 +27,11 @@ export const SANDBOX_NODE = "/usr/local/bin/node";
 /** Explicit PATH inside the sandbox; matches the image layout and nothing else. */
 export const SANDBOX_PATH = "/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin";
 export const SANDBOX_PI = "/opt/opentag/tools/bin/pi";
+/** Platform resolver source; its bytes are snapshotted so this sensitive path is never mounted. */
+export const SANDBOX_RESOLVER_SOURCE = "/etc/resolv.conf";
+/** Upper bound on the copied resolver; the source is validated before any private file is written. */
+export const MAX_RESOLVER_BYTES = 64 * 1024;
+const RESOLVER_DESTINATION = "/etc/resolv.conf";
 
 const CAPTURE_LIMIT_BYTES = 256 * 1024;
 
@@ -48,6 +54,8 @@ export type SpawnProcess = (
 export interface NativeSandboxOptions {
   readonly name: string;
   readonly workspace: string;
+  /** Platform resolver file to snapshot; production uses `/etc/resolv.conf`. */
+  readonly resolverSource?: string;
   readonly spawnProcess?: SpawnProcess;
   readonly sandboxBinary?: string;
   readonly rootfs?: string;
@@ -88,9 +96,19 @@ function classifySpawnError(error: unknown): NativeSandboxError {
 export function buildSandboxRunArgv(input: {
   name: string;
   workspace: string;
+  /** Explicit private copy; the sensitive platform resolver is never a default mount source. */
+  resolverCopy: string;
   rootfs?: string;
   sandboxBinary?: string;
 }): readonly string[] {
+  assertSafeOperand(input.resolverCopy, "resolver copy path");
+  if (
+    !input.resolverCopy.startsWith("/") ||
+    input.resolverCopy.includes(",") ||
+    input.resolverCopy.split("/").includes("..")
+  ) {
+    throw new NativeSandboxError("launch_failed", "Unsafe resolver copy mount");
+  }
   return [
     input.sandboxBinary ?? SANDBOX_BINARY,
     "run",
@@ -103,7 +121,7 @@ export function buildSandboxRunArgv(input: {
     "--mount",
     `type=bind,source=${input.workspace},destination=${SANDBOX_WORKSPACE_DESTINATION}`,
     "--mount",
-    "type=bind,source=/etc/resolv.conf,destination=/etc/resolv.conf,readonly",
+    `type=bind,source=${input.resolverCopy},destination=${RESOLVER_DESTINATION},readonly`,
     "--env",
     `PATH=${SANDBOX_PATH}`,
     "--",
@@ -127,9 +145,45 @@ export function buildSandboxDeleteArgv(input: { name: string; sandboxBinary?: st
 }
 
 /** Assert that a value can never smuggle option/argv structure into the sandbox CLI. */
-function assertSafeOperand(value: string, what: string): void {
-  if (value.length === 0 || value.length > 512 || /[\0\n\r]/.test(value)) {
+function assertSafeOperand(value: unknown, what: string): asserts value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512 || /[\0\n\r]/.test(value)) {
     throw new NativeSandboxError("launch_failed", `Unsafe ${what} for the native sandbox`);
+  }
+}
+
+/** Read the platform resolver with a hard byte bound before anything is written to the private copy. */
+async function readBoundedResolver(source: string): Promise<Buffer> {
+  let sourceStats: Awaited<ReturnType<typeof stat>>;
+  try {
+    sourceStats = await stat(source);
+  } catch {
+    throw new NativeSandboxError("launch_failed", "Platform resolver source cannot be read for the native sandbox");
+  }
+  if (!sourceStats.isFile()) {
+    throw new NativeSandboxError("launch_failed", "Platform resolver source is not a regular file");
+  }
+  const handle = await open(source, "r");
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile()) {
+      throw new NativeSandboxError("launch_failed", "Platform resolver source is not a regular file");
+    }
+    const buffer = Buffer.alloc(MAX_RESOLVER_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total === 0) {
+      throw new NativeSandboxError("launch_failed", "Platform resolver source is empty");
+    }
+    if (total > MAX_RESOLVER_BYTES) {
+      throw new NativeSandboxError("launch_failed", "Platform resolver source exceeds the snapshot bound");
+    }
+    return buffer.subarray(0, total);
+  } finally {
+    await handle.close();
   }
 }
 
@@ -140,8 +194,11 @@ export class NativeSandbox {
   readonly #binary: string;
   readonly #spawn: SpawnProcess;
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #resolverSource: string;
   // Retained across delete/relaunch, so readiness also proves the previous writable layer vanished.
   readonly #rootfsCanary = `/tmp/opentag-rootfs-${randomUUID()}`;
+  #resolverSnapshot?: { readonly directory: string; readonly copy: string };
+  #sandboxAlive = false;
 
   constructor(options: NativeSandboxOptions) {
     if (!/^[a-z][a-z0-9-]{0,62}$/.test(options.name))
@@ -157,6 +214,10 @@ export class NativeSandbox {
     this.#workspace = options.workspace;
     this.#rootfs = options.rootfs ?? SANDBOX_ROOTFS;
     this.#binary = options.sandboxBinary ?? SANDBOX_BINARY;
+    this.#resolverSource = options.resolverSource ?? SANDBOX_RESOLVER_SOURCE;
+    assertSafeOperand(this.#resolverSource, "resolver source path");
+    if (!this.#resolverSource.startsWith("/"))
+      throw new NativeSandboxError("launch_failed", "Unsafe resolver source path");
     this.#spawn =
       options.spawnProcess ??
       ((command, args, spawnOptions) =>
@@ -170,21 +231,66 @@ export class NativeSandbox {
 
   /** run --detach; resolves once the CLI accepted the launch, then verifies the sandbox answers exec. */
   async launch(): Promise<void> {
+    const resolver = await this.#ensureResolverSnapshot();
     const argv = buildSandboxRunArgv({
       name: this.#name,
       workspace: this.#workspace,
+      resolverCopy: resolver.copy,
       rootfs: this.#rootfs,
       sandboxBinary: this.#binary,
     });
     const [command, ...args] = argv as [string, ...string[]];
-    const result = await this.#runToExit(command, args, { timeoutMs: 30_000 });
-    if (result.code !== 0) {
-      const stderr = result.stderr.trim();
-      if (/permission denied|operation not permitted|must be run as root|requires root/i.test(stderr)) {
-        throw new NativeSandboxError("requires_root", "Native sandbox launch requires platform privileges");
+    try {
+      const result = await this.#runToExit(command, args, { timeoutMs: 30_000 });
+      if (result.code !== 0) {
+        const stderr = result.stderr.trim();
+        if (/permission denied|operation not permitted|must be run as root|requires root/i.test(stderr)) {
+          throw new NativeSandboxError("requires_root", "Native sandbox launch requires platform privileges");
+        }
+        throw new NativeSandboxError("launch_failed", `Sandbox launch failed (exit ${result.code})`);
       }
-      throw new NativeSandboxError("launch_failed", `Sandbox launch failed (exit ${result.code})`);
+      this.#sandboxAlive = true;
+    } catch (error) {
+      // A launch that never produced a live sandbox must not leave its resolver copy behind. After
+      // a failed delete the previous sandbox still owns the mount, so keep that snapshot instead.
+      if (!this.#sandboxAlive) await this.#removeResolverSnapshot().catch(() => undefined);
+      throw error;
     }
+  }
+
+  /**
+   * The platform resolver lives on a sensitive parent path the native CLI refuses to mount.
+   * Snapshot its bounded bytes into a fresh 0700 directory outside the workspace and rootfs, and
+   * mount only that copy read-only. The copy exists until the native sandbox is deleted.
+   */
+  async #ensureResolverSnapshot(): Promise<{ readonly directory: string; readonly copy: string }> {
+    if (this.#resolverSnapshot) return this.#resolverSnapshot;
+    let bytes: Buffer;
+    try {
+      bytes = await readBoundedResolver(this.#resolverSource);
+    } catch (error) {
+      if (error instanceof NativeSandboxError) throw error;
+      throw new NativeSandboxError("launch_failed", "Could not read the platform resolver for the native sandbox");
+    }
+    const directory = await mkdtemp(join(tmpdir(), "opentag-resolver-"));
+    const copy = join(directory, "resolv.conf");
+    try {
+      await writeFile(copy, bytes, { mode: 0o600, flag: "wx" });
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+      throw error instanceof NativeSandboxError
+        ? error
+        : new NativeSandboxError("launch_failed", "Could not write the private resolver copy for the native sandbox");
+    }
+    this.#resolverSnapshot = { directory, copy };
+    return this.#resolverSnapshot;
+  }
+
+  async #removeResolverSnapshot(): Promise<void> {
+    const snapshot = this.#resolverSnapshot;
+    if (!snapshot) return;
+    await rm(snapshot.directory, { recursive: true, force: true });
+    this.#resolverSnapshot = undefined;
   }
 
   /** Native sandbox/tool readiness inside the sandbox: exact versions from the immutable rootfs. */
@@ -269,7 +375,18 @@ export class NativeSandbox {
       const argv = buildSandboxDeleteArgv({ name: this.#name, sandboxBinary: this.#binary });
       const [command, ...args] = argv as [string, ...string[]];
       const result = await this.#runToExit(command, args, { timeoutMs: 30_000 });
-      if (result.code === 0) return;
+      if (result.code === 0) {
+        this.#sandboxAlive = false;
+        try {
+          await this.#removeResolverSnapshot();
+        } catch {
+          throw new NativeSandboxError(
+            "delete_failed",
+            "Native sandbox was deleted but its private resolver copy could not be removed",
+          );
+        }
+        return;
+      }
 
       if (attempt < attempts) await this.#sleep(1_000 * attempt);
     }

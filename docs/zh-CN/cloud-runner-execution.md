@@ -46,15 +46,17 @@ Bootstrap 令牌保存在 Instance 的环境变量中，有权读取实例配置
 
 ## 原生隔离与取消
 
-镜像内单独构建 /opt/sandbox-root，启动时显式指定，避免默认挂载父容器根目录。
-仅挂载 Session 的 /workspace 与平台只读 /etc/resolv.conf，不挂载父容器 HOME、运行时状态或
-bootstrap 凭证目录。父容器和原生 Sandbox 均使用源码维护的 Linux init 回收被收养的子进程。
+镜像内单独构建 /opt/sandbox-root，启动时显式指定，避免默认挂载父容器根目录。平台 resolver
+不会被直接挂载：Runner 先对 /etc/resolv.conf 的字节做有界校验，再写入 workspace 与 rootfs 之外的
+全新私有目录，并把该副本只读挂载到 /etc/resolv.conf。仅挂载每 Session 的 /workspace 与该
+resolver 副本；不挂载父容器 HOME、运行时状态或 bootstrap 凭证目录。父容器和原生 Sandbox 均使用
+源码维护的 Linux init 回收被收养的子进程。
 
 Instance 父进程需要特权：原生 sandbox launcher 要求 root，因此精确的 `opentag-runner serve`
 进程由源码自有的 init 以 root 运行。其余镜像命令（identity、probe、skills、accept、worker）
 都通过基础镜像自带的 `setpriv` 以 uid/gid 10000 执行并清空附加组；容器若本身以非 root 启动，
 entrypoint 绝不提权。worker 仍只作为原生 Sandbox 子进程运行——父进程绝不亲自执行用户任务，
-挂载集合仍严格是每 Session 的 workspace 加只读 /etc/resolv.conf。
+挂载集合仍严格是每 Session 的 workspace 加只读 resolver 副本。
 
 worker 通过有大小限制的 stdin 获取参数。Pi 配置筛选为 DeepSeek，拒绝 shell 凭证间接执行，
 写入私有临时目录；不向 worker 下发控制令牌。验收脚本验证本地原配置未变。

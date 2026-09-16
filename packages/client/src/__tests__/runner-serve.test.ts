@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -100,7 +100,13 @@ describe("loadRunnerServeConfig", () => {
 
 describe("native sandbox argv construction", () => {
   it("builds the exact PoC argv arrays with the clean image-built rootfs", () => {
-    expect(buildSandboxRunArgv({ name: "ots-x", workspace: "/tmp/ws/ots-x" })).toEqual([
+    expect(
+      buildSandboxRunArgv({
+        name: "ots-x",
+        workspace: "/tmp/ws/ots-x",
+        resolverCopy: "/tmp/opentag-resolver-ots-x/resolv.conf",
+      }),
+    ).toEqual([
       SANDBOX_BINARY,
       "run",
       "ots-x",
@@ -112,7 +118,7 @@ describe("native sandbox argv construction", () => {
       "--mount",
       "type=bind,source=/tmp/ws/ots-x,destination=/workspace",
       "--mount",
-      "type=bind,source=/etc/resolv.conf,destination=/etc/resolv.conf,readonly",
+      "type=bind,source=/tmp/opentag-resolver-ots-x/resolv.conf,destination=/etc/resolv.conf,readonly",
       "--env",
       "PATH=/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin",
       "--",
@@ -171,11 +177,21 @@ function fakeChild(handler: (stdin: string) => { code: number; stdout?: string; 
   return child;
 }
 
+/** Hermetic private resolver source so launch() never depends on the host /etc/resolv.conf. */
+async function resolverSourceFixture() {
+  const directory = await mkdtemp(join(tmpdir(), "opentag-resolver-source-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  const source = join(directory, "resolv.conf");
+  await writeFile(source, "nameserver 192.0.2.53\nsearch example.internal\n");
+  return source;
+}
+
 describe("NativeSandbox", () => {
   it("classifies a missing sandbox binary as unavailable and EACCES as requires_root", async () => {
     const enoent = new NativeSandbox({
       name: "ots-x",
       workspace: "/tmp/ws",
+      resolverSource: await resolverSourceFixture(),
       spawnProcess: () => {
         throw Object.assign(new Error("spawn /usr/local/gcp/bin/sandbox ENOENT"), { code: "ENOENT" });
       },
@@ -184,6 +200,7 @@ describe("NativeSandbox", () => {
     const eacces = new NativeSandbox({
       name: "ots-x",
       workspace: "/tmp/ws",
+      resolverSource: await resolverSourceFixture(),
       spawnProcess: () => {
         throw Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
       },
@@ -221,6 +238,7 @@ describe("NativeSandbox", () => {
     const sandbox = new NativeSandbox({
       name: "ots-x",
       workspace: "/tmp/ws",
+      resolverSource: await resolverSourceFixture(),
       spawnProcess: (_command, _args, options) => {
         seen.push(options);
         return fakeChild(() => ({ code: 0, stdout: "v24.19.0" })) as never;
@@ -232,6 +250,7 @@ describe("NativeSandbox", () => {
       expect(JSON.stringify(env)).not.toContain(BOOTSTRAP_TOKEN);
       expect(Object.keys(env.env ?? {})).toEqual(["PATH"]);
     }
+    await sandbox.destroy();
     delete process.env.OPENTAG_RUNNER_BOOTSTRAP_TOKEN;
   });
 });

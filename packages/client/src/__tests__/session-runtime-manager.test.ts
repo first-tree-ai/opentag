@@ -1328,6 +1328,7 @@ function reconcile(computerId: string, runtime: EffectiveRuntimeSnapshot): Sessi
 
 function snapshot(revision: number): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: revision, id: `agent-revision-${revision}` },
       session: { sequence: revision, id: `session-revision-${revision}` },

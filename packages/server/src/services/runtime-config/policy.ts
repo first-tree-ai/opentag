@@ -1,6 +1,6 @@
 import {
+  AgentRuntimeConfigSchema,
   type CreateAgentRuntimeConfig,
-  CreateAgentRuntimeConfigSchema,
   OPENTAG_PLATFORM_INSTRUCTIONS,
 } from "@opentag/shared";
 
@@ -14,12 +14,12 @@ export const DEFAULT_AGENT_RUNTIME_CONFIG = Object.freeze({
   reasoningEffort: null,
   instructions: DEFAULT_AGENT_INSTRUCTIONS,
   maxDurationMs: null,
-}) satisfies Readonly<Required<CreateAgentRuntimeConfig>>;
+}) satisfies Readonly<Required<CreateAgentRuntimeConfig> & { contextTreeRepository: string | null }>;
 
 export function resolveAgentRuntimeConfig(
-  input: CreateAgentRuntimeConfig | undefined,
-): Readonly<Required<CreateAgentRuntimeConfig>> {
-  return CreateAgentRuntimeConfigSchema.required().parse({
+  input: (CreateAgentRuntimeConfig & { contextTreeRepository?: string | null }) | undefined,
+): Readonly<Required<CreateAgentRuntimeConfig> & { contextTreeRepository: string | null }> {
+  return AgentRuntimeConfigSchema.omit({ revision: true }).parse({
     ...DEFAULT_AGENT_RUNTIME_CONFIG,
     ...input,
   });

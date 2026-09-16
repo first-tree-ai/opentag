@@ -3,7 +3,6 @@ import { CLI_VERSION } from "../build-info.js";
 import { registerAgentCommand } from "../commands/agent/index.js";
 import { registerComputerConnectCommand } from "../commands/computer/connect.js";
 import { registerComputerCommand } from "../commands/computer/index.js";
-import { registerContextTreeCommand } from "../commands/context-tree.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerLoginCommand } from "../commands/login.js";
@@ -33,7 +32,6 @@ export function createProgram(options: { json?: boolean } = {}): Command {
   registerComputerConnectCommand(program);
   registerComputerCommand(program);
   registerAgentCommand(program);
-  registerContextTreeCommand(program);
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);

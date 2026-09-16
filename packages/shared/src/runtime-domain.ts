@@ -134,7 +134,7 @@ export const RuntimeUsageSchema = z
 
 export const EffectiveRuntimeSnapshotSchema = z
   .object({
-    contextTreeRepository: ContextTreeRepositorySchema.nullable().optional(),
+    contextTreeRepository: ContextTreeRepositorySchema.nullable(),
     revision: z
       .object({
         agent: RuntimeRevisionSchema,
@@ -1156,7 +1156,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.workspace.workspaceId,
     snapshot.workspace.mode,
     snapshot.workspace.sharing,
-    ...(snapshot.contextTreeRepository ? [snapshot.contextTreeRepository] : []),
+    snapshot.contextTreeRepository?.toLowerCase() ?? null,
   ]);
   const sessionConfigHash = hashTuple([
     1,

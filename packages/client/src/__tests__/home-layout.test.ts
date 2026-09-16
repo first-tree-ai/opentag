@@ -21,7 +21,6 @@ describe("OpenTag Home layout", () => {
     expect(resolveOpenTagHomeLayout(home)).toEqual({
       config: join(root, "config"),
       contextTreeBin: join(root, "context-tree", "bin"),
-      contextTreePreparationFile: join(root, "state", "context-tree-preparation.json"),
       daemonState: join(root, "state", "daemon"),
       data: join(root, "data"),
       home: root,

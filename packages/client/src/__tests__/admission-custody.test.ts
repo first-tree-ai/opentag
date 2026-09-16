@@ -212,6 +212,7 @@ describe("TurnCustodyOwner", () => {
     await preflightEntered;
     const upgradedRuntime: EffectiveRuntimeSnapshot = {
       ...fixture.runtime,
+      contextTreeRepository: null,
       revision: {
         agent: { sequence: 2, id: "agent-revision-2" },
         session: fixture.runtime.revision.session,
@@ -381,6 +382,7 @@ async function custodyFixture() {
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

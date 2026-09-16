@@ -47,7 +47,10 @@ export interface DeliveryDecision {
 }
 
 export interface ClientRuntimeOptions {
-  contextTreeSettings?: { run(frame: ContextTreeOperationFrame): Promise<ContextTreeOperationResponse> };
+  contextTreeSettings?: {
+    run(frame: ContextTreeOperationFrame): Promise<ContextTreeOperationResponse>;
+    close?(): void;
+  };
   logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
@@ -101,6 +104,7 @@ export class ClientRuntime {
   }
 
   stop(): void {
+    this.#options.contextTreeSettings?.close?.();
     this.#abort.abort();
     this.#connection.stop();
   }

@@ -200,19 +200,7 @@ export {
   requestsProviderReadinessV2,
   withComputerRuntimeProviderSupport,
 } from "./computer.js";
-export {
-  CONTEXT_TREE_CONFIG_SCHEMA_VERSION,
-  CONTEXT_TREE_PREPARATION_SCHEMA_VERSION,
-  type ContextTreeConfig,
-  ContextTreeConfigSchema,
-  type ContextTreePreparation,
-  ContextTreePreparationSchema,
-  ContextTreeRepositorySchema,
-  type ContextTreeTarget,
-  ContextTreeTargetSchema,
-  formatContextTreeTarget,
-  parseContextTreeTarget,
-} from "./context-tree.js";
+export { ContextTreeRepositorySchema } from "./context-tree.js";
 export * from "./context-tree-operation.js";
 export {
   type ErrorCategory,

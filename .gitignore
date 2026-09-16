@@ -43,6 +43,3 @@ Thumbs.db
 
 # Agent orchestration scratch state - never commit
 .dispatch/
-
-# User-specifc agent skills
-.agents/

@@ -877,6 +877,7 @@ async function createFixture() {
 
 function runtimeSnapshot(agentId: string) {
   return {
+    contextTreeRepository: null,
     revision: { agent: { sequence: 1, id: "a".repeat(64) }, session: { sequence: 1, id: "b".repeat(64) } },
     agentId,
     provider: "codex" as const,

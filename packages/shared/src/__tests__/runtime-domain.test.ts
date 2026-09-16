@@ -311,12 +311,12 @@ describe("runtime domain contract", () => {
     const runtime = snapshot();
     const hashes = computeRuntimeSnapshotHashes(runtime);
     expect(hashes).toEqual({
-      agentConfigHash: "9c345d5a6bbd8c2ddaf49112c5bb110c053ad7fb9619fd66f2036f2685c85838",
+      agentConfigHash: "4ce41622fe0bc78df35784c1a6f409e392f12131075a95e5d15f7eed5f49db46",
       sessionConfigHash: "9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6",
-      effectiveSnapshotHash: "647fac0b2c511e583846e9daf95e2fabe2f028e95de699f5d6d03df25ba4623f",
+      effectiveSnapshotHash: "29bb3a2d86ea994d59d05826999f1d5cc722295ae8e8920eea8682adf9656088",
     });
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "f0526b059b61ae051ea15a8a45b28f6ea2f8a7296fbb4421611cbb5e0d58c487",
+      "20f225978ec879852c0a7ad0c3b401aa73ecef5b2520ce61724507339225733b",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
     const withReplies = turnReport({
@@ -432,7 +432,7 @@ describe("runtime domain contract", () => {
       runtime: snapshot(),
     };
     expect(computeReconcilePayloadHash(request)).toBe(
-      "973599fac890f01fa6d0f46a8a0e1410622287f1e80606523af19644b7992400",
+      "33f67e7fc87143715afe6adabe52cc79c1dfa2f8f939284e622685e0d9eec310",
     );
     expect(
       computeReconcilePayloadHash({ ...request, installationId: "77777777-7777-4777-8777-777777777777" }),
@@ -615,6 +615,7 @@ describe("runtime domain contract", () => {
 
 function snapshot(): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 3, id: "agent-revision-3" },
       session: { sequence: 7, id: "session-revision-7" },
@@ -680,3 +681,13 @@ function turnReport(overrides: Partial<TurnReportHashInput> = {}): TurnReportReq
     resultHash: computeTurnResultHash(body),
   };
 }
+
+it("requires an explicit nullable repository and hashes normalized identity", () => {
+  const current = snapshot();
+  const { contextTreeRepository: _, ...missing } = current;
+  expect(EffectiveRuntimeSnapshotSchema.safeParse(missing).success).toBe(false);
+  const off = computeRuntimeSnapshotHashes(current);
+  const selected = computeRuntimeSnapshotHashes({ ...current, contextTreeRepository: "Acme/Memory" });
+  expect(selected).not.toEqual(off);
+  expect(selected).toEqual(computeRuntimeSnapshotHashes({ ...current, contextTreeRepository: "acme/memory" }));
+});

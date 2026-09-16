@@ -16,7 +16,6 @@ import {
 } from "../runtime/context-tree.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
-import { resolveContextTreeHome } from "../storage/context-tree-home.js";
 
 /**
  * Offline regression of the shared Agent Home / Context Tree filesystem and CLI contract.
@@ -59,15 +58,23 @@ describe("shared Agent Home and Context Tree", () => {
     await mkdir(treeSeed);
     const created = await runCli(["create", "--project-path", treeSeed, "--json"]);
     expect(created.failureCode).toBeUndefined();
-    const treePath = readTreePath(created.payload);
+    let treePath = readTreePath(created.payload);
     expect(treePath.startsWith(`${fixture.accountHome}/`)).toBe(true);
 
-    const layout = resolveContextTreeHome(environment);
-    await mkdir(layout.directory, { recursive: true });
-    await writeFile(
-      layout.configFile,
-      `${JSON.stringify({ schemaVersion: 1, target: { kind: "path", path: treePath } })}\n`,
+    await isolatedExecFile(
+      "git",
+      ["config", "--global", `url.file://${treePath}.insteadOf`, "https://github.com/acme/memory.git"],
+      { cwd: runRoot, timeout: 20_000, maxBuffer: 1024 * 1024, windowsHide: true, env: environment },
     );
+    await isolatedExecFile("git", ["config", "--global", "protocol.file.allow", "always"], {
+      cwd: runRoot,
+      timeout: 20_000,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+      env: environment,
+    });
+    const connected = await runCli(["connect", "acme/memory", "--project-path", treeSeed, "--json"]);
+    treePath = (connected.payload as { tree: { path: string } }).tree.path;
     const treeManager = new ContextTreeManager({
       environment,
       home: openTagHome,
@@ -76,7 +83,10 @@ describe("shared Agent Home and Context Tree", () => {
       sessionStartBudgetMs: 30_000,
       execFile: isolatedExecFile,
     });
-    const statuses = await Promise.all([treeManager.ensureAgent(agentHome), treeManager.ensureAgent(agentHome)]);
+    const statuses = await Promise.all([
+      treeManager.ensureAgent(agentHome, "codex", "acme/memory"),
+      treeManager.ensureAgent(agentHome, "codex", "acme/memory"),
+    ]);
     for (const status of statuses) expect(status).toEqual({ status: "ready", treePath });
     expect(await readFile(join(agentHome, "AGENTS.md"), "utf8")).toBe(userInstructions);
     await expect(
@@ -269,6 +279,7 @@ function createManagers(home: string, installationId: string) {
 
 function runtime(agentId: string): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

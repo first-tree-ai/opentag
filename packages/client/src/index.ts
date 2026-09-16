@@ -214,7 +214,6 @@ export {
   type ContextTreeManagerOptions,
   type ContextTreePackage,
   type ContextTreeStatus,
-  readContextTreePreparation,
   resolveContextTreePackage,
   runContextTreeCli,
 } from "./runtime/context-tree.js";

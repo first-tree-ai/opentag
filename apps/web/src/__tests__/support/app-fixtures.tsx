@@ -409,6 +409,7 @@ export function installApi(
     computerId,
     revision,
     runtimeConfig: {
+      contextTreeRepository: null,
       revision: 1,
       model: null,
       reasoningEffort: null,

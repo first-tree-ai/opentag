@@ -48,7 +48,7 @@ export const agentSettingsSections: ReadonlyArray<{
     group: "setup",
     icon: "laptop",
   },
-  { key: "context-tree", label: () => m.context_tree_title(), group: "setup", icon: "instructions" },
+  { key: "context-tree", label: () => m.agent_settings_context_tree_title(), group: "setup", icon: "instructions" },
   {
     key: "instructions",
     label: () => m.agent_settings_instructions_title(),
@@ -88,7 +88,8 @@ export function agentSettingsSummary(
   config: AgentAdminConfig,
   section: AgentSettingsSection,
 ): string {
-  if (section === "context-tree") return config.runtimeConfig.contextTreeRepository ?? m.context_tree_disabled();
+  if (section === "context-tree")
+    return config.runtimeConfig.contextTreeRepository ?? m.agent_settings_context_tree_disabled();
   if (section === "instructions") {
     return config.runtimeConfig.instructions.trim()
       ? m.agent_settings_custom_instructions()

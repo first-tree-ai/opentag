@@ -281,7 +281,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       this.#contextTree,
       managed.cwd,
       managed.snapshot.provider,
-      managed.snapshot.contextTreeRepository ?? null,
+      managed.snapshot.contextTreeRepository,
     );
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
     const common = {

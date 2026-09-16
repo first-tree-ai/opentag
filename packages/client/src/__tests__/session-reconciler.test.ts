@@ -113,6 +113,7 @@ describe("SessionReconciler", () => {
       model: "gpt-5.1",
       reasoningEffort: "medium",
       budget: { maxDurationMs: 45_000 },
+      contextTreeRepository: null,
       revision: {
         agent: { sequence: 2, id: initialRuntime.revision.agent.id },
         session: { sequence: 2, id: "session-revision-2" },
@@ -313,6 +314,7 @@ describe("SessionReconciler", () => {
 
 function snapshot(agentId: string, workspaceId: string): EffectiveRuntimeSnapshot {
   return {
+    contextTreeRepository: null,
     revision: {
       agent: { sequence: 1, id: "agent-revision-1" },
       session: { sequence: 1, id: "session-revision-1" },

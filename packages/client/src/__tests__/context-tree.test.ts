@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -115,22 +115,6 @@ describe("per-Agent ContextTreeManager", () => {
     await vi.waitFor(() => expect(calls).toHaveLength(3));
     await manager.runExclusive(async () => undefined);
     expect(calls.map(([command]) => command)).toEqual(["connect", "settings", "disconnect"]);
-  });
-  it("writes distinct diagnostics for different repositories and providers", async () => {
-    const { home, cwd, manager } = await fixture();
-    await manager.ensureAgent(cwd, "pi", "acme/memory");
-    await manager.ensureAgent(cwd, "codex", "acme/memory");
-    await manager.ensureAgent(`${cwd}-other`, "pi", "other/memory");
-    const files = await readdir(join(home, "state", "context-tree"));
-    expect(files).toHaveLength(3);
-    const records = await Promise.all(
-      files.map(async (file) => JSON.parse(await readFile(join(home, "state", "context-tree", file), "utf8"))),
-    );
-    expect(records.map((record) => record.target).sort()).toEqual([
-      "acme/memory:codex",
-      "acme/memory:pi",
-      "other/memory:pi",
-    ]);
   });
   it.each([
     { packaged: false, reason: "PACKAGE_MISSING" },

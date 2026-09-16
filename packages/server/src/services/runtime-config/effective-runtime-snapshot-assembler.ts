@@ -79,7 +79,7 @@ export class EffectiveRuntimeSnapshotAssembler {
       // The exact rendered platform string, so a slug change produces a new Agent revision.
       platformInstructions,
       config.instructions,
-      ...(config.contextTreeRepository ? [config.contextTreeRepository] : []),
+      config.contextTreeRepository?.toLowerCase() ?? null,
       authority.agentId,
       "empty_on_create",
       "agent",
@@ -115,7 +115,7 @@ export class EffectiveRuntimeSnapshotAssembler {
           id: sessionRevisionId,
         },
       },
-      ...(config.contextTreeRepository ? { contextTreeRepository: config.contextTreeRepository } : {}),
+      contextTreeRepository: config.contextTreeRepository,
       agentId: authority.agentId,
       provider: authority.runtimeProvider,
       ...(model !== null ? { model } : {}),

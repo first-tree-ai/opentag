@@ -72,12 +72,16 @@ HOME, runtime state or bootstrap credential directory is mounted. A source-owned
 in both parent and native Sandbox and reaps adopted children.
 
 The Instance parent is privileged because the native sandbox launcher requires root: the exact
-`opentag-runner serve` process runs as root under the source-owned init. Every other image command
-(`identity`, `probe`, `skills`, `accept`, `worker`) executes as uid/gid 10000 with supplementary
-groups cleared through the base image's `setpriv`; when the container is already started non-root,
+`opentag-runner serve` process runs as root under the source-owned init. Other commands invoked
+through the image entrypoint (`identity`, `probe`, `skills`, `accept`, `worker`) execute as uid/gid
+10000 with supplementary groups cleared through the base image's `setpriv`; when the container is already started non-root,
 the entrypoint never elevates. The worker still only ever runs as a native sandbox child — the
 parent never executes the user task itself and the mount set stays exactly the per-Session
-workspace plus the read-only resolver copy.
+workspace plus the read-only resolver copy. Native `sandbox exec` invokes the worker directly,
+bypassing the image entrypoint: the current Cloud Run execution path runs as uid 0 inside the
+native Sandbox, as verified in the GCP diagnostic. It does not inherit the entrypoint's uid 10000
+drop. This boundary relies on the platform Sandbox and restricted mounts; it is not an additional
+non-root worker boundary. Dropping native worker privileges remains a hardening follow-up.
 
 `worker` accepts a bounded stdin document. Pi configuration is scoped to DeepSeek, rejects shell
 credential indirection, and is written into a private disposable directory. Control credentials

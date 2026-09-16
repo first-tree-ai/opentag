@@ -22,6 +22,8 @@ const POLICY = {
 export const RUNNER_DEEPSEEK_MODEL = "deepseek-v4.1-flash-expires-on-0910";
 export const RUNNER_DEEPSEEK_PROVIDER = "deepseek";
 export const RUNNER_MODEL_ID = `${RUNNER_DEEPSEEK_PROVIDER}/${RUNNER_DEEPSEEK_MODEL}`;
+/** Native Pi `--version` startup measured ~6s on Cloud Run; the provider's 5s local default is too tight. */
+export const RUNNER_PI_PROBE_TIMEOUT_MS = 30_000;
 
 export interface RunnerAcceptanceOptions {
   readonly assembleSkills?: () => Promise<AssembledContextTreeSkills>;
@@ -104,7 +106,7 @@ function runtimeEnvironment(options: RunnerAcceptanceOptions): NodeJS.ProcessEnv
   };
 }
 
-function createTrackedFactory(
+export function createTrackedFactory(
   options: RunnerAcceptanceOptions,
   skillPaths: readonly string[],
   pids: Set<number>,
@@ -114,6 +116,7 @@ function createTrackedFactory(
       args: skillArgsOf(skillPaths),
       command: "pi",
       env: runtimeEnvironment(options),
+      probeTimeoutMs: RUNNER_PI_PROBE_TIMEOUT_MS,
       sessionDirectory: options.sessionDirectory,
       spawnProcess: trackedSpawn(pids),
     },

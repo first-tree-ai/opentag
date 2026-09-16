@@ -569,6 +569,10 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     }
 
     expect(() => new PiAgentRuntimeFactory({ process: { sessionDirectory: "relative" } })).toThrow("sessionDirectory");
+    for (const probeTimeoutMs of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 60_001]) {
+      expect(() => new PiAgentRuntimeFactory({ process: { probeTimeoutMs } })).toThrow("probeTimeoutMs");
+    }
+    expect(() => new PiAgentRuntimeFactory({ process: { probeTimeoutMs: 30_000 } })).not.toThrow();
     await expect(
       new PiAgentRuntimeFactory({ createSessionId: () => "not-a-uuid" }).create(request(() => undefined)),
     ).rejects.toMatchObject({ code: "provider_protocol_error" });
@@ -1055,7 +1059,7 @@ if has_flag --help "$@"; then printf started > '${helpStarted}'; exec '${process
 exit 1
 `);
     const helpAbort = new AbortController();
-    const helpProbe = localProbe(hangingHelp).probe({
+    const helpProbe = localProbe(hangingHelp, 30_000).probe({
       signal: helpAbort.signal,
     });
     await vi.waitFor(async () => expect(await readFile(helpStarted, "utf8")).toBe("started"));
@@ -1077,6 +1081,21 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
     modelsAbort.abort(new Error("stop"));
     await expect(modelsProbe).rejects.toBeDefined();
   }, 15_000);
+
+  it("bounds probe commands by the 5s default and a configured budget", async () => {
+    const slowCli = await delayedProbeCli(5_200);
+    const [defaultProbe, boundedProbe, tightProbe] = await Promise.all([
+      localProbe(slowCli).probe({}),
+      localProbe(slowCli, 30_000).probe({}),
+      localProbe(slowCli, 2_000).probe({}),
+    ]);
+    // Default stays 5s: a 5.2s startup times out and fails closed as a missing artifact.
+    expect(defaultProbe).toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    // A validated 30s budget accepts the same delayed startup without skipping probes.
+    expect(boundedProbe).toEqual({ ready: true, version: "0.84.2", issues: [] });
+    // The budget still governs: 2s kills the 5.2s startup.
+    expect(tightProbe).toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+  }, 20_000);
 
   it("uses the default local Pi process boundary without adding a package dependency", async () => {
     const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
@@ -1313,13 +1332,30 @@ ${body}`,
   return path;
 }
 
+/** A probe CLI whose `--version` startup is delayed, like native Cloud Run Pi startup. */
+async function delayedProbeCli(delayMs: number): Promise<string> {
+  return probeCli(`
+if [ "$1" = "--version" ]; then
+  exec '${process.execPath}' -e 'setTimeout(() => { console.log("0.84.2"); }, ${delayMs})'
+fi
+if has_flag --help "$@"; then echo ${JSON.stringify(PI_HELP_TOKENS)}; exit 0; fi
+cat <<'EOF'
+${PI_LIST_MODELS_TABLE}
+EOF
+`);
+}
+
 function probeHome(command: string): string {
   return dirname(command);
 }
 
-function localProbe(command: string): PiAgentRuntimeFactory {
+function localProbe(command: string, probeTimeoutMs?: number): PiAgentRuntimeFactory {
   return new PiAgentRuntimeFactory({
-    process: { command, env: { HOME: probeHome(command) } },
+    process: {
+      command,
+      env: { HOME: probeHome(command) },
+      ...(probeTimeoutMs === undefined ? {} : { probeTimeoutMs }),
+    },
   });
 }
 

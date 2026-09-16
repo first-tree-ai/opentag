@@ -53,10 +53,13 @@ resolver 副本；不挂载父容器 HOME、运行时状态或 bootstrap 凭证�
 源码维护的 Linux init 回收被收养的子进程。
 
 Instance 父进程需要特权：原生 sandbox launcher 要求 root，因此精确的 `opentag-runner serve`
-进程由源码自有的 init 以 root 运行。其余镜像命令（identity、probe、skills、accept、worker）
+进程由源码自有的 init 以 root 运行。通过镜像 entrypoint 调用的其余命令（identity、probe、skills、accept、worker）
 都通过基础镜像自带的 `setpriv` 以 uid/gid 10000 执行并清空附加组；容器若本身以非 root 启动，
 entrypoint 绝不提权。worker 仍只作为原生 Sandbox 子进程运行——父进程绝不亲自执行用户任务，
-挂载集合仍严格是每 Session 的 workspace 加只读 resolver 副本。
+挂载集合仍严格是每 Session 的 workspace 加只读 resolver 副本。原生 `sandbox exec` 直接调用 worker，
+绕过镜像 entrypoint；GCP 实测该路径在原生 Sandbox 内以 uid 0 运行，不继承 entrypoint 的 uid 10000
+降权。因此当前隔离依赖平台 Sandbox 与受限挂载，不额外承诺非 root worker 边界。
+原生 worker 降权保留为后续加固项。
 
 worker 通过有大小限制的 stdin 获取参数。Pi 配置筛选为 DeepSeek，拒绝 shell 凭证间接执行，
 写入私有临时目录；不向 worker 下发控制令牌。验收脚本验证本地原配置未变。

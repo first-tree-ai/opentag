@@ -53,6 +53,10 @@ const PI_RESOURCE_DISABLE_ARGUMENTS = [
   "--no-approve",
 ] as const;
 const PI_LIST_MODELS_COLUMNS = ["provider", "model", "context", "max-out", "thinking", "images"] as const;
+/** Local Pi probes have always allowed 5s; native Cloud Run Pi startup measured ~6s. */
+const PI_PROBE_DEFAULT_TIMEOUT_MS = 5_000;
+/** Upper bound on a configured probe budget so no caller can wait unbounded. */
+const PI_PROBE_MAX_TIMEOUT_MS = 60_000;
 
 export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: PI_PROVIDER_ID,
@@ -83,6 +87,7 @@ export interface PiAgentRuntimeFactoryOptions {
     readonly env?: NodeJS.ProcessEnv;
     readonly maxLineBytes?: number;
     readonly maxStderrBytes?: number;
+    readonly probeTimeoutMs?: number;
     readonly requestTimeoutMs?: number;
     readonly sessionDirectory?: string;
     readonly spawnProcess?: (
@@ -684,6 +689,16 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       throw new AgentRuntimeError("configuration_invalid", "Pi sessionDirectory must be absolute");
     }
     this.#sessionDirectory = sessionDirectory;
+    const probeTimeoutMs = options.process?.probeTimeoutMs;
+    if (
+      probeTimeoutMs !== undefined &&
+      (!Number.isInteger(probeTimeoutMs) || probeTimeoutMs < 1 || probeTimeoutMs > PI_PROBE_MAX_TIMEOUT_MS)
+    ) {
+      throw new AgentRuntimeError(
+        "configuration_invalid",
+        `Pi probeTimeoutMs must be an integer between 1 and ${PI_PROBE_MAX_TIMEOUT_MS}`,
+      );
+    }
     this.#createClient =
       options.createClient ??
       ((cwd, args, workspaceEnvironment, pathPrepend) =>
@@ -697,7 +712,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
           requestTimeoutMs: options.process?.requestTimeoutMs,
           spawnProcess: options.process?.spawnProcess,
         }));
-    this.#probeRunner = options.probeRunner ?? ((signal) => probePi(command, environment, signal));
+    this.#probeRunner = options.probeRunner ?? ((signal) => probePi(command, environment, signal, probeTimeoutMs));
   }
 
   async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
@@ -848,8 +863,9 @@ async function probePi(
   command: string,
   environment: NodeJS.ProcessEnv,
   signal?: AbortSignal,
+  timeoutMs = PI_PROBE_DEFAULT_TIMEOUT_MS,
 ): Promise<{ readonly credential: boolean; readonly rpc: boolean; readonly version: string }> {
-  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: 5_000, windowsHide: true };
+  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: timeoutMs, windowsHide: true };
   const versionResult = await execFileAsync(command, ["--version"], execution);
   const version = versionResult.stdout.trim();
   let help = "";

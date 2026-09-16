@@ -305,6 +305,26 @@ describe("runRunnerWorker (in-sandbox worker)", () => {
     ).toBe(2);
     expect(runAcceptance).not.toHaveBeenCalled();
   });
+
+  it("rejects a non-ASCII config document that fits characters but not UTF-8 bytes", async () => {
+    const output = io();
+    const runAcceptance = vi.fn(async () => passingReport);
+    // 11,012 characters (under the 32K character bound) but 33,012 UTF-8 bytes (over 32 KiB).
+    const oversizedDocument = JSON.stringify({ token: "密钥".repeat(5_500) });
+    const code = await runRunnerWorker(
+      {
+        stdin: stdinOf(JSON.stringify({ kind: "acceptance", mode: "real", piConfig: { authJson: oversizedDocument } })),
+        ...output,
+      },
+      { runAcceptance: runAcceptance as never },
+    );
+    expect(code).toBe(2);
+    expect(JSON.parse(output.chunks.stdout.join(""))).toMatchObject({
+      kind: "error",
+      code: "worker_request_invalid",
+    });
+    expect(runAcceptance).not.toHaveBeenCalled();
+  });
 });
 
 /* ----------------------------------------------------------------------------------------------

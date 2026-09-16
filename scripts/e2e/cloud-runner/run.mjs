@@ -158,12 +158,15 @@ export async function main(argv) {
   };
   let receiptQueue = Promise.resolve();
   const receipt = () => {
-    const text = `${JSON.stringify(summary, null, 2)}\n`;
     receiptQueue = receiptQueue
       .catch(() => {
         summary.artifactError = true;
       })
-      .then(() => writeFile(join(artifactDirectory, "summary.json"), text, { mode: 0o600 }));
+      .then(() =>
+        // Serialize at write time so a later write records an earlier write failure as
+        // `artifactError` instead of writing a stale summary.
+        writeFile(join(artifactDirectory, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, { mode: 0o600 }),
+      );
     return receiptQueue;
   };
   const stopping = new AbortController();
@@ -299,49 +302,128 @@ export async function main(argv) {
       ? "Acceptance interrupted; cleanup required"
       : "Cloud acceptance failed; see bounded Server diagnostics and resource receipt";
   } finally {
-    // Resource cleanup runs before fixture/database teardown on success, error and signals.
-    await cleanupAllocations({ api, allocations, shared, receipt, assertions });
-    if (piInput) record(assertions, "host-pi-config-unchanged", await piInput.verifyUnchanged().catch(() => false));
-    if (fixture) {
-      const failures = await fixture.cleanup();
-      record(assertions, "fixture-cleanup", failures.length === 0);
-    }
+    // Best-effort but fail-closed teardown: every allocation, config check, fixture cleanup and
+    // the final receipt is attempted even when an earlier step throws. Failures stay visible as
+    // failing assertions / `artifactError`, so a cleanup failure can never become a false pass.
+    await finalizeRun({ api, allocations, shared, receipt, assertions, piInput, fixture, summary });
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
-    summary.outcome = acceptanceOutcome(summary);
-    summary.finishedAt = new Date().toISOString();
-    await receipt();
     process.stdout.write(`[cloud-runner] ${summary.outcome}; artifacts: ${artifactDirectory}\n`);
   }
   return summary.outcome === "passed" ? 0 : 1;
 }
 
-async function cleanupAllocations({ api, allocations, shared, receipt, assertions }) {
-  if (api)
-    for (const allocation of allocations) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const current = await api("GET", shared.accountSandboxRunnerPath(allocation.sandboxId), undefined, true);
-          Object.assign(allocation, {
-            resourceName: current.currentResourceName,
-            resourceUid: current.currentResourceUid,
-            generation: current.environmentGeneration,
-          });
-          await receipt().catch(() => {
-            allocation.receiptError = true;
-          });
-          const stopped = await api("POST", shared.accountSandboxRunnerStopPath(allocation.sandboxId), {}, true);
-          if (stopped.lifecycle !== "unallocated" || stopped.currentResourceName !== null)
-            throw new Error("Cloud removal is uncertain");
-          allocation.cleanup = "verified-removed";
-          break;
-        } catch {
-          allocation.cleanup = "unverified";
-          await sleep(2_000);
-        }
-      }
-      record(assertions, `${allocation.sessionId}-cloud-removed`, allocation.cleanup === "verified-removed");
+function note(assertions, name, ok, detail = "") {
+  assertions.push({ name, ok: Boolean(ok), detail: String(detail ?? "") });
+}
+
+/** One allocation, at most three attempts; the outcome and evidence stay on the allocation. */
+async function cleanupAllocation({ api, allocation, shared, receipt, sleepFn }) {
+  allocation.cleanup = "unverified";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const current = await api("GET", shared.accountSandboxRunnerPath(allocation.sandboxId), undefined, true);
+      Object.assign(allocation, {
+        resourceName: current.currentResourceName,
+        resourceUid: current.currentResourceUid,
+        generation: current.environmentGeneration,
+      });
+      // The resource receipt is written before the stop attempt; a write failure is recorded on
+      // the allocation but must not skip the stop.
+      await Promise.resolve()
+        .then(() => receipt())
+        .catch(() => {
+          allocation.receiptError = true;
+        });
+      const stopped = await api("POST", shared.accountSandboxRunnerStopPath(allocation.sandboxId), {}, true);
+      if (stopped.lifecycle !== "unallocated" || stopped.currentResourceName !== null)
+        throw new Error("Cloud removal is uncertain");
+      allocation.cleanup = "verified-removed";
+      return;
+    } catch (error) {
+      allocation.cleanup = "unverified";
+      allocation.cleanupError = error instanceof Error ? error.message : String(error);
+      await sleepFn(2_000);
     }
+  }
+}
+
+/**
+ * Best-effort resource cleanup: every allocation is attempted, and each failure is recorded as a
+ * failing assertion instead of aborting the loop. `sleepFn` is injectable so tests do not wait out
+ * the retry backoff.
+ */
+export async function cleanupAllocations({ api, allocations, shared, receipt, assertions, sleepFn = sleep }) {
+  if (!api) return;
+  for (const allocation of allocations) {
+    await cleanupAllocation({ api, allocation, shared, receipt, sleepFn });
+    note(
+      assertions,
+      `${allocation.sessionId}-cloud-removed`,
+      allocation.cleanup === "verified-removed",
+      allocation.cleanupError ?? "",
+    );
+  }
+}
+
+/** Config verification and fixture teardown are exception-isolated so the receipt still runs. */
+async function recordPiConfigVerification(assertions, piInput) {
+  if (!piInput) return;
+  let unchanged = false;
+  let detail = "";
+  try {
+    unchanged = (await piInput.verifyUnchanged()) === true;
+  } catch (error) {
+    detail = error instanceof Error ? error.message : String(error);
+  }
+  note(assertions, "host-pi-config-unchanged", unchanged, detail);
+}
+
+async function recordFixtureCleanup(assertions, fixture) {
+  if (!fixture) return;
+  try {
+    const failures = await fixture.cleanup();
+    note(
+      assertions,
+      "fixture-cleanup",
+      Array.isArray(failures) && failures.length === 0,
+      Array.isArray(failures) ? failures.join("; ") : "",
+    );
+  } catch (error) {
+    note(assertions, "fixture-cleanup", false, error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * Runs every teardown step even when an earlier one fails and never throws. The summary stays
+ * fail-closed through the recorded assertions (and `artifactError` when the receipt could not be
+ * written); one failed step cannot skip the remaining allocations, fixture teardown, or receipt.
+ */
+export async function finalizeRun({
+  api,
+  allocations,
+  shared,
+  receipt,
+  assertions,
+  piInput,
+  fixture,
+  summary,
+  sleepFn = sleep,
+}) {
+  await cleanupAllocations({ api, allocations, shared, receipt, assertions, sleepFn }).catch((error) => {
+    note(assertions, "allocation-cleanup", false, error instanceof Error ? error.message : String(error));
+  });
+  await recordPiConfigVerification(assertions, piInput);
+  await recordFixtureCleanup(assertions, fixture);
+  summary.finishedAt = new Date().toISOString();
+  summary.outcome = acceptanceOutcome(summary);
+  try {
+    await receipt();
+  } catch {
+    summary.artifactError = true;
+    summary.outcome = "failed";
+  }
+  return summary;
 }
 
 function invalidInputs(values, accessToken) {

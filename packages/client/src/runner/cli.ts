@@ -143,7 +143,28 @@ async function runServe(invocation: RunnerCliInvocation, io: RunnerCliIo): Promi
   const env = io.env ?? process.env;
   if (invocation.workspace) io.stderr.write("--workspace is ignored in serve mode; OPENTAG_RUNNER_WORKSPACE applies\n");
   const config = loadRunnerServeConfig(env);
-  return runRunnerServe(config, { env, stderr: io.stderr });
+  /*
+   * One signal owner for serve. The bin entrypoint owns the process-level handlers; this scope
+   * aborts serve through its AbortSignal and awaits the serve promise, so serve's own `finally`
+   * (active acceptance cancellation, native sandbox deletion) completes before the process exits.
+   * serve must not install a second process handler for this CLI path.
+   */
+  const stop = new AbortController();
+  const running = runRunnerServe(config, {
+    env,
+    stderr: io.stderr,
+    signal: stop.signal,
+    installSignalHandlers: false,
+  });
+  registerRunnerSignalCleanup(async () => {
+    stop.abort();
+    await running;
+  });
+  try {
+    return await running;
+  } finally {
+    registerRunnerSignalCleanup(undefined);
+  }
 }
 
 async function runWorker(invocation: RunnerCliInvocation, io: RunnerCliIo): Promise<number> {

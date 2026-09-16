@@ -10,6 +10,7 @@ import {
   type RunnerServerFrame,
   RunnerServerFrameSchema,
   type RunnerWelcomeFrame,
+  serializeRunnerAcceptanceWorkerStdin,
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions } from "ws";
 import {
@@ -327,8 +328,7 @@ async function runAcceptanceInSandbox(
     exec = await sandbox.exec(SANDBOX_NODE, [SANDBOX_WORKER_ENTRY, "worker"], {
       timeoutMs: remaining,
       signal,
-      stdin: JSON.stringify({
-        kind: "acceptance",
+      stdin: serializeRunnerAcceptanceWorkerStdin({
         mode: command.mode,
         ...(command.piConfig ? { piConfig: command.piConfig } : {}),
       }),

@@ -639,6 +639,35 @@ describe("account runner HTTP endpoints", () => {
     await client.closed;
   });
 
+  it("rejects an acceptance payload that exceeds document or aggregate byte budgets with HTTP 400", async () => {
+    const accountId = await account();
+    const { app, address, token, sandbox, service } = await startedSandbox(accountId);
+    const { client } = await authenticatedRunner(address, token);
+    client.send(READY_FRAME);
+    await waitForLifecycle(service, accountId, sandbox.sandboxId, "ready");
+
+    // Valid JSON: 11,012 characters but 33,012 UTF-8 bytes for the first; the second passes each
+    // document bound but doubles under JSON escaping beyond the serialized worker-stdin budget.
+    const nonAscii = JSON.stringify({ token: "密钥".repeat(5_500) });
+    const escapeHeavy = JSON.stringify("\\".repeat(16_000));
+    for (const piConfig of [
+      { authJson: nonAscii },
+      { authJson: escapeHeavy, modelsJson: escapeHeavy, settingsJson: escapeHeavy },
+    ]) {
+      const response = await app.inject({
+        method: "POST",
+        url: accountSandboxRunnerAcceptancePath(sandbox.sandboxId),
+        headers: { ...authorization, "content-type": "application/json" },
+        payload: { mode: "real", piConfig },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("VALIDATION_ERROR");
+    }
+    expect(client.frames.some((frame) => frame.type === "acceptance:run")).toBe(false);
+    client.socket.close();
+    await client.closed;
+  });
+
   it("acceptance conflicts when no ready runner is attached", async () => {
     const accountId = await account();
     const { app, sandbox } = await startedSandbox(accountId);

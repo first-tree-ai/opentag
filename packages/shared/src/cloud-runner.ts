@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runtimeUtf8Length } from "./runtime-config.js";
 import { SandboxLifecycleSchema } from "./sandbox.js";
 
 /**
@@ -16,6 +17,10 @@ export const RUNNER_WS_PROTOCOL_VERSION = 1;
 export const RUNNER_WS_MAX_FRAME_BYTES = 256 * 1024;
 /** Bounded credential/config payloads: each document an Account may push for one acceptance run. */
 export const RUNNER_PI_CONFIG_DOCUMENT_MAX_CHARS = 32 * 1024;
+/** UTF-8 byte bound for a single Pi config document (non-ASCII text counts per byte). */
+export const RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES = 32 * 1024;
+/** Tightest dispatch budget: the serialized `kind/mode/piConfig` stdin document the worker reads. */
+export const RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES = 128 * 1024;
 export const RUNNER_ACCEPTANCE_MODES = ["offline", "real"] as const;
 /** The only model provider E3 real acceptance admits. */
 export const RUNNER_ACCEPTANCE_PROVIDER = "deepseek";
@@ -97,13 +102,69 @@ export type RunnerAcceptanceReportWire = z.infer<typeof RunnerAcceptanceReportWi
  * ------------------------------------------------------------------------------------------- */
 
 /** Minimal Pi configuration for one real acceptance run. Delivered per-request only; never persisted. */
+const RunnerPiConfigDocumentSchema = z
+  .string()
+  .min(1)
+  .max(RUNNER_PI_CONFIG_DOCUMENT_MAX_CHARS)
+  .superRefine((value, context) => {
+    if (runtimeUtf8Length(value) > RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES) {
+      context.addIssue({
+        code: "custom",
+        message: `Pi config documents exceed the ${RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES}-byte UTF-8 limit`,
+      });
+    }
+  });
+
 export const RunnerPiConfigInputSchema = z
   .object({
-    authJson: z.string().min(1).max(RUNNER_PI_CONFIG_DOCUMENT_MAX_CHARS),
-    modelsJson: z.string().min(1).max(RUNNER_PI_CONFIG_DOCUMENT_MAX_CHARS).optional(),
-    settingsJson: z.string().min(1).max(RUNNER_PI_CONFIG_DOCUMENT_MAX_CHARS).optional(),
+    authJson: RunnerPiConfigDocumentSchema,
+    modelsJson: RunnerPiConfigDocumentSchema.optional(),
+    settingsJson: RunnerPiConfigDocumentSchema.optional(),
   })
   .strict();
+
+export type RunnerPiConfigInput = z.infer<typeof RunnerPiConfigInputSchema>;
+
+/**
+ * The exact stdin document the Runner hands to the in-sandbox worker. It is the serialization
+ * that counts toward the wire budget: JSON escaping (quotes, backslashes, control characters)
+ * expands the document bytes, so the bound is measured on this string, not on each document.
+ */
+export function serializeRunnerAcceptanceWorkerStdin(input: {
+  mode: RunnerAcceptanceMode;
+  piConfig?: RunnerPiConfigInput;
+}): string {
+  return JSON.stringify({
+    kind: "acceptance",
+    mode: input.mode,
+    ...(input.piConfig ? { piConfig: input.piConfig } : {}),
+  });
+}
+
+/** Reject an acceptance command that would not fit the worker stdin and/or the control frame. */
+function checkRunnerAcceptanceWireBytes(
+  value: { mode: RunnerAcceptanceMode; piConfig?: RunnerPiConfigInput },
+  context: z.RefinementCtx,
+  serializedFrame?: string,
+): void {
+  if (
+    value.piConfig &&
+    runtimeUtf8Length(serializeRunnerAcceptanceWorkerStdin(value)) > RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["piConfig"],
+      message: `piConfig exceeds the ${RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES}-byte serialized worker stdin budget`,
+    });
+  }
+  if (serializedFrame !== undefined && runtimeUtf8Length(serializedFrame) > RUNNER_WS_MAX_FRAME_BYTES) {
+    context.addIssue({
+      code: "custom",
+      path: ["piConfig"],
+      message: `The acceptance frame exceeds the ${RUNNER_WS_MAX_FRAME_BYTES}-byte control-channel budget`,
+    });
+  }
+}
 
 export const AccountSandboxRunnerAcceptanceRequestSchema = z
   .object({
@@ -118,6 +179,7 @@ export const AccountSandboxRunnerAcceptanceRequestSchema = z
     if (value.mode === "offline" && value.piConfig) {
       context.addIssue({ code: "custom", path: ["piConfig"], message: "Offline acceptance must not carry piConfig" });
     }
+    checkRunnerAcceptanceWireBytes(value, context);
   });
 
 export type AccountSandboxRunnerAcceptanceRequest = z.infer<typeof AccountSandboxRunnerAcceptanceRequestSchema>;
@@ -259,7 +321,10 @@ export const RunnerAcceptanceRunFrameSchema = z
     deadlineAtMs: z.number().int().positive(),
     piConfig: RunnerPiConfigInputSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    checkRunnerAcceptanceWireBytes(value, context, JSON.stringify(value));
+  });
 export type RunnerAcceptanceRunFrame = z.infer<typeof RunnerAcceptanceRunFrameSchema>;
 
 export const RunnerAcceptanceCancelFrameSchema = z

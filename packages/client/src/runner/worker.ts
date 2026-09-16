@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES, RunnerPiConfigInputSchema } from "@opentag/shared";
 import { z } from "zod";
 import { runRunnerAcceptance } from "./acceptance.js";
 import { copyIsolatedPiConfig } from "./config.js";
@@ -14,33 +15,14 @@ import { registerRunnerSignalCleanup } from "./signals.js";
  * the report is already redacted by the acceptance runner.
  */
 
-export const WORKER_STDIN_MAX_BYTES = 128 * 1024;
+export const WORKER_STDIN_MAX_BYTES = RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES;
 export const WORKER_DEFAULT_WORKSPACE = "/workspace";
-
-const WorkerPiConfigSchema = z
-  .object({
-    authJson: z
-      .string()
-      .min(1)
-      .max(32 * 1024),
-    modelsJson: z
-      .string()
-      .min(1)
-      .max(32 * 1024)
-      .optional(),
-    settingsJson: z
-      .string()
-      .min(1)
-      .max(32 * 1024)
-      .optional(),
-  })
-  .strict();
 
 const WorkerRequestSchema = z
   .object({
     kind: z.literal("acceptance"),
     mode: z.enum(["offline", "real"]),
-    piConfig: WorkerPiConfigSchema.optional(),
+    piConfig: RunnerPiConfigInputSchema.optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -85,7 +67,10 @@ async function readStdinBounded(stdin: NodeJS.ReadStream, limit: number): Promis
   });
 }
 
-async function writeDisposablePiConfig(piHome: string, config: z.infer<typeof WorkerPiConfigSchema>): Promise<void> {
+async function writeDisposablePiConfig(
+  piHome: string,
+  config: z.infer<typeof RunnerPiConfigInputSchema>,
+): Promise<void> {
   // The worker trusts the parent-Runner's schema bounds but still writes each document as an
   // owned 0600 file inside the fresh 0700 home; nothing else in the sandbox can observe them.
   await writeFile(join(piHome, "auth.json"), config.authJson, { encoding: "utf8", mode: 0o600 });

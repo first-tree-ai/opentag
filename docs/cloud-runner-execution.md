@@ -28,8 +28,12 @@ allocation. An uncertain create or delete retains the row's resource reference a
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
 
-The Instance runs `opentag-runner serve`. It opens an outbound WSS connection to
-`/api/v1/sandbox-runners/ws`; it does not expose a parent HTTP control service. Authentication is
+The Instance runs `opentag-runner serve`. It declares the single container port `8080` so the
+platform's default TCP startup probe has a listening socket; after native readiness is verified,
+the Runner listens on that port only to accept and immediately end connections — no data is read
+or written, and the listener carries no command, HTTP, or credential surface. The control channel
+remains the Runner's outbound WSS connection to `/api/v1/sandbox-runners/ws`; the Instance exposes
+no parent HTTP control service. Authentication is
 in the first frame, never the URL. Tokens are scoped to the current Sandbox/Session/generation/
 resource name. Heartbeat acknowledgements detect a dead connection; renewed tokens stay in
 parent memory for reconnection. The Server checks current ownership, placement and execution
@@ -100,13 +104,14 @@ Server privileges.
 The operator provisions Direct VPC with `ALL_TRAFFIC`, NAT for public egress, and firewall rules
 scoped to the execution tag. Allow required public DNS/HTTPS/HTTP/Git transport while denying
 private/special destinations and unneeded ports. The Server adapter verifies the actual NIC,
-subnet, egress and tag after creation, along with image/resource/ingress/identity policy. It does
-not provision firewall rules itself. IPv6 needs its own policy before use.
+subnet, egress and tag after creation, along with image/resource/ingress/identity/port policy. It
+does not provision firewall rules itself. IPv6 needs its own policy before use.
 
 The global v2 Instance create currently has a Direct VPC representation incompatibility in the
 verified us-west1 environment. Only a recognized rejected VPC-field 400 uses the equivalent
 regional v1 create representation. Both paths preserve internal ingress, disabled default URL,
-IAM invoker checking, no restart, sandbox launcher and Direct VPC all-traffic routing. There is
+IAM invoker checking, no restart, sandbox launcher, the single declared container port 8080 and
+Direct VPC all-traffic routing. There is
 no fallback to default egress. Normal reads/deletes use v2.
 
 VPC firewall rules alone do not establish parent-loopback or metadata isolation. Verify those

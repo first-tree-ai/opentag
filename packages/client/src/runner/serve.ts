@@ -13,6 +13,7 @@ import {
   serializeRunnerAcceptanceWorkerStdin,
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions } from "ws";
+import { type RunnerHealthListener, startRunnerHealthListener } from "./health.js";
 import {
   NativeSandbox,
   NativeSandboxError,
@@ -44,6 +45,8 @@ export interface RunnerServeConfig {
   readonly bootstrapToken: string;
   readonly sandboxName: string;
   readonly workspace: string;
+  /** Declared platform container port for the startup probe; absent means no health listener. */
+  readonly healthPort?: number;
 }
 
 export interface RunnerServeOptions {
@@ -103,12 +106,28 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(sandboxName)) {
     throw new Error("OPENTAG_RUNNER_SANDBOX_NAME is not a safe sandbox name");
   }
+  const healthPort = parseRunnerHealthPort(env.PORT);
   return {
     backendUrl: resolveRunnerBackendUrl(backendRaw),
     bootstrapToken: token,
     sandboxName,
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
+    ...(healthPort !== undefined ? { healthPort } : {}),
   };
+}
+
+/**
+ * The platform sets PORT because the Instance declares its single container port. Only an exact
+ * integer 1..65535 is accepted; 0 and out-of-range values are configuration errors (the helper
+ * itself accepts 0 so tests can request an ephemeral port directly).
+ */
+function parseRunnerHealthPort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || String(port) !== value) {
+    throw new Error("PORT must be an integer between 1 and 65535");
+  }
+  return port;
 }
 
 interface WorkState {
@@ -131,6 +150,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     return startupExitCode(error);
   }
   let state: WorkState | undefined;
+  let health: RunnerHealthListener | undefined;
   let stopping = false,
     exitCode = 143,
     launchAttempted = false;
@@ -152,6 +172,15 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     launchAttempted = true;
     await sandbox.launch();
     state = { probe: await sandbox.probe(), stopping, fatal: false, present: true, token: config.bootstrapToken };
+    // The platform's default TCP startup probe needs a listening socket on the declared port.
+    // Start it only after native readiness is proven, and only when the platform provided PORT.
+    if (!stopping && config.healthPort !== undefined) {
+      health = await startRunnerHealthListener({
+        port: config.healthPort,
+        onError: (message) => logLine(options.stderr, `startup health listener error: ${message}`),
+      });
+      logLine(options.stderr, `startup health listener ready on port ${health.port}`);
+    }
     await maintainConnections(config, state, sandbox, options, stopListeners);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
   } catch (error) {
@@ -159,8 +188,13 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     if (error instanceof NativeSandboxError && error.code === "unavailable") launchAttempted = false;
     result = startupExitCode(error);
   } finally {
-    if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
-    removeSignals();
+    // The probe listener and process handlers are released even when sandbox cleanup throws.
+    try {
+      if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
+    } finally {
+      await health?.close();
+      removeSignals();
+    }
   }
   return result;
 }

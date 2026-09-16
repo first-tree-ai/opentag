@@ -226,6 +226,8 @@ export class CloudRunAdmin {
       limits = record(record(c.resources).limits);
     const cpu = limits.cpu,
       memory = limits.memory;
+    const ports = Array.isArray(c.ports) ? c.ports : [];
+    const containerPort = record(ports[0]).containerPort;
     // False scalar values may be omitted by protobuf JSON. Security-sensitive true values must be explicit.
     if (
       p?.ingress !== "INGRESS_TRAFFIC_INTERNAL_ONLY" ||
@@ -238,12 +240,14 @@ export class CloudRunAdmin {
       c.image !== this.#config.image ||
       c.sandboxLauncher !== true ||
       JSON.stringify(c.args) !== JSON.stringify(["opentag-runner", "serve"]) ||
+      ports.length !== 1 ||
+      containerPort !== 8080 ||
       !(cpu === "1" || cpu === "1000m") ||
       !(memory === "1Gi" || memory === "1024Mi")
     )
       throw new CloudRunAdminError(
         "invalid",
-        "Cloud Run Instance does not match the required Runner image, identity, resource or ingress policy",
+        "Cloud Run Instance does not match the required Runner image, port, identity, resource or ingress policy",
       );
   }
   async #createV1(spec: RunnerInstanceSpec, id: string, name: string): Promise<CloudRunCreateResult> {
@@ -296,6 +300,9 @@ export class CloudRunAdmin {
         { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
       ],
       resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
+      // The Instance ingress policy and the default TCP startup probe both require exactly this
+      // single declared container port; the Runner listens here for probe connections only.
+      ports: [{ containerPort: 8080 }],
     };
   }
   #v2Body(spec: RunnerInstanceSpec) {

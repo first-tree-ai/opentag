@@ -128,7 +128,7 @@ function failUsage(message) {
   return 2;
 }
 
-export async function main(argv) {
+export async function main(argv, { createFixture = createCloudIdentitiesFixture } = {}) {
   const { help, values } = parseArgs(argv, process.env);
   if (help) {
     process.stdout.write(`${HELP}\n`);
@@ -145,13 +145,14 @@ export async function main(argv) {
   const assertions = [],
     secrets = [accessToken];
   const redact = (text) => secrets.reduce((result, secret) => result.split(secret).join("[redacted]"), String(text));
-  const step = createStepper(redact);
+  const { step, steps } = createStepper(redact);
   const allocations = [];
   const summary = {
     command: "cloud-runner",
     mode: values.mode,
     git: await gitState(repositoryRoot),
     substitutions: SUBSTITUTIONS.map((e) => e.name),
+    steps,
     assertions,
     allocations,
     outcome: "failed",
@@ -180,7 +181,7 @@ export async function main(argv) {
   try {
     if (values.mode === "real") piInput = await preparePiInput({ repositoryRoot, source: values.piConfigDir, secrets });
     fixture = await step("disposable Server and Postgres", () =>
-      createCloudIdentitiesFixture({
+      createFixture({
         repositoryRoot,
         artifactDirectory,
         port: process.env.OPENTAG_E3_PORT,

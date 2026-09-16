@@ -21,7 +21,9 @@ Runner 属于 Client，沿用 CLI 发布版本；不新增数据表或迁移。
 资源名，并发请求核对同一个分配。创建或删除结果不明时保留归属和错误状态；创建仍可能到达时，
 GET 404 不代表已清理。删除同时校验 UID 和 etag，避免误删同名替换资源。
 
-Instance 内的 opentag-runner serve 主动连接 /api/v1/sandbox-runners/ws，不开放父容器 HTTP
+Instance 内运行 opentag-runner serve。仅为平台默认 TCP 启动探针声明唯一的容器端口 8080；原生就绪
+验证通过后，Runner 只在该端口接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。
+控制通道仍是 Runner 主动连接 /api/v1/sandbox-runners/ws 的 WSS；Instance 不开放父容器 HTTP
 控制接口。令牌在首帧发送，绑定当前 Sandbox、Session、generation、资源名，不进入 URL。
 Server 回复心跳，通过当前已认证连接续期令牌。重连使用父进程内存中的新令牌；接收工作及结果前
 校验当前归属、placement 与执行权限。
@@ -77,11 +79,12 @@ Instance 服务账号不能继承 Server 权限。
 
 运维预先部署 Direct VPC ALL_TRAFFIC、公网 NAT 和 execution tag 对应的防火墙，按需开放
 DNS、HTTPS、HTTP、Git，限制私网／特殊地址和不需要的端口。Server 创建后核对实际网卡、子网、
-egress、tag，以及镜像、规格、ingress、身份等配置，不自动创建防火墙。使用 IPv6 前另行制定策略。
+egress、tag，以及镜像、规格、ingress、身份、端口等配置，不自动创建防火墙。使用 IPv6 前另行制定策略。
 
 已验证的 us-west1 环境中，v2 创建接口存在 Direct VPC 表示兼容问题。只针对已拒绝的 VPC 字段
 400 使用区域 v1 等价请求；两条路径都保持 internal ingress、禁用 default URL、IAM invoker
-检查、不自动重启、sandbox launcher、Direct VPC ALL_TRAFFIC。不会回退到默认出站。读／删使用 v2。
+检查、不自动重启、sandbox launcher、唯一声明端口 8080、Direct VPC ALL_TRAFFIC。不会回退到
+默认出站。读／删使用 v2。
 
 VPC 防火墙本身不证明父容器 loopback 或 metadata 隔离，必须实测原生环境。Git 使用正常 DNS／TLS，
 不得固定主机 IP 或关闭证书校验。

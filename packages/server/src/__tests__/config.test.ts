@@ -135,11 +135,10 @@ describe("parseServerConfig", () => {
       }),
     ).toThrow();
     // Backend origin rejects credentials, paths, and plain http.
-    for (const origin of [
-      "https://user:pass@api.example.com",
-      "https://api.example.com/path",
-      "http://api.example.com",
-    ]) {
+    const credentialOrigin = new URL("https://api.example.com");
+    credentialOrigin.username = "synthetic-user";
+    credentialOrigin.password = "synthetic-password";
+    for (const origin of [credentialOrigin.toString(), "https://api.example.com/path", "http://api.example.com"]) {
       expect(() =>
         parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: origin }),
       ).toThrow();

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm, stat } from "node:fs/promises";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -83,6 +83,15 @@ describe("loadRunnerServeConfig", () => {
     );
     expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_SANDBOX_NAME: "../escape" })).toThrow(/SANDBOX_NAME/);
     expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_SANDBOX_NAME: "9bad" })).toThrow(/SANDBOX_NAME/);
+  });
+
+  it("accepts only an exact integer PORT in range for the declared health port", () => {
+    expect(loadRunnerServeConfig(base).healthPort).toBeUndefined();
+    expect(loadRunnerServeConfig({ ...base, PORT: "8080" }).healthPort).toBe(8080);
+    expect(loadRunnerServeConfig({ ...base, PORT: "65535" }).healthPort).toBe(65535);
+    for (const PORT of ["0", "-1", "65536", "1.5", "abc", "", " 8080", "08080"]) {
+      expect(() => loadRunnerServeConfig({ ...base, PORT }), `PORT=${JSON.stringify(PORT)}`).toThrow(/PORT/);
+    }
   });
 });
 
@@ -339,6 +348,29 @@ async function freePort(): Promise<number> {
       const address = probe.address();
       const port = typeof address === "object" && address ? address.port : 0;
       probe.close(() => resolve(port));
+    });
+  });
+}
+
+/** Real loopback TCP probe: resolves when the health listener ends the connection. */
+function probeHealthPort(port: number): Promise<{ bytes: number }> {
+  return new Promise((resolve, reject) => {
+    const socket = connect({ host: "127.0.0.1", port });
+    let bytes = 0;
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("health listener did not answer"));
+    }, 5_000);
+    socket.on("data", (chunk: Buffer) => {
+      bytes += chunk.byteLength;
+    });
+    socket.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    socket.on("close", () => {
+      clearTimeout(timer);
+      resolve({ bytes });
     });
   });
 }
@@ -617,6 +649,63 @@ describe("runRunnerServe", () => {
     expect(state.destroys).toBe(1);
     expect(output.chunks.stderr.join("")).toMatch(/deletion failed/);
   }, 30_000);
+
+  it("serves the declared platform health port with a zero-data listener until shutdown", async () => {
+    const wss = await startWss();
+    const output = io();
+    const state = { destroys: 0, launches: 0, failDestroy: false };
+    const stop = new AbortController();
+    const healthPort = await freePort();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), healthPort },
+      {
+        stderr: output.stderr,
+        installSignalHandlers: false,
+        sandboxFactory: fakeSandboxFactory([], state),
+        signal: stop.signal,
+      },
+    );
+    // Readiness means native probe succeeded AND the startup-probe listener is bound.
+    await wss.waitFor("runner:ready");
+    expect(await probeHealthPort(healthPort)).toEqual({ bytes: 0 });
+    stop.abort();
+    expect(await running).toBe(143);
+    await expect(probeHealthPort(healthPort)).rejects.toThrow();
+  }, 30_000);
+
+  it("closes the health listener when authentication is fatally rejected", async () => {
+    const wss = await startWss(() => false);
+    const healthPort = await freePort();
+    const state = { destroys: 0, launches: 0, failDestroy: false };
+    const code = await runRunnerServe(
+      { ...serveConfig(wss.url), healthPort },
+      {
+        stderr: io().stderr,
+        installSignalHandlers: false,
+        sandboxFactory: fakeSandboxFactory([], state),
+        maxReconnectAttempts: 1,
+        randomJitter: () => 0,
+      },
+    );
+    expect(code).toBe(1);
+    await expect(probeHealthPort(healthPort)).rejects.toThrow();
+  }, 30_000);
+
+  it("never opens the health port when native startup fails", async () => {
+    const healthPort = await freePort();
+    const code = await runRunnerServe(
+      { ...serveConfig("ws://127.0.0.1:1/ws"), healthPort },
+      {
+        stderr: io().stderr,
+        installSignalHandlers: false,
+        sandboxFactory: () => {
+          throw new NativeSandboxError("unavailable", "The native Cloud Run sandbox binary is absent");
+        },
+      },
+    );
+    expect(code).toBe(3);
+    await expect(probeHealthPort(healthPort)).rejects.toThrow();
+  });
 });
 
 describe("Runner cancellation and connection lifetime", () => {

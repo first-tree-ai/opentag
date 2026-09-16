@@ -72,6 +72,7 @@ function instanceBody(overrides: Record<string, unknown> = {}) {
         sandboxLauncher: true,
         args: ["opentag-runner", "serve"],
         resources: { limits: { cpu: "1", memory: "1Gi" } },
+        ports: [{ containerPort: 8080 }],
       },
     ],
     uid: "uid-1234-5678",
@@ -147,6 +148,7 @@ describe("CloudRunAdmin create", () => {
       sandboxLauncher: true,
       args: ["opentag-runner", "serve"],
       resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
+      ports: [{ containerPort: 8080 }],
     });
     const env = Object.fromEntries(
       (container as { env: { name: string; value: string }[] }).env.map((entry) => [entry.name, entry.value]),
@@ -214,7 +216,11 @@ describe("CloudRunAdmin create", () => {
       { network: "opentag-net", subnetwork: "opentag-subnet", tags: ["opentag-runner"] },
     ]);
     expect(body.metadata.annotations["run.googleapis.com/vpc-access-egress"]).toBe("all-traffic");
-    expect(body.spec.containers[0]).toMatchObject({ sandboxLauncher: true, image: CONFIG.image });
+    expect(body.spec.containers[0]).toMatchObject({
+      sandboxLauncher: true,
+      image: CONFIG.image,
+      ports: [{ containerPort: 8080 }],
+    });
   });
 
   it("never falls back to default egress for other 400 rejections", async () => {
@@ -224,6 +230,26 @@ describe("CloudRunAdmin create", () => {
     }));
     await expect(admin(fetchImpl).createInstance(SPEC)).rejects.toMatchObject({ kind: "invalid" });
     expect(calls.filter((call) => call.url.includes("/apis/run.googleapis.com/v1/"))).toHaveLength(0);
+  });
+
+  it("fails verification unless exactly the declared startup-probe port is present", async () => {
+    const [container] = instanceBody().containers as Record<string, unknown>[];
+    for (const ports of [
+      undefined,
+      [],
+      [{ containerPort: 9090 }],
+      [{ containerPort: 8080 }, { containerPort: 9090 }],
+    ]) {
+      const candidate = { ...container };
+      if (ports === undefined) delete candidate.ports;
+      else candidate.ports = ports;
+      const { fetchImpl } = fakeFetch((call) =>
+        call.method === "POST"
+          ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+          : { status: 200, body: instanceBody({ containers: [candidate] }) },
+      );
+      await expect(admin(fetchImpl).createInstance(SPEC)).rejects.toMatchObject({ kind: "invalid" });
+    }
   });
 
   it("fails verification when the created instance lacks the Direct VPC attachment", async () => {

@@ -114,11 +114,16 @@ function consumeDiffContent({ changed, currentFile, line, nextLine }) {
 }
 
 export function extractChangedLines(diffText) {
+  // A missing or non-string diff is a wiring bug, not an empty patch: refuse it instead of
+  // coercing it into the explicit no-executable-lines pass, which would read as a green gate.
+  if (typeof diffText !== "string") {
+    throw new Error(`A unified diff string is required, received ${diffText === null ? "null" : typeof diffText}`);
+  }
   const changed = new Map();
   let currentFile;
   let nextLine;
 
-  for (const rawLine of String(diffText ?? "").split("\n")) {
+  for (const rawLine of diffText.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
     if (line.startsWith("+++ b/") || line === "+++ /dev/null") {
       currentFile = parseDiffFileHeader(line);

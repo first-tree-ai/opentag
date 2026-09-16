@@ -142,7 +142,7 @@ jobs:
           const diff = captureMergeBaseDiff({ baseSha, repositoryRoot });
 
           const coverage = JSON.parse(readFileSync(`${repositoryRoot}/coverage/unit/coverage-final.json`, "utf8"));
-          const result = evaluatePatchCoverage({ coverage, diff: diff.stdout, repositoryRoot, threshold });
+          const result = evaluatePatchCoverage({ coverage, diff, repositoryRoot, threshold });
           if (result.total === 0) {
             console.log("Patch coverage: no executable changed lines were found (explicit pass).");
             process.exit(0);

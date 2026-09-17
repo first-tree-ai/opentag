@@ -1,6 +1,7 @@
 import { and, asc, eq, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, mcpServerAuthorizations } from "../../db/schema/index.js";
+import type { McpAuthorizationService } from "./mcp-authorization-service.js";
 import type { McpOAuthFlowService } from "./mcp-oauth-flow-service.js";
 import type { McpServerService } from "./mcp-server-service.js";
 
@@ -33,6 +34,8 @@ export function refreshAtFrom(expiresAt: Date, expiresInSeconds?: number): Date 
 }
 
 export interface McpRefreshWorkerOptions {
+  /** Runs the probes this pass schedules; see `#runPendingProbes`. */
+  authorization: McpAuthorizationService;
   database: DatabaseClient;
   flows: McpOAuthFlowService;
   /** Test seam for the pass's clock; the scan compares against it rather than the wall clock. */
@@ -44,6 +47,7 @@ export interface McpRefreshWorkerOptions {
 }
 
 export class McpRefreshWorker {
+  readonly #authorization: McpAuthorizationService;
   readonly #batchSize: number;
   readonly #database: DatabaseClient;
   readonly #flows: McpOAuthFlowService;
@@ -54,6 +58,7 @@ export class McpRefreshWorker {
   #timer: NodeJS.Timeout | undefined;
 
   constructor(options: McpRefreshWorkerOptions) {
+    this.#authorization = options.authorization;
     this.#batchSize = options.batchSize ?? MCP_REFRESH_BATCH_SIZE;
     this.#database = options.database;
     this.#flows = options.flows;
@@ -77,9 +82,12 @@ export class McpRefreshWorker {
   }
 
   /**
-   * One pass: expire the credentials that cannot be renewed, then refresh the ones that can. The two
-   * are separate statements so a failure in the refresh path cannot leave an unrenewable credential
-   * looking alive.
+   * One pass: expire the credentials that cannot be renewed, run the probes that were scheduled, then
+   * refresh the tokens that can be. The statements are separate so a failure in one cannot leave
+   * another's work half-reported.
+   *
+   * The return value counts refreshed tokens, which is what its callers and the tests have always
+   * meant by a pass; pending probes are reported to `onError` and do not change it.
    */
   async runOnce(): Promise<number> {
     if (this.#running) return 0;
@@ -87,6 +95,7 @@ export class McpRefreshWorker {
     try {
       const now = this.#now();
       await this.#expireUnrenewable(now);
+      await this.#runPendingProbes();
       const due = await this.#database
         .select({ id: mcpServerAuthorizations.id })
         .from(mcpServerAuthorizations)
@@ -117,6 +126,44 @@ export class McpRefreshWorker {
       return due.length;
     } finally {
       this.#running = false;
+    }
+  }
+
+  /**
+   * Run the probes that were scheduled by a state change.
+   *
+   * Several paths mark a row `pending` — a callback storing a credential, a definition edit, a binding
+   * override — and the comment on `markProbesPending` promised "a background pass re-probes them". No
+   * such pass existed: the only probes were the two explicit routes, so a shared edit left every mount
+   * showing stale tools until somebody clicked Re-probe, and a freshly authorized row stayed `pending`
+   * forever, which is also why `mcp authorize` could never finish its wait.
+   *
+   * Bounded per pass, oldest first, and a deleted Agent is excluded for the same reason the refresh
+   * scan excludes one: nothing should reach out on behalf of an Agent that no longer exists.
+   */
+  async #runPendingProbes(): Promise<void> {
+    const pending = await this.#database
+      .select({
+        agentId: mcpServerAuthorizations.agentId,
+        accountId: agents.createdByUserId,
+        mcpServerId: mcpServerAuthorizations.mcpServerId,
+      })
+      .from(mcpServerAuthorizations)
+      .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
+      .where(and(eq(mcpServerAuthorizations.probeState, "pending"), ne(agents.status, "deleted")))
+      .orderBy(asc(mcpServerAuthorizations.updatedAt))
+      .limit(this.#batchSize);
+    for (const row of pending) {
+      try {
+        await this.#authorization.probe(row.accountId, row.agentId, row.mcpServerId);
+      } catch (error) {
+        /*
+         * Reported and stepped over. A probe that fails records its own failure on the row, so the
+         * next pass sees `failed` rather than `pending` and does not retry it in a loop; anything
+         * thrown here is infrastructure, and one bad row must not stop the rest of the batch.
+         */
+        this.#onError(error);
+      }
     }
   }
 

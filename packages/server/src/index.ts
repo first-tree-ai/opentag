@@ -562,6 +562,7 @@ export async function startServer(): Promise<void> {
     });
     const mcpFlows = new McpOAuthFlowService({ database, cipher: mcpCipher, oauth: mcpOAuth, servers: mcpServers });
     const mcpRefreshWorker = new McpRefreshWorker({
+      authorization: mcpAuthorization,
       database,
       flows: mcpFlows,
       servers: mcpServers,

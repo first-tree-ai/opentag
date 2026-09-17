@@ -97,7 +97,7 @@ function buildHarness(
     ...(accountSnapshotMaxBytes === undefined ? {} : { accountSnapshotMaxBytes }),
   });
   const flows = new McpOAuthFlowService({ database, cipher, oauth, servers });
-  const refresh = new McpRefreshWorker({ database, flows, servers });
+  const refresh = new McpRefreshWorker({ authorization, database, flows, servers });
   return { accountId, agentA, agentB, authorization, cipher, database, flows, probe, refresh, servers };
 }
 
@@ -1479,6 +1479,18 @@ describe("Agent-level overrides", () => {
       states = await afterProbe();
       expect(states.get(harness.agentA)).toBe("pending");
       expect(states.get(harness.agentB)).toBe("pending");
+
+      /*
+       * S5: the background pass actually runs them.
+       *
+       * `markProbesPending` promised "a background pass re-probes them" and no such pass existed, so
+       * these rows stayed pending until somebody clicked Re-probe — and a freshly authorized row stayed
+       * pending forever, which is also why `mcp authorize` could never finish its wait.
+       */
+      await harness.refresh.runOnce();
+      states = await afterProbe();
+      expect(states.get(harness.agentA)).toBe("succeeded");
+      expect(states.get(harness.agentB)).toBe("succeeded");
     } finally {
       await fixture.stop();
     }

@@ -47,6 +47,15 @@ export interface McpFixtureOptions {
   issuerParameter?: string;
   /** Answer the authorize endpoint with `error=access_denied` instead of a code. */
   denyAuthorization?: boolean;
+  /**
+   * The `serverInfo.description` this fixture publishes, in both the modern `_meta` slot and the
+   * legacy `initialize` result.
+   *
+   * Optional and omitted by default, because the specification makes it optional: a test that wants
+   * "the Server described itself" has to ask for it, and the default keeps the shape every other
+   * test already relies on.
+   */
+  serverDescription?: string;
 }
 
 /**
@@ -83,6 +92,19 @@ export class McpFixtureServer {
     const fixture = new McpFixtureServer(options);
     await fixture.#listen();
     return fixture;
+  }
+
+  /**
+   * The `serverInfo` both eras publish. One builder rather than two literals, so the modern and
+   * legacy paths cannot drift into describing two different Servers.
+   */
+  #serverInfo(): Record<string, unknown> {
+    const { serverDescription } = this.#options;
+    return {
+      name: "fixture",
+      version: "1.0.0",
+      ...(serverDescription === undefined ? {} : { description: serverDescription }),
+    };
   }
 
   get endpoint(): string {
@@ -276,7 +298,7 @@ export class McpFixtureServer {
       rpc(response, request.id, {
         capabilities: this.#options.capabilities ?? { tools: {} },
         instructions: "Fixture instructions.",
-        _meta: { "io.modelcontextprotocol/serverInfo": { name: "fixture", version: "1.0.0" } },
+        _meta: { "io.modelcontextprotocol/serverInfo": this.#serverInfo() },
       });
       return;
     }
@@ -284,7 +306,7 @@ export class McpFixtureServer {
       rpc(response, request.id, {
         protocolVersion: "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "fixture", version: "1.0.0" },
+        serverInfo: this.#serverInfo(),
       });
       return;
     }

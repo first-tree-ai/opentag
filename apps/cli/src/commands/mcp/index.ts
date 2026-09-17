@@ -53,11 +53,14 @@ export function registerMcpCommand(program: Command): void {
   mcp
     .command("add")
     .description("Register a shared MCP Server definition")
-    .requiredOption("--name <name>", "lowercase slug, unique within the Account")
-    .requiredOption("--display-name <name>", "human-readable name")
+    .requiredOption("--name <name>", "unique handle within the Account: lowercase letters, numbers, and hyphens")
     .requiredOption("--url <url>", "the MCP endpoint")
     .option("--default-auth <kind>", "prefill for a new authorization: oauth | bearer | none", "oauth")
-    .option("--description <text>", "description, at most 1024 bytes")
+    /*
+     * No `--description` on create: a definition's description is what a probe discovered, and
+     * nothing can be probed before the definition exists. The first successful probe fills it in;
+     * `mcp update --description` is how an operator replaces it.
+     */
     .option("--auth-header <name>", "authorization header name used by a bearer authorization")
     .option("--auth-scheme <scheme>", "scheme prefixed to the bearer value; empty sends it verbatim")
     .option("--extra-header <name=value>", "additional static header sent on every request (repeatable)", collect, [])
@@ -67,10 +70,8 @@ export function registerMcpCommand(program: Command): void {
         () =>
           runMcpCreate({
             name: String(options.name),
-            displayName: String(options.displayName),
             url: String(options.url),
             defaultAuthKind: authKindOf(options.defaultAuth),
-            ...whenDefined("description", optionalString(options.description)),
             ...whenDefined("authHeader", optionalString(options.authHeader)),
             ...whenDefined("authScheme", optionalString(options.authScheme)),
             ...whenDefined("extraHeader", optionalList(options.extraHeader)),
@@ -110,8 +111,7 @@ export function registerMcpCommand(program: Command): void {
   mcp
     .command("update <server>")
     .description("Edit the shared definition, which affects every Agent that mounts it")
-    .option("--display-name <name>", "human-readable name")
-    .option("--description <text>", "description, at most 1024 bytes")
+    .option("--description <text>", "override the probed description, at most 1024 bytes")
     .option("--url <url>", "the MCP endpoint")
     .option("--default-auth <kind>", "prefill for a new authorization: oauth | bearer | none")
     .option("--auth-header <name>", "authorization header name used by a bearer authorization")
@@ -125,7 +125,6 @@ export function registerMcpCommand(program: Command): void {
       process.exitCode = await executeCommand(
         () =>
           runMcpUpdate(server, {
-            ...whenDefined("displayName", optionalString(options.displayName)),
             ...whenDefined("description", optionalString(options.description)),
             ...whenDefined("url", optionalString(options.url)),
             ...whenDefined(
@@ -206,10 +205,24 @@ export function registerMcpCommand(program: Command): void {
       }
       process.exitCode = await executeCommand(
         () =>
-          runMcpAuthorize(String(options.agent), server, {
-            ...whenDefined("scopes", options.scopes === undefined ? undefined : splitList(String(options.scopes))),
-            ...(options.wait === false ? { noWait: true } : {}),
-          }),
+          runMcpAuthorize(
+            String(options.agent),
+            server,
+            {
+              ...whenDefined("scopes", options.scopes === undefined ? undefined : splitList(String(options.scopes))),
+              ...(options.wait === false ? { noWait: true } : {}),
+            },
+            {
+              /*
+               * Printed to stderr as soon as it exists, because the wait that follows can run the
+               * flow's full ten minutes and this URL is what the user must open to end it. stderr
+               * rather than stdout so `--json` still emits exactly one JSON document on stdout.
+               */
+              onStarted: (started) => {
+                process.stderr.write(`Open this URL to authorize:\n${started.authorizationUrl}\n`);
+              },
+            },
+          ),
         { json: options.json === true, formatValue: formatAuthorization, phase: "request" },
       );
     });

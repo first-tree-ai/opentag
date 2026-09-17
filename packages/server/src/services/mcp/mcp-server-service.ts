@@ -10,6 +10,7 @@ import {
   type MCPServerAgent,
   type MCPServerDetail,
   normalizeExtraHeaders,
+  probedServerDescription,
   type UpdateMCPBindingRequest,
   type UpdateMCPServerRequest,
 } from "@opentag/shared";
@@ -83,8 +84,6 @@ export class McpServerService {
         .values({
           accountId,
           name: input.name,
-          displayName: input.displayName,
-          description: input.description ?? null,
           url: input.url,
           defaultAuthKind: input.defaultAuthKind,
           authHeader: input.authHeader ?? "authorization",
@@ -129,7 +128,6 @@ export class McpServerService {
     const [updated] = await this.#database
       .update(mcpServers)
       .set({
-        ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
         ...(input.description === undefined ? {} : { description: input.description }),
         ...(input.url === undefined ? {} : { url: input.url }),
         ...(input.defaultAuthKind === undefined ? {} : { defaultAuthKind: input.defaultAuthKind }),
@@ -223,7 +221,6 @@ export class McpServerService {
     return rows.map((row) => ({
       id: row.server.id,
       name: row.server.name,
-      displayName: row.server.displayName,
       description: row.server.description,
       boundAgentCount: aggregates.get(row.server.id)?.boundAgentCount ?? 0,
     }));
@@ -638,7 +635,6 @@ function toServerDto(row: typeof mcpServers.$inferSelect, aggregate: Aggregate |
   return {
     id: row.id,
     name: row.name,
-    displayName: row.displayName,
     description: row.description,
     url: row.url,
     defaultAuthKind: row.defaultAuthKind,
@@ -701,8 +697,8 @@ function toAgentServerDto(
   return {
     mcpServerId: server.id,
     name: server.name,
-    displayName: server.displayName,
     description: server.description,
+    discoveredDescription: probedServerDescription(authorization?.serverInfo),
     enabled: binding.enabled,
     effective: McpServerService.resolveEffectiveConfig(server, binding),
     overridden: McpServerService.resolveOverrideSources(binding),

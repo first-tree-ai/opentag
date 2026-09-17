@@ -13,6 +13,7 @@ import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { AgentService } from "../../services/agents/index.js";
+import { BROWSER_COOKIE_NAMES } from "../../services/auth/browser-cookies.js";
 import type { UserAuthService } from "../../services/auth/index.js";
 import { MachineAuthService } from "../../services/computers/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
@@ -147,7 +148,7 @@ async function boot(): Promise<Harness> {
   const app = createApp({
     authService,
     agentService,
-    mcp: { authorization, flows, servers, publicOrigin: PUBLIC_ORIGIN },
+    mcp: { authorization, flows, servers, publicOrigin: PUBLIC_ORIGIN, secureCookies: false },
   });
   openApps.push(app);
 
@@ -193,6 +194,20 @@ async function attachOverHttp(harness: Harness, agentId: string, mcpServerId: st
   return response.json();
 }
 
+/**
+ * The flow-binding cookie out of a start response, in the form a browser would send it back.
+ *
+ * The cookie is set with a `Path` scoped to the callback, so a real browser only ever attaches it
+ * there. `inject` has no cookie jar, so this reads it off the start response and hands it over
+ * explicitly — which also makes the binding visible in the test rather than incidental.
+ */
+function flowCookieFrom(start: { headers: Record<string, unknown> }): string {
+  const raw = start.headers["set-cookie"];
+  const values = (Array.isArray(raw) ? raw : [raw]).map(String);
+  const cookie = values.find((value) => value.startsWith(`${BROWSER_COOKIE_NAMES.mcpOAuthContext}=`));
+  return cookie?.split(";", 1)[0] ?? "";
+}
+
 // ------------------------------------------------------------------ the route table
 
 describe("MCP HTTP routes — definitions", () => {
@@ -200,7 +215,6 @@ describe("MCP HTTP routes — definitions", () => {
     const harness = await boot();
     const created = await createServerOverHttp(harness, {
       name: "linear",
-      displayName: "Linear",
       url: "https://mcp.example.com/mcp",
       defaultAuthKind: "bearer",
       authHeader: "x-api-key",
@@ -235,10 +249,10 @@ describe("MCP HTTP routes — definitions", () => {
       method: "PATCH",
       url: MCP_SERVER_BY_ID_TEMPLATE.replace(":mcpServerId", created.id),
       headers: ACCESS_HEADER,
-      payload: { displayName: "Linear (renamed)", expectedRevision: 1 },
+      payload: { description: "Issue tracking", expectedRevision: 1 },
     });
     expect(patched.statusCode).toBe(200);
-    expect(patched.json()).toMatchObject({ displayName: "Linear (renamed)", revision: 2 });
+    expect(patched.json()).toMatchObject({ description: "Issue tracking", revision: 2 });
 
     const removed = await harness.app.inject({
       method: "DELETE",
@@ -252,7 +266,7 @@ describe("MCP HTTP routes — definitions", () => {
 
   it("answers 409 on a name conflict and on a stale expectedRevision", async () => {
     const harness = await boot();
-    const base = { displayName: "Fixture", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" };
+    const base = { url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" };
     await createServerOverHttp(harness, { ...base, name: "linear" });
 
     /*
@@ -284,7 +298,7 @@ describe("MCP HTTP routes — definitions", () => {
       method: "PATCH",
       url: MCP_SERVER_BY_ID_TEMPLATE.replace(":mcpServerId", second.id),
       headers: ACCESS_HEADER,
-      payload: { displayName: "Nope", expectedRevision: 99 },
+      payload: { description: "Nope", expectedRevision: 99 },
     });
     expect(stale.statusCode).toBe(409);
     expect(stale.json()).toMatchObject({ error: { code: "MCP_SERVER_REVISION_CONFLICT" } });
@@ -296,7 +310,7 @@ describe("MCP HTTP routes — definitions", () => {
       method: "POST",
       url: MCP_SERVERS_PATH,
       headers: ACCESS_HEADER,
-      payload: { name: "bad", displayName: "Bad", url: "not-a-url" },
+      payload: { name: "bad", url: "not-a-url" },
     });
     // A shape the schema rejects is the generic validation envelope, not an MCP code.
     expect(invalidUrl.statusCode).toBe(400);
@@ -308,7 +322,6 @@ describe("MCP HTTP routes — definitions", () => {
       headers: ACCESS_HEADER,
       payload: {
         name: "reserved",
-        displayName: "Reserved",
         url: "https://mcp.example.com/mcp",
         authHeader: "host",
       },
@@ -341,7 +354,6 @@ describe("MCP HTTP routes — per-Agent mounts and authorization", () => {
 
     const definition = await createServerOverHttp(harness, {
       name: "fixture",
-      displayName: "Fixture",
       url: server.endpoint,
       defaultAuthKind: "bearer",
     });
@@ -433,7 +445,6 @@ describe("MCP HTTP routes — per-Agent mounts and authorization", () => {
     const harness = await boot();
     const definition = await createServerOverHttp(harness, {
       name: "fixture",
-      displayName: "Fixture",
       url: server.endpoint,
       defaultAuthKind: "oauth",
     });
@@ -474,13 +485,11 @@ describe("MCP HTTP routes — per-Agent mounts and authorization", () => {
     const harness = await boot();
     const mounted = await createServerOverHttp(harness, {
       name: "mounted",
-      displayName: "Mounted",
       url: server.endpoint,
       defaultAuthKind: "none",
     });
     await createServerOverHttp(harness, {
       name: "unused",
-      displayName: "Unused",
       url: `${server.endpoint}?alt=1`,
       defaultAuthKind: "none",
     });
@@ -501,7 +510,6 @@ describe("MCP HTTP routes — per-Agent mounts and authorization", () => {
     const harness = await boot();
     const definition = await createServerOverHttp(harness, {
       name: "anonymous",
-      displayName: "Anonymous",
       url: server.endpoint,
       defaultAuthKind: "none",
     });
@@ -534,7 +542,6 @@ describe("MCP HTTP routes — per-Agent mounts and authorization", () => {
     const harness = await boot();
     const definition = await createServerOverHttp(harness, {
       name: "fixture",
-      displayName: "Fixture",
       url: server.endpoint,
       defaultAuthKind: "none",
     });
@@ -584,7 +591,6 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
     const harness = await boot();
     const definition = await createServerOverHttp(harness, {
       name: "fixture",
-      displayName: "Fixture",
       url: server.endpoint,
       defaultAuthKind: "oauth",
     });
@@ -600,6 +606,13 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
       payload: {},
     });
     const { authorizationUrl } = start.json() as { authorizationUrl: string };
+    /*
+     * The flow cookie the start response set. A real browser keeps it automatically; the injected
+     * callback has to carry it, and that is the binding under test — without it the callback below
+     * would be refused as one started by somebody else.
+     */
+    const flowCookie = flowCookieFrom(start);
+    expect(flowCookie).toBeTruthy();
 
     // Drive the fixture's authorize endpoint the way a browser would, then hand the redirect back to
     // the callback. This is the only path that exercises the session-less state authentication.
@@ -608,6 +621,7 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
     const callback = await harness.app.inject({
       method: "GET",
       url: `${MCP_OAUTH_CALLBACK_PATH}?code=${encodeURIComponent(location.searchParams.get("code") ?? "")}&state=${encodeURIComponent(location.searchParams.get("state") ?? "")}&iss=${encodeURIComponent(location.searchParams.get("iss") ?? "")}`,
+      headers: { cookie: flowCookie },
     });
     expect(callback.statusCode).toBe(302);
     const landed = callback.headers.location as string;
@@ -639,7 +653,44 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
     const harness = await boot();
     const definition = await createServerOverHttp(harness, {
       name: "fixture",
-      displayName: "Fixture",
+      url: server.endpoint,
+      defaultAuthKind: "oauth",
+    });
+    await attachOverHttp(harness, harness.agentA, definition.id);
+
+    const start = await harness.app.inject({
+      method: "POST",
+      url: AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE.replace(":agentId", harness.agentA).replace(
+        ":mcpServerId",
+        definition.id,
+      ),
+      headers: ACCESS_HEADER,
+      payload: {},
+    });
+    const { authorizationUrl } = start.json() as { authorizationUrl: string };
+    const flowCookie = flowCookieFrom(start);
+    const authorize = await fetch(authorizationUrl, { redirect: "manual" });
+    const location = new URL(authorize.headers.get("location") as string);
+    expect(location.searchParams.get("error")).toBe("access_denied");
+
+    const callback = await harness.app.inject({
+      method: "GET",
+      url: `${MCP_OAUTH_CALLBACK_PATH}?error=access_denied&state=${encodeURIComponent(location.searchParams.get("state") ?? "")}`,
+      headers: { cookie: flowCookie },
+    });
+    expect(callback.statusCode).toBe(302);
+    const landed = callback.headers.location as string;
+    expect(landed).toContain("mcp_oauth=error");
+    expect(landed).toContain("MCP_OAUTH_DENIED");
+    // Only the bounded code travels; nothing the authorization server said is echoed.
+    expect(landed).not.toContain("error_description");
+  }, 30_000);
+
+  it("refuses a callback whose browser does not hold the flow cookie", async () => {
+    const server = await fixture({ toolPages: [{ tools: [{ name: "only" }] }] });
+    const harness = await boot();
+    const definition = await createServerOverHttp(harness, {
+      name: "fixture",
       url: server.endpoint,
       defaultAuthKind: "oauth",
     });
@@ -657,18 +708,30 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
     const { authorizationUrl } = start.json() as { authorizationUrl: string };
     const authorize = await fetch(authorizationUrl, { redirect: "manual" });
     const location = new URL(authorize.headers.get("location") as string);
-    expect(location.searchParams.get("error")).toBe("access_denied");
+    const url = `${MCP_OAUTH_CALLBACK_PATH}?code=${encodeURIComponent(location.searchParams.get("code") ?? "")}&state=${encodeURIComponent(location.searchParams.get("state") ?? "")}`;
 
-    const callback = await harness.app.inject({
+    /*
+     * The URL and the state are enough to reach this route — they travel through the browser and
+     * the authorization server — but not enough to redeem it. The state is presented with no cookie,
+     * with somebody else's, and with a wrong value, and none of them stores a credential.
+     */
+    for (const cookie of ["", "opentag_mcp_oauth_context=someone-elses-secret", "opentag_mcp_oauth_context="]) {
+      const refused = await harness.app.inject({
+        method: "GET",
+        url,
+        ...(cookie === "" ? {} : { headers: { cookie } }),
+      });
+      expect(refused.statusCode).toBe(302);
+      expect(refused.headers.location as string).toContain("MCP_OAUTH_FLOW_INVALID");
+    }
+
+    const list = await harness.app.inject({
       method: "GET",
-      url: `${MCP_OAUTH_CALLBACK_PATH}?error=access_denied&state=${encodeURIComponent(location.searchParams.get("state") ?? "")}`,
+      url: AGENT_MCP_SERVERS_TEMPLATE.replace(":agentId", harness.agentA),
+      headers: ACCESS_HEADER,
     });
-    expect(callback.statusCode).toBe(302);
-    const landed = callback.headers.location as string;
-    expect(landed).toContain("mcp_oauth=error");
-    expect(landed).toContain("MCP_OAUTH_DENIED");
-    // Only the bounded code travels; nothing the authorization server said is echoed.
-    expect(landed).not.toContain("error_description");
+    const row = (list.json() as { servers: { authorization: { status: string } | null }[] }).servers[0];
+    expect(row?.authorization?.status).not.toBe("active");
   }, 30_000);
 
   it("answers the exact request shapes the browser client builds", async () => {
@@ -686,7 +749,7 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
       method: "POST",
       url: MCP_SERVERS_PATH,
       headers: { ...ACCESS_HEADER, "x-opentag-csrf": "probe-token" },
-      payload: { name: "fixture", displayName: "Fixture", url: server.endpoint, defaultAuthKind: "none" },
+      payload: { name: "fixture", url: server.endpoint, defaultAuthKind: "none" },
     });
     expect(created.statusCode, created.body).toBe(201);
     const definition = created.json() as { id: string };
@@ -741,7 +804,6 @@ describe("MCP HTTP routes — the two unauthenticated paths", () => {
     // and refused when anything tries to dial it, which is the layer that matters.
     const definition = await createServerOverHttp(harness, {
       name: "metadata",
-      displayName: "Metadata",
       url: "https://169.254.169.254/latest/meta-data/",
       defaultAuthKind: "none",
     });

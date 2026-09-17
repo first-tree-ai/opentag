@@ -180,20 +180,51 @@ export class McpProbe {
     };
   }
 
+  /**
+   * Page the legacy `tools/list` to exhaustion, under the same caps as the modern path.
+   *
+   * It previously read a single page and reported `truncated: true` for any Server that sent a
+   * cursor — which claimed a complete snapshot whenever the Server fit on one page, and claimed a
+   * partial one even when more pages were available and cheap. The modern path's loop is the
+   * reference: page until the cursor runs out, the budget expires, or a cap is hit, and only then
+   * call the snapshot truncated.
+   */
   async #collectLegacyTools(
     input: McpProbeInput,
     transport: McpTransport,
     sessionId: string | undefined,
   ): Promise<{ tools: McpProbeTool[]; truncated: boolean }> {
-    const result = await transport.call(
-      input.accountId,
-      input.url,
-      "tools/list",
-      {},
-      input.authHeaders,
-      sessionId ? { headers: { "mcp-session-id": sessionId } } : {},
-    );
-    return collectPage(asRecord(result), [], false);
+    const collected: McpProbeTool[] = [];
+    const deadline = this.#now().getTime() + this.#budgetMs;
+    const sessionHeaders = sessionId ? { headers: { "mcp-session-id": sessionId } } : {};
+    let cursor: string | undefined;
+    let truncated = false;
+    let pages = 0;
+    for (;;) {
+      if (this.#now().getTime() >= deadline || pages >= MAX_PROBE_PAGES) {
+        // Stopped with a cursor still outstanding, so the snapshot is explicitly partial.
+        truncated = true;
+        break;
+      }
+      pages += 1;
+      const page = readToolsPage(
+        asRecord(
+          await transport.callLegacy(
+            input.accountId,
+            input.url,
+            "tools/list",
+            cursor === undefined ? {} : { cursor },
+            input.authHeaders,
+            sessionHeaders,
+          ),
+        ),
+      );
+      for (const tool of page.tools) collected.push(validateTool(tool));
+      truncated = this.#applyToolCaps(collected) || truncated;
+      if (truncated || page.nextCursor === undefined) break;
+      cursor = page.nextCursor;
+    }
+    return { tools: collected, truncated };
   }
 
   /**
@@ -253,16 +284,6 @@ export class McpProbe {
     while (collected.length > 0 && serializedToolsBytes(collected) > MCP_PROBE_MAX_TOOLS_BYTES) collected.pop();
     return true;
   }
-}
-
-function collectPage(
-  payload: Record<string, unknown>,
-  collected: McpProbeTool[],
-  truncated: boolean,
-): { tools: McpProbeTool[]; truncated: boolean } {
-  const { tools, nextCursor } = readToolsPage(payload);
-  for (const tool of tools) collected.push(validateTool(tool));
-  return { tools: collected, truncated: truncated || nextCursor !== undefined };
 }
 
 function readToolsPage(payload: Record<string, unknown>): { tools: unknown[]; nextCursor: string | undefined } {

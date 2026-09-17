@@ -64,7 +64,6 @@ export const mcpServers = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     name: text("name").notNull(),
-    displayName: text("display_name").notNull(),
     description: text("description"),
     /** The MCP endpoint default; an Agent-level `url_override` may replace it for one Agent. */
     url: text("url").notNull(),
@@ -84,7 +83,6 @@ export const mcpServers = pgTable(
     index("mcp_servers_account_idx").on(table.accountId),
     check("mcp_servers_revision_positive", sql`${table.revision} >= 1`),
     check("mcp_servers_name_bounds", sql`char_length(${table.name}) between 1 and 64`),
-    check("mcp_servers_display_name_bounds", sql`char_length(${table.displayName}) between 1 and 120`),
     check(
       "mcp_servers_description_bounds",
       sql`${table.description} is null or octet_length(${table.description}) <= 1024`,
@@ -192,6 +190,14 @@ export const mcpServerAuthorizations = pgTable(
     state: text("state"),
     stateExpiresAt: timestamp("state_expires_at", { withTimezone: true }),
     pkceCiphertext: text("pkce_ciphertext"),
+    /**
+     * The hash of the initiating browser's flow secret.
+     *
+     * The callback must present the secret this hash was derived from, which binds the flow to the
+     * browser that started it. Without it the state alone would be enough to redeem a callback, and
+     * the state travels in a URL that can be handed to anyone — the classic OAuth session fixation.
+     */
+    loginSessionHash: text("login_session_hash"),
 
     probeState: mcpProbeState("probe_state").notNull().default("pending"),
     probedAt: timestamp("probed_at", { withTimezone: true }),
@@ -266,8 +272,16 @@ export const mcpServerAuthorizations = pgTable(
         ${table.status} not in ('active', 'expired') or ${table.ciphertext} is not null
       )`,
     ),
-    /** A live flow keeps state, its deadline, and the encrypted PKCE verifier together. */
+    /**
+     * A live flow keeps state, its deadline, the encrypted PKCE verifier, and the initiator binding
+     * together. The binding is part of the shape rather than a nullable extra so a row cannot exist
+     * that has a redeemable state but nobody who is allowed to redeem it.
+     */
     check("mcp_server_authorizations_flow_shape", sql`(${table.state} is null) = (${table.stateExpiresAt} is null)`),
+    check(
+      "mcp_server_authorizations_flow_binding_shape",
+      sql`(${table.state} is null) = (${table.loginSessionHash} is null)`,
+    ),
     check(
       "mcp_server_authorizations_flow_requires_pkce",
       sql`${table.state} is null or (${table.kind} = 'oauth' and ${table.pkceCiphertext} is not null)`,

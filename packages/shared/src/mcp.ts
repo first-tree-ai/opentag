@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentDisplayNameSchema } from "./agent.js";
 
 /**
  * MCP (Model Context Protocol) management contract.
@@ -28,8 +29,13 @@ export const MCPServerNameSchema = z
     /^[a-z0-9][a-z0-9-]*$/,
     "Server name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
   );
-export const MCPServerDisplayNameSchema = z.string().trim().min(1).max(120);
-/** Bounded to 1024 bytes by the datastore as well; the plan's byte bound is enforced server-side. */
+/**
+ * The human-readable description an operator writes over the probed one.
+ *
+ * Bounded to 1024 bytes by the datastore as well; the plan's byte bound is enforced server-side.
+ * This is an override, not the only source: the Server's own `serverInfo.description` arrives with a
+ * probe and is reported separately, so a definition with no override still shows the peer's words.
+ */
 export const MCPServerDescriptionSchema = z.string().trim().min(1).max(1024);
 
 /**
@@ -222,7 +228,6 @@ export const MCPServerSchema = z
   .object({
     id: UuidSchema,
     name: MCPServerNameSchema,
-    displayName: MCPServerDisplayNameSchema,
     description: MCPServerDescriptionSchema.nullable(),
     url: z.string().min(1),
     defaultAuthKind: MCPAuthKindSchema,
@@ -298,6 +303,23 @@ export const MCPAuthorizationSummarySchema = z
   .strict();
 export type MCPAuthorizationSummary = z.infer<typeof MCPAuthorizationSummarySchema>;
 
+/**
+ * The Server's own description of itself, out of the `serverInfo` a probe recorded.
+ *
+ * Derived on read rather than stored as its own column: `serverInfo` is already persisted verbatim,
+ * so extracting this is a pure function of data that is already there, and a second column could
+ * only drift from it. Returns null for any shape that is not the specification's `Implementation`,
+ * because `serverInfo` is untrusted JSON from a peer.
+ */
+export function probedServerDescription(serverInfo: unknown): string | null {
+  if (typeof serverInfo !== "object" || serverInfo === null || Array.isArray(serverInfo)) return null;
+  const description = (serverInfo as Record<string, unknown>).description;
+  if (typeof description !== "string") return null;
+  const trimmed = description.trim();
+  // Bounded here as well as at the probe, because `server_info` is jsonb read back by a later build.
+  return trimmed.length === 0 ? null : trimmed.slice(0, 1024);
+}
+
 /** The snapshot one Agent's own credential produced, plus the era that produced it. */
 export const MCPProbeSnapshotSchema = z
   .object({
@@ -320,8 +342,13 @@ export const MCPAgentServerSchema = z
   .object({
     mcpServerId: UuidSchema,
     name: MCPServerNameSchema,
-    displayName: MCPServerDisplayNameSchema,
     description: MCPServerDescriptionSchema.nullable(),
+    /**
+     * What this Agent's own probe heard the Server say about itself, shown when `description` is
+     * null. Per Agent rather than per definition because the probe runs with this Agent's
+     * credential, and two credentials can reach two different origins.
+     */
+    discoveredDescription: z.string().max(1024).nullable(),
     enabled: z.boolean(),
     effective: MCPEffectiveConfigSchema,
     overridden: MCPOverrideSourcesSchema,
@@ -341,7 +368,7 @@ export const MCPServerAgentSchema = z
   .object({
     agentId: UuidSchema,
     agentName: MCPServerNameSchema,
-    agentDisplayName: MCPServerDisplayNameSchema,
+    agentDisplayName: AgentDisplayNameSchema,
     enabled: z.boolean(),
     effective: MCPEffectiveConfigSchema,
     overridden: MCPOverrideSourcesSchema,
@@ -370,7 +397,6 @@ export const MCPAvailableServerSchema = z
   .object({
     id: UuidSchema,
     name: MCPServerNameSchema,
-    displayName: MCPServerDisplayNameSchema,
     description: MCPServerDescriptionSchema.nullable(),
     boundAgentCount: z.number().int().min(0),
   })
@@ -384,12 +410,14 @@ export type ListAvailableMCPServersResponse = z.infer<typeof ListAvailableMCPSer
  * Definition create/update input. `authHeader`, `authScheme`, and `extraHeaders` only matter for a
  * bearer authorization; they are still stored on the definition so two Agents can override them
  * independently.
+ *
+ * `description` is absent on create on purpose: a definition's description is what a probe
+ * discovered, and there is nothing to probe until the definition exists. Creation writes NULL and
+ * the first successful probe fills it in; `update` is where an operator replaces it.
  */
 export const CreateMCPServerRequestSchema = z
   .object({
     name: MCPServerNameSchema,
-    displayName: MCPServerDisplayNameSchema,
-    description: MCPServerDescriptionSchema.nullable().optional(),
     url: MCPServerUrlSchema,
     defaultAuthKind: MCPAuthKindSchema.default("oauth"),
     authHeader: MCPCustomAuthHeaderSchema.optional(),
@@ -410,7 +438,6 @@ export type CreateMCPServerRequest = z.infer<typeof CreateMCPServerRequestSchema
 
 export const UpdateMCPServerRequestSchema = z
   .object({
-    displayName: MCPServerDisplayNameSchema.optional(),
     description: MCPServerDescriptionSchema.nullable().optional(),
     url: MCPServerUrlSchema.optional(),
     defaultAuthKind: MCPAuthKindSchema.optional(),

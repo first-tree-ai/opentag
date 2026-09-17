@@ -83,7 +83,6 @@ export function formatMcpServer(server: MCPServer): string {
   return [
     `id\t${server.id}`,
     `name\t${server.name}`,
-    `displayName\t${server.displayName}`,
     `description\t${server.description ?? "-"}`,
     `url\t${server.url}`,
     // Never a statement of what the Server requires: it is only the prefill for a new authorization.
@@ -101,11 +100,10 @@ export function formatMcpServer(server: MCPServer): string {
 export function formatMcpServerList(servers: readonly MCPServer[]): string {
   if (servers.length === 0) return "No MCP Servers configured";
   return [
-    ["NAME", "DISPLAY NAME", "URL", "AGENTS", "AUTHORIZED", "LAST PROBED"].join("\t"),
+    ["NAME", "URL", "AGENTS", "AUTHORIZED", "LAST PROBED"].join("\t"),
     ...servers.map((server) =>
       [
         server.name,
-        server.displayName,
         server.url,
         String(server.boundAgentCount),
         String(server.authorizedAgentCount),

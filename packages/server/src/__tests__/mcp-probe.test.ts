@@ -15,6 +15,12 @@ import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
 const ACCOUNT = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const ENDPOINT = "https://mcp.example.com/mcp";
 
+/**
+ * A resolver answering one public address. The outbound gate resolves hostnames, and every test here
+ * dials `mcp.example.com`, so without this they would each depend on real DNS.
+ */
+const PUBLIC_RESOLVE = { resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"] };
+
 interface Response {
   status: number;
   body?: unknown;
@@ -49,7 +55,9 @@ function node(body: Response, pageTools?: (params: Record<string, unknown>) => R
   }) as unknown as typeof globalThis.fetch;
   return {
     calls,
-    probe: new McpProbe({ fetcher: new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl }) }),
+    probe: new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    }),
   };
 }
 
@@ -248,7 +256,9 @@ describe("MCP probe era handling", () => {
         headers: { "content-type": "application/json" },
       });
     }) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({ fetcher: new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl }) });
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
     const result = await probe.probe({
       accountId: ACCOUNT,
       url: ENDPOINT,
@@ -262,6 +272,100 @@ describe("MCP probe era handling", () => {
     expect(result.protocolEra).toBe("legacy");
     expect(result.protocolVersion).toBe("2025-06-18");
     expect(result.tools.map((tool) => tool.name)).toEqual(["legacy-tool"]);
+  });
+
+  /*
+   * The regression B7 names. A legacy Server answers `initialize` with a pre-modern version, and
+   * every later request must speak that protocol: no `MCP-Protocol-Version` header, no `Mcp-Method`,
+   * and no `_meta`. The modern header is what `@modelcontextprotocol/sdk` rejects with
+   * `400 Unsupported protocol version`, which broke the legacy path immediately after a successful
+   * handshake.
+   */
+  it("speaks the legacy protocol on every request after the handshake", async () => {
+    const legacyCalls: { method: string; headers: Record<string, string>; body: Record<string, unknown> }[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method?: string; params?: Record<string, unknown> };
+      const method = body.method ?? "";
+      const headers: Record<string, string> = {};
+      new Headers(init?.headers).forEach((value, key) => {
+        headers[key] = value;
+      });
+      if (method !== "server/discover") legacyCalls.push({ method, headers, body: body as Record<string, unknown> });
+      if (method === "server/discover") return new Response("<html>Not Found</html>", { status: 404 });
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json", "mcp-session-id": "session-1" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [{ name: "legacy-tool" }] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
+    await probe.probe({
+      accountId: ACCOUNT,
+      url: ENDPOINT,
+      authHeaders: {},
+      cachedEra: null,
+      cachedVersion: null,
+    });
+
+    const tools = legacyCalls.filter((call) => call.method === "tools/list");
+    expect(tools.length).toBeGreaterThan(0);
+    for (const call of tools) {
+      expect(call.headers["mcp-protocol-version"]).toBeUndefined();
+      expect(call.headers["mcp-method"]).toBeUndefined();
+      expect(call.body).not.toHaveProperty("params._meta");
+      // The session the handshake returned is carried on the session-scoped call.
+      expect(call.headers["mcp-session-id"]).toBe("session-1");
+    }
+  });
+
+  it("pages the legacy tool list to exhaustion instead of stopping at the first page", async () => {
+    const pages = [
+      { tools: [{ name: "a" }, { name: "b" }], nextCursor: "page-2" },
+      { tools: [{ name: "c" }], nextCursor: "page-3" },
+      { tools: [{ name: "d" }] },
+    ];
+    let page = 0;
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method?: string };
+      const method = body.method ?? "";
+      if (method === "server/discover") return new Response("<html>Not Found</html>", { status: 404 });
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-06-18", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json", "mcp-session-id": "session-1" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      const next = pages[page] ?? { tools: [] };
+      page += 1;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: next }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
+    const result = await probe.probe({
+      accountId: ACCOUNT,
+      url: ENDPOINT,
+      authHeaders: {},
+      cachedEra: null,
+      cachedVersion: null,
+    });
+
+    // Every page was read and the snapshot is complete, so it is not marked truncated.
+    expect(page).toBe(3);
+    expect(result.tools.map((tool) => tool.name)).toEqual(["a", "b", "c", "d"]);
+    expect(result.toolsTruncated).toBe(false);
   });
 
   it("retries with an advertised version instead of downgrading when a modern error answers 400", async () => {
@@ -291,7 +395,9 @@ describe("MCP probe era handling", () => {
         headers: { "content-type": "application/json" },
       });
     }) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({ fetcher: new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl }) });
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
     const result = await probe.probe({
       accountId: ACCOUNT,
       url: ENDPOINT,
@@ -324,7 +430,9 @@ describe("MCP probe era handling", () => {
         headers: { "content-type": "application/json" },
       });
     }) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({ fetcher: new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl }) });
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
     await probe.probe({
       accountId: ACCOUNT,
       url: ENDPOINT,
@@ -348,7 +456,9 @@ describe("MCP probe era handling", () => {
           { status: 400, headers: { "content-type": "application/json" } },
         ),
     ) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({ fetcher: new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl }) });
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
     const result = await probe.probe({
       accountId: ACCOUNT,
       url: ENDPOINT,
@@ -362,7 +472,9 @@ describe("MCP probe era handling", () => {
 
   it("does not invalidate a cached era on a plain upstream failure", async () => {
     const fetchImpl = vi.fn(async () => new Response("boom", { status: 500 })) as unknown as typeof globalThis.fetch;
-    const probe = new McpProbe({ fetcher: new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl }) });
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
     const result = await probe.probe({
       accountId: ACCOUNT,
       url: ENDPOINT,

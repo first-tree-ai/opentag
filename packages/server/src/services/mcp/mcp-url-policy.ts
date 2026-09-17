@@ -1,3 +1,4 @@
+import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { MCP_ERROR_CODES } from "@opentag/shared";
 import { McpServiceError } from "./errors.js";
@@ -17,10 +18,24 @@ import { McpServiceError } from "./errors.js";
  * `fetchOutbound` from here, which keeps the gate unavoidable by construction. A regression test
  * scans those three files for a direct `fetch(` call.
  *
- * Deliberately not attempted: DNS rebinding (the name resolves to a public address during
- * validation and a private one at connect time). Pinning the validated IP at the socket layer is
- * the upgrade path if that threat becomes real.
+ * Deliberately not attempted: pinning the validated address at the socket layer, which would also
+ * close DNS rebinding (a name that resolves to a public address during validation and a private one
+ * at connect time). The resolution check below is at least the half that stops the ordinary cases:
+ * a public name that simply points at `127.0.0.1`, and the split-horizon names. See
+ * `McpOutboundFetcher.#assertPublicDestination` for the upgrade path.
  */
+
+/**
+ * Every address a hostname holds, A and AAAA together.
+ *
+ * `all: true` because a single-record lookup would make the verdict depend on resolver order: a
+ * name with one public and one private address must be refused, and checking only the first would
+ * admit it whenever the public record came back first.
+ */
+async function resolveAllAddresses(hostname: string): Promise<string[]> {
+  const records = await lookup(hostname, { all: true, verbatim: true });
+  return records.map((record) => record.address);
+}
 
 /** The request never follows a redirect: a 3xx is a refusal, and its `Location` is never read. */
 const REDIRECT_MODE = "manual" as const;
@@ -111,54 +126,95 @@ function isBlockedIpv4(address: string): boolean {
 }
 
 /**
- * Non-public IPv6 destinations, as `[first 32 bits, prefix length]`. Only ranges with no public
- * members are listed: `2001::/16` is deliberately absent because most of it is routable, so only
- * Teredo (`2001:0000::/32`) and the documentation block (`2001:db8::/32`) are refused.
+ * Non-public IPv6 destinations, as `[network as a 128-bit BigInt, prefix length, CIDR text]`.
+ *
+ * Only ranges with no public members are listed: `2001::/16` is deliberately absent because most of
+ * it is routable, so only Teredo (`2001:0000::/32`) and the documentation block (`2001:db8::/32`)
+ * are refused.
+ *
+ * The range lives as a BigInt rather than the leading 32 bits because a prefix shorter than 32 bits
+ * is decided above them: `fc00::/7` is only correct if `fd00::` matches it too, which a truncated
+ * network number cannot express.
  */
-const BLOCKED_IPV6_RANGES: readonly (readonly [number, number])[] = [
-  [0x00000000, 16], // ::/16 — unspecified, loopback, and IPv4-mapped/NAT64 forms
-  [0x0064ff9b, 32], // 64:ff9b::/96 NAT64 well-known prefix
-  [0x01000000, 64], // 100::/64 discard-only
-  [0x20010000, 32], // 2001::/32 Teredo
-  [0x20010db8, 32], // 2001:db8::/32 documentation
-  [0xfc000000, 7], // fc00::/7 unique local
-  [0xfe800000, 10], // fe80::/10 link-local
-  [0xff000000, 8], // ff00::/8 multicast
+const BLOCKED_IPV6_RANGES: readonly (readonly [bigint, number, string])[] = [
+  [ipv6RangeBase("::", 16), 16, "::/16"], // unspecified, loopback, and IPv4-mapped/NAT64 forms
+  [ipv6RangeBase("64:ff9b::", 96), 32, "64:ff9b::/32"], // NAT64 well-known prefix
+  [ipv6RangeBase("100::", 64), 64, "100::/64"], // discard-only
+  [ipv6RangeBase("2001::", 32), 32, "2001::/32"], // Teredo
+  [ipv6RangeBase("2001:db8::", 32), 32, "2001:db8::/32"], // documentation
+  [ipv6RangeBase("fc00::", 7), 7, "fc00::/7"], // unique local
+  [ipv6RangeBase("fe80::", 10), 10, "fe80::/10"], // link-local
+  [ipv6RangeBase("ff00::", 8), 8, "ff00::/8"], // multicast
 ];
 
-/** The address's first 32 bits, or `undefined` when the spelling is not usable. */
-function ipv6LeadingBits(address: string): number | undefined {
-  const normalized = address.toLowerCase().replace(/^\[|\]$/g, "");
-  const [head, tail] = normalized.split("::");
-  if (tail === undefined) {
-    // A full address parses as eight groups; anything else is not a spelling we can reason about.
-    const groups = normalized.split(":");
-    if (groups.length !== 8) return undefined;
-    return groupsToBits(groups);
-  }
-  const headGroups = head === undefined || head === "" ? [] : head.split(":");
-  const tailGroups = tail === "" ? [] : tail.split(":");
-  if (headGroups.length + tailGroups.length > 7) return undefined;
-  // The elision is entirely in the first four groups, so the leading bits come from the head alone.
-  return groupsToBits([...headGroups, ...Array(4 - headGroups.length).fill("0")]);
+/** The 128-bit value of a CIDR base address, which the table above spells out in full. */
+function ipv6RangeBase(address: string, prefix: number): bigint {
+  const bits = ipv6Bits(address);
+  if (bits === undefined) throw new Error(`Blocked IPv6 range ${address} is not a usable address`);
+  return (bits >> BigInt(128 - prefix)) << BigInt(128 - prefix);
 }
 
-function groupsToBits(groups: readonly string[]): number | undefined {
-  let value = 0;
-  for (let index = 0; index < 4; index += 1) {
-    const group = Number.parseInt(groups[index] ?? "0", 16);
-    if (Number.isNaN(group) || group < 0 || group > 0xffff) return undefined;
-    value = (value << 16) | group;
+/**
+ * The address as a 128-bit BigInt, or `undefined` when the spelling is not usable.
+ *
+ * BigInt rather than bitwise operators: JavaScript's `<<` and `|` coerce to 32 bits, so the
+ * previous four-group packing discarded everything above the third group — `2001:db8::` read as
+ * `::` and every address in the documentation block was judged by its *last* two groups instead of
+ * its first. An address this cannot parse is treated as blocked by the caller, which is the safe
+ * direction for a rule that decides what the Server may reach.
+ */
+/**
+ * An IPv6 address's eight groups, or `undefined` when the spelling is not usable.
+ *
+ * Split out of {@link ipv6Bits} so each step stays readable: an IPv4 tail has to be folded into two
+ * hex groups before the elision can be counted, and an address with no `::` must already be exactly
+ * eight groups.
+ */
+function ipv6Groups(normalized: string): string[] | undefined {
+  const [head, tail] = normalized.split("::");
+  const headGroups = head === undefined || head === "" ? [] : head.split(":");
+  if (tail === undefined) return headGroups.length === 8 ? headGroups : undefined;
+  const tailGroups = tail === "" ? [] : tail.split(":");
+  const elided = 8 - headGroups.length - tailGroups.length;
+  // `::` must stand for at least one group; two elisions or an over-long address is unusable.
+  if (elided < 1) return undefined;
+  return [...headGroups, ...Array<string>(elided).fill("0"), ...tailGroups];
+}
+
+/** Folds a trailing dotted-quad into the two hex groups it stands for, or returns the input as-is. */
+function expandEmbeddedIpv4(normalized: string): string | undefined {
+  const embeddedIpv4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(normalized)?.[1];
+  if (!embeddedIpv4) return normalized;
+  const ipv4 = ipv4ToNumber(embeddedIpv4);
+  if (ipv4 === undefined) return undefined;
+  const head = normalized.slice(0, normalized.length - embeddedIpv4.length);
+  return `${head}${(ipv4 >>> 16).toString(16)}:${(ipv4 & 0xffff).toString(16)}`;
+}
+
+function ipv6Bits(address: string): bigint | undefined {
+  const normalized =
+    address
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "")
+      .split("%", 1)[0] ?? "";
+  const text = expandEmbeddedIpv4(normalized);
+  if (text === undefined) return undefined;
+  const groups = ipv6Groups(text);
+  if (groups === undefined) return undefined;
+  let value = 0n;
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return undefined;
+    value = (value << 16n) | BigInt(Number.parseInt(group, 16));
   }
-  return value >>> 0;
+  return value;
 }
 
 function isBlockedIpv6(address: string): boolean {
-  const value = ipv6LeadingBits(address);
+  const value = ipv6Bits(address);
   if (value === undefined) return true;
   return BLOCKED_IPV6_RANGES.some(([network, prefix]) => {
-    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-    return (value & mask) >>> 0 === network;
+    const shift = BigInt(128 - prefix);
+    return value >> shift === network >> shift;
   });
 }
 
@@ -171,8 +227,14 @@ function isBlockedAddress(hostname: string): boolean {
 }
 
 function isLoopbackHostname(hostname: string): boolean {
-  const bare = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  // A trailing dot is the absolute form of the same name, so `localhost.` is `localhost`.
+  const bare = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
   if (LOOPBACK_HOSTNAMES.has(bare)) return true;
+  // The specification reserves the whole `.localhost` tree for loopback, so `foo.localhost` is too.
+  if (bare.endsWith(".localhost")) return true;
   return isIP(bare) === 4 && bare.startsWith("127.");
 }
 
@@ -221,6 +283,11 @@ export function assertOutboundUrl(rawUrl: string, policy: McpOutboundPolicy): UR
 
 export interface McpOutboundFetchOptions extends McpOutboundPolicy {
   fetch?: typeof globalThis.fetch;
+  /**
+   * Resolves a hostname to every address it holds. Injectable so a test can assert the policy
+   * without a network, and so a deployment can supply a resolver with different search domains.
+   */
+  resolveAddresses?: (hostname: string) => Promise<string[]>;
 }
 
 /**
@@ -235,6 +302,7 @@ export class McpOutboundFetcher {
   readonly #maxConcurrentPerAccount: number;
   readonly #maxResponseBytes: number;
   readonly #policy: McpOutboundPolicy;
+  readonly #resolveAddresses: (hostname: string) => Promise<string[]>;
   readonly #timeoutMs: number;
 
   constructor(options: McpOutboundFetchOptions = { allowLoopback: false }) {
@@ -242,6 +310,7 @@ export class McpOutboundFetcher {
     this.#maxConcurrentPerAccount = options.maxConcurrentPerAccount ?? MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT;
     this.#maxResponseBytes = options.maxResponseBytes ?? MCP_DEFAULT_MAX_RESPONSE_BYTES;
     this.#policy = { allowLoopback: options.allowLoopback };
+    this.#resolveAddresses = options.resolveAddresses ?? resolveAllAddresses;
     this.#timeoutMs = options.timeoutMs ?? MCP_DEFAULT_TIMEOUT_MS;
   }
 
@@ -252,6 +321,7 @@ export class McpOutboundFetcher {
 
   async fetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit = {}): Promise<McpFetchResponse> {
     const url = assertOutboundUrl(rawUrl, this.#policy);
+    await this.#assertPublicDestination(url);
     if ((this.#inFlight.get(accountId) ?? 0) >= this.#maxConcurrentPerAccount) {
       throw new McpServiceError(
         MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
@@ -265,6 +335,53 @@ export class McpOutboundFetcher {
       const remaining = (this.#inFlight.get(accountId) ?? 1) - 1;
       if (remaining <= 0) this.#inFlight.delete(accountId);
       else this.#inFlight.set(accountId, remaining);
+    }
+  }
+
+  /**
+   * Refuse a hostname that resolves to a private address.
+   *
+   * `assertOutboundUrl` can only judge what the URL spells, and a hostname spells nothing about where
+   * it points: `localtest.me` is public DNS that answers `127.0.0.1`, `metadata.google.internal` is a
+   * split-horizon name, and a renamed `*.localhost` still lands on loopback. Since the probe stores
+   * and displays whatever answers — instructions, capabilities, and tool lists — plus any extra
+   * headers the Account configured, admitting these made the gate's promise ("non-public
+   * destinations are refused") untrue for the common case of a name rather than a literal.
+   *
+   * Every A and AAAA record is checked, not just the first: a name with one public and one private
+   * address would otherwise be admitted or refused depending on resolver order.
+   *
+   * ponytail: resolve-then-dial, so a record that changes between this lookup and the connection
+   * (DNS rebinding) is not covered. Closing that needs the connection pinned to the validated
+   * address, which Node's `fetch` cannot express without adding an undici `Agent` with a custom
+   * `connect.lookup`. Add it when a deployment faces a hostile resolver rather than a hostile Server.
+   */
+  async #assertPublicDestination(url: URL): Promise<void> {
+    const bare = url.hostname.replace(/^\[|\]$/g, "");
+    // A literal was already judged by `assertOutboundUrl`, and a loopback literal only got here
+    // because the deployment opted into loopback.
+    if (isIP(bare) !== 0) return;
+    if (isLoopbackHostname(bare)) return;
+    let addresses: string[];
+    try {
+      addresses = await this.#resolveAddresses(bare);
+    } catch (error) {
+      // A name that does not resolve is an unreachable endpoint, not a blocked one: the caller's
+      // URL is fine, the peer is missing. Reported as such so the UI says "could not be reached".
+      throw new McpServiceError(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, "The MCP endpoint could not be reached", {
+        cause: error instanceof Error ? error.name : typeof error,
+        host: bare,
+      });
+    }
+    if (addresses.length === 0) {
+      throw new McpServiceError(MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, "The MCP endpoint could not be reached", {
+        host: bare,
+      });
+    }
+    for (const address of addresses) {
+      if (isBlockedAddress(address)) {
+        throw blocked("The outbound URL resolves to a non-public address", { host: bare });
+      }
     }
   }
 

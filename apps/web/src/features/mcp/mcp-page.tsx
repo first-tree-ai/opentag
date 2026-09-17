@@ -220,7 +220,7 @@ function McpRow({
     <li className="grid gap-2 rounded-lg border border-kumo-line p-4" data-ui="mcp-server-row">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="grid gap-0.5">
-          <Text variant="body">{entry.displayName}</Text>
+          <Text variant="body">{entry.name}</Text>
           <Text variant="secondary">{entry.effective.url}</Text>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -240,6 +240,14 @@ function McpRow({
       </div>
 
       {!entry.enabled ? <Text variant="secondary">{m.mcp_disabled_hint()}</Text> : null}
+      {/*
+       * The operator's own words win; the probed description is the fallback, shown with its
+       * provenance so nobody mistakes a Server's self-description for something an admin wrote.
+       */}
+      {entry.description ? <Text variant="secondary">{entry.description}</Text> : null}
+      {!entry.description && entry.discoveredDescription ? (
+        <Text variant="secondary">{m.mcp_description_discovered({ value: entry.discoveredDescription })}</Text>
+      ) : null}
       {entry.authorization?.probeError ? <Text variant="error">{entry.authorization.probeError}</Text> : null}
       {entry.authorization?.toolsTruncated ? <Text variant="error">{m.mcp_tools_truncated()}</Text> : null}
 
@@ -275,9 +283,7 @@ function McpRow({
 function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const create = useCreateMcpServer(agentId);
   const [name, setName] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [url, setUrl] = useState("");
-  const [description, setDescription] = useState("");
   const [defaultAuthKind, setDefaultAuthKind] = useState<MCPAuthKind>("oauth");
   const [authHeader, setAuthHeader] = useState("");
   const [authScheme, setAuthScheme] = useState("");
@@ -289,10 +295,8 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
     try {
       await create.mutateAsync({
         name,
-        displayName,
         url,
         defaultAuthKind,
-        ...(description ? { description } : {}),
         ...(authHeader ? { authHeader } : {}),
         ...(authScheme ? { authScheme } : {}),
       });
@@ -314,14 +318,8 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
         <Field hint={m.mcp_name_help()} htmlFor="mcp-name" label={m.mcp_name_label()}>
           <KumoInputControl onChange={(event) => setName(event.target.value)} value={name} />
         </Field>
-        <Field htmlFor="mcp-display-name" label={m.common_name()}>
-          <KumoInputControl onChange={(event) => setDisplayName(event.target.value)} value={displayName} />
-        </Field>
         <Field htmlFor="mcp-url" label={m.mcp_url_label()}>
           <KumoInputControl onChange={(event) => setUrl(event.target.value)} value={url} />
-        </Field>
-        <Field htmlFor="mcp-description" label={m.mcp_description_label()}>
-          <KumoInputControl onChange={(event) => setDescription(event.target.value)} value={description} />
         </Field>
         <Field hint={m.mcp_default_auth_help()} htmlFor="mcp-default-auth" label={m.mcp_default_auth_label()}>
           <KumoSelectControl
@@ -357,7 +355,7 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
           <Button onClick={onClose} variant="ghost">
             {m.common_cancel()}
           </Button>
-          <Button disabled={create.isPending || !name || !displayName || !url} onClick={submit} variant="primary">
+          <Button disabled={create.isPending || !name || !url} onClick={submit} variant="primary">
             {m.mcp_create_submit()}
           </Button>
         </div>
@@ -395,7 +393,7 @@ function AddServerDialog({ agentId, onClose }: { agentId: string; onClose: () =>
           {available.data?.servers.map((server) => (
             <li className="flex items-center justify-between gap-2 rounded border border-kumo-line p-3" key={server.id}>
               <div className="grid gap-0.5">
-                <Text variant="body">{server.displayName}</Text>
+                <Text variant="body">{server.name}</Text>
                 <Text variant="secondary">{server.description ?? server.name}</Text>
               </div>
               <Button onClick={() => add(server)} size="compact" variant="secondary">
@@ -455,7 +453,7 @@ function AuthorizeDialog({
       busy={busy}
       description={m.mcp_authorize_dialog_description()}
       onClose={onClose}
-      title={m.mcp_authorize_title({ server: entry.displayName, agent: agentDisplayName })}
+      title={m.mcp_authorize_title({ server: entry.name, agent: agentDisplayName })}
     >
       <div className="grid gap-3">
         {error ? <Banner variant="error">{error}</Banner> : null}
@@ -511,6 +509,12 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
   const [authHeader, setAuthHeader] = useState(entry.effective.authHeader);
   const [authScheme, setAuthScheme] = useState(entry.effective.authScheme);
   const [extraHeaders, setExtraHeaders] = useState<HeaderRow[]>(headerRows(entry.effective.extraHeaders));
+  /*
+   * Seeded from the operator's stored override, never from the probed value: an empty field means
+   * "show what the probe found", and prefilling it would silently freeze the probe's words into an
+   * override the first time anyone saved for an unrelated reason.
+   */
+  const [description, setDescription] = useState(entry.description ?? "");
   const [error, setError] = useState<string | undefined>();
   const busy = updateBinding.isPending || updateServer.isPending;
 
@@ -526,6 +530,7 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
           authHeader,
           authScheme,
           extraHeaders: headersFromRows(extraHeaders),
+          description: description.trim() === "" ? null : description.trim(),
           expectedRevision: detail.data?.server.revision ?? 1,
         });
       } else {
@@ -544,9 +549,14 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
   };
 
   return (
-    <Dialog busy={busy} onClose={onClose} title={m.mcp_edit_title({ server: entry.displayName })}>
+    <Dialog busy={busy} onClose={onClose} title={m.mcp_edit_title({ server: entry.name })}>
       <div className="grid gap-3">
         {error ? <Banner variant="error">{error}</Banner> : null}
+        {scope === "shared" ? (
+          <Field hint={m.mcp_description_edit_help()} htmlFor="mcp-edit-description" label={m.mcp_description_label()}>
+            <KumoInputControl onChange={(event) => setDescription(event.target.value)} value={description} />
+          </Field>
+        ) : null}
         <Field htmlFor="mcp-edit-scope" label={m.mcp_edit_scope_label()}>
           <KumoSelectControl id="mcp-edit-scope" onValueChange={(value) => setScope(value as EditScope)} value={scope}>
             <option value="agent">{m.mcp_edit_scope_agent()}</option>
@@ -675,7 +685,7 @@ function RemoveDialog({ agentId, entry, onClose }: { agentId: string; entry: MCP
   };
 
   return (
-    <Dialog busy={busy} onClose={onClose} title={m.mcp_detach_title({ server: entry.displayName })}>
+    <Dialog busy={busy} onClose={onClose} title={m.mcp_detach_title({ server: entry.name })}>
       <div className="grid gap-3">
         {error ? <Banner variant="error">{error}</Banner> : null}
         {/* The group carries no legend of its own: the dialog title above already names the choice. */}
@@ -736,7 +746,7 @@ function RevokeDialog({ agentId, entry, onClose }: { agentId: string; entry: MCP
       description={m.mcp_revoke_description()}
       onClose={onClose}
       role="alertdialog"
-      title={m.mcp_revoke_title({ server: entry.displayName })}
+      title={m.mcp_revoke_title({ server: entry.name })}
     >
       <div className="grid gap-3">
         {error ? <Banner variant="error">{error}</Banner> : null}
@@ -756,7 +766,7 @@ function RevokeDialog({ agentId, entry, onClose }: { agentId: string; entry: MCP
 function ToolsDialog({ entry, onClose }: { entry: MCPAgentServer; onClose: () => void }) {
   const tools: MCPToolSnapshot[] = entry.snapshot?.tools ?? [];
   return (
-    <Dialog description={m.mcp_tools_title()} onClose={onClose} title={entry.displayName}>
+    <Dialog description={m.mcp_tools_title()} onClose={onClose} title={entry.name}>
       <div className="grid gap-3">
         <Text variant="secondary">
           {`${entry.snapshot?.protocolEra ?? "-"} · ${entry.snapshot?.protocolVersion ?? "-"}`}

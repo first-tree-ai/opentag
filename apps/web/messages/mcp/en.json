@@ -38,6 +38,8 @@
   "mcp_create_title": "New MCP Server",
   "mcp_default_auth_help": "Only a prefill for a new authorization. It does not restrict how any Agent authorizes with this Server.",
   "mcp_default_auth_label": "Default authorization method",
+  "mcp_description_discovered": "The Server describes itself as: {value}",
+  "mcp_description_edit_help": "Leave empty to show the discovered description. What you write here takes precedence.",
   "mcp_description_label": "Description",
   "mcp_detach_action": "Remove from this Agent",
   "mcp_detach_and_delete_description": "Removes it from every Agent and deletes the definition. Available only when no other Agent uses it.",

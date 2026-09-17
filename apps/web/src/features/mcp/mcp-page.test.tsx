@@ -25,8 +25,8 @@ function entry(overrides: Partial<MCPAgentServer> = {}): MCPAgentServer {
   return {
     mcpServerId: SERVER_ID,
     name: "linear",
-    displayName: "Linear",
     description: null,
+    discoveredDescription: null,
     enabled: true,
     effective: {
       url: "https://mcp.linear.app/sse",
@@ -69,7 +69,6 @@ function detail(boundAgentCount: number): MCPServerDetail {
     server: {
       id: SERVER_ID,
       name: "linear",
-      displayName: "Linear",
       description: null,
       url: "https://mcp.linear.app/sse",
       defaultAuthKind: "oauth",
@@ -96,6 +95,8 @@ function detail(boundAgentCount: number): MCPServerDetail {
           extraHeaders: {},
         },
         overridden: { url: false, authHeader: false, authScheme: false, extraHeaders: false },
+        protocolEra: null,
+        protocolVersion: null,
         authorization: null,
       },
       ...(boundAgentCount > 1
@@ -112,6 +113,8 @@ function detail(boundAgentCount: number): MCPServerDetail {
                 extraHeaders: {},
               },
               overridden: { url: false, authHeader: false, authScheme: false, extraHeaders: false },
+              protocolEra: null,
+              protocolVersion: null,
               authorization: null,
             },
           ]
@@ -160,7 +163,7 @@ describe("McpPage", () => {
     stub([entry({ enabled: false })]);
     wrap(<McpPage agentId={AGENT_ID} />);
 
-    expect(await screen.findByText("Linear")).toBeTruthy();
+    expect(await screen.findByText("linear")).toBeTruthy();
     expect(screen.getByText("Disabled")).toBeTruthy();
     // The credential is still active, and the page says so rather than implying reauthorization.
     expect(screen.getByText("Authorized")).toBeTruthy();
@@ -205,7 +208,7 @@ describe("McpPage", () => {
     wrap(<McpPage agentId={AGENT_ID} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
 
-    expect(await screen.findByText("Remove Linear?")).toBeTruthy();
+    expect(await screen.findByText("Remove linear?")).toBeTruthy();
     // The impact text only renders once the shared definition has been read, so it is also the
     // signal that the delete option's disabled state is final.
     expect(await screen.findByText("This will affect the Agent Helper")).toBeTruthy();

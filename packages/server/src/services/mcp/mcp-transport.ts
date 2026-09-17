@@ -193,6 +193,40 @@ export class McpTransport {
   }
 
   /**
+   * One legacy JSON-RPC call, after `initialize` negotiated a pre-modern version.
+   *
+   * The legacy protocol predates the modern per-request envelope, so this sends none of it: no
+   * `MCP-Protocol-Version` header (the session, not a header, carries the version), no `Mcp-Method`,
+   * no `Mcp-Name`, and no `_meta`. {@link call} always speaks the modern shape, so using it here is
+   * what made a legacy Server reject the request immediately after a successful `initialize`:
+   * `@modelcontextprotocol/sdk` answers `400 Unsupported protocol version` for any header value
+   * outside the versions it knows, and the modern one is.
+   */
+  async callLegacy(
+    accountId: string,
+    url: string,
+    method: string,
+    params: Record<string, unknown> | undefined,
+    authHeaders: Record<string, string>,
+    options: McpCallOptions = {},
+  ): Promise<unknown> {
+    const id = randomUUID();
+    const headers: Record<string, string> = {
+      ...authHeaders,
+      accept: MCP_ACCEPT_HEADER,
+      "content-type": "application/json",
+    };
+    for (const [key, value] of Object.entries(options.headers ?? {})) headers[key] = value;
+    const response = await this.#fetcher.fetchOutbound(accountId, url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    return this.#interpret(accountId, url, method, id, response);
+  }
+
+  /**
    * The legacy `initialize` handshake, used only after the modern path proved the Server is older.
    * The legacy protocol is session-based, so the session header from the response is returned.
    */
@@ -260,9 +294,7 @@ export class McpTransport {
     if (response.status === NOTIFICATION_STATUS || response.status === NO_CONTENT_STATUS) return undefined;
 
     if (contentType.includes("text/event-stream")) {
-      const payload = parseSseResponse(response.text, id);
-      if (payload === undefined) return undefined;
-      return unwrap(payload, response.status);
+      return interpretSseResponse(response, method, parseSseResponse(response.text, id));
     }
     if (response.status === 404) {
       throw new McpTransportError(
@@ -291,6 +323,15 @@ export class McpTransport {
         { method },
       );
     }
+    /*
+     * A non-2xx status with a JSON body that is *not* a JSON-RPC envelope is a failure, not a result.
+     * Without this, a gateway answering `401 {"message":"Unauthorized"}` or `500 {"detail":"…"}`
+     * parsed as an object, carried no JSON-RPC `error`, and was returned as `payload.result` — which
+     * the probe recorded as `probeState: "succeeded"` with zero tools and no error. The probe exists
+     * to be evidence that the credential and the Server agree, so reporting a rejected credential as
+     * a healthy empty Server is the one answer it must never give.
+     */
+    if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
     void accountId;
     void url;
     return unwrap(payload, response.status);
@@ -308,6 +349,36 @@ function unwrap(payload: McpJsonRpcResult, status: number): unknown {
     );
   }
   return payload.result;
+}
+
+/**
+ * Interpret a `text/event-stream` response.
+ *
+ * Extracted from `#interpret` so the two rules it shares with the JSON branch stay readable there:
+ * a JSON-RPC error is preserved so the caller can branch on its code, and any other non-2xx status
+ * is a failure rather than a result — otherwise a rejected credential reads as a healthy empty Server.
+ */
+function interpretSseResponse(
+  response: McpFetchResponse,
+  method: string,
+  payload: McpJsonRpcResult | undefined,
+): unknown {
+  if (payload === undefined) {
+    // A stream that ended without a result is only a success if the status said so.
+    if (response.status >= 200 && response.status < 300) return undefined;
+    throw upstreamFailure(response.status);
+  }
+  if (payload.error !== undefined) {
+    throw new McpTransportError(
+      MCP_ERROR_CODES.UPSTREAM_ERROR,
+      boundedMcpSummary(payload.error.message || "The MCP Server returned a JSON-RPC error"),
+      response.status,
+      payload.error,
+      { method },
+    );
+  }
+  if (response.status < 200 || response.status >= 300) throw upstreamFailure(response.status);
+  return unwrap(payload, response.status);
 }
 
 function upstreamFailure(status: number): McpTransportError {

@@ -23,6 +23,7 @@ import {
   ListAgentMCPServersResponseSchema,
   ListAvailableMCPServersResponseSchema,
   ListMCPServersResponseSchema,
+  MCP_OAUTH_CALLBACK_PATH,
   MCP_SERVER_BY_ID_TEMPLATE,
   MCP_SERVERS_PATH,
   MCPProbeResponseSchema,
@@ -37,7 +38,8 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
-import type { UserAuthService } from "../services/auth/index.js";
+import { setMcpOAuthContextCookie } from "../services/auth/browser-cookies.js";
+import { generateSecret, type UserAuthService } from "../services/auth/index.js";
 import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "../services/mcp/index.js";
 import { parseRequest } from "./request-validation.js";
 
@@ -49,6 +51,7 @@ export interface McpServerRoutesOptions {
   authOptions?: UserAuthPreHandlerOptions;
   authorization: McpAuthorizationService;
   flows: McpOAuthFlowService;
+  secureCookies: boolean;
   servers: McpServerService;
 }
 
@@ -165,7 +168,23 @@ export function registerMcpServerRoutes(
   app.post(AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId, mcpServerId } = parseRequest(AgentServerParamsSchema, request.params);
     const input = parseRequest(StartMCPOAuthRequestSchema, request.body ?? {});
-    const started = await flows.start(authenticatedUserId(request), agentId, mcpServerId, input.scopes ?? []);
+    /*
+     * The browser is handed a secret at start and must present it at the callback. Without this the
+     * flow would be redeemable by anyone holding the `authorizationUrl`, because the state alone
+     * cannot tell the initiating browser from one the URL was forwarded to.
+     */
+    const flowSecret = generateSecret(32);
+    const started = await flows.start(
+      authenticatedUserId(request),
+      agentId,
+      mcpServerId,
+      input.scopes ?? [],
+      flowSecret,
+    );
+    setMcpOAuthContextCookie(reply, flowSecret, {
+      path: MCP_OAUTH_CALLBACK_PATH,
+      secure: options.secureCookies,
+    });
     return reply.code(200).send(
       StartMCPOAuthResponseSchema.parse({
         authorizationUrl: started.authorizationUrl,

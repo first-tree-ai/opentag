@@ -632,7 +632,13 @@ export async function startServer(): Promise<void> {
           }
         : {}),
       imResourceService,
-      mcp: { authorization: mcpAuthorization, flows: mcpFlows, servers: mcpServers, publicOrigin: config.publicUrl },
+      mcp: {
+        authorization: mcpAuthorization,
+        flows: mcpFlows,
+        servers: mcpServers,
+        publicOrigin: config.publicUrl,
+        secureCookies: isHostedEnvironment(config.environment),
+      },
       readiness,
       runtimeAuthService: platformRuntime.auth,
       runtimeProviderProxy: { transport: platformRuntime.credentials.transport },

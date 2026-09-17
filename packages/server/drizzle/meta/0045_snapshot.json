@@ -3444,6 +3444,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "login_session_hash": {
+          "name": "login_session_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "probe_state": {
           "name": "probe_state",
           "type": "mcp_probe_state",
@@ -3741,6 +3747,10 @@
         "mcp_server_authorizations_tools_object": {
           "name": "mcp_server_authorizations_tools_object",
           "value": "\"mcp_server_authorizations\".\"tools\" is null or (jsonb_typeof(\"mcp_server_authorizations\".\"tools\") = 'array' and pg_column_size(\"mcp_server_authorizations\".\"tools\") <= 262144)"
+        },
+        "mcp_server_authorizations_flow_binding_shape": {
+          "name": "mcp_server_authorizations_flow_binding_shape",
+          "value": "(\"mcp_server_authorizations\".\"state\" is null) = (\"mcp_server_authorizations\".\"login_session_hash\" is null)"
         }
       },
       "isRLSEnabled": false
@@ -3764,12 +3774,6 @@
         },
         "name": {
           "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_name": {
-          "name": "display_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -3901,10 +3905,6 @@
         "mcp_servers_name_bounds": {
           "name": "mcp_servers_name_bounds",
           "value": "char_length(\"mcp_servers\".\"name\") between 1 and 64"
-        },
-        "mcp_servers_display_name_bounds": {
-          "name": "mcp_servers_display_name_bounds",
-          "value": "char_length(\"mcp_servers\".\"display_name\") between 1 and 120"
         },
         "mcp_servers_description_bounds": {
           "name": "mcp_servers_description_bounds",

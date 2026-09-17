@@ -111,7 +111,7 @@ Four tables, migration `0045`.
 
 ```
 mcp_servers                     a shared definition; holds no secret of any kind
-  id, account_id, name, display_name, description, url,
+  id, account_id, name, description, url,
   default_auth_kind, auth_header, auth_scheme, extra_headers,
   revision, created_at, updated_at
   unique(account_id, lower(name))
@@ -126,7 +126,7 @@ mcp_server_authorizations       exactly one row per (Server, Agent)
   id, mcp_server_id, agent_id, kind, status,
   ciphertext, key_id, scopes, access_token_expires_at,
   authorization_server, client_registration_id,
-  state, state_expires_at, pkce_ciphertext,
+  state, state_expires_at, pkce_ciphertext, login_session_hash,
   probe_state, probed_at, probe_error,
   protocol_era, protocol_version, server_info, capabilities, instructions,
   tools, tools_count, tools_truncated,
@@ -319,9 +319,17 @@ The rules are applied uniformly to all of them:
 `fetch` themselves; they take `fetchOutbound` from the policy module. A regression test scans those
 four files for a direct `fetch(` call, so the property is enforced by CI rather than by review.
 
-Not attempted: DNS rebinding, where a name resolves publicly during validation and privately at
-connect time. Pinning the validated IP at the socket layer is the upgrade path if that threat becomes
-real.
+**Every hostname is resolved before dialing, and every A and AAAA record must be public.** The URL
+check can only judge what a name spells, and a name spells nothing about where it points:
+`localtest.me` is public DNS answering `127.0.0.1`, `metadata.google.internal` is a split-horizon
+name, and `foo.localhost` is reserved for loopback. All records are checked rather than the first, so
+the verdict does not depend on resolver order. A name that does not resolve is reported as
+unreachable rather than blocked, because the caller's URL is fine and the peer is missing.
+
+Not attempted: **DNS rebinding**, where a name resolves publicly during this lookup and privately at
+connect time. Closing it needs the connection pinned to the validated address, which Node's `fetch`
+cannot express without an undici `Agent` with a custom `connect.lookup`; that is the upgrade path if
+a deployment faces a hostile resolver rather than a hostile Server.
 
 ## OAuth
 
@@ -392,10 +400,21 @@ authorization is revoked with a clear "authorize again" signal. A client metadat
 - PKCE `S256`; the verifier is encrypted and the challenge travels.
 - **`resource` appears on both the authorization request and the token request**, spelled with a
   lowercase scheme and host and no fragment.
-- `state` is single use, valid for 10 minutes, and bound to the `(Server, Agent)` pair.
-- Re-starting a flow overwrites `state`, its deadline, and the PKCE verifier in one write, so the
-  previous callback URL is immediately unusable. The callback then validates existence, then expiry,
-  then pending status, and clears the flow as soon as the code is redeemed.
+- `state` is single use, valid for 10 minutes, and stored **hashed**: the raw value only ever exists
+  in the URL the browser carries, so a leaked row cannot be turned into a redeemable callback.
+- **The flow is bound to the browser that started it.** `start` issues a single-use secret as an
+  `HttpOnly` cookie scoped to the callback path and records its hash on the row; the callback must
+  present the matching secret. The state alone is not enough, because the state travels in a URL that
+  can be handed to anyone — without this binding, developer A could start a flow, forward the URL, and
+  have developer B's approval land a credential on A's Agent.
+- Re-starting a flow overwrites `state`, its deadline, the PKCE verifier, and the binding in one
+  write, so the previous callback URL is immediately unusable. The callback then validates the
+  browser binding, then existence, then expiry, then pending status, and clears the flow as soon as
+  the code is redeemed.
+- **The client is the one `start` registered.** The flow records `client_registration_id`, and the
+  callback and every later refresh look that registration up rather than resolving a client again.
+  Registering afresh at callback time produces a second client (DCR) and then presents the first
+  client's code under it, which a strict authorization server refuses with `invalid_client`.
 
 **`iss` validation (RFC 9207)**, exactly per the specification's table:
 
@@ -472,6 +491,19 @@ valid while probes run concurrently.
 
 A failed probe records the failure and leaves the snapshot columns alone, so the UI shows "discovery
 failed" beside the last good tool list rather than going blank.
+
+### Two names, one description
+
+A definition has exactly one name, `name`: the lowercase handle the CLI addresses and the UI titles
+rows with. There is no separate display name, because the two would have to disagree about which is
+what a user calls the Server, and the CLI needs the stable handle in every case.
+
+The definition's `description` is what a probe discovered — the Server's own
+`serverInfo.description`, kept verbatim in `server_info` and extracted on read — **not** something a
+user types at creation time. Creation writes NULL, because nothing can be probed before the
+definition exists. `description` on the definition row is only ever a user's override of that
+probed value, and when it is set the UI shows it instead of the discovered one. The two are never
+merged: a reader can always tell an operator's words from a peer's.
 
 ### Pagination and bounds
 
@@ -585,7 +617,7 @@ DELETE /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization        rev
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/authorization/oauth  start OAuth
 POST   /api/v1/agents/:agentId/mcp-servers/:mcpServerId/probe                re-probe
 
-GET    /api/v1/mcp-servers/oauth/callback                unauthenticated; the one-time state authenticates it
+GET    /api/v1/mcp-servers/oauth/callback                unauthenticated; the state hash plus the flow cookie authenticate it
 GET    /oauth/client-metadata.json                       unauthenticated; this deployment's CIMD document
 ```
 
@@ -607,7 +639,7 @@ inheritance. `extraHeaders` has one extra action, `emptyExtraHeaders`, which wri
 ## CLI
 
 ```
-mcp add --name --display-name --url [--default-auth oauth|bearer|none] [--description]
+mcp add --name --url [--default-auth oauth|bearer|none]
         [--auth-header <name>] [--auth-scheme <scheme>] [--extra-header <name=value> …] [--json]
 mcp list
 mcp show <server> [--agent <id>] [--json]
@@ -636,9 +668,14 @@ line argument is readable by every other process on the machine and lands in the
 file. `--bearer-key-stdin` is the documented path, and a non-interactive terminal with neither flag
 reads a hidden prompt.
 
-`mcp authorize` prints the URL and then, by default, polls every 2 seconds until the row is
-authorized and probed, timing out at the flow's own 10-minute lifetime so it never waits on a state
-the Server has already discarded. `--no-wait` returns as soon as the URL is issued.
+`mcp authorize` prints the URL — to **stderr**, the moment it is issued, so `--json` still emits one
+JSON document on stdout — and then, by default, polls every 2 seconds until the row is authorized and
+probed, timing out at the flow's own 10-minute lifetime so it never waits on a state the Server has
+already discarded. `--no-wait` returns as soon as the URL is issued. The printed URL is what makes
+the default usable: the wait can last ten minutes, and nothing else the user sees ends it.
+
+An OAuth authorization completes out of band, so the row's `probe_state` is what ends the poll. The
+callback fires the probe without awaiting it, so a flow started from the browser converges too.
 
 ## Web UI
 
@@ -682,16 +719,16 @@ Unit tests (no network, no database):
 
 | Area | What is asserted |
 | --- | --- |
-| Transport headers | Every required header; the version in header and `_meta`; the name header only when there is one; the Base64 sentinel boundary in both directions |
-| Response parsing | JSON, request-scoped SSE with notifications and foreign ids, `202` with no body, JSON-RPC errors that keep their code |
+| Transport headers | Every required header; the version in header and `_meta`; the name header only when there is one; the Base64 sentinel boundary in both directions; a legacy call carrying none of the modern envelope |
+| Response parsing | JSON, request-scoped SSE with notifications and foreign ids, `202` with no body, JSON-RPC errors that keep their code, a non-2xx JSON body failing rather than reading as an empty result |
 | Era detection | A modern error body means retry, not downgrade; a non-modern `404` means downgrade; a generic `-32601` is not a modern signal; only protocol-class failures invalidate a cached era |
-| URL policy | Every non-public IPv4 and IPv6 range, non-HTTPS, credentials, fragments, redirects refused with no request made, the loopback opt-in, and the concurrency and size bounds |
+| URL policy | Every non-public IPv4 and IPv6 range decided by leading bits (including the 5+-group and IPv4-mapped spellings), a hostname resolving to any private address, the `.localhost` tree and trailing-dot loopback spellings, non-HTTPS, credentials, fragments, redirects refused with no request made, the loopback opt-in, and the concurrency and size bounds |
 | Outbound gate | The transport, OAuth, probe, and OAuth-flow modules contain no `fetch(` call, so the gate cannot be bypassed by a later edit |
 | Header construction | OAuth always uses `Authorization`; an empty scheme sends verbatim; `none` sends no authorization header; extra headers apply to all three kinds; a collision is refused case-insensitively; the reserved names are refused |
 | Header validation | The RFC 9110 token set, CR/LF in a name or value, the count and size bounds, and each reserved name |
 | AAD | The literal format; a different Agent, a different authorization server, and the other envelope's domain all fail to open; a kind change is openable because the context never names the kind |
 | Discovery | The exact well-known order; a mismatched issuer propagates; multi-issuer ordering; the registration choice in all four cases; CIMD self-naming and same-host redirects; PKCE; `resource` on both requests; the four `iss` rows; scope priority; the refresh lead |
-| Probing | Two pages merged into one snapshot; the cursor sent only on later pages; each per-tool bound failing the page; the cap and the budget both setting `tools_truncated`; SSE discovery; the era paths |
+| Probing | Two pages merged into one snapshot on both eras; the cursor sent only on later pages; each per-tool bound failing the page; the cap and the budget both setting `tools_truncated`; SSE discovery; the era paths |
 
 PostgreSQL integration tests (`mcp-management.test.ts`, Docker + testcontainers) drive a loopback
 fixture Server that is also its own authorization server:
@@ -700,6 +737,7 @@ fixture Server that is also its own authorization server:
 | --- | --- |
 | P2 — management plane | One Server holds `kind='bearer'` for one Agent and `kind='oauth'` for another; a disable keeps the credential and re-enabling needs no reauthorization; two Agents see different Server sets; the aggregate counts and `lastProbedAt`; an Agent-level override re-probes only that Agent while a shared edit re-probes every mount |
 | P3 — OAuth round trip | The flow reaches `active` with the state cleared, the probe reports the modern era and both pages' tools, a restart invalidates the old state, `invalid_grant` revokes, a refresh rotates without re-probing, and a Bearer row is left alone by the refresh pass |
+| P3 — flow security | A callback presented by a browser holding no flow secret, or a different one, is refused and stores nothing (session fixation); the callback redeems the code under the registration `start` recorded, leaving exactly one registration per `(Account, issuer)` pair and the row still pointing at it |
 | P4 — outbound gate | A challenge naming a link-local document, a Protected Resource Metadata document naming a private issuer, and an AS document naming a private token endpoint are each refused with `MCP_URL_BLOCKED`, and the fixture's request log shows nothing was sent |
 | P5 — lifecycle | A soft-deleted Agent drops `boundAgentCount` to 0 so the definition can be deleted; an onboarding reset leaves no mount behind; detaching releases the credential; a client registration survives its Server's deletion |
 | Constraints | The one-row-per-pair unique index, the anonymous row created on mount, mounting before authorizing, `MCP_SERVER_IN_USE`, the datastore-level header-name rules, the case-insensitive Server name, and the Account snapshot bound failing one Agent's write without disturbing another's |

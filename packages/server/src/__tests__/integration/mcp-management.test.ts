@@ -42,6 +42,14 @@ import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated
 let testDatabase: MigratedTestDatabase;
 let databaseUrl: string;
 
+/**
+ * The flow secret a browser would hold in its cookie for the duration of one authorization.
+ *
+ * A constant is enough for the tests that only need a flow to complete. The test that proves the
+ * binding actually binds uses a different value for the second browser, which is the whole point.
+ */
+const FLOW_SECRET = "test-flow-secret";
+
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
   databaseUrl = testDatabase.databaseUrl;
@@ -139,7 +147,6 @@ describe("P2 — management plane, per-Agent authorization", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -152,7 +159,7 @@ describe("P2 — management plane, per-Agent authorization", () => {
         kind: "bearer",
         bearerKey: "key_a",
       });
-      const started = await harness.flows.start(harness.accountId, harness.agentB, server.id);
+      const started = await harness.flows.start(harness.accountId, harness.agentB, server.id, [], FLOW_SECRET);
       expect(started.authorizationUrl).toContain("/authorize");
 
       const rows = await harness.database
@@ -176,19 +183,16 @@ describe("P2 — management plane, per-Agent authorization", () => {
     try {
       const s1 = await harness.servers.createServer(harness.accountId, {
         name: "s1",
-        displayName: "S1",
         url: fixture.endpoint,
         defaultAuthKind: "none",
       });
       const s2 = await harness.servers.createServer(harness.accountId, {
         name: "s2",
-        displayName: "S2",
         url: `${fixture.endpoint}?alt=1`,
         defaultAuthKind: "none",
       });
       const s3 = await harness.servers.createServer(harness.accountId, {
         name: "s3",
-        displayName: "S3",
         url: `${fixture.endpoint}?alt=2`,
         defaultAuthKind: "none",
       });
@@ -217,7 +221,6 @@ describe("P2 — management plane, per-Agent authorization", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -260,7 +263,6 @@ describe("P2 — management plane, per-Agent authorization", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -302,13 +304,12 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
 
-      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const state = new URL(started.authorizationUrl).searchParams.get("state") ?? "";
       expect(state.length).toBeGreaterThan(0);
 
@@ -316,12 +317,16 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
       const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
       expect(authorize.status).toBe(302);
       const callback = new URL(authorize.headers.get("location") as string);
-      const result = await harness.flows.callback({
-        code: callback.searchParams.get("code") ?? "",
-        state: callback.searchParams.get("state") ?? "",
-        iss: callback.searchParams.get("iss") ?? undefined,
-      });
-      expect(result).toEqual({ agentId: harness.agentA, mcpServerId: server.id });
+      const result = await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+      // The Account travels back too, so the callback's backstage probe has one to scope itself to.
+      expect(result).toEqual({ accountId: harness.accountId, agentId: harness.agentA, mcpServerId: server.id });
 
       const [row] = await harness.database
         .select()
@@ -349,12 +354,11 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
-      await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
 
       const registrations = await harness.database
         .select()
@@ -366,7 +370,7 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
       // A second start for another Agent at the same issuer reuses the registration rather than
       // registering again: it is the Account's client at that AS, not the Agent's.
       await harness.servers.attachServer(harness.accountId, harness.agentB, server.id, true);
-      await harness.flows.start(harness.accountId, harness.agentB, server.id);
+      await harness.flows.start(harness.accountId, harness.agentB, server.id, [], FLOW_SECRET);
       const after = await harness.database
         .select()
         .from(mcpClientRegistrations)
@@ -383,22 +387,115 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
 
-      const first = await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      const first = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const oldState = new URL(first.authorizationUrl).searchParams.get("state") ?? "";
-      const second = await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      const second = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const newState = new URL(second.authorizationUrl).searchParams.get("state") ?? "";
       expect(newState).not.toBe(oldState);
 
       // The superseded state is no longer addressable, so an old callback URL cannot be redeemed.
-      await expect(harness.flows.callback({ code: "stale", state: oldState })).rejects.toMatchObject({
+      await expect(harness.flows.callback({ code: "stale", state: oldState }, FLOW_SECRET)).rejects.toMatchObject({
         code: "MCP_OAUTH_FLOW_INVALID",
       });
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  /*
+   * The session-fixation attack this binding exists to stop, driven through the real flow: A starts
+   * an authorization, hands the URL to B, and B approves it. Before the binding, B's approval landed
+   * a credential on A's Agent — a genuine consent screen for a genuine deployment, because the
+   * client_id is deployment-wide, so nothing about the screen warns B.
+   */
+  it("refuses a callback presented by a browser that did not start the flow", async () => {
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+
+      // A starts the flow and keeps the returned secret; only the URL is forwarded to B.
+      const aSecret = "flow-secret-for-browser-a";
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], aSecret);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      const redeem = {
+        code: callback.searchParams.get("code") ?? "",
+        state: callback.searchParams.get("state") ?? "",
+        iss: callback.searchParams.get("iss") ?? undefined,
+      };
+
+      // B holds the URL and the state, but not A's secret: the flow is refused and cleared.
+      await expect(harness.flows.callback(redeem, "flow-secret-for-browser-b")).rejects.toMatchObject({
+        code: "MCP_OAUTH_FLOW_INVALID",
+      });
+      // A missing cookie is refused the same way, without even performing the state lookup.
+      await expect(harness.flows.callback(redeem, undefined)).rejects.toMatchObject({
+        code: "MCP_OAUTH_FLOW_INVALID",
+      });
+
+      // And the credential really was not stored: the refusal is not cosmetic.
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(row?.ciphertext).toBeNull();
+      expect(row?.status).not.toBe("active");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("redeems a callback only under the client registration the flow recorded", async () => {
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+
+      /*
+       * The whole point of B3: the callback exchanged the code under the client `start` registered.
+       * Registering a second client here is what made a strict authorization server answer
+       * `invalid_client`, so exactly one registration must exist for this (Account, issuer) pair and
+       * the row must still point at it.
+       */
+      const registrations = await harness.database
+        .select()
+        .from(mcpClientRegistrations)
+        .where(eq(mcpClientRegistrations.accountId, harness.accountId));
+      expect(registrations).toHaveLength(1);
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(row?.status).toBe("active");
+      expect(row?.clientRegistrationId).toBe(registrations[0]?.id);
     } finally {
       await fixture.stop();
     }
@@ -410,19 +507,21 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
-      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
       const callback = new URL(authorize.headers.get("location") as string);
-      await harness.flows.callback({
-        code: callback.searchParams.get("code") ?? "",
-        state: callback.searchParams.get("state") ?? "",
-        iss: callback.searchParams.get("iss") ?? undefined,
-      });
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
 
       // The issuer stays put — the envelope's AAD names it, so moving the AS is a different
       // property — while the grant itself starts failing.
@@ -456,19 +555,21 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
-      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
       const callback = new URL(authorize.headers.get("location") as string);
-      await harness.flows.callback({
-        code: callback.searchParams.get("code") ?? "",
-        state: callback.searchParams.get("state") ?? "",
-        iss: callback.searchParams.get("iss") ?? undefined,
-      });
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
       await harness.authorization.probe(harness.accountId, harness.agentA, server.id);
 
       const [before] = await harness.database
@@ -506,7 +607,6 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
@@ -541,7 +641,6 @@ describe("P4 — the outbound gate refuses every private destination in the disc
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
@@ -637,7 +736,6 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -684,7 +782,6 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -738,7 +835,6 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -769,12 +865,11 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
-      await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const before = await harness.database
         .select()
         .from(mcpClientRegistrations)
@@ -807,7 +902,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: shared.endpoint,
         defaultAuthKind: "none",
       });
@@ -839,7 +933,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: shared.endpoint,
         defaultAuthKind: "none",
         extraHeaders: { "x-workspace-id": "shared" },
@@ -876,7 +969,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
         authScheme: "Bearer",
@@ -905,7 +997,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -954,7 +1045,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: first.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -1002,7 +1092,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: shared.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -1043,7 +1132,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -1073,7 +1161,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -1099,7 +1186,6 @@ describe("Agent-level overrides", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
       });
@@ -1114,7 +1200,6 @@ describe("Agent-level overrides", () => {
       // wrote only the authorization row, so it never invalidated the editor's `expectedRevision`.
       await harness.servers.updateServer(harness.accountId, server.id, {
         expectedRevision: server.revision,
-        displayName: "Renamed",
       });
       const [row] = await harness.database.select().from(mcpServers).where(eq(mcpServers.id, server.id));
       expect(row?.revision).toBe(server.revision + 1);
@@ -1133,7 +1218,6 @@ describe("datastore constraints", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "none",
       });
@@ -1159,7 +1243,6 @@ describe("datastore constraints", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "none",
       });
@@ -1179,7 +1262,6 @@ describe("datastore constraints", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
@@ -1198,7 +1280,6 @@ describe("datastore constraints", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "none",
       });
@@ -1215,7 +1296,6 @@ describe("datastore constraints", () => {
     const harness = await seed();
     const base = {
       accountId: harness.accountId,
-      displayName: "Fixture",
       url: "https://mcp.example.com/mcp",
     };
     // Uppercase is refused: the column is stored lowercase so two spellings cannot both exist.
@@ -1247,7 +1327,6 @@ describe("datastore constraints", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "none",
       });
@@ -1302,7 +1381,7 @@ describe("datastore constraints", () => {
 
   it("keeps a unique Account-scoped Server name, case-insensitively", async () => {
     const harness = await seed();
-    const base = { displayName: "Fixture", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" } as const;
+    const base = { url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" } as const;
     await harness.database.insert(mcpServers).values({ ...base, accountId: harness.accountId, name: "linear" });
     await expect(
       harness.database.insert(mcpServers).values({ ...base, accountId: harness.accountId, name: "LINEAR" }),
@@ -1317,19 +1396,21 @@ describe("refresh worker scan", () => {
     try {
       const server = await harness.servers.createServer(harness.accountId, {
         name: "fixture",
-        displayName: "Fixture",
         url: fixture.endpoint,
         defaultAuthKind: "oauth",
       });
       await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
-      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
       const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
       const callback = new URL(authorize.headers.get("location") as string);
-      await harness.flows.callback({
-        code: callback.searchParams.get("code") ?? "",
-        state: callback.searchParams.get("state") ?? "",
-        iss: callback.searchParams.get("iss") ?? undefined,
-      });
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
       await harness.database
         .update(mcpServerAuthorizations)
         .set({ accessTokenExpiresAt: new Date(0) })

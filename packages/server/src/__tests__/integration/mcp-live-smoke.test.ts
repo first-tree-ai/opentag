@@ -53,6 +53,8 @@ describe("MCP management plane, end to end as a user would", () => {
         { tools: [{ name: "create_issue", description: "Create an issue" }], nextCursor: "page-1" },
         { tools: [{ name: "list_issues", description: "List issues" }] },
       ],
+      // The Server describes itself; that description is what the definition ends up showing.
+      serverDescription: "Issue tracking",
     });
     cleanup.push(() => fixture.stop());
 
@@ -117,6 +119,7 @@ describe("MCP management plane, end to end as a user would", () => {
         }),
         servers,
         publicOrigin: "https://opentag.test",
+        secureCookies: false,
       },
     });
     cleanup.push(() => app.close());
@@ -128,13 +131,16 @@ describe("MCP management plane, end to end as a user would", () => {
       headers: HEADERS,
       payload: {
         name: "linear",
-        displayName: "Linear",
         url: fixture.endpoint,
         defaultAuthKind: "bearer",
-        description: "Issue tracking",
       },
     });
     expect(created.statusCode, created.body).toBe(201);
+    /*
+     * A definition is created without a description: there is nothing to probe yet, and a
+     * description is what a probe discovered rather than something the caller asserts.
+     */
+    expect(created.json()).toMatchObject({ name: "linear", description: null });
     const definition = created.json() as { id: string; revision: number };
 
     // 2. Mount it for the Agent. Mounting needs no credential yet.
@@ -205,9 +211,18 @@ describe("MCP management plane, end to end as a user would", () => {
       snapshot: { tools: { name: string }[] };
       authorization: { toolsCount: number };
       overridden: Record<string, boolean>;
+      description: string | null;
+      discoveredDescription: string | null;
     };
     expect(row.snapshot.tools.map((tool) => tool.name)).toEqual(["create_issue", "list_issues"]);
     expect(row.authorization.toolsCount).toBe(2);
+    /*
+     * The description reached the Agent's view from the peer, not from the caller: nothing in this
+     * test ever sent one. The definition has no override, so the discovered value is what a reader
+     * sees — which is the whole point of making it probe-derived.
+     */
+    expect(row.description).toBeNull();
+    expect(row.discoveredDescription).toBe("Issue tracking");
     // Nothing is overridden: this Agent uses the shared definition as written.
     expect(Object.values(row.overridden).every((value) => value === false)).toBe(true);
 

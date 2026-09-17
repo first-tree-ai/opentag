@@ -144,7 +144,7 @@ const SENSITIVE_KEY_PARTS = [
 ];
 
 /**
- * Keys that read as sensitive but are known-safe structural names.
+ * Keys that read as sensitive but are known-safe *structural* names.
  *
  * Redaction runs over whatever a command returns, and a substring match on "authorization" or
  * "credential" would blank a whole subtree whose *name* merely resembles a secret. MCP's
@@ -166,6 +166,41 @@ const SAFE_STRUCTURAL_KEYS = new Set([
   "has_credential",
 ]);
 
+/**
+ * The one exempted name that also spells a real credential carrier.
+ *
+ * `authorization_server`, `access_token_expires_at`, and `has_credential` are OpenTag's own field
+ * names — a URL, a timestamp, and a flag — so they are safe however they are spelled. `authorization`
+ * is not: the very same key is an HTTP header in every log line and error object containing one, and
+ * this feature can send a key verbatim (`authScheme: ""`), which is exactly the shape that leaks.
+ * The MCP summary arrives as an object; a *string* under this name is a credential.
+ */
+const SAFE_STRUCTURAL_OBJECT_ONLY_KEYS = new Set(["authorization"]);
+
+/**
+ * Whether a key carries a secret, given the value it carries.
+ *
+ * The value participates because a name alone cannot decide: `authorization` is a structural summary
+ * in the MCP DTO and a raw credential in a header dump.
+ */
+function isSensitiveKey(key: string, value: unknown): boolean {
+  const normalized = normalizedKey(key);
+  if (SAFE_STRUCTURAL_KEYS.has(normalized)) {
+    if (!SAFE_STRUCTURAL_OBJECT_ONLY_KEYS.has(normalized) || typeof value !== "string") return false;
+  }
+  /*
+   * Both spellings are tested, because the camelCase split is lossy in one direction: `PassWord`
+   * normalizes to `pass_word`, which no longer contains `password`, and `payLoad` to `pay_load`,
+   * which no longer contains `payload`. Testing the plain lowercase form as well catches those
+   * without giving up the joined form that `bearerKey` -> `bearer_key` depends on.
+   */
+  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part) || plainLowercaseKey(key).includes(part));
+}
+
+function plainLowercaseKey(key: string): string {
+  return key.toLowerCase().replaceAll("-", "_");
+}
+
 function normalizedKey(key: string): string {
   /*
    * Fold every separator convention onto underscores, including camelCase.
@@ -173,17 +208,15 @@ function normalizedKey(key: string): string {
    * Without the camelCase split, `bearerKey`, `privateKey`, and `refreshKey` never matched their
    * underscore-form entries and were emitted verbatim — the redactor silently leaked exactly the
    * names a credential-carrying DTO is most likely to use.
+   *
+   * The split runs on the original spelling, before lowercasing: after lowercasing there is no case
+   * boundary left to find, so `authorizationServer` would normalize to `authorizationserver` and
+   * match no entry at all.
    */
   return key
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase()
     .replaceAll("-", "_");
-}
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = normalizedKey(key);
-  if (SAFE_STRUCTURAL_KEYS.has(normalized)) return false;
-  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
 const CREDENTIAL_HEADER_PATTERN =
@@ -662,7 +695,7 @@ function redactArray(value: unknown[], seen: WeakSet<object>, depth: number): un
 function redactObject(value: object, seen: WeakSet<object>, depth: number): Record<string, unknown> {
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value).slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS)) {
-    output[key] = isSensitiveKey(key) ? REDACTED : redactValue(child, seen, depth + 1);
+    output[key] = isSensitiveKey(key, child) ? REDACTED : redactValue(child, seen, depth + 1);
   }
   return output;
 }

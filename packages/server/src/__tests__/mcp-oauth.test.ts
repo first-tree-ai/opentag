@@ -38,7 +38,15 @@ function stubOAuth(responses: Response[]) {
       headers: { "content-type": "application/json", ...next.headers },
     });
   }) as unknown as typeof globalThis.fetch;
-  const fetcher = new McpOutboundFetcher({ allowLoopback: false, fetch: fetchImpl });
+  /*
+   * The gate resolves hostnames, and these tests dial `mcp.example.com` and `auth.example.com`. A
+   * stub resolver keeps them about OAuth discovery rather than about DNS, and keeps them offline.
+   */
+  const fetcher = new McpOutboundFetcher({
+    allowLoopback: false,
+    fetch: fetchImpl,
+    resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+  });
   return { calls, client: new McpOAuthClient({ fetcher, publicUrl: PUBLIC_URL }) };
 }
 

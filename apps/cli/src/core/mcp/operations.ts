@@ -25,10 +25,8 @@ import { extraHeadersFrom, type McpCommandDependencies, resolveMcpCommandContext
 
 export interface McpCreateOptions {
   name: string;
-  displayName: string;
   url: string;
   defaultAuthKind?: MCPAuthKind;
-  description?: string;
   authHeader?: string;
   authScheme?: string;
   extraHeader?: string[];
@@ -42,10 +40,8 @@ export async function runMcpCreate(
   const headers = extraHeadersFrom(options.extraHeader);
   const input: CreateMCPServerRequest = {
     name: options.name,
-    displayName: options.displayName,
     url: options.url,
     defaultAuthKind: options.defaultAuthKind ?? "oauth",
-    ...(options.description === undefined ? {} : { description: options.description }),
     ...(options.authHeader === undefined ? {} : { authHeader: options.authHeader }),
     ...(options.authScheme === undefined ? {} : { authScheme: options.authScheme }),
     ...(headers === undefined ? {} : { extraHeaders: headers }),
@@ -82,7 +78,6 @@ async function loadAgentView(
 }
 
 export interface McpUpdateOptions {
-  displayName?: string;
   description?: string;
   url?: string;
   defaultAuthKind?: MCPAuthKind;
@@ -112,7 +107,6 @@ export async function runMcpUpdate(
   const headers = extraHeadersFrom(options.extraHeader);
   const input: UpdateMCPServerRequest = {
     expectedRevision: options.expectedRevision ?? server.revision,
-    ...(options.displayName === undefined ? {} : { displayName: options.displayName }),
     ...(options.description === undefined ? {} : { description: options.description }),
     ...(options.url === undefined ? {} : { url: options.url }),
     ...(options.defaultAuthKind === undefined ? {} : { defaultAuthKind: options.defaultAuthKind }),
@@ -305,13 +299,24 @@ export async function runMcpAuthorize(
   agentId: string,
   reference: string,
   options: { scopes?: string[]; noWait?: boolean },
-  dependencies: McpCommandDependencies = {},
+  dependencies: McpCommandDependencies & {
+    /**
+     * Called the moment the URL exists, before any waiting.
+     *
+     * The wait below can last the flow's full ten minutes, and the URL is the one thing the user
+     * must act on to make it end. Reporting it only after the wait — which is what happened when the
+     * command returned a single formatted result — meant the default invocation printed nothing at
+     * all and then timed out, so `--no-wait` was the only usable form.
+     */
+    onStarted?: (started: StartMCPOAuthResponse) => void;
+  } = {},
 ): Promise<{ server: MCPServer; started: StartMCPOAuthResponse; probe?: MCPProbeResponse }> {
   const { api, accessToken } = await resolveMcpCommandContext(dependencies);
   const server = await resolveMcpServer(reference, dependencies);
   const started = await api.startMcpOAuth(accessToken, agentId, server.id, {
     ...(options.scopes ? { scopes: options.scopes } : {}),
   });
+  dependencies.onStarted?.(started);
   if (options.noWait) return { server, started };
   const probe = await waitForAuthorization(api, accessToken, agentId, server.id);
   return { server, started, ...(probe ? { probe } : {}) };

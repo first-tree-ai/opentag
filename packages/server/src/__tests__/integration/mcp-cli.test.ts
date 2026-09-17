@@ -123,6 +123,7 @@ async function boot(): Promise<Booted> {
       flows,
       servers,
       publicOrigin: "https://opentag.test",
+      secureCookies: false,
     },
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
@@ -200,8 +201,6 @@ describe("MCP CLI end to end", () => {
       "add",
       "--name",
       "linear",
-      "--display-name",
-      "Linear",
       "--url",
       "https://mcp.example.com/mcp",
       "--default-auth",
@@ -218,16 +217,15 @@ describe("MCP CLI end to end", () => {
     const listed = await cli(booted.home, ["mcp", "list"]);
     expect(listed.code, listed.stderr).toBe(0);
     expect(listed.stdout).toContain("linear");
-    expect(listed.stdout).toContain("Linear");
 
     const shown = await cli(booted.home, ["mcp", "show", "linear"]);
     expect(shown.code, shown.stderr).toBe(0);
     expect(shown.stdout).toContain("authHeader\tx-api-key");
 
     // The revision-fenced edit, given no --expected-revision, uses the revision it just read.
-    const updated = await cli(booted.home, ["mcp", "update", "linear", "--display-name", "Linear v2"]);
+    const updated = await cli(booted.home, ["mcp", "update", "linear", "--description", "Issue tracking"]);
     expect(updated.code, updated.stderr).toBe(0);
-    expect(updated.stdout).toContain("displayName\tLinear v2");
+    expect(updated.stdout).toContain("description\tIssue tracking");
     expect(updated.stdout).toContain("revision\t2");
 
     const removed = await cli(booted.home, ["mcp", "remove", "linear"]);
@@ -238,16 +236,7 @@ describe("MCP CLI end to end", () => {
 
   it("prints machine-readable JSON when asked", async () => {
     const booted = await boot();
-    await cli(booted.home, [
-      "mcp",
-      "add",
-      "--name",
-      "linear",
-      "--display-name",
-      "Linear",
-      "--url",
-      "https://mcp.example.com/mcp",
-    ]);
+    await cli(booted.home, ["mcp", "add", "--name", "linear", "--url", "https://mcp.example.com/mcp"]);
     const listed = await cli(booted.home, ["mcp", "list", "--json"]);
     expect(listed.code, listed.stderr).toBe(0);
     // `--json` emits the shared success envelope; `mcp list` yields the Servers array directly.
@@ -263,18 +252,7 @@ describe("MCP CLI end to end", () => {
   it("mounts, authorizes with a piped Bearer key, probes, and detaches", async () => {
     const server = await fixture({ toolPages: [{ tools: [{ name: "echo" }, { name: "search" }] }] });
     const booted = await boot();
-    await cli(booted.home, [
-      "mcp",
-      "add",
-      "--name",
-      "fixture",
-      "--display-name",
-      "Fixture",
-      "--url",
-      server.endpoint,
-      "--default-auth",
-      "bearer",
-    ]);
+    await cli(booted.home, ["mcp", "add", "--name", "fixture", "--url", server.endpoint, "--default-auth", "bearer"]);
     const attached = await cli(booted.home, ["agent", "mcp", "attach", booted.agentId, "fixture"]);
     expect(attached.code, attached.stderr).toBe(0);
     expect(attached.stdout).toContain("mount\tenabled");
@@ -314,7 +292,7 @@ describe("MCP CLI end to end", () => {
     const shared = await fixture({ toolPages: [{ tools: [] }] });
     const overridden = await fixture({ toolPages: [{ tools: [] }] });
     const booted = await boot();
-    await cli(booted.home, ["mcp", "add", "--name", "fixture", "--display-name", "Fixture", "--url", shared.endpoint]);
+    await cli(booted.home, ["mcp", "add", "--name", "fixture", "--url", shared.endpoint]);
     await cli(booted.home, ["agent", "mcp", "attach", booted.agentId, "fixture"]);
 
     // The default scope is this Agent: an override, which the output marks as overridden.
@@ -346,18 +324,7 @@ describe("MCP CLI end to end", () => {
       toolPages: [{ tools: Array.from({ length: 250 }, (_, index) => ({ name: `t${index}` })) }],
     });
     const booted = await boot();
-    await cli(booted.home, [
-      "mcp",
-      "add",
-      "--name",
-      "many",
-      "--display-name",
-      "Many",
-      "--url",
-      server.endpoint,
-      "--default-auth",
-      "none",
-    ]);
+    await cli(booted.home, ["mcp", "add", "--name", "many", "--url", server.endpoint, "--default-auth", "none"]);
     await cli(booted.home, ["agent", "mcp", "attach", booted.agentId, "many"]);
     const probed = await cli(booted.home, ["mcp", "probe", "many", "--agent", booted.agentId]);
     expect(probed.code, probed.stderr).toBe(0);
@@ -372,16 +339,7 @@ describe("MCP CLI end to end", () => {
     expect(missing.stderr).toContain("does-not-exist");
 
     // A rejected payload surfaces the server's own code, not a generic failure.
-    const invalid = await cli(booted.home, [
-      "mcp",
-      "add",
-      "--name",
-      "bad",
-      "--display-name",
-      "Bad",
-      "--url",
-      "not-a-url",
-    ]);
+    const invalid = await cli(booted.home, ["mcp", "add", "--name", "bad", "--url", "not-a-url"]);
     expect(invalid.code).not.toBe(0);
   }, 60_000);
 });

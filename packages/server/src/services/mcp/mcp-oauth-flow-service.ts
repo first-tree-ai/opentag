@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, mcpClientRegistrations, mcpServerAuthorizations } from "../../db/schema/index.js";
+import { hashSecret } from "../auth/security.js";
 import { MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import type { McpCredentialCipher } from "./mcp-credential-cipher.js";
 import {
@@ -20,10 +21,21 @@ import { McpServerService } from "./mcp-server-service.js";
  * precedent: `state`, its deadline, and the encrypted PKCE verifier live there, and a repeated start
  * simply overwrites them, which invalidates the previous `state` immediately.
  *
+ * Two bindings make the callback safe to expose publicly, and both are copied from the GitHub flow
+ * rather than invented here:
+ *
+ * - **The row is found by the hash of the state, not the state.** A leaked database row (a backup, a
+ *   log of a query) cannot be turned into a redeemable callback URL for a flow nobody started.
+ * - **The flow records the hash of the initiating browser's session proof.** The callback must
+ *   present the matching secret. Without it, developer A could start a flow, hand the resulting
+ *   `authorizationUrl` to developer B, and B's approval — a genuine consent screen for a genuine
+ *   deployment, because the `client_id` is deployment-wide — would land a credential on A's Agent.
+ *   That is session fixation, and the state alone does not prevent it: A knows the state, so nothing
+ *   in it distinguishes A's browser from B's.
+ *
  * Discovery runs on every start but never on a refresh: a refresh only needs the endpoint the row
  * already recorded, and re-discovering there would let a peer move our token endpoint mid-flight.
  */
-
 export interface McpOAuthFlowServiceOptions {
   database: DatabaseClient;
   cipher: McpCredentialCipher;
@@ -63,6 +75,11 @@ export class McpOAuthFlowService {
     agentId: string,
     mcpServerId: string,
     requestedScopes: readonly string[] = [],
+    /*
+     * The initiating browser's flow secret. Required, not optional: a caller that forgot it would
+     * silently produce an unbound flow, which is the vulnerability this parameter exists to close.
+     */
+    flowSecret: string,
   ): Promise<StartedMcpOAuth> {
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
@@ -102,10 +119,12 @@ export class McpOAuthFlowService {
         status: "pending",
         authorizationServer: metadata.issuer,
         clientRegistrationId: registrationId,
-        state,
+        // Stored hashed: the raw state is only ever in the URL the browser carries.
+        state: hashSecret(state),
         stateExpiresAt: expiresAt,
         pkceCiphertext: sealedPkce.ciphertext,
         scopes,
+        loginSessionHash: hashSecret(flowSecret),
         probeState: "pending",
         createdAt: now,
         updatedAt: now,
@@ -116,7 +135,7 @@ export class McpOAuthFlowService {
           kind: "oauth",
           // A restarted flow invalidates the previous state in the same write, so an old callback
           // URL can no longer be redeemed.
-          state,
+          state: hashSecret(state),
           stateExpiresAt: expiresAt,
           pkceCiphertext: sealedPkce.ciphertext,
           authorizationServer: metadata.issuer,
@@ -128,6 +147,7 @@ export class McpOAuthFlowService {
           accessTokenExpiresAt: null,
           failureCode: null,
           probeState: "pending",
+          loginSessionHash: hashSecret(flowSecret),
           refreshClaimId: null,
           refreshClaimedAt: null,
           revision: sql`${mcpServerAuthorizations.revision} + 1`,
@@ -258,16 +278,24 @@ export class McpOAuthFlowService {
   }
 
   /**
-   * Complete the round trip. The row is located by its one-time `state`, then checked for expiry and
-   * pending status; any failure past that point clears the flow so a stale callback cannot be replayed.
+   * Complete the round trip. The row is located by the hash of its one-time `state`, then checked for
+   * the initiating browser's flow secret, expiry, and pending status; any failure past that point
+   * clears the flow so a stale callback cannot be replayed.
+   *
+   * `flowSecret` is the value the initiating browser holds in its cookie. It is what stops a
+   * callback that was started by someone else from landing here: the state travels in the URL and is
+   * therefore known to whoever was handed the URL, while the secret never leaves the first browser.
    */
-  async callback(query: {
-    code?: string;
-    state: string;
-    error?: string;
-    iss?: string;
-  }): Promise<{ agentId: string; mcpServerId: string }> {
-    const row = await this.#locateFlow(query.state);
+  async callback(
+    query: {
+      code?: string;
+      state: string;
+      error?: string;
+      iss?: string;
+    },
+    flowSecret: string | undefined,
+  ): Promise<{ accountId: string; agentId: string; mcpServerId: string }> {
+    const row = await this.#locateFlow(query.state, flowSecret);
     const { authorization, agentId, accountId } = row;
     if (query.error) {
       await this.#clearFlow(authorization.id);
@@ -291,7 +319,7 @@ export class McpOAuthFlowService {
       this.#oauth.validateIssuer(metadata, query.iss, metadata.issuer);
       const binding = { mcpServerId, agentId, authorizationServer: metadata.issuer };
       const codeVerifier = this.#cipher.decryptPkceVerifier(binding, requirePkce(authorization));
-      const client = await this.#readClientCredentials(accountId, metadata);
+      const client = await this.#readClientCredentials(accountId, metadata, authorization.clientRegistrationId);
       const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
       const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
       const tokens = await this.#oauth.exchangeAuthorizationCode(accountId, metadata, {
@@ -315,10 +343,11 @@ export class McpOAuthFlowService {
           scopes: tokens.scope ? tokens.scope.split(/\s+/).filter(Boolean) : authorization.scopes,
           accessTokenExpiresAt: tokens.expiresIn ? new Date(now.getTime() + tokens.expiresIn * 1000) : null,
           failureCode: null,
-          // Single use: the state and its verifier are gone the moment the code is redeemed.
+          // Single use: the state, its verifier, and the flow binding are gone the moment the code is redeemed.
           state: null,
           stateExpiresAt: null,
           pkceCiphertext: null,
+          loginSessionHash: null,
           probeState: "pending",
           revision: sql`${authorization.revision} + 1`,
           updatedAt: now,
@@ -328,24 +357,49 @@ export class McpOAuthFlowService {
       await this.#clearFlow(authorization.id);
       throw error;
     }
-    return { agentId, mcpServerId };
+    return { accountId, agentId, mcpServerId };
   }
 
-  async #locateFlow(state: string): Promise<{
+  async #locateFlow(
+    state: string,
+    flowSecret: string | undefined,
+  ): Promise<{
     authorization: typeof mcpServerAuthorizations.$inferSelect;
     agentId: string;
     accountId: string;
   }> {
+    /*
+     * A missing secret is rejected before the lookup rather than after, so an attacker without the
+     * cookie learns nothing about whether the state exists.
+     */
+    if (!flowSecret) {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+        "The authorization flow was not started by this browser",
+      );
+    }
     const [row] = await this.#database
       .select({ authorization: mcpServerAuthorizations, accountId: agents.createdByUserId })
       .from(mcpServerAuthorizations)
       .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
-      .where(eq(mcpServerAuthorizations.state, state))
+      // The state is stored hashed, so the callback's raw value is hashed the same way to find it.
+      .where(eq(mcpServerAuthorizations.state, hashSecret(state)))
       .limit(1);
     if (!row) {
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization flow is no longer valid");
     }
     const authorization = row.authorization;
+    /*
+     * Compared as hashes so a mistyped or stolen cookie cannot be distinguished from a wrong one by
+     * response timing, and so the stored value never equals the secret a browser holds.
+     */
+    if (authorization.loginSessionHash !== hashSecret(flowSecret)) {
+      await this.#clearFlow(authorization.id);
+      throw new McpServiceError(
+        MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+        "The authorization flow was not started by this browser",
+      );
+    }
     if (!authorization.stateExpiresAt || authorization.stateExpiresAt.getTime() <= this.#now().getTime()) {
       await this.#clearFlow(authorization.id);
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED, "The authorization flow has expired");
@@ -360,19 +414,78 @@ export class McpOAuthFlowService {
   async #clearFlow(id: string): Promise<void> {
     await this.#database
       .update(mcpServerAuthorizations)
-      .set({ state: null, stateExpiresAt: null, pkceCiphertext: null, updatedAt: this.#now() })
+      .set({ state: null, stateExpiresAt: null, pkceCiphertext: null, loginSessionHash: null, updatedAt: this.#now() })
       .where(eq(mcpServerAuthorizations.id, id));
   }
 
+  /**
+   * The client to redeem the code with.
+   *
+   * The flow row already carries `clientRegistrationId`, so the callback and every later refresh use
+   * exactly the client the authorization request named. Resolving fresh here would register a
+   * *second* client and then present the first client's code under it — which a strict authorization
+   * server refuses with `invalid_client`, and which made every refresh register yet another client.
+   */
   async #readClientCredentials(
     accountId: string,
     metadata: McpAuthorizationServerMetadata,
+    clientRegistrationId: string | null,
   ): Promise<McpClientCredentials> {
+    /*
+     * A pre-registered client is stable for the Account and issuer, so it is preferred: it is what
+     * the authorization request named, and there is exactly one of them per pair.
+     */
     const preregistered = await this.#readPreregistered(accountId, metadata.issuer);
     if (preregistered) return preregistered;
-    const client = await this.#oauth.resolveClientCredentials(accountId, metadata);
-    await this.#recordRegistration(accountId, metadata, client, this.#now());
-    return client;
+    if (clientRegistrationId) {
+      const recorded = await this.#readRegistration(accountId, clientRegistrationId, metadata.issuer);
+      if (recorded) return recorded;
+    }
+    /*
+     * Nothing usable: the flow predates this registration, or the row was pruned. Registering a new
+     * client here would produce one the authorization request never named, so the exchange could not
+     * succeed anyway — and on the DCR path it would also overwrite the Account's shared registration
+     * with a client that no in-flight flow is using.
+     */
+    throw new McpServiceError(
+      MCP_ERROR_CODES.REGISTRATION_FAILED,
+      "The client registration for this authorization flow is no longer available",
+    );
+  }
+
+  /**
+   * Read one recorded registration back, with its secret.
+   *
+   * Scoped to the issuer as well as the Account: a client registered with one authorization server
+   * is not presented to another. Returns undefined rather than throwing for a row that no longer
+   * exists, so the caller decides what that means.
+   */
+  async #readRegistration(accountId: string, id: string, issuer: string): Promise<McpClientCredentials | undefined> {
+    const [row] = await this.#database
+      .select()
+      .from(mcpClientRegistrations)
+      .where(
+        and(
+          eq(mcpClientRegistrations.id, id),
+          eq(mcpClientRegistrations.accountId, accountId),
+          eq(mcpClientRegistrations.authorizationServer, issuer),
+        ),
+      )
+      .limit(1);
+    if (!row) return undefined;
+    const clientSecret = row.ciphertext
+      ? this.#cipher.decryptClientSecret(
+          { accountId, authorizationServer: row.authorizationServer },
+          { ciphertext: row.ciphertext, keyId: row.keyId as string },
+        )
+      : undefined;
+    return {
+      clientId: row.clientId,
+      ...(clientSecret === undefined ? {} : { clientSecret }),
+      source: row.source,
+      // The same derivation the pre-registered path uses: a stored secret means basic auth.
+      tokenEndpointAuthMethod: row.ciphertext ? "client_secret_basic" : "none",
+    };
   }
 
   /** The fixed local surface a callback lands on, carrying only a bounded outcome. */
@@ -420,7 +533,7 @@ export class McpOAuthFlowService {
     }
     try {
       const metadata = await this.#oauth.authorizationServerMetadata(row.accountId, requireIssuer(row));
-      const client = await this.#readClientCredentials(row.accountId, metadata);
+      const client = await this.#readClientCredentials(row.accountId, metadata, row.clientRegistrationId);
       const context = await this.#servers.readProbeContext(row.accountId, row.agentId, row.mcpServerId);
       const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
       const tokens = await this.#oauth.refreshAccessToken(row.accountId, metadata, {

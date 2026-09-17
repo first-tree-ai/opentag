@@ -41,7 +41,15 @@ function stubFetch(
       },
     });
   }) as unknown as typeof globalThis.fetch;
-  const fetcher = new McpOutboundFetcher({ allowLoopback: true, fetch: fetchImpl });
+  const fetcher = new McpOutboundFetcher({
+    allowLoopback: true,
+    fetch: fetchImpl,
+    /*
+     * The gate resolves hostnames, and these tests dial `mcp.example.com`. A stub resolver keeps them
+     * about the transport rather than about DNS, and keeps them offline.
+     */
+    resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+  });
   return { calls, fetcher };
 }
 
@@ -171,6 +179,93 @@ describe("MCP response parsing", () => {
     expect(error).toBeInstanceOf(McpTransportError);
     expect((error as McpTransportError).rpcError?.code).toBe(-32022);
     expect((error as McpTransportError).supportedVersions).toEqual(["2026-07-28", "2025-11-25"]);
+  });
+
+  /*
+   * A gateway's error body is JSON, just not JSON-RPC. Returning it as the result made the probe
+   * report `probeState: "succeeded"` with zero tools and no error — the one answer the probe must
+   * never give, since its whole purpose is to be evidence that the credential and the Server agree.
+   */
+  it("refuses a non-2xx status even when the body is a JSON object", async () => {
+    for (const [status, body] of [
+      [401, JSON.stringify({ message: "Unauthorized" })],
+      [403, JSON.stringify({ detail: "Forbidden" })],
+      [500, JSON.stringify({ error: "boom" })],
+      [502, JSON.stringify({ gateway: "upstream failed" })],
+    ] as const) {
+      const { fetcher } = stubFetch([{ status, body }]);
+      const transport = new McpTransport({ fetcher });
+      const error = await transport
+        .call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {})
+        .catch((caught: unknown) => caught);
+      expect(error, `status ${status}`).toBeInstanceOf(McpTransportError);
+      expect((error as McpTransportError).code, `status ${status}`).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
+      // The status travels with the error so the caller can tell a refused credential from an outage.
+      expect((error as McpTransportError & { status?: number }).status, `status ${status}`).toBe(status);
+    }
+  });
+
+  it("names a refused credential as such rather than reporting a bare status", async () => {
+    for (const status of [401, 403]) {
+      const { fetcher } = stubFetch([{ status, body: JSON.stringify({ message: "Unauthorized" }) }]);
+      const transport = new McpTransport({ fetcher });
+      await expect(transport.call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {})).rejects.toThrow(
+        /refused this credential/u,
+      );
+    }
+  });
+
+  it("still accepts a 2xx JSON body with no JSON-RPC envelope as a result", async () => {
+    /*
+     * The status rule must not turn a legitimate empty 200 into a failure. A body with no JSON-RPC
+     * keys is treated as a bare result (`splitEnvelope`), so `{}` unwraps to `{}`.
+     */
+    const { fetcher } = stubFetch([{ status: 200, body: "{}" }]);
+    const transport = new McpTransport({ fetcher });
+    await expect(transport.call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {})).resolves.toEqual({});
+    // And a 200 that carries a result still yields it.
+    const withResult = stubFetch([{ status: 200, body: JSON.stringify({ result: { tools: [] } }) }]);
+    await expect(
+      new McpTransport({ fetcher: withResult.fetcher }).call(
+        ACCOUNT,
+        "https://mcp.example.com/mcp",
+        "tools/list",
+        {},
+        {},
+      ),
+    ).resolves.toEqual({ tools: [] });
+  });
+});
+
+/*
+ * The legacy era speaks a pre-modern protocol in which the session, not a header, carries the
+ * version. `call` always stamps the modern `MCP-Protocol-Version` plus `Mcp-Method` and `_meta`, and
+ * `@modelcontextprotocol/sdk` answers `400 Unsupported protocol version` for any header value it does
+ * not know — so a legacy Server rejected the request immediately after a successful `initialize`.
+ */
+describe("MCP transport legacy calls", () => {
+  it("sends none of the modern envelope on a legacy call", async () => {
+    const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: { tools: [] } }) }]);
+    const transport = new McpTransport({ fetcher });
+    await transport.callLegacy(
+      ACCOUNT,
+      "https://mcp.example.com/mcp",
+      "tools/list",
+      {},
+      { authorization: "Bearer t" },
+      { headers: { "mcp-session-id": "session-1" } },
+    );
+
+    const headers = headersOf(calls[0] as { init: RequestInit });
+    expect(headers["mcp-protocol-version"]).toBeUndefined();
+    expect(headers["mcp-method"]).toBeUndefined();
+    expect(headers["mcp-name"]).toBeUndefined();
+    // The session header the legacy protocol requires does travel.
+    expect(headers["mcp-session-id"]).toBe("session-1");
+    // And the body carries no `_meta`, which only the modern shape defines.
+    const body = bodyOf(calls[0] as { init: RequestInit });
+    expect(body).not.toHaveProperty("params._meta");
+    expect(body.method).toBe("tools/list");
   });
 });
 

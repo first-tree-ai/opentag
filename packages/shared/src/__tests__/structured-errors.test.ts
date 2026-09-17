@@ -153,6 +153,46 @@ describe("structured error redaction", () => {
     });
   });
 
+  it("redacts a credential carried as a string under an exempted structural name", () => {
+    /*
+     * `authorization` is exempted because MCP's summary is an object. A string under the same name
+     * is an HTTP header value or a raw key — and with `authScheme: ""` this feature sends a key
+     * verbatim, so this is a shape it really produces, not a hypothetical one.
+     */
+    expect(redactSensitive({ authorization: "token ghp_abc" })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ headers: { authorization: "sk-live-raw" } })).toEqual({
+      headers: { authorization: "[REDACTED]" },
+    });
+    expect(redactSensitive({ Authorization: "sk-live-raw" })).toEqual({ Authorization: "[REDACTED]" });
+  });
+
+  it("keeps exempting the structural names that are safe in any spelling", () => {
+    // A URL, a timestamp, and a flag: none of the three can be a credential however it is spelled.
+    expect(
+      redactSensitive({
+        authorizationServer: "https://auth.example.com",
+        accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+        hasCredential: true,
+      }),
+    ).toEqual({
+      authorizationServer: "https://auth.example.com",
+      accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+      hasCredential: true,
+    });
+  });
+
+  it("redacts unusual casing that the camelCase split would otherwise lose", () => {
+    /*
+     * Splitting camelCase is lossy: `PassWord` becomes `pass_word` and `payLoad` becomes `pay_load`,
+     * neither of which contains the entry it should match. Both spellings are checked for this.
+     */
+    expect(redactSensitive({ PassWord: "pw", payLoad: "body", Authorization: "raw" })).toEqual({
+      PassWord: "[REDACTED]",
+      payLoad: "[REDACTED]",
+      Authorization: "[REDACTED]",
+    });
+  });
+
   it("redacts Error causes and preserves safe primitive representations", () => {
     const nested = new Error("nested password=nested-secret");
     Object.assign(nested, { code: "NESTED_FAILURE" });

@@ -114,6 +114,12 @@ export interface CreateAppOptions {
      * that wires MCP without the browser sign-in surface.
      */
     publicOrigin: string;
+    /**
+     * Whether the flow-binding cookie is marked Secure. Explicit for the same reason `publicOrigin`
+     * is: the callback is reachable without a browser session, so it cannot read this off the
+     * browser sign-in surface it deliberately does not depend on.
+     */
+    secureCookies: boolean;
   };
   feishuSetupService?: FeishuSetupService;
   slackOAuth?: SlackOAuthRouteOptions;
@@ -541,7 +547,19 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     if (options.mcp) {
       registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
-      registerMcpOAuthRoutes(app, { flows: options.mcp.flows, publicOrigin: options.mcp.publicOrigin });
+      registerMcpOAuthRoutes(app, {
+        flows: options.mcp.flows,
+        /*
+         * The callback cannot probe cheaply itself, so the probe is fired here and not awaited. The
+         * route has no Account context of its own to pass — the flow already proved which pair it
+         * belongs to — so the id pair travels straight through from the callback.
+         */
+        onCredentialStored: (accountId, agentId, mcpServerId) => {
+          void options.mcp?.authorization.probe(accountId, agentId, mcpServerId).catch(() => undefined);
+        },
+        publicOrigin: options.mcp.publicOrigin,
+        secureCookies: options.mcp.secureCookies,
+      });
     }
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);

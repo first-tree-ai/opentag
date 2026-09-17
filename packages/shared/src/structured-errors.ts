@@ -703,16 +703,40 @@ function redactErrorValue(value: Error, seen: WeakSet<object>, depth: number): R
   return output;
 }
 
+/*
+ * Redaction and display bounds are separate concerns, and conflating them silently truncated a
+ * command's real output: the CLI presents `--json` results through `redactSensitive`, so the log
+ * serializer's array cap of 32 and depth cap of 8 applied to a user's data. `agent mcp list --json`
+ * dropped every tool past the 32nd and rendered nested `inputSchema` as `[TRUNCATED]`, with nothing
+ * reporting that it had. Redaction is a security property and applies everywhere; the caps are log
+ * hygiene and belong to `redactForLog`, which is where the budget they protect is.
+ */
 function redactArray(value: unknown[], seen: WeakSet<object>, depth: number): unknown[] {
-  return value
-    .slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS)
-    .map((item) => redactValue(item, seen, depth + 1));
+  return value.map((item) => redactValue(item, seen, depth + 1));
 }
 
 function redactObject(value: object, seen: WeakSet<object>, depth: number): Record<string, unknown> {
   const output: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value).slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS)) {
+  for (const [key, child] of Object.entries(value)) {
     output[key] = isSensitiveKey(key, child) ? REDACTED : redactValue(child, seen, depth + 1);
+  }
+  return output;
+}
+
+/** The log serializer's caps, applied on top of redaction rather than inside it. */
+function capDepth(value: unknown, seen: WeakSet<object>, depth: number): unknown {
+  if (value === null || value === undefined || typeof value !== "object") return value;
+  if (depth >= STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH) return TRUNCATED;
+  if (seen.has(value)) return CIRCULAR;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS)
+      .map((item) => capDepth(item, seen, depth + 1));
+  }
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value).slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS)) {
+    output[key] = capDepth(child, seen, depth + 1);
   }
   return output;
 }
@@ -724,7 +748,11 @@ function redactValue(value: unknown, seen: WeakSet<object>, depth: number): unkn
   if (typeof value === "string") return scrubString(value);
   if (typeof value === "bigint") return String(value);
   if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
-  if (depth >= STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH) return TRUNCATED;
+  /*
+   * The cycle guard stays: a redactor that recursed forever on a self-referencing object would hang
+   * rather than redact. Depth is unbounded otherwise, because truncating a caller's data is not
+   * redaction's job.
+   */
   if (seen.has(value)) return CIRCULAR;
   seen.add(value);
   if (value instanceof Error) return redactErrorValue(value, seen, depth);
@@ -773,9 +801,12 @@ function capLogStringValues(value: unknown, seen: WeakSet<object>): unknown {
   return output;
 }
 
-/** Return a detached, recursively redacted copy with a UTF-8 cap on every string value. */
+/**
+ * Return a detached, recursively redacted copy with the log serializer's caps: a UTF-8 bound on every
+ * string, and a depth and breadth limit on the structure itself.
+ */
 export function redactForLog<T>(value: T): T {
-  return capLogStringValues(redactSensitive(value), new WeakSet<object>()) as T;
+  return capLogStringValues(capDepth(redactSensitive(value), new WeakSet<object>(), 0), new WeakSet<object>()) as T;
 }
 
 /**

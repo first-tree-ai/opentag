@@ -249,6 +249,37 @@ describe("MCP CLI end to end", () => {
     expect(parsed.result[0]).toMatchObject({ name: "linear", url: "https://mcp.example.com/mcp" });
   }, 60_000);
 
+  it("emits a whole tool snapshot as JSON rather than a log-sized slice", async () => {
+    /*
+     * S11. The CLI presents `--json` through the shared redactor, which was also applying the log
+     * serializer's caps — arrays at 32, depth at 8. So this command dropped every tool past the 32nd
+     * and rendered a nested `inputSchema` as `[TRUNCATED]`, silently, which the PR body did not
+     * mention either. Sixty tools and a nested schema are enough to exercise both caps.
+     */
+    const server = await fixture({
+      toolPages: [
+        {
+          tools: Array.from({ length: 60 }, (_, index) => ({
+            inputSchema: { properties: { nested: { type: "object" } }, type: "object" },
+            name: `t${index}`,
+          })),
+        },
+      ],
+    });
+    const booted = await boot();
+    await cli(booted.home, ["mcp", "add", "--name", "many", "--url", server.endpoint, "--default-auth", "none"]);
+    await cli(booted.home, ["agent", "mcp", "attach", booted.agentId, "many"]);
+    await cli(booted.home, ["mcp", "probe", "many", "--agent", booted.agentId]);
+
+    const shown = await cli(booted.home, ["agent", "mcp", "list", booted.agentId, "--json"]);
+    expect(shown.code, shown.stderr).toBe(0);
+    const raw = shown.stdout;
+    expect(raw).not.toContain("[TRUNCATED]");
+    // Every one of the sixty tools is present, not the first thirty-two.
+    expect(raw).toContain('"t59"');
+    expect(raw).toContain('"t32"');
+  }, 60_000);
+
   it("mounts, authorizes with a piped Bearer key, probes, and detaches", async () => {
     const server = await fixture({ toolPages: [{ tools: [{ name: "echo" }, { name: "search" }] }] });
     const booted = await boot();

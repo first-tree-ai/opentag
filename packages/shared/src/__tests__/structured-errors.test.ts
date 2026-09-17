@@ -247,13 +247,33 @@ describe("structured error redaction", () => {
     expect(JSON.stringify(redacted)).not.toContain("nested-secret");
   });
 
-  it("bounds nested arrays and objects and truncates deep values", () => {
+  it("redacts a command's whole output rather than a log-sized slice of it", () => {
+    /*
+     * `redactSensitive` is what the CLI presents `--json` results through, so the log serializer's
+     * caps must not apply here: `agent mcp list --json` was dropping every tool past the 32nd and
+     * rendering nested `inputSchema` as `[TRUNCATED]`, silently, because the array and depth caps
+     * lived in the redactor instead of the log path.
+     */
+    const values = Array.from({ length: 40 }, (_, index) => index);
+    const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
+    let nested: Record<string, unknown> = { value: "deep" };
+    for (let depth = 0; depth < 12; depth += 1) nested = { nested };
+
+    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    expect(redacted.values).toHaveLength(40);
+    expect(Object.keys(redacted.entries as object)).toHaveLength(70);
+    expect(JSON.stringify(redacted)).not.toContain("[TRUNCATED]");
+    // Redaction still happens: that is the security property, and it is not negotiable.
+    expect(redactSensitive({ authorization: "sk-live" })).toEqual({ authorization: "[REDACTED]" });
+  });
+
+  it("bounds nested arrays and objects and truncates deep values for the log", () => {
     const values = Array.from({ length: 40 }, (_, index) => index);
     const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
     let nested: Record<string, unknown> = { value: "deep" };
     for (let depth = 0; depth < 10; depth += 1) nested = { nested };
 
-    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    const redacted = redactForLog({ values, entries, nested }) as Record<string, unknown>;
     expect(redacted.values).toHaveLength(32);
     expect(Object.keys(redacted.entries as object)).toHaveLength(64);
     expect(JSON.stringify(redacted)).toContain("[TRUNCATED]");

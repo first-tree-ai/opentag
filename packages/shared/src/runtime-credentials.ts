@@ -8,6 +8,7 @@ import {
 import { runtimeByteString as byteString } from "./runtime-config.js";
 import { RuntimeImOutboxContextSchema, RuntimeOpaqueIdSchema } from "./runtime-domain.js";
 import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
+import { RuntimeExecutionServiceRequestSchema, RuntimeExecutionServiceSchema } from "./web-tools.js";
 
 /**
  * Runtime credential delegation contract (control + data planes).
@@ -106,6 +107,11 @@ export const RuntimeExecutionOpenRequestSchema = z
     runId: z.string().uuid(),
     source: RuntimeExecutionSourceSchema,
     sandbox: RuntimeExecutionSandboxSchema.optional(),
+    /**
+     * Optional platform services the Client opts into (currently only `web`). Sent only when the
+     * `runtime.webTools` capability was negotiated; older peers never see or accept this field.
+     */
+    services: z.array(RuntimeExecutionServiceRequestSchema).max(4).optional(),
   })
   .strict();
 export type RuntimeExecutionOpenRequest = z.infer<typeof RuntimeExecutionOpenRequestSchema>;
@@ -208,6 +214,12 @@ export const RuntimeExecutionOpenResultSchema = z.discriminatedUnion("status", [
       executionId,
       expiresAt: isoDateTime,
       providers: z.array(RuntimeExecutionProviderSchema).max(16),
+      /**
+       * Granted platform services with their exact authorized scopes. Present only when the
+       * `runtime.webTools` capability was negotiated; an empty providers list with a non-empty
+       * services list is a real, authorized execution.
+       */
+      services: z.array(RuntimeExecutionServiceSchema).max(4).optional(),
     })
     .strict(),
   z

@@ -429,6 +429,7 @@ export {
 } from "./runtime/runtime-connection.js";
 export {
   type PreparedRuntimeCredentialEnvironment,
+  type PreparedWebToolsLaunch,
   RuntimeCredentialEnvironmentManager,
   type RuntimeCredentialEnvironmentManagerOptions,
   type RuntimeCredentialMode,
@@ -448,6 +449,7 @@ export {
   RUNTIME_PROXY_DATA_MAX_STREAMS,
   RUNTIME_PROXY_PROVIDERS,
   RUNTIME_PROXY_TICKET_TTL_MS,
+  RUNTIME_WEB_TOOLS_CAPABILITY,
   type RuntimeCredentialGrant,
   type RuntimeCredentialResult,
   type RuntimeCredentialRevoked,
@@ -456,6 +458,7 @@ export {
   type RuntimeExecutionOpenResult,
   type RuntimeExecutionProvider,
   type RuntimeExecutionSandbox,
+  type RuntimeExecutionService,
   type RuntimeExecutionSource,
   type RuntimeProxyCliMetadata,
   type RuntimeProxyProvider,
@@ -602,6 +605,18 @@ export {
   type UpdaterStateName,
   type UpdaterStateSnapshot,
 } from "./runtime/update-manager.js";
+export { resolveWebToolsExtensionPath } from "./runtime/web-tools-artifact.js";
+export {
+  WebToolsClientError,
+  WebToolsServerClient,
+  type WebToolsServerClientOptions,
+} from "./runtime/web-tools-client.js";
+export {
+  type WebGatewayDispatch,
+  WebGatewayDispatchError,
+  WebToolsGatewayServer,
+  type WebToolsGatewayServerOptions,
+} from "./runtime/web-tools-gateway.js";
 export { prepareContextTreeHome, resolveContextTreeHome } from "./storage/context-tree-home.js";
 export {
   assertRealDirectory,

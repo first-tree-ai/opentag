@@ -9,6 +9,7 @@
 ## 运行时与消息
 
 - [Runtime 协议](./runtime-protocol.md)
+- [Web 工具](./web-tools.md)
 - [IM Channel 与 Thread Session](./thread-sessions.md)
 - [直连 provider CLI 消息](./direct-provider-cli.md)
 - [内部 Session 协作](./internal-session-collaboration.md)

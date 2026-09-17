@@ -8,6 +8,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 
 - [Platform integrations and credential delivery](./platform-integrations-foundation.md)
 - [Runtime protocol](./runtime-protocol.md)
+- [Web tools](./web-tools.md)
 - [IM Channel and Thread Sessions](./thread-sessions.md)
 - [Direct provider CLI messaging](./direct-provider-cli.md)
 - [Internal Session collaboration](./internal-session-collaboration.md)

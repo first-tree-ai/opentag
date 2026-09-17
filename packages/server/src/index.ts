@@ -602,6 +602,9 @@ export async function startServer(): Promise<void> {
       readiness,
       runtimeAuthService: platformRuntime.auth,
       runtimeProviderProxy: { transport: platformRuntime.credentials.transport },
+      ...(platformRuntime.credentials.web
+        ? { runtimeWeb: { machineAuth: platformRuntime.auth, service: platformRuntime.credentials.web } }
+        : {}),
       runtime: {
         runtimeCredentialOwner: platformRuntime.credentials.owner,
         registry,

@@ -20,8 +20,10 @@ export {
   SANDBOX_PATH,
   SANDBOX_PI,
   SANDBOX_ROOTFS,
+  SANDBOX_WEB_BRIDGE_DIRECTORY,
   SANDBOX_WORKER_ENTRY,
   SANDBOX_WORKSPACE_DESTINATION,
+  type SandboxExecDuplex,
   type SandboxExecResult,
   type SandboxProbeResult,
 } from "./native-sandbox.js";
@@ -54,4 +56,16 @@ export {
   type RunnerMode,
   type RunnerToolLock,
 } from "./types.js";
+export {
+  WEB_BRIDGE_BUDGET_PATTERN,
+  WEB_BRIDGE_MAX_FRAME_BYTES,
+  WEB_BRIDGE_MAX_REQUEST_BYTES,
+  WEB_BRIDGE_SOURCE,
+} from "./web-bridge.js";
+export {
+  NativeSandboxWebGateway,
+  type NativeSandboxWebGatewayOptions,
+  type NativeWebExecutionAuthority,
+  NativeWebExecutionChannel,
+} from "./web-gateway.js";
 export { runRunnerWorker, WORKER_STDIN_MAX_BYTES, type WorkerIo, type WorkerOptions } from "./worker.js";

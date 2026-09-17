@@ -7,6 +7,7 @@
  * is the portable gate behind the CLI Pack Smoke CI job for staging and production.
  */
 
+import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -48,6 +49,13 @@ export async function smokePortableApp({ channel, version }) {
   validateChannelVersion(channel, version);
   const template = await createAppTemplate({ channelConfig, version });
   try {
+    // The trusted Pi web tools extension must ship inside the portable app layout (both CLI
+    // entry depths); the smoke runs offline and fails before any release artifact is considered.
+    for (const relativePath of ["pi-extensions/web-tools.mjs", "cli/pi-extensions/web-tools.mjs"]) {
+      if (!existsSync(join(template.appDir, ...relativePath.split("/")))) {
+        fail(`portable app template is missing ${relativePath}`);
+      }
+    }
     const summary = verifyPortableDependencyGraph(template.appDir);
     runContextTreeRuntimeProbe({
       appDir: template.appDir,

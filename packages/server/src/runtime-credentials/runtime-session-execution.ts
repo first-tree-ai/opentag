@@ -3,8 +3,10 @@ import type {
   RuntimeCredentialProvider,
   RuntimeExecutionOpenRejectCode,
   RuntimeExecutionOpenResult,
+  RuntimeExecutionService,
   RuntimeExecutionSource,
 } from "@opentag/shared";
+import { RUNTIME_CAPABILITY } from "@opentag/shared";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import {
@@ -24,6 +26,7 @@ import {
   runtimeExecutionProviderBinding,
   runtimeExecutionProviderKey,
 } from "./types.js";
+import type { RuntimeWebServicePolicy } from "./web-policy.js";
 
 type ExecutionOpenFrame = Extract<RuntimeCredentialClientFrame, { type: "runtime:execution:open" }>;
 type CandidateProvider = "github" | "slack" | "feishu";
@@ -36,6 +39,11 @@ export interface RuntimeSessionExecutionDeps {
   broker: RuntimeCredentialBroker;
   gitHubAdmission: RuntimeGitHubAdmission;
   cloudControlActive?: (identity: RuntimeControlIdentity) => Promise<boolean> | boolean;
+  /**
+   * Deployment web service policy. Absent means no execution can carry web service scopes, which
+   * keeps the feature fully off regardless of what a Client requests.
+   */
+  webPolicy?: RuntimeWebServicePolicy;
 }
 
 /**
@@ -74,11 +82,12 @@ export async function openRuntimeSessionExecution(
   if (decision.status === "invalid") return rejected("execution_source_invalid");
   const purpose: RuntimeExecutionPurpose = decision.validation ? "validation" : "execution";
   const candidates = await candidateProviders(deps, snapshot, decision.validation, frame.source);
-  if (candidates.length === 0) return rejected("execution_authority_denied");
-  const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId);
+  const services = describeSessionServices(deps, frame, context, snapshot);
+  if (candidates.length === 0 && services.length === 0) return rejected("execution_authority_denied");
+  const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId, services);
   if (!record) return rejected("owner_unavailable");
   const providers = await describeSessionCandidates(deps, record, candidates);
-  if (providers.size === 0) {
+  if (providers.size === 0 && services.length === 0) {
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
   }
@@ -91,6 +100,9 @@ export async function openRuntimeSessionExecution(
     executionId: opened.executionId,
     expiresAt: new Date(opened.expiresAt).toISOString(),
     providers: [...providers.values()],
+    // Service grants are only on the wire when the Client negotiated the webTools capability;
+    // older Clients never see a field their strict schema would reject.
+    ...(services.length > 0 && context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.webTools] === 1 ? { services } : {}),
   };
 }
 
@@ -150,6 +162,7 @@ function openSessionRecord(
   snapshot: RuntimeScopeSnapshot,
   purpose: RuntimeExecutionPurpose,
   connectionId: string,
+  services: readonly RuntimeExecutionService[],
 ): RuntimeExecutionRecord | undefined {
   try {
     return deps.executions.open({
@@ -167,11 +180,31 @@ function openSessionRecord(
       computerKind: snapshot.computer.kind,
       ...(frame.sandbox ? { sandbox: frame.sandbox } : {}),
       providers: new Map(),
+      ...(services.length > 0 ? { services } : {}),
       maxLifetimeMs: purpose === "validation" ? VALIDATION_EXECUTION_MAX_LIFETIME_MS : undefined,
     });
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Platform services attach only when the Client explicitly requested them over a negotiated
+ * webTools capability, the deployment policy authorizes the owning Account, and the Session fence
+ * already passed. A requested-but-unauthorized service is omitted (the tools never register),
+ * never silently granted through a shared default.
+ */
+function describeSessionServices(
+  deps: RuntimeSessionExecutionDeps,
+  frame: ExecutionOpenFrame,
+  context: RuntimeBusinessContext,
+  snapshot: RuntimeScopeSnapshot,
+): RuntimeExecutionService[] {
+  if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.webTools] !== 1) return [];
+  if (!frame.services?.includes("web") || !deps.webPolicy) return [];
+  const scopes = deps.webPolicy.authorizeWeb({ accountId: snapshot.computer.ownerAccountId });
+  if (!scopes || scopes.length === 0) return [];
+  return [{ service: "web", scopes: [...scopes] }];
 }
 
 async function describeSessionCandidates(

@@ -23,6 +23,11 @@ import {
   type SandboxProbeResult,
 } from "./native-sandbox.js";
 import { redactAcceptanceRecord } from "./redact.js";
+import {
+  NativeSandboxWebGateway,
+  type NativeWebExecutionAuthority,
+  type NativeWebExecutionChannel,
+} from "./web-gateway.js";
 
 /**
  * Runner serve mode: the long-lived process a Cloud Run Instance runs. It launches the native
@@ -47,6 +52,11 @@ export interface RunnerServeConfig {
   readonly workspace: string;
   /** Declared platform container port for the startup probe; absent means no health listener. */
   readonly healthPort?: number;
+  /**
+   * Web tools opt-in: enable the fail-closed native web gateway boundary. Off by default; no
+   * listener exists until a trusted parent execution opens its own dedicated channel.
+   */
+  readonly webTools?: boolean;
 }
 
 export interface RunnerServeOptions {
@@ -62,6 +72,16 @@ export interface RunnerServeOptions {
   readonly installSignalHandlers?: boolean;
   /** Graceful stop (the SIGTERM analog); production uses process signals, tests use this. */
   readonly signal?: AbortSignal;
+  /** Test seam: capture the started web gateway for authority injection. */
+  readonly onWebGateway?: (gateway: NativeSandboxWebGateway) => void;
+  /**
+   * Acceptance-harness seam: a trusted, Server-authorized execution authority supplied by the
+   * caller. Production never sets it, so the gateway stays closed for business; no bootstrap
+   * credential is ever treated as an authority.
+   */
+  readonly webAuthority?: NativeWebExecutionAuthority;
+  /** Acceptance-harness observation of the opened per-execution channel descriptor. */
+  readonly onWebExecution?: (channel: NativeWebExecutionChannel) => void;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -113,7 +133,18 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     sandboxName,
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
     ...(healthPort !== undefined ? { healthPort } : {}),
+    ...parseRunnerWebTools(env.OPENTAG_RUNNER_WEB_TOOLS),
   };
+}
+
+/**
+ * The native web boundary opt-in accepts only the exact strings `true`/`false` (or absence).
+ * Any other value is a configuration error instead of a silent posture change.
+ */
+function parseRunnerWebTools(value: string | undefined): { readonly webTools?: boolean } {
+  if (value === undefined || value === "false") return {};
+  if (value === "true") return { webTools: true };
+  throw new Error("OPENTAG_RUNNER_WEB_TOOLS must be true or false");
 }
 
 /**
@@ -139,6 +170,9 @@ interface WorkState {
   token: string;
 }
 export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
+  const webStartup = await startServeWebGateway(config, options);
+  if (webStartup.exitCode !== undefined) return webStartup.exitCode;
+  const webGateway = webStartup.gateway;
   let sandbox: NativeSandbox;
   try {
     sandbox = (options.sandboxFactory ?? ((name, workspace) => new NativeSandbox({ name, workspace })))(
@@ -146,6 +180,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       config.workspace,
     );
   } catch (error) {
+    await webGateway?.close();
     reportStartupError(error, options);
     return startupExitCode(error);
   }
@@ -172,15 +207,10 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     launchAttempted = true;
     await sandbox.launch();
     state = { probe: await sandbox.probe(), stopping, fatal: false, present: true, token: config.bootstrapToken };
+    await openServeWebExecution(webGateway, sandbox, options, stopping);
     // The platform's default TCP startup probe needs a listening socket on the declared port.
     // Start it only after native readiness is proven, and only when the platform provided PORT.
-    if (!stopping && config.healthPort !== undefined) {
-      health = await startRunnerHealthListener({
-        port: config.healthPort,
-        onError: (message) => logLine(options.stderr, `startup health listener error: ${message}`),
-      });
-      logLine(options.stderr, `startup health listener ready on port ${health.port}`);
-    }
+    health = await startServeHealthListener(config, options, stopping);
     await maintainConnections(config, state, sandbox, options, stopListeners);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
   } catch (error) {
@@ -192,11 +222,60 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     try {
       if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
     } finally {
+      await webGateway?.close();
       await health?.close();
       removeSignals();
     }
   }
   return result;
+}
+
+/** Acceptance-harness path only: production never supplies an authority, so no channel opens. */
+async function openServeWebExecution(
+  webGateway: NativeSandboxWebGateway | undefined,
+  sandbox: NativeSandbox,
+  options: RunnerServeOptions,
+  stopping: boolean,
+): Promise<void> {
+  if (stopping || !webGateway || !options.webAuthority) return;
+  const channel = await webGateway.openExecution({ sandbox, authority: options.webAuthority });
+  options.onWebExecution?.(channel);
+}
+
+/** Platform TCP startup probe: started only after native readiness, only when PORT was declared. */
+async function startServeHealthListener(
+  config: RunnerServeConfig,
+  options: RunnerServeOptions,
+  stopping: boolean,
+): Promise<RunnerHealthListener | undefined> {
+  if (stopping || config.healthPort === undefined) return undefined;
+  const health = await startRunnerHealthListener({
+    port: config.healthPort,
+    onError: (message) => logLine(options.stderr, `startup health listener error: ${message}`),
+  });
+  logLine(options.stderr, `startup health listener ready on port ${health.port}`);
+  return health;
+}
+
+interface WebGatewayStartup {
+  readonly gateway?: NativeSandboxWebGateway;
+  readonly exitCode?: number;
+}
+
+/** No listener exists until an execution opens its own channel; opt-in only marks the boundary. */
+async function startServeWebGateway(
+  config: RunnerServeConfig,
+  options: RunnerServeOptions,
+): Promise<WebGatewayStartup> {
+  if (!config.webTools) return {};
+  try {
+    const gateway = await NativeSandboxWebGateway.start({ sandboxName: config.sandboxName });
+    options.onWebGateway?.(gateway);
+    return { gateway };
+  } catch (error) {
+    reportStartupError(error, options);
+    return { exitCode: 4 };
+  }
 }
 interface ConnectionOutcome {
   /**

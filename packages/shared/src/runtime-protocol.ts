@@ -49,6 +49,7 @@ export const RUNTIME_CAPABILITY = {
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
+  webTools: "runtime.webTools",
 } as const;
 
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
@@ -66,6 +67,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 2 },
+  [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },
 } as const;
 
 export const RUNTIME_CLIENT_CAPABILITY_OFFERS = RUNTIME_SERVER_CAPABILITY_OFFERS;

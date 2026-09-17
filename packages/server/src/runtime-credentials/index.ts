@@ -22,6 +22,10 @@ import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "./task-policy.
 import { RuntimeProxyTicketStore } from "./ticket-store.js";
 import { RuntimeUrlHandleStore } from "./url-handle-store.js";
 import { RuntimeValidationRunRegistry } from "./validation-runs.js";
+import { RuntimeWebExecutionAuthorizer } from "./web-execution.js";
+import type { RuntimeWebServicePolicy, RuntimeWebTenantResolver } from "./web-policy.js";
+import type { RouterWebClient } from "./web-router-client.js";
+import { RuntimeWebService } from "./web-service.js";
 
 export * from "./capability-store.js";
 export * from "./credential-broker.js";
@@ -47,6 +51,10 @@ export * from "./types.js";
 export * from "./upload-forward.js";
 export * from "./url-handle-store.js";
 export * from "./validation-runs.js";
+export * from "./web-execution.js";
+export * from "./web-policy.js";
+export * from "./web-router-client.js";
+export * from "./web-service.js";
 export * from "./write-outcome.js";
 
 export interface RuntimeCredentialServicesOptions {
@@ -76,6 +84,14 @@ export interface RuntimeCredentialServicesOptions {
   fetchImpl?: typeof fetch;
   /** Parent-provided adapters (e.g. GitHub). IM adapters are constructed by default. */
   adapters?: ReadonlyMap<RuntimeCredentialProvider, ProviderProxyAdapter>;
+  /**
+   * Deployment web service wiring (policy + fixed Router client). Absent keeps the platform web
+   * service fully off: no execution carries web scopes and no runtime web route exists.
+   */
+  web?: {
+    readonly policy: RuntimeWebServicePolicy & RuntimeWebTenantResolver;
+    readonly router: RouterWebClient;
+  };
   sweepIntervalMs?: number;
 }
 
@@ -88,7 +104,35 @@ export interface RuntimeCredentialServices {
   validationRuns: RuntimeValidationRunRegistry;
   urlHandles: RuntimeUrlHandleStore;
   broker: RuntimeCredentialBroker;
+  /** Present only when the deployment configured the web service. */
+  web?: RuntimeWebService;
   close(): void;
+}
+
+/** Builds the optional web service exactly once per stack; absent config keeps it fully off. */
+function createRuntimeWebService(
+  options: RuntimeCredentialServicesOptions,
+  deps: {
+    executions: RuntimeExecutionRegistry;
+    scopeResolver: RuntimeScopeResolverPort;
+    authority: RuntimeExecutionAuthority;
+    connectionFence: RuntimeConnectionFence;
+  },
+): RuntimeWebService | undefined {
+  const web = options.web;
+  if (!web) return undefined;
+  return new RuntimeWebService({
+    authorizer: new RuntimeWebExecutionAuthorizer({
+      executions: deps.executions,
+      scopeResolver: deps.scopeResolver,
+      authority: deps.authority,
+      connectionFence: deps.connectionFence,
+      ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
+    }),
+    policy: web.policy,
+    router: web.router,
+    executions: deps.executions,
+  });
 }
 
 /**
@@ -154,6 +198,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     policy,
     gitHubAdmission,
     ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
+    ...(options.web ? { webPolicy: options.web.policy } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
     ...(options.sweepIntervalMs !== undefined ? { sweepIntervalMs: options.sweepIntervalMs } : {}),
   });
@@ -168,6 +213,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);
   });
+  const web = createRuntimeWebService(options, { executions, scopeResolver, authority, connectionFence });
   return {
     owner,
     transport,
@@ -177,6 +223,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     validationRuns,
     urlHandles,
     broker,
+    ...(web ? { web } : {}),
     close: () => {
       unsubscribeHandles();
       owner.close();

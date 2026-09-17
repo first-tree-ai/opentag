@@ -13,7 +13,13 @@ import {
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
-import type { AgentInput, AgentRunResult, AgentRuntime, AgentRuntimeEvent } from "../agent-runtime/types.js";
+import type {
+  AgentInput,
+  AgentRunConfiguration,
+  AgentRunResult,
+  AgentRuntime,
+  AgentRuntimeEvent,
+} from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
@@ -32,6 +38,7 @@ import { buildProviderOutboxInstructions, GITHUB_NATIVE_CLI_INSTRUCTIONS } from 
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
   PreparedRuntimeCredentialEnvironment,
+  PreparedWebToolsLaunch,
   RuntimeCredentialEnvironmentManager,
 } from "./runtime-credential-environment-manager.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
@@ -274,6 +281,11 @@ export class AgentTurnRunner {
         runId: owner.turnId,
         input: buildAgentInput(owner.request, supplementalContext),
         signal: runSignal,
+        // Pi-specific launch facts are only resolved when this execution actually carries them,
+        // so a non-web runtime manager is never consulted at all.
+        ...(started.webTools
+          ? webToolsPromptConfiguration(started.webTools, this.#runtimeManager.providerId(owner.request.sessionId))
+          : {}),
       });
       turn.phase = "reporting";
       completion = completionForResult(result, signal.reason);
@@ -361,6 +373,7 @@ export class AgentTurnRunner {
     preparedExecutionId?: string;
     runSignal: AbortSignal;
     turnPlanInput?: ProviderCliTurnPlanPrepareInput;
+    webTools?: PreparedWebToolsLaunch;
   }> {
     await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, owner.turnId, "starting");
     const credentials = await this.#credentialEnvironment.prepare(
@@ -381,6 +394,7 @@ export class AgentTurnRunner {
       ...(credentials.executionId ? { preparedExecutionId: credentials.executionId } : {}),
       runSignal,
       ...(turnPlanInput ? { turnPlanInput } : {}),
+      ...(credentials.web ? { webTools: credentials.web } : {}),
     };
   }
 
@@ -445,6 +459,22 @@ function outgoingReplyCapturePlan(
   includeInReport: boolean,
 ): Pick<ProviderCliTurnPlanPrepareInput, "captureOutgoingReplies"> {
   return provider === "feishu" && includeInReport ? { captureOutgoingReplies: true } : {};
+}
+
+/**
+ * Per-Turn web tools launch for the Pi provider only. The trusted facts come from the freshly
+ * prepared execution (never from Server content); other providers never see Pi-specific fields.
+ */
+function webToolsPromptConfiguration(
+  webTools: PreparedWebToolsLaunch | undefined,
+  providerId: string | undefined,
+): { configuration?: AgentRunConfiguration } {
+  if (!webTools || providerId !== "pi") return {};
+  return {
+    configuration: {
+      provider: { webTools: { extensionPath: webTools.extensionPath, socketPath: webTools.socketPath } },
+    },
+  };
 }
 
 export function buildAgentInput(

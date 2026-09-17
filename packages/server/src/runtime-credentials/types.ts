@@ -3,6 +3,7 @@ import type {
   RuntimeCredentialRevokedCode,
   RuntimeExecutionProvider,
   RuntimeExecutionSandbox,
+  RuntimeExecutionService,
   RuntimeExecutionSource,
   RuntimeProviderCliMetadata,
 } from "@opentag/shared";
@@ -49,6 +50,12 @@ export interface RuntimeExecutionRecord {
   /** Present only for a Server-issued validation execution; replaces the Session fence. */
   validation?: { provider: RuntimeCredentialProvider; bindingId: string };
   providers: ReadonlyMap<string, RuntimeExecutionProviderBinding>;
+  /**
+   * Granted platform services (currently only `web`) with their exact authorized scopes. Platform
+   * services are not provider CLI bindings: they authorize fixed Server routes and never mint
+   * provider material. Absent/empty means the execution carries no service authorization.
+   */
+  services?: readonly RuntimeExecutionService[];
   createdAt: number;
   expiresAt: number;
 }

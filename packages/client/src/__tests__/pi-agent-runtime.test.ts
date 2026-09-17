@@ -84,6 +84,50 @@ describe("PiAgentRuntime", () => {
     await runtime.close();
   });
 
+  it("loads the trusted web tools extension explicitly and injects only the endpoint descriptor", async () => {
+    const client = new ScriptedPiClient("complete");
+    const environments: Array<Readonly<Record<string, string>> | undefined> = [];
+    const factory = new PiAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createClient: (_cwd, args, environment) => {
+        client.args = args;
+        environments.push(environment);
+        return client;
+      },
+      probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+    });
+    const extensionPath = "/opt/opentag/client/dist/pi-extensions/web-tools.mjs";
+    const socketPath = "/tmp/opentag-web-abc/web.sock";
+    const runtime = await factory.create(
+      createRequest(() => undefined, { provider: { webTools: { extensionPath, socketPath } } }),
+    );
+    await expect(runtime.prompt({ runId: "run-web", input: input("hello") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(client.args).toContain("--no-extensions");
+    expect(client.args?.[client.args.indexOf("--extension") + 1]).toBe(extensionPath);
+    expect(environments[0]).toEqual({ OPENTAG_WEB_TOOLS_SOCKET: socketPath });
+    await runtime.close();
+  });
+
+  it("rejects malformed trusted web tools launch facts before spawning anything", async () => {
+    const factory = piFactory(new ScriptedPiClient("complete"));
+    const invalid: unknown[] = [
+      "not-an-object",
+      { extensionPath: "/tool.mjs", socketPath: "/tool.sock", extra: true },
+      { extensionPath: "relative.mjs", socketPath: "/tool.sock" },
+      { extensionPath: "/tool.mjs", socketPath: "relative.sock" },
+      { extensionPath: "", socketPath: "/tool.sock" },
+    ];
+    for (const webTools of invalid) {
+      await expect(
+        factory.create(createRequest(() => undefined, { provider: { webTools: webTools as never } })),
+      ).rejects.toMatchObject({
+        code: "configuration_invalid",
+      });
+    }
+  });
+
   it("resumes the exact binding in a new process and preserves non-prompt overrides", async () => {
     const client = new ScriptedPiClient("complete");
     client.messageCount = 2;

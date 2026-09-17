@@ -96,6 +96,15 @@ describe("loadRunnerServeConfig", () => {
       expect(() => loadRunnerServeConfig({ ...base, PORT }), `PORT=${JSON.stringify(PORT)}`).toThrow(/PORT/);
     }
   });
+
+  it("accepts only exact booleans for the web tools opt-in", () => {
+    expect(loadRunnerServeConfig(base).webTools).toBeUndefined();
+    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: "false" }).webTools).toBeUndefined();
+    expect(loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: "true" }).webTools).toBe(true);
+    for (const value of ["1", "yes", "TRUE", "on", ""]) {
+      expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_WEB_TOOLS: value })).toThrow(/WEB_TOOLS/);
+    }
+  });
 });
 
 describe("native sandbox argv construction", () => {
@@ -493,6 +502,12 @@ async function startWss(
 ): Promise<WssHarness> {
   const port = await freePort();
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
+  // Bind before any caller asks for another free port: otherwise an ephemeral probe can hand
+  // out this same port to the startup health listener and fail its bind.
+  await new Promise<void>((resolve, reject) => {
+    wss.once("listening", () => resolve());
+    wss.once("error", reject);
+  });
   cleanup.push(async () => {
     for (const socket of wss.clients) socket.terminate();
     await new Promise<void>((resolve) => wss.close(() => resolve()));

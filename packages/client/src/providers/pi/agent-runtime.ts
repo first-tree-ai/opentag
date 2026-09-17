@@ -67,12 +67,29 @@ export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
 
 interface PiProviderConfiguration {
   readonly sessionName?: string;
+  /**
+   * Trusted web tools launch (runtime opt-in, negotiated, execution-authorized). When present,
+   * the fixed trusted extension artifact is loaded explicitly with `-e` for this run (implicit
+   * discovery stays disabled via `--no-extensions`), and the nonsecret gateway endpoint is
+   * injected into the process environment. Never read from Server content; the trusted Turn
+   * runner sets it from the prepared execution.
+   */
+  readonly webTools?: PiWebToolsConfiguration;
 }
+
+// Type aliases (not interfaces) so the shapes stay assignable to JsonValue configuration.
+type PiWebToolsConfiguration = {
+  readonly extensionPath: string;
+  readonly socketPath: string;
+};
+
+/** Nonsecret endpoint descriptor consumed by the trusted extension artifact. */
+const PI_WEB_TOOLS_SOCKET_ENV = "OPENTAG_WEB_TOOLS_SOCKET";
 
 interface PiRuntimeOptions {
   readonly binding: AgentRuntimeBinding;
   readonly configuration?: AgentRunConfiguration;
-  readonly createClient: (args: readonly string[]) => PiRpcClient;
+  readonly createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
   readonly eventSink: AgentRuntimeEventSink;
   readonly policy: AgentRuntimePolicy;
   readonly resume: boolean;
@@ -142,7 +159,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #configuration?: AgentRunConfiguration;
   readonly #sessionDirectory?: string;
   readonly #systemPrompt: string;
-  readonly #createClient: (args: readonly string[]) => PiRpcClient;
+  readonly #createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
   readonly #tools = new Map<string, PiTool>();
   #client?: PiRpcClient;
   #unsubscribe?: () => void;
@@ -192,7 +209,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     let cleanupFailure: Error | undefined;
     let result: AgentProviderRunResult;
     try {
-      client = this.#createClient(this.#arguments(request));
+      client = this.#createClient(this.#arguments(request), piWebToolsEnvironment(request, this.#configuration));
       this.#client = client;
       this.#unsubscribe = client.subscribe((message) => this.#enqueue(message));
       const state = requireRecord(
@@ -340,6 +357,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       ...piPolicyArguments(this.#policy),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--thinking", configuration.reasoningEffort] : []),
+      // Explicit `-e` extension load for actual execution only; probes/help never receive it and
+      // `--no-extensions` (in PI_RESOURCE_DISABLE_ARGUMENTS) keeps implicit discovery disabled.
+      ...(provider.webTools ? ["--extension", provider.webTools.extensionPath] : []),
       "--append-system-prompt",
       this.#systemPrompt,
       ...(provider.sessionName ? ["--name", provider.sessionName] : []),
@@ -762,8 +782,15 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       return new PiAgentRuntime({
         binding,
         configuration: request.configuration,
-        createClient: (args) =>
-          this.#createClient(request.workspace.cwd, args, request.workspace.environment, request.workspace.pathPrepend),
+        createClient: (args, extraEnvironment) =>
+          this.#createClient(
+            request.workspace.cwd,
+            args,
+            extraEnvironment
+              ? { ...request.workspace.environment, ...extraEnvironment }
+              : request.workspace.environment,
+            request.workspace.pathPrepend,
+          ),
         eventSink: request.eventSink,
         policy: request.policy,
         resume: mode === "resume",
@@ -997,7 +1024,7 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   assertJsonValue(value, "configuration.provider");
   const object = record(value);
   if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi provider configuration must be an object");
-  const allowed = new Set(["sessionName"]);
+  const allowed = new Set(["sessionName", "webTools"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key))
       throw new AgentRuntimeError("configuration_invalid", `unknown Pi configuration field: ${key}`);
@@ -1005,7 +1032,38 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   const sessionName = boundedConfigurationString(object.sessionName, "sessionName", 4_096);
   return {
     ...(sessionName ? { sessionName } : {}),
+    ...(object.webTools !== undefined ? { webTools: parseWebToolsConfiguration(object.webTools) } : {}),
   };
+}
+
+/** Strict trusted launch facts; both are absolute trusted-local paths with hard byte bounds. */
+function parseWebToolsConfiguration(value: unknown): PiWebToolsConfiguration {
+  assertJsonValue(value, "configuration.provider.webTools");
+  const object = record(value);
+  if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi webTools must be an object");
+  const allowed = new Set(["extensionPath", "socketPath"]);
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key)) throw new AgentRuntimeError("configuration_invalid", `unknown Pi webTools field: ${key}`);
+  }
+  const extensionPath = boundedConfigurationString(object.extensionPath, "webTools.extensionPath", 512);
+  const socketPath = boundedConfigurationString(object.socketPath, "webTools.socketPath", 200);
+  if (!extensionPath || !isAbsolute(extensionPath)) {
+    throw new AgentRuntimeError("configuration_invalid", "Pi webTools.extensionPath must be an absolute path");
+  }
+  if (!socketPath || !isAbsolute(socketPath)) {
+    throw new AgentRuntimeError("configuration_invalid", "Pi webTools.socketPath must be an absolute path");
+  }
+  return { extensionPath, socketPath };
+}
+
+/** Per-run process environment for the trusted extension: only the nonsecret endpoint descriptor. */
+function piWebToolsEnvironment(
+  request: AgentPromptRequest,
+  base: AgentRunConfiguration | undefined,
+): Readonly<Record<string, string>> | undefined {
+  const configuration = mergeConfiguration(base, request.configuration);
+  const provider = parseProviderConfiguration(configuration?.provider);
+  return provider.webTools ? { [PI_WEB_TOOLS_SOCKET_ENV]: provider.webTools.socketPath } : undefined;
 }
 
 function boundedConfigurationString(

@@ -48,6 +48,7 @@ import { ProviderCliTurnPlanManager } from "../runtime/provider-cli/turn-plan-ma
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
@@ -84,6 +85,63 @@ describe("createClientRuntime production composition", () => {
       runtime.stop();
       await runtime.run();
     }
+  });
+
+  it("resolves the trusted web tools extension only for the proxy-mode opt-in", async () => {
+    const home = await temporaryDirectory("opentag-web-tools-optin-");
+    const extension = resolve(home, "web-tools.mjs");
+    await writeFile(extension, "export default function register() {}\n");
+    const logs: RecordedLog[] = [];
+    const enabled = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      logger: recordingLogger(logs),
+      machineToken: "machine-token",
+      webTools: { enabled: true, extensionPath: extension, fetchImpl: fetch },
+    });
+    enabled.stop();
+    expect(logs.some((entry) => entry.fields.code === "web_tools_artifact_missing")).toBe(false);
+
+    const missing = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      logger: recordingLogger(logs),
+      machineToken: "machine-token",
+      webTools: { enabled: true, extensionPath: resolve(home, "missing.mjs") },
+    });
+    missing.stop();
+    expect(logs.some((entry) => entry.fields.code === "web_tools_artifact_missing")).toBe(true);
+
+    // No explicit path: the default built/source artifact candidate must resolve.
+    logs.length = 0;
+    const defaultResolution = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      logger: recordingLogger(logs),
+      machineToken: "machine-token",
+      webTools: { enabled: true },
+    });
+    defaultResolution.stop();
+    expect(logs.some((entry) => entry.fields.code === "web_tools_artifact_missing")).toBe(false);
+
+    // Legacy mode never opens executions, so the flag must not even resolve an artifact.
+    const legacy = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      factory: readyFactory(),
+      home,
+      machineToken: "machine-token",
+      webTools: { enabled: true, extensionPath: resolve(home, "missing-legacy.mjs") },
+    });
+    legacy.stop();
   });
 
   it("passes a caller-supplied host Context Tree environment into runtime preparation", async () => {

@@ -94,6 +94,7 @@ import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
+import { resolveWebToolsExtensionPath } from "./web-tools-artifact.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
@@ -318,6 +319,16 @@ export interface CreateClientRuntimeOptions {
   readonly machineToken?: string;
   readonly durabilityStore?: RuntimeDurabilityStore;
   readonly durabilityMetrics?: RuntimeDurabilityMetrics;
+  /**
+   * Explicit web tools opt-in. Effective only in proxy credential mode with the webTools
+   * capability negotiated and the Server granting web scopes to the execution; otherwise the
+   * trusted extension is never loaded. `extensionPath` defaults to the fixed built artifact.
+   */
+  readonly webTools?: {
+    readonly enabled: boolean;
+    readonly extensionPath?: string;
+    readonly fetchImpl?: typeof fetch;
+  };
 }
 
 export class ComposedClientRuntime {
@@ -687,6 +698,7 @@ export async function createClientRuntime(
     options,
     connection,
     moduleLogger("im-credential-environment"),
+    await resolveOptedInWebToolsExtensionPath(options, moduleLogger("web-tools")),
   );
   const providerCliReconciler = new ProviderCliReconciler({
     connection,
@@ -1268,6 +1280,7 @@ export function createCredentialEnvironment(
   options: CreateClientRuntimeOptions,
   connection: RuntimeConnection,
   logger: ClientLogger,
+  webToolsExtensionPath?: string,
 ): RuntimeCredentialEnvironmentManager {
   const runtimeCredentials = options.runtimeCredentials;
   return new RuntimeCredentialEnvironmentManager({
@@ -1284,7 +1297,38 @@ export function createCredentialEnvironment(
     ...(runtimeCredentials?.openBudgetMs ? { openBudgetMs: runtimeCredentials.openBudgetMs } : {}),
     ...(runtimeCredentials?.sandboxForSession ? { sandboxForSession: runtimeCredentials.sandboxForSession } : {}),
     ...(runtimeCredentials?.scheduler ? { scheduler: runtimeCredentials.scheduler } : {}),
+    ...(webToolsExtensionPath && options.machineToken
+      ? {
+          webTools: {
+            extensionPath: webToolsExtensionPath,
+            machineToken: options.machineToken,
+            ...(options.webTools?.fetchImpl ? { fetchImpl: options.webTools.fetchImpl } : {}),
+          },
+        }
+      : {}),
   });
+}
+
+/**
+ * Resolve the trusted extension artifact for the web tools opt-in. Proxy mode only: legacy mode
+ * never opens executions, so web tools stay off regardless of the flag. A missing artifact is a
+ * logged fail-closed, never a fallback path.
+ */
+async function resolveOptedInWebToolsExtensionPath(
+  options: CreateClientRuntimeOptions,
+  logger: ClientLogger,
+): Promise<string | undefined> {
+  if (!options.webTools?.enabled || (options.credentialMode ?? "legacy") !== "proxy") return undefined;
+  const path = await resolveWebToolsExtensionPath(
+    options.webTools.extensionPath !== undefined ? { explicitPath: options.webTools.extensionPath } : {},
+  );
+  if (!path) {
+    logger.warn(
+      { code: "web_tools_artifact_missing" },
+      "The trusted web tools extension artifact is missing; web tools stay disabled",
+    );
+  }
+  return path;
 }
 
 /**

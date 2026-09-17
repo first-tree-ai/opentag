@@ -8,6 +8,7 @@ import {
   type RuntimeExecutionOpenResult,
   type RuntimeExecutionProvider,
   type RuntimeExecutionSandbox,
+  type RuntimeExecutionService,
   type RuntimeExecutionSource,
   type RuntimeProxyCliMetadata,
   type RuntimeProxyProvider,
@@ -61,6 +62,11 @@ export interface RuntimeCredentialExecutionSubject {
   readonly sandbox?: RuntimeExecutionSandbox;
   readonly sessionId: string;
   readonly source: RuntimeExecutionSource;
+  /**
+   * Platform services the Client opts into for this execution (`web`). Sent only when the
+   * webTools capability was negotiated; the Server grants per its own deployment policy.
+   */
+  readonly services?: readonly "web"[];
 }
 
 /** Structural data-connection surface so the parent harness can drive the real Relay. */
@@ -182,6 +188,7 @@ export class RuntimeCredentialRelay {
   #data?: RuntimeProxyDataConnectionLike;
   #executionId = "";
   #providers: readonly RuntimeExecutionProvider[] = [];
+  #services: readonly RuntimeExecutionService[] = [];
 
   private constructor(options: RuntimeCredentialRelayOptions) {
     this.#connection = options.connection;
@@ -214,6 +221,11 @@ export class RuntimeCredentialRelay {
 
   get providers(): readonly RuntimeExecutionProvider[] {
     return this.#providers;
+  }
+
+  /** Platform services the Server granted this execution (e.g. `web` with exact scopes). */
+  get services(): readonly RuntimeExecutionService[] {
+    return this.#services;
   }
 
   /** Fires when the execution is revoked, closed, or loses its control/data connection. */
@@ -327,6 +339,7 @@ export class RuntimeCredentialRelay {
           runId: subject.runId,
           source: subject.source,
           ...(subject.sandbox ? { sandbox: subject.sandbox } : {}),
+          ...(subject.services && subject.services.length > 0 ? { services: [...subject.services] } : {}),
         },
         "runtime:execution:result",
         signal,
@@ -334,6 +347,7 @@ export class RuntimeCredentialRelay {
       if (result.status === "succeeded") {
         this.#executionId = result.executionId;
         this.#providers = result.providers;
+        this.#services = result.services ?? [];
         return;
       }
       // Only `execution_not_ready` is retryable: Server custody has not accepted yet.

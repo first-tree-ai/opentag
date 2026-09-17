@@ -665,8 +665,10 @@ describe("SessionRuntimeManager", () => {
     const first = reconcile(computerId, snapshot(1));
 
     expect(() => manager.sessionKind(first.sessionId)).toThrow(SessionRuntimeNotPreparedError);
+    expect(manager.providerId(first.sessionId)).toBeUndefined();
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
     expect(manager.sessionKind(first.sessionId)).toBe("visible");
+    expect(manager.providerId(first.sessionId)).toBe("codex");
     await manager.ensureRuntime("session-1");
     expect(factory.created[0]?.workspace.writableRoots).toEqual([
       factory.created[0]?.workspace.cwd,

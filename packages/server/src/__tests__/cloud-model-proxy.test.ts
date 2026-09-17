@@ -369,18 +369,14 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "slow-sse", chunkIntervalMs: 20 });
     const { grants, port } = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 30_000 } });
     const issued = await issueToken(grants);
-    const controller = new AbortController();
-    const response = await postModel(
-      port,
-      { messages: [], model: "model-a", stream: true },
-      issued.token,
-      controller.signal,
-    );
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("no response stream");
-    const first = await reader.read();
-    expect(first.done).toBe(false);
-    controller.abort();
+    // A dedicated connection (no keep-alive pool) makes the disconnect a real socket destroy
+    // owned and cleaned up by this test. Node 22's global fetch leaves a replacement idle
+    // keep-alive socket after an abort, which holds `app.close()` until the server keep-alive
+    // timeout and times the afterEach hook out even though the route aborted correctly.
+    const stream = await openModelStream(port, issued.token, { messages: [], model: "model-a", stream: true });
+    expect(stream.statusCode).toBe(200);
+    expect(stream.firstChunkBytes).toBeGreaterThan(0);
+    stream.destroy();
     await vi.waitFor(() => expect(upstream.stats.prematureClose).toBe(true), { interval: 10, timeout: 2_000 });
     await vi.waitFor(() => expect(slotIsFree(grants, issued.claims.jti)).toBe(true), { interval: 10, timeout: 2_000 });
   });

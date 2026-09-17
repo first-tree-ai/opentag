@@ -589,6 +589,21 @@ function serveConfig(url: string): RunnerServeConfig {
   };
 }
 
+/** The delivery id carried by a report frame, if it is a report frame. */
+function frameReportDeliveryId(frame: Record<string, unknown>): string | undefined {
+  if (frame.type !== "delivery:report") return undefined;
+  return (frame.report as { deliveryId?: string } | undefined)?.deliveryId;
+}
+
+/** Exact delivery-identity report lookup; never a transient frame count. */
+function reportFor(
+  wss: { readonly frames: Record<string, unknown>[] },
+  deliveryId: string,
+): { outcome?: string } | undefined {
+  const frame = wss.frames.find((candidate) => frameReportDeliveryId(candidate) === deliveryId);
+  return frame ? (frame.report as { outcome?: string }) : undefined;
+}
+
 function modelGrantFor(delivery: ReturnType<typeof cloudDeliveryFixture>) {
   return {
     baseUrl: "https://server.example.com/api/v1/cloud-model",
@@ -1133,9 +1148,12 @@ describe("Runner cancellation and connection lifetime", () => {
           destroyCalls += 1;
           markResetStarted();
           await resetGate;
-          // Emulate the native `delete --force` reclaiming the whole namespace process tree.
-          if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-          await childExited;
+          // Emulate the native `delete --force` reclaiming the whole namespace process tree. Only
+          // wait for a child that actually exists, so cleanup cannot hang before the worker spawn.
+          if (child && child.exitCode === null && child.signalCode === null) {
+            child.kill("SIGKILL");
+            await childExited;
+          }
         },
         exec: async () => {
           throw new Error("unexpected native exec");
@@ -1192,71 +1210,88 @@ describe("Runner cancellation and connection lifetime", () => {
         stderr: output.stderr,
       },
     );
-    await wss.waitFor("runner:ready");
-    // Startup already launched/probed once; the reset must add exactly one more verified cycle.
-    const launchesBefore = launchCalls;
-    const probesBefore = probeCalls;
-    const first = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
-    wss.send({ type: "delivery:run", requestId: first.requestId, delivery: first });
-    await wss.waitFor("delivery:received");
-    wss.send({
-      type: "delivery:verified",
-      requestId: first.requestId,
-      status: "verified",
-      model: modelGrantFor(first),
-    });
-    // NO next delivery is sent: cleanup starts immediately, while the turn occupation is reserved.
-    await resetStarted;
-    expect(destroyCalls).toBe(1);
-    expect(child?.exitCode).toBeNull();
-    expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(0);
-    // A queued second turn and E3 acceptance stay blocked through the pending cleanup.
-    wss.send({ type: "acceptance:run", requestId: "busy-1", mode: "offline", deadlineAtMs: Date.now() + 60_000 });
-    const busy = (await wss.waitFor("acceptance:result")) as { failure?: { code?: string } };
-    expect(busy.failure?.code).toBe("runner_busy");
-    const second = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
-    wss.send({ type: "delivery:run", requestId: second.requestId, delivery: second });
-    await waitFor(
-      () => wss.frames.filter((frame) => frame.type === "delivery:received").length === 2,
-      "second receipt",
-    );
-    wss.send({
-      type: "delivery:verified",
-      requestId: second.requestId,
-      status: "verified",
-      model: modelGrantFor(second),
-    });
-    const secondReceipt = wss.frames.find(
-      (frame) => frame.type === "delivery:received" && frame.deliveryId === second.deliveryId,
-    ) as { turnId?: string } | undefined;
-    // The query result is serialized behind the second verified frame: observing it proves that
-    // frame was processed and only queued, never started before cleanup completed.
-    wss.send({
-      type: "delivery:query",
-      requestId: "probe-q",
-      deliveryId: second.deliveryId,
-      turnId: secondReceipt?.turnId,
-    });
-    await waitFor(
-      () => wss.frames.some((frame) => frame.type === "delivery:query:result" && frame.requestId === "probe-q"),
-      "second verified processed",
-    );
-    expect(workerCalls).toHaveLength(1);
-    expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(0);
-    releaseReset();
-    await waitFor(() => wss.frames.filter((frame) => frame.type === "delivery:report").length === 1, "first report");
-    const firstReport = wss.frames.find((frame) => frame.type === "delivery:report") as {
-      report?: { outcome?: string };
-    };
-    expect(firstReport.report?.outcome).toBe("cancelled");
-    expect(child?.signalCode).toBe("SIGKILL");
-    await waitFor(() => wss.frames.filter((frame) => frame.type === "delivery:report").length === 2, "second report");
-    expect(workerCalls).toHaveLength(2);
-    expect(destroyCalls).toBe(1);
-    expect(launchCalls - launchesBefore).toBe(1);
-    expect(probeCalls - probesBefore).toBe(1);
-    stop.abort();
-    expect(await running).toBe(143);
+    try {
+      await wss.waitFor("runner:ready");
+      // Startup already launched/probed once; the reset must add exactly one more verified cycle.
+      const launchesBefore = launchCalls;
+      const probesBefore = probeCalls;
+      const first = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+      wss.send({ type: "delivery:run", requestId: first.requestId, delivery: first });
+      await wss.waitFor("delivery:received");
+      wss.send({
+        type: "delivery:verified",
+        requestId: first.requestId,
+        status: "verified",
+        model: modelGrantFor(first),
+      });
+      // NO next delivery is sent: cleanup starts immediately, while the turn occupation is reserved.
+      await resetStarted;
+      expect(destroyCalls).toBe(1);
+      expect(child?.exitCode).toBeNull();
+      expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(0);
+      // A queued second turn and E3 acceptance stay blocked through the pending cleanup.
+      wss.send({ type: "acceptance:run", requestId: "busy-1", mode: "offline", deadlineAtMs: Date.now() + 60_000 });
+      const busy = (await wss.waitFor("acceptance:result")) as { failure?: { code?: string } };
+      expect(busy.failure?.code).toBe("runner_busy");
+      const second = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+      wss.send({ type: "delivery:run", requestId: second.requestId, delivery: second });
+      await waitFor(
+        () => wss.frames.filter((frame) => frame.type === "delivery:received").length === 2,
+        "second receipt",
+      );
+      wss.send({
+        type: "delivery:verified",
+        requestId: second.requestId,
+        status: "verified",
+        model: modelGrantFor(second),
+      });
+      const secondReceipt = wss.frames.find(
+        (frame) => frame.type === "delivery:received" && frame.deliveryId === second.deliveryId,
+      ) as { turnId?: string } | undefined;
+      // The query result is serialized behind the second verified frame: observing it proves that
+      // frame was processed and only queued, never started before cleanup completed.
+      wss.send({
+        type: "delivery:query",
+        requestId: "probe-q",
+        deliveryId: second.deliveryId,
+        turnId: secondReceipt?.turnId,
+      });
+      await waitFor(
+        () => wss.frames.some((frame) => frame.type === "delivery:query:result" && frame.requestId === "probe-q"),
+        "second verified processed",
+      );
+      expect(workerCalls).toHaveLength(1);
+      expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(0);
+      releaseReset();
+      // Match the exact delivery identity. Two reports can arrive between polls, so a transient
+      // count (=== 1) is never a valid observation; every predicate below is monotonic.
+      await waitFor(() => reportFor(wss, first.deliveryId) !== undefined, "first report");
+      expect(reportFor(wss, first.deliveryId)?.outcome).toBe("cancelled");
+      expect(child?.signalCode).toBe("SIGKILL");
+      await waitFor(() => reportFor(wss, second.deliveryId) !== undefined, "second report");
+      expect(reportFor(wss, second.deliveryId)?.outcome).toBe("completed");
+      // Exact final delivery order and count: cancelled first, completed second, nothing else.
+      expect(wss.frames.filter((frame) => frame.type === "delivery:report").map(frameReportDeliveryId)).toEqual([
+        first.deliveryId,
+        second.deliveryId,
+      ]);
+      expect(workerCalls).toEqual([first.deliveryId, second.deliveryId]);
+      expect(destroyCalls).toBe(1);
+      expect(launchCalls - launchesBefore).toBe(1);
+      expect(probeCalls - probesBefore).toBe(1);
+      stop.abort();
+      expect(await running).toBe(143);
+    } finally {
+      // Always release the gated cleanup, settle the runner, and reap the owned child even when an
+      // assertion failed earlier. Reap before awaiting the runner so a stuck cleanup cannot hang.
+      releaseReset();
+      stop.abort();
+      if (child) {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await childExited;
+      }
+      await running.catch(() => undefined);
+    }
   }, 30_000);
 
   it("keeps a legacy E3 welcome Cloud-free and still runs E3 acceptance", async () => {

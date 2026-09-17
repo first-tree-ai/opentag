@@ -50,6 +50,25 @@ function stubOAuth(responses: Response[]) {
   return { calls, client: new McpOAuthClient({ fetcher, publicUrl: PUBLIC_URL }) };
 }
 
+/**
+ * The same stub, with loopback plain HTTP admitted.
+ *
+ * The fixture Server is on `127.0.0.1` and is its own authorization server, so its metadata is on
+ * `http:` — which the ordinary stub refuses before any metadata is parsed. A test about the document's
+ * own scheme rules needs that gate out of the way.
+ */
+function stubOAuthWithLoopback(responses: Response[]) {
+  const fetchImpl = vi.fn(async () => {
+    const next = responses.shift() ?? { status: 404 };
+    return new Response(next.body ?? "", {
+      status: next.status,
+      headers: { "content-type": "application/json", ...next.headers },
+    });
+  }) as unknown as typeof globalThis.fetch;
+  const fetcher = new McpOutboundFetcher({ allowLoopback: true, fetch: fetchImpl });
+  return { client: new McpOAuthClient({ fetcher, publicUrl: PUBLIC_URL }) };
+}
+
 function json(value: unknown): Response {
   return { status: 200, body: JSON.stringify(value) };
 }
@@ -121,6 +140,48 @@ describe("MCP OAuth discovery order", () => {
       registrationEndpoint: "https://auth.example.com/register",
       clientIdMetadataDocumentSupported: true,
       authorizationResponseIssParameterSupported: true,
+    });
+  });
+
+  it("refuses a document whose endpoints are not https", async () => {
+    /*
+     * The authorization endpoint is handed to the browser with `location.assign`, and `new URL()`
+     * accepts `javascript:` — so a peer answering with one would be executing script in an
+     * authenticated page. The CSP blocks that today; validating the scheme is what makes it true by
+     * construction rather than by luck.
+     */
+    for (const endpoint of [
+      "javascript:alert(1)",
+      "data:text/html,<script>alert(1)</script>",
+      "http://auth.example.com/authorize",
+      "https://user:secret@auth.example.com/authorize",
+    ]) {
+      const { client } = stubOAuth([
+        json({
+          issuer: "https://auth.example.com",
+          authorization_endpoint: endpoint,
+          token_endpoint: "https://auth.example.com/token",
+        }),
+      ]);
+      // Refused as "no usable metadata", so the caller tries the next candidate rather than proceeding.
+      await expect(client.authorizationServerMetadata(ACCOUNT, "https://auth.example.com"), endpoint).rejects.toThrow();
+    }
+  });
+
+  it("admits loopback plain HTTP, which the local fixture server needs", async () => {
+    /*
+     * Exercised with a loopback-permitting fetcher, because the other tests' stub refuses loopback
+     * before the metadata is ever parsed — so asserting it there would only be testing the gate.
+     */
+    const { client } = stubOAuthWithLoopback([
+      json({
+        issuer: "http://127.0.0.1:9123",
+        authorization_endpoint: "http://127.0.0.1:9123/authorize",
+        token_endpoint: "http://127.0.0.1:9123/token",
+      }),
+    ]);
+    await expect(client.authorizationServerMetadata(ACCOUNT, "http://127.0.0.1:9123")).resolves.toMatchObject({
+      authorizationEndpoint: "http://127.0.0.1:9123/authorize",
     });
   });
 

@@ -819,24 +819,51 @@ describe("P4 — the outbound gate refuses every private destination in the disc
   });
 
   it("refuses an authorization server whose token endpoint is private", async () => {
+    /*
+     * Two independent refusals, and both are wanted:
+     *
+     * - A plain-HTTP non-loopback endpoint is invalid for OAuth, so the metadata reader refuses it.
+     *   That is the earlier and cheaper check, and it is what stops `javascript:` reaching the browser
+     *   through `location.assign`.
+     * - An `https:` endpoint on a private address is syntactically fine and only the outbound gate can
+     *   judge it, which it does before any request is made.
+     */
     const fixture = await McpFixtureServer.start({
-      authorizationServerMetadata: () => ({
-        issuer: fixture.endpoint.replace(/\/mcp$/, ""),
-        authorization_endpoint: `${fixture.endpoint.replace(/\/mcp$/, "")}/authorize`,
+      authorizationServerMetadata: (self) => ({
+        issuer: self,
+        authorization_endpoint: `${self}/authorize`,
         token_endpoint: "http://192.168.0.1/token",
       }),
     });
     const harness = await seed();
     try {
       const loopback = new McpOutboundFetcher({ allowLoopback: true });
-      const hosted = new McpOutboundFetcher({ allowLoopback: false });
-      const reader = new McpOAuthClient({ fetcher: loopback, publicUrl: "https://opentag.test" });
       const issuer = fixture.endpoint.replace(/\/mcp$/, "");
-      const metadata = await reader.authorizationServerMetadata(harness.accountId, issuer);
-      expect(metadata.tokenEndpoint).toBe("http://192.168.0.1/token");
+      const reader = new McpOAuthClient({ fetcher: loopback, publicUrl: "https://opentag.test" });
+      await expect(reader.authorizationServerMetadata(harness.accountId, issuer)).rejects.toThrow(/could not be read/u);
+    } finally {
+      await fixture.stop();
+    }
 
-      // The private endpoint is refused before a request is made.
-      const hostedClient = new McpOAuthClient({ fetcher: hosted, publicUrl: "https://opentag.test" });
+    // The gate still refuses a private destination that passed the scheme check.
+    const httpsFixture = await McpFixtureServer.start({
+      authorizationServerMetadata: (self) => ({
+        issuer: self,
+        authorization_endpoint: `${self}/authorize`,
+        token_endpoint: "https://192.168.0.1/token",
+      }),
+    });
+    try {
+      const loopback = new McpOutboundFetcher({ allowLoopback: true });
+      const issuer = httpsFixture.endpoint.replace(/\/mcp$/, "");
+      const reader = new McpOAuthClient({ fetcher: loopback, publicUrl: "https://opentag.test" });
+      const metadata = await reader.authorizationServerMetadata(harness.accountId, issuer);
+      expect(metadata.tokenEndpoint).toBe("https://192.168.0.1/token");
+
+      const hostedClient = new McpOAuthClient({
+        fetcher: new McpOutboundFetcher({ allowLoopback: false }),
+        publicUrl: "https://opentag.test",
+      });
       await expect(
         hostedClient.exchangeAuthorizationCode(harness.accountId, metadata, {
           code: "x",
@@ -844,9 +871,9 @@ describe("P4 — the outbound gate refuses every private destination in the disc
           client: { source: "cimd", clientId: "c", tokenEndpointAuthMethod: "none" },
           resource: "https://mcp.example.com/mcp",
         }),
-      ).rejects.toMatchObject({ code: "MCP_URL_BLOCKED" });
+      ).rejects.toMatchObject({ code: MCP_ERROR_CODES.URL_BLOCKED });
     } finally {
-      await fixture.stop();
+      await httpsFixture.stop();
     }
   });
 

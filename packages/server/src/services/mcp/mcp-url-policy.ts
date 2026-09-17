@@ -227,6 +227,17 @@ function isBlockedAddress(hostname: string): boolean {
   return false;
 }
 
+/**
+ * Whether a hostname names the local machine.
+ *
+ * Exported so a module that must accept loopback plain HTTP for the local fixture — without adopting
+ * the whole outbound policy — can ask the same question the policy asks, instead of re-deriving the
+ * `.localhost` tree, the trailing dot, and the literal forms and getting one of them wrong.
+ */
+export function isLoopbackHost(hostname: string): boolean {
+  return isLoopbackHostname(hostname);
+}
+
 function isLoopbackHostname(hostname: string): boolean {
   // A trailing dot is the absolute form of the same name, so `localhost.` is `localhost`.
   const bare = hostname

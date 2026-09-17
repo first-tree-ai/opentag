@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
-import type { McpFetchResponse, McpOutboundFetcher } from "./mcp-url-policy.js";
+import { isLoopbackHost, type McpFetchResponse, type McpOutboundFetcher } from "./mcp-url-policy.js";
 
 /**
  * The OAuth 2.1 / RFC 9728 / RFC 8414 side of MCP authorization.
@@ -105,6 +105,34 @@ function json(body: McpFetchResponse): Record<string, unknown> {
   } catch {
     throw upstream("The MCP authorization server returned an unreadable document");
   }
+}
+
+/**
+ * A URL from an authorization server document that this deployment will hand to a browser or dial.
+ *
+ * Requires an absolute `https:` URL, and admits `http:` only for a loopback host so the local fixture
+ * Server still works. `new URL()` alone is not enough: it accepts `javascript:`, `data:`, and other
+ * schemes, and the authorization endpoint in particular is passed straight to `window.location.assign`
+ * — a peer answering with `javascript:` would be executing script in an authenticated page. The CSP
+ * happens to block that today; validating the scheme here is what makes it true rather than lucky.
+ *
+ * Returns undefined for anything else, so the caller treats it as "no metadata" and tries the next
+ * candidate rather than proceeding with a value it cannot use.
+ */
+function endpointUrl(document: Record<string, unknown>, key: string): string | undefined {
+  const raw = stringField(document, key);
+  if (raw === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.username || url.password) return undefined;
+  if (url.protocol === "https:") return raw;
+  // The loopback exception exists for the test fixture, which is its own authorization server.
+  if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return raw;
+  return undefined;
 }
 
 function stringField(document: Record<string, unknown>, key: string): string | undefined {
@@ -259,10 +287,10 @@ export class McpOAuthClient {
             "The authorization server metadata issuer does not match the requested issuer",
           );
         }
-        const authorizationEndpoint = stringField(document, "authorization_endpoint");
-        const tokenEndpoint = stringField(document, "token_endpoint");
+        const authorizationEndpoint = endpointUrl(document, "authorization_endpoint");
+        const tokenEndpoint = endpointUrl(document, "token_endpoint");
         if (!authorizationEndpoint || !tokenEndpoint) return undefined;
-        const registrationEndpoint = stringField(document, "registration_endpoint");
+        const registrationEndpoint = endpointUrl(document, "registration_endpoint");
         return {
           issuer,
           authorizationEndpoint,

@@ -12,9 +12,9 @@ export const CLOUD_CONTROL_CREDENTIAL_PREFIX = "otcloud-control.";
 
 export interface TrustedCloudControlIdentity {
   /**
-   * The deployment-issued credential id. Production verifiers (FileCloudControlAuthority) always
-   * return it; it is optional only for legacy test fakes, and the auth verifier fails closed when
-   * it is missing so a Cloud context never invents one.
+   * The deployment-issued credential id. Trusted production verifiers always return it; it is
+   * optional only for legacy test fakes, and the auth verifier fails closed when it is missing
+   * so a Cloud context never invents one.
    */
   credentialId?: string;
   computerId: string;
@@ -22,12 +22,29 @@ export interface TrustedCloudControlIdentity {
 }
 
 /**
- * Deployment-injected credential resolver for the trusted Cloud control path. The deployment owns
- * issuance, rotation, and revocation; without a verifier, Cloud control authentication does not
- * exist and Cloud executions cannot open.
+ * Deployment-injected credential resolver for the trusted Cloud control path. The future
+ * Computer/Cloud orchestration owns issuance, rotation, and revocation; without a verifier,
+ * Cloud control authentication does not exist and Cloud executions cannot open. There is no
+ * implicit self-issued credential and no Local-token fallback.
  */
 export interface TrustedCloudControlVerifier {
   verifyControlCredential(credential: string): Promise<TrustedCloudControlIdentity | undefined>;
+}
+
+/** The stable facts of one authenticated Cloud control credential, re-checked for liveness. */
+export interface TrustedCloudControlFacts {
+  credentialId: string;
+  computerId: string;
+  installationId: string;
+}
+
+/**
+ * The trusted Cloud control port consumed by the integration runtime: credential verification
+ * plus the live activity/revocation check re-read on control frames and data requests. Both
+ * halves belong to the Computer/Cloud orchestration; this composition only consumes them.
+ */
+export interface TrustedCloudControlAuthority extends TrustedCloudControlVerifier {
+  isActive(identity: TrustedCloudControlFacts): Promise<boolean> | boolean;
 }
 
 function cloudControlRejected(): AuthServiceError {

@@ -43,6 +43,3 @@ Thumbs.db
 
 # Agent orchestration scratch state - never commit
 .dispatch/
-
-# Server-private runtime control state
-.opentag-control/

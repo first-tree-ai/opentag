@@ -1,11 +1,9 @@
-import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import type { RuntimeCredentialProvider } from "@opentag/shared";
-import { decodeBufferedBody, requestQuery, slackBufferedBodyKind } from "./buffered-body.js";
+import { decodeBufferedBody, slackBufferedBodyKind } from "./buffered-body.js";
 import type { RuntimeProxyAuthorization } from "./credential-broker.js";
 import {
   bufferProxyBody,
-  operationRequiresSourceRecord,
   type ProviderOperation,
   type ProviderOperationMatch,
   type ProviderOperationRegistry,
@@ -16,7 +14,6 @@ import {
   assertHandleUrlAllowed,
   filterResponseHeaders,
   isRedirectStatus,
-  journalSafeResource,
   MAX_HANDLE_REDIRECTS,
   parseJsonResponse,
   RuntimeProxyError,
@@ -27,23 +24,14 @@ import {
   upstreamHeaders,
   webBody,
 } from "./provider-proxy-support.js";
-import { type RuntimeSourceRecorder, UnavailableRuntimeSourceRecorder } from "./source-recorder.js";
-import { forwardUploadWithReceipt } from "./upload-receipt.js";
+import { forwardUpload } from "./upload-forward.js";
 import {
   RUNTIME_URL_HANDLE_PATH_PREFIX,
   type RuntimeUrlHandle,
   type RuntimeUrlHandleStore,
   rewriteUrlToHandle,
 } from "./url-handle-store.js";
-import type { RuntimeWriteJournal } from "./write-journal.js";
-import {
-  beginWriteReceipt,
-  classifyStatusWriteReceipt,
-  classifyWriteReceipt,
-  completeWriteReceipt,
-  completeWriteReceiptUnknown,
-  type WriteReceiptContext,
-} from "./write-receipt.js";
+import { classifyStatusWriteOutcome, classifyWriteOutcome } from "./write-outcome.js";
 
 export { RuntimeProxyError, type RuntimeProxyFailureCode } from "./provider-proxy-support.js";
 
@@ -75,26 +63,22 @@ export interface ImProviderProxyAdapterOptions {
   provider: RuntimeCredentialProvider;
   registry: ProviderOperationRegistry;
   urlHandles: RuntimeUrlHandleStore;
-  journal: RuntimeWriteJournal;
-  /** Durable audit for protected read outputs; fail-closed by default. */
-  sourceRecorder?: RuntimeSourceRecorder;
   fetchImpl?: typeof fetch;
   capabilityTtlSeconds?: number;
-  now?: () => Date;
 }
 
-/** Server-side provider adapter: fixed origins, registered operations, journaled writes. */
+/**
+ * Server-side provider adapter: fixed origins, registered operations, one upstream attempt per
+ * write. Writes are classified in memory as succeeded, definitely rejected, or unknown; an
+ * unknown outcome surfaces as `write_outcome_unknown` and is never journaled or replayed.
+ */
 export class ImProviderProxyAdapter implements ProviderProxyAdapter {
   readonly #fetch: typeof fetch;
-  readonly #now: () => Date;
   readonly #options: ImProviderProxyAdapterOptions;
-  readonly #sourceRecorder: RuntimeSourceRecorder;
 
   constructor(options: ImProviderProxyAdapterOptions) {
     this.#options = options;
     this.#fetch = options.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
-    this.#now = options.now ?? (() => new Date());
-    this.#sourceRecorder = options.sourceRecorder ?? new UnavailableRuntimeSourceRecorder();
   }
 
   async handle(
@@ -131,20 +115,34 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     request: ProviderProxyRequest,
     authorization: RuntimeProxyAuthorization,
   ): Promise<ProviderProxyResponse> {
-    const journalContext =
-      match.operation.kind === "write"
-        ? await this.#beginOperationWrite(match, prepared, request, authorization)
-        : undefined;
+    const operation = match.operation;
+    // Preflight boundary: material resolution and the live fence revalidation after that async
+    // boundary fail with their own codes (or `cancelled`), before any upstream byte is sent.
+    let material: RuntimeProviderMaterial;
     try {
-      return await this.#forward(match, prepared, headers, request, authorization, journalContext);
+      material = await authorization.resolveMaterial(request.signal);
+      await authorization.recheck(request.signal);
     } catch (error) {
-      // A durable unknown receipt never overwrites an outcome this write already attempted.
-      if (journalContext) {
-        await completeWriteReceiptUnknown(this.#options.journal, request.sessionId, journalContext, this.#now);
-      }
-      if (error instanceof RuntimeProxyError) throw error;
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
-      if (journalContext) throw new RuntimeProxyError("write_outcome_unknown");
+      throw error;
+    }
+    try {
+      const response = await this.#fetchUpstream(operation, prepared, headers, request, material);
+      return operation.response === "stream"
+        ? this.#streamResponse(match, response)
+        : await this.#jsonResponse(match, request, material, response);
+    } catch (error) {
+      if (error instanceof RuntimeProxyError) {
+        // A write whose response cannot be parsed or read is an unconfirmed outcome, never a
+        // clean `response_invalid` (that code stays accurate for reads) and never a replay.
+        if (operation.kind === "write" && error.code === "response_invalid") {
+          throw new RuntimeProxyError("write_outcome_unknown");
+        }
+        throw error;
+      }
+      if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
+      // A write whose outcome cannot be confirmed is reported unknown, never silently retried.
+      if (operation.kind === "write") throw new RuntimeProxyError("write_outcome_unknown");
       throw new RuntimeProxyError("upstream_unavailable");
     }
   }
@@ -193,82 +191,6 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     return { status: 200, headers: { "content-type": "application/json" }, body: singleChunk(bytes) };
   }
 
-  async #recordSource(
-    operation: ProviderOperation,
-    params: Record<string, string>,
-    parsed: unknown,
-    request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
-  ): Promise<void> {
-    const query = requestQuery(request.path);
-    const resource = operation.resource?.(params, parsed, query) ?? `operation:${operation.operationId}`;
-    await this.#recordResource(resource, request, authorization);
-  }
-
-  /**
-   * Durable source metadata for one protected output. Records only the bounded resource id and
-   * never payloads, URLs, or credentials; a failing recorder fails the response.
-   */
-  async #recordResource(
-    resource: string,
-    request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
-  ): Promise<void> {
-    try {
-      await this.#sourceRecorder.recordSource({
-        sessionId: authorization.sessionId,
-        provider: request.provider,
-        resource: journalSafeResource(resource),
-        policyRevision: authorization.authorizationRevision,
-        recordedAt: this.#now().toISOString(),
-      });
-    } catch {
-      throw new RuntimeProxyError("source_record_unavailable");
-    }
-  }
-
-  async #beginOperationWrite(
-    match: ProviderOperationMatch,
-    prepared: { bytes: Uint8Array; parsed: unknown },
-    request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
-  ): Promise<WriteReceiptContext> {
-    const query = requestQuery(request.path);
-    const resource =
-      match.operation.resource?.(match.params, prepared.parsed, query) ?? `operation:${match.operation.operationId}`;
-    const requestHash = createHash("sha256")
-      .update(JSON.stringify([match.operation.method, request.path, prepared.parsed ?? null]))
-      .digest("hex");
-    return beginWriteReceipt(this.#options.journal, {
-      executionId: request.executionId,
-      now: this.#now,
-      operation: match.operation.operationId,
-      policyRevision: authorization.authorizationRevision,
-      provider: request.provider,
-      requestHash,
-      resource: journalSafeResource(resource),
-      sessionId: authorization.sessionId,
-    });
-  }
-
-  async #forward(
-    match: ProviderOperationMatch,
-    prepared: { bytes: Uint8Array; parsed: unknown },
-    headers: Record<string, string>,
-    request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
-    journalContext?: WriteReceiptContext,
-  ): Promise<ProviderProxyResponse> {
-    const operation = match.operation;
-    const material = await authorization.resolveMaterial(request.signal);
-    // The async material/cipher boundary is over: revalidate the live fence before any upstream byte.
-    await authorization.recheck(request.signal);
-    const response = await this.#fetchUpstream(operation, prepared, headers, request, material);
-    return operation.response === "stream"
-      ? this.#streamResponse(match, prepared, request, authorization, response, journalContext)
-      : this.#jsonResponse(match, prepared, request, authorization, material, response, journalContext);
-  }
-
   async #fetchUpstream(
     operation: ProviderOperation,
     prepared: { bytes: Uint8Array; parsed: unknown },
@@ -297,22 +219,11 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
   }
 
-  async #streamResponse(
-    match: ProviderOperationMatch,
-    prepared: { bytes: Uint8Array; parsed: unknown },
-    request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
-    response: Response,
-    journalContext?: WriteReceiptContext,
-  ): Promise<ProviderProxyResponse> {
-    if (operationRequiresSourceRecord(match.operation)) {
-      // Durable audit before the first protected byte reaches the caller.
-      await this.#recordSource(match.operation, match.params, prepared.parsed, request, authorization);
-    }
-    if (journalContext) {
-      const receipt = classifyStatusWriteReceipt(response.status);
-      await completeWriteReceipt(this.#options.journal, request.sessionId, journalContext, receipt, this.#now);
-      if (receipt.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
+  #streamResponse(match: ProviderOperationMatch, response: Response): ProviderProxyResponse {
+    if (match.operation.kind === "write") {
+      const outcome = classifyStatusWriteOutcome(response.status);
+      // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
+      if (outcome.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
     }
     return {
       status: response.status,
@@ -323,35 +234,24 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
 
   async #jsonResponse(
     match: ProviderOperationMatch,
-    prepared: { bytes: Uint8Array; parsed: unknown },
     request: ProviderProxyRequest,
-    authorization: RuntimeProxyAuthorization,
     material: RuntimeProviderMaterial,
     response: Response,
-    journalContext?: WriteReceiptContext,
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
     const payload = await parseJsonResponse(response, operation.maxResponseBytes ?? 2 * 1024 * 1024);
-    if (journalContext) {
-      const receipt = classifyWriteReceipt({ payload, provider: request.provider, status: response.status });
-      await completeWriteReceipt(this.#options.journal, request.sessionId, journalContext, receipt, this.#now);
+    if (operation.kind === "write") {
+      const outcome = classifyWriteOutcome({ payload, provider: request.provider, status: response.status });
       // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
-      if (receipt.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
+      if (outcome.state === "unknown") throw new RuntimeProxyError("write_outcome_unknown");
     }
     const rewritten = rewriteOperationResponse(operation, payload, {
       executionId: request.executionId,
       provider: request.provider,
       origin: material.origin,
-      createDownloadHandle: (target, resource) =>
-        this.#createHandle(request, material.origin, "download", target, resource),
-      createUploadHandle: (target, resource) =>
-        this.#createHandle(request, material.origin, "upload", target, resource),
+      createDownloadHandle: (target) => this.#createHandle(request, material.origin, "download", target),
+      createUploadHandle: (target) => this.#createHandle(request, material.origin, "upload", target),
     });
-    if (operationRequiresSourceRecord(operation)) {
-      // Every protected read records durable metadata before its output is exposed, whether or
-      // not the response happened to contain a protected URL to rewrite.
-      await this.#recordSource(operation, match.params, prepared.parsed, request, authorization);
-    }
     return {
       status: response.status,
       headers: { ...filterResponseHeaders(response.headers), "content-type": "application/json" },
@@ -359,20 +259,13 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     };
   }
 
-  #createHandle(
-    request: ProviderProxyRequest,
-    origin: string,
-    kind: "upload" | "download",
-    url: string,
-    resource?: string,
-  ): string {
+  #createHandle(request: ProviderProxyRequest, origin: string, kind: "upload" | "download", url: string): string {
     assertHandleUrlAllowed(request.provider, url);
     const handleId = this.#options.urlHandles.create({
       executionId: request.executionId,
       provider: request.provider,
       kind,
       url,
-      ...(resource ? { resource } : {}),
     });
     return rewriteUrlToHandle(origin, handleId);
   }
@@ -385,19 +278,13 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     if (!kind) throw new RuntimeProxyError("operation_not_registered");
     const handle = this.#resolveUrlHandle(request, kind);
     if (kind === "upload") {
-      return forwardUploadWithReceipt({
+      return forwardUpload({
         authorization,
         fetchImpl: this.#fetch,
         handle,
-        journal: this.#options.journal,
-        now: this.#now,
         request,
       });
     }
-    // Every protected download records durable metadata before its body is exposed, including
-    // handles minted by write responses that only have a write receipt. The handle resource is
-    // the file identity; the bounded opaque fallback never contains the upstream URL.
-    await this.#recordResource(handle.resource ?? `handle:${handle.handleId}`, request, authorization);
     // Every handle use re-runs the current fence before touching the upstream URL.
     await authorization.recheck(request.signal);
     return this.#proxyDownload(request, handle.url, authorization);

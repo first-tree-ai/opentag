@@ -11,7 +11,6 @@ export interface RuntimeUrlHandle {
   kind: "upload" | "download";
   /** Real upstream URL, retained only in bounded Server memory. */
   url: string;
-  resource?: string;
   expiresAt: number;
 }
 
@@ -62,7 +61,6 @@ export class RuntimeUrlHandleStore {
     provider: RuntimeCredentialProvider;
     kind: "upload" | "download";
     url: string;
-    resource?: string;
   }): string {
     this.sweep(this.#now());
     if (this.#handles.size >= this.#maxHandles) throw new RuntimeUrlHandleStoreCapacityError();
@@ -73,7 +71,6 @@ export class RuntimeUrlHandleStore {
       provider: input.provider,
       kind: input.kind,
       url: input.url,
-      resource: input.resource,
       expiresAt: this.#now() + this.#ttlMs,
     });
     return handleId;

@@ -1,20 +1,17 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { SessionControlStore } from "../session-control-store/index.js";
-import { ensureControlDirectory } from "../session-control-store/private-files.js";
 import { GitPublicationError } from "./git-packets.js";
 import { type GitProcessOptions, runTrustedGit } from "./git-process.js";
 import { assertDirectoryBudget } from "./git-publication.js";
 import type { PublicationRemote } from "./git-remote.js";
+import type { GitWorkspace } from "./git-workspace.js";
 import { verifyPublishedContextTree } from "./tree-verifier.js";
 
 export class VerifiedTreeHead {
   #active = 0;
-  constructor(readonly options: { root: string; store: SessionControlStore }) {}
+  constructor(readonly options: { workspace: GitWorkspace }) {}
   async verify(input: {
-    sessionId: string;
     repositoryId: string;
-    policyRevision: string;
     ref: string;
     remote: PublicationRemote;
     signal: AbortSignal;
@@ -37,8 +34,7 @@ export class VerifiedTreeHead {
     monitor.unref();
     try {
       await input.recheck();
-      await ensureControlDirectory(this.options.root);
-      directory = await mkdtemp(join(this.options.root, "tree-head-"));
+      directory = await this.options.workspace.stagingDirectory("tree-head-");
       const home = join(directory, "home");
       await mkdir(home, { mode: 0o700 });
       const options: GitProcessOptions = {
@@ -57,13 +53,6 @@ export class VerifiedTreeHead {
       };
       const repository = join(directory, "repository.git");
       await runTrustedGit(["-c", "init.templateDir=", "init", "--bare", repository], options);
-      await this.options.store.recordSource({
-        sessionId: input.sessionId,
-        provider: "github",
-        resource: `repository:${input.repositoryId}`,
-        policyRevision: input.policyRevision,
-        recordedAt: new Date().toISOString(),
-      });
       await input.remote.seed(repository, options, [input.ref]);
       await assertDirectoryBudget(directory, 512 * 1024 * 1024);
       const sha = (await runTrustedGit(["-C", repository, "rev-parse", "--verify", `${input.ref}^{commit}`], options))

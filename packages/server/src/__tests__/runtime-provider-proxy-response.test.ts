@@ -7,21 +7,15 @@ import { ImProviderProxyAdapter, type ProviderProxyRequest } from "../runtime-cr
 import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
 import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
 
-function fixture(provider: "slack" | "feishu", response: Response, withRecorder = true) {
+function fixture(provider: "slack" | "feishu", response: Response) {
   const executionId = randomUUID();
   const sessionId = randomUUID();
-  const recordSource = vi.fn(async () => undefined);
   const urlHandles = new RuntimeUrlHandleStore();
   const instance = new ImProviderProxyAdapter({
     provider,
     registry: new ProviderOperationRegistry(provider === "slack" ? SLACK_OPERATIONS : FEISHU_OPERATIONS),
     urlHandles,
     fetchImpl: vi.fn(async () => response),
-    journal: {
-      beginWrite: async () => ({ intentHash: "f".repeat(64) }),
-      completeWrite: async () => undefined,
-    },
-    ...(withRecorder ? { sourceRecorder: { recordSource } } : {}),
   });
   const authorization: RuntimeProxyAuthorization = {
     executionId,
@@ -60,7 +54,7 @@ function fixture(provider: "slack" | "feishu", response: Response, withRecorder 
       signal: new AbortController().signal,
     };
   }
-  return { instance, authorization, request, recordSource, urlHandles };
+  return { instance, authorization, request, urlHandles };
 }
 
 async function readBody(body: AsyncIterable<Uint8Array>) {
@@ -99,18 +93,11 @@ describe("IM response delivery contract", () => {
   it.each([
     ["slack", "/api/conversations.history?channel=C1", { ok: true, messages: [{ text: "private text" }] }],
     ["feishu", "/open-apis/docx/v1/documents/D1/raw_content", { code: 0, data: { content: "private text" } }],
-  ] as const)("requires a durable source record for %s text-only reads", async (provider, path, payload) => {
-    const f = fixture(provider, Response.json(payload), false);
-    await expect(f.instance.handle(f.request(path), f.authorization)).rejects.toMatchObject({
-      code: "source_record_unavailable",
-    });
-  });
-
-  it("persists text-read metadata before exposing the response", async () => {
-    const f = fixture("slack", Response.json({ ok: true, messages: [{ text: "private text" }] }));
-    const result = await f.instance.handle(f.request("/api/conversations.history?channel=C1"), f.authorization);
-    expect(f.recordSource).toHaveBeenCalledWith(expect.objectContaining({ resource: "channel:C1", provider: "slack" }));
-    expect(JSON.stringify(f.recordSource.mock.calls)).not.toContain("private text");
+  ] as const)("returns %s protected read output with no recording dependency", async (provider, path, payload) => {
+    // The proxy keeps no source ledger: protected reads are authorized per request and returned.
+    const f = fixture(provider, Response.json(payload));
+    const result = await f.instance.handle(f.request(path), f.authorization);
+    expect(result.status).toBe(200);
     expect(await readBody(result.body)).toContain("private text");
   });
 
@@ -140,25 +127,22 @@ describe("IM response delivery contract", () => {
   });
 });
 
-describe("IM read source-recording exemptions", () => {
+describe("IM identity and ordinary reads", () => {
   it.each([
     ["slack", "/api/auth.test"],
     ["feishu", "/open-apis/bot/v3/info"],
     ["feishu", "/api/tools/open/api_definition"],
-  ] as const)("exempts %s identity/public read %s from durable source recording", async (provider, path) => {
+  ] as const)("serves the %s identity/public read %s", async (provider, path) => {
     const f = fixture(provider, Response.json({ ok: true, code: 0 }));
     await expect(f.instance.handle(f.request(path), f.authorization)).resolves.toMatchObject({ status: 200 });
-    expect(f.recordSource).not.toHaveBeenCalled();
   });
 
   it.each([
     ["slack", "/api/bots.info"],
     ["feishu", "/open-apis/im/v1/chats"],
-  ] as const)("still requires durable source recording for non-exempt %s reads", async (provider, path) => {
-    const f = fixture(provider, Response.json({ ok: true, code: 0 }), false);
-    await expect(f.instance.handle(f.request(path), f.authorization)).rejects.toMatchObject({
-      code: "source_record_unavailable",
-    });
+  ] as const)("serves non-identity %s reads the same way", async (provider, path) => {
+    const f = fixture(provider, Response.json({ ok: true, code: 0 }));
+    await expect(f.instance.handle(f.request(path), f.authorization)).resolves.toMatchObject({ status: 200 });
   });
 });
 

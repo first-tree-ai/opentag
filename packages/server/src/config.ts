@@ -1,6 +1,5 @@
 import { createPrivateKey } from "node:crypto";
 import { isIP } from "node:net";
-import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type ChannelConfig,
@@ -246,12 +245,6 @@ const ServerEnvironmentSchema = z
     BETTER_AUTH_SECRET: z.string().min(32),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
-    OPENTAG_RUNTIME_CONTROL_DIRECTORY: z
-      .string()
-      .trim()
-      .min(1)
-      .default(".opentag-control")
-      .transform((value) => resolve(value)),
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
     OPENTAG_ENCRYPTION_KEY_RING: EncryptionKeyRingSchema,
     OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1).optional(),
@@ -547,8 +540,6 @@ export interface ServerConfig {
    * logged. `oauthCallbackUrl` is the resolved exact callback on this server's public origin.
    */
   githubApp?: GitHubAppConfig;
-  /** Persistent Server-private metadata and trusted Git staging root; never mounted into Sandboxes. */
-  runtimeControlDirectory: string;
   host: string;
   /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
@@ -623,7 +614,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
-    OPENTAG_RUNTIME_CONTROL_DIRECTORY: environment.OPENTAG_RUNTIME_CONTROL_DIRECTORY,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
     OPENTAG_ENCRYPTION_KEY_RING: emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING),
     OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: emptyToUndefined(environment.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID),
@@ -672,7 +662,6 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     },
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
-    runtimeControlDirectory: parsed.OPENTAG_RUNTIME_CONTROL_DIRECTORY,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
     ...(parsed.OPENTAG_ENCRYPTION_KEY_RING && parsed.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID
       ? {

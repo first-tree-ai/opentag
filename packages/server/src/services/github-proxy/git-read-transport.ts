@@ -1,19 +1,16 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { ProviderProxyResponse } from "../../runtime-credentials/provider-proxy-adapter.js";
-import type { SessionControlStore } from "../session-control-store/index.js";
-import { ensureControlDirectory } from "../session-control-store/private-files.js";
 import { GitPublicationError, gitPacket } from "./git-packets.js";
 import { type GitProcessOptions, runTrustedGit } from "./git-process.js";
 import { assertDirectoryBudget } from "./git-publication.js";
 import type { PublicationRemote } from "./git-remote.js";
+import type { GitWorkspace } from "./git-workspace.js";
 
 export interface GitReadRequest {
-  sessionId: string;
   repositoryId: string;
-  policyRevision: string;
   service: "git-upload-pack" | "git-receive-pack";
   advertise: boolean;
   protocol?: string;
@@ -27,13 +24,11 @@ export interface GitReadRequest {
 
 /** Git reads are served from a trusted snapshot exposing only this execution's permitted refs. */
 export class GitReadTransport {
-  readonly #root: string;
-  readonly #store: SessionControlStore;
+  readonly #workspace: GitWorkspace;
   readonly #maximum: number;
   #active = 0;
-  constructor(options: { root: string; controlStore: SessionControlStore; maxConcurrent?: number }) {
-    this.#root = resolve(options.root);
-    this.#store = options.controlStore;
+  constructor(options: { workspace: GitWorkspace; maxConcurrent?: number }) {
+    this.#workspace = options.workspace;
     this.#maximum = options.maxConcurrent ?? 4;
   }
 
@@ -67,8 +62,7 @@ export class GitReadTransport {
     };
     try {
       await input.revalidate();
-      await ensureControlDirectory(this.#root);
-      workspace = await mkdtemp(join(this.#root, "read-"));
+      workspace = await this.#workspace.stagingDirectory("read-");
       const home = join(workspace, "home");
       await mkdir(home, { mode: 0o700 });
       const options: GitProcessOptions = {
@@ -88,13 +82,6 @@ export class GitReadTransport {
       };
       const repository = join(workspace, "repository.git");
       await runTrustedGit(["-c", "init.templateDir=", "init", "--bare", repository], options);
-      await this.#store.recordSource({
-        sessionId: input.sessionId,
-        provider: "github",
-        resource: `repository:${input.repositoryId}`,
-        policyRevision: input.policyRevision,
-        recordedAt: new Date().toISOString(),
-      });
       await input.remote.seed(repository, options, input.allowedRefs);
       await runTrustedGit(["-C", repository, "symbolic-ref", "HEAD", input.defaultRef], options);
       await assertDirectoryBudget(workspace, 512 * 1024 * 1024);

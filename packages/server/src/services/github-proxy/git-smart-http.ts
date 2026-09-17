@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../../runtime-credentials/provider-proxy-adapter.js";
 import { type GitHubExecutionRepository, publicationScopes, treeReadRefs } from "./execution-policy.js";
@@ -35,11 +34,7 @@ export async function handleGitSmartHttp(
     const remote = new GitHubPublicationRemote({ fullName: repository.fullName, token: lease.token });
     if (service === "git-receive-pack" && !advertise) {
       const result = await options.publication.receive({
-        sessionId: authorization.sessionId,
-        executionId: request.executionId,
-        operationId: randomUUID(),
         repositoryId: repository.repositoryId,
-        policyRevision: authorization.scopeHash,
         scopes,
         protectedTreeRefs: repository.protectedTreeRefs,
         body: request.body,
@@ -55,9 +50,7 @@ export async function handleGitSmartHttp(
       };
     }
     const response = await options.reads.handle({
-      sessionId: authorization.sessionId,
       repositoryId: repository.repositoryId,
-      policyRevision: authorization.scopeHash,
       service,
       advertise,
       protocol: request.headers["git-protocol"],

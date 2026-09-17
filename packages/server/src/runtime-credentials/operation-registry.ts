@@ -6,8 +6,7 @@ export type ProviderOperationResponse = "stream" | "json";
 
 /**
  * One registered provider operation. The table ships with the Server; there is no wildcard
- * operation and no caller-selected upstream. `resource` extracts the stable resource identifier
- * used for authorization and journaling from path params plus a bounded parsed body.
+ * operation and no caller-selected upstream.
  */
 export interface ProviderOperation {
   operationId: string;
@@ -19,15 +18,8 @@ export interface ProviderOperation {
   response: ProviderOperationResponse;
   /** Read-only identity operations a validation-purpose capability may call. */
   validationAllowed?: boolean;
-  /**
-   * Durable source-recording requirement for reads. Reads default to `"required"`: protected
-   * output must be recorded before it is exposed, and a failing recorder fails the response.
-   * `"exempt"` is reserved for identity/public operations that return no protected resource.
-   */
-  sourceRecord?: "required" | "exempt";
   maxBodyBytes?: number;
   maxResponseBytes?: number;
-  resource?(params: Record<string, string>, body: unknown, query: URLSearchParams): string | undefined;
   /**
    * Operations answered locally by the Server without any upstream call (e.g. the Feishu tenant
    * token endpoint, which must never expose the real token).
@@ -47,8 +39,8 @@ export interface ProviderOperationRewriteContext {
   executionId: string;
   provider: RuntimeCredentialProvider;
   origin: string;
-  createDownloadHandle(url: string, resource?: string): string;
-  createUploadHandle(url: string, resource?: string): string;
+  createDownloadHandle(url: string): string;
+  createUploadHandle(url: string): string;
 }
 
 export interface ProviderOperationMatch {
@@ -141,14 +133,6 @@ export class ProviderProxyBodyTooLargeError extends Error {
     super("The provider request body exceeds the registered bound");
     this.name = "ProviderProxyBodyTooLargeError";
   }
-}
-
-/**
- * True when a read must durably record its protected output before returning it. Reads default
- * to required; only explicit identity/public operation metadata opts out.
- */
-export function operationRequiresSourceRecord(operation: ProviderOperation): boolean {
-  return operation.kind === "read" && operation.sourceRecord !== "exempt";
 }
 
 /** Bounded body buffering used only for operations registered with a parsed body kind. */

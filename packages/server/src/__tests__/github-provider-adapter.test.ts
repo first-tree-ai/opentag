@@ -15,19 +15,19 @@ import {
 } from "../services/github-proxy/execution-policy.js";
 import { GitPublicationGuard } from "../services/github-proxy/git-publication.js";
 import { GitReadTransport } from "../services/github-proxy/git-read-transport.js";
+import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
 import { GitHubIatLeases } from "../services/github-proxy/iat-leases.js";
-import { FileSessionControlStore } from "../services/session-control-store/index.js";
 
 let root: string, sessionId: string, executionId: string, bindingId: string;
-let store: FileSessionControlStore, adapter: GitHubProviderAdapter, repository: GitHubExecutionRepository;
+let workspace: GitWorkspace, adapter: GitHubProviderAdapter, repository: GitHubExecutionRepository;
 let authorization: RuntimeProxyAuthorization;
 let upstream: ReturnType<typeof vi.fn<typeof fetch>>;
 let mint: ReturnType<typeof vi.fn<GitHubInstallationTokenClient["mint"]>>,
   revoke: ReturnType<typeof vi.fn<GitHubInstallationTokenClient["revoke"]>>;
 const iat = "ghs_test-installation-token";
 const metadata = { id: 123, node_id: "R_test", full_name: "owner/repository", default_branch: "main" };
-let writeBehavior: "ok" | "lost" | "secret";
+let writeBehavior: "ok" | "lost" | "secret" | "empty" | "malformed" | "reject422" | "status503" | "status408";
 let writeCount: number;
 const requests: { method: string; path: string; headers: Headers; body: unknown }[] = [];
 
@@ -36,7 +36,7 @@ beforeEach(async () => {
   sessionId = randomUUID();
   executionId = randomUUID();
   bindingId = randomUUID();
-  store = new FileSessionControlStore({ root: join(root, "control") });
+  workspace = new GitWorkspace();
   repository = {
     installationId: "456",
     repositoryId: "123",
@@ -84,14 +84,14 @@ beforeEach(async () => {
   adapter = new GitHubProviderAdapter({
     policy: { resolve: async () => [repository] },
     leases: new GitHubIatLeases({ mint, revoke }),
-    reads: new GitReadTransport({ root: join(root, "read"), controlStore: store }),
-    publication: new GitPublicationGuard({ root: join(root, "write"), controlStore: store }),
-    store,
+    reads: new GitReadTransport({ workspace }),
+    publication: new GitPublicationGuard({ workspace }),
     api: new GitHubProxyApiTransport(upstream),
   });
 });
 afterEach(async () => {
   await adapter.close();
+  await workspace?.close();
   await rm(root, { recursive: true, force: true });
 });
 function request(path: string, method = "GET", body?: unknown): ProviderProxyRequest {
@@ -119,7 +119,7 @@ function pullBody() {
 }
 
 describe("production GitHub provider adapter", () => {
-  it("uses exactly one repository IAT and records source before returning native REST output", async () => {
+  it("uses exactly one repository IAT before returning native REST output", async () => {
     expect(await responseJson(await adapter.handle(request("/repos/owner/repository"), authorization))).toEqual(
       metadata,
     );
@@ -132,7 +132,6 @@ describe("production GitHub provider adapter", () => {
     );
     expect(requests.every((item) => item.headers.get("authorization") === `Bearer ${iat}`)).toBe(true);
     expect(requests.some((item) => item.headers.has("x-opentag-provider-origin"))).toBe(false);
-    expect(await store.listSources(sessionId)).toHaveLength(1);
     expect(revoke).toHaveBeenCalledWith(iat);
   });
   it("denies another repository, encoded bypasses, and Git object writes before minting", async () => {
@@ -157,28 +156,62 @@ describe("production GitHub provider adapter", () => {
       ).rejects.toThrow(/scope_denied/);
     expect(writeCount).toBe(0);
   });
-  it("journals intent before the upstream write and completes a native PR response", async () => {
-    const original = upstream.getMockImplementation();
-    upstream.mockImplementation(async (...args) => {
-      if (String(args[0]).endsWith("/pulls")) expect(await store.listUnresolvedWrites(sessionId)).toHaveLength(1);
-      return (original as typeof fetch)(...args);
-    });
+  it("makes one upstream write attempt and completes a native PR response", async () => {
     const result = await adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization);
     expect(await responseJson(result)).toMatchObject({ number: 1 });
     expect(writeCount).toBe(1);
-    expect(await store.listUnresolvedWrites(sessionId)).toEqual([]);
   });
-  it("records an ambiguous write and prevents implicit replay on the same resource", async () => {
+  it("never replays a lost write; a caller retry is a fresh single attempt", async () => {
     writeBehavior = "lost";
     await expect(
       adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toThrow();
-    expect((await store.listUnresolvedWrites(sessionId))[0]?.outcome?.state).toBe("unknown");
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(writeCount).toBe(1);
+    // The gateway itself does not retry or block: a new caller request goes upstream exactly once.
+    writeBehavior = "ok";
+    const result = await adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization);
+    expect(await responseJson(result)).toMatchObject({ number: 1 });
+    expect(writeCount).toBe(2);
+  });
+  it.each([
+    ["a 503", 503],
+    ["a 408", 408],
+  ])("surfaces %s write response as write_outcome_unknown after one attempt", async (_label, status) => {
+    writeBehavior = status === 503 ? "status503" : "status408";
     await expect(
       adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
     expect(writeCount).toBe(1);
   });
+  it.each([
+    ["an empty 2xx body without mutation evidence", "empty"],
+    ["a malformed 2xx body", "malformed"],
+  ] as const)("surfaces %s as write_outcome_unknown", async (_label, behavior) => {
+    writeBehavior = behavior;
+    await expect(
+      adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(writeCount).toBe(1);
+  });
+  it("keeps a definite provider rejection visible as its own response", async () => {
+    writeBehavior = "reject422";
+    const result = await adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization);
+    expect(result.status).toBe(422);
+    expect(writeCount).toBe(1);
+  });
+  it.each(["ok", "reject422"] as const)(
+    "rechecks the fence after a %s write response without replay",
+    async (behavior) => {
+      writeBehavior = behavior;
+      authorization.recheck = async () => {
+        if (writeCount > 0) throw new Error("authorization revoked after the upstream attempt");
+      };
+      await expect(
+        adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
+      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+      expect(writeCount).toBe(1);
+    },
+  );
   it("passes through ordinary response text that merely resembles an https URL", async () => {
     const original = upstream.getMockImplementation();
     upstream.mockImplementation(async (url, init) => {
@@ -197,7 +230,8 @@ describe("production GitHub provider adapter", () => {
     writeBehavior = "secret";
     await expect(
       adapter.handle(request("/repos/owner/repository/pulls", "POST", pullBody()), authorization),
-    ).rejects.toThrow();
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(writeCount).toBe(1);
   });
   it("keeps the IAT alive through GraphQL mutation completion, with ID established by a scoped read", async () => {
     await adapter.handle(request("/repos/owner/repository"), authorization);
@@ -223,6 +257,63 @@ describe("production GitHub provider adapter", () => {
     );
     expect(revoke).toHaveBeenCalledTimes(1);
   });
+  it("completes an aliased GraphQL mutation with one attempt", async () => {
+    // A prior scoped read establishes the repository node identity the mutation policy requires.
+    await adapter.handle(request("/repos/owner/repository"), authorization);
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith("/graphql")) {
+        writeCount++;
+        return Response.json({
+          data: {
+            reviewAlias: {
+              pullRequest: { id: "PR_one", number: 1, headRefName: pullBody().head, baseRefName: "main" },
+            },
+          },
+        });
+      }
+      return (original as typeof fetch)(...args);
+    });
+    const body = {
+      query:
+        "mutation($input:CreatePullRequestInput!){reviewAlias:createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
+      variables: {
+        input: { repositoryId: "R_test", title: "Work", headRefName: pullBody().head, baseRefName: "main" },
+      },
+    };
+    expect(await responseJson(await adapter.handle(request("/graphql", "POST", body), authorization))).toHaveProperty(
+      "data.reviewAlias.pullRequest.number",
+      1,
+    );
+    expect(writeCount).toBe(1);
+  });
+  it.each([
+    ["empty data", { data: {} }],
+    ["null mutation data", { data: { createPullRequest: null } }],
+    ["partial errors", { data: { createPullRequest: { pullRequest: null } }, errors: [{ message: "partial" }] }],
+  ])("surfaces a GraphQL 2xx with %s as write_outcome_unknown, never success or rejection", async (_label, payload) => {
+    // A prior scoped read establishes the repository node identity the mutation policy requires.
+    await adapter.handle(request("/repos/owner/repository"), authorization);
+    const original = upstream.getMockImplementation();
+    upstream.mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith("/graphql")) {
+        writeCount++;
+        return Response.json(payload);
+      }
+      return (original as typeof fetch)(...args);
+    });
+    const body = {
+      query:
+        "mutation($input:CreatePullRequestInput!){createPullRequest(input:$input){pullRequest{id number headRefName baseRefName}}}",
+      variables: {
+        input: { repositoryId: "R_test", title: "Work", headRefName: pullBody().head, baseRefName: "main" },
+      },
+    };
+    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
+      code: "write_outcome_unknown",
+    });
+    expect(writeCount).toBe(1);
+  });
   it("rejects actor-scope GraphQL escapes before minting and cannot establish foreign PR nodes", async () => {
     const hostile = {
       query:
@@ -233,7 +324,6 @@ describe("production GitHub provider adapter", () => {
     await expect(adapter.handle(request("/graphql", "POST", hostile), authorization)).rejects.toThrow(/policy/);
     expect(mint).not.toHaveBeenCalled();
     expect(upstream).not.toHaveBeenCalled();
-    expect(await store.listSources(sessionId)).toEqual([]);
     // The rejected read cannot authorize a later mutation against a node it would have discovered.
     const mutation = {
       query: 'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,title:"x"}){pullRequest{id}}}',
@@ -345,6 +435,12 @@ function fixtureWrite(path: string, body: { variables: { input: { headRefName: s
   if (writeBehavior === "lost") throw new Error("untrusted transport detail");
   if (writeBehavior === "secret")
     return Response.json({ download_url: `https://github.com/private?token=${iat}` }, { status: 201 });
+  if (writeBehavior === "empty") return Response.json({}, { status: 201 });
+  if (writeBehavior === "malformed")
+    return new Response("this is not json", { status: 201, headers: { "content-type": "application/json" } });
+  if (writeBehavior === "reject422") return Response.json({ message: "Validation Failed" }, { status: 422 });
+  if (writeBehavior === "status503") return Response.json({ message: "server error" }, { status: 503 });
+  if (writeBehavior === "status408") return Response.json({ message: "timeout" }, { status: 408 });
   if (path === "/graphql")
     return Response.json({
       data: {

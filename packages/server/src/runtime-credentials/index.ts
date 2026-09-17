@@ -18,12 +18,10 @@ import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-pr
 import { RuntimeCredentialOwner } from "./runtime-credential-owner.js";
 import { RuntimeScopeResolver, type RuntimeScopeResolverPort } from "./scope-resolver.js";
 import { SLACK_OPERATIONS } from "./slack-operations.js";
-import { type RuntimeSourceRecorder, UnavailableRuntimeSourceRecorder } from "./source-recorder.js";
 import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "./task-policy.js";
 import { RuntimeProxyTicketStore } from "./ticket-store.js";
 import { RuntimeUrlHandleStore } from "./url-handle-store.js";
 import { RuntimeValidationRunRegistry } from "./validation-runs.js";
-import { type RuntimeWriteJournal, UnavailableRuntimeWriteJournal } from "./write-journal.js";
 
 export * from "./capability-store.js";
 export * from "./credential-broker.js";
@@ -42,14 +40,14 @@ export * from "./runtime-credential-owner.js";
 export * from "./runtime-validation-execution.js";
 export * from "./scope-resolver.js";
 export * from "./slack-operations.js";
-export * from "./source-recorder.js";
 export * from "./task-policy.js";
 export * from "./ticket-store.js";
 export * from "./trusted-control.js";
 export * from "./types.js";
+export * from "./upload-forward.js";
 export * from "./url-handle-store.js";
 export * from "./validation-runs.js";
-export * from "./write-journal.js";
+export * from "./write-outcome.js";
 
 export interface RuntimeCredentialServicesOptions {
   database: DatabaseClient;
@@ -66,18 +64,14 @@ export interface RuntimeCredentialServicesOptions {
   /** Test/deployment scope resolver override; defaults to the Postgres resolver. */
   scopeResolver?: RuntimeScopeResolverPort;
   /**
-   * Live Cloud control credential check (`FileCloudControlAuthority.isActive`). Cloud requests
-   * fail closed when this is missing; Local behavior is unchanged.
+   * Live Cloud control credential check (the injected trusted verifier's activity check). Cloud
+   * requests fail closed when this is missing; Local behavior is unchanged.
    */
   cloudControlActive?: (identity: RuntimeControlIdentity) => Promise<boolean> | boolean;
   /** Authoritative Account/owner task delegation. Defaults to the fail-closed policy. */
   taskPolicy?: RuntimeTaskPolicy;
   /** Fresh GitHub UAT admission. Defaults to unavailable, which denies GitHub execution. */
   gitHubAdmission?: RuntimeGitHubAdmission;
-  /** Parent-owned durable write intent/outcome store (SessionControlStore). */
-  writeJournal?: RuntimeWriteJournal;
-  /** Parent-owned durable source recorder for protected read outputs. */
-  sourceRecorder?: RuntimeSourceRecorder;
   authority?: RuntimeExecutionAuthority;
   fetchImpl?: typeof fetch;
   /** Parent-provided adapters (e.g. GitHub). IM adapters are constructed by default. */
@@ -99,8 +93,8 @@ export interface RuntimeCredentialServices {
 
 /**
  * Composes the whole Server runtime credential stack with production defaults: IM adapters over
- * the registered operation tables, Feishu tenant token caching, and fail-closed GitHub/journal/
- * source ports until the parent injects the authoritative implementations. The parent composes
+ * the registered operation tables, Feishu tenant token caching, and a fail-closed GitHub
+ * admission port until the parent injects the authoritative implementation. The parent composes
  * this once from `app.ts` and wires `owner` into `registerRuntimeRoutes` and `transport` into
  * `registerRuntimeProviderProxyRoutes`.
  */
@@ -147,9 +141,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       feishu: materialResolver,
     },
   });
-  const journal = options.writeJournal ?? new UnavailableRuntimeWriteJournal();
-  const sourceRecorder = options.sourceRecorder ?? new UnavailableRuntimeSourceRecorder();
-  const adapters = createImAdapters(options, urlHandles, journal, sourceRecorder);
+  const adapters = createImAdapters(options, urlHandles);
   const owner = new RuntimeCredentialOwner({
     registry: options.registry,
     executions,
@@ -205,8 +197,6 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
   urlHandles: RuntimeUrlHandleStore,
-  journal: RuntimeWriteJournal,
-  sourceRecorder: RuntimeSourceRecorder,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
   const defaults = [
@@ -221,8 +211,6 @@ function createImAdapters(
         provider,
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
-        journal,
-        sourceRecorder,
         ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
       }),
     );

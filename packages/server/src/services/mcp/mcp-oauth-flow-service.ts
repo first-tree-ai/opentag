@@ -117,7 +117,9 @@ export class McpOAuthFlowService {
         mcpServerId,
         kind: "oauth",
         status: "pending",
+        // A row created by a flow has no credential yet, so the flow's issuer is also its own.
         authorizationServer: metadata.issuer,
+        flowAuthorizationServer: metadata.issuer,
         clientRegistrationId: registrationId,
         // Stored hashed: the raw state is only ever in the URL the browser carries.
         state: hashSecret(state),
@@ -138,8 +140,28 @@ export class McpOAuthFlowService {
           state: hashSecret(state),
           stateExpiresAt: expiresAt,
           pkceCiphertext: sealedPkce.ciphertext,
-          authorizationServer: metadata.issuer,
-          clientRegistrationId: registrationId,
+          /*
+           * The flow's issuer goes in its own column, and `authorizationServer` is left alone unless
+           * there is no credential to protect.
+           *
+           * `authorizationServer` is the credential envelope's AAD, so writing this flow's issuer over
+           * it while an existing ciphertext stays on the row made that ciphertext undecryptable. The
+           * row's credential is only replaced at the callback, which writes the credential's issuer and
+           * the new envelope together — so a row that keeps its credential keeps the issuer that sealed
+           * it.
+           */
+          flowAuthorizationServer: metadata.issuer,
+          /*
+           * `authorizationServer` is only written when the row has no credential to protect.
+           *
+           * It is the credential envelope's AAD — and it is legitimately `null` for a Bearer row, whose
+           * key is not issued by any authorization server. Writing this flow's issuer into it either
+           * invalidated a working credential or, with a `coalesce`, filled in a column the Bearer
+           * envelope was sealed against being null. The flow's own issuer is `flowAuthorizationServer`,
+           * and the credential's issuer is replaced only at the callback, together with the envelope.
+           */
+          authorizationServer: sql`case when ${mcpServerAuthorizations.ciphertext} is null then ${metadata.issuer} else ${mcpServerAuthorizations.authorizationServer} end`,
+          clientRegistrationId: sql`case when ${mcpServerAuthorizations.ciphertext} is null then ${registrationId}::uuid else ${mcpServerAuthorizations.clientRegistrationId} end`,
           scopes,
           /*
            * The existing credential is deliberately left in place, and so is its `status`.
@@ -282,18 +304,25 @@ export class McpOAuthFlowService {
     }
     if (metadata.clientIdMetadataDocumentSupported) {
       /*
-       * The CIMD client is this deployment's own metadata URL, so it is the same on every start and
-       * recording it is idempotent — unlike a DCR registration, re-recording cannot invalidate a flow
-       * that already named it. A row is kept because the schema models one per mechanism and the
-       * callback and refresh find their client through `client_registration_id`.
+       * No row is stored for CIMD.
+       *
+       * The client is this deployment's own metadata URL — it is derivable from `publicUrl`, so there
+       * is nothing to remember, and `#readClientCredentials` resolves it the same way. Recording one
+       * was actively harmful: `mcp_client_registrations` is unique on `(Account, issuer)` and holds ONE
+       * row per pair, while this lookup is scoped by `source`. So a CIMD record upserted over an
+       * existing DCR row, repointing `client_id` and clearing the secret under every authorization
+       * already using it — their next refresh presented a client the authorization server had never
+       * issued them, and `invalid_client` is terminal, so the credential was destroyed with no way
+       * back. The same hazard existed in the other direction, and both are gone with the row.
        */
-      const client: McpClientCredentials = {
-        source: "cimd",
-        clientId: this.#oauth.clientMetadataUrl,
-        tokenEndpointAuthMethod: "none",
+      return {
+        client: {
+          source: "cimd",
+          clientId: this.#oauth.clientMetadataUrl,
+          tokenEndpointAuthMethod: "none",
+        },
+        registrationId: null,
       };
-      const registrationId = await this.#recordRegistration(accountId, metadata, client, this.#now());
-      return { client, registrationId };
     }
     const existing = await this.#readRegistrationRow(accountId, metadata.issuer, "dcr");
     if (existing) {
@@ -301,8 +330,24 @@ export class McpOAuthFlowService {
       return { client, registrationId: existing.id };
     }
     const client = await this.#oauth.registerDynamically(accountId, metadata);
-    const registrationId = await this.#recordRegistration(accountId, metadata, client, this.#now());
-    return { client, registrationId };
+    await this.#recordRegistration(accountId, metadata, client, this.#now(), { ifAbsent: true });
+    /*
+     * Re-read rather than using what was just registered.
+     *
+     * Two concurrent starts both miss the lookup above and both register; with an insert-if-absent the
+     * second one stores nothing, so the row holds the first client. Naming the client this call
+     * registered would make the loser's authorization request name a client its callback — which
+     * resolves the row — will not present, and a strict authorization server answers `invalid_client`.
+     * Reading back is what makes both flows agree on the client the row actually holds.
+     */
+    const recorded = await this.#readRegistrationRow(accountId, metadata.issuer, "dcr");
+    if (!recorded) {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.REGISTRATION_FAILED,
+        "A different client registration already exists for this authorization server",
+      );
+    }
+    return { client: await this.#clientFromRow(accountId, recorded), registrationId: recorded.id };
   }
 
   /** One registration row for `(Account, issuer)`, by the mechanism that created it. */
@@ -357,35 +402,61 @@ export class McpOAuthFlowService {
     metadata: McpAuthorizationServerMetadata,
     client: McpClientCredentials,
     now: Date,
+    options: { ifAbsent?: boolean } = {},
   ): Promise<string> {
     const sealed = client.clientSecret
       ? this.#cipher.encryptClientSecret({ accountId, authorizationServer: metadata.issuer }, client.clientSecret)
       : undefined;
-    const [row] = await this.#database
-      .insert(mcpClientRegistrations)
-      .values({
-        accountId,
-        authorizationServer: metadata.issuer,
-        source: client.source,
-        clientId: client.clientId,
-        ciphertext: sealed?.ciphertext ?? null,
-        keyId: sealed?.keyId ?? null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: [mcpClientRegistrations.accountId, mcpClientRegistrations.authorizationServer],
-        set: {
-          source: client.source,
-          clientId: client.clientId,
-          ciphertext: sealed?.ciphertext ?? null,
-          keyId: sealed?.keyId ?? null,
-          updatedAt: now,
-        },
-      })
-      .returning({ id: mcpClientRegistrations.id });
-    if (!row) throw new McpServiceError(MCP_ERROR_CODES.REGISTRATION_FAILED, "The client registration was not stored");
-    return row.id;
+    const values = {
+      accountId,
+      authorizationServer: metadata.issuer,
+      source: client.source,
+      clientId: client.clientId,
+      ciphertext: sealed?.ciphertext ?? null,
+      keyId: sealed?.keyId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const insert = this.#database.insert(mcpClientRegistrations).values(values);
+    const [row] =
+      options.ifAbsent === true
+        ? // Never overwrite an existing registration: it is the client every authorization at this
+          // issuer is already using, and replacing `client_id` under them is terminal.
+          await insert
+            .onConflictDoNothing({
+              target: [mcpClientRegistrations.accountId, mcpClientRegistrations.authorizationServer],
+            })
+            .returning({ id: mcpClientRegistrations.id })
+        : await insert
+            .onConflictDoUpdate({
+              target: [mcpClientRegistrations.accountId, mcpClientRegistrations.authorizationServer],
+              set: {
+                source: client.source,
+                clientId: client.clientId,
+                ciphertext: sealed?.ciphertext ?? null,
+                keyId: sealed?.keyId ?? null,
+                updatedAt: now,
+              },
+            })
+            .returning({ id: mcpClientRegistrations.id });
+    if (row) return row.id;
+    /*
+     * No row came back from an insert-if-absent, which means someone else's registration won. That is
+     * expected under concurrency and the caller re-reads; reaching here from the upsert path would be
+     * a datastore fault.
+     */
+    const [existing] = await this.#database
+      .select({ id: mcpClientRegistrations.id })
+      .from(mcpClientRegistrations)
+      .where(
+        and(
+          eq(mcpClientRegistrations.accountId, accountId),
+          eq(mcpClientRegistrations.authorizationServer, metadata.issuer),
+        ),
+      )
+      .limit(1);
+    if (existing) return existing.id;
+    throw new McpServiceError(MCP_ERROR_CODES.REGISTRATION_FAILED, "The client registration was not stored");
   }
 
   /**
@@ -474,7 +545,7 @@ export class McpOAuthFlowService {
   }): Promise<void> {
     const { accountId, agentId, authorization, code, issuedState, iss } = input;
     const mcpServerId = authorization.mcpServerId;
-    const metadata = await this.#oauth.authorizationServerMetadata(accountId, requireIssuer(authorization));
+    const metadata = await this.#oauth.authorizationServerMetadata(accountId, requireFlowIssuer(authorization));
     /*
      * `iss` is validated before anything from the response is used. On a mismatch the response's
      * own `error` values are never shown or adopted, because a mismatched response is evidence of
@@ -620,6 +691,23 @@ export class McpOAuthFlowService {
    * Passing no code means the failure is transient — the flow's state is cleared and the row is left
    * `pending` for a retry, which is the one case where waiting is still the right answer.
    */
+  /**
+   * End a flow that cannot succeed.
+   *
+   * `status` leaves `pending` only when there is no credential to protect: the poll in `mcp authorize`
+   * and the page's probe indicator both end on a status other than `pending`, and a row that only had
+   * its state cleared kept a user waiting for the flow's full ten minutes.
+   *
+   * But `status` is also what `resolveActiveCredential` gates on, so writing `error` unconditionally
+   * destroyed a working credential: an Agent that was authorized and working, whose user denied a
+   * *re*-authorization, came out unauthorized — the same outcome as the bug that stopped `start` from
+   * clearing it, reached by a different door. With a credential present the row keeps its status and
+   * only records the reason; the pending-probe pass re-probes it, because an active row with a pending
+   * probe is exactly what that pass runs, so nothing is left waiting either way.
+   *
+   * Passing no code means the failure is transient — the flow's state is cleared and the row is left
+   * `pending` for a retry, the one case where waiting is still the right answer.
+   */
   async #failFlow(id: string, failureCode: string | undefined): Promise<void> {
     await this.#database
       .update(mcpServerAuthorizations)
@@ -628,7 +716,16 @@ export class McpOAuthFlowService {
         stateExpiresAt: null,
         pkceCiphertext: null,
         loginSessionHash: null,
-        ...(failureCode === undefined ? {} : { status: "error", failureCode }),
+        ...(failureCode === undefined
+          ? {}
+          : {
+              failureCode,
+              /*
+               * Downgraded only when there is nothing to lose. `ciphertext` is read in the same
+               * statement so the decision cannot go stale between a read and this write.
+               */
+              status: sql`case when ${mcpServerAuthorizations.ciphertext} is null then 'error' else ${mcpServerAuthorizations.status} end`,
+            }),
         updatedAt: this.#now(),
       })
       .where(eq(mcpServerAuthorizations.id, id));
@@ -908,6 +1005,20 @@ function accessTokenExpiry(now: Date, expiresInSeconds: number | undefined): Dat
   return new Date(now.getTime() + (expiresInSeconds ?? UNKNOWN_LIFETIME_SECONDS) * 1000);
 }
 
+/**
+ * The issuer a flow discovered, which is not the same as the credential's issuer.
+ *
+ * A re-authorization keeps the existing credential while its flow runs, and the credential's issuer is
+ * part of the envelope's AAD, so the two must be able to differ.
+ */
+function requireFlowIssuer(row: { flowAuthorizationServer: string | null }): string {
+  if (!row.flowAuthorizationServer) {
+    throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FAILED, "The authorization row has no flow authorization server");
+  }
+  return row.flowAuthorizationServer;
+}
+
+/** The issuer that sealed this row's credential, which a refresh must talk to. */
 function requireIssuer(row: { authorizationServer: string | null }): string {
   if (!row.authorizationServer) {
     throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FAILED, "The authorization row has no authorization server");

@@ -3420,6 +3420,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "flow_authorization_server": {
+          "name": "flow_authorization_server",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "client_registration_id": {
           "name": "client_registration_id",
           "type": "uuid",

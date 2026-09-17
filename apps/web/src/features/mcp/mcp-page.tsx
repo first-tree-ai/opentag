@@ -558,7 +558,12 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
 
   const impact = useMemo(() => (detail.data ? sharedDefinitionImpact(detail.data) : undefined), [detail.data]);
 
-  const headersChanged = JSON.stringify(headersFromRows(extraHeaders)) !== JSON.stringify(entry.effective.extraHeaders);
+  /*
+   * Sorted by name, because the rows are a set: reordering them changes nothing about what the Server
+   * receives, and comparing serialized order marked the field changed and pinned an override for it.
+   */
+  const headersChanged =
+    sortedHeadersKey(headersFromRows(extraHeaders)) !== sortedHeadersKey(entry.effective.extraHeaders);
 
   /*
    * Only the fields the user actually changed are sent.
@@ -588,6 +593,7 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
     clearAuthHeader?: true;
     clearAuthScheme?: true;
     clearExtraHeaders?: true;
+    emptyExtraHeaders?: true;
   }) => {
     setError(undefined);
     try {
@@ -652,7 +658,7 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
         <Field htmlFor="mcp-edit-url" label={m.mcp_edit_url_label()}>
           <KumoInputControl onChange={(event) => setUrl(event.target.value)} value={url} />
         </Field>
-        {scope === "agent" && entry.overridden.url && url === entry.effective.url ? (
+        {scope === "agent" && entry.overridden.url ? (
           <Button onClick={() => void restoreShared({ clearUrl: true })} size="compact" variant="ghost">
             {m.mcp_edit_clear_url()}
           </Button>
@@ -660,7 +666,7 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
         <Field htmlFor="mcp-auth-header" label={m.mcp_edit_auth_header_label()}>
           <KumoInputControl onChange={(event) => setAuthHeader(event.target.value)} value={authHeader} />
         </Field>
-        {scope === "agent" && entry.overridden.authHeader && authHeader === entry.effective.authHeader ? (
+        {scope === "agent" && entry.overridden.authHeader ? (
           <Button onClick={() => void restoreShared({ clearAuthHeader: true })} size="compact" variant="ghost">
             {m.mcp_edit_clear_auth_header()}
           </Button>
@@ -668,7 +674,7 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
         <Field hint={m.mcp_edit_auth_scheme_help()} htmlFor="mcp-auth-scheme" label={m.mcp_edit_auth_scheme_label()}>
           <KumoInputControl onChange={(event) => setAuthScheme(event.target.value)} value={authScheme} />
         </Field>
-        {scope === "agent" && entry.overridden.authScheme && authScheme === entry.effective.authScheme ? (
+        {scope === "agent" && entry.overridden.authScheme ? (
           <Button onClick={() => void restoreShared({ clearAuthScheme: true })} size="compact" variant="ghost">
             {m.mcp_edit_clear_auth_scheme()}
           </Button>
@@ -725,9 +731,13 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
                   {m.mcp_edit_clear_extra_headers()}
                 </Button>
                 <Button
-                  onClick={() => {
-                    void updateBinding.mutateAsync({ mcpServerId: entry.mcpServerId, emptyExtraHeaders: true });
-                  }}
+                  /*
+                   * The same path as the other restores: awaited, reported on failure, and closed on
+                   * success. As a bare `void` it reported nothing, and because it no longer cleared the
+                   * local rows, `headersChanged` stayed true — so a following Save sent the headers
+                   * straight back as an override, undoing the button.
+                   */
+                  onClick={() => void restoreShared({ emptyExtraHeaders: true })}
                   size="compact"
                   variant="ghost"
                 >
@@ -979,6 +989,11 @@ function headersFromRows(rows: readonly HeaderRow[]): Record<string, string> {
     if (name.length > 0) headers[name] = row.value;
   }
   return headers;
+}
+
+/** A header set as an order-independent key, so reordering rows is not read as an edit. */
+function sortedHeadersKey(headers: Record<string, string>): string {
+  return JSON.stringify(Object.entries(headers).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
 }
 
 function replaceRow<T>(rows: readonly T[], index: number, value: T): T[] {

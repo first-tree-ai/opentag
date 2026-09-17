@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte, ne, or } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, ne, or } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, mcpServerAuthorizations } from "../../db/schema/index.js";
 import type { McpAuthorizationService } from "./mcp-authorization-service.js";
@@ -94,7 +94,6 @@ export class McpRefreshWorker {
     this.#running = true;
     try {
       const now = this.#now();
-      await this.#expireUnrenewable(now);
       await this.#runPendingProbes();
       const due = await this.#database
         .select({ id: mcpServerAuthorizations.id })
@@ -146,11 +145,32 @@ export class McpRefreshWorker {
       .select({
         agentId: mcpServerAuthorizations.agentId,
         accountId: agents.createdByUserId,
+        id: mcpServerAuthorizations.id,
         mcpServerId: mcpServerAuthorizations.mcpServerId,
       })
       .from(mcpServerAuthorizations)
       .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
-      .where(and(eq(mcpServerAuthorizations.probeState, "pending"), ne(agents.status, "deleted")))
+      .where(
+        and(
+          eq(mcpServerAuthorizations.probeState, "pending"),
+          /*
+           * Only rows `probe()` will accept.
+           *
+           * It throws `AUTHORIZATION_REQUIRED` for any row that is not `active`, before writing
+           * anything — so a revoked, expired, or errored row that is still marked pending would be
+           * selected, throw, keep its `probeState` and its `updatedAt`, and be selected again next pass,
+           * forever. Those are not edge cases: `revoke` writes `probeState: "pending"` itself, and
+           * `start` marks the row pending at the beginning of every flow.
+           *
+           * The sharper half is starvation. The scan is oldest-first with a batch bound, and a row that
+           * throws never has its `updatedAt` touched, so stuck rows sort to the head permanently. Once
+           * a deployment accumulates a batch of them the pass runs nothing else — the symptom this pass
+           * exists to remove, reached from the other side.
+           */
+          eq(mcpServerAuthorizations.status, "active"),
+          ne(agents.status, "deleted"),
+        ),
+      )
       .orderBy(asc(mcpServerAuthorizations.updatedAt))
       .limit(this.#batchSize);
     for (const row of pending) {
@@ -158,36 +178,19 @@ export class McpRefreshWorker {
         await this.#authorization.probe(row.accountId, row.agentId, row.mcpServerId);
       } catch (error) {
         /*
-         * Reported and stepped over. A probe that fails records its own failure on the row, so the
-         * next pass sees `failed` rather than `pending` and does not retry it in a loop; anything
-         * thrown here is infrastructure, and one bad row must not stop the rest of the batch.
+         * Reported, then rotated to the back of the queue.
+         *
+         * A probe that fails normally records its own failure, so the next pass sees `failed` rather
+         * than `pending`. This path is for a throw that did not — infrastructure, or a row that changed
+         * under us — and without touching `updatedAt` such a row would pin the head of an oldest-first
+         * scan and, in enough numbers, starve every real probe behind it.
          */
         this.#onError(error);
+        await this.#database
+          .update(mcpServerAuthorizations)
+          .set({ updatedAt: this.#now() })
+          .where(eq(mcpServerAuthorizations.id, row.id));
       }
     }
-  }
-
-  /** An OAuth row past its expiry with no refresh token lapses; there is nothing to spend. */
-  async #expireUnrenewable(now: Date): Promise<void> {
-    const rows = await this.#database
-      .select({ id: mcpServerAuthorizations.id, ciphertext: mcpServerAuthorizations.ciphertext })
-      .from(mcpServerAuthorizations)
-      .innerJoin(agents, eq(agents.id, mcpServerAuthorizations.agentId))
-      .where(
-        and(
-          eq(mcpServerAuthorizations.kind, "oauth"),
-          eq(mcpServerAuthorizations.status, "active"),
-          ne(agents.status, "deleted"),
-          isNull(mcpServerAuthorizations.refreshClaimId),
-          lte(mcpServerAuthorizations.accessTokenExpiresAt, now),
-        ),
-      )
-      .limit(this.#batchSize);
-    const ids = rows.filter((row) => row.ciphertext === null).map((row) => row.id);
-    if (ids.length === 0) return;
-    await this.#database
-      .update(mcpServerAuthorizations)
-      .set({ status: "expired", updatedAt: now })
-      .where(inArray(mcpServerAuthorizations.id, ids));
   }
 }

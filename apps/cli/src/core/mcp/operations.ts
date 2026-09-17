@@ -340,6 +340,16 @@ async function waitForAuthorization(
     const { servers } = await api.listAgentMcpServers(accessToken, agentId);
     const entry = servers.find((candidate) => candidate.mcpServerId === mcpServerId);
     const authorization = entry?.authorization;
+    /*
+     * A failure code ends the wait.
+     *
+     * A denial or a terminal exchange failure on a row that already held a working credential leaves
+     * `status: active` deliberately — the old credential is still valid and must not be destroyed — so
+     * `status` alone cannot tell this wait that the flow ended. `failureCode` is what records it.
+     */
+    if (authorization?.failureCode) {
+      throw new Error(`The authorization failed with ${authorization.failureCode}`);
+    }
     if (authorization?.status === "active" && authorization.probeState !== "pending") {
       return {
         probeState: authorization.probeState,

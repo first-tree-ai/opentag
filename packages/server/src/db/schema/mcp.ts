@@ -181,8 +181,19 @@ export const mcpServerAuthorizations = pgTable(
     keyId: text("key_id"),
     scopes: text("scopes").array(),
     accessTokenExpiresAt: timestamp("access_token_expires_at", { withTimezone: true }),
-    /** The selected authorization server (issuer); null for `none` and unset `bearer` rows. */
+    /**
+     * The selected authorization server (issuer).
+     *
+     * Part of the credential envelope's AAD, so it may only change together with the ciphertext it
+     * seals. A flow in progress therefore records its own issuer in `flow_authorization_server`
+     * instead: the two are different questions ("who issued the credential on this row" and "who is
+     * this flow talking to"), and one column cannot answer both when a re-authorization keeps a
+     * working credential — writing the flow's issuer here made that credential undecryptable, which is
+     * the same defect class as sealing a Bearer key under a value the row was about to null.
+     */
     authorizationServer: text("authorization_server"),
+    /** The issuer this row's in-flight flow discovered; null when no flow is in progress. */
+    flowAuthorizationServer: text("flow_authorization_server"),
     clientRegistrationId: uuid("client_registration_id").references(() => mcpClientRegistrations.id, {
       onDelete: "set null",
     }),

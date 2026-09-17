@@ -52,6 +52,7 @@ CREATE TABLE "mcp_server_authorizations" (
 	"scopes" text[],
 	"access_token_expires_at" timestamp with time zone,
 	"authorization_server" text,
+	"flow_authorization_server" text,
 	"client_registration_id" uuid,
 	"state" text,
 	"state_expires_at" timestamp with time zone,

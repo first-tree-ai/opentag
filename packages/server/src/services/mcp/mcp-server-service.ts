@@ -375,6 +375,16 @@ export class McpServerService {
     const reset = {
       probeState: "pending" as const,
       ...(options.invalidateEra === true ? { protocolEra: null, protocolVersion: null } : {}),
+      /*
+       * `revision` is bumped so every write already in flight against these rows is fenced out.
+       *
+       * `revoke` and `setBearerOrNone` bump it, which is exactly why a probe that started before them
+       * cannot land afterwards. This path changes the row just as decisively — the endpoint moved, so
+       * the snapshot and the credential describe an origin that no longer applies — yet it left the
+       * revision alone, so a probe already in flight passed the new fence and wrote `succeeded` plus a
+       * tool list from the old origin onto a row that had just been revoked.
+       */
+      revision: sql`${mcpServerAuthorizations.revision} + 1`,
     };
     if (options.dropCredential !== true) {
       await this.#database.update(mcpServerAuthorizations).set(reset).where(scope);
@@ -384,10 +394,27 @@ export class McpServerService {
      * Scoped to OAuth rows that actually hold a credential: `none` rows have nothing to drop, and a
      * Bearer row's key is not origin-bound. The envelope is cleared together with its key id, because
      * `credential_pair` requires the two to be present or absent as a pair.
+     *
+     * The flow columns go too, and they are not optional. A flow that was in progress when the origin
+     * changed would otherwise survive this: its callback is located by `state`, and `#redeemCode`
+     * writes `status: active` with a token minted by the *old* authorization server — authorizing the
+     * new origin with a credential issued for the old one, which is the reuse the specification
+     * forbids and the reason this branch exists at all. `state` and `loginSessionHash` are paired by
+     * `flow_binding_shape`, so they clear together.
      */
     await this.#database
       .update(mcpServerAuthorizations)
-      .set({ ...reset, status: "revoked", ciphertext: null, keyId: null, accessTokenExpiresAt: null })
+      .set({
+        ...reset,
+        status: "revoked",
+        ciphertext: null,
+        keyId: null,
+        accessTokenExpiresAt: null,
+        state: null,
+        stateExpiresAt: null,
+        pkceCiphertext: null,
+        loginSessionHash: null,
+      })
       .where(and(scope, eq(mcpServerAuthorizations.kind, "oauth")));
     await this.#database
       .update(mcpServerAuthorizations)

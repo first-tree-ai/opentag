@@ -258,6 +258,22 @@ describe("McpPage", () => {
     expect(updates[0]).toEqual({ clearUrl: true });
   });
 
+  it("reports a failed 'send none' instead of silently doing nothing", async () => {
+    /*
+     * That button was a bare `void updateBinding.mutateAsync(...)`: no await, no catch, no banner. A
+     * failure was an unhandled rejection the user never saw, and the button appeared to do nothing.
+     */
+    stub([entry()], detail(1));
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockRejectedValue(new Error("network down"));
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Send no extra headers" }));
+
+    // Reported rather than swallowed, and the dialog stays open so the user can retry.
+    expect(await screen.findByText("Couldn’t save these settings. Try again.")).toBeTruthy();
+  });
+
   it("mounts the Server it just created, so it appears on the page that created it", async () => {
     /*
      * Creating a definition is Account-level and mounting it is per Agent. A definition left

@@ -187,11 +187,17 @@ const SAFE_STRUCTURAL_OBJECT_ONLY_KEYS = new Set(["authorization"]);
  */
 const AUTHORIZATION_SUMMARY_FIELDS = ["kind", "status", "has_credential"];
 
-/** Whether an exempted key's value is the structural summary the exemption exists for. */
+/**
+ * Whether an exempted key's value is the structural summary the exemption exists for.
+ *
+ * Every field, not any one of them. `.some()` accepted an object carrying a single summary field, and
+ * nested redaction is key-name-only, so `{authorization: {kind: "bearer", value: "sk-live"}}` kept its
+ * secret — an object that merely mentions `kind` is not the DTO.
+ */
 function isAuthorizationSummary(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const keys = Object.keys(value).map((key) => normalizedKey(key));
-  return AUTHORIZATION_SUMMARY_FIELDS.some((field) => keys.includes(field));
+  return AUTHORIZATION_SUMMARY_FIELDS.every((field) => keys.includes(field));
 }
 
 /**

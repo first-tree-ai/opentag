@@ -119,7 +119,7 @@ function json(body: McpFetchResponse): Record<string, unknown> {
  * Returns undefined for anything else, so the caller treats it as "no metadata" and tries the next
  * candidate rather than proceeding with a value it cannot use.
  */
-function endpointUrl(document: Record<string, unknown>, key: string): string | undefined {
+function endpointUrl(document: Record<string, unknown>, key: string, allowLoopback: boolean): string | undefined {
   const raw = stringField(document, key);
   if (raw === undefined) return undefined;
   let url: URL;
@@ -130,8 +130,15 @@ function endpointUrl(document: Record<string, unknown>, key: string): string | u
   }
   if (url.username || url.password) return undefined;
   if (url.protocol === "https:") return raw;
-  // The loopback exception exists for the test fixture, which is its own authorization server.
-  if (url.protocol === "http:" && isLoopbackHost(url.hostname)) return raw;
+  /*
+   * Loopback plain HTTP is admitted only where the deployment opted into it, exactly as the outbound
+   * gate does — not merely because the host resolves to the local machine. This endpoint is handed to
+   * the browser with `location.assign`, so a hostile public authorization server could otherwise
+   * answer `http://localhost:3000/…` and have a production browser navigated at the user's own
+   * machine. The exception exists for the test fixture, which is its own authorization server on
+   * loopback and runs in a deployment that set the flag.
+   */
+  if (allowLoopback && url.protocol === "http:" && isLoopbackHost(url.hostname)) return raw;
   return undefined;
 }
 
@@ -307,6 +314,9 @@ export class McpOAuthClient {
    * than normalized (no case folding, no default-port or trailing-slash tolerance).
    */
   async authorizationServerMetadata(accountId: string, issuer: string): Promise<McpAuthorizationServerMetadata> {
+    // The same opt-in the outbound gate enforces, so a loopback endpoint is only usable where the
+    // deployment already permits dialing one.
+    const allowLoopback = this.#fetcher.policy.allowLoopback;
     const result = await firstPublishedDocument(
       authorizationServerMetadataUrls(issuer),
       async (candidate) => {
@@ -323,10 +333,10 @@ export class McpOAuthClient {
             "The authorization server metadata issuer does not match the requested issuer",
           );
         }
-        const authorizationEndpoint = endpointUrl(document, "authorization_endpoint");
-        const tokenEndpoint = endpointUrl(document, "token_endpoint");
+        const authorizationEndpoint = endpointUrl(document, "authorization_endpoint", allowLoopback);
+        const tokenEndpoint = endpointUrl(document, "token_endpoint", allowLoopback);
         if (!authorizationEndpoint || !tokenEndpoint) return undefined;
-        const registrationEndpoint = endpointUrl(document, "registration_endpoint");
+        const registrationEndpoint = endpointUrl(document, "registration_endpoint", allowLoopback);
         return {
           issuer,
           authorizationEndpoint,
@@ -344,33 +354,6 @@ export class McpOAuthClient {
       throw upstream("The authorization server metadata could not be read", { tried: result.failures.slice(0, 4) });
     }
     return result.value;
-  }
-
-  /**
-   * Resolve a usable client credential. Pre-registration wins; then CIMD when the AS advertises it;
-   * then Dynamic Client Registration. Otherwise the caller is told to supply one by hand, because
-   * guessing at a registration shape the AS does not support would fail later and less clearly.
-   */
-  async resolveClientCredentials(
-    accountId: string,
-    metadata: McpAuthorizationServerMetadata,
-    preregistered?: McpClientCredentials,
-  ): Promise<McpClientCredentials> {
-    if (preregistered) return preregistered;
-    if (metadata.clientIdMetadataDocumentSupported) {
-      return {
-        source: "cimd",
-        clientId: this.clientMetadataUrl,
-        tokenEndpointAuthMethod: "none",
-      };
-    }
-    if (metadata.registrationEndpoint) {
-      return this.registerDynamically(accountId, metadata);
-    }
-    throw new McpServiceError(
-      MCP_ERROR_CODES.REGISTRATION_UNSUPPORTED,
-      "The authorization server supports neither client metadata documents nor dynamic registration",
-    );
   }
 
   /** RFC 7591 dynamic registration. This is a remote web application, not a native one. */

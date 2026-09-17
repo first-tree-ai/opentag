@@ -1,8 +1,8 @@
 import {
+  MCP_LEGACY_PROTOCOL_VERSIONS,
   MCP_MODERN_PROTOCOL_VERSION,
   MCP_PROBE_MAX_TOOLS,
   MCP_PROBE_MAX_TOOLS_BYTES,
-  MCP_SUPPORTED_PROTOCOL_VERSIONS,
 } from "@opentag/shared";
 import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import {
@@ -172,12 +172,15 @@ export class McpProbe {
       );
     }
     /*
-     * The version the peer negotiated, checked against the ones this client speaks. An unrecognized
-     * value is recorded as absent rather than echoed onto later requests: a Server naming a version we
-     * do not implement would otherwise have us stamp it on the `tools/list` that follows.
+     * The version the peer negotiated, checked against the *legacy* list.
+     *
+     * `MCP_SUPPORTED_PROTOCOL_VERSIONS` includes the modern `2026-07-28`, so a legacy-era Server naming
+     * it was accepted and then had the modern `MCP-Protocol-Version` stamped on its `tools/list` — the
+     * exact failure this check exists to prevent — while the row recorded `era: legacy` with a modern
+     * version. Only a legacy version can be spoken on the legacy path.
      */
     const negotiated = typeof payload.protocolVersion === "string" ? payload.protocolVersion : undefined;
-    const supported = negotiated !== undefined && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(negotiated as never);
+    const supported = negotiated !== undefined && MCP_LEGACY_PROTOCOL_VERSIONS.includes(negotiated as never);
     const tools = await this.#collectLegacyTools(
       input,
       transport,

@@ -77,7 +77,7 @@ export class McpAuthorizationService {
     mcpServerId: string,
     input: { kind: "none" | "bearer"; bearerKey?: string },
   ): Promise<void> {
-    const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
+    await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const now = this.#now();
     if (input.kind === "bearer" && (!input.bearerKey || input.bearerKey.length === 0)) {
       throw new McpServiceError(MCP_ERROR_CODES.CREDENTIAL_INPUT_INVALID, "A bearer authorization requires its key");
@@ -86,11 +86,18 @@ export class McpAuthorizationService {
      * The sealed value is stored in `access_token` position of the envelope: a Bearer key is this
      * Agent's single credential for the Server, and the envelope shape is shared with OAuth so a
      * kind change is one write rather than a migration.
+     *
+     * Sealed under the authorization server the row will *end up* with, which is `null`: a bearer
+     * credential is not issued by an authorization server, and the write below clears the column for
+     * `bearer` and `none` alike. Sealing under the previous row's value instead — as this did — left
+     * an envelope the current AAD could not open whenever a row arrived with one set, which is every
+     * row after an abandoned OAuth start or an OAuth revoke. The PUT returned 200 and every probe
+     * then failed to decrypt.
      */
     const sealed =
       input.kind === "bearer"
         ? this.#cipher.encryptAuthorizationCredential(
-            { mcpServerId, agentId, authorizationServer: context.authorization?.authorizationServer ?? null },
+            { mcpServerId, agentId, authorizationServer: null },
             { accessToken: input.bearerKey as string },
           )
         : undefined;
@@ -123,6 +130,13 @@ export class McpAuthorizationService {
           state: null,
           stateExpiresAt: null,
           pkceCiphertext: null,
+          /*
+           * Cleared with the flow it belongs to. The datastore pairs the two
+           * (`mcp_server_authorizations_flow_binding_shape`), and a write that nulled only `state`
+           * was rejected outright — switching a row that was mid-flow to a Bearer key failed before
+           * it could store anything.
+           */
+          loginSessionHash: null,
           refreshClaimId: null,
           refreshClaimedAt: null,
           probeState: "pending",
@@ -147,6 +161,9 @@ export class McpAuthorizationService {
         state: null,
         stateExpiresAt: null,
         pkceCiphertext: null,
+        // Paired with `state` by `mcp_server_authorizations_flow_binding_shape`; clearing one alone is
+        // refused by the datastore, and this is the write that ends the row's flow.
+        loginSessionHash: null,
         refreshClaimId: null,
         refreshClaimedAt: null,
         probeState: "pending",

@@ -718,6 +718,47 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
       await fixture.stop();
     }
   });
+
+  it("can write a Bearer key over a row that still names an authorization server", async () => {
+    /*
+     * Switching from OAuth to Bearer used to store a key that could not be decrypted.
+     *
+     * The envelope was sealed with the old row's `authorizationServer` as AAD while the same write set
+     * that column to null, so `resolveActiveCredential` then opened it with null and failed. Any row
+     * that had been through an abandoned OAuth `start` or an OAuth `revoke` still carries a value
+     * there, which is the ordinary state a user reaches by changing their mind. The PUT returned 200
+     * and every probe failed, and re-entering the same key "fixed" it only because the second write
+     * found the column already null.
+     */
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+
+      // An abandoned OAuth start leaves `authorizationServer` set.
+      await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const [during] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(during?.authorizationServer).not.toBeNull();
+
+      // Switching to a Bearer key must produce a credential that actually opens.
+      await harness.authorization.setBearerOrNone(harness.accountId, harness.agentA, server.id, {
+        kind: "bearer",
+        bearerKey: "key_a",
+      });
+      const outcome = await harness.authorization.probe(harness.accountId, harness.agentA, server.id);
+      expect(outcome.probeState).toBe("succeeded");
+    } finally {
+      await fixture.stop();
+    }
+  });
 });
 
 // ------------------------------------------------------------------ P4: SSRF regression

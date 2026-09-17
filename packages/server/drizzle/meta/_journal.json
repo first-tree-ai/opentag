@@ -316,6 +316,13 @@
       "when": 1789544780443,
       "tag": "0044_wet_xorn",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1789653588431,
+      "tag": "0045_abandoned_rocket_raccoon",
+      "breakpoints": true
     }
   ]
 }

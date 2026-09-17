@@ -8,6 +8,7 @@ import { useAgentIdentityList } from "../agents/agent-queries.js";
 import {
   agentDetailLink,
   agentIntegrationsLink,
+  agentMcpLink,
   agentSkillsLink,
   agentTasksLink,
   agentUsageLink,
@@ -25,6 +26,11 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
   const items = [
     { section: "home", icon: "overview", label: m.shell_overview(), link: agentDetailLink(agentId) },
     { section: "tasks", icon: "instructions", label: m.shell_tasks(), link: agentTasksLink(agentId) },
+    /*
+     * Visible by default, with no internal-tools gate: the Server pool and per-Agent authorization
+     * are an ordinary management surface, not a preview.
+     */
+    { section: "mcp", icon: "integrations", label: m.shell_mcp(), link: agentMcpLink(agentId) },
     ...(internal.skills
       ? ([{ section: "skills", icon: "shield", label: m.shell_skills(), link: agentSkillsLink(agentId) }] as const)
       : []),
@@ -83,6 +89,7 @@ export default function AgentNavigation({ agentId, pathname }: { agentId: string
 /** Preserve the reader's section across Agents, but never a Task or Settings detail. */
 function agentSwitchLink(pathname: string, agentId: string) {
   if (pathname.includes("/tasks")) return agentTasksLink(agentId);
+  if (pathname.includes("/mcp")) return agentMcpLink(agentId);
   if (pathname.includes("/skills")) return agentSkillsLink(agentId);
   if (pathname.includes("/integrations")) return agentIntegrationsLink(agentId);
   if (pathname.includes("/usage")) return agentUsageLink(agentId);
@@ -185,7 +192,7 @@ function AgentSwitcher({
 export function isAgentSectionActive(
   pathname: string,
   agentId: string,
-  section: "home" | "integrations" | "skills" | "tasks" | "usage",
+  section: "home" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
 ): boolean {
   const root = `/agents/${agentId}`;
   if (section === "home") return isAgentHome(pathname, agentId);

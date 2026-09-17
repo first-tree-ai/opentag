@@ -130,6 +130,7 @@ const SENSITIVE_KEY_PARTS = [
   "passwd",
   "api_key",
   "apikey",
+  "bearer_key",
   "access_key",
   "refresh_key",
   "private_key",
@@ -142,12 +143,46 @@ const SENSITIVE_KEY_PARTS = [
   "tool_output",
 ];
 
+/**
+ * Keys that read as sensitive but are known-safe structural names.
+ *
+ * Redaction runs over whatever a command returns, and a substring match on "authorization" or
+ * "credential" would blank a whole subtree whose *name* merely resembles a secret. MCP's
+ * authorization summary is exactly that: a field called `authorization` carrying `hasCredential`,
+ * `status`, and an expiry — no secret anywhere in it. Left unlisted, the CLI printed `authKind none`
+ * for a stored Bearer key, because the object it formatted had been replaced by `[REDACTED]`.
+ *
+ * These are exact key names, not substrings: the exemption must not reopen the door for
+ * `authorizationHeader`, `credentialCiphertext`, or anything else that could actually hold a value.
+ */
+const SAFE_STRUCTURAL_KEYS = new Set([
+  // The MCP authorization *summary*: kind, status, hasCredential, expiry, probe state.
+  "authorization",
+  // The issuer URL the authorization targets. Public by definition, and the UI shows it.
+  "authorization_server",
+  // An expiry timestamp, required by the UI and CLI to render "expires at …".
+  "access_token_expires_at",
+  // A boolean-ish presence flag rather than a value.
+  "has_credential",
+]);
+
 function normalizedKey(key: string): string {
-  return key.toLowerCase().replaceAll("-", "_");
+  /*
+   * Fold every separator convention onto underscores, including camelCase.
+   *
+   * Without the camelCase split, `bearerKey`, `privateKey`, and `refreshKey` never matched their
+   * underscore-form entries and were emitted verbatim — the redactor silently leaked exactly the
+   * names a credential-carrying DTO is most likely to use.
+   */
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replaceAll("-", "_");
 }
 
 function isSensitiveKey(key: string): boolean {
   const normalized = normalizedKey(key);
+  if (SAFE_STRUCTURAL_KEYS.has(normalized)) return false;
   return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 

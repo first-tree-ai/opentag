@@ -10,6 +10,7 @@
   "shell_integrations": "集成",
   "shell_internal_tools": "内部工具",
   "shell_loading_agent_workspace": "正在加载 Agent 工作区",
+  "shell_mcp": "MCP Server",
   "shell_new_agent": "新建 Agent",
   "shell_open_agent_navigation": "打开 Agent 导航",
   "shell_overview": "概览",

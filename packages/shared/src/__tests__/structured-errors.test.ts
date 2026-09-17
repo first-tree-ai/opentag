@@ -106,6 +106,53 @@ describe("structured error redaction", () => {
     expect(() => redactSensitive(cyclic)).not.toThrow();
   });
 
+  /*
+   * Two failure modes found by running the CLI against a live Server, both of which made the
+   * redactor lie about what it was given:
+   *
+   * 1. Substring matching on "authorization" blanked MCP's whole authorization *summary*, so the CLI
+   *    printed `authKind none` for a stored Bearer key.
+   * 2. `normalizedKey` only folded `-` to `_`, never camelCase, so `bearerKey`, `privateKey`, and
+   *    `refreshKey` were emitted verbatim — the names a credential DTO is most likely to use.
+   */
+  it("keeps a credential-free structural field whose name only resembles a secret", () => {
+    // The real MCP authorization summary: no secret anywhere, and the CLI cannot render a row
+    // without it.
+    const summary = {
+      authorization: {
+        kind: "bearer",
+        status: "active",
+        hasCredential: true,
+        authorizationServer: "https://auth.example.com",
+        accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    expect(redactSensitive(summary)).toEqual(summary);
+  });
+
+  it("redacts camelCase credential names as well as the separated spellings", () => {
+    const redacted = redactSensitive({
+      bearerKey: "b",
+      privateKey: "p",
+      refreshKey: "r",
+      apiKey: "a",
+      accessKey: "ac",
+      clientSecret: "cs",
+      password: "pw",
+      "refresh-token": "rt",
+      credential_ciphertext: "cc",
+    }) as Record<string, unknown>;
+    for (const value of Object.values(redacted)) expect(value).toBe("[REDACTED]");
+  });
+
+  it("does not exempt a name that could actually carry a secret", () => {
+    // The exemption is exact-name, so a real header or ciphertext under a similar name is still cut.
+    expect(redactSensitive({ authorizationHeader: "Bearer x", credentialCiphertext: "v2.a.b" })).toEqual({
+      authorizationHeader: "[REDACTED]",
+      credentialCiphertext: "[REDACTED]",
+    });
+  });
+
   it("redacts Error causes and preserves safe primitive representations", () => {
     const nested = new Error("nested password=nested-secret");
     Object.assign(nested, { code: "NESTED_FAILURE" });

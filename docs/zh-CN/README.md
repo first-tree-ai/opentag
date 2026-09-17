@@ -32,6 +32,7 @@
 
 ## 设计文档（英文）
 
+- [MCP Server integration](../design/mcp-server-integration.md)
 - [Web UI contract](../design/web-ui-contract.md)
 - [Doctor product specification](../design/doctor-product-spec.md)
 - [Agent Runtime contract](../design/agent-runtime-contract.md)

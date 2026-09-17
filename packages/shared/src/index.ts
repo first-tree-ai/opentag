@@ -242,6 +242,11 @@ export {
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_IM_BINDING_UNBIND_TEMPLATE,
+  AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE,
+  AGENT_MCP_AUTHORIZATION_TEMPLATE,
+  AGENT_MCP_PROBE_TEMPLATE,
+  AGENT_MCP_SERVER_TEMPLATE,
+  AGENT_MCP_SERVERS_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SETUP_REFRESH_TEMPLATE,
@@ -267,6 +272,11 @@ export {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentImBindingUnbindPath,
+  agentMcpAuthorizationOAuthPath,
+  agentMcpAuthorizationPath,
+  agentMcpProbePath,
+  agentMcpServerPath,
+  agentMcpServersPath,
   agentReactivatePath,
   agentRuntimeTestPath,
   agentSetupPath,
@@ -295,6 +305,12 @@ export {
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  MCP_CLIENT_METADATA_PATH,
+  MCP_OAUTH_CALLBACK_PATH,
+  MCP_SERVER_BY_ID_TEMPLATE,
+  MCP_SERVERS_PATH,
+  mcpServerPath,
+  mcpServersPath,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   runtimeDurableWorkPath,
@@ -311,6 +327,7 @@ export {
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";
+export * from "./mcp.js";
 export {
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,

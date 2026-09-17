@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { registerAgentMcpCommands } from "../mcp/index.js";
 import { registerAgentBindCommand } from "./bind.js";
 import { registerAgentCreateCommand } from "./create.js";
 import { registerAgentDeleteCommand } from "./delete.js";
@@ -18,4 +19,5 @@ export function registerAgentCommand(program: Command): void {
   registerAgentLifecycleCommands(agent);
   registerAgentDeleteCommand(agent);
   registerAgentImBindingCommands(agent);
+  registerAgentMcpCommands(agent);
 }

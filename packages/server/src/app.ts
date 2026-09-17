@@ -21,6 +21,8 @@ import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js"
 import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
+import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
+import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
@@ -53,6 +55,8 @@ import {
   ImBindingUnbindRequiredError,
 } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "./services/mcp/index.js";
+import { McpServiceError } from "./services/mcp/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
@@ -96,6 +100,21 @@ export interface CreateAppOptions {
   browserAuth?: BrowserAuthRoutesOptions;
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
+  /** MCP management plane: definitions, per-Agent mounts/overrides, authorization, probing. */
+  mcp?: {
+    authorization: McpAuthorizationService;
+    flows: McpOAuthFlowService;
+    servers: McpServerService;
+    /**
+     * The origin the OAuth callback and the client-metadata document are published on.
+     *
+     * Carried here rather than read from `browserAuth`: those two routes are the public half of the
+     * MCP OAuth flow and need an origin, not a browser session. Deriving them from `browserAuth`
+     * would silently drop the callback — and so break every OAuth authorization — on any deployment
+     * that wires MCP without the browser sign-in surface.
+     */
+    publicOrigin: string;
+  };
   feishuSetupService?: FeishuSetupService;
   slackOAuth?: SlackOAuthRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
@@ -132,6 +151,7 @@ type AccountFacingError =
   | SlackConfigurationServiceError
   | AccountSetupServiceError
   | SandboxServiceError
+  | McpServiceError
   | GitHubConnectionServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
@@ -144,6 +164,7 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof SlackConfigurationServiceError ||
     error instanceof AccountSetupServiceError ||
     error instanceof SandboxServiceError ||
+    error instanceof McpServiceError ||
     error instanceof GitHubConnectionServiceError
   );
 }
@@ -517,6 +538,10 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
     if (options.githubIntegrations) {
       registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
+    }
+    if (options.mcp) {
+      registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
+      registerMcpOAuthRoutes(app, { flows: options.mcp.flows, publicOrigin: options.mcp.publicOrigin });
     }
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);

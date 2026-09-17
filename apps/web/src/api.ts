@@ -15,6 +15,7 @@ import {
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
+  type AttachMCPServerRequest,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   accountComputerConnectCodePath,
@@ -27,6 +28,11 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentImBindingUnbindPath,
+  agentMcpAuthorizationOAuthPath,
+  agentMcpAuthorizationPath,
+  agentMcpProbePath,
+  agentMcpServerPath,
+  agentMcpServersPath,
   agentReactivatePath,
   agentRuntimeTestPath,
   agentSetupPath,
@@ -42,6 +48,7 @@ import {
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
   type CreateAgentRequest,
+  type CreateMCPServerRequest,
   type EmailSignInRequest,
   type EmailSignUpRequest,
   ErrorEnvelopeSchema,
@@ -77,19 +84,39 @@ import {
   imBindingDisablePath,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
+  type ListAgentMCPServersResponse,
+  ListAgentMCPServersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListAvailableMCPServersResponse,
+  ListAvailableMCPServersResponseSchema,
+  type ListMCPServersResponse,
+  ListMCPServersResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
+  type MCPAgentServer,
+  MCPAgentServerSchema,
+  type MCPProbeResponse,
+  MCPProbeResponseSchema,
+  type MCPServer,
+  type MCPServerDetail,
+  MCPServerDetailSchema,
+  MCPServerSchema,
   type MeResponse,
   MeResponseSchema,
+  mcpServerPath,
+  mcpServersPath,
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
+  type SetMCPAuthorizationRequest,
   type StartGitHubAuthorizationRequest,
   type StartGitHubAuthorizationResponse,
   StartGitHubAuthorizationResponseSchema,
+  type StartMCPOAuthRequest,
+  type StartMCPOAuthResponse,
+  StartMCPOAuthResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -103,6 +130,8 @@ import {
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateGitHubConnectionBindingsRequest,
+  type UpdateMCPBindingRequest,
+  type UpdateMCPServerRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
   UserProfileSchema,
@@ -509,6 +538,113 @@ export class BrowserApi {
 
   disconnectGitHub(): Promise<GitHubConnectionStatus | undefined> {
     return this.requestOptional(GITHUB_INTEGRATION_DISCONNECT_PATH, GitHubConnectionStatusSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  /*
+   * MCP management. The browser reads Server definitions and one Agent's mounts with their
+   * authorizations, and it writes definitions, overrides, Bearer keys, and OAuth starts. No response
+   * ever carries a credential — only `hasCredential` — so a Bearer key travels one way and is never
+   * readable again; the Server authors the authorize URL, and the broker's redirect_uri is
+   * deployment-fixed rather than chosen here.
+   */
+  mcpServers(): Promise<ListMCPServersResponse> {
+    return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+  }
+
+  mcpServer(mcpServerId: string): Promise<MCPServerDetail> {
+    return this.request(mcpServerPath(mcpServerId), MCPServerDetailSchema);
+  }
+
+  createMcpServer(input: CreateMCPServerRequest): Promise<MCPServer> {
+    return this.request(mcpServersPath(), MCPServerSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  updateMcpServer(mcpServerId: string, input: UpdateMCPServerRequest): Promise<MCPServer> {
+    return this.request(mcpServerPath(mcpServerId), MCPServerSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  removeMcpServer(mcpServerId: string): Promise<void> {
+    return this.requestNoContent(mcpServerPath(mcpServerId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  agentMcpServers(agentId: string): Promise<ListAgentMCPServersResponse> {
+    return this.request(agentMcpServersPath(agentId), ListAgentMCPServersResponseSchema);
+  }
+
+  availableMcpServers(agentId: string): Promise<ListAvailableMCPServersResponse> {
+    return this.request(`${agentMcpServersPath(agentId)}/available`, ListAvailableMCPServersResponseSchema);
+  }
+
+  attachMcpServer(agentId: string, input: AttachMCPServerRequest): Promise<MCPAgentServer> {
+    return this.request(agentMcpServersPath(agentId), MCPAgentServerSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  updateAgentMcpServer(agentId: string, mcpServerId: string, input: UpdateMCPBindingRequest): Promise<MCPAgentServer> {
+    return this.request(agentMcpServerPath(agentId, mcpServerId), MCPAgentServerSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  detachMcpServer(agentId: string, mcpServerId: string): Promise<void> {
+    return this.requestNoContent(agentMcpServerPath(agentId, mcpServerId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  setMcpAuthorization(
+    agentId: string,
+    mcpServerId: string,
+    input: SetMCPAuthorizationRequest,
+  ): Promise<MCPAgentServer> {
+    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
+      method: "PUT",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  revokeMcpAuthorization(agentId: string, mcpServerId: string): Promise<MCPAgentServer> {
+    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  startMcpOAuth(
+    agentId: string,
+    mcpServerId: string,
+    input: StartMCPOAuthRequest = {},
+  ): Promise<StartMCPOAuthResponse> {
+    return this.request(agentMcpAuthorizationOAuthPath(agentId, mcpServerId), StartMCPOAuthResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  probeMcpServer(agentId: string, mcpServerId: string): Promise<MCPProbeResponse> {
+    return this.request(agentMcpProbePath(agentId, mcpServerId), MCPProbeResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

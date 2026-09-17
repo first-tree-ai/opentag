@@ -63,6 +63,22 @@ export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/na
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
+/*
+ * MCP management plane. Server definitions live on the Account pool; every binding, authorization,
+ * and probe is addressed under the Agent that owns it, because authorization is strictly per Agent.
+ * The callback and the CIMD metadata document are the only unauthenticated paths and each verifies
+ * its own caller (one-time state, and a public static document).
+ */
+export const MCP_SERVERS_PATH = `${API_V1_PREFIX}/mcp-servers`;
+export const MCP_SERVER_BY_ID_TEMPLATE = `${MCP_SERVERS_PATH}/:mcpServerId`;
+export const MCP_OAUTH_CALLBACK_PATH = `${MCP_SERVERS_PATH}/oauth/callback`;
+export const AGENT_MCP_SERVERS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/mcp-servers`;
+export const AGENT_MCP_SERVER_TEMPLATE = `${AGENT_MCP_SERVERS_TEMPLATE}/:mcpServerId`;
+export const AGENT_MCP_AUTHORIZATION_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/authorization`;
+export const AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE = `${AGENT_MCP_AUTHORIZATION_TEMPLATE}/oauth`;
+export const AGENT_MCP_PROBE_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/probe`;
+/** A public static document describing this deployment as an OAuth client (CIMD). */
+export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
@@ -80,6 +96,9 @@ export const HTTP_PATHS = {
   githubIntegration: GITHUB_INTEGRATION_PATH,
   githubOAuthCallback: GITHUB_OAUTH_CALLBACK_PATH,
   githubWebhook: GITHUB_WEBHOOK_PATH,
+  mcpServers: MCP_SERVERS_PATH,
+  mcpOAuthCallback: MCP_OAUTH_CALLBACK_PATH,
+  mcpClientMetadata: MCP_CLIENT_METADATA_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
@@ -247,6 +266,34 @@ export function imBindingDisablePath(imBindingId: string): string {
 
 export function imBindingDiagnosticsPath(imBindingId: string): string {
   return `${API_V1_PREFIX}/im-bindings/${encodeURIComponent(imBindingId)}/diagnostics`;
+}
+
+export function mcpServersPath(): string {
+  return MCP_SERVERS_PATH;
+}
+
+export function mcpServerPath(mcpServerId: string): string {
+  return `${MCP_SERVERS_PATH}/${encodeURIComponent(mcpServerId)}`;
+}
+
+export function agentMcpServersPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/mcp-servers`;
+}
+
+export function agentMcpServerPath(agentId: string, mcpServerId: string): string {
+  return `${agentMcpServersPath(agentId)}/${encodeURIComponent(mcpServerId)}`;
+}
+
+export function agentMcpAuthorizationPath(agentId: string, mcpServerId: string): string {
+  return `${agentMcpServerPath(agentId, mcpServerId)}/authorization`;
+}
+
+export function agentMcpAuthorizationOAuthPath(agentId: string, mcpServerId: string): string {
+  return `${agentMcpAuthorizationPath(agentId, mcpServerId)}/oauth`;
+}
+
+export function agentMcpProbePath(agentId: string, mcpServerId: string): string {
+  return `${agentMcpServerPath(agentId, mcpServerId)}/probe`;
 }
 
 export function runtimeImResourcePath(

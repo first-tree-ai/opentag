@@ -40,4 +40,16 @@ export const queryKeys = {
   },
 
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,
+
+  /**
+   * MCP management. The Account pool and each Agent's own mounts are separate roots so a write to
+   * one Agent's override does not invalidate every other Agent's view.
+   */
+  mcp: {
+    servers: () => ["mcp", "servers"] as const,
+    serverRoot: () => ["mcp", "server"] as const,
+    server: (mcpServerId: string) => ["mcp", "server", mcpServerId] as const,
+    agentServers: (agentId: string) => ["mcp", "agents", agentId] as const,
+    availableServers: (agentId: string) => ["mcp", "agents", agentId, "available"] as const,
+  },
 } as const;

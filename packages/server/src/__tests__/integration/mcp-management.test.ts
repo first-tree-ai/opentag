@@ -1077,13 +1077,19 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
         .where(eq(agents.id, harness.agentA));
       expect(deleted?.status).toBe("deleted");
 
-      // The mount row still exists — the schema does not cascade a status change — but it no longer
-      // counts, so the definition is not permanently undeletable.
+      // The mount and its credential are removed with the Agent, not merely ignored: a soft delete is
+      // not a cascade, so these rows would otherwise hold a credential the Account can no longer see
+      // or revoke through any route.
       const remaining = await harness.database
         .select()
         .from(agentMcpServers)
         .where(eq(agentMcpServers.mcpServerId, server.id));
-      expect(remaining).toHaveLength(1);
+      expect(remaining).toHaveLength(0);
+      const credentials = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(credentials).toHaveLength(0);
       expect(await countLiveBindings(harness.database, server.id)).toBe(0);
 
       const listed = await harness.servers.listServers(harness.accountId);
@@ -1093,6 +1099,55 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
       await harness.servers.deleteServer(harness.accountId, server.id);
       const servers = await harness.servers.listServers(harness.accountId);
       expect(servers).toHaveLength(0);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("refuses every MCP path for a soft-deleted Agent", async () => {
+    /*
+     * S6, the reachability half. `readJoinedBinding` checked only the Server's Account, so a deleted
+     * Agent still resolved its mount and its credential — which meant an outbound probe, an OAuth
+     * `start`, and a read all worked on behalf of an Agent the Account had retired. The cleanup above
+     * removes the rows, and the join now also excludes a deleted Agent, so neither a row that slipped
+     * through nor a race can reach a retired Agent's credential.
+     */
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "bearer",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      await harness.authorization.setBearerOrNone(harness.accountId, harness.agentA, server.id, {
+        kind: "bearer",
+        bearerKey: "key_a",
+      });
+      // Confirmed working before the delete, so the refusals below mean something.
+      await expect(harness.authorization.probe(harness.accountId, harness.agentA, server.id)).resolves.toMatchObject({
+        probeState: "succeeded",
+      });
+
+      await harness.agentService.suspendById(harness.accountId, harness.agentA);
+      await harness.agentService.deleteById(harness.accountId, harness.agentA);
+
+      /*
+       * The cleanup removes the rows, so this test would pass on that alone. The join is the guard for
+       * rows that exist anyway — a deployment that predates the cleanup, or a mount created in a race
+       * with the delete — so they are re-inserted here to exercise it directly.
+       */
+      await harness.database
+        .insert(agentMcpServers)
+        .values({ agentId: harness.agentA, mcpServerId: server.id, enabled: true });
+
+      await expect(harness.servers.readProbeContext(harness.accountId, harness.agentA, server.id)).rejects.toThrow();
+      await expect(harness.authorization.probe(harness.accountId, harness.agentA, server.id)).rejects.toThrow();
+      await expect(
+        harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET),
+      ).rejects.toThrow();
+      await expect(harness.servers.readAgentServer(harness.accountId, harness.agentA, server.id)).rejects.toThrow();
     } finally {
       await fixture.stop();
     }

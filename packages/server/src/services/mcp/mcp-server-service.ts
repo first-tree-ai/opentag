@@ -433,7 +433,15 @@ export class McpServerService {
 
   // ---------------------------------------------------------------- internals
 
-  /** The joined binding a probe needs: the definition, the Agent's overrides, and the credential row. */
+  /**
+   * The joined binding a probe needs: the definition, the Agent's overrides, and the credential row.
+   *
+   * A soft-deleted Agent has no binding, by construction: the join requires `status <> 'deleted'`, so
+   * every caller below — the probe, OAuth `start`, authorization writes, and the reads — refuses a
+   * deleted Agent at one choke point instead of each remembering to check. That matters beyond tidiness:
+   * these paths perform outbound requests with the Agent's stored credential, so a deleted Agent that
+   * still resolved here would keep reaching its MCP Server on behalf of an Account that had retired it.
+   */
   async readProbeContext(accountId: string, agentId: string, mcpServerId: string): Promise<McpJoinedBinding> {
     const joined = await this.readJoinedBinding(accountId, agentId, mcpServerId);
     if (!joined) throw mcpBindingNotFound();
@@ -449,6 +457,11 @@ export class McpServerService {
       .select({ binding: agentMcpServers, server: mcpServers, authorization: mcpServerAuthorizations })
       .from(agentMcpServers)
       .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
+      /*
+       * A deleted Agent is excluded here rather than checked by each caller, because every path that
+       * reads a binding goes on to use the Agent's credential against an external Server.
+       */
+      .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
       .leftJoin(
         mcpServerAuthorizations,
         and(
@@ -461,6 +474,7 @@ export class McpServerService {
           eq(agentMcpServers.agentId, agentId),
           eq(agentMcpServers.mcpServerId, mcpServerId),
           eq(mcpServers.accountId, accountId),
+          ne(agents.status, "deleted"),
         ),
       )
       .limit(1);

@@ -1543,6 +1543,40 @@ describe("Agent-level overrides", () => {
     }
   }, 30_000);
 
+  it("refuses a protected-resource document that names a different endpoint", async () => {
+    /*
+     * S3. The advertised `resource` becomes the authorization request's `resource` while the token
+     * request sends the endpoint, so a Server allowed to advertise something else could have this
+     * deployment obtain a token for a *different* resource server at a shared authorization server —
+     * and the two requests would disagree about what they were asking for.
+     *
+     * RFC 9728 §3.3 requires the document to name the resource it describes, so a mismatch is refused
+     * at discovery and `start` fails rather than proceeding.
+     */
+    const fixture = await McpFixtureServer.start({
+      protectedResourceMetadata: (self) => ({
+        // A usable issuer is offered, so the *only* thing wrong is the resource name — otherwise the
+        // test would pass because discovery found nothing, not because the check under test fired.
+        resource: "https://other.example.com/mcp",
+        authorization_servers: [self],
+      }),
+    });
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      await expect(
+        harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET),
+      ).rejects.toThrow();
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
   it("revokes an OAuth credential when the endpoint moves to a new origin", async () => {
     /*
      * S2. An access token is issued for one resource, and the AS's `resource` binding is what stops it

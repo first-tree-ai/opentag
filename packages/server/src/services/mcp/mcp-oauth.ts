@@ -135,6 +135,24 @@ function endpointUrl(document: Record<string, unknown>, key: string): string | u
   return undefined;
 }
 
+/**
+ * The `resource` parameter's exact spelling: lowercase scheme and host, no fragment, and no trailing
+ * slash unless the path is only a slash. Case tolerance is for the peer's spelling, not ours.
+ *
+ * It lives here rather than in the flow service because the protected-resource reader needs it to
+ * compare an advertised `resource` with the endpoint, and the flow service already imports this module
+ * — the dependency would otherwise run both ways.
+ */
+export function normalizeResource(advertised: string | undefined, fallback: string): string {
+  const source = advertised && advertised.length > 0 ? advertised : fallback;
+  const url = new URL(source);
+  url.protocol = url.protocol.toLowerCase();
+  url.host = url.host.toLowerCase();
+  url.hash = "";
+  if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.replace(/\/+$/, "");
+  return url.toString();
+}
+
 function stringField(document: Record<string, unknown>, key: string): string | undefined {
   const value = document[key];
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -238,8 +256,26 @@ export class McpOAuthClient {
         if (document === undefined) return undefined;
         const authorizationServers = stringArray(document, "authorization_servers");
         if (authorizationServers.length === 0) return undefined;
+        /*
+         * An advertised `resource` that names a different endpoint is refused (RFC 9728 §3.3).
+         *
+         * This is the one identity check the document has, and it is load-bearing for two reasons.
+         * The value travels as the authorization request's `resource`, so a hostile Server could
+         * otherwise name another resource server and have this deployment obtain a token for it from a
+         * shared authorization server. And our two requests have to agree: the authorization request
+         * sent the advertised value while the token request sends the endpoint, and a mismatch there is
+         * what the specification's `resource` binding exists to prevent.
+         *
+         * Compared after normalization so a peer's spelling of the same endpoint — a trailing slash,
+         * an uppercase host — is accepted rather than treated as an attack.
+         */
+        const advertised = stringField(document, "resource");
+        const resource = advertised ?? mcpEndpoint;
+        if (normalizeResource(advertised, mcpEndpoint) !== normalizeResource(undefined, mcpEndpoint)) {
+          return undefined;
+        }
         return {
-          resource: stringField(document, "resource") ?? mcpEndpoint,
+          resource,
           authorizationServers,
           scopesSupported: stringArray(document, "scopes_supported"),
         } satisfies McpProtectedResourceMetadata;

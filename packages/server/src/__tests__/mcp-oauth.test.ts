@@ -98,7 +98,7 @@ describe("MCP OAuth discovery order", () => {
 
   it("uses the challenge's resource_metadata instead of the well-known fallbacks", async () => {
     const { calls, client } = stubOAuth([
-      json({ resource: "https://mcp.example.com", authorization_servers: ["https://auth.example.com"] }),
+      json({ resource: "https://mcp.example.com/mcp", authorization_servers: ["https://auth.example.com"] }),
     ]);
     await client.protectedResourceMetadata(
       ACCOUNT,
@@ -106,6 +106,31 @@ describe("MCP OAuth discovery order", () => {
       "https://mcp.example.com/custom-prm.json",
     );
     expect(calls.map((call) => call.url)).toEqual(["https://mcp.example.com/custom-prm.json"]);
+  });
+
+  it("refuses a protected-resource document whose resource names a different endpoint", async () => {
+    /*
+     * RFC 9728 §3.3: the document must name the resource it describes. The value travels as the
+     * authorization request's `resource`, so accepting another name would let a hostile Server have
+     * this deployment obtain a token for a different resource server at a shared authorization server.
+     */
+    const { client } = stubOAuth([
+      json({ resource: "https://other.example.com/mcp", authorization_servers: ["https://auth.example.com"] }),
+    ]);
+    await expect(client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp")).rejects.toThrow();
+  });
+
+  it("accepts the same endpoint spelled with an uppercase host or a trailing slash", async () => {
+    // Compared after normalization, so a peer's spelling is not mistaken for an attack.
+    for (const advertised of ["HTTPS://MCP.example.com/mcp/", "https://mcp.example.com/mcp#frag"]) {
+      const { client } = stubOAuth([
+        json({ resource: advertised, authorization_servers: ["https://auth.example.com"] }),
+      ]);
+      await expect(
+        client.protectedResourceMetadata(ACCOUNT, "https://mcp.example.com/mcp"),
+        advertised,
+      ).resolves.toBeDefined();
+    }
   });
 
   it("rejects an authorization server whose document names a different issuer", async () => {

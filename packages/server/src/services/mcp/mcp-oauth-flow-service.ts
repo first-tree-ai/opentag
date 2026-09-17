@@ -11,6 +11,7 @@ import {
   type McpClientCredentials,
   McpOAuthClient,
   mcpCallbackRedirect,
+  normalizeResource,
 } from "./mcp-oauth.js";
 import { McpServerService } from "./mcp-server-service.js";
 
@@ -894,20 +895,6 @@ export function orderIssuers(issuers: readonly string[], recorded: string | null
 }
 
 /**
- * The `resource` parameter's exact spelling: lowercase scheme and host, no fragment, and no trailing
- * slash unless the path is only a slash. Case tolerance is for the peer's spelling, not ours.
- */
-export function normalizeResource(advertised: string | undefined, fallback: string): string {
-  const source = advertised && advertised.length > 0 ? advertised : fallback;
-  const url = new URL(source);
-  url.protocol = url.protocol.toLowerCase();
-  url.host = url.host.toLowerCase();
-  url.hash = "";
-  if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.replace(/\/+$/, "");
-  return url.toString();
-}
-
-/**
  * When an issued access token should be refreshed.
  *
  * A response with no `expires_in` is treated as short-lived rather than never-expiring: storing null
@@ -937,3 +924,5 @@ function requirePkce(row: { pkceCiphertext: string | null }): { ciphertext: stri
   if (!keyId) throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The PKCE verifier is unreadable");
   return { ciphertext: row.pkceCiphertext, keyId };
 }
+
+export { normalizeResource };

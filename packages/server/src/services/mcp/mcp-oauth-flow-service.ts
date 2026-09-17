@@ -504,7 +504,7 @@ export class McpOAuthFlowService {
         ciphertext: sealed.ciphertext,
         keyId: sealed.keyId,
         scopes: tokens.scope ? tokens.scope.split(/\s+/).filter(Boolean) : authorization.scopes,
-        accessTokenExpiresAt: tokens.expiresIn ? new Date(now.getTime() + tokens.expiresIn * 1000) : null,
+        accessTokenExpiresAt: accessTokenExpiry(now, tokens.expiresIn),
         failureCode: null,
         // Single use: the state, its verifier, and the flow binding are gone the moment the code is redeemed.
         state: null,
@@ -777,7 +777,7 @@ export class McpOAuthFlowService {
         .set({
           ciphertext: sealed.ciphertext,
           keyId: sealed.keyId,
-          accessTokenExpiresAt: tokens.expiresIn ? new Date(now.getTime() + tokens.expiresIn * 1000) : null,
+          accessTokenExpiresAt: accessTokenExpiry(now, tokens.expiresIn),
           ...(tokens.scope ? { scopes: tokens.scope.split(/\s+/).filter(Boolean) } : {}),
           status: "active",
           failureCode: null,
@@ -905,6 +905,20 @@ export function normalizeResource(advertised: string | undefined, fallback: stri
   url.hash = "";
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString();
+}
+
+/**
+ * When an issued access token should be refreshed.
+ *
+ * A response with no `expires_in` is treated as short-lived rather than never-expiring: storing null
+ * made the token immortal as far as the refresh worker was concerned, because its `due` predicate
+ * compares `access_token_expires_at` and null never compares due. The specification makes `expires_in`
+ * optional and recommends against assuming a long lifetime, so the token whose real lifetime is
+ * unknown is exactly the one worth refreshing early.
+ */
+const UNKNOWN_LIFETIME_SECONDS = 5 * 60;
+function accessTokenExpiry(now: Date, expiresInSeconds: number | undefined): Date {
+  return new Date(now.getTime() + (expiresInSeconds ?? UNKNOWN_LIFETIME_SECONDS) * 1000);
 }
 
 function requireIssuer(row: { authorizationServer: string | null }): string {

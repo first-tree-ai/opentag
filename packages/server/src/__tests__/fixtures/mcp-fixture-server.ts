@@ -44,6 +44,14 @@ export interface McpFixtureOptions {
   /** Answer the token endpoint with this error code, for the refresh failure classification. */
   tokenError?: string;
   /**
+   * Omit `expires_in` from token responses.
+   *
+   * The specification makes it optional, and a token whose lifetime is unknown is the case the refresh
+   * lead has to handle explicitly: storing no expiry at all made the token immortal to the refresh
+   * worker, whose due predicate compares `access_token_expires_at`.
+   */
+  omitExpiresIn?: boolean;
+  /**
    * Run just before an `/mcp` request is answered, and awaited.
    *
    * The probe's upstream round trip is this endpoint, so this is where a test can hold a probe in
@@ -332,31 +340,12 @@ export class McpFixtureServer {
     }
     const params = new URLSearchParams(typeof body === "string" ? body : "");
     const grant = params.get("grant_type");
-    const basic = basicAuthClientId(authorization);
-    /*
-     * The client the request presents, from either mechanism the specification allows. An
-     * authorization-code exchange must present the client its authorization request named; a refresh
-     * must present a client that is still registered. Anything else is `invalid_client`, which is
-     * what a real strict server answers and what makes a rotated registration fail here.
-     */
-    const presented = basic ?? params.get("client_id") ?? "";
-    if (grant === "authorization_code") {
-      const code = params.get("code") ?? "";
-      const expected = this.#codeClients.get(code);
-      if (expected !== undefined && presented !== expected) {
-        json(response, 400, { error: "invalid_client" });
-        return;
-      }
-    } else if (grant === "refresh_token" && !this.#issuedClients.has(presented)) {
+    if (!this.#clientIsAcceptable(params, grant, authorization)) {
       json(response, 400, { error: "invalid_client" });
       return;
     }
     if (grant === "authorization_code") {
-      // Verify the PKCE challenge the authorize request recorded, so the round trip is genuinely
-      // checked rather than assumed.
-      const verifier = params.get("code_verifier") ?? "";
-      const challenge = createHash("sha256").update(verifier).digest("base64url");
-      if (this.#pkceChallenge && challenge !== this.#pkceChallenge) {
+      if (!this.#pkceMatches(params)) {
         json(response, 400, { error: "invalid_grant" });
         return;
       }
@@ -366,10 +355,38 @@ export class McpFixtureServer {
     json(response, 200, {
       access_token: `at_${this.#tokensIssued}`,
       refresh_token: `rt_${this.#tokensIssued}`,
-      expires_in: 3600,
+      ...(this.#options.omitExpiresIn ? {} : { expires_in: 3600 }),
       scope: "mcp.read",
       token_type: "Bearer",
     });
+  }
+
+  /**
+   * Whether the request presents a client this fixture recognises for its grant.
+   *
+   * The client arrives by whichever mechanism the specification allows. An authorization-code exchange
+   * must present the client its authorization request named; a refresh must present one that has
+   * authorized here before. Anything else is `invalid_client`, which is what a real strict server
+   * answers — and what makes a registration rotated out from under a flow fail here instead of
+   * silently passing.
+   */
+  #clientIsAcceptable(params: URLSearchParams, grant: string | null, authorization?: string): boolean {
+    const presented = basicAuthClientId(authorization) ?? params.get("client_id") ?? "";
+    if (grant === "authorization_code") {
+      const expected = this.#codeClients.get(params.get("code") ?? "");
+      return expected === undefined || presented === expected;
+    }
+    if (grant === "refresh_token") return this.#issuedClients.has(presented);
+    return true;
+  }
+
+  /** Whether the exchange's verifier hashes to the challenge the authorize request recorded. */
+  #pkceMatches(params: URLSearchParams): boolean {
+    if (!this.#pkceChallenge) return true;
+    const challenge = createHash("sha256")
+      .update(params.get("code_verifier") ?? "")
+      .digest("base64url");
+    return challenge === this.#pkceChallenge;
   }
 
   async #mcp(response: ServerResponse, body: unknown): Promise<void> {

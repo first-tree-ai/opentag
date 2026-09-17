@@ -808,6 +808,53 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     }
   }, 30_000);
 
+  it("treats a token with no expires_in as short-lived rather than never expiring", async () => {
+    /*
+     * S7. `expires_in` is optional, and storing no expiry made the token immortal to the refresh
+     * worker: its `due` predicate compares `access_token_expires_at`, and a null never compares due —
+     * so the token was never refreshed and simply died at the authorization server's discretion.
+     */
+    const fixture = await McpFixtureServer.start({ omitExpiresIn: true });
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+
+      // An expiry was recorded rather than left null, so the refresh pass can see it is due.
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(row?.status).toBe("active");
+      // Asserted non-null first so a missing expiry fails here rather than throwing inside the next line.
+      expect(row?.accessTokenExpiresAt).not.toBeNull();
+      const expiresAt = row?.accessTokenExpiresAt;
+      expect(expiresAt).toBeInstanceOf(Date);
+      // Within the refresh lead, which is what makes the next pass select it.
+      expect((expiresAt as Date).getTime()).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000);
+
+      const passes = await harness.refresh.runOnce();
+      expect(passes).toBe(1);
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
   it("never asks the fixture for a refresh when the credential has no refresh token", async () => {
     const fixture = await McpFixtureServer.start();
     const harness = await seed();

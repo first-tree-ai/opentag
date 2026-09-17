@@ -21,9 +21,11 @@ const BRIDGE_SHUTDOWN_TIMEOUT_MS = 2_000;
  * for a live, Server-authorized execution with web scopes for this exact Sandbox. The
  * `executionIdentity` is a nonsecret per-execution value: every authority opens its own bridge
  * process and its own listener, so no successor execution can ever inherit an older endpoint or
- * an older authority field. Until the native session execution pipeline supplies a real issuer
- * (E4), the gateway stays closed for business: no authority is accepted from bootstrap
- * credentials and every call without an opened channel is refused as web_disabled.
+ * an older authority field. E4 model execution exists, but it wires no web authority: the E4
+ * per-turn credential bridge never requests the `web` service, no production path injects an
+ * authority, and bootstrap credentials are never accepted as one. Until a real web authority
+ * issuer exists, the gateway stays closed for business and every call without an opened channel
+ * is refused as web_disabled.
  */
 export interface NativeWebExecutionAuthority {
   /** Nonsecret identity of the exact execution; one channel binds exactly one value. */

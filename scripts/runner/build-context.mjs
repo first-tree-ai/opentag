@@ -54,6 +54,8 @@ export const RUNNER_CONTEXT_ALLOWLIST = Object.freeze([
   "e2e/package.json",
   "scripts/portable/node-version.txt",
   "scripts/portable/runtime-dependencies.mjs",
+  // apps/cli's build invokes this repo-level script; the in-image build fails without it.
+  "scripts/copy-web-tools-extension.mjs",
   "scripts/prepare-cli-release.mjs",
   "scripts/release-versions.mjs",
   "scripts/channel-config.mjs",

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   isCredentialPath,
   isInsideRoot,
@@ -28,6 +29,26 @@ async function fixture() {
   git(source, ["add", "-A"]);
   return { source, dest };
 }
+
+test("the production allowlist stages the scripts the in-image CLI build requires", async () => {
+  // Regression for the Runner Toolchain image build: apps/cli's build runs
+  // `node ../../scripts/copy-web-tools-extension.mjs`, so the staged context must actually carry
+  // it. Stage the real repository with the production allowlist and inspect the generated
+  // context contents rather than the manifest alone.
+  const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const dest = await mkdtemp(join(tmpdir(), "opentag-ctx-prod-"));
+  try {
+    stageRunnerBuildContext({ sourceRoot: repositoryRoot, destination: dest });
+    const files = listStagedRelativeFiles(dest);
+    assert.ok(files.includes("scripts/copy-web-tools-extension.mjs"));
+    assert.ok(files.includes("scripts/prepare-cli-release.mjs"));
+    assert.ok(files.includes("scripts/channel-config.mjs"));
+    assert.ok(files.includes("scripts/runner/Dockerfile"));
+    assert.ok(files.includes("apps/cli/package.json"));
+  } finally {
+    await rm(dest, { recursive: true, force: true });
+  }
+});
 
 test("staged context copies the allowlist and omits identity-only extras", async () => {
   const { source, dest } = await fixture();

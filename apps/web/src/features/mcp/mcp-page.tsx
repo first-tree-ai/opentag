@@ -1,4 +1,4 @@
-import type { MCPAgentServer, MCPAuthKind, MCPToolSnapshot } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthKind, MCPAvailableServer, MCPToolSnapshot } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
@@ -23,6 +23,7 @@ import { canRevoke, rowStates, sharedDefinitionImpact } from "./mcp-page-model.j
 import {
   useAgentMcpServers,
   useAttachMcpServer,
+  useAvailableMcpServers,
   useCreateMcpServer,
   useDetachMcpServer,
   useMcpServerDetail,
@@ -273,6 +274,8 @@ function McpRow({
   );
 }
 
+type CreateMode = "new" | "existing";
+
 function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const create = useCreateMcpServer(agentId);
   /*
@@ -282,6 +285,17 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
    * user sees a success and then nothing, which reads as a failure.
    */
   const attach = useAttachMcpServer(agentId);
+  /*
+   * One entry point, two ways to add a Server.
+   *
+   * The mode chooser is here rather than a second button because `mcp_servers` is unique on
+   * `(account, lower(name))`: a user who wants an existing Server on a second Agent cannot create it
+   * again, and giving it another name would create a second definition — a separate identity with its
+   * own probes and its own edit surface. Mounting the existing one is the only correct move there, so
+   * it has to stay reachable; keeping it inside this dialog keeps create-and-mount the default path.
+   */
+  const [mode, setMode] = useState<CreateMode>("new");
+  const available = useAvailableMcpServers(agentId, mode === "existing");
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [defaultAuthKind, setDefaultAuthKind] = useState<MCPAuthKind>("oauth");
@@ -307,61 +321,127 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
     }
   };
 
+  /** Mount a definition that already exists in this Account, which needs no name or URL. */
+  const addExisting = async (server: MCPAvailableServer) => {
+    setError(undefined);
+    try {
+      await attach.mutateAsync(server.id);
+      onClose();
+    } catch (cause) {
+      setError(describeActionError(cause, m.mcp_attach_failed()));
+    }
+  };
+
+  const busy = create.isPending || attach.isPending;
+
   return (
-    <Dialog
-      busy={create.isPending || attach.isPending}
-      description={m.mcp_create_description()}
-      onClose={onClose}
-      title={m.mcp_create_title()}
-    >
+    <Dialog busy={busy} description={m.mcp_create_description()} onClose={onClose} title={m.mcp_create_title()}>
       <div className="grid gap-3">
         {error ? <Banner variant="error">{error}</Banner> : null}
-        <Field hint={m.mcp_name_help()} htmlFor="mcp-name" label={m.mcp_name_label()}>
-          <KumoInputControl onChange={(event) => setName(event.target.value)} value={name} />
-        </Field>
-        <Field htmlFor="mcp-url" label={m.mcp_url_label()}>
-          <KumoInputControl onChange={(event) => setUrl(event.target.value)} value={url} />
-        </Field>
-        <Field hint={m.mcp_default_auth_help()} htmlFor="mcp-default-auth" label={m.mcp_default_auth_label()}>
+        <Field htmlFor="mcp-add-mode" label={m.mcp_add_mode_label()}>
           <KumoSelectControl
-            id="mcp-default-auth"
-            onValueChange={(value) => setDefaultAuthKind(value as MCPAuthKind)}
-            value={defaultAuthKind}
+            id="mcp-add-mode"
+            onValueChange={(value) => {
+              setMode(value as CreateMode);
+              setError(undefined);
+            }}
+            value={mode}
           >
-            <option value="oauth">{m.mcp_authorization_oauth()}</option>
-            <option value="bearer">{m.mcp_authorization_bearer()}</option>
-            <option value="none">{m.mcp_authorization_anonymous()}</option>
+            <option value="new">{m.mcp_create_action()}</option>
+            <option value="existing">{m.mcp_add_existing()}</option>
           </KumoSelectControl>
         </Field>
-        <Checkbox
-          checked={advanced}
-          label={m.mcp_create_advanced()}
-          onCheckedChange={(next) => setAdvanced(next === true)}
-        />
-        {advanced ? (
+        {mode === "existing" ? (
+          <ExistingServerChooser
+            isPending={available.isPending}
+            onAdd={addExisting}
+            pending={attach.isPending}
+            servers={available.data?.servers ?? []}
+          />
+        ) : (
           <>
-            <Field htmlFor="mcp-auth-header" label={m.mcp_edit_auth_header_label()}>
-              <KumoInputControl onChange={(event) => setAuthHeader(event.target.value)} value={authHeader} />
+            <Field hint={m.mcp_name_help()} htmlFor="mcp-name" label={m.mcp_name_label()}>
+              <KumoInputControl onChange={(event) => setName(event.target.value)} value={name} />
             </Field>
-            <Field
-              hint={m.mcp_edit_auth_scheme_help()}
-              htmlFor="mcp-auth-scheme"
-              label={m.mcp_edit_auth_scheme_label()}
-            >
-              <KumoInputControl onChange={(event) => setAuthScheme(event.target.value)} value={authScheme} />
+            <Field htmlFor="mcp-url" label={m.mcp_url_label()}>
+              <KumoInputControl onChange={(event) => setUrl(event.target.value)} value={url} />
             </Field>
+            <Field hint={m.mcp_default_auth_help()} htmlFor="mcp-default-auth" label={m.mcp_default_auth_label()}>
+              <KumoSelectControl
+                id="mcp-default-auth"
+                onValueChange={(value) => setDefaultAuthKind(value as MCPAuthKind)}
+                value={defaultAuthKind}
+              >
+                <option value="oauth">{m.mcp_authorization_oauth()}</option>
+                <option value="bearer">{m.mcp_authorization_bearer()}</option>
+                <option value="none">{m.mcp_authorization_anonymous()}</option>
+              </KumoSelectControl>
+            </Field>
+            <Checkbox
+              checked={advanced}
+              label={m.mcp_create_advanced()}
+              onCheckedChange={(next) => setAdvanced(next === true)}
+            />
+            {advanced ? (
+              <>
+                <Field htmlFor="mcp-auth-header" label={m.mcp_edit_auth_header_label()}>
+                  <KumoInputControl onChange={(event) => setAuthHeader(event.target.value)} value={authHeader} />
+                </Field>
+                <Field
+                  hint={m.mcp_edit_auth_scheme_help()}
+                  htmlFor="mcp-auth-scheme"
+                  label={m.mcp_edit_auth_scheme_label()}
+                >
+                  <KumoInputControl onChange={(event) => setAuthScheme(event.target.value)} value={authScheme} />
+                </Field>
+              </>
+            ) : null}
           </>
-        ) : null}
+        )}
         <div className="flex justify-end gap-2">
           <Button onClick={onClose} variant="ghost">
             {m.common_cancel()}
           </Button>
-          <Button disabled={create.isPending || attach.isPending || !name || !url} onClick={submit} variant="primary">
-            {m.mcp_create_submit()}
-          </Button>
+          {/* Mounting an existing Server has its own per-row button, so the primary action is create-only. */}
+          {mode === "new" ? (
+            <Button disabled={busy || !name || !url} onClick={submit} variant="primary">
+              {m.mcp_create_submit()}
+            </Button>
+          ) : null}
         </div>
       </div>
     </Dialog>
+  );
+}
+
+/** The Account's unmounted definitions, each with the button that mounts it on this Agent. */
+function ExistingServerChooser({
+  isPending,
+  onAdd,
+  pending,
+  servers,
+}: {
+  isPending: boolean;
+  onAdd: (server: MCPAvailableServer) => void;
+  pending: boolean;
+  servers: MCPAvailableServer[];
+}) {
+  if (isPending) return <Text variant="body">{m.common_loading()}</Text>;
+  if (servers.length === 0) return <Text variant="body">{m.mcp_add_existing_empty()}</Text>;
+  return (
+    <ul className="grid gap-2" data-ui="mcp-available-list">
+      {servers.map((server) => (
+        <li className="flex items-center justify-between gap-2 rounded border border-kumo-line p-3" key={server.id}>
+          <div className="grid gap-0.5">
+            <Text variant="body">{server.name}</Text>
+            <Text variant="secondary">{server.description ?? server.name}</Text>
+          </div>
+          <Button disabled={pending} onClick={() => onAdd(server)} size="compact" variant="secondary">
+            {m.mcp_attach_action()}
+          </Button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

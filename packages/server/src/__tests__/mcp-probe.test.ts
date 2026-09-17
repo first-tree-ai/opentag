@@ -276,10 +276,9 @@ describe("MCP probe era handling", () => {
 
   /*
    * The regression B7 names. A legacy Server answers `initialize` with a pre-modern version, and
-   * every later request must speak that protocol: no `MCP-Protocol-Version` header, no `Mcp-Method`,
-   * and no `_meta`. The modern header is what `@modelcontextprotocol/sdk` rejects with
-   * `400 Unsupported protocol version`, which broke the legacy path immediately after a successful
-   * handshake.
+   * every later request must speak that protocol rather than the modern one: no `Mcp-Method`, no
+   * `_meta`, and `MCP-Protocol-Version` carrying the *negotiated* version. The modern version is what
+   * `@modelcontextprotocol/sdk` rejects with `400 Unsupported protocol version`.
    */
   it("speaks the legacy protocol on every request after the handshake", async () => {
     const legacyCalls: { method: string; headers: Record<string, string>; body: Record<string, unknown> }[] = [];
@@ -318,12 +317,54 @@ describe("MCP probe era handling", () => {
     const tools = legacyCalls.filter((call) => call.method === "tools/list");
     expect(tools.length).toBeGreaterThan(0);
     for (const call of tools) {
-      expect(call.headers["mcp-protocol-version"]).toBeUndefined();
+      // The negotiated version, not the modern one and not the 2025-03-26 default.
+      expect(call.headers["mcp-protocol-version"]).toBe("2025-06-18");
       expect(call.headers["mcp-method"]).toBeUndefined();
       expect(call.body).not.toHaveProperty("params._meta");
       // The session the handshake returned is carried on the session-scoped call.
       expect(call.headers["mcp-session-id"]).toBe("session-1");
     }
+  });
+
+  it("omits the version header for the legacy version that predates it", async () => {
+    /*
+     * `2025-03-26` has no `MCP-Protocol-Version` at all, so sending one would be wrong in the other
+     * direction: the header is specified to default to that version when absent.
+     */
+    const legacyCalls: Record<string, string>[] = [];
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const method = (JSON.parse(String(init?.body)) as { method?: string }).method ?? "";
+      const headers: Record<string, string> = {};
+      new Headers(init?.headers).forEach((value, key) => {
+        headers[key] = value;
+      });
+      if (method === "tools/list") legacyCalls.push(headers);
+      if (method === "server/discover") return new Response("<html>Not Found</html>", { status: 404 });
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id: "1", result: { protocolVersion: "2025-03-26", capabilities: {} } }),
+          { status: 200, headers: { "content-type": "application/json", "mcp-session-id": "s" } },
+        );
+      }
+      if (method === "notifications/initialized") return new Response("", { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "1", result: { tools: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const probe = new McpProbe({
+      fetcher: new McpOutboundFetcher({ ...PUBLIC_RESOLVE, allowLoopback: false, fetch: fetchImpl }),
+    });
+    await probe.probe({
+      accountId: ACCOUNT,
+      url: ENDPOINT,
+      authHeaders: {},
+      cachedEra: null,
+      cachedVersion: null,
+    });
+
+    expect(legacyCalls.length).toBeGreaterThan(0);
+    for (const headers of legacyCalls) expect(headers["mcp-protocol-version"]).toBeUndefined();
   });
 
   it("pages the legacy tool list to exhaustion instead of stopping at the first page", async () => {

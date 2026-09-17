@@ -143,6 +143,7 @@ const BLOCKED_IPV6_RANGES: readonly (readonly [bigint, number, string])[] = [
   [ipv6RangeBase("2001::", 32), 32, "2001::/32"], // Teredo
   [ipv6RangeBase("2001:db8::", 32), 32, "2001:db8::/32"], // documentation
   [ipv6RangeBase("fc00::", 7), 7, "fc00::/7"], // unique local
+  [ipv6RangeBase("fec0::", 10), 10, "fec0::/10"], // deprecated site-local, still unroutable
   [ipv6RangeBase("fe80::", 10), 10, "fe80::/10"], // link-local
   [ipv6RangeBase("ff00::", 8), 8, "ff00::/8"], // multicast
 ];
@@ -321,7 +322,11 @@ export class McpOutboundFetcher {
 
   async fetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit = {}): Promise<McpFetchResponse> {
     const url = assertOutboundUrl(rawUrl, this.#policy);
-    await this.#assertPublicDestination(url);
+    /*
+     * The counter is taken before resolving, not after. A DNS lookup is a network round trip the
+     * Account asked for, so a hostile Server answering with many distinct names could otherwise spend
+     * as many concurrent lookups as it liked while the counter sat at zero.
+     */
     if ((this.#inFlight.get(accountId) ?? 0) >= this.#maxConcurrentPerAccount) {
       throw new McpServiceError(
         MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
@@ -330,6 +335,7 @@ export class McpOutboundFetcher {
     }
     this.#inFlight.set(accountId, (this.#inFlight.get(accountId) ?? 0) + 1);
     try {
+      await this.#assertPublicDestination(url);
       return await this.#perform(url, init);
     } finally {
       const remaining = (this.#inFlight.get(accountId) ?? 1) - 1;

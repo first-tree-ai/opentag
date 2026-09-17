@@ -56,6 +56,13 @@ export interface McpFixtureOptions {
    * test already relies on.
    */
   serverDescription?: string;
+  /**
+   * When true, the AS metadata omits `client_id_metadata_document_supported`, leaving dynamic client
+   * registration as the only mechanism. The default advertises CIMD, which short-circuits DCR
+   * entirely — so a DCR-path bug (registering on every start, or reusing the wrong client) is
+   * invisible without this.
+   */
+  dynamicRegistrationOnly?: boolean;
 }
 
 /**
@@ -68,6 +75,11 @@ export class McpFixtureServer {
   #authorizationServer = "";
   #code: string | undefined;
   #pkceChallenge: string | undefined;
+  /** Every client id this fixture has registered, and the code each authorization request used. */
+  #issuedClients = new Set<string>();
+  #registrations = 0;
+  /** The `client_id` each issued authorization code was requested under. */
+  #codeClients = new Map<string, string>();
   #server: Server | undefined;
   #tokensIssued = 0;
   #tokenError: string | undefined;
@@ -121,6 +133,11 @@ export class McpFixtureServer {
     return this.#tokensIssued;
   }
 
+  /** How many dynamic client registrations this fixture has served, for the reuse assertions. */
+  get registrations(): number {
+    return this.#registrations;
+  }
+
   /** Requests whose `Mcp-Method` header names the given method. */
   requestsFor(method: string): RecordedRequest[] {
     return this.#requests.filter((request) => request.headers["mcp-method"] === method);
@@ -156,7 +173,7 @@ export class McpFixtureServer {
       this.#unauthorized(response);
       return;
     }
-    if (this.#route(response, url, body)) return;
+    if (this.#route(response, url, body, request.headers.authorization)) return;
 
     this.#unauthorized(response);
   }
@@ -178,7 +195,7 @@ export class McpFixtureServer {
   }
 
   /** Returns true when this URL belonged to a fixture route and a response was sent. */
-  #route(response: ServerResponse, url: string, body: unknown): boolean {
+  #route(response: ServerResponse, url: string, body: unknown, authorization?: string): boolean {
     if (url.startsWith("/.well-known/oauth-protected-resource")) {
       json(response, 200, this.#protectedResourceMetadata());
       return true;
@@ -188,7 +205,21 @@ export class McpFixtureServer {
       return true;
     }
     if (url === "/register") {
-      json(response, 200, { client_id: "fixture-client", client_secret: "fixture-secret" });
+      /*
+       * A distinct client per registration, and a strict token endpoint below.
+       *
+       * Returning one fixed `client_id` made the token endpoint unable to tell whether the exchange
+       * presented the client the authorization request named, which is exactly the bug this fixture
+       * now has to catch: `start` used to re-register on every call and overwrite the Account's single
+       * `(account, issuer)` row, so an existing authorization's later refresh presented a client the
+       * server had replaced.
+       */
+      this.#registrations += 1;
+      this.#issuedClients.add(`fixture-client-${this.#registrations}`);
+      json(response, 200, {
+        client_id: `fixture-client-${this.#registrations}`,
+        client_secret: `fixture-secret-${this.#registrations}`,
+      });
       return true;
     }
     if (url.startsWith("/authorize")) {
@@ -196,7 +227,7 @@ export class McpFixtureServer {
       return true;
     }
     if (url === "/token") {
-      this.#token(response, body);
+      this.#token(response, body, authorization);
       return true;
     }
     if (url === "/mcp" || url.startsWith("/mcp?")) {
@@ -231,7 +262,7 @@ export class McpFixtureServer {
       token_endpoint: `${this.#authorizationServer}/token`,
       registration_endpoint: `${this.#authorizationServer}/register`,
       scopes_supported: ["mcp.read", "mcp.write"],
-      client_id_metadata_document_supported: true,
+      ...(this.#options.dynamicRegistrationOnly ? {} : { client_id_metadata_document_supported: true }),
       authorization_response_iss_parameter_supported: true,
     };
   }
@@ -247,6 +278,15 @@ export class McpFixtureServer {
       return;
     }
     this.#code = `code-${++this.#tokensIssued}`;
+    // Which client this authorization was requested under, so the token end can require the same one.
+    const clientId = params.get("client_id") ?? "";
+    this.#codeClients.set(this.#code, clientId);
+    /*
+     * Every client that has authorized here. A refresh must present one of them: a CIMD client is this
+     * deployment's metadata URL rather than a registered id, so "has authorized before" is the
+     * property that covers both mechanisms.
+     */
+    if (clientId !== "") this.#issuedClients.add(clientId);
     // No UI: the fixture approves immediately, which is what makes the callback path testable.
     const target = new URL(redirectUri);
     target.searchParams.set("code", this.#code);
@@ -257,13 +297,32 @@ export class McpFixtureServer {
     response.end();
   }
 
-  #token(response: ServerResponse, body: unknown): void {
+  #token(response: ServerResponse, body: unknown, authorization?: string): void {
     if (this.#tokenError) {
       json(response, 400, { error: this.#tokenError });
       return;
     }
     const params = new URLSearchParams(typeof body === "string" ? body : "");
     const grant = params.get("grant_type");
+    const basic = basicAuthClientId(authorization);
+    /*
+     * The client the request presents, from either mechanism the specification allows. An
+     * authorization-code exchange must present the client its authorization request named; a refresh
+     * must present a client that is still registered. Anything else is `invalid_client`, which is
+     * what a real strict server answers and what makes a rotated registration fail here.
+     */
+    const presented = basic ?? params.get("client_id") ?? "";
+    if (grant === "authorization_code") {
+      const code = params.get("code") ?? "";
+      const expected = this.#codeClients.get(code);
+      if (expected !== undefined && presented !== expected) {
+        json(response, 400, { error: "invalid_client" });
+        return;
+      }
+    } else if (grant === "refresh_token" && !this.#issuedClients.has(presented)) {
+      json(response, 400, { error: "invalid_client" });
+      return;
+    }
     if (grant === "authorization_code") {
       // Verify the PKCE challenge the authorize request recorded, so the round trip is genuinely
       // checked rather than assumed.
@@ -343,6 +402,19 @@ function safeJson(raw: string): unknown {
   } catch {
     return raw;
   }
+}
+
+/**
+ * The `client_id` of a `client_secret_basic` Authorization header, or undefined for any other shape.
+ *
+ * The secret is deliberately not checked: what these tests are about is which client the request
+ * names, and the fixture has no user database to authenticate it against.
+ */
+function basicAuthClientId(authorization: string | undefined): string | undefined {
+  if (!authorization?.startsWith("Basic ")) return undefined;
+  const decoded = Buffer.from(authorization.slice("Basic ".length), "base64").toString("utf8");
+  const separator = decoded.indexOf(":");
+  return separator === -1 ? undefined : decoded.slice(0, separator);
 }
 
 function json(response: ServerResponse, status: number, body: unknown): void {

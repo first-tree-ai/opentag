@@ -85,7 +85,7 @@ export class McpOAuthFlowService {
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
     const existing = context.authorization;
 
-    const { metadata, client, challengeScope, resource } = await this.#discoverForStart(
+    const { metadata, client, registrationId, challengeScope, resource } = await this.#discoverForStart(
       accountId,
       effective.url,
       existing?.authorizationServer ?? null,
@@ -99,7 +99,6 @@ export class McpOAuthFlowService {
       { mcpServerId, agentId, authorizationServer: metadata.issuer },
       pkce.verifier,
     );
-    const registrationId = await this.#recordRegistration(accountId, metadata, client, now);
     const scopes = this.#oauth.resolveScopes(challengeScope, [], metadata, requestedScopes);
     const authorizationUrl = this.#oauth.authorizationUrl({
       metadata,
@@ -168,6 +167,7 @@ export class McpOAuthFlowService {
   ): Promise<{
     metadata: McpAuthorizationServerMetadata;
     client: McpClientCredentials;
+    registrationId: string | null;
     challengeScope: string | undefined;
     resource: string;
   }> {
@@ -177,11 +177,24 @@ export class McpOAuthFlowService {
     for (const issuer of candidates) {
       try {
         const metadata = await this.#oauth.authorizationServerMetadata(accountId, issuer);
-        const preregistered = await this.#readPreregistered(accountId, issuer);
-        const client = await this.#oauth.resolveClientCredentials(accountId, metadata, preregistered);
+        /*
+         * A client already registered with this issuer is reused rather than registered again.
+         *
+         * Registering unconditionally looks harmless because `#recordRegistration` upserts in place
+         * and keeps the row id — but the row is keyed by `(account, issuer)`, so it holds ONE client
+         * for the whole Account. A second `start` therefore rotated `client_id` and the secret out
+         * from under every authorization already pointing at that row: their next refresh presented
+         * the wrong client, `invalid_client` is terminal, and the row went to `status: error`.
+         * Authorizing a second Agent silently killed the first.
+         *
+         * Reuse also keeps a flow's own client stable: the authorization request named the client
+         * returned here, so nothing may replace it between this call and the callback.
+         */
+        const { client, registrationId } = await this.#clientForStart(accountId, metadata);
         return {
           metadata,
           client,
+          registrationId,
           challengeScope,
           resource: normalizeResource(prm.resource, url),
         };
@@ -230,6 +243,96 @@ export class McpOAuthFlowService {
             ),
           }
         : {}),
+      tokenEndpointAuthMethod: row.ciphertext ? "client_secret_basic" : "none",
+    };
+  }
+
+  /**
+   * The client a new flow should present at this issuer, plus the registration row to record on it.
+   *
+   * Reuse is the whole point: the row is keyed by `(Account, issuer)`, so registering on every start
+   * replaced the one client every existing authorization at that issuer points at. Their next refresh
+   * then presented a client the authorization server had never seen, `invalid_client` is terminal,
+   * and the credential was destroyed — so authorizing a second Agent silently killed the first.
+   *
+   * Order of preference, matching the discovery rules:
+   * - a `preregistered` row, which is the deployment's own client and always wins;
+   * - an existing DCR row, reused as-is;
+   * - otherwise a fresh registration, which is the only case that writes the row.
+   *
+   * A CIMD client is not a row at all — it is this deployment's URL — so it is resolved rather than
+   * looked up, and `registrationId` stays null for it.
+   */
+  async #clientForStart(
+    accountId: string,
+    metadata: McpAuthorizationServerMetadata,
+  ): Promise<{ client: McpClientCredentials; registrationId: string | null }> {
+    const preregistered = await this.#readPreregistered(accountId, metadata.issuer);
+    if (preregistered) {
+      const row = await this.#readRegistrationRow(accountId, metadata.issuer, "preregistered");
+      return { client: preregistered, registrationId: row?.id ?? null };
+    }
+    if (metadata.clientIdMetadataDocumentSupported) {
+      /*
+       * The CIMD client is this deployment's own metadata URL, so it is the same on every start and
+       * recording it is idempotent — unlike a DCR registration, re-recording cannot invalidate a flow
+       * that already named it. A row is kept because the schema models one per mechanism and the
+       * callback and refresh find their client through `client_registration_id`.
+       */
+      const client: McpClientCredentials = {
+        source: "cimd",
+        clientId: this.#oauth.clientMetadataUrl,
+        tokenEndpointAuthMethod: "none",
+      };
+      const registrationId = await this.#recordRegistration(accountId, metadata, client, this.#now());
+      return { client, registrationId };
+    }
+    const existing = await this.#readRegistrationRow(accountId, metadata.issuer, "dcr");
+    if (existing) {
+      const client = await this.#clientFromRow(accountId, existing);
+      return { client, registrationId: existing.id };
+    }
+    const client = await this.#oauth.registerDynamically(accountId, metadata);
+    const registrationId = await this.#recordRegistration(accountId, metadata, client, this.#now());
+    return { client, registrationId };
+  }
+
+  /** One registration row for `(Account, issuer)`, by the mechanism that created it. */
+  async #readRegistrationRow(
+    accountId: string,
+    issuer: string,
+    source: typeof mcpClientRegistrations.$inferSelect.source,
+  ) {
+    const [row] = await this.#database
+      .select()
+      .from(mcpClientRegistrations)
+      .where(
+        and(
+          eq(mcpClientRegistrations.accountId, accountId),
+          eq(mcpClientRegistrations.authorizationServer, issuer),
+          eq(mcpClientRegistrations.source, source),
+        ),
+      )
+      .limit(1);
+    return row;
+  }
+
+  /** A stored row as the credential to present, decrypting the secret it carries. */
+  async #clientFromRow(
+    accountId: string,
+    row: typeof mcpClientRegistrations.$inferSelect,
+  ): Promise<McpClientCredentials> {
+    const clientSecret =
+      row.ciphertext && row.keyId
+        ? this.#cipher.decryptClientSecret(
+            { accountId, authorizationServer: row.authorizationServer },
+            { ciphertext: row.ciphertext, keyId: row.keyId },
+          )
+        : undefined;
+    return {
+      source: row.source,
+      clientId: row.clientId,
+      ...(clientSecret === undefined ? {} : { clientSecret }),
       tokenEndpointAuthMethod: row.ciphertext ? "client_secret_basic" : "none",
     };
   }
@@ -298,7 +401,17 @@ export class McpOAuthFlowService {
     const row = await this.#locateFlow(query.state, flowSecret);
     const { authorization, agentId, accountId } = row;
     if (query.error) {
-      await this.#clearFlow(authorization.id);
+      /*
+       * A denial is terminal, so it is recorded as such rather than only cleared.
+       *
+       * Clearing the flow left `status` at `pending`, and the poll's terminal conditions require it to
+       * leave `pending` — so a user who denied the request waited out the full ten minutes, and a
+       * failed exchange did the same. `failureCode` carries the bounded reason for the row's reader.
+       */
+      await this.#failFlow(
+        authorization.id,
+        query.error === "access_denied" ? MCP_ERROR_CODES.OAUTH_DENIED : MCP_ERROR_CODES.OAUTH_FAILED,
+      );
       throw new McpServiceError(
         query.error === "access_denied" ? MCP_ERROR_CODES.OAUTH_DENIED : MCP_ERROR_CODES.OAUTH_FAILED,
         "The authorization was not granted",
@@ -306,7 +419,7 @@ export class McpOAuthFlowService {
     }
     const mcpServerId = authorization.mcpServerId;
     if (!query.code) {
-      await this.#clearFlow(authorization.id);
+      await this.#failFlow(authorization.id, MCP_ERROR_CODES.OAUTH_FLOW_INVALID);
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization response carried no code");
     }
     try {
@@ -354,7 +467,15 @@ export class McpOAuthFlowService {
         })
         .where(eq(mcpServerAuthorizations.id, authorization.id));
     } catch (error) {
-      await this.#clearFlow(authorization.id);
+      /*
+       * A failed exchange is terminal too: the code is spent, so retrying cannot help and leaving the
+       * row `pending` would just be a wait that ends in a timeout. The flow is cleared and a terminal
+       * status recorded, and a transient failure is left pending because a retry can still succeed.
+       */
+      await this.#failFlow(
+        authorization.id,
+        error instanceof McpServiceError && error.category === "transient" ? undefined : MCP_ERROR_CODES.OAUTH_FAILED,
+      );
       throw error;
     }
     return { accountId, agentId, mcpServerId };
@@ -390,11 +511,15 @@ export class McpOAuthFlowService {
     }
     const authorization = row.authorization;
     /*
-     * Compared as hashes so a mistyped or stolen cookie cannot be distinguished from a wrong one by
-     * response timing, and so the stored value never equals the secret a browser holds.
+     * A mismatched secret does NOT clear the flow.
+     *
+     * Clearing here would hand anyone who learned a `state` an unauthenticated way to destroy a
+     * pending authorization: present the state with a garbage cookie and the flow is gone. It also
+     * made two concurrent flows hopeless — one cookie name at one path means starting flow B
+     * replaces the cookie flow A is holding, and A's callback would then have killed A. An
+     * unauthorized caller simply gets nothing.
      */
     if (authorization.loginSessionHash !== hashSecret(flowSecret)) {
-      await this.#clearFlow(authorization.id);
       throw new McpServiceError(
         MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
         "The authorization flow was not started by this browser",
@@ -419,12 +544,40 @@ export class McpOAuthFlowService {
   }
 
   /**
+   * End a flow that cannot succeed, so a waiter stops waiting.
+   *
+   * `status` must leave `pending`: the poll in `mcp authorize` and the page's probe indicator both end
+   * on a status other than `pending`, so a row that only had its state cleared kept a user waiting for
+   * the flow's full ten minutes after a denial. `failureCode` records the bounded reason.
+   *
+   * Passing no code means the failure is transient — the flow's state is cleared and the row is left
+   * `pending` for a retry, which is the one case where waiting is still the right answer.
+   */
+  async #failFlow(id: string, failureCode: string | undefined): Promise<void> {
+    await this.#database
+      .update(mcpServerAuthorizations)
+      .set({
+        state: null,
+        stateExpiresAt: null,
+        pkceCiphertext: null,
+        loginSessionHash: null,
+        ...(failureCode === undefined ? {} : { status: "error", failureCode }),
+        updatedAt: this.#now(),
+      })
+      .where(eq(mcpServerAuthorizations.id, id));
+  }
+
+  /**
    * The client to redeem the code with.
    *
    * The flow row already carries `clientRegistrationId`, so the callback and every later refresh use
-   * exactly the client the authorization request named. Resolving fresh here would register a
-   * *second* client and then present the first client's code under it — which a strict authorization
-   * server refuses with `invalid_client`, and which made every refresh register yet another client.
+   * exactly the client the authorization request named. Resolving a client *fresh* here would
+   * register a second one and then present the first one's code under it — which a strict
+   * authorization server refuses with `invalid_client`.
+   *
+   * CIMD is the one mechanism with no row to record: the client is this deployment's metadata URL, so
+   * it is derived rather than looked up, and it is by construction the same client the authorization
+   * request named.
    */
   async #readClientCredentials(
     accountId: string,
@@ -440,6 +593,12 @@ export class McpOAuthFlowService {
     if (clientRegistrationId) {
       const recorded = await this.#readRegistration(accountId, clientRegistrationId, metadata.issuer);
       if (recorded) return recorded;
+    } else if (metadata.clientIdMetadataDocumentSupported) {
+      return {
+        source: "cimd",
+        clientId: this.#oauth.clientMetadataUrl,
+        tokenEndpointAuthMethod: "none",
+      };
     }
     /*
      * Nothing usable: the flow predates this registration, or the row was pruned. Registering a new

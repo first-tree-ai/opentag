@@ -134,6 +134,14 @@ describe("assertOutboundUrl", () => {
       expect(blockedBy(`https://${host}/mcp`)?.code, host).toBe(MCP_ERROR_CODES.URL_BLOCKED);
     }
   });
+
+  it("refuses deprecated site-local IPv6, which is still unroutable", () => {
+    for (const host of ["[fec0::1]", "[feff::1]"]) {
+      expect(blockedBy(`https://${host}/mcp`)?.code, host).toBe(MCP_ERROR_CODES.URL_BLOCKED);
+    }
+    // The neighbouring public space stays reachable: 2000::/3 is global unicast.
+    expect(blockedBy("https://[2001:4860:4860::8888]/mcp")).toBeUndefined();
+  });
 });
 
 describe("McpOutboundFetcher DNS policy", () => {
@@ -214,6 +222,39 @@ describe("McpOutboundFetcher DNS policy", () => {
   it("does not resolve a literal address, which the URL check already judged", async () => {
     const { fetcher } = fetcherResolving(new Error("should not be consulted"));
     await expect(fetcher.fetchOutbound(ACCOUNT, "https://93.184.216.34/mcp")).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("counts the resolution against the concurrency bound", async () => {
+    /*
+     * A lookup is a network round trip the Account asked for. Resolving before taking a slot let a
+     * hostile Server answering with many distinct names spend as many concurrent lookups as it liked
+     * while the counter sat at zero.
+     */
+    let resolving = 0;
+    let peak = 0;
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      maxConcurrentPerAccount: 2,
+      fetch: (async () => new Response("{}", { status: 200 })) as unknown as typeof globalThis.fetch,
+      resolveAddresses: async () => {
+        resolving += 1;
+        peak = Math.max(peak, resolving);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        resolving -= 1;
+        return ["93.184.216.34"];
+      },
+    });
+
+    const outcomes = await Promise.allSettled([
+      fetcher.fetchOutbound(ACCOUNT, "https://a.example.com/mcp"),
+      fetcher.fetchOutbound(ACCOUNT, "https://b.example.com/mcp"),
+      fetcher.fetchOutbound(ACCOUNT, "https://c.example.com/mcp"),
+    ]);
+
+    // Two proceed and the third is refused, so the lookups never exceed the bound either.
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(2);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(peak).toBeLessThanOrEqual(2);
   });
 });
 

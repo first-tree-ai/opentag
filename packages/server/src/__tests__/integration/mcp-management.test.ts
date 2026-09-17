@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { MCP_ERROR_CODES } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -456,6 +457,101 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     }
   });
 
+  it("does not destroy a pending flow when a callback presents the wrong secret", async () => {
+    /*
+     * The refusal must be harmless to the flow it refused.
+     *
+     * Clearing on mismatch handed anyone who learned a `state` an unauthenticated way to kill a
+     * pending authorization, and it made two concurrent flows impossible: one cookie name at one path
+     * means starting flow B replaces the cookie flow A holds, so A's own callback would have
+     * destroyed A.
+     */
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      const redeem = {
+        code: callback.searchParams.get("code") ?? "",
+        state: callback.searchParams.get("state") ?? "",
+        iss: callback.searchParams.get("iss") ?? undefined,
+      };
+
+      // A stranger's attempt is refused...
+      await expect(harness.flows.callback(redeem, "not-my-secret")).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+      });
+
+      // ...and the rightful browser can still complete the very same flow afterwards.
+      await expect(harness.flows.callback(redeem, FLOW_SECRET)).resolves.toMatchObject({
+        agentId: harness.agentA,
+        mcpServerId: server.id,
+      });
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(row?.status).toBe("active");
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("records a terminal status when the authorization is denied", async () => {
+    /*
+     * A denial has to leave `pending`, or the waiter cannot tell it apart from "still in flight".
+     *
+     * `mcp authorize` polls until `status` leaves `pending` (and the page's probe indicator does the
+     * same), so a denial that only cleared the flow's state left the user watching a spinner for the
+     * flow's full ten minutes before a timeout — which the review caught as a claim that did not hold.
+     */
+    const fixture = await McpFixtureServer.start({ denyAuthorization: true });
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      expect(callback.searchParams.get("error")).toBe("access_denied");
+
+      await expect(
+        harness.flows.callback(
+          {
+            error: "access_denied",
+            state: callback.searchParams.get("state") ?? "",
+          },
+          FLOW_SECRET,
+        ),
+      ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_DENIED });
+
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      // Terminal: `status` left `pending`, the flow is gone, and the reason is recorded.
+      expect(row?.status).toBe("error");
+      expect(row?.failureCode).toBe(MCP_ERROR_CODES.OAUTH_DENIED);
+      expect(row?.state).toBeNull();
+      expect(row?.ciphertext).toBeNull();
+    } finally {
+      await fixture.stop();
+    }
+  });
+
   it("redeems a callback only under the client registration the flow recorded", async () => {
     const fixture = await McpFixtureServer.start();
     const harness = await seed();
@@ -854,6 +950,75 @@ describe("P5 — a soft-deleted Agent releases its mounts", () => {
         .from(mcpServerAuthorizations)
         .where(eq(mcpServerAuthorizations.mcpServerId, server.id));
       expect(authorizations).toHaveLength(0);
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("does not rotate the shared registration when a second Agent starts a flow", async () => {
+    /*
+     * The reviewer's scenario, and the reason the DCR path needed its own fixture: with CIMD the
+     * client is this deployment's URL, so re-registering cannot change it and the bug is invisible.
+     *
+     * `mcp_client_registrations` is keyed by `(account, issuer)`, so it holds ONE client for the whole
+     * Account. When `start` registered unconditionally, the second Agent's start replaced that client
+     * — and the first Agent's authorization, which had been requested under the old one, then failed
+     * every refresh with `invalid_client`. Authorizing a second Agent silently destroyed the first.
+     */
+    const fixture = await McpFixtureServer.start({ dynamicRegistrationOnly: true });
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      await harness.servers.attachServer(harness.accountId, harness.agentB, server.id, true);
+
+      // Agent A completes a full authorization, leaving it active and refreshable.
+      const first = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const firstAuthorize = await fetch(first.authorizationUrl, { redirect: "manual" });
+      const firstCallback = new URL(firstAuthorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: firstCallback.searchParams.get("code") ?? "",
+          state: firstCallback.searchParams.get("state") ?? "",
+          iss: firstCallback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+      const registrationsAfterFirst = await harness.database
+        .select()
+        .from(mcpClientRegistrations)
+        .where(eq(mcpClientRegistrations.accountId, harness.accountId));
+      expect(registrationsAfterFirst).toHaveLength(1);
+      const clientForA = registrationsAfterFirst[0]?.clientId;
+
+      // Agent B starts a flow at the same issuer. This is the second `start` that used to rotate the row.
+      await harness.flows.start(harness.accountId, harness.agentB, server.id, [], FLOW_SECRET);
+      const registrationsAfterSecond = await harness.database
+        .select()
+        .from(mcpClientRegistrations)
+        .where(eq(mcpClientRegistrations.accountId, harness.accountId));
+
+      // Still one row, still the client Agent A authorized under, and only one registration was made.
+      expect(registrationsAfterSecond).toHaveLength(1);
+      expect(registrationsAfterSecond[0]?.clientId).toBe(clientForA);
+      expect(fixture.registrations).toBe(1);
+
+      // And Agent A's existing authorization still refreshes: the failure this prevents is terminal.
+      await harness.database
+        .update(mcpServerAuthorizations)
+        .set({ accessTokenExpiresAt: new Date(0) })
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      const passes = await harness.refresh.runOnce();
+      expect(passes).toBe(1);
+      const [rowA] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(rowA?.status).toBe("active");
     } finally {
       await fixture.stop();
     }

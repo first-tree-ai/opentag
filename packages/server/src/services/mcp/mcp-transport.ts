@@ -106,6 +106,14 @@ export interface McpCallOptions {
   name?: string;
   /** Extra request headers beyond the authorization set (used for `Mcp-Param-*` extensions). */
   headers?: Record<string, string>;
+  /**
+   * The version `initialize` negotiated, for a legacy call.
+   *
+   * Only the legacy path sets this: `2025-06-18` and `2025-11-25` want `MCP-Protocol-Version` on
+   * every request after the handshake, while `2025-03-26` predates the header and must not receive
+   * one. The modern path stamps its own version unconditionally.
+   */
+  negotiatedVersion?: string;
   signal?: AbortSignal;
 }
 
@@ -195,12 +203,15 @@ export class McpTransport {
   /**
    * One legacy JSON-RPC call, after `initialize` negotiated a pre-modern version.
    *
-   * The legacy protocol predates the modern per-request envelope, so this sends none of it: no
-   * `MCP-Protocol-Version` header (the session, not a header, carries the version), no `Mcp-Method`,
-   * no `Mcp-Name`, and no `_meta`. {@link call} always speaks the modern shape, so using it here is
-   * what made a legacy Server reject the request immediately after a successful `initialize`:
-   * `@modelcontextprotocol/sdk` answers `400 Unsupported protocol version` for any header value
-   * outside the versions it knows, and the modern one is.
+   * The legacy era is not one protocol. `2025-03-26` carries the version in the session alone, but
+   * `2025-06-18` and `2025-11-25` — the newest legacy version this client advertises first — expect
+   * `MCP-Protocol-Version` on every request after the handshake, and the specification says a missing
+   * header defaults to `2025-03-26`. Sending the *modern* version (what {@link call} does) made a
+   * strict server answer `400 Unsupported protocol version`; sending none happened to work only
+   * because the SDK defaults, so a strict 2025-11-25 server would still refuse it.
+   *
+   * The negotiated version is therefore sent when the peer's era requires it, and omitted for
+   * `2025-03-26`, which predates the header and would reject an unexpected one.
    */
   async callLegacy(
     accountId: string,
@@ -215,6 +226,7 @@ export class McpTransport {
       ...authHeaders,
       accept: MCP_ACCEPT_HEADER,
       "content-type": "application/json",
+      ...legacyVersionHeaders(options.negotiatedVersion),
     };
     for (const [key, value] of Object.entries(options.headers ?? {})) headers[key] = value;
     const response = await this.#fetcher.fetchOutbound(accountId, url, {
@@ -478,6 +490,17 @@ export function negotiateProtocolVersion(supported: readonly string[]): string {
 
 function legacyVersionProbe(): string {
   return MCP_LEGACY_PROTOCOL_VERSIONS[0];
+}
+
+/**
+ * The version header a legacy request needs, if any.
+ *
+ * `2025-03-26` predates `MCP-Protocol-Version` entirely, so it gets none; every later legacy version
+ * expects the negotiated value on each request after the handshake.
+ */
+function legacyVersionHeaders(negotiated: string | undefined): Record<string, string> {
+  if (negotiated === undefined || negotiated === "2025-03-26") return {};
+  return { "MCP-Protocol-Version": negotiated };
 }
 
 /**

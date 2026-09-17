@@ -166,6 +166,20 @@ describe("structured error redaction", () => {
     expect(redactSensitive({ Authorization: "sk-live-raw" })).toEqual({ Authorization: "[REDACTED]" });
   });
 
+  it("redacts a credential wrapped in an array or object under an exempted name", () => {
+    /*
+     * The exemption cannot rest on the value merely being a container: a secret rides along just as
+     * easily one level down, and undici's raw headers can present an array. Only a value carrying the
+     * summary's own fields is the DTO the exemption exists for.
+     */
+    expect(redactSensitive({ authorization: ["sk-live"] })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ authorization: { value: "sk-live" } })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ authorization: { a: { b: "sk-live" } } })).toEqual({
+      authorization: "[REDACTED]",
+    });
+    expect(redactSensitive({ authorization: [] })).toEqual({ authorization: "[REDACTED]" });
+  });
+
   it("keeps exempting the structural names that are safe in any spelling", () => {
     // A URL, a timestamp, and a flag: none of the three can be a credential however it is spelled.
     expect(

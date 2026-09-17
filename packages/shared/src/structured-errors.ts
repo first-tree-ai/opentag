@@ -173,9 +173,26 @@ const SAFE_STRUCTURAL_KEYS = new Set([
  * names — a URL, a timestamp, and a flag — so they are safe however they are spelled. `authorization`
  * is not: the very same key is an HTTP header in every log line and error object containing one, and
  * this feature can send a key verbatim (`authScheme: ""`), which is exactly the shape that leaks.
- * The MCP summary arrives as an object; a *string* under this name is a credential.
  */
 const SAFE_STRUCTURAL_OBJECT_ONLY_KEYS = new Set(["authorization"]);
+
+/**
+ * The MCP authorization summary's own field names.
+ *
+ * An exemption for `authorization` cannot rest on the value merely being a container: a secret rides
+ * along just as easily one level down (`{ authorization: { value: "sk-live" } }`, or an array, both
+ * of which undici's raw headers can produce). Requiring the object to carry the summary's own fields
+ * is what distinguishes the DTO from a wrapper, and it is checked before the value is descended into
+ * so a summary's scalar fields keep their ordinary treatment.
+ */
+const AUTHORIZATION_SUMMARY_FIELDS = ["kind", "status", "has_credential"];
+
+/** Whether an exempted key's value is the structural summary the exemption exists for. */
+function isAuthorizationSummary(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value).map((key) => normalizedKey(key));
+  return AUTHORIZATION_SUMMARY_FIELDS.some((field) => keys.includes(field));
+}
 
 /**
  * Whether a key carries a secret, given the value it carries.
@@ -186,7 +203,7 @@ const SAFE_STRUCTURAL_OBJECT_ONLY_KEYS = new Set(["authorization"]);
 function isSensitiveKey(key: string, value: unknown): boolean {
   const normalized = normalizedKey(key);
   if (SAFE_STRUCTURAL_KEYS.has(normalized)) {
-    if (!SAFE_STRUCTURAL_OBJECT_ONLY_KEYS.has(normalized) || typeof value !== "string") return false;
+    if (!SAFE_STRUCTURAL_OBJECT_ONLY_KEYS.has(normalized) || isAuthorizationSummary(value)) return false;
   }
   /*
    * Both spellings are tested, because the camelCase split is lossy in one direction: `PassWord`

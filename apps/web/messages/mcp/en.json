@@ -1,5 +1,9 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
+  "mcp_add_existing": "Use an existing Server",
+  "mcp_add_existing_empty": "Every Server in this Account is already added to this Agent. Create a new one instead.",
+  "mcp_add_mode_label": "Method",
+  "mcp_attach_action": "Add",
   "mcp_attach_failed": "Couldn’t add this Server. Try again.",
   "mcp_authorization_anonymous": "Anonymous",
   "mcp_authorization_bearer": "Bearer",

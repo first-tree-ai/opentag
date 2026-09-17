@@ -1,4 +1,9 @@
-import { MCP_MODERN_PROTOCOL_VERSION, MCP_PROBE_MAX_TOOLS, MCP_PROBE_MAX_TOOLS_BYTES } from "@opentag/shared";
+import {
+  MCP_MODERN_PROTOCOL_VERSION,
+  MCP_PROBE_MAX_TOOLS,
+  MCP_PROBE_MAX_TOOLS_BYTES,
+  MCP_SUPPORTED_PROTOCOL_VERSIONS,
+} from "@opentag/shared";
 import { boundedMcpSummary, MCP_ERROR_CODES, McpServiceError } from "./errors.js";
 import {
   detectEraFromRpcError,
@@ -83,7 +88,9 @@ export class McpProbe {
   async probe(input: McpProbeInput): Promise<McpProbeResult> {
     const deadline = this.#now().getTime() + this.#budgetMs;
     try {
-      return input.cachedEra === "legacy" ? await this.#probeLegacy(input) : await this.#probeModern(input, deadline);
+      return input.cachedEra === "legacy"
+        ? await this.#probeLegacy(input, deadline)
+        : await this.#probeModern(input, deadline);
     } catch (error) {
       return failed(error, invalidatesProtocolEra(error));
     }
@@ -97,7 +104,7 @@ export class McpProbe {
   async #probeModern(input: McpProbeInput, deadline: number): Promise<McpProbeResult> {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
     const discover = await this.#discover(input, transport);
-    if (discover.kind === "legacy") return this.#probeLegacy(input);
+    if (discover.kind === "legacy") return this.#probeLegacy(input, deadline);
     const { payload, protocolVersion } = discover;
     const era = protocolVersion === MCP_MODERN_PROTOCOL_VERSION ? "modern" : "legacy";
     const negotiated = new McpTransport({
@@ -151,7 +158,7 @@ export class McpProbe {
   }
 
   /** The legacy `initialize` handshake, used only for an origin that predates the modern model. */
-  async #probeLegacy(input: McpProbeInput): Promise<McpProbeResult> {
+  async #probeLegacy(input: McpProbeInput, deadline: number): Promise<McpProbeResult> {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
     const { sessionId, result } = await transport.initialize(input.accountId, input.url, input.authHeaders);
     const payload = asRecord(result);
@@ -164,11 +171,24 @@ export class McpProbe {
         sessionId,
       );
     }
-    const tools = await this.#collectLegacyTools(input, transport, sessionId);
+    /*
+     * The version the peer negotiated, checked against the ones this client speaks. An unrecognized
+     * value is recorded as absent rather than echoed onto later requests: a Server naming a version we
+     * do not implement would otherwise have us stamp it on the `tools/list` that follows.
+     */
+    const negotiated = typeof payload.protocolVersion === "string" ? payload.protocolVersion : undefined;
+    const supported = negotiated !== undefined && MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(negotiated as never);
+    const tools = await this.#collectLegacyTools(
+      input,
+      transport,
+      sessionId,
+      supported ? negotiated : undefined,
+      deadline,
+    );
     return {
       probeState: "succeeded",
       protocolEra: "legacy",
-      protocolVersion: typeof payload.protocolVersion === "string" ? payload.protocolVersion : null,
+      protocolVersion: supported && negotiated !== undefined ? negotiated : null,
       serverInfo: payload.serverInfo ?? null,
       capabilities: payload.capabilities ?? null,
       instructions: boundedInstructions(payload.instructions),
@@ -193,9 +213,15 @@ export class McpProbe {
     input: McpProbeInput,
     transport: McpTransport,
     sessionId: string | undefined,
+    negotiatedVersion: string | undefined,
+    deadline: number,
   ): Promise<{ tools: McpProbeTool[]; truncated: boolean }> {
     const collected: McpProbeTool[] = [];
-    const deadline = this.#now().getTime() + this.#budgetMs;
+    /*
+     * The caller's deadline is the probe's own, not a fresh budget: this runs after the handshake has
+     * already spent part of it, and starting a second window let a legacy probe run about twice the
+     * configured budget.
+     */
     const sessionHeaders = sessionId ? { headers: { "mcp-session-id": sessionId } } : {};
     let cursor: string | undefined;
     let truncated = false;
@@ -215,7 +241,7 @@ export class McpProbe {
             "tools/list",
             cursor === undefined ? {} : { cursor },
             input.authHeaders,
-            sessionHeaders,
+            { ...sessionHeaders, ...(negotiatedVersion === undefined ? {} : { negotiatedVersion }) },
           ),
         ),
       );

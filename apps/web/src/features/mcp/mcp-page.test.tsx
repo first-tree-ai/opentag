@@ -236,6 +236,39 @@ describe("McpPage", () => {
     await waitFor(() => expect(screen.queryByText("New MCP Server")).toBeNull());
   });
 
+  it("mounts an existing definition, which is the only way to reuse one across Agents", async () => {
+    /*
+     * `mcp_servers` is unique on `(account, lower(name))`, so a user who wants an existing Server on
+     * a second Agent cannot create it again — and another name would make a second definition with
+     * its own probes and edit surface. The chooser is inside the add dialog rather than a second
+     * button, but it has to exist, or reuse is CLI-only.
+     */
+    stub([]);
+    let attached: string | undefined;
+    const createSpy = vi.spyOn(browserApi, "createMcpServer").mockResolvedValue(detail(1).server as never);
+    vi.spyOn(browserApi, "availableMcpServers").mockResolvedValue({
+      servers: [{ id: SERVER_ID, name: "linear", description: "Issue tracking", boundAgentCount: 1 }],
+    } as never);
+    vi.spyOn(browserApi, "attachMcpServer").mockImplementation((async (
+      _agentId: string,
+      input: { mcpServerId: string },
+    ) => {
+      attached = input.mcpServerId;
+      return entry();
+    }) as never);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create Server" }));
+    await chooseOption("Method", "Use an existing Server");
+
+    expect(await screen.findByText("Issue tracking")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => expect(attached).toBe(SERVER_ID));
+    // No create is issued: the definition already exists.
+    expect(createSpy).not.toHaveBeenCalled();
+  });
+
   it("does not offer to delete the definition while another Agent still uses it", async () => {
     stub([entry()], detail(2));
     wrap(<McpPage agentId={AGENT_ID} />);

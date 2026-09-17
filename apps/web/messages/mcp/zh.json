@@ -1,5 +1,9 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
+  "mcp_add_existing": "使用已有 Server",
+  "mcp_add_existing_empty": "该账户中的所有 Server 都已添加到此 Agent。请改为新建一个。",
+  "mcp_add_mode_label": "添加方式",
+  "mcp_attach_action": "添加",
   "mcp_attach_failed": "无法添加此 Server，请重试。",
   "mcp_authorization_anonymous": "匿名",
   "mcp_authorization_bearer": "Bearer",

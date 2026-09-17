@@ -238,10 +238,11 @@ describe("MCP response parsing", () => {
 });
 
 /*
- * The legacy era speaks a pre-modern protocol in which the session, not a header, carries the
- * version. `call` always stamps the modern `MCP-Protocol-Version` plus `Mcp-Method` and `_meta`, and
- * `@modelcontextprotocol/sdk` answers `400 Unsupported protocol version` for any header value it does
- * not know — so a legacy Server rejected the request immediately after a successful `initialize`.
+ * The legacy era is not one protocol. `2025-03-26` carries the version in the session alone, while
+ * `2025-06-18` and `2025-11-25` want `MCP-Protocol-Version` on every request after the handshake.
+ * `call` always stamps the modern version plus `Mcp-Method` and `_meta`, and the SDK answers
+ * `400 Unsupported protocol version` for any value it does not know — which is what broke the legacy
+ * path immediately after a successful `initialize`.
  */
 describe("MCP transport legacy calls", () => {
   it("sends none of the modern envelope on a legacy call", async () => {
@@ -266,6 +267,95 @@ describe("MCP transport legacy calls", () => {
     const body = bodyOf(calls[0] as { init: RequestInit });
     expect(body).not.toHaveProperty("params._meta");
     expect(body.method).toBe("tools/list");
+  });
+
+  it("carries the negotiated version when the peer's era wants one", async () => {
+    const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: { tools: [] } }) }]);
+    const transport = new McpTransport({ fetcher });
+    await transport.callLegacy(
+      ACCOUNT,
+      "https://mcp.example.com/mcp",
+      "tools/list",
+      {},
+      {},
+      { negotiatedVersion: "2025-06-18" },
+    );
+
+    const headers = headersOf(calls[0] as { init: RequestInit });
+    expect(headers["mcp-protocol-version"]).toBe("2025-06-18");
+    // Still none of the modern per-request envelope.
+    expect(headers["mcp-method"]).toBeUndefined();
+  });
+
+  it("omits the version header for the legacy version that predates it", async () => {
+    const { calls, fetcher } = stubFetch([{ status: 200, body: JSON.stringify({ result: { tools: [] } }) }]);
+    const transport = new McpTransport({ fetcher });
+    await transport.callLegacy(
+      ACCOUNT,
+      "https://mcp.example.com/mcp",
+      "tools/list",
+      {},
+      {},
+      { negotiatedVersion: "2025-03-26" },
+    );
+
+    expect(headersOf(calls[0] as { init: RequestInit })["mcp-protocol-version"]).toBeUndefined();
+  });
+});
+
+/*
+ * The SSE branch got the same B6 status rule as the JSON branch, and the review noted it landed
+ * code-only. A stream is a body shape, not a licence to ignore the status.
+ *
+ * A stream answer must carry the request's own id (a frame without one is a notification), and the
+ * id is a fresh UUID per call, so these fixtures build the frame from the body they receive.
+ */
+describe("MCP transport SSE responses", () => {
+  /** A fetcher that answers with an SSE frame echoing the request id. */
+  function sseFetcher(frame: (id: string) => unknown, status: number) {
+    const fetchImpl = vi.fn(async (_url: URL | string, init?: RequestInit) => {
+      const id = String((JSON.parse(String(init?.body)) as { id?: unknown }).id ?? "");
+      return new Response(`data: ${JSON.stringify(frame(id))}\n\n`, {
+        status,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    return new McpTransport({
+      fetcher: new McpOutboundFetcher({
+        allowLoopback: true,
+        fetch: fetchImpl,
+        resolveAddresses: async () => ["93.184.216.34"],
+      }),
+    });
+  }
+
+  it("refuses a non-2xx status whose stream carries no JSON-RPC error", async () => {
+    for (const status of [401, 500]) {
+      const transport = sseFetcher((id) => ({ jsonrpc: "2.0", id, result: { tools: [] } }), status);
+      await expect(
+        transport.call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {}),
+        `status ${status}`,
+      ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_ERROR });
+    }
+  });
+
+  it("preserves a JSON-RPC error delivered inside the stream", async () => {
+    const transport = sseFetcher(
+      (id) => ({ jsonrpc: "2.0", id, error: { code: -32022, message: "unsupported" } }),
+      400,
+    );
+    const error = await transport
+      .call(ACCOUNT, "https://mcp.example.com/mcp", "server/discover", {}, {})
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(McpTransportError);
+    expect((error as McpTransportError).rpcError?.code).toBe(-32022);
+  });
+
+  it("accepts a 2xx stream with a result", async () => {
+    const transport = sseFetcher((id) => ({ jsonrpc: "2.0", id, result: { tools: [{ name: "a" }] } }), 200);
+    await expect(transport.call(ACCOUNT, "https://mcp.example.com/mcp", "tools/list", {}, {})).resolves.toEqual({
+      tools: [{ name: "a" }],
+    });
   });
 });
 

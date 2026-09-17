@@ -133,10 +133,22 @@ interface ActiveTurn {
   execution?: Promise<void>;
 }
 
+interface QueuedVerified {
+  readonly deliveryId: string;
+  readonly frame: RunnerCloudDeliveryVerifiedFrame;
+  /** Connection generation that received the grant; a newer generation invalidates it. */
+  readonly generation: number;
+}
+
 /** Worker stdout is captured bounded by the native sandbox; still refuse anything larger. */
 const CLOUD_TURN_WORKER_STDOUT_MAX_BYTES = 256 * 1024;
 /** Bounded Session queue: verified entries beyond this wait at `received` for re-verification. */
 const CLOUD_TURN_MAX_QUEUED = 64;
+/**
+ * Bounded grace on top of the persisted runtime budget for the native exec backstop, so the
+ * in-sandbox worker's own deadline reports `turn_timeout` before the parent kills the wrapper.
+ */
+export const CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS = 5_000;
 
 /** Strict validation of the in-sandbox worker completion before it can become a durable report. */
 const CloudTurnCompletionSchema = z
@@ -170,10 +182,9 @@ export class CloudTurnRunner {
   readonly #options: CloudTurnRunnerOptions;
   readonly #cancelRequested = new Set<string>();
   /** Verified entries waiting for the single Session-serial turn slot, keyed by request id. */
-  readonly #queue = new Map<
-    string,
-    { readonly frame: RunnerCloudDeliveryVerifiedFrame; readonly deliveryId: string }
-  >();
+  readonly #queue = new Map<string, QueuedVerified>();
+  /** Monotonic control-channel generation; a close invalidates queued connection-scoped grants. */
+  #channelGeneration = 0;
   #active?: ActiveTurn;
   #closed = false;
   /**
@@ -263,9 +274,16 @@ export class CloudTurnRunner {
 
   /** Server persisted durable custody: execution may start (the model grant rides along). */
   async handleVerified(frame: RunnerCloudDeliveryVerifiedFrame): Promise<void> {
+    // Capture BEFORE waiting for the serial queue: a close may happen while this frame is queued
+    // behind another operation, and the frame's grant still belongs to the old connection.
+    const generation = this.#channelGeneration;
     await this.#enqueue(async () => {
       const entry = await this.#entryByRequestId(frame.requestId);
       if (!entry) return; // Already retired or never received.
+      if (generation !== this.#channelGeneration) {
+        this.#log(`ignoring delivery ${entry.deliveryId} verified on a closed channel generation`);
+        return;
+      }
       if (frame.status === "rejected") {
         // The Server refused custody before any start. A started/reported entry is real durable
         // state that a late rejection must never erase.
@@ -283,22 +301,35 @@ export class CloudTurnRunner {
         await this.#reportTerminal(entry, denial.completion);
         return;
       }
-      if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
-        this.#log(`cloud turn queue is full; leaving ${entry.deliveryId} at the received boundary for re-verification`);
-        return;
-      }
-      // Queue first, then drain: FIFO is the order verified frames were accepted, so a later
-      // verification can never overtake an earlier queued delivery. When this frame is the head
-      // and the slot is free, start it before resolving (the established frame contract);
-      // otherwise a serialized drain picks it up in order.
-      const queued = { deliveryId: entry.deliveryId, frame: { ...frame, model: frame.model } };
-      this.#queue.set(entry.requestId, queued);
-      if (!this.#active && this.#queue.keys().next().value === entry.requestId) {
-        await this.#processQueued(queued);
-        return;
-      }
-      this.#scheduleDrain();
+      await this.#queueVerified(entry, frame, generation);
     });
+  }
+
+  /**
+   * Queue a verified frame in FIFO order, then drain: a later verification can never overtake an
+   * earlier queued delivery. When this frame is the head and the slot is free, start it before
+   * resolving (the established frame contract); otherwise a serialized drain picks it up in order.
+   */
+  async #queueVerified(
+    entry: CloudJournalEntry,
+    frame: RunnerCloudDeliveryVerifiedFrame,
+    generation: number,
+  ): Promise<void> {
+    if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
+      this.#log(`cloud turn queue is full; leaving ${entry.deliveryId} at the received boundary for re-verification`);
+      return;
+    }
+    const queued: QueuedVerified = {
+      deliveryId: entry.deliveryId,
+      frame: { ...frame, model: frame.model },
+      generation,
+    };
+    this.#queue.set(entry.requestId, queued);
+    if (!this.#active && this.#queue.keys().next().value === entry.requestId) {
+      await this.#processQueued(queued);
+      return;
+    }
+    this.#scheduleDrain();
   }
 
   /**
@@ -417,12 +448,18 @@ export class CloudTurnRunner {
   }
 
   /**
-   * The control channel dropped. Durable journal state survives and a live in-sandbox execution
-   * keeps running; the report stays journaled until the Server acknowledges it. A full process
-   * restart is what makes the started entry unknown, not a transient reconnect.
+   * The control channel dropped. Connection-scoped grants are revoked by the Server with it, so
+   * queued verified frames must never start afterwards; the journaled `received` entries are
+   * re-announced by reconcile and re-verified with fresh grants. A live execution is not aborted
+   * here (its report stays journaled and honest); only a full process restart reports `unknown`.
    */
   onChannelClosed(): void {
-    this.#log("cloud control channel closed; journaled state survives and live execution continues");
+    this.#channelGeneration += 1;
+    const dropped = this.#queue.size;
+    this.#queue.clear();
+    if (dropped > 0) {
+      this.#log(`dropped ${dropped} queued delivery grant(s) from the closed channel generation`);
+    }
   }
 
   async close(): Promise<void> {
@@ -437,7 +474,11 @@ export class CloudTurnRunner {
    * ------------------------------------------------------------------------------------------ */
 
   /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
-  async #startTurn(entry: CloudJournalEntry, frame: RunnerCloudDeliveryVerifiedFrame): Promise<boolean> {
+  async #startTurn(
+    entry: CloudJournalEntry,
+    frame: RunnerCloudDeliveryVerifiedFrame,
+    generation: number,
+  ): Promise<boolean> {
     if (this.#closed || this.#active) return false;
     if (!(this.#options.canStart?.() ?? true)) return false;
     let settle: () => void = () => undefined;
@@ -456,8 +497,22 @@ export class CloudTurnRunner {
       if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
       const current = await this.#options.journal.read(entry.deliveryId);
       if (current?.phase !== "received" || this.#closed) return false;
+      if (generation !== this.#channelGeneration) {
+        // The grant's connection closed while this read was pending: leave `received` for a fresh
+        // verification instead of marking started with a revoked grant.
+        this.#queue.delete(entry.requestId);
+        return false;
+      }
+      if (active.abort.signal.aborted) {
+        // A stop arrived before the started boundary: no native effect happened, so settle an
+        // honest not_started result and never mark the entry started.
+        this.#queue.delete(entry.requestId);
+        this.#cancelRequested.delete(entry.deliveryId);
+        await this.#reportTerminal(current, cancelledBeforeStart());
+        return false;
+      }
       const started = await this.#options.journal.markStarted(current.deliveryId, current.scope);
-      active.execution = this.#executeTurn(started, frame, active.abort.signal)
+      active.execution = this.#executeTurn(started, frame, active.abort.signal, generation)
         .catch((error) => this.#reportPersistenceError(error))
         .finally(() => {
           this.#completeActive(active);
@@ -522,9 +577,7 @@ export class CloudTurnRunner {
   async #drain(): Promise<void> {
     for (;;) {
       if (this.#closed || this.#active || this.#sandboxUnusable) return;
-      const first = this.#queue.values().next().value as
-        | { readonly frame: RunnerCloudDeliveryVerifiedFrame; readonly deliveryId: string }
-        | undefined;
+      const first = this.#queue.values().next().value as QueuedVerified | undefined;
       if (!first) return;
       const outcome = await this.#processQueued(first);
       if (outcome !== "continue") return;
@@ -536,10 +589,7 @@ export class CloudTurnRunner {
    * occupation race can never drop verified work, and cancellation is re-checked after every
    * await so a delivery cancelled mid-drain is never started.
    */
-  async #processQueued(next: {
-    readonly frame: RunnerCloudDeliveryVerifiedFrame;
-    readonly deliveryId: string;
-  }): Promise<"continue" | "started" | "stop"> {
+  async #processQueued(next: QueuedVerified): Promise<"continue" | "started" | "stop"> {
     if (this.#cancelRequested.delete(next.deliveryId)) {
       this.#queue.delete(next.frame.requestId);
       await this.#settleCancelled(next.deliveryId);
@@ -555,6 +605,11 @@ export class CloudTurnRunner {
       await this.#settleCancelled(next.deliveryId);
       return "continue";
     }
+    if (next.generation !== this.#channelGeneration) {
+      // The connection that minted the grant is gone; keep the received entry for re-verification.
+      this.#queue.delete(next.frame.requestId);
+      return "continue";
+    }
     const denial = this.#admit(entry.delivery, next.frame);
     if (denial) {
       this.#queue.delete(next.frame.requestId);
@@ -562,7 +617,7 @@ export class CloudTurnRunner {
       return "continue";
     }
     if (!(this.#options.canStart?.() ?? true)) return "stop";
-    const started = await this.#startTurn(entry, next.frame);
+    const started = await this.#startTurn(entry, next.frame, next.generation);
     if (!started) return "stop";
     this.#queue.delete(next.frame.requestId);
     return "started";
@@ -584,14 +639,27 @@ export class CloudTurnRunner {
     entry: CloudJournalEntry,
     frame: RunnerCloudDeliveryVerifiedFrame,
     signal: AbortSignal,
+    generation: number,
   ): Promise<void> {
     const current = await this.#options.journal.read(entry.deliveryId);
     if (current?.phase !== "started") return;
+    if (generation !== this.#channelGeneration) {
+      // The connection closed after the durable started marker but before any sandbox work: no
+      // execution effect occurred, so settle honestly instead of running with a revoked grant.
+      await this.#reportTerminal(current, cancelledBeforeStart());
+      return;
+    }
+    if (signal.aborted) {
+      // A stop landed while the started marker was being written or shortly after. Nothing has
+      // been opened or executed yet, so this is a known not_started effect, not an unknown.
+      await this.#reportTerminal(current, cancelledBeforeStart());
+      return;
+    }
     const model = frame.model;
     if (!model) return;
     let completion: TurnCompletion;
     try {
-      completion = await this.#runInSandbox(current.delivery, model, current, signal);
+      completion = await this.#runInSandbox(current.delivery, model, current, signal, generation);
     } catch {
       completion = { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
     }
@@ -707,13 +775,19 @@ export class CloudTurnRunner {
     model: RunnerCloudModelGrant,
     entry: CloudJournalEntry,
     signal: AbortSignal,
+    generation: number,
   ): Promise<TurnCompletion> {
     const scope = this.#options.scope();
     if (!scope) throw new Error("The Runner scope is not established");
+    // No model/Pi/tool effect exists yet: a stop here must never open credentials or spawn work.
+    if (signal.aborted) return cancelledBeforeStart();
     const openExecution =
       this.#options.openExecution ?? ((input: CloudTurnExecutionOpenInput) => this.#openBridgeExecution(input));
     const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
     try {
+      // The credential bridge is open, but the worker has not started; close it without calling
+      // the worker when a stop or grant revocation landed during the open.
+      if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
       const stdin = serializeRunnerCloudTurnWorkerStdin({
         delivery,
         executionDir: execution.executionDir,
@@ -728,9 +802,11 @@ export class CloudTurnRunner {
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
           }));
-      // The timeout is the ACTUAL remaining budget (including sandbox/Pi startup); there is no
-      // lower floor, so an almost-expired turn cannot be extended by a fixed window.
-      const timeoutMs = turnTimeoutMs(delivery, Date.now());
+      // The in-sandbox worker owns the persisted runtime deadline and aborts itself at
+      // `turnTimeoutMs(...)`, reporting `turn_timeout`. This parent value is only the exec
+      // backstop that stops a wedged wrapper; it adds the bounded reporting grace so the worker's
+      // own deadline wins, and it never makes the advertised runtime longer than that grace.
+      const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
       const exec = await runWorker({ stdin, timeoutMs }, signal);
       if (signal.aborted) {
         return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };

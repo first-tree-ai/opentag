@@ -16,6 +16,10 @@ import {
 const SECRET = "unit-test-jwt-secret-at-least-32-characters";
 const SANDBOX_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
+/** Minimal valid chat history: the strict request schema requires at least one message. */
+const CHAT_MESSAGES = [{ content: "hello", role: "user" }];
+/** Deliberate pin of the route's CLOUD_MODEL_MAX_OUTPUT_TOKENS value: clamping tests assert it. */
+const OUTPUT_TOKEN_CEILING = 65_536;
 
 type ProxyConfig = Parameters<typeof registerCloudModelProxyRoutes>[1]["config"];
 
@@ -219,7 +223,7 @@ describe("Cloud model proxy route", () => {
     expect((upstream.stats.lastRequestBody as { model?: string }).model).toBe("model-a");
     // Arbitrary upstream response headers are never relayed.
     expect(response.headers.get(FIXTURE_RESPONSE_HEADER)).toBeNull();
-    const second = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const second = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(second.status).toBe(200);
     await second.text();
   });
@@ -228,7 +232,7 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "sse" });
     const { grants, port } = await makeStack({ upstream });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a", stream: true }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
     const text = await response.text();
@@ -238,7 +242,7 @@ describe("Cloud model proxy route", () => {
     expect(upstream.stats.hits).toBe(1);
     // An upstream that streams anyway for a non-stream request is relayed (its caller fails
     // visibly in the JSON parser); the reverse direction is rejected below.
-    const nonStream = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const nonStream = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(nonStream.status).toBe(200);
     await nonStream.text();
   });
@@ -259,7 +263,7 @@ describe("Cloud model proxy route", () => {
     expect(revokedResponse.status).toBe(401);
 
     const expiring = await issueToken(grants, "turn-expiring");
-    expect((await postModel(port, { model: "model-a" }, expiring.token)).status).toBe(200);
+    expect((await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, expiring.token)).status).toBe(200);
     now = new Date(now.getTime() + 61_000);
     const expiredResponse = await postModel(port, { model: "model-a" }, expiring.token);
     expect(expiredResponse.status).toBe(401);
@@ -271,7 +275,7 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "json" });
     const { grants, port } = await makeStack({ upstream });
     const issued = await issueToken(grants);
-    const wrongModel = await postModel(port, { messages: [], model: "model-b" }, issued.token);
+    const wrongModel = await postModel(port, { messages: CHAT_MESSAGES, model: "model-b" }, issued.token);
     expect(wrongModel.status).toBe(403);
     expect(await errorCode(wrongModel)).toBe("CLOUD_MODEL_MODEL_DENIED");
     for (const path of ["/api/v1/cloud-model/models", "/api/v1/cloud-model/chat/completions/extra"]) {
@@ -285,12 +289,175 @@ describe("Cloud model proxy route", () => {
     expect(upstream.stats.hits).toBe(0);
   });
 
+  it("rejects sandbox-controlled routing and credential fields without contacting the upstream", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    // The strict request schema is the allowlist: router/credential overrides a sandbox could use
+    // to redirect the call or bypass the model binding are rejected before any upstream call.
+    for (const extra of [
+      { route: "fallback" },
+      { models: ["model-a", "model-b"] },
+      { provider: { order: ["cheap"], allow_fallbacks: true } },
+      { providerOptions: { gateway: { order: ["other"] } } },
+      { api_base: "https://attacker.example/v1" },
+      { apiBase: "https://attacker.example/v1" },
+      { base_url: "https://attacker.example/v1" },
+      { api_key: "attacker-controlled-key" },
+      { transforms: ["middle-out"] },
+      { user: "attacker-controlled" },
+    ]) {
+      const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", ...extra }, issued.token);
+      expect(response.status, JSON.stringify(extra)).toBe(400);
+      expect(await errorCode(response)).toBe("CLOUD_MODEL_REQUEST_INVALID");
+    }
+    expect(upstream.stats.hits).toBe(0);
+  });
+
+  it("bounds completions to a single choice and clamps output token budgets to the ceiling", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    // n > 1 multiplies completions per call on the master key and is never emitted by Pi: reject.
+    const multi = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", n: 2 }, issued.token);
+    expect(multi.status).toBe(400);
+    expect(await errorCode(multi)).toBe("CLOUD_MODEL_REQUEST_INVALID");
+    expect(upstream.stats.hits).toBe(0);
+    // n = 1 is the only acceptable explicit value.
+    const single = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", n: 1 }, issued.token);
+    expect(single.status).toBe(200);
+    await single.text();
+    expect((upstream.stats.lastRequestBody as { n?: number }).n).toBe(1);
+    // Omitting both budget fields must not bypass the platform output ceiling.
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(OUTPUT_TOKEN_CEILING);
+    // An uncapped token ask is clamped to the proxy ceiling, never relayed to the master key.
+    const hugeTokens = await postModel(
+      port,
+      { messages: CHAT_MESSAGES, model: "model-a", max_tokens: 1_000_000_000 },
+      issued.token,
+    );
+    expect(hugeTokens.status).toBe(200);
+    await hugeTokens.text();
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(OUTPUT_TOKEN_CEILING);
+    const hugeCompletion = await postModel(
+      port,
+      { messages: CHAT_MESSAGES, model: "model-a", max_completion_tokens: 1_000_000_000 },
+      issued.token,
+    );
+    expect(hugeCompletion.status).toBe(200);
+    await hugeCompletion.text();
+    expect((upstream.stats.lastRequestBody as { max_completion_tokens?: number }).max_completion_tokens).toBe(
+      OUTPUT_TOKEN_CEILING,
+    );
+    // A budget under the ceiling is forwarded untouched.
+    const normal = await postModel(
+      port,
+      { messages: CHAT_MESSAGES, model: "model-a", max_tokens: 8_192 },
+      issued.token,
+    );
+    expect(normal.status).toBe(200);
+    await normal.text();
+    expect((upstream.stats.lastRequestBody as { max_tokens?: number }).max_tokens).toBe(8_192);
+    // Non-positive or fractional budgets are invalid.
+    for (const maxTokens of [0, -1, 1.5]) {
+      const response = await postModel(
+        port,
+        { messages: CHAT_MESSAGES, model: "model-a", max_tokens: maxTokens },
+        issued.token,
+      );
+      expect(response.status).toBe(400);
+      expect(await errorCode(response)).toBe("CLOUD_MODEL_REQUEST_INVALID");
+    }
+  });
+
+  it("forwards a realistic pinned-Pi openai-completions payload to the upstream unchanged", async () => {
+    // Shape mirrored from the image-pinned Pi (scripts/runner/pi: @earendil-works/pi-coding-agent
+    // 0.84.2 → pi-ai openai-completions buildParams/convertMessages for a custom provider whose
+    // model has no reasoning flag): stream with usage, store:false, the 16,384 provider-composer
+    // default budget, strict function tools, and assistant/tool/image history.
+    const piBody = {
+      model: "model-a",
+      messages: [
+        { role: "system", content: "You are a coding agent." },
+        { role: "user", content: "Change the button label." },
+        {
+          role: "assistant",
+          content: "I will inspect the file.",
+          tool_calls: [
+            { id: "call_abc123", type: "function", function: { name: "read", arguments: '{"path":"src/a.ts"}' } },
+          ],
+        },
+        { role: "tool", content: "export const a = 1;", tool_call_id: "call_abc123" },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Here is the screenshot." },
+            { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw0KGgo=" } },
+          ],
+        },
+      ],
+      stream: true,
+      stream_options: { include_usage: true },
+      store: false,
+      max_completion_tokens: 16_384,
+      temperature: 0.2,
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "read",
+            description: "Read a file",
+            parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+            strict: false,
+          },
+        },
+      ],
+      tool_choice: "auto",
+    };
+    const upstream = await startFixture({ kind: "sse" });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    const response = await postModel(port, piBody, issued.token);
+    expect(response.status).toBe(200);
+    await response.text();
+    // Nothing is dropped, rewritten, or added between the Runner and the fixed upstream.
+    expect(upstream.stats.lastRequestBody).toEqual(piBody);
+  });
+
+  it("accepts the DeepSeek reasoning fields and rejects out-of-range sampling", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    // DeepSeek multi-turn reasoning: the reasoner's reasoning_content must round-trip on
+    // assistant history, and thinking/reasoning_effort are the DeepSeek request switches.
+    const body = {
+      model: "model-a",
+      messages: [
+        { role: "user", content: "think" },
+        { role: "assistant", content: "answer", reasoning_content: "chain of thought" },
+        { role: "user", content: "continue" },
+      ],
+      thinking: { type: "enabled" },
+      reasoning_effort: "high",
+      max_tokens: 8_192,
+    };
+    const response = await postModel(port, body, issued.token);
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(upstream.stats.lastRequestBody).toEqual(body);
+    for (const extra of [{ temperature: 3 }, { temperature: -1 }, { top_p: 2 }]) {
+      const invalid = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", ...extra }, issued.token);
+      expect(invalid.status).toBe(400);
+      expect(await errorCode(invalid)).toBe("CLOUD_MODEL_REQUEST_INVALID");
+    }
+  });
+
   it("does not follow redirects off the fixed upstream", async () => {
     const target = await startFixture({ kind: "json" });
     const upstream = await startFixture({ kind: "redirect", location: `${target.baseUrl}/stolen` });
     const { grants, port } = await makeStack({ upstream });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(response.status).toBe(502);
     expect(response.headers.get("location")).toBeNull();
     expect(await response.text()).not.toContain("redirect-fixture");
@@ -316,7 +483,7 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "overflow", chunkBytes: 8 * 1024, totalBytes: 3 * maxResponseBytes });
     const { grants, port } = await makeStack({ upstream, configOverrides: { maxResponseBytes } });
     const issued = await issueToken(grants);
-    const result = await rawModelRequest(port, issued.token, { messages: [], model: "model-a" });
+    const result = await rawModelRequest(port, issued.token, { messages: CHAT_MESSAGES, model: "model-a" });
     expect(result.statusCode).toBe(200);
     expect(result.bytes).toBeLessThanOrEqual(maxResponseBytes + 1024);
     expect(result.complete).toBe(false);
@@ -327,7 +494,7 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "bad-content-type" });
     const { grants, port } = await makeStack({ upstream });
     const issued = await issueToken(grants);
-    const badType = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const badType = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(badType.status).toBe(502);
     expect(await errorCode(badType)).toBe("CLOUD_MODEL_UPSTREAM_INVALID");
 
@@ -337,7 +504,7 @@ describe("Cloud model proxy route", () => {
     const jsonIssued = await issueToken(jsonStack.grants, "turn-json-stream");
     const jsonToStream = await postModel(
       jsonStack.port,
-      { messages: [], model: "model-a", stream: true },
+      { messages: CHAT_MESSAGES, model: "model-a", stream: true },
       jsonIssued.token,
     );
     expect(jsonToStream.status).toBe(502);
@@ -346,7 +513,11 @@ describe("Cloud model proxy route", () => {
     const emptyUpstream = await startFixture({ kind: "empty" });
     const emptyStack = await makeStack({ upstream: emptyUpstream });
     const emptyIssued = await issueToken(emptyStack.grants, "turn-empty");
-    const emptyResponse = await postModel(emptyStack.port, { messages: [], model: "model-a" }, emptyIssued.token);
+    const emptyResponse = await postModel(
+      emptyStack.port,
+      { messages: CHAT_MESSAGES, model: "model-a" },
+      emptyIssued.token,
+    );
     expect(emptyResponse.status).toBe(502);
     expect(await errorCode(emptyResponse)).toBe("CLOUD_MODEL_UPSTREAM_INVALID");
   });
@@ -359,7 +530,7 @@ describe("Cloud model proxy route", () => {
       configOverrides: { maxResponseBytes, requestTimeoutMs: 30_000 },
     });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(response.status).toBe(502);
     expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_INVALID");
     expect(slotIsFree(grants, issued.claims.jti)).toBe(true);
@@ -373,7 +544,11 @@ describe("Cloud model proxy route", () => {
     // owned and cleaned up by this test. Node 22's global fetch leaves a replacement idle
     // keep-alive socket after an abort, which holds `app.close()` until the server keep-alive
     // timeout and times the afterEach hook out even though the route aborted correctly.
-    const stream = await openModelStream(port, issued.token, { messages: [], model: "model-a", stream: true });
+    const stream = await openModelStream(port, issued.token, {
+      messages: CHAT_MESSAGES,
+      model: "model-a",
+      stream: true,
+    });
     expect(stream.statusCode).toBe(200);
     expect(stream.firstChunkBytes).toBeGreaterThan(0);
     stream.destroy();
@@ -391,7 +566,7 @@ describe("Cloud model proxy route", () => {
     const result = await rawModelRequest(
       port,
       issued.token,
-      { messages: [], model: "model-a" },
+      { messages: CHAT_MESSAGES, model: "model-a" },
       {
         pauseAfterFirstChunkMs: 200,
       },
@@ -405,13 +580,13 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "slow-sse", chunkIntervalMs: 20 });
     const { grants, port } = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 30_000 } });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a", stream: true }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
     const reader = response.body?.getReader();
     if (!reader) throw new Error("no response stream");
     expect((await reader.read()).done).toBe(false);
     grants.revokeExecution("turn-1");
     await vi.waitFor(() => expect(upstream.stats.prematureClose).toBe(true), { interval: 10, timeout: 2_000 });
-    const after = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const after = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(after.status).toBe(401);
   });
 
@@ -419,7 +594,7 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "stall" });
     const { grants, port } = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 400 } });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(response.status).toBe(504);
     expect(await errorCode(response)).toBe("CLOUD_MODEL_UPSTREAM_TIMEOUT");
     expect(slotIsFree(grants, issued.claims.jti)).toBe(true);
@@ -440,7 +615,7 @@ describe("Cloud model proxy route", () => {
       upstream,
     });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(response.status).toBe(401);
     const body = await response.text();
     expect(body).toContain("CLOUD_MODEL_UPSTREAM_ERROR");
@@ -454,7 +629,11 @@ describe("Cloud model proxy route", () => {
     const failing = await startFixture({ kind: "error", status: 503 });
     const failingStack = await makeStack({ upstream: failing });
     const failingIssued = await issueToken(failingStack.grants, "turn-503");
-    const failingResponse = await postModel(failingStack.port, { messages: [], model: "model-a" }, failingIssued.token);
+    const failingResponse = await postModel(
+      failingStack.port,
+      { messages: CHAT_MESSAGES, model: "model-a" },
+      failingIssued.token,
+    );
     expect(failingResponse.status).toBe(503);
     expect(await errorCode(failingResponse)).toBe("CLOUD_MODEL_UPSTREAM_ERROR");
   });
@@ -463,15 +642,23 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "slow-sse", chunkIntervalMs: 20 });
     const { grants, port } = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 30_000 } });
     const issued = await issueToken(grants);
-    const first = await openModelStream(port, issued.token, { messages: [], model: "model-a", stream: true });
+    const first = await openModelStream(port, issued.token, {
+      messages: CHAT_MESSAGES,
+      model: "model-a",
+      stream: true,
+    });
     expect(first.statusCode).toBe(200);
     expect(first.firstChunkBytes).toBeGreaterThan(0);
-    const saturated = await postModel(port, { messages: [], model: "model-a" }, issued.token);
+    const saturated = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a" }, issued.token);
     expect(saturated.status).toBe(429);
     expect(await errorCode(saturated)).toBe("CLOUD_MODEL_STREAMS_EXHAUSTED");
     first.destroy();
     await vi.waitFor(() => expect(slotIsFree(grants, issued.claims.jti)).toBe(true), { interval: 10, timeout: 2_000 });
-    const after = await openModelStream(port, issued.token, { messages: [], model: "model-a", stream: true });
+    const after = await openModelStream(port, issued.token, {
+      messages: CHAT_MESSAGES,
+      model: "model-a",
+      stream: true,
+    });
     expect(after.statusCode).toBe(200);
     after.destroy();
   });
@@ -480,7 +667,7 @@ describe("Cloud model proxy route", () => {
     const upstream = await startFixture({ kind: "slow-sse", chunkIntervalMs: 10 });
     const { app, grants, port } = await makeStack({ upstream, configOverrides: { requestTimeoutMs: 30_000 } });
     const issued = await issueToken(grants);
-    const response = await postModel(port, { messages: [], model: "model-a", stream: true }, issued.token);
+    const response = await postModel(port, { messages: CHAT_MESSAGES, model: "model-a", stream: true }, issued.token);
     const reader = response.body?.getReader();
     if (!reader) throw new Error("no response stream");
     expect((await reader.read()).done).toBe(false);

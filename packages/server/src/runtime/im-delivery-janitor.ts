@@ -173,9 +173,13 @@ export interface ImDeliveryJanitorOptions {
 export async function runImDeliveryExpiry(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
-  // Expire only deliveries whose Session is positively placed on a Local Computer: Cloud-placed
-  // deliveries stay durable while Cloud execution is pending, and a missing placement or Computer
-  // row fails conservative. The guard precedes the batch limit so a Cloud backlog cannot starve it.
+  // A pending row has exactly one bounded deadline. Local rows expire at the ingress deadline.
+  // Cloud rows that were never dispatched expire there too; a DISPATCHED Cloud row is owned by its
+  // frozen execution window instead (the worker releases it when that window passed, after which
+  // the ingress deadline applies), so this never expires input a Runner may still be executing.
+  // Accepted-unreported custody is never pending and is never expired. A missing placement or
+  // Computer row fails conservative. The guard precedes the batch limit so a dispatched Cloud
+  // backlog cannot starve Local expiry.
   await database.execute(sql`
     with expired as (
       select delivery.id
@@ -183,12 +187,24 @@ export async function runImDeliveryExpiry(database: DatabaseClient, options: ImD
       where delivery.state = 'pending'
         and delivery.reason is null
         and delivery.expires_at <= ${expiryNow}::timestamptz
-        and exists (
-          select 1
-          from session_placements as placement
-          inner join computers as computer on computer.id = placement.computer_id
-          where placement.session_id = delivery.session_id
-            and computer.kind = 'local'
+        and (
+          exists (
+            select 1
+            from session_placements as placement
+            inner join computers as computer on computer.id = placement.computer_id
+            where placement.session_id = delivery.session_id
+              and computer.kind = 'local'
+          )
+          or (
+            delivery.dispatch_request_id is null
+            and exists (
+              select 1
+              from session_placements as placement
+              inner join computers as computer on computer.id = placement.computer_id
+              where placement.session_id = delivery.session_id
+                and computer.kind = 'cloud'
+            )
+          )
         )
       order by delivery.expires_at asc, delivery.id asc
       limit ${options.expiryBatchSize}

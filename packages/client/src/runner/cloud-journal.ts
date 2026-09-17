@@ -166,14 +166,7 @@ export class CloudJournal {
 
   /** Every entry, for reconnect reconciliation. Corrupt files fail loudly, never silently skipped. */
   async list(): Promise<CloudJournalEntry[]> {
-    let names: string[];
-    try {
-      names = await readdir(this.#directory);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    const entryNames = names.filter((name) => ENTRY_NAME.test(name)).sort();
+    const entryNames = await this.#entryNames();
     if (entryNames.length > CLOUD_JOURNAL_MAX_ENTRIES) {
       throw new CloudJournalError(
         "store_failed",
@@ -219,6 +212,15 @@ export class CloudJournal {
           );
         }
         return existing;
+      }
+      // Enforce the capacity atomically inside the serialized mutation queue: a new dispatch is
+      // refused at the cap, while idempotent re-dispatch above and retire/ack below stay allowed.
+      const entryNames = await this.#entryNames();
+      if (entryNames.length >= CLOUD_JOURNAL_MAX_ENTRIES) {
+        throw new CloudJournalError(
+          "store_failed",
+          `The Cloud delivery journal is at its ${CLOUD_JOURNAL_MAX_ENTRIES}-entry capacity`,
+        );
       }
       const entry: CloudJournalEntry = {
         delivery: input.delivery,
@@ -336,6 +338,18 @@ export class CloudJournal {
       () => undefined,
     );
     return run;
+  }
+
+  /** Durable entry file names, sorted; used for the capacity check and full reads. */
+  async #entryNames(): Promise<string[]> {
+    let names: string[];
+    try {
+      names = await readdir(this.#directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    return names.filter((name) => ENTRY_NAME.test(name)).sort();
   }
 
   async #readEntry(deliveryId: string): Promise<CloudJournalEntry | undefined> {

@@ -270,7 +270,7 @@ describe("ImDeliveryWorker Cloud routing", () => {
     expect(row.lastErrorCode).toBe("IM_DELIVERY_CLOUD_UNAVAILABLE");
   });
 
-  it("claims an aged Cloud pending delivery past the ingress TTL and freezes a fresh runtime-budget window", async () => {
+  it("claims a Cloud pending delivery inside its ingress deadline and freezes a fresh runtime-budget window", async () => {
     const { scope, cloud, agent } = await cloudScope();
     await unit.database
       .update(agentRuntimeConfigs)
@@ -282,8 +282,9 @@ describe("ImDeliveryWorker Cloud routing", () => {
     stack.hub.attach(scope, socket);
     stack.hub.markReady(scope, READINESS, socket);
     stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
-    // The ingress TTL is long past: a positive Cloud placement must stay claimable.
-    const { deliveryId } = await pendingDelivery(scope.sessionId, new Date(Date.now() - 6 * 60 * 60 * 1_000));
+    // Inside the bounded ingress deadline the Cloud row is claimable, and the frozen execution
+    // window is the runtime budget for THIS attempt — not the ingress TTL.
+    const { deliveryId } = await pendingDelivery(scope.sessionId, new Date(Date.now() + 6 * 60 * 60 * 1_000));
     const worker = makeWorker(stack.owner);
     await worker.runOnce();
     const runs = sent.filter((frame) => frame.type === "delivery:run");
@@ -374,6 +375,24 @@ describe("ImDeliveryWorker Cloud routing", () => {
     expect(deliveryId).toBeTypeOf("string");
   });
 
+  it("does not claim an undispatched Cloud delivery past its ingress deadline", async () => {
+    const { scope, cloud } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    // The bounded ingress deadline passed before this input ever reached a Runner: the janitor
+    // owns it (expired/ttl) and the worker must not dispatch it.
+    const { deliveryId } = await pendingDelivery(scope.sessionId, new Date(Date.now() - 60_000));
+    const worker = makeWorker(stack.owner);
+    await worker.runOnce();
+    expect(sent.some((frame) => frame.type === "delivery:run")).toBe(false);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null });
+  });
+
   it("blocks destructive re-allocation before E5 and reports the restore requirement", async () => {
     const { scope, cloud } = await cloudScope();
     const stack = makeStack();
@@ -389,8 +408,32 @@ describe("ImDeliveryWorker Cloud routing", () => {
     expect(allocation.allocated).toHaveLength(1);
     expect(sent.some((frame) => frame.type === "delivery:run")).toBe(false);
     const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
-    expect(row?.lastErrorCode).toBe("IM_DELIVERY_CLOUD_RESTORE_REQUIRED");
-    expect(row?.state).toBe("pending");
+    // A permanent E5 guard is an explicit terminal failure, not a 2 s retry loop.
+    expect(row).toMatchObject({ state: "terminal_rejected", reason: "restore_required", dispatchRequestId: null });
+    // A later claim cannot re-provision the same message.
+    await worker.runOnce();
+    expect(allocation.allocated).toHaveLength(1);
+    expect(sent.some((frame) => frame.type === "delivery:run")).toBe(false);
+  });
+
+  it("terminally rejects a Cloud delivery when its environment was stopped", async () => {
+    const { scope, cloud } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const allocation: AllocationCallLog = { ensured: [], allocated: [], outcome: "stopped" };
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const worker = makeWorker(stack.owner, allocation);
+    await worker.runOnce();
+    expect(allocation.allocated).toHaveLength(1);
+    expect(sent.some((frame) => frame.type === "delivery:run")).toBe(false);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "terminal_rejected", reason: "environment_stopped", dispatchRequestId: null });
+    await worker.runOnce();
+    expect(allocation.allocated).toHaveLength(1);
   });
 
   it("releases a persisted dispatch whose frozen execution window passed instead of faking it forward", async () => {
@@ -500,6 +543,72 @@ describe("ImDeliveryWorker Cloud routing", () => {
     expect(preservedRow?.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
     expect(agent.id).toBeTypeOf("string");
     expect(cloud.computerId).toBeTypeOf("string");
+  });
+
+  it("reconciles a started accepted turn whose binding stopped even without an ended Session", async () => {
+    const { scope, cloud, bindingId } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const worker = makeWorker(stack.owner);
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    await worker.runOnce();
+    const run = sent.filter((frame) => frame.type === "delivery:run")[0] as Extract<
+      RunnerServerFrame,
+      { type: "delivery:run" }
+    >;
+    const connection = stack.fence.connectionForSandbox(scope.sandboxId);
+    if (!connection) throw new Error("no live Cloud connection");
+    const turnId = randomUUID();
+    await stack.owner.handleDeliveryReceived(connection, { deliveryId, requestId: run.requestId, turnId });
+
+    // The binding is deactivated while the turn runs: the normal claim path excludes this row, so
+    // the bounded stopped-authority pass must still reach it and resend the missed cancel.
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => stack.owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "started" }));
+      }
+    };
+    // The claim lease left nextAttemptAt in the future; this pass must be due now.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await worker.runJanitorOnce();
+
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(true);
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
+  });
+
+  it("terminally rejects a pending Cloud input whose authority stopped", async () => {
+    const { scope, agent, bindingId } = await cloudScope();
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+    const stack = makeStack();
+    const worker = makeWorker(stack.owner);
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+
+    await worker.runJanitorOnce();
+
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({
+      state: "terminal_rejected",
+      reason: "authority_stopped",
+      dispatchRequestId: null,
+    });
+    expect(agent.id).toBeDefined();
   });
 
   it("does not dispatch a second Cloud delivery while the first is accepted-unreported (Session serial)", async () => {

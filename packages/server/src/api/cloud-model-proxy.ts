@@ -11,7 +11,12 @@ import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-g
  * bodies and streams, forwards to the single configured fixed upstream with the platform master
  * key, and aborts in-flight upstream calls on revocation. The token, the master key, and upstream
  * error bodies are never logged or relayed; arbitrary URLs, paths, and models are rejected by
- * construction (no path parameter exists — the route is the whole allowlist).
+ * construction (no path parameter exists — the route is the whole allowlist). The request body is
+ * a STRICT field allowlist: exactly the standard chat-completion fields the image-pinned Pi
+ * (`scripts/runner/pi`: @earendil-works/pi-coding-agent 0.84.2, pi-ai openai-completions) emits,
+ * plus the bounded DeepSeek reasoning fields. Router/credential overrides (`route`, `models`,
+ * `provider`, `api_base`, `api_key`, …) are rejected before any upstream call, `n` is bounded to a
+ * single choice, and every request carries a bounded output budget.
  *
  * Responsibility boundaries:
  * - Client disconnect is detected on the RESPONSE socket (`reply.raw` close before the response
@@ -26,12 +31,130 @@ import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-g
  *   grant service, so `app.close()` cannot wait indefinitely on an open model stream.
  */
 
+/**
+ * Platform ceiling for one completion's output budget, above the image-pinned Pi custom-provider
+ * default of 16,384. Values above it are clamped so an oversized budget need not fail the Turn;
+ * when neither field is supplied, the proxy supplies the standard max_tokens limit itself.
+ */
+export const CLOUD_MODEL_MAX_OUTPUT_TOKENS = 65_536;
+
+/** Chat history for one turn stays far below these bounds; the HTTP body byte cap bounds sizes. */
+const MAX_MESSAGES_PER_REQUEST = 1_024;
+const MAX_CONTENT_PARTS_PER_MESSAGE = 64;
+const MAX_TOOLS_PER_REQUEST = 128;
+const MAX_TOOL_CALLS_PER_MESSAGE = 128;
+
+/** Clamp an output budget to the fixed ceiling; absent stays absent. */
+const outputTokenBudget = z
+  .number()
+  .int()
+  .min(1)
+  .optional()
+  .transform((value) => (value === undefined ? undefined : Math.min(value, CLOUD_MODEL_MAX_OUTPUT_TOKENS)));
+
+const textContentPart = z.object({ type: z.literal("text"), text: z.string() }).strict();
+const imageContentPart = z
+  .object({ type: z.literal("image_url"), image_url: z.object({ url: z.string().min(1) }).strict() })
+  .strict();
+
+const functionToolCall = z
+  .object({
+    id: z.string().min(1).max(256),
+    type: z.literal("function"),
+    function: z.object({ name: z.string().min(1).max(128), arguments: z.string() }).strict(),
+  })
+  .strict();
+
+/**
+ * The exact message shapes the pinned Pi's openai-completions conversion emits (system/user text,
+ * assistant text-or-null with function tool calls and the DeepSeek `reasoning_content` echo, tool
+ * results, and text/image user content parts). `developer` covers the OpenAI reasoning-model role.
+ */
+const chatMessage = z.discriminatedUnion("role", [
+  z.object({ role: z.literal("system"), content: z.string() }).strict(),
+  z.object({ role: z.literal("developer"), content: z.string() }).strict(),
+  z
+    .object({
+      role: z.literal("user"),
+      content: z.union([
+        z.string(),
+        z
+          .array(z.union([textContentPart, imageContentPart]))
+          .min(1)
+          .max(MAX_CONTENT_PARTS_PER_MESSAGE),
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      role: z.literal("assistant"),
+      content: z.string().nullable().optional(),
+      tool_calls: z.array(functionToolCall).min(1).max(MAX_TOOL_CALLS_PER_MESSAGE).optional(),
+      reasoning_content: z.string().optional(),
+    })
+    .strict(),
+  z.object({ role: z.literal("tool"), content: z.string(), tool_call_id: z.string().min(1).max(256) }).strict(),
+]);
+
+const chatTool = z
+  .object({
+    type: z.literal("function"),
+    function: z
+      .object({
+        name: z.string().min(1).max(128),
+        description: z.string().optional(),
+        parameters: z.record(z.string(), z.unknown()).optional(),
+        strict: z.boolean().optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+const chatToolChoice = z.union([
+  z.enum(["none", "auto", "required"]),
+  z
+    .object({
+      type: z.literal("function"),
+      function: z.object({ name: z.string().min(1).max(128) }).strict(),
+    })
+    .strict(),
+]);
+
+/**
+ * Strict request allowlist: exactly the fields the pinned Pi openai-completions path can emit for
+ * the Sandbox's custom provider (model/messages/stream/stream_options/store/max_completion_tokens
+ * or max_tokens/temperature/tools/tool_choice), the standard `top_p`/`n` knobs, and the bounded
+ * DeepSeek reasoning fields (`thinking`, `reasoning_effort`, message-level `reasoning_content`).
+ * Everything else — above all router/credential overrides — is rejected. `n` is bounded to a
+ * single choice: Pi never sets it and `n > 1` would multiply completions on the master key.
+ */
 const ChatCompletionsBodySchema = z
   .object({
     model: z.string().min(1).max(128),
+    messages: z.array(chatMessage).min(1).max(MAX_MESSAGES_PER_REQUEST),
     stream: z.boolean().optional(),
+    stream_options: z.object({ include_usage: z.boolean().optional() }).strict().optional(),
+    store: z.boolean().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    top_p: z.number().min(0).max(1).optional(),
+    max_tokens: outputTokenBudget,
+    max_completion_tokens: outputTokenBudget,
+    n: z.literal(1).optional(),
+    tools: z.array(chatTool).max(MAX_TOOLS_PER_REQUEST).optional(),
+    tool_choice: chatToolChoice.optional(),
+    reasoning_effort: z.string().min(1).max(32).optional(),
+    thinking: z
+      .object({ type: z.enum(["enabled", "disabled"]) })
+      .strict()
+      .optional(),
   })
-  .loose();
+  .strict()
+  .transform((body) => {
+    if (body.max_tokens === undefined && body.max_completion_tokens === undefined) {
+      return { ...body, max_tokens: CLOUD_MODEL_MAX_OUTPUT_TOKENS };
+    }
+    return body;
+  });
 
 const JSON_CONTENT_TYPE = "application/json";
 const SSE_CONTENT_TYPE = "text/event-stream";

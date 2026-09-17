@@ -10,16 +10,17 @@ import {
   type RuntimeImDeliveryContent,
   runtimeFrameByteLength,
 } from "@opentag/shared";
-import { and, asc, eq, isNotNull, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, lte, ne, or } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import {
-  type agents,
+  agents,
   computers,
-  type imBindings,
+  imBindings,
   imMessageDeliveries,
   type imMessages,
   sessionPlacements,
   sessions,
+  users,
 } from "../db/schema/index.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
@@ -100,6 +101,11 @@ export class CloudDeliveryCoordinator {
   /** One claimed Cloud delivery: validate/refresh the dispatch and send it through the owner. */
   async deliver(row: CloudDeliveryClaimRow, claimToken: string, lease: CloudClaimLease, signal: AbortSignal) {
     const deliveryId = row.delivery.id;
+    // Release a stale/expired dispatch FIRST: a dispatched row is outside the janitor's TTL bound,
+    // so this is the only path back to the bounded deadline, and it must not depend on the model
+    // path being configured.
+    if (!(await lease.assertOwned())) return;
+    if (await this.#releaseUnusableDispatch(row, deliveryId, claimToken)) return;
     const prepared = await this.#prepareDispatch(row, claimToken);
     if (prepared.kind !== "continue") return;
     if (await this.#options.hasOtherAgentCustody(row.agent.id, deliveryId)) {
@@ -108,8 +114,6 @@ export class CloudDeliveryCoordinator {
     }
     if (!(await lease.assertOwned())) return;
     try {
-      const released = await this.#releaseUnusableDispatch(row, prepared.persistedRequest, deliveryId, claimToken);
-      if (released) return;
       const built =
         prepared.persistedRequest ?? (await this.#buildFreshDispatch(row, prepared.replyRole, prepared.runtime));
       if (!(await lease.assertOwned())) return;
@@ -183,12 +187,15 @@ export class CloudDeliveryCoordinator {
    * passed. A pending row never held execution permission, so a stale window is released for a
    * fresh attempt rather than faked forward.
    */
-  async #releaseUnusableDispatch(
-    row: CloudDeliveryClaimRow,
-    persistedRequest: DirectImMessageDeliveryRequest | undefined,
-    deliveryId: string,
-    claimToken: string,
-  ): Promise<boolean> {
+  async #releaseUnusableDispatch(row: CloudDeliveryClaimRow, deliveryId: string, claimToken: string): Promise<boolean> {
+    const persisted = readPersistedDeliveryRequest({
+      delivery: row.delivery,
+      message: row.message,
+      session: row.session,
+      agent: row.agent,
+      placementGeneration: row.placement.generation,
+    });
+    const persistedRequest = persisted.status === "valid" ? persisted.request : undefined;
     if (row.delivery.state === "expired") {
       // Same rule as Local: an expired dispatch is released, never executed.
       if (persistedRequest) {
@@ -355,12 +362,15 @@ export class CloudDeliveryCoordinator {
     try {
       const outcome = await this.#options.cloudAllocation?.ensureEnvironmentAllocated({ accountId, sandboxId });
       if (outcome === "restore_required") {
-        // E5 guard: never allocate a blank replacement for previously used storage.
-        await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_RESTORE_REQUIRED", claimToken);
+        // E5 guard: never allocate a blank replacement for previously used storage. This is a
+        // permanent condition for the input, so it terminates explicitly instead of retrying.
+        await this.#options.rejectInput(deliveryId, "restore_required", claimToken);
         return false;
       }
       if (outcome === "stopped") {
-        await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_ENVIRONMENT_STOPPED", claimToken);
+        // The environment is being released; this input can never run on it. Terminal, not a
+        // 2 s retry loop.
+        await this.#options.rejectInput(deliveryId, "environment_stopped", claimToken);
         return false;
       }
       return true;
@@ -371,12 +381,13 @@ export class CloudDeliveryCoordinator {
   }
 
   /**
-   * Bounded reconciliation for Cloud work whose Session already ended (explicit stop, Agent
-   * suspend/delete). Pending inputs can never execute under the ended-Session claim guard, so they
-   * are terminally rejected with an explicit reason instead of becoming invisible pending rows.
-   * Accepted-unreported turns are re-driven through the owner's persisted-allocation recovery
-   * (never a blind replay) on a bounded cadence; a lost socket stays reconcilable and a genuine
-   * result is preserved until the allocation is proven retired/superseded.
+   * Bounded reconciliation for Cloud work whose authority chain is no longer active: the Session
+   * ended, the Agent or binding was deactivated/suspended, or the Account was suspended. Those
+   * rows are outside the normal claim filters, so this pass keeps them from being stranded.
+   * Pending inputs are terminally rejected with an explicit reason; accepted-unreported turns are
+   * re-driven through the owner's persisted-allocation recovery (never a blind replay) on a
+   * bounded cadence — a lost socket stays reconcilable and a genuine outcome is preserved until
+   * the Runner reports or the allocation is proven retired/superseded.
    */
   async reconcileStoppedWork(): Promise<void> {
     const owner = this.#options.cloudDelivery;
@@ -384,7 +395,7 @@ export class CloudDeliveryCoordinator {
     const pending = await this.#stoppedRows("pending");
     for (const row of pending) {
       try {
-        await this.#options.rejectInput(row.id, "session_ended");
+        await this.#options.rejectInput(row.id, row.reason);
       } catch {
         this.#options.onDiagnostic("IM_DELIVERY_CLOUD_STOPPED_REJECT_FAILED");
       }
@@ -411,25 +422,38 @@ export class CloudDeliveryCoordinator {
     if (outcome === "pending") await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_REPORT_PENDING");
   }
 
-  async #stoppedRows(state: "pending" | "accepted"): Promise<{ id: string }[]> {
+  async #stoppedRows(state: "pending" | "accepted"): Promise<{ id: string; reason: string }[]> {
     const rows = await this.#options.database
-      .select({ id: imMessageDeliveries.id })
+      .select({
+        id: imMessageDeliveries.id,
+        ended: isNotNull(sessions.endedAt),
+      })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(users, eq(users.id, agents.createdByUserId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
           eq(imMessageDeliveries.state, state),
           state === "pending" ? isNull(imMessageDeliveries.reason) : isNull(imMessageDeliveries.reportedAt),
-          isNotNull(sessions.endedAt),
           eq(computers.kind, "cloud"),
           lte(imMessageDeliveries.nextAttemptAt, new Date(this.#options.now())),
+          // Every authority filter the normal claim path applies, plus the ones it only checks
+          // later: an inactive chain must still reach bounded reconciliation.
+          or(
+            isNotNull(sessions.endedAt),
+            ne(agents.status, "active"),
+            ne(imBindings.status, "active"),
+            isNotNull(users.suspendedAt),
+          ),
         ),
       )
       .orderBy(asc(imMessageDeliveries.id))
       .limit(STOPPED_CLOUD_RECONCILE_BATCH);
-    return rows;
+    return rows.map((row) => ({ id: row.id, reason: row.ended ? "session_ended" : "authority_stopped" }));
   }
 
   async #throttleStoppedRow(deliveryId: string): Promise<void> {
@@ -460,7 +484,7 @@ export function cloudDispatchWindowExpired(request: DirectImMessageDeliveryReque
 /**
  * The Cloud execution window frozen into one dispatch attempt: the runtime budget of THIS attempt
  * (Agent budget or the platform default), bounded by the supported maximum. Deliberately separate
- * from the ingress `expiresAt`, which is only the Local liveness TTL.
+ * from the ingress `expiresAt`, which bounds Local and undispatched Cloud pending input.
  */
 export function cloudDispatchDeadline(nowMs: number, runtime: EffectiveRuntimeSnapshot): string {
   const requested = runtime.budget?.maxDurationMs;

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
+import { CloudJournal } from "../runner/cloud-journal.js";
 import {
   buildSandboxDeleteArgv,
   buildSandboxExecArgv,
@@ -27,7 +28,10 @@ import { runRunnerWorker, WORKER_STDIN_MAX_BYTES } from "../runner/worker.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(cleanup.splice(0).map((close) => close()));
+});
 
 const BOOTSTRAP_TOKEN = "unit-bootstrap-token-secret";
 /** Fixed welcome Session identity the WSS harness uses; Cloud deliveries must match it. */
@@ -604,12 +608,15 @@ function reportFor(
   return frame ? (frame.report as { outcome?: string }) : undefined;
 }
 
-function modelGrantFor(delivery: ReturnType<typeof cloudDeliveryFixture>) {
+function modelGrantFor(
+  delivery: ReturnType<typeof cloudDeliveryFixture>,
+  token = "unit-execution-token-0123456789abcdef",
+) {
   return {
     baseUrl: "https://server.example.com/api/v1/cloud-model",
     expiresAt: new Date(Date.now() + 600_000).toISOString(),
     model: delivery.runtime.model,
-    token: "unit-execution-token-0123456789abcdef",
+    token,
   };
 }
 
@@ -1291,6 +1298,187 @@ describe("Runner cancellation and connection lifetime", () => {
         await childExited;
       }
       await running.catch(() => undefined);
+    }
+  }, 30_000);
+
+  it("settles the Cloud controller before destroying the sandbox on shutdown", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-shutdown-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    let workerSettled = false;
+    let destroySawSettled: boolean | undefined;
+    let destroyCalls = 0;
+    let markWorkerStarted: () => void = () => undefined;
+    const workerStarted = new Promise<void>((resolve) => {
+      markWorkerStarted = resolve;
+    });
+    const sandboxFactory = () =>
+      ({
+        destroy: async () => {
+          destroyCalls += 1;
+          destroySawSettled = workerSettled;
+        },
+        exec: async () => {
+          throw new Error("unexpected native exec");
+        },
+        launch: async () => undefined,
+        probe: async () => ({ nodeVersion: "v24.19.0", piVersion: "0.84.2", runnerVersion: "1.0.0" }),
+      }) as unknown as NativeSandbox;
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        cloudTurnSeams: {
+          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          runWorker: async (_input, signal) =>
+            new Promise((resolve) => {
+              signal.addEventListener(
+                "abort",
+                () => {
+                  workerSettled = true;
+                  resolve({ code: 143, stderr: "", stdout: "" });
+                },
+                { once: true },
+              );
+              markWorkerStarted();
+            }),
+        },
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory,
+        signal: stop.signal,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    const delivery = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    await wss.waitFor("delivery:received");
+    wss.send({
+      type: "delivery:verified",
+      requestId: delivery.requestId,
+      status: "verified",
+      model: modelGrantFor(delivery),
+    });
+    await workerStarted;
+    stop.abort();
+    expect(await running).toBe(143);
+    // The controller aborted and awaited the live worker before the namespace was destroyed.
+    expect(destroyCalls).toBe(1);
+    expect(destroySawSettled).toBe(true);
+  }, 30_000);
+
+  it("skips a verified frame queued on a connection that closed before its control turn", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-stale-frame-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    let markReadEntered: () => void = () => undefined;
+    const readEntered = new Promise<void>((resolve) => {
+      markReadEntered = resolve;
+    });
+    let releaseRead: () => void = () => undefined;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let readArmed = false;
+    let readConsumed = false;
+    const realRead = CloudJournal.prototype.read;
+    const readSpy = vi.spyOn(CloudJournal.prototype, "read").mockImplementation(async function (
+      this: CloudJournal,
+      deliveryId: string,
+    ) {
+      if (readArmed && !readConsumed) {
+        readConsumed = true;
+        markReadEntered();
+        await readGate;
+      }
+      return realRead.call(this, deliveryId);
+    });
+    const tokens: string[] = [];
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        cloudTurnSeams: {
+          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          runWorker: async (input) => {
+            tokens.push((JSON.parse(input.stdin) as { model: { token: string } }).model.token);
+            return {
+              code: 0,
+              stderr: "",
+              stdout: `${JSON.stringify({
+                kind: "result",
+                completion: { executionEffects: "completed", finalText: "stale", outcome: "completed" },
+              })}\n`,
+            };
+          },
+        },
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory: fakeSandboxFactory(),
+        signal: stop.signal,
+        sleep: async () => undefined,
+        stderr: output.stderr,
+      },
+    );
+    try {
+      await wss.waitFor("runner:ready");
+      const delivery = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+      wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+      await wss.waitFor("delivery:received");
+      // A query handler blocks this connection's control queue inside the real journal read.
+      readArmed = true;
+      wss.send({
+        type: "delivery:query",
+        requestId: "block-1",
+        deliveryId: "blocked-delivery",
+        turnId: "blocked-turn",
+      });
+      await readEntered;
+      // The old connection's verified frame queues behind the blocked handler, then the socket closes.
+      wss.send({
+        type: "delivery:verified",
+        requestId: delivery.requestId,
+        status: "verified",
+        model: modelGrantFor(delivery),
+      });
+      wss.closeSocket();
+      // The runner reconnected, proving the old connection closed and its generation advanced.
+      await waitFor(() => wss.sockets.length >= 2, "replacement connection");
+      await waitFor(() => wss.frames.filter((frame) => frame.type === "runner:ready").length >= 2, "replacement ready");
+      releaseRead();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      // The queued verified frame from the old socket must never have started a worker.
+      expect(tokens).toEqual([]);
+      const reopened = await CloudJournal.open(join(stateDir, "journal"));
+      expect((await reopened.list()).map((entry) => entry.phase)).toEqual(["received"]);
+      // Only a fresh verification on the replacement connection starts it, once and with the new grant.
+      wss.send({
+        type: "delivery:verified",
+        requestId: delivery.requestId,
+        status: "verified",
+        model: modelGrantFor(delivery, "fresh-connection-token-0123456789"),
+      });
+      await waitFor(() => tokens.length === 1, "fresh connection worker");
+      expect(tokens).toEqual(["fresh-connection-token-0123456789"]);
+    } finally {
+      readSpy.mockRestore();
+      stop.abort();
+      expect(await running).toBe(143);
     }
   }, 30_000);
 

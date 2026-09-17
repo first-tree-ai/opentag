@@ -6,6 +6,7 @@ import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCloudJournalScope,
+  CLOUD_JOURNAL_MAX_ENTRIES,
   CloudJournal,
   CloudJournalError,
   type CloudJournalScope,
@@ -245,6 +246,55 @@ describe("CloudJournal", () => {
       turnId: "turn-1",
     });
     expect(await journal.list()).toHaveLength(0);
+  });
+
+  it("enforces the entry cap atomically on write while still allowing retire and idempotent re-dispatch", async () => {
+    const journal = await CloudJournal.open(directory);
+    // Fill to capacity with durable entry-named files; the cap counts entries, not parsed reports.
+    for (let index = 0; index < CLOUD_JOURNAL_MAX_ENTRIES - 1; index += 1) {
+      await writeFile(join(directory, `filler-${index.toString().padStart(4, "0")}.json`), "{}\n");
+    }
+    const delivery = cloudDeliveryFixture();
+    const scope = scopeFor(delivery.sessionId);
+    const recorded = await journal.recordReceived({
+      delivery,
+      scope,
+      deliveryId: delivery.deliveryId,
+      requestId: delivery.requestId,
+      turnId: "turn-1",
+    });
+    // At the cap, the idempotent duplicate still resolves to the original turn.
+    const again = await journal.recordReceived({
+      delivery,
+      scope,
+      deliveryId: delivery.deliveryId,
+      requestId: delivery.requestId,
+      turnId: "turn-2",
+    });
+    expect(again.turnId).toBe(recorded.turnId);
+    // A NEW dispatch is refused before it can exceed capacity.
+    const other = cloudDeliveryFixture();
+    const otherScope = scopeFor(other.sessionId);
+    await expect(
+      journal.recordReceived({
+        delivery: other,
+        scope: otherScope,
+        deliveryId: other.deliveryId,
+        requestId: other.requestId,
+        turnId: "turn-3",
+      }),
+    ).rejects.toMatchObject({ code: "store_failed" });
+    // Retiring a durable entry frees capacity again.
+    await journal.clearRejected(delivery.deliveryId, scope);
+    await expect(
+      journal.recordReceived({
+        delivery: other,
+        scope: otherScope,
+        deliveryId: other.deliveryId,
+        requestId: other.requestId,
+        turnId: "turn-3",
+      }),
+    ).resolves.toMatchObject({ phase: "received" });
   });
 
   it("fails visibly on a corrupt journal file instead of skipping it", async () => {

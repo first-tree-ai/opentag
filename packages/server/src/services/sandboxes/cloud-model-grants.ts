@@ -4,11 +4,22 @@ import { jwtVerify, SignJWT } from "jose";
 import { z } from "zod";
 
 /**
- * Execution-scoped model call permission. A token is minted only when a Cloud delivery's durable
- * custody was persisted (the "verified" boundary), pins the exact turn/sandbox/session/model, and
- * is revoked when the turn reports, when its Runner connection is lost, or when its allocation
- * ends. Revocation also aborts in-flight upstream streams. Tokens are HS256 JWTs under a
- * dedicated audience; the platform model master key never leaves the proxy route.
+ * Execution-scoped model call permission. The delivery owner may prepare a token before custody
+ * commits, but sends it to the Runner only after durable custody and authorization checks (the
+ * "verified" boundary). This service controls signing and revocation, not custody. A mint that
+ * loses a revocation, close or expiry race is never returned. A token pins the exact
+ * turn/sandbox/session/model, and is revoked when
+ * the turn reports, when its Runner connection is lost, or when its allocation ends. Revocation
+ * also aborts in-flight upstream streams. Tokens are HS256 JWTs under a dedicated audience; the
+ * platform model master key never leaves the proxy route.
+ *
+ * Issuance keeps the capacity bound and the per-execution idempotence across concurrent issue()
+ * calls without any lock table: the reservation — which counts against the retained-grant bound
+ * and is keyed by execution — is inserted synchronously before the asynchronous JWT signing
+ * starts. A concurrent mint for a different execution therefore fails closed against the bound,
+ * while a concurrent duplicate for the same execution awaits the one in-flight mint and reuses
+ * its token. A failed mint releases the reservation unless the execution was revoked meanwhile,
+ * so capacity and retry-ability survive signing errors without unbounded state.
  *
  * Lifetime is explicit per turn: the Server passes the dispatch deadline (+ transport allowance)
  * as `expiresAt`, bounded by the supported 24h runtime plus a small allowance. Omitting it keeps
@@ -87,7 +98,10 @@ interface GrantState {
   expiresAtMs: number;
   revoked: boolean;
   inFlight: Set<{ abort(): void }>;
+  /** Disclosed token; empty while the mint is in flight or after it lost a revocation race. */
   token: string;
+  /** In-flight mint for this reservation; undefined once the reservation has settled. */
+  signing: Promise<string | undefined> | undefined;
 }
 
 export class CloudModelGrantService {
@@ -101,6 +115,7 @@ export class CloudModelGrantService {
   readonly #now: () => Date;
   readonly #sweepIntervalMs: number;
   readonly #ttlSeconds: number;
+  #closed = false;
   #sweepTimer: NodeJS.Timeout | undefined;
 
   constructor(
@@ -138,7 +153,7 @@ export class CloudModelGrantService {
     return this.#defaultModel;
   }
 
-  /** Diagnostic retained-state size (live grants plus revocation tombstones awaiting expiry). */
+  /** Diagnostic retained-state size (live grants, in-flight reservations, and revocation tombstones). */
   get trackedGrantCount(): number {
     return this.#grants.size;
   }
@@ -152,13 +167,17 @@ export class CloudModelGrantService {
    * live grant for the same execution is reused (same token) and a conflicting scope/model is
    * refused. A revoked execution is never re-minted unless the caller explicitly requests
    * `supersedeRevoked` after re-validating current custody; an expired execution stays refused.
+   * Concurrent calls are serialized through the reservation itself: the slot is reserved
+   * synchronously before the asynchronous signing, a duplicate for the same execution awaits the
+   * in-flight mint and reuses its token, and the retained-grant bound accounts for in-flight
+   * reservations, so concurrent mints for distinct executions fail closed.
    */
   async issue(input: CloudModelGrantIssueInput): Promise<CloudModelGrantIssue | undefined> {
-    if (!this.#allowedModels.has(input.model)) return undefined;
+    if (this.#closed || !this.#allowedModels.has(input.model)) return undefined;
     const nowMs = this.#now().getTime();
     const existing = this.#checkExistingGrant(input, nowMs);
-    if (existing.kind === "reuse") return existing.issue;
     if (existing.kind === "refuse") return undefined;
+    if (existing.kind === "reuse") return this.#disclose(existing.state);
     // A "rotate" decision keeps the old revoked jti as a tombstone and mints a fresh generation;
     // the by-execution pointer moves to the new jti so revocation of the turn kills both.
     const expiresAtMs = this.#resolveExpiry(input.expiresAt, nowMs);
@@ -174,30 +193,82 @@ export class CloudModelGrantService {
     const issuedAt = Math.floor(nowMs / 1_000);
     const expirationSeconds = Math.floor(expiresAtMs / 1_000);
     if (expirationSeconds <= issuedAt || !this.#reserveCapacity()) return undefined;
-    const token = await new SignJWT(claims.data)
-      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-      .setIssuer(MODEL_GRANT_ISSUER)
-      .setAudience(MODEL_GRANT_AUDIENCE)
-      .setIssuedAt(issuedAt)
-      .setExpirationTime(expirationSeconds)
-      .setJti(claims.data.jti)
-      .sign(this.#key);
-    this.#grants.set(claims.data.jti, {
+    // Reserve the slot synchronously, BEFORE the asynchronous signing starts: the capacity bound
+    // and the per-execution idempotence therefore hold across concurrent issue() calls.
+    const reservation: GrantState = {
       claims: claims.data,
       expiresAtMs,
       inFlight: new Set(),
       revoked: false,
-      token,
-    });
+      signing: undefined,
+      token: "",
+    };
+    this.#grants.set(claims.data.jti, reservation);
     this.#byExecution.set(claims.data.executionId, claims.data.jti);
     this.#ensureSweepTimer();
-    return { claims: claims.data, expiresAt: new Date(expiresAtMs), token };
+    reservation.signing = this.#mint(reservation, issuedAt, expirationSeconds);
+    return this.#disclose(reservation);
+  }
+
+  /**
+   * Disclose one grant to its caller: await any in-flight mint, then re-validate that the
+   * reservation is still tracked, unrevoked, and unexpired. A revocation, close, sweep, or
+   * eviction that raced the mint wins, and the token is never disclosed.
+   */
+  async #disclose(state: GrantState): Promise<CloudModelGrantIssue | undefined> {
+    if (state.signing !== undefined) {
+      const settled = await state.signing;
+      if (settled === undefined) return undefined;
+    }
+    if (this.#grants.get(state.claims.jti) !== state) return undefined;
+    if (state.revoked || state.token.length === 0) return undefined;
+    if (state.expiresAtMs <= this.#now().getTime()) return undefined;
+    return { claims: state.claims, expiresAt: new Date(state.expiresAtMs), token: state.token };
+  }
+
+  /**
+   * Sign one reserved grant and settle the reservation. Signing is the only await between the
+   * capacity reservation and disclosure, so anything that raced it is honoured here: a swept or
+   * evicted reservation discloses nothing, and a revocation or close that landed mid-mint keeps
+   * the reservation as a revoked tombstone whose token is never disclosed. A failed mint removes
+   * the reservation — releasing capacity and keeping the execution reusable — unless it was
+   * revoked meanwhile, in which case the tombstone stays so the turn is never silently re-minted.
+   */
+  async #mint(state: GrantState, issuedAt: number, expirationSeconds: number): Promise<string | undefined> {
+    let token: string | undefined;
+    try {
+      token = await new SignJWT(state.claims)
+        .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+        .setIssuer(MODEL_GRANT_ISSUER)
+        .setAudience(MODEL_GRANT_AUDIENCE)
+        .setIssuedAt(issuedAt)
+        .setExpirationTime(expirationSeconds)
+        .setJti(state.claims.jti)
+        .sign(this.#key);
+    } catch {
+      token = undefined;
+    }
+    state.signing = undefined;
+    // A swept or evicted reservation discloses nothing.
+    if (this.#grants.get(state.claims.jti) !== state) return undefined;
+    if (token === undefined) {
+      if (state.revoked) return undefined;
+      this.#grants.delete(state.claims.jti);
+      if (this.#byExecution.get(state.claims.executionId) === state.claims.jti) {
+        this.#byExecution.delete(state.claims.executionId);
+      }
+      return undefined;
+    }
+    // Revoked or closed while signing: the tombstone stays and the token is never disclosed.
+    if (state.revoked) return undefined;
+    state.token = token;
+    return token;
   }
 
   #checkExistingGrant(
     input: CloudModelGrantIssueInput,
     nowMs: number,
-  ): { kind: "none" } | { kind: "reuse"; issue: CloudModelGrantIssue } | { kind: "rotate" } | { kind: "refuse" } {
+  ): { kind: "none" } | { kind: "reuse"; state: GrantState } | { kind: "rotate" } | { kind: "refuse" } {
     const existingJti = this.#byExecution.get(input.executionId);
     if (existingJti === undefined) return { kind: "none" };
     const existing = this.#grants.get(existingJti);
@@ -219,10 +290,7 @@ export class CloudModelGrantService {
     }
     if (existing.expiresAtMs <= nowMs) return { kind: "refuse" };
     if (!sameScope) return { kind: "refuse" };
-    return {
-      issue: { claims: existing.claims, expiresAt: new Date(existing.expiresAtMs), token: existing.token },
-      kind: "reuse",
-    };
+    return { kind: "reuse", state: existing };
   }
 
   /** Verify signature/audience/expiry/revocation. Returns undefined for any invalid token. */
@@ -251,7 +319,8 @@ export class CloudModelGrantService {
       });
       if (!claims.success || claims.data.jti !== jti) return undefined;
       const state = this.#grants.get(claims.data.jti);
-      if (!state || state.revoked || state.expiresAtMs <= now.getTime()) return undefined;
+      // A grant whose token was never disclosed (mint in flight or lost to a race) never verifies.
+      if (!state || state.revoked || state.token.length === 0 || state.expiresAtMs <= now.getTime()) return undefined;
       if (
         state.claims.executionId !== claims.data.executionId ||
         state.claims.model !== claims.data.model ||
@@ -317,8 +386,9 @@ export class CloudModelGrantService {
     return swept;
   }
 
-  /** Stop the recurring sweep, abort every in-flight stream, and drop all grant state. */
+  /** Stop issuance and the recurring sweep, abort every in-flight stream, and drop all state. */
   close(): void {
+    this.#closed = true;
     if (this.#sweepTimer) {
       clearInterval(this.#sweepTimer);
       this.#sweepTimer = undefined;

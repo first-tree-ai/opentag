@@ -112,7 +112,11 @@ function e4DeliveryRequest(input: {
   };
 }
 
-function e4TurnReport(request: DirectImMessageDeliveryRequest, turnId: string): TurnReportRequest {
+function e4TurnReport(
+  request: DirectImMessageDeliveryRequest,
+  turnId: string,
+  outcome: "completed" | "cancelled" = "completed",
+): TurnReportRequest {
   const base = {
     type: "turn:report" as const,
     requestId: randomUUID(),
@@ -121,9 +125,9 @@ function e4TurnReport(request: DirectImMessageDeliveryRequest, turnId: string): 
     sessionId: request.sessionId,
     agentId: request.agentId,
     placementGeneration: request.placementGeneration,
-    outcome: "completed" as const,
-    executionEffects: "completed" as const,
-    finalText: "done",
+    outcome,
+    executionEffects: outcome === "completed" ? ("completed" as const) : ("not_started" as const),
+    ...(outcome === "completed" ? { finalText: "done" } : { errorReason: "client_shutdown" as const }),
     traceSummary: { lastSequence: 1, droppedEvents: 0 },
   };
   return { ...base, resultHash: computeTurnResultHash(base) };
@@ -729,11 +733,117 @@ describe("runner control channel liveness and credential renewal", () => {
     const { client } = await authenticatedRunner(ctx.address, token);
     await client.waitFor("server:credential");
     // A definitive revocation (the persisted allocation is gone) must take effect on the live
-    // socket at the next renewal instead of silently staying active. A merely ended Session or a
-    // releasing environment keeps the report-capable channel alive for accepted work.
+    // socket at the next renewal instead of silently staying active.
     await unit.database.update(sandboxes).set({ lifecycle: "unallocated" }).where(eq(sandboxes.id, sandbox.sandboxId));
     expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.staleScope);
     expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
+  });
+
+  it("closes an E3 connection with staleScope when the Session ends while the allocation is current", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, {
+      heartbeatIntervalMs: 15_000,
+      credentialRenewalIntervalMs: 120,
+    });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const token = await ctx.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    });
+    const { client } = await authenticatedRunner(ctx.address, token);
+    await client.waitFor("server:credential");
+    // The Session ends while the persisted allocation is still current. A connection that never
+    // negotiated E4 has no report-capable fallback: the next renewal revokes the live socket
+    // instead of keeping it credentialed on the channel-only check.
+    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, sandbox.sessionId));
+    expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.staleScope);
+    expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
+  });
+
+  it("closes an E3 connection with staleScope when the environment starts releasing", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, {
+      heartbeatIntervalMs: 15_000,
+      credentialRenewalIntervalMs: 120,
+    });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const token = await ctx.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    });
+    const { client } = await authenticatedRunner(ctx.address, token);
+    await client.waitFor("server:credential");
+    // A releasing environment keeps the exact allocation identity, but the active authority chain
+    // is gone; without E4 negotiation that is a revocation on the live socket.
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.staleScope);
+    expect(ctx.hub.describe(sandbox.sandboxId).connected).toBe(false);
+  });
+
+  it("closes an E3 connection with staleScope when an acceptance result arrives after the Session ended", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, {
+      heartbeatIntervalMs: 15_000,
+      // Keep the renewal timer out of the way so the result frame is the trigger under test.
+      credentialRenewalIntervalMs: 60_000,
+    });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const token = await ctx.tokens.issue({
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    });
+    const { client } = await authenticatedRunner(ctx.address, token);
+    await client.waitFor("server:credential");
+    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, sandbox.sessionId));
+    client.send({ type: "acceptance:result", requestId: randomUUID(), outcome: "passed" });
+    const outcome = await Promise.race([
+      client.closed.then((closed) => closed.code),
+      new Promise<"open">((resolve) => setTimeout(() => resolve("open"), 2_000)),
+    ]);
+    expect(outcome).toBe(RUNNER_WS_CLOSE.staleScope);
+  });
+
+  it("keeps an E3 connection open when a renewal hits a transient validation error", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const ctx = await createBareRunnerApp(accountId, {
+      heartbeatIntervalMs: 15_000,
+      credentialRenewalIntervalMs: 120,
+    });
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const status = await ctx.service.statusForAccount(accountId, sandbox.sandboxId);
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const token = await ctx.tokens.issue(claims);
+    const { client } = await authenticatedRunner(ctx.address, token);
+    await client.waitFor("server:credential");
+    // A transient database error is not a revocation: the socket survives and the next renewal
+    // tick recovers.
+    const spy = vi
+      .spyOn(ctx.service, "validateRunnerScope")
+      .mockRejectedValueOnce(new Error("unit transient database error"));
+    const renewed = await client.waitForNth("server:credential", 2, 3_000);
+    expect(spy).toHaveBeenCalled();
+    expect(await ctx.tokens.verify(String(renewed.token))).toEqual(claims);
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+    client.socket.close();
+    await client.closed;
   });
 
   it("renews scoped credentials on a cadence while the connection stays current", async () => {
@@ -943,7 +1053,10 @@ describe("account runner HTTP endpoints", () => {
 });
 
 describe("E4 Cloud IM delivery over the runner channel", () => {
-  async function cloudDeliveryStack(_accountId: string, options: { credentialRenewalIntervalMs?: number } = {}) {
+  async function cloudDeliveryStack(
+    _accountId: string,
+    options: { credentialRenewalIntervalMs?: number; heartbeatIntervalMs?: number } = {},
+  ) {
     const context = makeRunnerContext();
     const fence = new CloudRuntimeFence();
     const grants = new CloudModelGrantService(JWT_SECRET, {
@@ -969,6 +1082,7 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
       ...(options.credentialRenewalIntervalMs !== undefined
         ? { credentialRenewalIntervalMs: options.credentialRenewalIntervalMs }
         : {}),
+      ...(options.heartbeatIntervalMs !== undefined ? { heartbeatIntervalMs: options.heartbeatIntervalMs } : {}),
     });
     bareApps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
@@ -1031,6 +1145,163 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
       turnId: randomUUID(),
     });
     expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.protocolError);
+  });
+
+  it("never lets a server heartbeat reach an E4 Runner ahead of its auth:result", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const stack = await cloudDeliveryStack(accountId, { heartbeatIntervalMs: 30 });
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: row?.currentResourceName as string,
+    };
+    const token = await stack.tokens.issue(claims);
+    // Hold the asynchronous fence-authority read while the cadenced heartbeat sweep keeps firing:
+    // a socket visible to the hub before its auth:result would receive a heartbeat pre-auth.
+    let enterAuthority!: () => void;
+    const authorityEntered = new Promise<void>((resolve) => {
+      enterAuthority = resolve;
+    });
+    let releaseAuthority!: () => void;
+    const authorityGate = new Promise<void>((resolve) => {
+      releaseAuthority = resolve;
+    });
+    const original = stack.service.describeScopeAuthority.bind(stack.service);
+    const authoritySpy = vi
+      .spyOn(stack.service, "describeScopeAuthority")
+      .mockImplementation(async (scope: Parameters<typeof original>[0]) => {
+        enterAuthority();
+        await authorityGate;
+        return original(scope);
+      });
+    const heartbeatSpy = vi.spyOn(stack.hub, "heartbeatAll");
+    const client = await connectRunner(stack.address);
+    client.send({ type: "auth", requestId: randomUUID(), token, cloudDeliveryVersion: 1 });
+    await authorityEntered;
+    // The sweep really fires while the fence attach is gated, so the ordering barrier is the only
+    // thing keeping the pre-auth socket silent.
+    await vi.waitFor(() => expect(heartbeatSpy.mock.calls.length).toBeGreaterThanOrEqual(2), {
+      interval: 10,
+      timeout: 2_000,
+    });
+    expect(client.frames).toHaveLength(0);
+    releaseAuthority();
+    const authResult = await client.waitFor("auth:result");
+    expect(authResult.ok).toBe(true);
+    expect(client.frames[0]?.type).toBe("auth:result");
+    expect(client.frames.some((frame) => frame.type === "server:heartbeat")).toBe(false);
+    client.socket.close();
+    await client.closed;
+    authoritySpy.mockRestore();
+    heartbeatSpy.mockRestore();
+  });
+
+  it("keeps a negotiated E4 channel open when the channel-scope check hits a transient error", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const stack = await cloudDeliveryStack(accountId, { credentialRenewalIntervalMs: 120 });
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: row?.currentResourceName as string,
+    };
+    const token = await stack.tokens.issue(claims);
+    const { client } = await authenticatedCloudRunner(stack.address, token);
+    await client.waitFor("server:credential");
+    // The active chain ends; the channel fallback keeps the connection alive for accepted work.
+    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, sandbox.sessionId));
+    // A transient database error on the fallback check is not a definitive miss: the socket must
+    // survive and the next tick must renew against the persisted allocation identity.
+    const spy = vi
+      .spyOn(stack.service, "validateRunnerChannelScope")
+      .mockRejectedValueOnce(new Error("unit transient database error"));
+    const renewed = await client.waitForNth("server:credential", 2, 3_000);
+    expect(spy).toHaveBeenCalled();
+    expect(await stack.tokens.verify(String(renewed.token))).toEqual(claims);
+    expect(client.socket.readyState).toBe(WebSocket.OPEN);
+    client.socket.close();
+    await client.closed;
+  });
+
+  it("binds a credential execution open to the exact connection scope", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const stack = await cloudDeliveryStack(accountId);
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: row?.currentResourceName as string,
+    };
+    const token = await stack.tokens.issue(claims);
+    const { client } = await authenticatedCloudRunner(stack.address, token);
+    const welcome = (await client.waitFor("server:welcome")) as { resourceUid?: string };
+    const [placement] = await unit.database
+      .select()
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, sandbox.sessionId))
+      .limit(1);
+    if (!placement) throw new Error("fixture placement missing");
+    const [binding] = await unit.database.select().from(imBindings).limit(1);
+    if (!binding) throw new Error("fixture binding missing");
+    const delegation = vi.spyOn(stack.owner, "handleCredentialFrame");
+    const openFrame = (
+      requestId: string,
+      overrides: { sessionId?: string; sandboxId?: string; environmentGeneration?: number; omitSandbox?: boolean } = {},
+    ) => ({
+      type: "credential:frame",
+      frame: {
+        type: "runtime:execution:open",
+        requestId,
+        sessionId: overrides.sessionId ?? sandbox.sessionId,
+        agentId: binding.agentId,
+        placementGeneration: placement.generation,
+        runId: randomUUID(),
+        source: { kind: "session-message", messageId: randomUUID() },
+        ...(overrides.omitSandbox
+          ? {}
+          : {
+              sandbox: {
+                sandboxId: overrides.sandboxId ?? sandbox.sandboxId,
+                resourceUid: String(welcome.resourceUid),
+                environmentGeneration: overrides.environmentGeneration ?? 1,
+              },
+            }),
+      },
+    });
+    // The scope-matching open is delegated (this owner has no credential stack: it fails closed).
+    client.send(openFrame(randomUUID()));
+    const pass = (await client.waitFor("credential:frame")) as { frame: { status: string; code?: string } };
+    expect(pass.frame).toMatchObject({ status: "rejected", code: "owner_unavailable" });
+    expect(delegation).toHaveBeenCalledTimes(1);
+    // Every deviation from the authenticated allocation is rejected by the channel itself and
+    // never reaches the credential owner.
+    const deviations = [
+      { sessionId: randomUUID() },
+      { sandboxId: randomUUID() },
+      { environmentGeneration: 2 },
+      { omitSandbox: true as const },
+    ];
+    for (const [index, overrides] of deviations.entries()) {
+      delegation.mockClear();
+      client.send(openFrame(randomUUID(), overrides));
+      const denied = (await client.waitForNth("credential:frame", index + 2)) as {
+        frame: { status: string; code?: string };
+      };
+      expect(denied.frame).toMatchObject({ status: "rejected", code: "sandbox_mismatch" });
+      expect(delegation).not.toHaveBeenCalled();
+    }
+    client.socket.close();
+    await client.closed;
   });
 
   it("fails a Cloud-capable attach transiently until the allocation UID is tracked", async () => {
@@ -1117,99 +1388,113 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.staleScope);
   });
 
-  it("reconnects an ended-Session allocation in report-only mode and records the saved final report", async () => {
-    const accountId = await account();
-    const sandbox = await ownedSandbox(accountId);
-    const stack = await cloudDeliveryStack(accountId);
-    await stack.service.startForAccount(accountId, sandbox.sandboxId);
-    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
-    const claims = {
-      sandboxId: sandbox.sandboxId,
-      sessionId: sandbox.sessionId,
-      environmentGeneration: 1,
-      resourceName: row?.currentResourceName as string,
-    };
-    const token = await stack.tokens.issue(claims);
-    const first = await authenticatedCloudRunner(stack.address, token);
-    await first.client.waitFor("server:welcome");
-    first.client.send(readyFrame(claims.resourceName));
-    await waitForLifecycle(stack.service, accountId, sandbox.sandboxId, "ready");
-
-    const [placement] = await unit.database
-      .select()
-      .from(sessionPlacements)
-      .where(eq(sessionPlacements.sessionId, sandbox.sessionId))
-      .limit(1);
-    if (!placement) throw new Error("fixture placement missing");
-    const { deliveryId, messageId } = await pendingDelivery(sandbox.sessionId, placement.generation);
-    const [binding] = await unit.database.select().from(imBindings).limit(1);
-    if (!binding) throw new Error("fixture binding missing");
-    const request = e4DeliveryRequest({
-      deliveryId,
-      messageId,
-      sessionId: sandbox.sessionId,
-      placementGeneration: placement.generation,
-      agentId: binding.agentId,
-    });
-    await stack.owner.dispatchDelivery({
-      computerId: sandbox.computerId,
-      inputHash: computeDirectInputHash(request),
-      installationId: randomUUID(),
-      request,
-    });
-    const run = (await first.client.waitFor("delivery:run")) as { requestId: string };
-    const turnId = randomUUID();
-    first.client.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
-    await first.client.waitFor("delivery:verified");
-
-    // The Runner disconnected after the effect and the Session ended: the reconnect must still be
-    // able to authenticate against the exact persisted allocation and land the journaled report.
-    first.client.socket.close();
-    await first.client.closed;
-    await vi.waitFor(() => expect(stack.hub.describe(sandbox.sandboxId).connected).toBe(false));
-    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, sandbox.sessionId));
-
-    const { client } = await authenticatedCloudRunner(stack.address, token);
-    await client.waitFor("server:welcome");
-
-    // Report-only never accepts readiness or a new receipt/execution permission.
-    client.send(readyFrame(claims.resourceName));
-    expect((await client.waitFor("error")).code).toBe("RUNNER_SCOPE_REPORT_ONLY");
-    client.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
-    const denied = (await client.waitFor("delivery:verified")) as { status: string; code?: string };
-    expect(denied).toMatchObject({ status: "rejected", code: "scope_inactive" });
-    client.send({
-      type: "credential:frame",
-      frame: {
-        type: "runtime:execution:open",
-        requestId: randomUUID(),
+  it.each(["completed", "cancelled"] as const)(
+    "reconnects an ended-Session allocation in report-only mode and records its %s report",
+    async (outcome) => {
+      const accountId = await account();
+      const sandbox = await ownedSandbox(accountId);
+      const stack = await cloudDeliveryStack(accountId);
+      await stack.service.startForAccount(accountId, sandbox.sandboxId);
+      const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+      const claims = {
+        sandboxId: sandbox.sandboxId,
         sessionId: sandbox.sessionId,
-        agentId: binding.agentId,
-        placementGeneration: placement.generation,
-        runId: randomUUID(),
-        source: { kind: "delivery", deliveryId, turnId },
-        sandbox: {
-          sandboxId: sandbox.sandboxId,
-          resourceUid: row?.currentResourceUid as string,
-          environmentGeneration: 1,
-        },
-      },
-    });
-    const credential = (await client.waitFor("credential:frame")) as { frame: { status: string; code?: string } };
-    expect(credential.frame).toMatchObject({ status: "rejected", code: "execution_authority_denied" });
+        environmentGeneration: 1,
+        resourceName: row?.currentResourceName as string,
+      };
+      const token = await stack.tokens.issue(claims);
+      const first = await authenticatedCloudRunner(stack.address, token);
+      await first.client.waitFor("server:welcome");
+      first.client.send(readyFrame(claims.resourceName));
+      await waitForLifecycle(stack.service, accountId, sandbox.sandboxId, "ready");
 
-    // The saved final report is recorded exactly as if the channel had stayed open.
-    client.send({ type: "delivery:report", requestId: randomUUID(), report: e4TurnReport(request, turnId) });
-    const ack = (await client.waitFor("delivery:report:ack")) as { status: string };
-    expect(ack.status).toBe("recorded");
-    const [recorded] = await unit.database
-      .select()
-      .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.id, deliveryId));
-    expect(recorded?.reportedAt).not.toBeNull();
-    client.socket.close();
-    await client.closed;
-  });
+      const [placement] = await unit.database
+        .select()
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, sandbox.sessionId))
+        .limit(1);
+      if (!placement) throw new Error("fixture placement missing");
+      const { deliveryId, messageId } = await pendingDelivery(sandbox.sessionId, placement.generation);
+      const [binding] = await unit.database.select().from(imBindings).limit(1);
+      if (!binding) throw new Error("fixture binding missing");
+      const request = e4DeliveryRequest({
+        deliveryId,
+        messageId,
+        sessionId: sandbox.sessionId,
+        placementGeneration: placement.generation,
+        agentId: binding.agentId,
+      });
+      await stack.owner.dispatchDelivery({
+        computerId: sandbox.computerId,
+        inputHash: computeDirectInputHash(request),
+        installationId: randomUUID(),
+        request,
+      });
+      const run = (await first.client.waitFor("delivery:run")) as { requestId: string };
+      const turnId = randomUUID();
+      first.client.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
+      await first.client.waitFor("delivery:verified");
+
+      // Custody survives a disconnect, whether the Runner completed or only received the work.
+      // A stopped reconnect must preserve the evidence until its true result is recorded.
+      first.client.socket.close();
+      await first.client.closed;
+      await vi.waitFor(() => expect(stack.hub.describe(sandbox.sandboxId).connected).toBe(false));
+      await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, sandbox.sessionId));
+
+      const { client } = await authenticatedCloudRunner(stack.address, token);
+      await client.waitFor("server:welcome");
+
+      // Accepted received evidence is cancelled, never rejected/cleared as if custody were absent.
+      // Report-only still refuses readiness and any new execution permission.
+      client.send(readyFrame(claims.resourceName));
+      expect((await client.waitFor("error")).code).toBe("RUNNER_SCOPE_REPORT_ONLY");
+      client.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
+      expect(await client.waitFor("delivery:cancel")).toMatchObject({ deliveryId });
+      const freshRequestId = randomUUID();
+      client.send({
+        type: "delivery:received",
+        requestId: freshRequestId,
+        deliveryId: randomUUID(),
+        turnId: randomUUID(),
+      });
+      const denied = (await client.waitFor("delivery:verified")) as { status: string; code?: string };
+      expect(denied).toMatchObject({ requestId: freshRequestId, status: "rejected", code: "scope_inactive" });
+      client.send({
+        type: "credential:frame",
+        frame: {
+          type: "runtime:execution:open",
+          requestId: randomUUID(),
+          sessionId: sandbox.sessionId,
+          agentId: binding.agentId,
+          placementGeneration: placement.generation,
+          runId: randomUUID(),
+          source: { kind: "delivery", deliveryId, turnId },
+          sandbox: {
+            sandboxId: sandbox.sandboxId,
+            resourceUid: row?.currentResourceUid as string,
+            environmentGeneration: 1,
+          },
+        },
+      });
+      const credential = (await client.waitFor("credential:frame")) as { frame: { status: string; code?: string } };
+      expect(credential.frame).toMatchObject({ status: "rejected", code: "execution_authority_denied" });
+
+      // The saved final report is recorded exactly as if the channel had stayed open.
+      const report = e4TurnReport(request, turnId, outcome);
+      client.send({ type: "delivery:report", requestId: randomUUID(), report });
+      const ack = (await client.waitFor("delivery:report:ack")) as { status: string };
+      expect(ack.status).toBe("recorded");
+      const [recorded] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(recorded?.reportedAt).not.toBeNull();
+      expect(recorded?.resultHash).toBe(report.resultHash);
+      client.socket.close();
+      await client.closed;
+    },
+  );
 
   it("rejects a report-only reconnect for a released, superseded, or foreign allocation", async () => {
     const accountId = await account();

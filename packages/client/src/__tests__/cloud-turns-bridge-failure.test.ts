@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudCredentialChannel } from "../runner/cloud-credential-connection.js";
 import { CloudJournal } from "../runner/cloud-journal.js";
 import { CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { cloudRunnerDirectories, defaultRunnerStateDir, runnerStateDirectorySegment } from "../runner/serve.js";
 import { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -147,6 +148,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     sent: RunnerClientFrame[];
     state: ChannelFixture;
     publicDirectory?: string;
+    stateDirectory?: string;
     runWorker: (
       stdin: { stdin: string; timeoutMs: number },
       signal: AbortSignal,
@@ -161,7 +163,7 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
       scope: () => input.scope,
       send: (frame) => input.sent.push(frame),
       serverUrl: "https://server.example.com",
-      stateDirectory,
+      stateDirectory: input.stateDirectory ?? stateDirectory,
     });
   }
 
@@ -258,6 +260,73 @@ describe("CloudTurnRunner default bridge acquisition lifetime", () => {
     // Both scratch trees are gone: no partially published material survives the failure.
     expect(await readdir(stateDirectory)).toEqual([]);
     expect(await readdir(longRoot)).toEqual([]);
+  });
+
+  it("publishes the maximum-valid production bridge path without exceeding the native socket limit", async () => {
+    // Random per-run identities so concurrent independent test processes never share a fixture.
+    const productionName = `ot-p-${randomUUID().replaceAll("-", "")}-zzzzzzzzzzz`;
+    // Maximum length accepted by loadRunnerServeConfig: ^[a-z][a-z0-9-]{0,62}$.
+    const maxName = `a${randomUUID().replaceAll("-", "")}`.padEnd(63, "z");
+    for (const sandboxName of [productionName, maxName]) {
+      const segment = runnerStateDirectorySegment(sandboxName);
+      expect(segment.length).toBeLessThanOrEqual(41);
+      const worstCaseSocket = join(
+        cloudRunnerDirectories(defaultRunnerStateDir(sandboxName, "/tmp")).publicRoot,
+        "turn-XXXXXX",
+        "connect.sock",
+      );
+      expect(Buffer.byteLength(worstCaseSocket, "utf8")).toBeLessThanOrEqual(100);
+      // The previous default exceeded the bridge limit and made every production turn fail.
+      const legacySocket = join(
+        "/tmp",
+        "opentag-runner-state",
+        sandboxName,
+        "bridge-public",
+        "turn-XXXXXX",
+        "connect.sock",
+      );
+      expect(Buffer.byteLength(legacySocket, "utf8")).toBeGreaterThan(100);
+    }
+    // Real publication at the worst valid default path, not just a length calculation.
+    const productionStateDir = defaultRunnerStateDir(maxName, "/tmp");
+    const directories = cloudRunnerDirectories(productionStateDir);
+    await mkdir(productionStateDir, { recursive: true, mode: 0o700 });
+    try {
+      const relayClosed = { count: 0 };
+      const adapterClosed = { count: 0 };
+      vi.spyOn(RuntimeCredentialRelay, "open").mockResolvedValue(fakeRelay(relayClosed) as never);
+      const caPath = join(root, "ca.pem");
+      await writeFile(caPath, "-----BEGIN CERTIFICATE-----fixture-----END CERTIFICATE-----\n");
+      const adapter = await fakeAdapter(root, caPath, adapterClosed);
+      vi.spyOn(RuntimeProxyLoopbackAdapter, "start").mockResolvedValue(adapter.adapter as never);
+      const s = scenario();
+      const runner = makeRunner({
+        publicDirectory: directories.publicRoot,
+        runWorker: async () => ({
+          code: 0,
+          stderr: "",
+          stdout: `${JSON.stringify({
+            kind: "result",
+            completion: { executionEffects: "completed", finalText: "prod-path", outcome: "completed" },
+          })}\n`,
+        }),
+        scope: s.scope,
+        sent: s.sent,
+        state: s.state,
+        stateDirectory: productionStateDir,
+      });
+      await driveToReport(runner, s.delivery, s.sent);
+      expect((reportsOf(s.sent)[0] as { report: { outcome: string } }).report.outcome).toBe("completed");
+      // The real publication created and then cleaned the turn's real Unix sockets under this path.
+      expect(relayClosed.count).toBe(1);
+      expect(adapterClosed.count).toBe(1);
+      expect(s.state.activeListeners()).toBe(0);
+      // Only the persistent public root remains; the turn's sockets and private scratch are gone.
+      expect(await readdir(directories.publicRoot)).toEqual([]);
+      expect(await readdir(productionStateDir)).toEqual(["bridge-public"]);
+    } finally {
+      await rm(productionStateDir, { recursive: true, force: true });
+    }
   });
 
   it("releases every acquired resource exactly once per successful turn and never accumulates", async () => {

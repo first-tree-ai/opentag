@@ -50,13 +50,35 @@ describe("runImDeliveryExpiry", () => {
     expect(await deliveryRow(unit, fresh.deliveryId)).toMatchObject({ state: "pending", reason: null });
   });
 
-  it("keeps an aged pending Cloud delivery and its original input durable through expiry and retention", async () => {
+  it("expires an aged undispatched Cloud delivery and deletes its input after the bounded deadline", async () => {
     const now = new Date();
     const cloud = await seedScope(unit, { kind: "cloud", occurredAt: aged(now), expiresAt: aged(now), ended: true });
 
     await runImDeliveryExpiry(unit.database, janitorOptions(now));
+
+    // Undispatched Cloud input has a bounded deadline: the ingress expiresAt is terminal here.
+    expect(await deliveryRow(unit, cloud.deliveryId)).toMatchObject({ state: "expired", reason: "ttl" });
+
+    await runImDeliveryRetention(unit.database, janitorOptions(now));
+    expect(await deliveryRow(unit, cloud.deliveryId)).toBeUndefined();
+    expect(await messageRow(unit, cloud.messageId)).toBeUndefined();
+  });
+
+  it("keeps an aged DISPATCHED Cloud delivery durable past the ingress deadline", async () => {
+    const now = new Date();
+    const cloud = await seedScope(unit, {
+      kind: "cloud",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      dispatched: true,
+      ended: true,
+    });
+
+    await runImDeliveryExpiry(unit.database, janitorOptions(now));
     await runImDeliveryRetention(unit.database, janitorOptions(now));
 
+    // The frozen dispatch window, not the ingress TTL, owns a dispatched Cloud row; the worker
+    // releases it once that window passed, after which the bounded deadline applies.
     expect(await deliveryRow(unit, cloud.deliveryId)).toMatchObject({ state: "pending", reason: null });
     expect(await messageRow(unit, cloud.messageId)).toBeDefined();
   });
@@ -70,10 +92,10 @@ describe("runImDeliveryExpiry", () => {
     expect(await deliveryRow(unit, unplaced.deliveryId)).toMatchObject({ state: "pending", reason: null });
   });
 
-  it("never lets a durable Cloud backlog starve Local expiry within one batch", async () => {
+  it("never lets a durable dispatched Cloud backlog starve Local expiry within one batch", async () => {
     const now = new Date();
     const older = aged(aged(now));
-    const cloud = await seedScope(unit, { kind: "cloud", occurredAt: older, expiresAt: older });
+    const cloud = await seedScope(unit, { kind: "cloud", occurredAt: older, expiresAt: older, dispatched: true });
     const local = await seedScope(unit, { kind: "local", occurredAt: aged(now), expiresAt: aged(now) });
 
     await runImDeliveryExpiry(unit.database, janitorOptions(now, { expiryBatchSize: 1 }));
@@ -124,9 +146,15 @@ describe("runImDeliveryRetention", () => {
     expect(await messageRow(unit, cloud.messageId)).toBeUndefined();
   });
 
-  it("keeps an aged pending Cloud delivery of an ended Session while sweeping terminal Local rows", async () => {
+  it("keeps an aged dispatched Cloud delivery of an ended Session while sweeping terminal Local rows", async () => {
     const now = new Date();
-    const cloud = await seedScope(unit, { kind: "cloud", occurredAt: aged(now), expiresAt: aged(now), ended: true });
+    const cloud = await seedScope(unit, {
+      kind: "cloud",
+      occurredAt: aged(now),
+      expiresAt: aged(now),
+      dispatched: true,
+      ended: true,
+    });
     const local = await seedScope(unit, {
       kind: "local",
       occurredAt: aged(now),
@@ -169,6 +197,8 @@ interface SeedScopeInput {
   expiresAt: Date;
   ended?: boolean;
   state?: SeedState;
+  /** Pending row already dispatched to a Runner (its frozen window owns it, not the TTL). */
+  dispatched?: boolean;
 }
 
 async function seedScope(unit: UnitDatabase, input: SeedScopeInput) {
@@ -258,6 +288,7 @@ async function seedScope(unit: UnitDatabase, input: SeedScopeInput) {
     occurredAt: input.occurredAt,
   });
   const state = input.state ?? "pending";
+  const dispatchRequestId = input.dispatched && state === "pending" ? randomUUID() : null;
   await unit.database.insert(imMessageDeliveries).values({
     id: deliveryId,
     messageId,
@@ -265,6 +296,13 @@ async function seedScope(unit: UnitDatabase, input: SeedScopeInput) {
     attention: "direct",
     placementGeneration: 1,
     expiresAt: input.expiresAt,
+    ...(dispatchRequestId
+      ? {
+          dispatchRequestId,
+          dispatchInputHash: "dispatch-input-hash",
+          dispatchPayload: { deliveryId, requestId: dispatchRequestId } as never,
+        }
+      : {}),
     ...(state === "accepted-unreported"
       ? {
           state: "accepted" as const,

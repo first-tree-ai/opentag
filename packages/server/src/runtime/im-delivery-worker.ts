@@ -332,10 +332,14 @@ export class ImDeliveryWorker {
                     eq(imMessageDeliveries.state, "pending"),
                     isNull(imMessageDeliveries.reason),
                     lte(imMessageDeliveries.nextAttemptAt, now),
-                    // The ingress TTL is a LOCAL liveness bound. A positive Cloud placement stays
-                    // durably claimable after it passes: Cloud execution lifetime comes from the
-                    // runtime budget (frozen per dispatch attempt), never from this timestamp.
-                    or(sql`${imMessageDeliveries.expiresAt} > now()`, eq(computers.kind, "cloud")),
+                    // The ingress deadline bounds pending input. An UNDISPATCHED Cloud row is not
+                    // claimed past it (the janitor expires it as ttl). A DISPATCHED Cloud row is
+                    // owned by its frozen execution window instead: the worker still claims it to
+                    // release stale dispatches, and the janitor expires it afterwards.
+                    or(
+                      sql`${imMessageDeliveries.expiresAt} > now()`,
+                      and(eq(computers.kind, "cloud"), isNotNull(imMessageDeliveries.dispatchRequestId)),
+                    ),
                   ),
                   and(
                     eq(imMessageDeliveries.state, "expired"),
@@ -363,6 +367,10 @@ export class ImDeliveryWorker {
                       ),
                   ),
                   and(
+                    // Cloud follow-ups never enter the Local steer path: the E4 protocol has no
+                    // steer frame, and selecting them here only to decline would re-select the
+                    // same row every tick and starve every other tenant.
+                    eq(computers.kind, "local"),
                     eq(imMessageDeliveries.state, "pending"),
                     isNull(imMessageDeliveries.dispatchRequestId),
                     isNull(imMessageDeliveries.steerTargetDeliveryId),
@@ -417,6 +425,15 @@ export class ImDeliveryWorker {
           otherCustody.reportOwnerInstanceId !== instanceId ||
           !this.#registry.supportsCapability(row.computerId, instanceId, RUNTIME_CAPABILITY.imSteer)
         ) {
+          // A declined steer must be deferred, not skipped: returning without advancing the row
+          // makes the same earliest row win every tick and block all other tenants' deliveries.
+          await transaction
+            .update(imMessageDeliveries)
+            .set({
+              nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+              lastErrorCode: "IM_DELIVERY_STEER_DEFERRED",
+            })
+            .where(eq(imMessageDeliveries.id, row.id));
           return undefined;
         }
         steerTarget = { id: otherCustody.id, turnId: otherCustody.turnId };
@@ -751,7 +768,9 @@ export class ImDeliveryWorker {
      *   allocations are absorbed by repeated short attempts instead of one long in-operation wait;
      * - no Local admission/queue-age TTL applies (maxQueueAgeMs is unset in production wiring);
      *   the delivery's own expiresAt — set at ingress and protected by the Cloud-aware
-     *   inbox/janitor retention — remains the only pending deadline for durable Cloud inputs.
+     *   inbox/janitor retention — is the bounded deadline for the UNDISPATCHED pending input;
+     *   once a dispatch window is frozen, its runtime-budget deadline (separate from the short
+     *   operationTimeoutMs and ingress TTL) bounds it; accepted-unreported custody is never expired.
      */
     if (row.computer.kind === "cloud") {
       await this.#deliverCloud(row, claimToken, lease, signal);

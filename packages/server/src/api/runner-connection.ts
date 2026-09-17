@@ -8,6 +8,7 @@ import {
   RunnerClientFrameSchema,
   type RunnerReadiness,
   type RunnerServerFrame,
+  type RuntimeCredentialClientFrame,
 } from "@opentag/shared";
 import type { FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
@@ -92,6 +93,24 @@ function claimsFromScope(scope: RunnerScope): RunnerBootstrapClaims {
   };
 }
 
+/**
+ * A credential execution open must target exactly the sending connection's authenticated
+ * allocation: the Session, the Sandbox, and the environment generation it authenticated for. A
+ * Cloud execution is always Sandbox-bound, so a missing sandbox fact never matches.
+ */
+function executionOpenMatchesConnection(
+  connection: CloudConnectionRecord,
+  frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:execution:open" }>,
+): boolean {
+  if (frame.sessionId !== connection.scope.sessionId) return false;
+  const sandbox = frame.sandbox;
+  if (!sandbox) return false;
+  return (
+    sandbox.sandboxId === connection.scope.sandboxId &&
+    sandbox.environmentGeneration === connection.scope.environmentGeneration
+  );
+}
+
 export class RunnerConnection {
   readonly #options: RunnerWebSocketRouteOptions;
   readonly #socket: WebSocket;
@@ -107,6 +126,8 @@ export class RunnerConnection {
   #cloudConnection: CloudConnectionRecord | undefined;
   /** E4 reconnect after the active chain ended: report/query/proxy traffic only. */
   #reportOnly = false;
+  /** Set at attach: only a connection that negotiated E4 may use the channel-scope fallback. */
+  #cloudNegotiated = false;
   #authTimer: ReturnType<typeof setTimeout> | undefined;
   #credentialTimer: ReturnType<typeof setInterval> | undefined;
   #queued = 0;
@@ -259,6 +280,13 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     reportOnly: boolean,
   ): Promise<void> {
+    const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
+    // The asynchronous Cloud fence facts are resolved BEFORE the hub attach: once this socket is
+    // the hub's current entry, the route's cadenced heartbeat sweep can write to it, and no server
+    // frame may ever reach the Runner ahead of its auth:result. Everything between the hub attach
+    // and the auth:result below is synchronous, so the sweep cannot interleave.
+    const fence = cloudNegotiated ? await this.#prepareCloudFenceFacts(validated) : undefined;
+    if (cloudNegotiated && !fence) return; // the prepare step already closed the connection
     // A socket that closed during the asynchronous verification must never disturb the live
     // connection for its scope. No await between this check and the hub mutation, so a socket
     // that closed mid-verification can never evict a healthy Runner or become a ghost entry.
@@ -278,11 +306,17 @@ export class RunnerConnection {
     }
     this.#scope = validated;
     this.#reportOnly = reportOnly;
+    this.#cloudNegotiated = cloudNegotiated;
     if (this.#authTimer) clearTimeout(this.#authTimer);
     this.#authTimer = undefined;
-    const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
-    const cloud = await this.#attachCloudFence(validated, cloudNegotiated);
-    if (!cloud.ok || this.#closed) return;
+    if (fence) {
+      this.#cloudConnection = this.#options.cloudDelivery?.attachConnection({
+        computerId: fence.computerId,
+        installationId: fence.installationId,
+        scope: validated,
+        socket: this.#adapter,
+      });
+    }
     this.#sendAuthResult(true, requestId);
     this.#send({
       type: "server:welcome",
@@ -294,7 +328,7 @@ export class RunnerConnection {
       // Exact legacy E3 welcome shape for a connection that did not opt into E4: no capability
       // echo and no resourceUid are added for it.
       ...(cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
-      ...(cloudNegotiated && cloud.resourceUid ? { resourceUid: cloud.resourceUid } : {}),
+      ...(cloudNegotiated && fence?.resourceUid ? { resourceUid: fence.resourceUid } : {}),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
     });
@@ -310,20 +344,18 @@ export class RunnerConnection {
   }
 
   /**
-   * Attach the exact Cloud fence for a negotiated connection. Returns `ok: false` after the
-   * connection was closed transiently/permanently, or `ok: true` with the verified UID for the
-   * welcome frame (legacy connections carry no UID).
+   * Load and check the Cloud fence facts for a negotiated connection. Returns `undefined` after
+   * the connection was closed transiently/permanently (or already was); the caller then stops
+   * without ever attaching the socket to the hub.
    */
-  async #attachCloudFence(
+  async #prepareCloudFenceFacts(
     validated: RunnerScope,
-    cloudNegotiated: boolean,
-  ): Promise<{ ok: true; resourceUid?: string } | { ok: false }> {
-    if (!cloudNegotiated) return { ok: true };
+  ): Promise<{ computerId: string; installationId: string; resourceUid: string } | undefined> {
     const authority = await this.#describeAuthority(validated);
-    if (this.#closed) return { ok: false };
+    if (this.#closed) return undefined;
     if (!authority) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "runner authority facts are unavailable");
-      return { ok: false };
+      return undefined;
     }
     if (authority.resourceUid === null) {
       // The create caller has not tracked the policy-verified UID yet. Publishing a Cloud welcome
@@ -335,15 +367,13 @@ export class RunnerConnection {
         message: "The Sandbox allocation UID is not tracked yet; retry the attach",
       });
       this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "the Sandbox allocation UID is not tracked yet");
-      return { ok: false };
+      return undefined;
     }
-    this.#cloudConnection = this.#options.cloudDelivery?.attachConnection({
+    return {
       computerId: authority.computerId,
       installationId: authority.installationId,
-      scope: validated,
-      socket: this.#adapter,
-    });
-    return { ok: true, resourceUid: authority.resourceUid };
+      resourceUid: authority.resourceUid,
+    };
   }
 
   async #describeAuthority(
@@ -372,20 +402,39 @@ export class RunnerConnection {
     const current = this.#scope;
     if (!current || this.#closed || !this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
     // Revalidate the database allocation before minting anything; a stale connection must never
-    // receive a fresh credential.
-    const active = await this.#options.service.validateRunnerScope(claimsFromScope(current));
+    // receive a fresh credential. A transient lookup failure is NOT a revocation: the socket is
+    // left alone and a later renewal retries.
+    let active: RunnerScope | undefined;
+    try {
+      active = await this.#options.service.validateRunnerScope(claimsFromScope(current));
+    } catch (error) {
+      this.#request.log.warn({ err: error }, "Runner credential renewal could not validate the scope");
+      return;
+    }
     if (this.#closed) return;
     if (active) {
       await this.#issueRenewedCredential(current, active);
       return;
     }
-    // The active authority chain is gone (Session ended, Agent suspended, binding disabled).
-    // Already accepted work still needs a live channel to deliver its final/cancellation report,
-    // so the channel survives while the exact persisted allocation identity is current. Every NEW
-    // work frame re-checks the active chain before it is handled.
-    const channel = await this.#options.service
-      .validateRunnerChannelScope(claimsFromScope(current))
-      .catch(() => undefined);
+    // The active authority chain is gone (Session ended, Agent suspended, binding disabled). A
+    // connection that never negotiated E4 has no report-capable fallback: a definitive miss is a
+    // revocation and must take effect on the live socket instead of leaving the Runner connected
+    // and credentialed until some later sweep.
+    if (!this.#cloudNegotiated) {
+      this.#closeWith(RUNNER_WS_CLOSE.staleScope, "runner scope is no longer current");
+      return;
+    }
+    // A negotiated E4 connection keeps a report-capable channel while the exact persisted
+    // allocation identity is current, so already accepted work can still deliver its
+    // final/cancellation report. Every NEW work frame re-checks the active chain before it is
+    // handled. A transient lookup failure here is not a revocation either.
+    let channel: RunnerScope | undefined;
+    try {
+      channel = await this.#options.service.validateRunnerChannelScope(claimsFromScope(current));
+    } catch (error) {
+      this.#request.log.warn({ err: error }, "Runner credential renewal could not validate the channel scope");
+      return;
+    }
     if (this.#closed) return;
     if (!channel) {
       // A definitive miss is a revocation (allocation released/superseded): it must take effect on
@@ -496,9 +545,13 @@ export class RunnerConnection {
   }
 
   async #handleResult(current: RunnerScope, frame: RunnerAcceptanceResultFrame): Promise<void> {
-    // An acceptance result resolves work that was already started on this exact channel; it is not
-    // new work, so it uses the report-capable channel check.
-    if (!(await this.#channelHolds(current))) return;
+    // An acceptance result resolves work that was already started on this exact channel. A legacy
+    // E3 connection resolves only against the active authority chain (merge-base semantics: a
+    // definitive miss revokes the live socket); a negotiated E4 connection may also resolve
+    // accepted work against the exact persisted allocation after the active chain ended. A
+    // transient validation failure drops the frame and leaves the socket alone either way.
+    const holds = this.#cloudNegotiated ? await this.#channelHolds(current) : await this.#activeHolds(current);
+    if (!holds) return;
     this.#options.hub.resolveAcceptanceResult(current.sandboxId, frame, this.#adapter);
   }
 
@@ -507,13 +560,11 @@ export class RunnerConnection {
     frame: Extract<RunnerClientFrame, { type: "delivery:received" }>,
   ): Promise<void> {
     if (this.#reportOnly) {
-      // A report-only reconnect must not receive execution permission for a journaled receipt.
-      this.#send({
-        type: "delivery:verified",
-        requestId: frame.requestId,
-        status: "rejected",
-        code: "scope_inactive",
-      });
+      // Existing custody must finish through cancellation/reporting; a blanket rejection would
+      // erase an accepted received entry from the Runner journal and fabricate a lost result.
+      if (!(await this.#channelHolds(current))) return;
+      const cloud = this.#requireCloudContext();
+      if (cloud) await cloud.owner.handleInactiveDeliveryReceived(cloud.connection, frame);
       return;
     }
     if (!(await this.#activeHolds(current))) return;
@@ -559,6 +610,26 @@ export class RunnerConnection {
           requestId: frame.frame.requestId,
           status: "rejected",
           code: "execution_authority_denied",
+        },
+      });
+      return;
+    }
+    if (
+      frame.frame.type === "runtime:execution:open" &&
+      !executionOpenMatchesConnection(cloud.connection, frame.frame)
+    ) {
+      // The open must name exactly this connection's authenticated allocation (Session, Sandbox,
+      // environment generation). The credential module fences the frame against the target
+      // Session's persisted row, not against the SENDING connection, so without this binding a
+      // Runner could open a credential execution for any Session it can name (defense in depth;
+      // delivery sources are additionally covered by custody, session-message sources are not).
+      this.#send({
+        type: "credential:frame",
+        frame: {
+          type: "runtime:execution:result",
+          requestId: frame.frame.requestId,
+          status: "rejected",
+          code: "sandbox_mismatch",
         },
       });
       return;

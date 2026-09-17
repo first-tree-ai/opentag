@@ -85,6 +85,17 @@ unknown，绝不重放；reported 条目持续重发，直到匹配的 durable a
 journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id、不同输入的重投递是可见冲突，
 不会变成第二个 Turn。
 
+默认可信状态目录为 `$TMPDIR/ots/<长度受限的-sandbox-name>`（Runner 镜像内 TMPDIR 为 `/tmp`），
+保证实际公开 Unix socket 路径不超过 100 字节。输入 journal 达到 1,024 条时拒绝新条目，但仍允许
+重复回执与清理已有条目的确认。连接关闭时清除排队的验证授权；持久化的 received 条目必须在新
+连接上重新验证。旧连接中排队的帧不能在重连后授权新执行。
+
+尚未 dispatch 的 Cloud 输入复用已有 ingress TTL 与每 Session 队列容量（direct 100 条、ambient
+500 条），过期或超量会记录明确终态原因。已 dispatch 的 Cloud 输入保留冻结的执行窗口；已接收但
+尚未报告的 custody 不作为 pending 输入清理。restore_required 与已停止的环境明确拒绝输入，
+不无限重试。暂时的模型或 Runner 不可用仍可在输入 deadline 内重试。Cloud 后续消息等待当前
+Turn 结束，不进入 Local steering 路径。
+
 凭证与模型边界：#633 runtime-credential Relay 始终在可信父进程；Sandbox 只拿到只读 public
 材料（CA 证书、每 Turn 代理 socket、不透明 handle、每 Turn provider 环境文件），绝不包含平台
 master key、bootstrap token 或原始 provider 凭证。平台提供的模型访问通过模型代理；授权绑定到执行，
@@ -92,6 +103,13 @@ master key、bootstrap token 或原始 provider 凭证。平台提供的模型�
 （fail-closed，权限按连接隔离）。journal 恢复仍保留真实 Turn 结果且绝不重放 started 工作，但
 暂时的 Server／控制通道中断可能使进行中的模型／工具调用失败。E4 不承诺模型调用不中断，也不
 新增授权续期协议；如产品需要则属于后续工作。
+
+模型代理只接受兼容 Pi 的严格 chat-completions 请求，拒绝路由和凭证覆盖字段，每个请求最多一个
+completion，输出预算上限为 65,536 token。省略两个输出预算字段时，代理补充 `max_tokens: 65536`，
+因此不能通过省略参数绕过限制。这是单次请求限制，不是累计费用配额。
+
+授权登记表的 4,096 条上限用于限制 Server 状态量，并涵盖并发签发；它不是每 Account 执行配额
+或模型费用预算。账号级准入与公平性属于后续资源策略，当前单一 Account 仍可能占满全局上限。
 
 写入边界：E4 依赖的持久记录是 Server 的 IM 投递 custody 与 Turn 报告，以及 Runner 按分配保存的输入
 journal，而不是通用的 provider 写入账本或回执。Turn 期间代理的 provider 写入遵循 #634 规则：每个代理
@@ -107,6 +125,11 @@ Turn（取消、超时、失败或未知）结束时会立即执行与 E3 相同
 重置占用 Sandbox 时，E3 acceptance 不能启动。worker 非零退出即使 stdout 声称 completed，也绝不
 报告为 completed Turn。
 
+恢复时还会检查 Session、Agent、binding 或 Account 是否已停止授权。断线期间丢失 stop 帧时，
+若仍在线的 Runner 报告 received 或 started，Server 会重新发送取消。releasing 本身不代表结果
+已丢失；分配释放期间仍接收真实报告。worker 负责持久化的执行 deadline，父进程 exec 只增加
+5 秒作为清理与报告的兜底时间。
+
 连续性与密钥：Pi 会话状态与持久化 provider binding 位于 Session workspace 的
 .opentag/pi-session 子树，因此同一 Agent Session 在多次 Turn 及原生 rootfs 重置后仍保留 Pi
 binding／历史。模型授权与发布的 provider 环境只存在于每 Turn 的 0600 scratch 文件，Turn 结束即
@@ -117,6 +140,10 @@ binding／历史。模型授权与发布的 provider 环境只存在于每 Turn 
 回显能力与当前 allocation UID，其他连接保持与 E3 完全一致的 welcome 形状。带能力但 UID 尚未
 跟踪的 welcome 按暂时性失败重试。先发布 Server，再发布固定 digest 的 E4 Runner 镜像；新 E4
 Runner 不承诺兼容旧严格 Server，而 E3 Runner 连接新 Server 仍受支持。
+
+E3 的续期与 acceptance 结果仍要求完整有效的授权链。只有已协商 E4 的连接，才可在授权停止后、
+精确分配仍有效时保留结果回传通道，且不能授权新执行。数据库暂时性校验错误不会被当作撤销。
+认证信息在注册到 hub 前读完，防止 heartbeat 先于认证结果到达。
 
 边界：E3 仍是原生执行验收路径。E4 不实现 GCS workspace 恢复（E5）、并发多 Turn 放置（E6）、
 空闲复用／回收（E7）或 Context Tree 同步（E8）。原生 Cloud Run 执行、真实 GCP 验收与真实 IM

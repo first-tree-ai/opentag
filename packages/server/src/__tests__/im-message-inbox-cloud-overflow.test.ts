@@ -25,67 +25,47 @@ beforeEach(async () => {
   await unit.reset();
 });
 
-describe("ImMessageInbox Cloud overflow retention", () => {
-  it("retains every Cloud-placed pending delivery beyond capacity while the Local bucket prunes as before", async () => {
-    const cloud = await inboxFixture("cloud");
-    const local = await inboxFixture("local");
-    const cloudLogger = { error: vi.fn() };
-    const localLogger = { error: vi.fn() };
-    const cloudBeforeOverflowExpiry = vi.fn();
-    const localBeforeOverflowExpiry = vi.fn();
-    const localPassCompleted = deferred<void>();
-    const cloudInbox = new ImMessageInbox(unit.database, {
-      beforeOverflowExpiry: cloudBeforeOverflowExpiry,
-      logger: cloudLogger,
-    });
-    const localInbox = new ImMessageInbox(unit.database, {
-      beforeOverflowExpiry: localBeforeOverflowExpiry,
+describe("ImMessageInbox Cloud overflow capacity", () => {
+  it("bounds undispatched Cloud pending with the Local capacity and never prunes dispatched or accepted custody", async () => {
+    const value = await inboxFixture("cloud");
+    const logger = { error: vi.fn() };
+    const passCompleted = deferred<void>();
+    const beforeOverflowExpiry = vi.fn();
+    const inbox = new ImMessageInbox(unit.database, {
+      beforeOverflowExpiry,
       afterOverflowExpiry: async () => {
-        localPassCompleted.resolve();
+        passCompleted.resolve();
       },
-      logger: localLogger,
+      logger,
     });
 
-    const cloudFirst = await cloudInbox.ingest(cloud.imBindingId, 1, event(cloud, "first", 1));
-    const cloudSession = await onlySession(cloud.imBindingId);
-    await placeSessionOnCloudComputer(cloud.accountId, cloudSession.id);
-    await seedPendingDeliveries(cloud, cloudSession.id, DIRECT_CAPACITY - 1, "cloud-filler");
+    const first = await inbox.ingest(value.imBindingId, 1, event(value, "first", 1));
+    const firstDeliveryId = first.deliveryIds[0];
+    if (!firstDeliveryId) throw new Error("Cloud fixture did not create the first delivery");
+    const session = await onlySession(value.imBindingId);
+    await placeSessionOnCloudComputer(value.accountId, session.id);
+    const fillerIds = await seedPendingDeliveries(value, session.id, DIRECT_CAPACITY - 1, "cloud-filler");
+    // Older than every prunable row: if a dispatched window or accepted custody were counted or
+    // pruned, the oldest-row assertion below would change.
+    const protectedRows = await seedProtectedDeliveries(value, session.id);
 
-    const localFirst = await localInbox.ingest(local.imBindingId, 1, event(local, "first", 1));
-    const localSession = await onlySession(local.imBindingId);
-    await seedPendingDeliveries(local, localSession.id, DIRECT_CAPACITY - 1, "local-filler");
+    await inbox.ingest(value.imBindingId, 1, event(value, "trigger", DIRECT_CAPACITY + 1));
 
-    await cloudInbox.ingest(cloud.imBindingId, 1, event(cloud, "trigger", DIRECT_CAPACITY + 1));
-    await localInbox.ingest(local.imBindingId, 1, event(local, "trigger", DIRECT_CAPACITY + 1));
-
-    // The awaited ingests already queued every scheduled pass; awaiting the completed Local
-    // mutation transaction proves the pass ran before any non-deletion assertion below.
-    await localPassCompleted.promise;
-    expect(localBeforeOverflowExpiry).toHaveBeenCalledTimes(1);
-    expect(await pendingDeliveryCount(localSession.id)).toBe(DIRECT_CAPACITY);
-    const localRows = await unit.database
-      .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
-      .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.sessionId, localSession.id));
-    expect(localRows.filter((row) => row.state === "expired")).toEqual([{ state: "expired", reason: "capacity" }]);
-    const localFirstDeliveryId = localFirst.deliveryIds[0];
-    if (!localFirstDeliveryId) throw new Error("Local fixture did not create the first delivery");
-    expect(await deliveryState(localFirstDeliveryId)).toBe("expired");
-
-    expect(cloudBeforeOverflowExpiry).not.toHaveBeenCalled();
-    expect(await pendingDeliveryCount(cloudSession.id)).toBe(DIRECT_CAPACITY + 1);
-    const cloudFirstDeliveryId = cloudFirst.deliveryIds[0];
-    if (!cloudFirstDeliveryId) throw new Error("Cloud fixture did not create the first delivery");
-    expect(await deliveryState(cloudFirstDeliveryId)).toBe("pending");
-
-    await cloudInbox.ingest(cloud.imBindingId, 1, event(cloud, "next", DIRECT_CAPACITY + 2));
-    expect(cloudBeforeOverflowExpiry).not.toHaveBeenCalled();
-    expect(await pendingDeliveryCount(cloudSession.id)).toBe(DIRECT_CAPACITY + 2);
-    expect(cloudLogger.error).not.toHaveBeenCalled();
-    expect(localLogger.error).not.toHaveBeenCalled();
+    await passCompleted.promise;
+    expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
+    // One over capacity: the oldest prunable row is expired...
+    expect(await deliveryState(firstDeliveryId)).toMatchObject({ state: "expired", reason: "capacity" });
+    expect(await expiredCount(session.id)).toBe(1);
+    // ...the dispatched execution window and accepted custody are untouched...
+    expect(await deliveryState(protectedRows.dispatchedDeliveryId)).toMatchObject({ state: "pending", reason: null });
+    expect(await deliveryState(protectedRows.acceptedDeliveryId)).toMatchObject({ state: "accepted", reason: null });
+    // ...and exactly the capacity bound of undispatched input remains.
+    expect(await undispatchedPendingCount(session.id)).toBe(DIRECT_CAPACITY);
+    expect(fillerIds).toHaveLength(DIRECT_CAPACITY - 1);
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
-  it("keeps a bucket whose placement turns Cloud before the queued overflow pass runs", async () => {
+  it("applies capacity after a bucket turns Cloud before the queued pass runs", async () => {
     const value = await inboxFixture("flip");
     const logger = { error: vi.fn() };
     const passCompleted = deferred<void>();
@@ -101,7 +81,9 @@ describe("ImMessageInbox Cloud overflow retention", () => {
       logger,
     });
 
-    await inbox.ingest(value.imBindingId, 1, event(value, "first", 1));
+    const first = await inbox.ingest(value.imBindingId, 1, event(value, "first", 1));
+    const firstDeliveryId = first.deliveryIds[0];
+    if (!firstDeliveryId) throw new Error("Cloud fixture did not create the first delivery");
     const session = await onlySession(value.imBindingId);
     await seedPendingDeliveries(value, session.id, DIRECT_CAPACITY - 1, "flip-filler");
 
@@ -109,7 +91,10 @@ describe("ImMessageInbox Cloud overflow retention", () => {
 
     await passCompleted.promise;
     expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
-    expect(await pendingDeliveryCount(session.id)).toBe(DIRECT_CAPACITY + 1);
+    // The bucket became Cloud while the pass was queued; undispatched Cloud pending still obeys
+    // the capacity bound, so the delete transaction prunes the oldest row.
+    expect(await deliveryState(firstDeliveryId)).toMatchObject({ state: "expired", reason: "capacity" });
+    expect(await undispatchedPendingCount(session.id)).toBe(DIRECT_CAPACITY);
     expect(logger.error).not.toHaveBeenCalled();
   });
 
@@ -137,7 +122,54 @@ describe("ImMessageInbox Cloud overflow retention", () => {
 
     await passCompleted.promise;
     expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
+    // Unknown placement is conservative: nothing is counted or deleted.
     expect(await pendingDeliveryCount(session.id)).toBe(DIRECT_CAPACITY + 1);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Cloud row that became dispatched before the queued pass deletes it", async () => {
+    const value = await inboxFixture("dispatch-race");
+    const logger = { error: vi.fn() };
+    const passCompleted = deferred<void>();
+    let firstDeliveryId: string | undefined;
+    const beforeOverflowExpiry = vi.fn(async () => {
+      // The oldest prunable row becomes a dispatched execution window between the count and the
+      // delete; the delete must re-evaluate and leave it alone.
+      if (!firstDeliveryId) return;
+      const dispatchRequestId = randomUUID();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          dispatchRequestId,
+          dispatchInputHash: "race-dispatch-hash",
+          dispatchPayload: { deliveryId: firstDeliveryId, requestId: dispatchRequestId } as never,
+        })
+        .where(eq(imMessageDeliveries.id, firstDeliveryId));
+    });
+    const inbox = new ImMessageInbox(unit.database, {
+      beforeOverflowExpiry,
+      afterOverflowExpiry: async () => {
+        passCompleted.resolve();
+      },
+      logger,
+    });
+    const first = await inbox.ingest(value.imBindingId, 1, event(value, "first", 1));
+    firstDeliveryId = first.deliveryIds[0];
+    const session = await onlySession(value.imBindingId);
+    await placeSessionOnCloudComputer(value.accountId, session.id);
+    // One extra filler keeps the bucket over capacity even after the oldest row is dispatched.
+    const fillerIds = await seedPendingDeliveries(value, session.id, DIRECT_CAPACITY, "race-filler");
+    const nextOldestId = fillerIds[0];
+    if (!firstDeliveryId || !nextOldestId) throw new Error("Cloud fixture did not create deliveries");
+
+    await inbox.ingest(value.imBindingId, 1, event(value, "trigger", DIRECT_CAPACITY + 1));
+
+    await passCompleted.promise;
+    expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
+    // The now-dispatched row survives; the next-oldest undispatched row is the one pruned.
+    expect(await deliveryState(firstDeliveryId)).toMatchObject({ state: "pending", reason: null });
+    expect(await deliveryState(nextOldestId)).toMatchObject({ state: "expired", reason: "capacity" });
+    expect(await undispatchedPendingCount(session.id)).toBe(DIRECT_CAPACITY);
     expect(logger.error).not.toHaveBeenCalled();
   });
 });
@@ -235,7 +267,12 @@ async function placeSessionOnCloudComputer(accountId: string, sessionId: string)
     .where(eq(sessionPlacements.sessionId, sessionId));
 }
 
-async function seedPendingDeliveries(scope: InboxScope, sessionId: string, count: number, prefix: string) {
+async function seedPendingDeliveries(
+  scope: InboxScope,
+  sessionId: string,
+  count: number,
+  prefix: string,
+): Promise<string[]> {
   const messages = await unit.database
     .insert(imMessages)
     .values(
@@ -263,23 +300,90 @@ async function seedPendingDeliveries(scope: InboxScope, sessionId: string, count
       })),
     )
     .returning({ id: imMessages.id });
-  await unit.database.insert(imMessageDeliveries).values(
-    messages.map((message) => ({
-      messageId: message.id,
+  const deliveries = await unit.database
+    .insert(imMessageDeliveries)
+    .values(
+      messages.map((message) => ({
+        messageId: message.id,
+        sessionId,
+        attention: "direct" as const,
+        placementGeneration: 1,
+        expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      })),
+    )
+    .returning({ id: imMessageDeliveries.id });
+  return deliveries.map((delivery) => delivery.id);
+}
+
+/** Oldest possible rows: one dispatched execution window and one accepted-unreported custody. */
+async function seedProtectedDeliveries(scope: InboxScope, sessionId: string) {
+  const messages = await unit.database
+    .insert(imMessages)
+    .values(
+      ["dispatched", "accepted"].map((kind) => ({
+        imBindingId: scope.imBindingId,
+        providerEventId: `protected-${kind}-${randomUUID()}`,
+        channelId: scope.channelId,
+        externalMessageId: `protected-${kind}-message`,
+        providerRevisionKey: "1",
+        operation: "created" as const,
+        direction: "inbound" as const,
+        providerContext: { provider: "slack" as const, channelType: "channel" as const },
+        threadKey: null,
+        replyToExternalId: null,
+        authorKind: "human" as const,
+        authorExternalId: "U_HUMAN",
+        authorDisplayName: "Human",
+        content: {
+          version: 1 as const,
+          fallbackText: "protected",
+          blocks: [{ type: "text" as const, text: "protected" }],
+          truncated: false,
+        },
+        // Older than every prunable filler row.
+        occurredAt: new Date(fixedNow.getTime()),
+      })),
+    )
+    .returning({ id: imMessages.id });
+  const dispatchRequestId = randomUUID();
+  const [dispatched] = await unit.database
+    .insert(imMessageDeliveries)
+    .values({
+      messageId: messages[0]?.id as string,
       sessionId,
-      attention: "direct" as const,
+      attention: "direct",
       placementGeneration: 1,
       expiresAt: new Date("2026-08-26T00:00:00.000Z"),
-    })),
-  );
+      dispatchRequestId,
+      dispatchInputHash: "protected-dispatch-hash",
+      dispatchPayload: { requestId: dispatchRequestId } as never,
+    })
+    .returning({ id: imMessageDeliveries.id });
+  const [accepted] = await unit.database
+    .insert(imMessageDeliveries)
+    .values({
+      messageId: messages[1]?.id as string,
+      sessionId,
+      attention: "direct",
+      placementGeneration: 1,
+      expiresAt: new Date("2026-08-26T00:00:00.000Z"),
+      state: "accepted",
+      inputHash: "protected-input-hash",
+      turnId: "protected-turn",
+      reportOwnerInstanceId: randomUUID(),
+      acceptedAt: fixedNow,
+    })
+    .returning({ id: imMessageDeliveries.id });
+  if (!dispatched || !accepted) throw new Error("Protected fixture rows were not created");
+  return { dispatchedDeliveryId: dispatched.id, acceptedDeliveryId: accepted.id };
 }
 
 async function deliveryState(deliveryId: string) {
   const [row] = await unit.database
-    .select({ state: imMessageDeliveries.state })
+    .select({ state: imMessageDeliveries.state, reason: imMessageDeliveries.reason })
     .from(imMessageDeliveries)
     .where(eq(imMessageDeliveries.id, deliveryId));
-  return row?.state;
+  return row;
 }
 
 async function pendingDeliveryCount(sessionId: string) {
@@ -292,6 +396,36 @@ async function pendingDeliveryCount(sessionId: string) {
         eq(imMessageDeliveries.attention, "direct"),
         eq(imMessageDeliveries.state, "pending"),
         isNull(imMessageDeliveries.reason),
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+async function undispatchedPendingCount(sessionId: string) {
+  const [row] = await unit.database
+    .select({ count: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, sessionId),
+        eq(imMessageDeliveries.attention, "direct"),
+        eq(imMessageDeliveries.state, "pending"),
+        isNull(imMessageDeliveries.reason),
+        isNull(imMessageDeliveries.dispatchRequestId),
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+async function expiredCount(sessionId: string) {
+  const [row] = await unit.database
+    .select({ count: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, sessionId),
+        eq(imMessageDeliveries.state, "expired"),
+        eq(imMessageDeliveries.reason, "capacity"),
       ),
     );
   return row?.count ?? 0;

@@ -1,4 +1,4 @@
-import { randomInt, randomUUID } from "node:crypto";
+import { createHash, randomInt, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
@@ -129,7 +129,7 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     bootstrapToken: token,
     sandboxName,
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
-    stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? join(tmpdir(), "opentag-runner-state", sandboxName),
+    stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? defaultRunnerStateDir(sandboxName),
     ...(healthPort !== undefined ? { healthPort } : {}),
   };
 }
@@ -165,6 +165,32 @@ export function cloudRunnerDirectories(stateDir: string): {
     privateTurnRoot: join(stateDir, "turn-material"),
     publicRoot: join(stateDir, "bridge-public"),
   };
+}
+
+/**
+ * Longest per-Sandbox state directory segment. Long names keep the first 32 characters plus a
+ * `-<8 hex digest>` suffix (41 characters), so the published public Unix socket stays under the
+ * bridge's 100-byte limit even for the 63-character maximum valid Sandbox name.
+ */
+const RUNNER_STATE_SEGMENT_MAX = 32;
+
+/**
+ * Per-Sandbox state directory segment. Bounded so the published public Unix socket path stays
+ * under the bridge's 100-byte limit for any accepted Sandbox name, while the deterministic hash
+ * keeps one distinct durable journal/private root per Sandbox.
+ */
+export function runnerStateDirectorySegment(sandboxName: string): string {
+  if (sandboxName.length <= RUNNER_STATE_SEGMENT_MAX) return sandboxName;
+  const digest = createHash("sha256").update(sandboxName).digest("hex").slice(0, 8);
+  return `${sandboxName.slice(0, RUNNER_STATE_SEGMENT_MAX)}-${digest}`;
+}
+
+/**
+ * Default trusted Runner state root. `temporaryRoot` is injectable so tests can compute the exact
+ * production path length; production always uses the platform temp root.
+ */
+export function defaultRunnerStateDir(sandboxName: string, temporaryRoot: string = tmpdir()): string {
+  return join(temporaryRoot, "ots", runnerStateDirectorySegment(sandboxName));
 }
 
 interface WorkState {
@@ -334,11 +360,13 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     if (error instanceof NativeSandboxError && error.code === "unavailable") launchAttempted = false;
     result = startupExitCode(error);
   } finally {
+    // Settle the Cloud controller (abort + await the active worker) BEFORE destroying the native
+    // sandbox, so a live in-sandbox execution is never left behind a deleted namespace.
+    await turns.close().catch(() => undefined);
     // The probe listener and process handlers are released even when sandbox cleanup throws.
     try {
       if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
     } finally {
-      await turns.close().catch(() => undefined);
       await health?.close();
       removeSignals();
     }
@@ -387,19 +415,30 @@ async function serveOnce(
         return;
       }
       controlPending += 1;
-      controlTail = controlTail.then(operation).then(
-        () => {
-          controlPending -= 1;
-        },
-        (error: unknown) => {
-          controlPending -= 1;
-          logLine(
-            options.stderr,
-            `cloud delivery ${label} failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-          finish();
-        },
-      );
+      // The invocation gate is re-checked when this queued operation reaches the head: a frame
+      // accepted from a connection that has since closed must not run its handler (an old
+      // verified grant would otherwise be handled after the channel generation moved on).
+      controlTail = controlTail
+        .then(async () => {
+          if (closed) {
+            logLine(options.stderr, `skipping cloud ${label} queued on a closed connection`);
+            return;
+          }
+          await operation();
+        })
+        .then(
+          () => {
+            controlPending -= 1;
+          },
+          (error: unknown) => {
+            controlPending -= 1;
+            logLine(
+              options.stderr,
+              `cloud delivery ${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            finish();
+          },
+        );
     };
     // A durable-boundary failure (journal/report store) is never swallowed: the frame that failed
     // is visible in the log and the connection cycles so durable reconciliation runs again.

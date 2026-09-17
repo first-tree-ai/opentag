@@ -275,20 +275,95 @@ export class CloudDeliveryOwner {
       return;
     }
     const { request } = scopeCheck;
-    const inputHash = computeDirectInputHash(request);
-    const custody = await this.#custody.acceptDelivery(request, inputHash, frame.turnId, this.#context(connection));
-    if (custody !== "accepted" && custody !== "already_accepted") {
-      this.#sendVerified(connection, frame.requestId, "rejected", custody);
+    const custodyRef = { deliveryId: frame.deliveryId, turnId: frame.turnId };
+    const receipt = await this.#classifyReceipt(connection, custodyRef, request);
+    if (receipt.kind === "gone") return;
+    if (receipt.kind === "completed") {
+      // Completed custody: its durable result already exists. Never mint or rotate a permission
+      // for it; the stale received evidence is answered with a rejection that cannot erase a
+      // reported outcome.
+      this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_unknown");
       return;
     }
-    // Revalidate the FULL current authorization immediately around the async mint: exact
-    // connection, current allocation, active Session/Agent chain, and unfinished custody. Only
-    // then may an accepted turn whose permission was revoked by a lost connection rotate it.
+    if (receipt.kind === "expired") {
+      // No permission can cover a window that already passed: settle the received entry through
+      // the existing cancellation/report flow (truthful not_started) instead of a silent retry.
+      await this.#cancelExpiredReceipt(connection, frame, custodyRef, request);
+      return;
+    }
+    await this.#acceptAndVerifyReceipt(connection, frame, custodyRef, request, receipt.kind === "already_accepted");
+  }
+
+  /**
+   * A `delivery:received` on an INACTIVE (report-only) reconnect: the exact current connection may
+   * still settle work it already received, but it can never be granted new execution.
+   * - exact accepted-unfinished custody on the exact live or releasing allocation: reuse the
+   *   explicit-stop `delivery:cancel`, so the Runner reports `not_started` (or its true outcome)
+   *   through the durable report path instead of the Client clearing its `received` evidence and
+   *   recovery later settling a fictitious `unknown`;
+   * - completed custody: reject, its durable result must never be used as a new execution;
+   * - fresh/unaccepted receipt, or a superseded/unallocated scope: reject and stop.
+   * Persisted reads plus synchronous sends only: never `recoverAccepted`, whose Runner query would
+   * deadlock behind the serialized frame handler that calls this.
+   */
+  async handleInactiveDeliveryReceived(
+    connection: CloudConnectionRecord,
+    frame: { deliveryId: string; requestId: string; turnId: string },
+  ): Promise<void> {
+    if (!this.#isExactConnection(connection)) return;
+    if (!(await this.#loadCurrentAllocation(connection, { allowReleasing: true }))) {
+      this.#sendVerified(connection, frame.requestId, "rejected", "stale_generation");
+      return;
+    }
     const custodyRef = { deliveryId: frame.deliveryId, turnId: frame.turnId };
-    if (!(await this.#canAuthorizeExecution(connection, custodyRef))) return;
+    if (await this.#isAcceptedUnfinished(connection, custodyRef)) {
+      if (this.#isExactConnection(connection)) this.#sendCancellation(connection, frame.deliveryId);
+      return;
+    }
+    if (await this.#isAcceptedReported(connection, custodyRef)) {
+      this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_unknown");
+      return;
+    }
+    this.#sendVerified(connection, frame.requestId, "rejected", "scope_inactive");
+  }
+
+  /**
+   * Mint BEFORE durable custody (the Runner receives the token only in `delivery:verified`,
+   * which follows the custody commit) and verify exactly once. A mint failure for an accepted
+   * replay keeps the received evidence; any other mint failure leaves the input retryable. A
+   * preminted permission is revoked if the custody transition fails or throws.
+   */
+  async #acceptAndVerifyReceipt(
+    connection: CloudConnectionRecord,
+    frame: { deliveryId: string; requestId: string; turnId: string },
+    custodyRef: { deliveryId: string; turnId: string },
+    request: DirectImMessageDeliveryRequest,
+    alreadyAccepted: boolean,
+  ): Promise<void> {
+    if (!(await this.#canAuthorizeReceipt(connection))) return;
     const grant = await this.#mintModelGrant(connection, frame.turnId, request, { supersedeRevoked: true });
     if (!grant) {
+      if (alreadyAccepted) return;
+      // The mint await can overlap a concurrent duplicate receipt that accepted this same turn:
+      // re-read custody before answering, because a stale rejection would erase the Runner's
+      // durable `received` evidence for accepted work.
+      if (await this.#isAcceptedUnfinished(connection, custodyRef)) return;
       this.#sendVerified(connection, frame.requestId, "rejected", "model_unavailable");
+      return;
+    }
+    const inputHash = computeDirectInputHash(request);
+    let custody: Awaited<ReturnType<RuntimeCustodyStore["acceptDelivery"]>>;
+    try {
+      custody = await this.#custody.acceptDelivery(request, inputHash, frame.turnId, this.#context(connection));
+    } catch (error) {
+      // A thrown custody transition must not leak the preminted permission.
+      this.#revokeIfOwned(frame.turnId, connection.connectionId);
+      throw error;
+    }
+    if (custody !== "accepted" && custody !== "already_accepted") {
+      // The minted permission belongs to a custody transition that did not happen: drop it.
+      this.#revokeIfOwned(frame.turnId, connection.connectionId);
+      this.#sendVerified(connection, frame.requestId, "rejected", custody);
       return;
     }
     // The exact socket is frozen with the connection record: a replacement connection that owns
@@ -303,6 +378,59 @@ export class CloudDeliveryOwner {
     if (!this.#sendToConnection(connection, frameWithGrant)) {
       this.#revokeIfOwned(frame.turnId, connection.connectionId);
     }
+  }
+
+  /**
+   * Classify one receipt against the current persisted custody BEFORE any mint: a replay of
+   * accepted-unfinished custody (`already_accepted`), completed custody that must never rotate,
+   * an expired window that can only settle through cancellation, a fresh pending input, or a
+   * connection that was replaced while reading.
+   */
+  async #classifyReceipt(
+    connection: CloudConnectionRecord,
+    custodyRef: { deliveryId: string; turnId: string },
+    request: DirectImMessageDeliveryRequest,
+  ): Promise<{ kind: "gone" | "completed" | "expired" | "already_accepted" | "fresh" }> {
+    const alreadyAccepted = await this.#isAcceptedUnfinished(connection, custodyRef);
+    if (!this.#isExactConnection(connection)) return { kind: "gone" };
+    if (await this.#isAcceptedReported(connection, custodyRef)) return { kind: "completed" };
+    if (requestWindowExpired(request)) return { kind: "expired" };
+    return alreadyAccepted ? { kind: "already_accepted" } : { kind: "fresh" };
+  }
+
+  /**
+   * A receipt whose frozen execution window already passed can never receive a permission. Record
+   * durable custody (so the Runner's terminal report is recordable), then settle the received
+   * journal entry through the same cancellation flow an explicit stop uses: the Runner reports
+   * `not_started`/`cancelled` and the durable report path records it truthfully, instead of a
+   * silent pending row or an `unknown` settlement.
+   */
+  async #cancelExpiredReceipt(
+    connection: CloudConnectionRecord,
+    frame: { deliveryId: string; requestId: string; turnId: string },
+    custodyRef: { deliveryId: string; turnId: string },
+    request: DirectImMessageDeliveryRequest,
+  ): Promise<void> {
+    const inputHash = computeDirectInputHash(request);
+    const custody = await this.#custody.acceptDelivery(request, inputHash, frame.turnId, this.#context(connection));
+    if (custody !== "accepted" && custody !== "already_accepted") {
+      this.#sendVerified(connection, frame.requestId, "rejected", custody);
+      return;
+    }
+    // Exact connection/allocation/unfinished custody, without requiring the active chain: an
+    // explicit stop or a stopped authority still settles its already accepted turn truthfully.
+    if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return;
+    if (!(await this.#isAcceptedUnfinished(connection, custodyRef))) return;
+    this.#sendCancellation(connection, frame.deliveryId);
+  }
+
+  /** The explicit-stop cancellation frame for one delivery on the exact owning connection. */
+  #sendCancellation(connection: CloudConnectionRecord, deliveryId: string): boolean {
+    return this.#sendToConnection(connection, {
+      type: "delivery:cancel",
+      deliveryId,
+      requestId: randomUUID(),
+    });
   }
 
   async #mintModelGrant(
@@ -568,15 +696,26 @@ export class CloudDeliveryOwner {
       // A superseded allocation can never report the accepted turn again.
       return { kind: "settle" };
     }
-    if (sandbox.lifecycle === "releasing" || sandbox.lifecycle === "unallocated") {
-      // Explicit durable stop state: the allocation is retired (or being retired) and no Runner
-      // will ever report this turn; settle once so it cannot stay invisibly pending forever.
+    if (sandbox.lifecycle === "unallocated") {
+      // The release completed: the resource reference is gone, so no report can ever arrive.
       return { kind: "settle" };
     }
+    // `preparing`/`ready`/`releasing` all stay recoverable. Releasing is not proof the allocation
+    // is destroyed: reports are still accepted while the Runner drains, and the row settles only
+    // once the release actually completes (or the allocation is superseded).
     return { kind: "live", sandboxId: sandbox.id };
   }
 
-  /** Ask the exact owning Runner about its durable journal and act on the answer. */
+  /**
+   * Ask the exact owning Runner about its durable journal and act on the answer.
+   * - `reported`: the Runner replays its journaled report through the normal durable path.
+   * - `received`/`started` under a live authority AND an active allocation: re-verify (never
+   *   started) or wait (started) with the real outcome preserved.
+   * - `received`/`started` under a stopped authority OR a retiring allocation: resend the SAME
+   *   `delivery:cancel` an explicit stop uses. The Runner aborts/settles and reports its TRUE
+   *   outcome; the Server never fabricates unknown for a turn the Runner can still describe.
+   * - `none`: the current Runner's journal has no record, an explicit crash-unknown.
+   */
   async #recoverLive(
     record: CloudConnectionRecord,
     delivery: typeof imMessageDeliveries.$inferSelect,
@@ -586,47 +725,31 @@ export class CloudDeliveryOwner {
       turnId: delivery.turnId as string,
     });
     if (!answer || answer === "reported") return "pending";
-    if (answer === "received") {
-      await this.#recoverReceivedEntry(record, delivery);
-      return "pending";
-    }
-    // "started" is the LIVE phase of a turn the current Runner still executes: it must stay
-    // pending and wait for the real report. "none" means the current Runner's durable journal has
-    // no record of this turn, so no execution was ever authorized from it: an explicit
-    // crash-unknown, not a missing socket.
-    if (answer === "started") return "pending";
-    return this.#settleUnknown(delivery.id);
-  }
+    if (answer === "none") return this.#settleUnknown(delivery.id);
 
-  /**
-   * A never-started journal entry. While the active authority chain is alive, re-verify with a
-   * fresh rotated permission (the reconnect path). Once the chain is definitively stopped, the
-   * exact current Runner is asked to settle the entry through the SAME `delivery:cancel` path an
-   * explicit stop uses, so a receipt that committed after the stop selection still produces a
-   * truthful `not_started` cancellation instead of looping on a reverify that can never authorize.
-   * Started/reported entries are never cancelled here: they may hold a real outcome.
-   */
-  async #recoverReceivedEntry(
-    record: CloudConnectionRecord,
-    delivery: typeof imMessageDeliveries.$inferSelect,
-  ): Promise<void> {
-    const deliveryRef = { deliveryId: delivery.id, turnId: delivery.turnId as string };
     // Re-check after the query await: a replaced connection, superseded allocation, or terminal
     // report must never turn into a cancellation of another resource's work.
-    if (!this.#isExactConnection(record) || !(await this.#isExactAllocation(record))) return;
-    if (!(await this.#isAcceptedUnfinished(record, deliveryRef))) return;
-    if (await this.#loadActiveAuthority(record)) {
-      await this.#reverifyReceived(record, delivery);
-      return;
+    const deliveryRef = { deliveryId: delivery.id, turnId: delivery.turnId as string };
+    if (!this.#isExactConnection(record)) return "pending";
+    const lifecycle = await this.#currentAllocationLifecycle(record);
+    if (!lifecycle || !(await this.#isAcceptedUnfinished(record, deliveryRef))) return "pending";
+    if (lifecycle === "active" && (await this.#loadActiveAuthority(record))) {
+      if (answer === "received") await this.#reverifyReceived(record, delivery);
+      return "pending";
     }
-    // Persisted stopped authority + a never-started entry: reuse the explicit-stop cancellation
-    // to the authenticated current Runner; its `not_started` report lands through the normal
-    // durable report path. A disconnected/replaced socket is left pending, never settled here.
-    this.#sendToConnection(record, {
-      type: "delivery:cancel",
-      deliveryId: delivery.id,
-      requestId: randomUUID(),
-    });
+    // Stopped authority or retiring allocation: reuse the explicit-stop cancellation so the
+    // authenticated current Runner settles the turn truthfully (its report lands through the
+    // normal durable report path). Started work is never discarded as unknown here; a
+    // disconnected/replaced socket simply stays pending.
+    this.#sendCancellation(record, delivery.id);
+    return "pending";
+  }
+
+  /** Exact current allocation lifecycle: preparing/ready is `active`, releasing is `retiring`. */
+  async #currentAllocationLifecycle(connection: CloudConnectionRecord): Promise<"active" | "retiring" | undefined> {
+    const sandbox = await this.#loadCurrentAllocation(connection, { allowReleasing: true });
+    if (!sandbox) return undefined;
+    return sandbox.lifecycle === "releasing" ? "retiring" : "active";
   }
 
   async #settleUnknown(deliveryId: string): Promise<"resolved" | "noop"> {
@@ -655,6 +778,12 @@ export class CloudDeliveryOwner {
     if (!parsed.success || !delivery.dispatchRequestId) return;
     const custodyRef = { deliveryId: delivery.id, turnId: delivery.turnId as string };
     if (!(await this.#canAuthorizeExecution(connection, custodyRef))) return;
+    if (requestWindowExpired(parsed.data)) {
+      // The frozen window passed while this received entry waited: no permission can be minted,
+      // so settle it through the truthful cancellation/report flow instead of retrying forever.
+      this.#sendCancellation(connection, delivery.id);
+      return;
+    }
     const grant = await this.#mintModelGrant(connection, custodyRef.turnId, parsed.data, { supersedeRevoked: true });
     if (!grant) return;
     if (!(await this.#canAuthorizeExecution(connection, custodyRef))) {
@@ -877,9 +1006,14 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     delivery: { deliveryId: string; turnId: string },
   ): Promise<boolean> {
-    if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return false;
-    if (!(await this.#loadActiveAuthority(connection))) return false;
+    if (!(await this.#canAuthorizeReceipt(connection))) return false;
     return this.#isAcceptedUnfinished(connection, delivery);
+  }
+
+  /** Exact connection + current allocation + live authority chain, before any custody transition. */
+  async #canAuthorizeReceipt(connection: CloudConnectionRecord): Promise<boolean> {
+    if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return false;
+    return Boolean(await this.#loadActiveAuthority(connection));
   }
 
   /**
@@ -901,6 +1035,30 @@ export class CloudDeliveryOwner {
       return undefined;
     }
     return owned;
+  }
+
+  /** Completed accepted custody for this exact turn: its durable result exists, never mint for it. */
+  async #isAcceptedReported(
+    connection: CloudConnectionRecord,
+    delivery: { deliveryId: string; turnId: string },
+  ): Promise<boolean> {
+    const [row] = await this.#database
+      .select({
+        state: imMessageDeliveries.state,
+        turnId: imMessageDeliveries.turnId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
+      })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, delivery.deliveryId))
+      .limit(1);
+    return Boolean(
+      row &&
+        row.state === "accepted" &&
+        row.turnId === delivery.turnId &&
+        row.reportedAt !== null &&
+        row.reportOwnerInstanceId === connection.instanceId,
+    );
   }
 
   /** The delivery is still accepted, unreported, and owned by this exact allocation instance. */
@@ -987,6 +1145,13 @@ export class CloudDeliveryOwner {
 
 /** The exact wire frame shape the delivery:verified sender may produce. */
 type RuntimeServerVerifiedFrame = Extract<Parameters<RunnerHub["sendToCurrent"]>[2], { type: "delivery:verified" }>;
+
+/** True only for a frozen dispatch whose execution window has definitively passed. */
+function requestWindowExpired(request: { deadlineAt?: string }): boolean {
+  if (request.deadlineAt === undefined) return false;
+  const deadlineMs = Date.parse(request.deadlineAt);
+  return Number.isFinite(deadlineMs) && deadlineMs <= Date.now();
+}
 
 function credentialFailure(
   frame: RuntimeCredentialClientFrame,

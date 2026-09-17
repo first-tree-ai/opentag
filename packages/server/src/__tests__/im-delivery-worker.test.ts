@@ -1090,6 +1090,117 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(events).toContain("steer");
   });
 
+  it("does not let a Cloud follow-up message starve another tenant's claim", async () => {
+    const fixture = await workerFixture(unit);
+    const cloud = await cloudFollowUpFixture(unit, fixture.userId);
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const events: string[] = [];
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(custody, fixture, { onEvent: (event) => events.push(event) }) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      onDiagnostic: (code) => events.push(code),
+    });
+    // The Cloud follow-up is the OLDEST claimable row. Before the fix the claim selects it for
+    // steering, finds no Local instance for the Cloud Computer, and returns without advancing it,
+    // so every tick re-selects the same row and the unrelated Local tenant is never dispatched.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 120_000) })
+      .where(eq(imMessageDeliveries.id, cloud.followUpDeliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 60_000) })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+
+    for (let tick = 0; tick < 5; tick += 1) await worker.runOnce();
+
+    expect(events).toContain("delivery");
+    const [followUp] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, cloud.followUpDeliveryId));
+    expect(followUp).toMatchObject({ state: "pending", dispatchRequestId: null });
+  });
+
+  it("defers an unsteerable Local follow-up so it cannot block another tenant", async () => {
+    const fixture = await workerFixture(unit);
+    const stalled = await workerFixture(unit);
+    // The stalled follow-up's Computer has a live instance but no steer capability, so the claim
+    // selects it for steering and must then defer it instead of re-selecting it every tick.
+    await fixture.registry.register(
+      {
+        computerId: stalled.computerId,
+        installationId: randomUUID(),
+        instanceId: stalled.instanceId,
+        lastHeartbeatAt: Date.now(),
+        socket: { close: vi.fn(), terminate: vi.fn() } as never,
+      },
+      async () => undefined,
+    );
+    const rootMessageId = randomUUID();
+    const rootDeliveryId = randomUUID();
+    const now = new Date();
+    await unit.database.insert(imMessages).values({
+      id: rootMessageId,
+      imBindingId: stalled.bindingId,
+      channelId: "channel",
+      externalMessageId: `stalled-root-${rootMessageId}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "U_HUMAN",
+      content: { fallbackText: "root" },
+      providerContext: { provider: "slack", teamId: "team", channelId: "channel", messageTs: "root" },
+      occurredAt: now,
+    } as never);
+    await unit.database.insert(imMessageDeliveries).values({
+      id: rootDeliveryId,
+      messageId: rootMessageId,
+      sessionId: stalled.sessionId,
+      attention: "direct",
+      state: "accepted",
+      placementGeneration: 1,
+      inputHash: "stalled-root-hash",
+      turnId: "turn-stalled",
+      reportOwnerInstanceId: stalled.instanceId,
+      acceptedAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    });
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 120_000) })
+      .where(eq(imMessageDeliveries.id, stalled.deliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 60_000) })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const events: string[] = [];
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(custody, fixture, { onEvent: (event) => events.push(event) }) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      onDiagnostic: (code) => events.push(code),
+    });
+    for (let tick = 0; tick < 5; tick += 1) await worker.runOnce();
+
+    expect(events).toContain("delivery");
+    const [stalledFollowUp] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, stalled.deliveryId));
+    expect(stalledFollowUp).toMatchObject({
+      state: "pending",
+      dispatchRequestId: null,
+      lastErrorCode: "IM_DELIVERY_STEER_DEFERRED",
+    });
+  });
+
   it("includes revision-aware history and trims oversized resource frames", async () => {
     const fixture = await workerFixture(unit);
     await unit.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, fixture.agentId));
@@ -1760,6 +1871,111 @@ async function steerFixture(unit: UnitDatabase) {
     async () => undefined,
   );
   return { ...fixture, registry: steerRegistry, rootDeliveryId };
+}
+
+/** A Cloud agent with an accepted unreported turn plus a pending follow-up in the same Session. */
+async function cloudFollowUpFixture(unit: UnitDatabase, userId: string) {
+  const now = new Date();
+  const computerId = randomUUID();
+  const agentId = randomUUID();
+  const bindingId = randomUUID();
+  const sessionId = randomUUID();
+  const rootMessageId = randomUUID();
+  const rootDeliveryId = randomUUID();
+  const followUpMessageId = randomUUID();
+  const followUpDeliveryId = randomUUID();
+  await unit.database.insert(computers).values({
+    id: computerId,
+    ownerAccountId: userId,
+    kind: "cloud",
+    currentInstallationId: randomUUID(),
+    displayName: "Cloud",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "test",
+  });
+  await unit.database.insert(agents).values({
+    id: agentId,
+    createdByUserId: userId,
+    computerId,
+    name: `cloud-agent-${agentId}`,
+    displayName: "Cloud Agent",
+    runtimeProvider: "pi",
+  });
+  await unit.database.insert(imBindings).values({
+    id: bindingId,
+    agentId,
+    provider: "feishu",
+    status: "active",
+    externalAppId: `cloud-app-${bindingId}`,
+    externalBotId: "bot",
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: "encrypted",
+    activatedAt: now,
+  });
+  await unit.database.insert(sessions).values({
+    id: sessionId,
+    imBindingId: bindingId,
+    channelId: "cloud-channel",
+    conversationKind: "channel",
+    kind: "channel",
+  });
+  await unit.database.insert(sessionPlacements).values({ sessionId, computerId, generation: 1 });
+  await unit.database.insert(imMessages).values([
+    {
+      id: rootMessageId,
+      imBindingId: bindingId,
+      channelId: "cloud-channel",
+      externalMessageId: `root-${rootMessageId}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "U_HUMAN",
+      content: { fallbackText: "root" },
+      providerContext: { provider: "feishu" as const, channelType: "channel" as const },
+      occurredAt: now,
+    },
+    {
+      id: followUpMessageId,
+      imBindingId: bindingId,
+      channelId: "cloud-channel",
+      externalMessageId: `follow-${followUpMessageId}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "U_HUMAN",
+      content: { fallbackText: "follow-up" },
+      providerContext: { provider: "feishu" as const, channelType: "channel" as const },
+      occurredAt: now,
+    },
+  ] as never);
+  await unit.database.insert(imMessageDeliveries).values([
+    {
+      id: rootDeliveryId,
+      messageId: rootMessageId,
+      sessionId,
+      attention: "direct",
+      state: "accepted",
+      placementGeneration: 1,
+      inputHash: "root-hash",
+      turnId: "turn-cloud",
+      reportOwnerInstanceId: randomUUID(),
+      acceptedAt: now,
+      expiresAt: new Date(now.getTime() + 60_000),
+    },
+    {
+      id: followUpDeliveryId,
+      messageId: followUpMessageId,
+      sessionId,
+      attention: "direct",
+      placementGeneration: 1,
+      expiresAt: new Date(now.getTime() + 60_000),
+    },
+  ]);
+  return { agentId, computerId, sessionId, rootDeliveryId, followUpDeliveryId };
 }
 
 function fakeDomain(

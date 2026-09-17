@@ -115,6 +115,20 @@ durable acknowledgement clears it. A reopened journal under another allocation f
 (`scope_mismatch`) without emitting a stale frame, and a same-id/different-input re-dispatch is a
 visible conflict rather than a second Turn.
 
+The default trusted state root is `$TMPDIR/ots/<bounded-sandbox-name>` (`/tmp` in the Runner
+image), keeping the real public Unix socket paths within their 100-byte limit. The input journal
+rejects new entries at its 1,024-entry capacity while still allowing duplicate receipts and
+acknowledgements to retire existing entries. A channel close drops queued verification grants;
+the durable `received` entries require fresh verification on the replacement connection. A frame
+queued on the old connection cannot authorize a new start after reconnect.
+
+Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
+direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
+inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
+pending input. `restore_required` and a stopped environment reject the input explicitly rather
+than retrying forever. Transient model/Runner unavailability remains retryable within the input
+deadline. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
+
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, per-turn proxy sockets,
 opaque handles, per-turn provider environment file) and never the platform master key, bootstrap
@@ -125,6 +139,15 @@ connection-scoped authority). Journal recovery still preserves the actual Turn o
 replays `started` work, but a transient Server or control-channel outage may fail an active
 model/tool call. E4 does not promise uninterrupted model continuation and adds no grant-renewal
 protocol; that remains future work if the product requires it.
+
+The model proxy accepts a strict Pi-compatible chat-completions payload. Routing and credential
+overrides are rejected, each request has at most one completion, and output budgets are capped at
+65,536 tokens. If both output-budget fields are omitted, the proxy supplies `max_tokens: 65536`;
+omission cannot bypass the limit. These are per-request bounds, not an aggregate spend quota.
+
+The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
+is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness
+remain resource-policy follow-ups; the current global limit can be consumed by one Account.
 
 Write boundary: the durable records E4 relies on are the Server's IM delivery custody and Turn
 report, plus the Runner's per-allocation input journal — not a generic provider write journal or
@@ -145,6 +168,12 @@ existing failure path rather than silently reusing the namespace; E3 acceptance 
 a Cloud Turn or a pending reset owns the Sandbox. A nonzero worker exit is never reported as a
 completed Turn, even if its stdout claims one.
 
+Recovery also checks whether the Session, Agent, binding or Account has stopped authorizing work.
+If a stop frame was lost during disconnection, a live Runner reporting `received` or `started`
+receives cancellation again. `releasing` alone is not evidence that its result was lost; the
+Server still accepts the real report while the allocation drains. The worker owns the persisted
+execution deadline; the parent exec adds five seconds only as a teardown/reporting backstop.
+
 Continuity and secrets: Pi conversation state and the persisted provider binding live under the
 Session workspace's `.opentag/pi-session` subtree, so the same Agent Session keeps its Pi
 binding/history across Turns and across a native rootfs reset. Model grants and the published
@@ -159,6 +188,12 @@ connection and keeps the exact legacy E3 welcome shape otherwise. A Cloud-capabl
 a tracked UID is treated as transient and retried. Roll out Server support first, then a pinned
 E4 Runner image; a new E4 Runner is not claimed backward compatible with an older strict Server,
 while E3 Runners against the new Server remain supported.
+
+E3 renewal and acceptance results still require the active authority chain. Only negotiated E4
+connections may retain a report-capable channel after that chain stops, while their exact
+allocation remains current; no new execution is authorized. Temporary database validation errors
+do not masquerade as revocation. Authentication facts are read before hub registration so a
+heartbeat cannot precede the authentication result.
 
 Boundary: E3 remains the native-execution acceptance path. E4 does not implement GCS workspace
 restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or Context Tree

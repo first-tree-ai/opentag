@@ -42,20 +42,21 @@ beforeEach(async () => {
 });
 
 describe("Cloud input retention on real PostgreSQL", () => {
-  it("keeps an aged Cloud pending input durable while the same aged Local input expires", async () => {
+  it("expires an aged undispatched Cloud pending input at its bounded deadline like Local", async () => {
     const now = new Date();
     const cloud = await seedScope({ kind: "cloud", occurredAt: aged(now), expiresAt: aged(now), ended: true });
     const local = await seedScope({ kind: "local", occurredAt: aged(now), expiresAt: aged(now), ended: true });
 
     await runImDeliveryExpiry(client.database, janitorOptions(now));
 
-    expect(await deliveryRow(cloud.deliveryId)).toMatchObject({ state: "pending", reason: null });
+    // Pending input has one bounded deadline; accepted-unreported custody is the only exemption.
+    expect(await deliveryRow(cloud.deliveryId)).toMatchObject({ state: "expired", reason: "ttl" });
     expect(await deliveryRow(local.deliveryId)).toMatchObject({ state: "expired", reason: "ttl" });
 
     await runImDeliveryRetention(client.database, janitorOptions(now));
 
-    expect(await deliveryRow(cloud.deliveryId)).toMatchObject({ state: "pending", reason: null });
-    expect(await messageRow(cloud.messageId)).toBeDefined();
+    expect(await deliveryRow(cloud.deliveryId)).toBeUndefined();
+    expect(await messageRow(cloud.messageId)).toBeUndefined();
     expect(await deliveryRow(local.deliveryId)).toBeUndefined();
     expect(await messageRow(local.messageId)).toBeUndefined();
   });
@@ -109,7 +110,7 @@ describe("Cloud input retention on real PostgreSQL", () => {
     expect(await messageRow(cloud.messageId)).toBeUndefined();
   });
 
-  it("retains Cloud overflow deliveries while the Local overflow bucket prunes as before", async () => {
+  it("bounds undispatched Cloud overflow like Local while keeping dispatched windows and accepted custody", async () => {
     const cloud = await inboxFixture("cloud");
     const local = await inboxFixture("local");
     const cloudLogger = { error: vi.fn() };
@@ -117,8 +118,12 @@ describe("Cloud input retention on real PostgreSQL", () => {
     const cloudBeforeOverflowExpiry = vi.fn();
     const localBeforeOverflowExpiry = vi.fn();
     const localPassCompleted = deferred<void>();
+    const cloudPassCompleted = deferred<void>();
     const cloudInbox = new ImMessageInbox(client.database, {
       beforeOverflowExpiry: cloudBeforeOverflowExpiry,
+      afterOverflowExpiry: async () => {
+        cloudPassCompleted.resolve();
+      },
       logger: cloudLogger,
     });
     const localInbox = new ImMessageInbox(client.database, {
@@ -130,38 +135,106 @@ describe("Cloud input retention on real PostgreSQL", () => {
     });
 
     const cloudFirst = await cloudInbox.ingest(cloud.imBindingId, 1, event(cloud, "first", 1));
+    const cloudFirstDeliveryId = cloudFirst.deliveryIds[0];
+    if (!cloudFirstDeliveryId) throw new Error("Cloud fixture did not create the first delivery");
     const cloudSession = await onlySession(cloud.imBindingId);
     await placeSessionOnCloudComputer(cloud.accountId, cloudSession.id);
     await seedPendingDeliveries(cloud, cloudSession.id, DIRECT_CAPACITY - 1, "cloud-filler");
+    const protectedRows = await seedProtectedInboxDeliveries(cloud, cloudSession.id);
 
     const localFirst = await localInbox.ingest(local.imBindingId, 1, event(local, "first", 1));
+    const localFirstDeliveryId = localFirst.deliveryIds[0];
+    if (!localFirstDeliveryId) throw new Error("Local fixture did not create the first delivery");
     const localSession = await onlySession(local.imBindingId);
     await seedPendingDeliveries(local, localSession.id, DIRECT_CAPACITY - 1, "local-filler");
 
     await cloudInbox.ingest(cloud.imBindingId, 1, event(cloud, "trigger", DIRECT_CAPACITY + 1));
     await localInbox.ingest(local.imBindingId, 1, event(local, "trigger", DIRECT_CAPACITY + 1));
 
-    // The awaited ingests already queued every scheduled pass; awaiting the completed Local
-    // mutation transaction proves the pass ran before any non-deletion assertion below.
-    await localPassCompleted.promise;
+    await Promise.all([cloudPassCompleted.promise, localPassCompleted.promise]);
+    expect(cloudBeforeOverflowExpiry).toHaveBeenCalledTimes(1);
     expect(localBeforeOverflowExpiry).toHaveBeenCalledTimes(1);
-    expect(await pendingDeliveryCount(localSession.id)).toBe(DIRECT_CAPACITY);
-    const localFirstDeliveryId = localFirst.deliveryIds[0];
-    if (!localFirstDeliveryId) throw new Error("Local fixture did not create the first delivery");
-    expect(await deliveryState(localFirstDeliveryId)).toMatchObject({ state: "expired", reason: "capacity" });
 
-    expect(cloudBeforeOverflowExpiry).not.toHaveBeenCalled();
-    expect(await pendingDeliveryCount(cloudSession.id)).toBe(DIRECT_CAPACITY + 1);
-    const cloudFirstDeliveryId = cloudFirst.deliveryIds[0];
-    if (!cloudFirstDeliveryId) throw new Error("Cloud fixture did not create the first delivery");
-    expect(await deliveryState(cloudFirstDeliveryId)).toMatchObject({ state: "pending", reason: null });
-    const cloudRows = await client.database
-      .select({ state: imMessageDeliveries.state })
-      .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.sessionId, cloudSession.id));
-    expect(cloudRows.filter((row) => row.state === "expired")).toEqual([]);
+    // Local keeps its existing capacity behavior.
+    expect(await deliveryState(localFirstDeliveryId)).toMatchObject({ state: "expired", reason: "capacity" });
+    expect(await undispatchedPendingCount(localSession.id)).toBe(DIRECT_CAPACITY);
+
+    // Undispatched Cloud pending now obeys the same bound...
+    expect(await deliveryState(cloudFirstDeliveryId)).toMatchObject({ state: "expired", reason: "capacity" });
+    expect(await undispatchedPendingCount(cloudSession.id)).toBe(DIRECT_CAPACITY);
+    expect(await capacityExpiredCount(cloudSession.id)).toBe(1);
+    // ...while a dispatched execution window and accepted-unreported custody are untouched.
+    expect(await deliveryState(protectedRows.dispatchedDeliveryId)).toMatchObject({ state: "pending", reason: null });
+    expect(await deliveryState(protectedRows.acceptedDeliveryId)).toMatchObject({ state: "accepted", reason: null });
     expect(cloudLogger.error).not.toHaveBeenCalled();
     expect(localLogger.error).not.toHaveBeenCalled();
+  });
+  it("does not expire a Cloud row that becomes dispatched while the overflow delete waits on its row lock", async () => {
+    const value = await inboxFixture("sql-race");
+    const logger = { error: vi.fn() };
+    const passCompleted = deferred<void>();
+    const inbox = new ImMessageInbox(client.database, {
+      afterOverflowExpiry: async () => {
+        passCompleted.resolve();
+      },
+      logger,
+    });
+
+    const first = await inbox.ingest(value.imBindingId, 1, event(value, "first", 1));
+    const racedDeliveryId = first.deliveryIds[0];
+    if (!racedDeliveryId) throw new Error("fixture did not create the first delivery");
+    const session = await onlySession(value.imBindingId);
+    await placeSessionOnCloudComputer(value.accountId, session.id);
+    // 101 undispatched rows: exactly one over capacity, and the raced row is the oldest.
+    await seedPendingDeliveries(value, session.id, DIRECT_CAPACITY, "sql-race-filler");
+
+    const locker = createDatabaseClient(testDatabase.databaseUrl);
+    let locked!: () => void;
+    const lockHeld = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    let releaseLock!: () => void;
+    const holdLock = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    const dispatchRequestId = randomUUID();
+    const locking = locker.sql.begin(async (sql) => {
+      await sql`
+        update im_message_deliveries
+        set dispatch_request_id = ${dispatchRequestId},
+            dispatch_input_hash = 'sql-race-hash',
+            dispatch_payload = ${JSON.stringify({ requestId: dispatchRequestId })}::jsonb
+        where id = ${racedDeliveryId}
+      `;
+      locked();
+      await holdLock;
+    });
+    try {
+      await lockHeld;
+      await inbox.ingest(value.imBindingId, 1, event(value, "trigger", DIRECT_CAPACITY + 2));
+      // The overflow UPDATE is now blocked on the raced row's lock (still uncommitted dispatch).
+      await vi.waitFor(async () => {
+        const waiting = await client.sql`
+          select count(*)::int as count
+          from pg_stat_activity
+          where datname = current_database()
+            and wait_event_type = 'Lock'
+            and query ilike '%with overflow as%'
+        `;
+        expect(waiting[0]?.count ?? 0).toBeGreaterThan(0);
+      });
+    } finally {
+      releaseLock();
+      await locking;
+      await locker.sql.end();
+    }
+    await passCompleted.promise;
+
+    // The row became dispatched while the delete waited: the final UPDATE eligibility must see
+    // that and leave the execution window alone.
+    expect(await deliveryState(racedDeliveryId)).toMatchObject({ state: "pending", reason: null });
+    expect((await deliveryRow(racedDeliveryId))?.dispatchRequestId).toBe(dispatchRequestId);
+    expect(logger.error).not.toHaveBeenCalled();
   });
 });
 
@@ -411,7 +484,12 @@ async function placeSessionOnCloudComputer(accountId: string, sessionId: string)
     .where(eq(sessionPlacements.sessionId, sessionId));
 }
 
-async function seedPendingDeliveries(scope: InboxScope, sessionId: string, count: number, prefix: string) {
+async function seedPendingDeliveries(
+  scope: InboxScope,
+  sessionId: string,
+  count: number,
+  prefix: string,
+): Promise<string[]> {
   const base = Date.now();
   const messages = await client.database
     .insert(imMessages)
@@ -440,15 +518,112 @@ async function seedPendingDeliveries(scope: InboxScope, sessionId: string, count
       })),
     )
     .returning({ id: imMessages.id });
-  await client.database.insert(imMessageDeliveries).values(
-    messages.map((message) => ({
-      messageId: message.id,
+  const deliveries = await client.database
+    .insert(imMessageDeliveries)
+    .values(
+      messages.map((message) => ({
+        messageId: message.id,
+        sessionId,
+        attention: "direct" as const,
+        placementGeneration: 1,
+        expiresAt: new Date(base + 60 * 60_000),
+      })),
+    )
+    .returning({ id: imMessageDeliveries.id });
+  return deliveries.map((delivery) => delivery.id);
+}
+
+/** Oldest-possible rows: one dispatched execution window and one accepted-unreported custody. */
+async function seedProtectedInboxDeliveries(scope: InboxScope, sessionId: string) {
+  const base = Date.now();
+  const messages = await client.database
+    .insert(imMessages)
+    .values(
+      ["dispatched", "accepted"].map((kind) => ({
+        imBindingId: scope.imBindingId,
+        providerEventId: `protected-${kind}-${randomUUID()}`,
+        channelId: scope.channelId,
+        externalMessageId: `protected-${kind}-message`,
+        providerRevisionKey: "1",
+        operation: "created" as const,
+        direction: "inbound" as const,
+        providerContext: { provider: "slack" as const, channelType: "channel" as const },
+        threadKey: null,
+        replyToExternalId: null,
+        authorKind: "human" as const,
+        authorExternalId: "U_HUMAN",
+        authorDisplayName: "Human",
+        content: {
+          version: 1 as const,
+          fallbackText: "protected",
+          blocks: [{ type: "text" as const, text: "protected" }],
+          truncated: false,
+        },
+        occurredAt: new Date(base),
+      })),
+    )
+    .returning({ id: imMessages.id });
+  const dispatchRequestId = randomUUID();
+  const [dispatched] = await client.database
+    .insert(imMessageDeliveries)
+    .values({
+      messageId: messages[0]?.id as string,
       sessionId,
-      attention: "direct" as const,
+      attention: "direct",
       placementGeneration: 1,
       expiresAt: new Date(base + 60 * 60_000),
-    })),
-  );
+      dispatchRequestId,
+      dispatchInputHash: "protected-dispatch-hash",
+      dispatchPayload: { requestId: dispatchRequestId } as never,
+    })
+    .returning({ id: imMessageDeliveries.id });
+  const [accepted] = await client.database
+    .insert(imMessageDeliveries)
+    .values({
+      messageId: messages[1]?.id as string,
+      sessionId,
+      attention: "direct",
+      placementGeneration: 1,
+      expiresAt: new Date(base + 60 * 60_000),
+      state: "accepted",
+      inputHash: "protected-input-hash",
+      turnId: "protected-turn",
+      reportOwnerInstanceId: randomUUID(),
+      acceptedAt: new Date(base),
+    })
+    .returning({ id: imMessageDeliveries.id });
+  if (!dispatched || !accepted) throw new Error("Protected fixture rows were not created");
+  return { dispatchedDeliveryId: dispatched.id, acceptedDeliveryId: accepted.id };
+}
+
+async function undispatchedPendingCount(sessionId: string) {
+  const [row] = await client.database
+    .select({ count: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, sessionId),
+        eq(imMessageDeliveries.attention, "direct"),
+        eq(imMessageDeliveries.state, "pending"),
+        isNull(imMessageDeliveries.reason),
+        isNull(imMessageDeliveries.dispatchRequestId),
+      ),
+    );
+  return row?.count ?? 0;
+}
+
+async function capacityExpiredCount(sessionId: string) {
+  const [row] = await client.database
+    .select({ count: count() })
+    .from(imMessageDeliveries)
+    .where(
+      and(
+        eq(imMessageDeliveries.sessionId, sessionId),
+        eq(imMessageDeliveries.state, "expired"),
+        eq(imMessageDeliveries.reason, "capacity"),
+      ),
+    );
+  return row?.count ?? 0;
 }
 
 async function deliveryRow(deliveryId: string) {
@@ -467,21 +642,6 @@ async function deliveryState(deliveryId: string) {
     .from(imMessageDeliveries)
     .where(eq(imMessageDeliveries.id, deliveryId));
   return row;
-}
-
-async function pendingDeliveryCount(sessionId: string) {
-  const [row] = await client.database
-    .select({ count: count() })
-    .from(imMessageDeliveries)
-    .where(
-      and(
-        eq(imMessageDeliveries.sessionId, sessionId),
-        eq(imMessageDeliveries.attention, "direct"),
-        eq(imMessageDeliveries.state, "pending"),
-        isNull(imMessageDeliveries.reason),
-      ),
-    );
-  return row?.count ?? 0;
 }
 
 function event(scope: InboxScope, eventSuffix: string, millisecondsAfterEpoch: number): NormalizedInboundImEvent {

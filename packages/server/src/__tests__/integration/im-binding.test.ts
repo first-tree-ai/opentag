@@ -4084,11 +4084,21 @@ describe("IM binding persistence", () => {
         domain: second.domain,
       });
 
+      const beforeDeferral = Date.now();
       await worker.runOnce();
       expect(second.frames).toEqual([]);
-      expect(
-        (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, pendingId)))[0],
-      ).toMatchObject({ attemptCount: 0, state: "pending" });
+      const [fencedPending] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, pendingId));
+      // The higher revision stays pending and the declined steer is formally deferred by the
+      // production anti-starvation retry delay instead of remaining immediately claimable.
+      expect(fencedPending).toMatchObject({
+        attemptCount: 0,
+        state: "pending",
+        lastErrorCode: "IM_DELIVERY_STEER_DEFERRED",
+      });
+      expect(fencedPending?.nextAttemptAt.getTime()).toBeGreaterThan(beforeDeferral);
 
       await value.database
         .update(imMessageDeliveries)
@@ -4103,6 +4113,13 @@ describe("IM binding persistence", () => {
       await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
       await rebuiltClient.bindingStore.recordResult(value.agent.id, firstRequest.sessionId, turnId, report.resultHash);
       expect(rebuiltClient.reconciler.clearRecovery(firstRequest.sessionId, turnId)).toBe(true);
+
+      // The declined steer's retry delay is real production pacing: simulate it elapsing so the
+      // recovered and reported custody lets the higher revision through deterministically.
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, pendingId));
 
       const beforePending = second.frames.length;
       await worker.runOnce();

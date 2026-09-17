@@ -668,14 +668,29 @@ export class ImMessageInbox {
           eq(imMessageDeliveries.attention, attention),
           eq(imMessageDeliveries.state, "pending"),
           isNull(imMessageDeliveries.reason),
-          // A bucket only overflows while its Session is positively placed on a Local Computer:
-          // Cloud-placed or unclassifiable buckets keep every pending delivery durable, no pass queued.
-          sql`exists (
-            select 1
-            from session_placements as placement
-            inner join computers as computer on computer.id = placement.computer_id
-            where placement.session_id = im_message_deliveries.session_id
-              and computer.kind = 'local'
+          // Capacity bounds pending input per bucket. Local rows always count; Cloud rows count
+          // only while they are UNDISPATCHED — a dispatched Cloud row is owned by its frozen
+          // execution window and accepted custody is never pending. A missing or unknown
+          // placement fails conservative: every pending delivery stays durable and no pass is
+          // queued.
+          sql`(
+            exists (
+              select 1
+              from session_placements as placement
+              inner join computers as computer on computer.id = placement.computer_id
+              where placement.session_id = im_message_deliveries.session_id
+                and computer.kind = 'local'
+            )
+            or (
+              ${imMessageDeliveries.dispatchRequestId} is null
+              and exists (
+                select 1
+                from session_placements as placement
+                inner join computers as computer on computer.id = placement.computer_id
+                where placement.session_id = im_message_deliveries.session_id
+                  and computer.kind = 'cloud'
+              )
+            )
           )`,
         ),
       );
@@ -732,8 +747,12 @@ export class ImMessageInbox {
     attention: DeliveryAttention,
   ): Promise<void> {
     const capacity = attention === "direct" ? 100 : 500;
-    // Re-check the current placement here: it can change since the count, and a bucket no longer
-    // positively Local-placed must lose nothing.
+    // Re-evaluate the current placement and dispatch state per row here: they can change since the
+    // count. A row that became dispatched, acquired accepted custody, or lost its placement
+    // classification must lose nothing; an undispatched Cloud row follows the same capacity bound
+    // as Local. The same per-row eligibility is repeated in the final UPDATE predicate because a
+    // concurrent dispatcher can hold the row lock: the UPDATE waits, and PostgreSQL re-evaluates
+    // only the final predicate against the committed row version.
     await transaction.execute(sql`
       with overflow as (
         select d.id
@@ -743,22 +762,44 @@ export class ImMessageInbox {
           and d.attention = ${attention}
           and d.state = 'pending'
           and d.reason is null
-          and exists (
+          and (
+            exists (
+              select 1
+              from session_placements as placement
+              inner join computers as computer on computer.id = placement.computer_id
+              where placement.session_id = d.session_id
+                and computer.kind = 'local'
+            )
+            or (
+              d.dispatch_request_id is null
+              and exists (
+                select 1
+                from session_placements as placement
+                inner join computers as computer on computer.id = placement.computer_id
+                where placement.session_id = d.session_id
+                  and computer.kind = 'cloud'
+              )
+            )
+          )
+        order by m.occurred_at desc, d.id desc
+        offset ${capacity}
+      )
+      update im_message_deliveries as d
+      set state = 'expired'::im_delivery_state,
+          reason = 'capacity'
+      where d.id in (select id from overflow)
+        and d.state = 'pending'
+        and d.reason is null
+        and (
+          d.dispatch_request_id is null
+          or exists (
             select 1
             from session_placements as placement
             inner join computers as computer on computer.id = placement.computer_id
             where placement.session_id = d.session_id
               and computer.kind = 'local'
           )
-        order by m.occurred_at desc, d.id desc
-        offset ${capacity}
-      )
-      update im_message_deliveries
-      set state = 'expired'::im_delivery_state,
-          reason = 'capacity'
-      where id in (select id from overflow)
-        and state = 'pending'
-        and reason is null
+        )
     `);
   }
 

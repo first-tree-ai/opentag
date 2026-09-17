@@ -7,6 +7,23 @@ const SECRET = "unit-test-jwt-secret-at-least-32-characters";
 const SANDBOX_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 
+/** Deterministic mint failures: the next N SignJWT.sign calls reject instead of signing. */
+const mintFailure = vi.hoisted(() => ({ remaining: 0 }));
+
+vi.mock("jose", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("jose")>();
+  class TestSignJWT extends actual.SignJWT {
+    override async sign(...args: Parameters<SignJWT["sign"]>): Promise<string> {
+      if (mintFailure.remaining > 0) {
+        mintFailure.remaining -= 1;
+        throw new Error("injected mint failure");
+      }
+      return super.sign(...args);
+    }
+  }
+  return { ...actual, SignJWT: TestSignJWT };
+});
+
 function issueInput(overrides: Partial<Parameters<CloudModelGrantService["issue"]>[0]> = {}) {
   return {
     executionId: "turn-1",
@@ -283,6 +300,130 @@ describe("CloudModelGrantService", () => {
     if (overflowed) {
       expect(service.trackedGrantCount).toBeLessThanOrEqual(2);
     }
+  });
+
+  it("fails closed against the retained-grant bound when mints for distinct executions race", async () => {
+    service = makeService({ maxTrackedGrants: 1 });
+    // issue() reserves synchronously before awaiting the mint, so the first call holds the only
+    // slot and the concurrent mint for the other execution fails closed instead of overrunning
+    // the bound.
+    const [first, second] = await Promise.all([
+      service.issue(issueInput({ executionId: "turn-1" })),
+      service.issue(issueInput({ executionId: "turn-2" })),
+    ]);
+    expect(second).toBeUndefined();
+    if (!first) throw new Error("the first reservation must win the single slot");
+    expect(first.claims.executionId).toBe("turn-1");
+    expect(service.trackedGrantCount).toBe(1);
+    expect(await service.verify(first.token)).toEqual(first.claims);
+    // Revoking the winner releases the bound: the loser's retry mints within the limit.
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    const retried = await service.issue(issueInput({ executionId: "turn-2" }));
+    if (!retried) throw new Error("retry after the winner's revocation must succeed");
+    expect(service.trackedGrantCount).toBe(1);
+    expect(await service.verify(retried.token)).toEqual(retried.claims);
+  });
+
+  it("mints exactly one token when duplicate receipts race for one execution", async () => {
+    service = makeService();
+    const [first, second, third] = await Promise.all([
+      service.issue(issueInput()),
+      service.issue(issueInput()),
+      service.issue(issueInput()),
+    ]);
+    if (!first || !second || !third) throw new Error("every duplicate reuses the one in-flight mint");
+    expect(second.token).toBe(first.token);
+    expect(third.token).toBe(first.token);
+    expect(second.claims.jti).toBe(first.claims.jti);
+    expect(service.trackedGrantCount).toBe(1);
+    expect(await service.verify(first.token)).toEqual(first.claims);
+  });
+
+  it("never discloses a mint that loses a revocation race, and the turn stays refused", async () => {
+    service = makeService();
+    // issue() reserves synchronously and only then awaits signing, so this revoke lands mid-mint.
+    const raced = service.issue(issueInput());
+    const duplicate = service.issue(issueInput());
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    expect(await raced).toBeUndefined();
+    expect(await duplicate).toBeUndefined();
+    // The reservation settles as a revoked tombstone: revocation stays final for the execution.
+    expect(service.trackedGrantCount).toBe(1);
+    expect(await service.issue(issueInput())).toBeUndefined();
+    // Explicit recovery rotation still mints a fresh generation for the unfinished turn.
+    const rotated = await service.issue(issueInput({ supersedeRevoked: true }));
+    if (!rotated) throw new Error("rotation after a raced revocation must succeed");
+    expect(await service.verify(rotated.token)).toEqual(rotated.claims);
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    expect(await service.verify(rotated.token)).toBeUndefined();
+  });
+
+  it("never discloses a mint that races close()", async () => {
+    service = makeService();
+    const raced = service.issue(issueInput());
+    service.close();
+    expect(await raced).toBeUndefined();
+    // A delayed receipt reaching the service after shutdown cannot reopen issuance either.
+    expect(await service.issue(issueInput({ executionId: "late-receipt" }))).toBeUndefined();
+    expect(service.trackedGrantCount).toBe(0);
+  });
+
+  it("releases the reservation when the mint fails, for the issuer and every racing duplicate", async () => {
+    service = makeService({ maxTrackedGrants: 1 });
+    mintFailure.remaining = 1;
+    const raced = service.issue(issueInput());
+    const duplicate = service.issue(issueInput());
+    try {
+      expect(await raced).toBeUndefined();
+      expect(await duplicate).toBeUndefined();
+    } finally {
+      mintFailure.remaining = 0;
+    }
+    // No tombstone and no leaked capacity: the failed mint reserved nothing permanently.
+    expect(service.trackedGrantCount).toBe(0);
+    const retried = await service.issue(issueInput());
+    if (!retried) throw new Error("retry after a failed mint must succeed");
+    expect(await service.verify(retried.token)).toEqual(retried.claims);
+    expect(service.trackedGrantCount).toBe(1);
+  });
+
+  it("keeps the revoked tombstone when a mint fails after losing a revocation race", async () => {
+    service = makeService({ maxTrackedGrants: 1 });
+    mintFailure.remaining = 1;
+    const raced = service.issue(issueInput());
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    try {
+      expect(await raced).toBeUndefined();
+    } finally {
+      mintFailure.remaining = 0;
+    }
+    // The failed mint must not resurrect the turn: the revoked tombstone stays and refuses a
+    // silent re-mint, while the capacity bound can still evict it for an explicit rotation.
+    expect(service.trackedGrantCount).toBe(1);
+    expect(await service.issue(issueInput())).toBeUndefined();
+    const rotated = await service.issue(issueInput({ supersedeRevoked: true }));
+    if (!rotated) throw new Error("rotation after the failed, revoked mint must succeed");
+    expect(service.trackedGrantCount).toBe(1);
+    expect(await service.verify(rotated.token)).toEqual(rotated.claims);
+  });
+
+  it("collapses concurrent recovery rotations onto one fresh generation", async () => {
+    service = makeService();
+    const first = await service.issue(issueInput());
+    if (!first) throw new Error("grant issue failed");
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    const [rotatedA, rotatedB] = await Promise.all([
+      service.issue(issueInput({ supersedeRevoked: true })),
+      service.issue(issueInput({ supersedeRevoked: true })),
+    ]);
+    if (!rotatedA || !rotatedB) throw new Error("concurrent rotations must share one fresh mint");
+    expect(rotatedA.claims.jti).toBe(rotatedB.claims.jti);
+    expect(rotatedA.token).toBe(rotatedB.token);
+    expect(rotatedA.claims.jti).not.toBe(first.claims.jti);
+    // The old tombstone plus the fresh generation: bounded, and one revoke kills both.
+    expect(service.trackedGrantCount).toBe(2);
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    expect(await service.verify(rotatedA.token)).toBeUndefined();
   });
 
   it("runs a bounded recurring sweep when enabled", async () => {

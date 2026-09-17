@@ -327,7 +327,7 @@ function deliveryRequest(input: {
 }
 
 describe("E4 Cloud dispatch custody on real PostgreSQL", () => {
-  it("claims an aged Cloud pending delivery while the same aged Local delivery expires", async () => {
+  it("expires aged undispatched Cloud input at its bounded deadline and keeps a dispatched attempt durable", async () => {
     const cloud = await cloudScope();
     const local = await localScope();
     const { hub, fence, owner, grants } = makeOwner();
@@ -337,9 +337,7 @@ describe("E4 Cloud dispatch custody on real PostgreSQL", () => {
     hub.markReady(cloud.scope, READINESS, socket);
     fence.attach({ computerId: cloud.cloud.computerId, installationId: randomUUID(), scope: cloud.scope, socket });
     const { deliveryId } = await agedPendingDelivery(cloud.scope.sessionId);
-
-    // The Local TTL still runs: an aged Local input is expired by the janitor, not dispatched.
-    await runImDeliveryExpiry(client.database, {
+    const janitorOptions = {
       clock: () => new Date(),
       expiryBatchSize: 100,
       retentionBatchSize: 100,
@@ -347,46 +345,82 @@ describe("E4 Cloud dispatch custody on real PostgreSQL", () => {
       imMessageDeliveriesRetentionMs: 90 * 24 * 60 * 60 * 1_000,
       slackWebhookReceiptsRetentionMs: 30 * 24 * 60 * 60 * 1_000,
       feishuInboundReceiptsRetentionMs: 30 * 24 * 60 * 60 * 1_000,
-    });
+    };
+
+    // The bounded ingress deadline is terminal for an input that never reached a Runner, exactly
+    // like Local; accepted-unreported custody is the only Cloud state exempt from it.
+    await runImDeliveryExpiry(client.database, janitorOptions);
+    const [cloudRow] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(cloudRow).toMatchObject({ state: "expired", reason: "ttl", dispatchRequestId: null });
     const [localRow] = await client.database
       .select()
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, local.deliveryId));
     expect(localRow).toMatchObject({ state: "expired", reason: "ttl", dispatchRequestId: null });
 
+    // The worker never dispatches a past-deadline undispatched Cloud row.
     const worker = makeWorker(owner);
-    // Bounded attempts: a transient first-attempt failure is retried the way production does,
-    // without waiting out the retry delay, until the aged Cloud delivery is dispatched.
-    for (let attempt = 0; attempt < 4 && !sent.some((frame) => frame.type === "delivery:run"); attempt += 1) {
-      await worker.runOnce();
-      await client.database
-        .update(imMessageDeliveries)
-        .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
-        .where(eq(imMessageDeliveries.id, deliveryId));
-    }
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(0);
 
-    const runs = sent.filter((frame) => frame.type === "delivery:run");
-    const [diagnosticRow] = await client.database
+    // A DISPATCHED Cloud attempt is owned by its frozen execution window, not the ingress TTL:
+    // the janitor leaves it, and the worker releases the stale attempt once that window passed.
+    const dispatched = await agedPendingDelivery(cloud.scope.sessionId);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ expiresAt: new Date(Date.now() + 3_600_000) })
+      .where(eq(imMessageDeliveries.id, dispatched.deliveryId));
+    const request = deliveryRequest({
+      deliveryId: dispatched.deliveryId,
+      messageId: dispatched.messageId,
+      sessionId: cloud.scope.sessionId,
+      agentId: cloud.agent.id,
+    });
+    await owner.dispatchDelivery({
+      computerId: cloud.cloud.computerId,
+      inputHash: computeDirectInputHash(request),
+      installationId: randomUUID(),
+      request,
+    });
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ expiresAt: new Date(Date.now() - 6 * 60 * 60 * 1_000) })
+      .where(eq(imMessageDeliveries.id, dispatched.deliveryId));
+    await runImDeliveryExpiry(client.database, janitorOptions);
+    const [dispatchedRow] = await client.database
       .select()
       .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.id, deliveryId));
-    expect(runs, `delivery row state: ${JSON.stringify(diagnosticRow)}`).toHaveLength(1);
-    const run = runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>;
-    expect(run.delivery.deliveryId).toBe(deliveryId);
-    expect(run.delivery.deadlineAt).toBeDefined();
-    expect(Date.parse(run.delivery.deadlineAt as string)).toBeGreaterThan(Date.now());
-    const [cloudRow] = await client.database
+      .where(eq(imMessageDeliveries.id, dispatched.deliveryId));
+    expect(dispatchedRow).toMatchObject({ state: "pending", dispatchRequestId: request.requestId });
+
+    const persisted = dispatchedRow?.dispatchPayload as DirectImMessageDeliveryRequest;
+    const expiredPayload = { ...persisted, deadlineAt: new Date(Date.now() - 60_000).toISOString() };
+    await client.database
+      .update(imMessageDeliveries)
+      .set({
+        dispatchPayload: expiredPayload,
+        dispatchInputHash: computeDirectInputHash(expiredPayload),
+        nextAttemptAt: new Date(Date.now() - 1_000),
+      })
+      .where(eq(imMessageDeliveries.id, dispatched.deliveryId));
+    await worker.runOnce();
+    const [released] = await client.database
       .select()
       .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.id, deliveryId));
-    expect(cloudRow).toMatchObject({ state: "pending", dispatchRequestId: run.requestId });
-    expect(cloudRow?.dispatchInputHash).toBe(computeDirectInputHash(run.delivery));
-    // The Local row was never claimed or dispatched by the worker.
-    const [stillLocal] = await client.database
+      .where(eq(imMessageDeliveries.id, dispatched.deliveryId));
+    expect(released).toMatchObject({ state: "pending", dispatchRequestId: null });
+    expect(released?.lastErrorCode).toBe("IM_DELIVERY_CLOUD_DISPATCH_EXPIRED");
+
+    // With the dispatch released, the bounded ingress deadline applies again.
+    await runImDeliveryExpiry(client.database, janitorOptions);
+    const [bounded] = await client.database
       .select()
       .from(imMessageDeliveries)
-      .where(eq(imMessageDeliveries.id, local.deliveryId));
-    expect(stillLocal?.dispatchRequestId).toBeNull();
+      .where(eq(imMessageDeliveries.id, dispatched.deliveryId));
+    expect(bounded).toMatchObject({ state: "expired", reason: "ttl" });
     grants.close();
   });
 
@@ -489,9 +523,10 @@ describe("E4 Cloud dispatch custody on real PostgreSQL", () => {
       request,
     });
     await owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId: randomUUID() });
+    // A completed release removes the resource reference: no Runner can ever report this turn.
     await client.database
       .update(sandboxes)
-      .set({ lifecycle: "releasing" })
+      .set({ lifecycle: "unallocated", currentResourceName: null, currentResourceUid: null })
       .where(eq(sandboxes.id, cloud.scope.sandboxId));
     expect(await owner.recoverAccepted(deliveryId)).toBe("resolved");
     const [settled] = await client.database

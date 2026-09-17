@@ -9,8 +9,8 @@ import type {
   RunnerCloudModelGrant,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CloudJournal, CloudJournalError } from "../runner/cloud-journal.js";
-import { CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { CloudJournal, CloudJournalError, type CloudJournalScope } from "../runner/cloud-journal.js";
+import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const MODEL_GRANT: RunnerCloudModelGrant = {
@@ -19,6 +19,11 @@ const MODEL_GRANT: RunnerCloudModelGrant = {
   token: "unit-execution-token-0123456789abcdef",
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
 };
+
+/** The same grant shape with a chosen token, for connection-generation regressions. */
+function grantWith(token: string): RunnerCloudModelGrant {
+  return { ...MODEL_GRANT, token };
+}
 
 interface ExecResult {
   code: number;
@@ -112,6 +117,53 @@ function gateJournalList(journal: CloudJournal, gate: Promise<void>, onGated: ()
     arm: () => {
       armed = true;
       snapshot ??= realList();
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+/**
+ * Gate the real journal's read() one-shot so a start can be held at the boundary under test;
+ * subsequent reads go to the real journal.
+ */
+function gateJournalRead(journal: CloudJournal, gate: Promise<void>, onGated: () => void) {
+  const realRead = journal.read.bind(journal);
+  let armed = false;
+  let consumed = false;
+  const spy = vi.spyOn(journal, "read").mockImplementation(async (deliveryId: string) => {
+    if (armed && !consumed) {
+      consumed = true;
+      onGated();
+      await gate;
+    }
+    return realRead(deliveryId);
+  });
+  return {
+    arm: () => {
+      armed = true;
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+/** Gate the real journal's markStarted one-shot to exercise the started-boundary window. */
+function gateJournalMarkStarted(journal: CloudJournal, gate: Promise<void>, onGated: () => void) {
+  const realMarkStarted = journal.markStarted.bind(journal);
+  let armed = false;
+  let consumed = false;
+  const spy = vi
+    .spyOn(journal, "markStarted")
+    .mockImplementation(async (deliveryId: string, scope: CloudJournalScope) => {
+      if (armed && !consumed) {
+        consumed = true;
+        onGated();
+        await gate;
+      }
+      return realMarkStarted(deliveryId, scope);
+    });
+  return {
+    arm: () => {
+      armed = true;
     },
     restore: () => spy.mockRestore(),
   };
@@ -280,14 +332,39 @@ describe("CloudTurnRunner", () => {
     expect(refusedReport?.report.executionEffects).toBe("not_started");
     expect(refusedReport?.report.errorReason).toBe("turn_timeout");
     await refused.runner.close();
-    // A live deadline becomes the actual remaining worker budget; no fixed 5s extension exists.
-    const nearly = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() + 1_500).toISOString() });
+    // A live deadline stays the worker's own budget, and the parent exec backstop adds only the
+    // bounded reporting grace so the worker can publish `turn_timeout` first.
+    const before = Date.now();
+    const nearly = cloudDeliveryFixture({ deadlineAt: new Date(before + 1_500).toISOString() });
     const h = harness({ delivery: nearly });
     await h.runner.handleDeliveryRun(runFrame(nearly));
     await h.runner.handleVerified(verifiedFrame(nearly.requestId));
     await waitFor(() => h.workerInputs.length === 1, "bounded worker start");
-    expect(h.workerInputs[0]?.timeoutMs).toBeLessThanOrEqual(1_500);
-    expect(h.workerInputs[0]?.timeoutMs).toBeGreaterThan(0);
+    const capturedAfter = Date.now();
+    const timeoutMs = h.workerInputs[0]?.timeoutMs ?? 0;
+    expect(timeoutMs).toBeLessThanOrEqual(before + 1_500 - before + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS);
+    expect(timeoutMs).toBeGreaterThanOrEqual(before + 1_500 - capturedAfter + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS);
+    expect(timeoutMs).toBeGreaterThan(1_500 - (capturedAfter - before));
+    await h.runner.close();
+  });
+
+  it("reports the worker's own turn_timeout instead of the parent exec backstop", async () => {
+    const h = harness({
+      worker: async () => ({
+        code: 1,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: { errorReason: "turn_timeout", executionEffects: "may_have_occurred", outcome: "failed" },
+        })}\n`,
+      }),
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "timeout report");
+    const report = reportsOf(h.sent)[0]?.report;
+    expect(report?.outcome).toBe("failed");
+    expect(report?.errorReason).toBe("turn_timeout");
     await h.runner.close();
   });
 
@@ -477,7 +554,7 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
-  it("keeps a live execution alive across a channel drop and reports the real outcome after reconnect", async () => {
+  it("does not abort a live execution on a channel drop and reports its real outcome (queued grants are dropped)", async () => {
     const workerStarted = deferred<void>();
     const release = deferred<ExecResult>();
     let aborted = false;
@@ -939,6 +1016,226 @@ describe("CloudTurnRunner", () => {
     const cancelled = reportsOf(h.sent).find((frame) => frame.report.deliveryId === b.deliveryId)?.report;
     expect(cancelled?.outcome).toBe("cancelled");
     expect(cancelled?.executionEffects).toBe("not_started");
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("drops queued grants from a closed channel generation and re-verifies with a fresh grant", async () => {
+    const aStarted = deferred<void>();
+    const releaseA = deferred<ExecResult>();
+    const tokens: string[] = [];
+    const h = harness({
+      worker: async (input) => {
+        const parsed = JSON.parse(input.stdin) as { model: { token: string } };
+        tokens.push(parsed.model.token);
+        if (tokens.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec("second");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleVerified(verifiedFrame(a.requestId, grantWith("dead-channel-grant-token-a-0123456789")));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId, grantWith("dead-channel-grant-token-b-0123456789")));
+    // B is queued on the current connection generation; that connection now drops.
+    h.runner.onChannelClosed();
+    releaseA.resolve(completedExec("a"));
+    await waitFor(() => h.runner.activeDeliveryId === undefined, "first turn to settle");
+    // The queued grant from the dead connection must never start.
+    expect(tokens).toEqual(["dead-channel-grant-token-a-0123456789"]);
+    const entryB = (await h.journal.list()).find((entry) => entry.deliveryId === b.deliveryId);
+    expect(entryB?.phase).toBe("received");
+    // Fresh verification on the new generation starts B with the new grant.
+    await h.runner.handleVerified(verifiedFrame(b.requestId, grantWith("fresh-channel-token-b-0123456789")));
+    await waitFor(() => reportsOf(h.sent).length === 2, "fresh-grant report");
+    expect(tokens).toEqual(["dead-channel-grant-token-a-0123456789", "fresh-channel-token-b-0123456789"]);
+    await h.runner.close();
+  });
+
+  it("never starts a delivery whose channel generation closed while its start read was pending", async () => {
+    const aStarted = deferred<void>();
+    const releaseA = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const tokens: string[] = [];
+    const h = harness({
+      worker: async (input) => {
+        tokens.push((JSON.parse(input.stdin) as { model: { token: string } }).model.token);
+        if (tokens.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec("second");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const gated = gateJournalRead(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleVerified(verifiedFrame(a.requestId, grantWith("start-read-token-a-0123456789ab")));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId, grantWith("start-read-token-b-0123456789ab")));
+    gated.arm();
+    // A settles; the drain starts B and blocks in the real journal read for B.
+    releaseA.resolve(completedExec("a"));
+    await gateEntered.promise;
+    h.runner.onChannelClosed();
+    gate.resolve();
+    await waitFor(() => h.runner.activeDeliveryId === undefined, "runner to settle");
+    expect(tokens).toEqual(["start-read-token-a-0123456789ab"]);
+    const entryB = (await h.journal.list()).find((entry) => entry.deliveryId === b.deliveryId);
+    expect(entryB?.phase).toBe("received");
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("never starts a verified frame captured before a close while it waited in the serial queue", async () => {
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const tokens: string[] = [];
+    const h = harness({
+      worker: async (input) => {
+        tokens.push((JSON.parse(input.stdin) as { model: { token: string } }).model.token);
+        return completedExec("b");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    gated.arm();
+    // A slow reconcile holds the serial queue while the verified frame is enqueued behind it.
+    const reconciling = h.runner.reconcile();
+    await gateEntered.promise;
+    const verifying = h.runner.handleVerified(
+      verifiedFrame(b.requestId, grantWith("queued-old-token-0123456789abcdef")),
+    );
+    h.runner.onChannelClosed();
+    gate.resolve();
+    await reconciling;
+    await verifying;
+    // The old grant must not start: no worker, and the durable entry stays received.
+    expect(tokens).toEqual([]);
+    const entryB = (await h.journal.list()).find((entry) => entry.deliveryId === b.deliveryId);
+    expect(entryB?.phase).toBe("received");
+    // Fresh verification on the new generation starts it with the new grant.
+    await h.runner.handleVerified(verifiedFrame(b.requestId, grantWith("fresh-token-0123456789abcdefgh")));
+    await waitFor(() => reportsOf(h.sent).length === 1, "fresh report");
+    expect(tokens).toEqual(["fresh-token-0123456789abcdefgh"]);
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("settles not_started when cancelled while markStarted is pending and never opens the bridge", async () => {
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    let opened = 0;
+    const h = harness({
+      runnerOptions: {
+        openExecution: async () => {
+          opened += 1;
+          return { close: async () => undefined, executionDir: "/run/opentag-execution/unit" };
+        },
+      },
+      worker: async () => {
+        throw new Error("the worker must not run after a cancellation during markStarted");
+      },
+    });
+    const gated = gateJournalMarkStarted(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    gated.arm();
+    const verifying = h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await gateEntered.promise;
+    h.runner.handleCancel(h.delivery.deliveryId);
+    gate.resolve();
+    await verifying;
+    await waitFor(() => reportsOf(h.sent).length === 1, "not-started report");
+    const report = reportsOf(h.sent)[0]?.report;
+    expect(report?.outcome).toBe("cancelled");
+    expect(report?.executionEffects).toBe("not_started");
+    expect(report?.errorReason).toBe("client_shutdown");
+    expect(h.workerInputs).toHaveLength(0);
+    expect(opened).toBe(0);
+    const [entry] = await h.journal.list();
+    expect(entry?.phase).toBe("reported");
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it.each(["cancel", "channel_close"] as const)(
+    "closes an opened credential execution without invoking the worker after %s during the open",
+    async (event) => {
+      const gate = deferred<void>();
+      const gateEntered = deferred<void>();
+      let closed = 0;
+      const h = harness({
+        runnerOptions: {
+          openExecution: async () => {
+            gateEntered.resolve();
+            await gate.promise;
+            return {
+              close: async () => {
+                closed += 1;
+              },
+              executionDir: "/run/opentag-execution/unit",
+            };
+          },
+        },
+        worker: async () => {
+          throw new Error("the worker must not run after a cancellation during the credential open");
+        },
+      });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      const verifying = h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await gateEntered.promise;
+      if (event === "cancel") h.runner.handleCancel(h.delivery.deliveryId);
+      else h.runner.onChannelClosed();
+      gate.resolve();
+      await verifying;
+      await waitFor(() => reportsOf(h.sent).length === 1, "not-started report");
+      const report = reportsOf(h.sent)[0]?.report;
+      expect(report?.outcome).toBe("cancelled");
+      expect(report?.executionEffects).toBe("not_started");
+      expect(report?.errorReason).toBe("client_shutdown");
+      expect(h.workerInputs).toHaveLength(0);
+      expect(closed).toBe(1);
+      const [entry] = await h.journal.list();
+      expect(entry?.phase).toBe("reported");
+      await h.runner.close();
+    },
+  );
+
+  it("settles not_started when cancelled before the started boundary and never runs the worker", async () => {
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        throw new Error("the worker must not run after a pre-start cancellation");
+      },
+    });
+    const gated = gateJournalRead(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    gated.arm();
+    const verifying = h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await gateEntered.promise;
+    h.runner.handleCancel(h.delivery.deliveryId);
+    gate.resolve();
+    await verifying;
+    await waitFor(() => reportsOf(h.sent).length === 1, "not-started report");
+    const report = reportsOf(h.sent)[0]?.report;
+    expect(report?.outcome).toBe("cancelled");
+    expect(report?.executionEffects).toBe("not_started");
+    expect(report?.errorReason).toBe("client_shutdown");
+    expect(h.workerInputs).toHaveLength(0);
+    const [entry] = await h.journal.list();
+    expect(entry?.phase).toBe("reported");
     gated.restore();
     await h.runner.close();
   });

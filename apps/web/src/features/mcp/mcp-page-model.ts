@@ -32,11 +32,6 @@ export function rowStates(entry: MCPAgentServer): McpRowStates {
   };
 }
 
-/** Whether the row can be disabled: only a mounted Server has a switch to flip. */
-export function canToggleMount(): boolean {
-  return true;
-}
-
 /**
  * Whether the credential can be revoked: revoking an anonymous Server would leave the pair with no
  * authorization row at all, so `none` is shown as a method, not as something to remove.
@@ -45,24 +40,6 @@ export function canRevoke(entry: MCPAgentServer): boolean {
   const authorization = entry.authorization;
   if (!authorization) return false;
   return authorization.kind !== "none" && authorization.status !== "revoked";
-}
-
-/** A Server already authorized can be re-authorized; one that never was can be authorized. */
-export function authorizationActionLabel(entry: MCPAgentServer): "authorize" | "reauthorize" {
-  return entry.authorization ? "reauthorize" : "authorize";
-}
-
-/**
- * Which effective fields this Agent overrides, for the editor's provenance display. A user cannot
- * guess what a Server actually receives unless the page tells them which values are inherited.
- */
-export function overrideSummary(entry: MCPAgentServer): { field: string; overridden: boolean }[] {
-  return [
-    { field: "url", overridden: entry.overridden.url },
-    { field: "authHeader", overridden: entry.overridden.authHeader },
-    { field: "authScheme", overridden: entry.overridden.authScheme },
-    { field: "extraHeaders", overridden: entry.overridden.extraHeaders },
-  ];
 }
 
 /**
@@ -78,15 +55,4 @@ export function sharedDefinitionImpact(detail: {
     count: detail.server.boundAgentCount,
     names: detail.agents.map((agent) => agent.agentDisplayName),
   };
-}
-
-/** Whether deleting the definition is offered: only when nothing else uses it. */
-export function canDeleteDefinition(
-  detail: { server: { boundAgentCount: number } },
-  agentId: string,
-  mountedHere: boolean,
-): boolean {
-  const others = detail.server.boundAgentCount - (mountedHere ? 1 : 0);
-  void agentId;
-  return others <= 0;
 }

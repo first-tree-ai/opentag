@@ -598,34 +598,6 @@ export const MCPProbeResponseSchema = z
   .strict();
 export type MCPProbeResponse = z.infer<typeof MCPProbeResponseSchema>;
 
-/** Pre-registering a client with an authorization server, ahead of any discovery. */
-export const RegisterMCPClientRequestSchema = z
-  .object({
-    authorizationServer: z.string().min(1).max(2048),
-    clientId: z.string().min(1).max(512),
-    clientSecret: z.string().min(1).max(4096).optional(),
-  })
-  .strict();
-export type RegisterMCPClientRequest = z.infer<typeof RegisterMCPClientRequestSchema>;
-
-export const MCPClientRegistrationSchema = z
-  .object({
-    id: UuidSchema,
-    authorizationServer: z.string().min(1),
-    source: MCPClientRegistrationSourceSchema,
-    clientId: z.string().min(1),
-    hasClientSecret: z.boolean(),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
-export type MCPClientRegistration = z.infer<typeof MCPClientRegistrationSchema>;
-
-export const ListMCPClientRegistrationsResponseSchema = z
-  .object({ registrations: z.array(MCPClientRegistrationSchema) })
-  .strict();
-export type ListMCPClientRegistrationsResponse = z.infer<typeof ListMCPClientRegistrationsResponseSchema>;
-
 /** The OAuth callback's fixed return surface, mirroring the GitHub/Slack outcome parameters. */
 export const MCP_OAUTH_OUTCOME_PARAM = "mcp_oauth";
 export const MCP_OAUTH_ERROR_PARAM = "mcp_oauth_error";

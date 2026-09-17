@@ -1398,6 +1398,35 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await defaultArgs.close();
   });
 
+  it("resumes a long thread without asking Codex to hydrate its turn history", async () => {
+    const cwd = await temporaryDirectory("opentag-codex-long-thread-");
+    const runtimeFactory = new CodexAgentRuntimeFactory({
+      clientVersion: "0.0.1-test",
+      process: {
+        command: process.execPath,
+        args: [fixture],
+        env: { PATH: process.env.PATH, CODEX_FIXTURE_SCENARIO: "history-large" },
+        requestTimeoutMs: 5_000,
+      },
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
+    });
+    const runtime = await runtimeFactory.create({ ...createRequest(() => undefined), workspace: { cwd } });
+    const binding = runtime.binding;
+    await runtime.close();
+    if (!binding) throw new Error("fixture did not create a binding");
+
+    // The fixture answers a resume that hydrates turns with a line above the App Server line
+    // limit, which previously failed the resume as a protocol error on a long Session.
+    const resumed = await runtimeFactory.resume({
+      ...createRequest(() => undefined),
+      workspace: { cwd },
+      binding,
+    });
+
+    expect(resumed.binding).toEqual(binding);
+    await resumed.close();
+  });
+
   it("runs the default local probe against controlled CLI artifacts and credential sources", async () => {
     const directory = await temporaryDirectory("opentag-codex-probe-");
     const command = join(directory, "codex-fixture");

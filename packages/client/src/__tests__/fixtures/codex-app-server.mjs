@@ -12,6 +12,29 @@ let threadSequence = 0;
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
+// Real Codex hydrates the whole stored thread into the `thread/resume` response unless the client
+// opts out with `excludeTurns`, so a long thread exceeds the Client's 1 MiB App Server line limit.
+const hydratedThread = (threadId) => ({
+  thread: {
+    id: threadId,
+    turns: [
+      {
+        id: "turn-history",
+        status: "completed",
+        items: [{ id: "message-history", type: "agentMessage", text: "x".repeat(1_200_000) }],
+      },
+    ],
+  },
+});
+
+const resumeThread = (message) => {
+  const hydratesHistory = scenario === "history-large" && message.params.excludeTurns !== true;
+  const thread = hydratesHistory
+    ? hydratedThread(message.params.threadId)
+    : { thread: { id: message.params.threadId } };
+  send({ id: message.id, result: thread });
+};
+
 createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
@@ -52,7 +75,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "thread/resume") {
-    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    resumeThread(message);
     return;
   }
   if (message.method === "turn/start") {

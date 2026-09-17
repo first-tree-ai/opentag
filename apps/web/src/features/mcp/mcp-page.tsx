@@ -558,10 +558,55 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
 
   const impact = useMemo(() => (detail.data ? sharedDefinitionImpact(detail.data) : undefined), [detail.data]);
 
+  const headersChanged = JSON.stringify(headersFromRows(extraHeaders)) !== JSON.stringify(entry.effective.extraHeaders);
+
+  /*
+   * Only the fields the user actually changed are sent.
+   *
+   * Submitting every field is what made an unrelated edit pin the rest: opening this dialog, changing
+   * only the URL, and saving froze `authHeader`, `authScheme`, and the extra headers as this Agent's
+   * overrides of the effective values — so later shared edits silently stopped reaching it. Comparing
+   * against what the form was seeded with is what distinguishes "the user typed this" from "this is
+   * what was on screen".
+   */
+  const bindingPatch = () => ({
+    ...(url !== entry.effective.url ? { url } : {}),
+    ...(authHeader !== entry.effective.authHeader ? { authHeader } : {}),
+    ...(authScheme !== entry.effective.authScheme ? { authScheme } : {}),
+    ...(headersChanged ? { extraHeaders: headersFromRows(extraHeaders) } : {}),
+  });
+
+  /**
+   * Restore one inherited value for this Agent, immediately.
+   *
+   * A separate action from Save, and it closes the dialog when it succeeds: the clear is a complete
+   * intent on its own, and leaving the form open invited a following Save to re-pin what was just
+   * cleared.
+   */
+  const restoreShared = async (clear: {
+    clearUrl?: true;
+    clearAuthHeader?: true;
+    clearAuthScheme?: true;
+    clearExtraHeaders?: true;
+  }) => {
+    setError(undefined);
+    try {
+      await updateBinding.mutateAsync({ mcpServerId: entry.mcpServerId, ...clear });
+      onClose();
+    } catch (cause) {
+      setError(describeActionError(cause, m.mcp_edit_failed()));
+    }
+  };
+
   const submit = async () => {
     setError(undefined);
     try {
       if (scope === "shared") {
+        /*
+         * The shared definition is edited with the definition's own values, not this Agent's effective
+         * ones: an Agent-level override shown in the form would otherwise be copied onto every other
+         * Agent as soon as anyone edited the shared scope.
+         */
         await updateServer.mutateAsync({
           mcpServerId: entry.mcpServerId,
           url,
@@ -574,10 +619,7 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
       } else {
         await updateBinding.mutateAsync({
           mcpServerId: entry.mcpServerId,
-          url,
-          authHeader,
-          authScheme,
-          extraHeaders: headersFromRows(extraHeaders),
+          ...bindingPatch(),
         });
       }
       onClose();
@@ -610,12 +652,27 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
         <Field htmlFor="mcp-edit-url" label={m.mcp_edit_url_label()}>
           <KumoInputControl onChange={(event) => setUrl(event.target.value)} value={url} />
         </Field>
+        {scope === "agent" && entry.overridden.url && url === entry.effective.url ? (
+          <Button onClick={() => void restoreShared({ clearUrl: true })} size="compact" variant="ghost">
+            {m.mcp_edit_clear_url()}
+          </Button>
+        ) : null}
         <Field htmlFor="mcp-auth-header" label={m.mcp_edit_auth_header_label()}>
           <KumoInputControl onChange={(event) => setAuthHeader(event.target.value)} value={authHeader} />
         </Field>
+        {scope === "agent" && entry.overridden.authHeader && authHeader === entry.effective.authHeader ? (
+          <Button onClick={() => void restoreShared({ clearAuthHeader: true })} size="compact" variant="ghost">
+            {m.mcp_edit_clear_auth_header()}
+          </Button>
+        ) : null}
         <Field hint={m.mcp_edit_auth_scheme_help()} htmlFor="mcp-auth-scheme" label={m.mcp_edit_auth_scheme_label()}>
           <KumoInputControl onChange={(event) => setAuthScheme(event.target.value)} value={authScheme} />
         </Field>
+        {scope === "agent" && entry.overridden.authScheme && authScheme === entry.effective.authScheme ? (
+          <Button onClick={() => void restoreShared({ clearAuthScheme: true })} size="compact" variant="ghost">
+            {m.mcp_edit_clear_auth_scheme()}
+          </Button>
+        ) : null}
 
         <div className="grid gap-2">
           <Text variant="body">{m.mcp_edit_advanced()}</Text>
@@ -664,19 +721,11 @@ function EditDialog({ agentId, entry, onClose }: { agentId: string; entry: MCPAg
                  * while sending none keeps the override and empties it. A user who wants the shared
                  * x-workspace-id gone for this Agent only needs the second.
                  */}
-                <Button
-                  onClick={() => {
-                    setExtraHeaders([]);
-                    void updateBinding.mutateAsync({ mcpServerId: entry.mcpServerId, clearExtraHeaders: true });
-                  }}
-                  size="compact"
-                  variant="ghost"
-                >
+                <Button onClick={() => void restoreShared({ clearExtraHeaders: true })} size="compact" variant="ghost">
                   {m.mcp_edit_clear_extra_headers()}
                 </Button>
                 <Button
                   onClick={() => {
-                    setExtraHeaders([]);
                     void updateBinding.mutateAsync({ mcpServerId: entry.mcpServerId, emptyExtraHeaders: true });
                   }}
                   size="compact"

@@ -203,6 +203,61 @@ describe("McpPage", () => {
     expect(await screen.findByText("This will affect 2 Agents: Reviewer, Helper")).toBeTruthy();
   });
 
+  it("sends only the field the user changed, so an unrelated edit pins nothing", async () => {
+    /*
+     * S10. Submitting every field froze the untouched ones as this Agent's overrides of the values on
+     * screen, so a later shared edit silently stopped reaching the Agent — and a web-only user had no
+     * way to undo it, because the "use the shared value" actions existed as copy but were never
+     * rendered. The patch is what distinguishes "the user typed this" from "this is what was shown".
+     */
+    stub([entry()], detail(1));
+    const updates: Record<string, unknown>[] = [];
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation((async (
+      _agentId: string,
+      _serverId: string,
+      patch: Record<string, unknown>,
+    ) => {
+      updates.push(patch);
+      return entry();
+    }) as never);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    // Only the URL is touched here.
+    fireEvent.change(screen.getByLabelText("MCP endpoint"), {
+      target: { value: "https://changed.example.com/mcp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toEqual({ url: "https://changed.example.com/mcp" });
+    // The untouched fields are absent, which is what leaves them inherited.
+    for (const key of ["authHeader", "authScheme", "extraHeaders"]) {
+      expect(updates[0]).not.toHaveProperty(key);
+    }
+  });
+
+  it("offers to restore a shared value for an Agent that overrode it", async () => {
+    // The reverse action, and the only way a web user can undo an override.
+    stub([entry({ overridden: { url: true, authHeader: false, authScheme: false, extraHeaders: false } })], detail(1));
+    const updates: Record<string, unknown>[] = [];
+    vi.spyOn(browserApi, "updateAgentMcpServer").mockImplementation((async (
+      _agentId: string,
+      _serverId: string,
+      patch: Record<string, unknown>,
+    ) => {
+      updates.push(patch);
+      return entry();
+    }) as never);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use the shared URL" }));
+
+    await waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]).toEqual({ clearUrl: true });
+  });
+
   it("mounts the Server it just created, so it appears on the page that created it", async () => {
     /*
      * Creating a definition is Account-level and mounting it is per Agent. A definition left

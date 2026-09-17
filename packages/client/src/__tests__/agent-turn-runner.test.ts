@@ -658,6 +658,10 @@ describe("AgentTurnRunner", () => {
           path: "/tmp/provider-env.sh",
           provider: "slack" as const,
           slackConfigDir: "/tmp/slack-config",
+          executionId: "exec-1",
+          environmentManifest: "/tmp/execution-manifest.json",
+          slackApiHost: "https://127.0.0.1:18443",
+          signal: new AbortController().signal,
         };
       }),
       cleanup: vi.fn(async () => {
@@ -696,9 +700,12 @@ describe("AgentTurnRunner", () => {
         sessionId: "session-1",
         runId: "turn-1",
         configDir: "/tmp/slack-config",
+        environmentManifest: "/tmp/execution-manifest.json",
+        slackApiHost: "https://127.0.0.1:18443",
       },
       expect.any(AbortSignal),
     );
+    expect(credentials.cleanup).toHaveBeenCalledWith("session-1", "exec-1");
 
     const driftedEnsure = vi.fn();
     const drifted = new AgentTurnRunner({
@@ -727,6 +734,46 @@ describe("AgentTurnRunner", () => {
     drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
     await drifted.settled();
     expect(driftedEnsure).not.toHaveBeenCalled();
+    expect(create).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        executionEffects: "not_started",
+        errorReason: "credential_unavailable",
+      }),
+    );
+  });
+
+  it("fails closed when a visible Turn has no IM provider credential", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "e".repeat(64),
+    }));
+    const ensureRuntime = vi.fn();
+    const turnPlan = { prepare: vi.fn(async () => undefined), cleanup: vi.fn(async () => undefined) };
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime,
+        sessionKind: () => "visible",
+      } as unknown as SessionRuntimeManager,
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh" })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      turnPlan,
+    });
+    runner.start(liveOwner({ ...delivery(), deliveryId: "delivery-no-provider" }));
+    await runner.settled();
+    expect(turnPlan.prepare).not.toHaveBeenCalled();
+    expect(ensureRuntime).not.toHaveBeenCalled();
     expect(create).toHaveBeenLastCalledWith(
       expect.objectContaining({
         outcome: "failed",

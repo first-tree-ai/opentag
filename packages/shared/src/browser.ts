@@ -6,6 +6,8 @@ export * from "./computer.js";
 export { ContextTreeRepositorySchema } from "./context-tree.js";
 export * from "./context-tree-operation.js";
 export * from "./errors.js";
+export * from "./github-integration.js";
+export * from "./github-management.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";

@@ -5,7 +5,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -198,6 +198,10 @@ function buildServerEnv(o) {
   return {
     ...copyEnvWithoutSecrets(process.env),
     HOME: o.home,
+    // The Server resolves runtimeControlDirectory to '.opentag-control' under its cwd
+    // (repositoryRoot here), which would leak durable control state past fixture cleanup.
+    // Pin it inside the fixture-owned temporary HOME so workspace cleanup removes it.
+    OPENTAG_RUNTIME_CONTROL_DIRECTORY: join(o.home, "runtime-control"),
     OPENTAG_DATABASE_URL: o.postgres.databaseUrl,
     OPENTAG_AUTO_MIGRATE: "true",
     OPENTAG_ENV: "dev",
@@ -412,7 +416,12 @@ export async function createCloudIdentitiesFixture(options = {}) {
   if (!repositoryRoot || !artifactDirectory) {
     throw new Error("createCloudIdentitiesFixture requires repositoryRoot and artifactDirectory");
   }
-  const workspace = await mkdtemp(join(tmpdir(), "opentag-e2-identities-"));
+  // Canonicalize the platform temporary directory before mkdtemp: on macOS tmpdir() is
+  // /var/folders/... with /var a symlink to /private/var, and the Server session-control
+  // store rejects symlink ancestors. Workspace, home, runtime-control, and cleanup must
+  // all use the physical path.
+  const temporaryRoot = await realpath(tmpdir());
+  const workspace = await mkdtemp(join(temporaryRoot, "opentag-e2-identities-"));
   const resources = { workspace, secrets: [], cleanupFailures: [] };
   try {
     return await assembleFixture({ ...options, resources });

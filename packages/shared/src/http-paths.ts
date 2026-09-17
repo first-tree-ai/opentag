@@ -20,6 +20,18 @@ export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindin
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oauth/callback`;
+/*
+ * Account-scoped GitHub integration management. One deployment-level GitHub App, one current
+ * connection per Account; the OAuth callback and webhook are the only unauthenticated paths and
+ * each has its own verification (state+session claim, raw-body HMAC).
+ */
+export const GITHUB_INTEGRATION_PATH = `${API_V1_PREFIX}/integrations/github`;
+export const GITHUB_INTEGRATION_AUTHORIZATION_PATH = `${GITHUB_INTEGRATION_PATH}/authorization`;
+export const GITHUB_INTEGRATION_REPOSITORIES_PATH = `${GITHUB_INTEGRATION_PATH}/repositories`;
+export const GITHUB_INTEGRATION_BINDINGS_PATH = `${GITHUB_INTEGRATION_PATH}/bindings`;
+export const GITHUB_INTEGRATION_DISCONNECT_PATH = `${GITHUB_INTEGRATION_PATH}/disconnect`;
+export const GITHUB_OAUTH_CALLBACK_PATH = `${GITHUB_INTEGRATION_PATH}/oauth/callback`;
+export const GITHUB_WEBHOOK_PATH = `${GITHUB_INTEGRATION_PATH}/webhook`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
@@ -65,6 +77,9 @@ export const HTTP_PATHS = {
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
+  githubIntegration: GITHUB_INTEGRATION_PATH,
+  githubOAuthCallback: GITHUB_OAUTH_CALLBACK_PATH,
+  githubWebhook: GITHUB_WEBHOOK_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
@@ -203,6 +218,27 @@ export function agentSlackOAuthStartPath(agentId: string): string {
 
 export function agentSlackEventsPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/im-binding/slack/events`;
+}
+
+export function githubIntegrationPath(): string {
+  return GITHUB_INTEGRATION_PATH;
+}
+
+export function githubIntegrationAuthorizationPath(): string {
+  return GITHUB_INTEGRATION_AUTHORIZATION_PATH;
+}
+
+export function githubIntegrationRepositoriesPath(cursor?: string): string {
+  if (cursor === undefined) return GITHUB_INTEGRATION_REPOSITORIES_PATH;
+  return `${GITHUB_INTEGRATION_REPOSITORIES_PATH}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+export function githubIntegrationBindingsPath(): string {
+  return GITHUB_INTEGRATION_BINDINGS_PATH;
+}
+
+export function githubIntegrationDisconnectPath(): string {
+  return GITHUB_INTEGRATION_DISCONNECT_PATH;
 }
 
 export function imBindingDisablePath(imBindingId: string): string {

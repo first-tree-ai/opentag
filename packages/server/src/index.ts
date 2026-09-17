@@ -18,6 +18,7 @@ import {
   initTelemetry,
   shutdownTelemetry,
 } from "./observability/index.js";
+import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -44,6 +45,8 @@ import {
 } from "./services/cloud-run/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
+import { createGitHubIntegration } from "./services/github/index.js";
+import { GitHubCredentialCipher } from "./services/github-credential-material.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import { FeishuInboundReceiptStore } from "./services/im-bindings/feishu/inbound-receipt-store.js";
@@ -127,6 +130,7 @@ export {
 } from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
+export { FileCloudControlAuthority } from "./services/cloud-control-authority.js";
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
 export { SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
@@ -136,6 +140,7 @@ export {
   type SessionCollaborationServiceOptions,
   SessionService,
 } from "./services/sessions/index.js";
+export { createPlatformRuntime };
 
 class InternalNavigationVisibilityService {
   #value: InternalNavigationVisibility = { integrations: false, skills: false };
@@ -212,10 +217,48 @@ function sandboxRunnerRouteOptions(runtime: SandboxRunnerRuntime | undefined):
   return runtime ? { sandboxRunnerService: runtime.sandboxRunnerService, runnerChannel: runtime.runnerChannel } : {};
 }
 
+/*
+ * The legacy key always stays configured for v1 reads; the optional ring turns on authenticated
+ * v2 envelopes and, when the deployment opted in, v2 IM credential writes.
+ */
+function createApplicationCipher(config: ServerConfig): ApplicationCipher {
+  if (!config.encryptionKeyRing) return new ApplicationCipher(config.encryptionKey);
+  return new ApplicationCipher({
+    legacyKey: config.encryptionKey,
+    keys: config.encryptionKeyRing.keys,
+    activeKeyId: config.encryptionKeyRing.activeKeyId,
+    writeVersion: config.imCredentialEncryptionWriteVersion,
+  });
+}
+
+/** Every configured value startup errors must never echo, including the raw key ring JSON. */
+function collectKnownSecrets(environment: NodeJS.ProcessEnv): string[] {
+  return [
+    environment.OPENTAG_DATABASE_URL ?? "",
+    environment.OPENTAG_JWT_SECRET ?? "",
+    environment.BETTER_AUTH_SECRET ?? "",
+    environment.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
+    environment.OPENTAG_ENCRYPTION_KEY ?? "",
+    environment.OPENTAG_ENCRYPTION_KEY_RING ?? "",
+    environment.OPENTAG_OTEL_HEADERS ?? "",
+    environment.OPENTAG_SLACK_CLIENT_SECRET ?? "",
+    environment.OPENTAG_SLACK_SIGNING_SECRET ?? "",
+    environment.OPENTAG_GITHUB_APP_CLIENT_SECRET ?? "",
+    environment.OPENTAG_GITHUB_APP_PRIVATE_KEY ?? "",
+    environment.OPENTAG_GITHUB_APP_WEBHOOK_SECRET ?? "",
+    // The dev-only static Cloud Runner token is a live Google access token while it is set.
+    environment.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN ?? "",
+  ];
+}
+
+function cipherKeySecrets(config: ServerConfig): string[] {
+  return Array.from(config.encryptionKeyRing?.keys.values() ?? [], (key) => Buffer.from(key).toString("base64"));
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
-  const knownSecrets: string[] = [];
+  const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
   const backgroundFailureSupervisor = createBackgroundFailureSupervisor({
@@ -225,17 +268,8 @@ export async function startServer(): Promise<void> {
   });
 
   try {
-    knownSecrets.push(
-      process.env.OPENTAG_DATABASE_URL ?? "",
-      process.env.OPENTAG_JWT_SECRET ?? "",
-      process.env.BETTER_AUTH_SECRET ?? "",
-      process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
-      process.env.OPENTAG_ENCRYPTION_KEY ?? "",
-      process.env.OPENTAG_OTEL_HEADERS ?? "",
-      process.env.OPENTAG_SLACK_CLIENT_SECRET ?? "",
-      process.env.OPENTAG_SLACK_SIGNING_SECRET ?? "",
-    );
     const config = parseServerConfig(process.env);
+    knownSecrets.push(...cipherKeySecrets(config));
     const instanceId = randomUUID();
     await initTelemetry(config.observability.tracing, instanceId);
     readiness.complete("configuration");
@@ -301,11 +335,41 @@ export async function startServer(): Promise<void> {
       },
     });
     const cloudIdentities = config.cloudIdentities;
+
+    const applicationCipher = createApplicationCipher(config);
+    /*
+     * The GitHub management plane exists only when the deployment App is coherently configured;
+     * the routes are registered either way so the UI reads explicit availability instead of a 404.
+     */
+    const github = config.githubApp
+      ? createGitHubIntegration({
+          database,
+          config: config.githubApp,
+          cipher: new GitHubCredentialCipher(applicationCipher),
+          worker: {
+            logger: {
+              warn: (bindings, message) => app?.log.warn(bindings, message),
+              error: (bindings, message) => app?.log.error(bindings, message),
+            },
+          },
+        })
+      : undefined;
+    const custody = new PostgresRuntimeCustodyStore(database);
+    const platformRuntime = await createPlatformRuntime({
+      config,
+      database,
+      cipher: applicationCipher,
+      registry,
+      custody,
+      machineAuth: machineAuthService,
+      ...(github ? { github } : {}),
+      logger: serviceLogger("platform-runtime"),
+    });
     const computerService = new ComputerService(database, authService, {
       providerReadiness: registry,
       cloudIdentities,
+      assertCloudControlCredential: platformRuntime.assertCloudControlCredential,
     });
-    const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
         .select({ computerId: computers.id, runtimeProvider: agents.runtimeProvider })
@@ -366,6 +430,9 @@ export async function startServer(): Promise<void> {
           : { status: "unconfirmed" };
       },
       onActiveBindingChanged: (input) => providerCliReconcileOwner?.onActiveBindingChanged(input),
+      runtimeCredentialValidation: {
+        issueValidationRun: (input) => platformRuntime.credentials.owner.issueValidationRun(input),
+      },
       logger: serviceLogger("im-binding"),
     });
     const accountSetupService = new AccountSetupService(database);
@@ -379,7 +446,7 @@ export async function startServer(): Promise<void> {
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
-    const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
+    const domainOwner = new RuntimeDomainOwner(registry, custody, {
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
@@ -389,6 +456,8 @@ export async function startServer(): Promise<void> {
     providerCliReconcileOwner = new ProviderCliReconcileOwner(registry, {
       listActiveProviderCliRequirements: (computerId) => imBindingService.listActiveProviderCliRequirements(computerId),
       issueIntegrationCliValidationGrant: (input) => imBindingService.issueIntegrationCliValidationGrant(input),
+      issueRuntimeValidationRun: (input) => imBindingService.issueRuntimeValidationRun(input),
+      computerKind: (computerId) => imBindingService.computerKind(computerId),
       shouldPrewarmOfficialProviderClis: (computerId) =>
         computerService.hasActiveAgentWithoutMessagingSetup(computerId),
     });
@@ -532,7 +601,10 @@ export async function startServer(): Promise<void> {
         : {}),
       imResourceService,
       readiness,
+      runtimeAuthService: platformRuntime.auth,
+      runtimeProviderProxy: { transport: platformRuntime.credentials.transport },
       runtime: {
+        runtimeCredentialOwner: platformRuntime.credentials.owner,
         registry,
         domainOwner,
         agentRuntimeTestOwner,
@@ -540,7 +612,7 @@ export async function startServer(): Promise<void> {
         providerCliReconcileOwner,
         channelTarget: () => channelTargetPoller.get(),
       },
-      runtimeDurableWork: { machineAuth: machineAuthService, store: durableWorkStore },
+      runtimeDurableWork: { machineAuth: platformRuntime.auth, store: durableWorkStore },
       runtimeSessions: {
         collaboration: sessionCollaborationService,
         proofs: sessionCliProofService,
@@ -561,12 +633,21 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
+      githubIntegrations: {
+        availability: config.githubApp
+          ? ({ available: true, githubHost: "github.com", appId: config.githubApp.appId } as const)
+          : ({ available: false, githubHost: "github.com", appId: null } as const),
+        publicOrigin: config.publicUrl,
+        secureCookies: isHostedEnvironment(config.environment),
+        ...(github ? { management: github.management, webhook: github.webhook } : {}),
+      },
       ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
       accountSetupService,
     });
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    github?.worker.start();
     channelTargetPoller.start();
     const closeForSignal = () => {
       void app?.close();
@@ -578,6 +659,8 @@ export async function startServer(): Promise<void> {
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
       imDeliveryWorker.stop();
+      if (github) await github.worker.stop();
+      await platformRuntime.close();
       await feishuSetupService.stop();
       await feishuConnections.stop();
       await sql.end();

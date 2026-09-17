@@ -262,6 +262,72 @@ describe("SessionRuntimeManager", () => {
     await feishuManager.close();
   });
 
+  it("injects the active proxy execution environment into visible Sessions only", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-proxy-env-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerCliLaunchPath: (sessionId) =>
+        `${resolve(home, "proxy", sessionId, "bin")}:${resolve(home, "plans", sessionId)}`,
+      providerEnvironment: (sessionId) =>
+        sessionId === "session-1"
+          ? { GH_TOKEN: "otrh_handle", HTTPS_PROXY: "http://127.0.0.1:3128", NO_PROXY: "127.0.0.1,localhost" }
+          : undefined,
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    await expect(
+      new SessionReconciler({ installationId: computerId, preparation: manager, localPolicy: manager }).reconcile(
+        reconcile(computerId, snapshot(1)),
+      ),
+    ).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime("session-1");
+    expect(factory.created[0]?.workspace.environment).toMatchObject({
+      OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
+      GH_TOKEN: "otrh_handle",
+      HTTPS_PROXY: "http://127.0.0.1:3128",
+      NO_PROXY: "127.0.0.1,localhost",
+    });
+    expect(factory.created[0]?.workspace.pathPrepend).toBe(
+      `${resolve(home, "proxy", "session-1", "bin")}:${resolve(home, "plans", "session-1")}`,
+    );
+
+    const internalFactory = new FakeFactory();
+    const internalManager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(internalFactory),
+      providerCliLaunchPath: () => resolve(home, "proxy", "session-internal", "bin"),
+      providerEnvironment: () => ({ GH_TOKEN: "otrh_internal_leak" }),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    await expect(
+      new SessionReconciler({
+        installationId: computerId,
+        preparation: internalManager,
+        localPolicy: internalManager,
+      }).reconcile({
+        ...reconcile(computerId, snapshot(1)),
+        sessionId: "session-internal",
+        sessionKind: "internal",
+        creatorSessionId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await internalManager.ensureRuntime("session-internal");
+    expect(internalFactory.created[0]?.workspace.environment).not.toHaveProperty("GH_TOKEN");
+    expect(internalFactory.created[0]?.workspace.pathPrepend).toBeUndefined();
+
+    await manager.close();
+    await internalManager.close();
+  });
+
   it("prepends the visible launch bin ahead of ambient PATH and never does so for internal Sessions", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-launch-path-"));
     homes.push(home);
@@ -365,6 +431,40 @@ describe("SessionRuntimeManager", () => {
       await manager.close();
     },
   );
+
+  it("passes the managed Context Tree environment into trusted CLI preparation", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-managed-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const contextTree = {
+      ensureAgent: vi.fn(async () => ({ status: "ready" as const, treePath: resolve(home, "tree") })),
+    };
+    const environment = { GITHUB_TOKEN: undefined, HTTPS_PROXY: "http://127.0.0.1:43123" };
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      cliCommand: "opentag-dev",
+      contextTree,
+      contextTreeEnvironment: (sessionId) => (sessionId === "session-1" ? environment : undefined),
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+    const cwd = await workspace.cwd(request.agentId);
+    expect(contextTree.ensureAgent).toHaveBeenCalledWith(cwd, "codex", null, environment);
+    await manager.close();
+  });
 
   it("does not repeat a managed tree already covered by the shared directory grant", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-nested-"));

@@ -20,13 +20,17 @@ async function fixture(
     sessionStartBudgetMs?: number;
     packaged?: boolean;
     platform?: NodeJS.Platform;
+    environment?: NodeJS.ProcessEnv;
+    managedCredentials?: boolean;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "opentag-context-tree-"));
   directories.push(home);
   const calls: string[][] = [];
-  const execFile: ContextTreeExecFile = async (_file, args) => {
+  const environments: Array<NodeJS.ProcessEnv | undefined> = [];
+  const execFile: ContextTreeExecFile = async (_file, args, execOptions) => {
     calls.push([...args.slice(1)]);
+    environments.push(execOptions.env);
     if (options.delay) await new Promise((resolve) => setTimeout(resolve, options.delay));
     if (options.fail) return { stdout: JSON.stringify({ error: { code: options.fail } }) };
     return {
@@ -37,15 +41,16 @@ async function fixture(
   };
   const manager = new ContextTreeManager({
     home,
-    environment: { HOME: home },
+    environment: { HOME: home, ...options.environment },
     execFile,
     contextTreePackage:
       options.packaged === false ? null : { root: home, cliPath: join(home, "cli.mjs"), skillsPath: home },
+    ...(options.managedCredentials ? { managedCredentials: true } : {}),
     sessionStartBudgetMs: options.sessionStartBudgetMs ?? 1000,
     failureCooldownMs: 100,
     platform: options.platform ?? "linux",
   });
-  return { home, cwd: join(home, "agent"), manager, calls };
+  return { home, cwd: join(home, "agent"), manager, calls, environments };
 }
 
 describe("per-Agent ContextTreeManager", () => {
@@ -125,6 +130,84 @@ describe("per-Agent ContextTreeManager", () => {
       status: "unavailable",
       reason: options.reason,
     });
+  });
+});
+
+describe("managed credential Context Tree preparation", () => {
+  it("fails clearly without an execution-local environment and never runs the CLI", async () => {
+    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({
+      status: "unavailable",
+      reason: "AUTHENTICATION_REQUIRED",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("runs the CLI with the execution proxy environment and unsets ambient credentials", async () => {
+    const { cwd, manager, calls, environments } = await fixture({
+      managedCredentials: true,
+      environment: { GITHUB_TOKEN: "ambient", HTTPS_PROXY: "http://ambient.invalid" },
+    });
+    const execution = {
+      GITHUB_TOKEN: undefined,
+      GIT_SSL_CAINFO: "/execution/ca.pem",
+      HTTPS_PROXY: "http://127.0.0.1:43123",
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "Acme/Memory", role: "context_tree" }]),
+      SSL_CERT_FILE: "/execution/ca.pem",
+    };
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toEqual({
+      status: "ready",
+      treePath: "/trees/acme/memory",
+    });
+    expect(calls).toHaveLength(1);
+    expect(environments[0]).toMatchObject({
+      GIT_SSL_CAINFO: "/execution/ca.pem",
+      HTTPS_PROXY: "http://127.0.0.1:43123",
+    });
+    expect(environments[0]).not.toHaveProperty("GITHUB_TOKEN");
+  });
+
+  it("rejects a repository outside the execution grant before the CLI runs", async () => {
+    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
+    const execution = { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "other/memory" }]) };
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toEqual({
+      status: "unavailable",
+      reason: "GITHUB_PERMISSION",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("requires a Context Tree role even when the same repository has code access", async () => {
+    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
+    const execution = { OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "code" }]) };
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toEqual({
+      status: "unavailable",
+      reason: "GITHUB_PERMISSION",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("checks current authority before returning a cached ready tree", async () => {
+    const { cwd, manager, calls } = await fixture({ managedCredentials: true });
+    const execution = {
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "context_tree" }]),
+    };
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", execution)).toMatchObject({ status: "ready" });
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory")).toEqual({
+      status: "unavailable",
+      reason: "AUTHENTICATION_REQUIRED",
+    });
+    expect(await manager.ensureAgent(cwd, "pi", "acme/memory", { OPENTAG_GITHUB_REPOSITORIES: "[]" })).toEqual({
+      status: "unavailable",
+      reason: "GITHUB_PERMISSION",
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("keeps the legacy ambient environment when managed credentials are not active", async () => {
+    const { cwd, manager, environments } = await fixture({ environment: { GITHUB_TOKEN: "ambient" } });
+    await manager.ensureAgent(cwd, "pi", "acme/memory");
+    expect(environments[0]?.GITHUB_TOKEN).toBe("ambient");
   });
 });
 

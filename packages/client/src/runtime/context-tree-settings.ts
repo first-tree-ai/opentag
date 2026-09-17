@@ -7,7 +7,12 @@ import {
 } from "@opentag/shared";
 import { z } from "zod";
 import { ensurePrivateDirectory, readDurableJson, writeDurableFile } from "../storage/durable-file.js";
-import { resolveContextTreePackage, runContextTreeCli } from "./context-tree.js";
+import {
+  managedRepositoryAllowed,
+  mergeContextTreeEnvironment,
+  resolveContextTreePackage,
+  runContextTreeCli,
+} from "./context-tree.js";
 
 const RecordSchema = z.object({ fingerprint: z.string(), result: ContextTreeOperationResponseSchema }).strict();
 type Result = ContextTreeOperationResponse;
@@ -44,6 +49,14 @@ export class ContextTreeSettings {
       exclusive: <T>(operation: () => Promise<T>) => Promise<T>;
       run?: Run;
       budgetMs?: number;
+      /**
+       * Trusted credential mode. Settings operations never fall back to ambient host credentials:
+       * network actions require `managedEnvironment` and otherwise fail with
+       * `authentication_required`. Legacy Local settings keep the existing behavior.
+       */
+      managedCredentials?: boolean;
+      /** Host-side execution environment for managed settings operations, when one is available. */
+      managedEnvironment?: () => NodeJS.ProcessEnv | undefined;
     },
   ) {}
 
@@ -81,14 +94,19 @@ export class ContextTreeSettings {
     }
   }
 
-  #runner(frame: ContextTreeOperationFrame, signal: AbortSignal): Run | undefined {
+  #runner(
+    frame: ContextTreeOperationFrame,
+    signal: AbortSignal,
+    managedEnvironment?: NodeJS.ProcessEnv,
+  ): Run | undefined {
     const assets = resolveContextTreePackage();
     if (!assets && !this.options.run) return undefined;
+    const environment = mergeContextTreeEnvironment(this.options.environment, managedEnvironment);
     const run: Run =
       this.options.run ??
       ((args, cancellation) => {
         if (!assets) throw new Error("Context Tree package missing");
-        return runContextTreeCli(assets, args, { env: this.options.environment, network: true, signal: cancellation });
+        return runContextTreeCli(assets, args, { env: environment, network: true, signal: cancellation });
       });
     return (args, cancellation = signal) => {
       const execute = async () => {
@@ -108,7 +126,23 @@ export class ContextTreeSettings {
 
   async #execute(frame: ContextTreeOperationFrame, signal: AbortSignal, cleanupSignal: AbortSignal): Promise<Result> {
     if (frame.requireStopped && this.options.hasAgentSessions(frame.agentId)) return failed("busy");
-    const run = this.#runner(frame, signal);
+    const input = frame.input;
+    const managedEnvironment = input.action === "disconnect" ? undefined : this.options.managedEnvironment?.();
+    if (this.options.managedCredentials && input.action !== "disconnect" && !managedEnvironment) {
+      // No managed GitHub authority is available for this Computer; never fall back to ambient
+      // host credentials (`gh auth login`, user git config) in proxy mode.
+      return failed("authentication_required");
+    }
+    if (
+      managedEnvironment &&
+      input.action === "connect" &&
+      input.repository &&
+      !managedRepositoryAllowed(managedEnvironment, input.repository)
+    ) {
+      // Explicit consistency check: the selected repository must be inside the managed grant set.
+      return failed("permission_denied");
+    }
+    const run = this.#runner(frame, signal, managedEnvironment);
     if (!run) return failed("capability_missing");
     return this.#executeRecorded(frame, run, cleanupSignal);
   }

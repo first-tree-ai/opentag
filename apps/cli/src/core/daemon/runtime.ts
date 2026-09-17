@@ -21,6 +21,7 @@ import { resolveChannelEnvironment } from "../channel/environment.js";
 import { resolveCommandContext } from "../command/context.js";
 import { createPortableAutoUpdater } from "../update/auto-update.js";
 import { detectInstallMode, type InstallMode } from "../update/install-mode.js";
+import { resolveRuntimeCredentialMode } from "./credential-mode.js";
 import { applyDaemonEnvironment, buildDaemonChildEnvironment } from "./environment.js";
 import { SUPERVISOR_RESTART_EXIT_CODE } from "./handoff.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
@@ -224,6 +225,7 @@ async function createDaemonRuntime(context: DaemonLifecycleContext, signal: Abor
   const runtime = await createClientRuntime(connection, {
     home: context.home,
     environment: context.daemonEnvironment,
+    credentialMode: resolveRuntimeCredentialMode(context.daemonEnvironment),
     clientVersion: CLI_VERSION,
     cliCommand: channelConfig.binName,
     logger: runtimeLogger,

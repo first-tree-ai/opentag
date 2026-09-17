@@ -6,6 +6,7 @@ import { agents, imBindings } from "../../../db/schema/index.js";
 import { isUniqueViolation } from "../../../db/unique-violation.js";
 import type { BackgroundFailureSupervisor } from "../../../observability/background-failure-supervisor.js";
 import type { ApplicationCipher } from "../../crypto.js";
+import { feishuSetupAttemptContext } from "../credential-material.js";
 import {
   type ImBindingService,
   ImBindingServiceError,
@@ -193,7 +194,10 @@ export class FeishuSetupService {
               setupState: "awaiting_user",
               setupOwnerInstanceId: this.#instanceId,
               setupOwnerHeartbeatAt: now,
-              encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+              encryptedSetupContext: this.#cipher.encryptCredential(
+                JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret),
+                feishuSetupAttemptContext(fenced.id, attemptId),
+              ),
               setupExpiresAt: qr.expiresAt,
               lastErrorCode: null,
               updatedAt: now,
@@ -208,9 +212,13 @@ export class FeishuSetupService {
             .returning();
           return updated;
         }
+        // The row ID is fixed before encryption so the setup secret envelope can bind the owning
+        // binding and this attempt as AAD.
+        const bindingId = randomUUID();
         const [created] = await transaction
           .insert(imBindings)
           .values({
+            id: bindingId,
             agentId,
             provider: "feishu",
             status: "provisioning",
@@ -219,7 +227,10 @@ export class FeishuSetupService {
             setupState: "awaiting_user",
             setupOwnerInstanceId: this.#instanceId,
             setupOwnerHeartbeatAt: now,
-            encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+            encryptedSetupContext: this.#cipher.encryptCredential(
+              JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret),
+              feishuSetupAttemptContext(bindingId, attemptId),
+            ),
             setupExpiresAt: qr.expiresAt,
             createdAt: now,
             updatedAt: now,
@@ -568,7 +579,9 @@ export class FeishuSetupService {
   #toAttempt(row: typeof imBindings.$inferSelect): FeishuSetupAttempt {
     if (!row.setupAttemptId || !row.setupIntent || !row.setupState) throw new Error("FEISHU_SETUP_NOT_FOUND");
     const secret = row.encryptedSetupContext
-      ? (JSON.parse(this.#cipher.decrypt(row.encryptedSetupContext)) as AttemptSecret)
+      ? (JSON.parse(
+          this.#cipher.decrypt(row.encryptedSetupContext, feishuSetupAttemptContext(row.id, row.setupAttemptId)),
+        ) as AttemptSecret)
       : undefined;
     const terminal = !["awaiting_user", "validating"].includes(row.setupState);
     return {

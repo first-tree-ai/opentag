@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { link, lstat, readdir, rm } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { createLogger } from "../../observability/logger.js";
 import {
   ensurePrivateDirectory,
@@ -11,7 +11,12 @@ import {
   writeDurableFile,
 } from "../../storage/durable-file.js";
 import { type ProviderCliAccountLayout, resolveProviderCliAccountLayout } from "./account-layout.js";
-import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
+import {
+  computeFileIdentity,
+  computeTargetFingerprint,
+  ProviderCliFileError,
+  type ProviderCliFileIdentity,
+} from "./fingerprint.js";
 import { recoverSessionOutgoingReplyEvidence } from "./outgoing-reply-store.js";
 import { sweepAbandonedOutgoingReplyRuns } from "./outgoing-reply-sweep.js";
 import {
@@ -65,6 +70,10 @@ export interface ProviderCliTurnPlanPrepareInput {
   /** Absolute Slack config leaf supplied by the trusted caller; Feishu must omit this. */
   readonly configDir?: string;
   readonly captureOutgoingReplies?: boolean;
+  /** Runtime proxy mode: absolute path of the current execution environment manifest. */
+  readonly environmentManifest?: string;
+  /** Runtime proxy mode: loopback HTTPS endpoint pinned through `--apihost` (Slack only). */
+  readonly slackApiHost?: string;
 }
 
 export interface ProviderCliPreparedTurnPlan {
@@ -130,6 +139,7 @@ export class ProviderCliTurnPlanManager {
     assertPlanWithinRoot(this.#layout.plans, sessionDir);
     await ensurePrivateDirectory(this.#layout.root, sessionDir);
     assertCaptureOutgoingRepliesInput(input);
+    assertProxyPlanInput(input);
     return await this.#withSessionLock(sessionDir, () =>
       this.#prepareLocked(input, sessionId, runId, sessionDir, signal),
     );
@@ -342,6 +352,64 @@ export class ProviderCliTurnPlanManager {
     expected?: ProviderCliReadySelection,
   ): Promise<ProviderCliTurnPlan> {
     const selection = record.selection;
+    const { fingerprint, identity } = await this.#verifyPlanTarget(selection, record, expected);
+    const shared = {
+      schemaVersion: 1 as const,
+      selectionVersion: selection.version,
+      selectionGeneration: record.generation,
+      targetPath: identity.path,
+      fingerprint,
+      homeNamespace: this.#homeNamespace,
+      sessionId,
+      runId,
+      ...(requestedCaptureOutgoingReplies(input) ? { captureOutgoingReplies: true as const } : {}),
+      ...(input.environmentManifest ? { environmentManifest: input.environmentManifest } : {}),
+    };
+    if (input.provider === "slack") {
+      const configDir = assertProviderCliTurnPlanConfigDir("slack", input.configDir);
+      if (selection.kind === "managed") {
+        return {
+          ...shared,
+          provider: "slack" as const,
+          command: "slack" as const,
+          selectionKind: "managed" as const,
+          artifactId: selection.artifactId,
+          configDir,
+          ...(input.slackApiHost ? { slackApiHost: input.slackApiHost } : {}),
+        };
+      }
+      return {
+        ...shared,
+        provider: "slack" as const,
+        command: "slack" as const,
+        selectionKind: "external" as const,
+        configDir,
+        ...(input.slackApiHost ? { slackApiHost: input.slackApiHost } : {}),
+      };
+    }
+    if (selection.kind === "managed") {
+      return {
+        ...shared,
+        provider: "feishu" as const,
+        command: "lark-cli" as const,
+        selectionKind: "managed" as const,
+        artifactId: selection.artifactId,
+      };
+    }
+    return {
+      ...shared,
+      provider: "feishu" as const,
+      command: "lark-cli" as const,
+      selectionKind: "external" as const,
+    };
+  }
+
+  /** Fail-closed target recheck: the executable must still match the stored selection. */
+  async #verifyPlanTarget(
+    selection: ProviderCliSelectionRecord["selection"],
+    record: ProviderCliSelectionRecord,
+    expected: ProviderCliReadySelection | undefined,
+  ): Promise<{ fingerprint: string; identity: ProviderCliFileIdentity }> {
     const storedPath = providerCliSelectionTargetPath(selection);
     const identity = await computeFileIdentity(storedPath).catch((error: unknown) => {
       logger.debug(
@@ -371,52 +439,7 @@ export class ProviderCliTurnPlanManager {
         "Provider CLI selection no longer matches daemon readiness",
       );
     }
-    const shared = {
-      schemaVersion: 1 as const,
-      selectionVersion: selection.version,
-      selectionGeneration: record.generation,
-      targetPath: identity.path,
-      fingerprint,
-      homeNamespace: this.#homeNamespace,
-      sessionId,
-      runId,
-      ...(requestedCaptureOutgoingReplies(input) ? { captureOutgoingReplies: true as const } : {}),
-    };
-    if (input.provider === "slack") {
-      const configDir = assertProviderCliTurnPlanConfigDir("slack", input.configDir);
-      if (selection.kind === "managed") {
-        return {
-          ...shared,
-          provider: "slack" as const,
-          command: "slack" as const,
-          selectionKind: "managed" as const,
-          artifactId: selection.artifactId,
-          configDir,
-        };
-      }
-      return {
-        ...shared,
-        provider: "slack" as const,
-        command: "slack" as const,
-        selectionKind: "external" as const,
-        configDir,
-      };
-    }
-    if (selection.kind === "managed") {
-      return {
-        ...shared,
-        provider: "feishu" as const,
-        command: "lark-cli" as const,
-        selectionKind: "managed" as const,
-        artifactId: selection.artifactId,
-      };
-    }
-    return {
-      ...shared,
-      provider: "feishu" as const,
-      command: "lark-cli" as const,
-      selectionKind: "external" as const,
-    };
+    return { fingerprint, identity };
   }
 
   async #writeLauncher(sessionDir: string, plan: ProviderCliTurnPlan): Promise<void> {
@@ -536,6 +559,31 @@ function assertCaptureOutgoingRepliesInput(input: ProviderCliTurnPlanPrepareInpu
   }
   if (input.provider === "slack" && input.captureOutgoingReplies) {
     throw new ProviderCliTurnPlanError("plan_invalid", "Slack Provider CLI Turn plans do not capture outgoing replies");
+  }
+}
+
+function assertProxyPlanInput(input: ProviderCliTurnPlanPrepareInput): void {
+  if (input.environmentManifest !== undefined) {
+    if (!isAbsolute(input.environmentManifest) || resolve(input.environmentManifest) !== input.environmentManifest) {
+      throw new ProviderCliTurnPlanError(
+        "plan_invalid",
+        "Provider CLI Turn environment manifest must be an absolute canonical path",
+      );
+    }
+  }
+  if (input.slackApiHost !== undefined) {
+    if (input.provider !== "slack") {
+      throw new ProviderCliTurnPlanError(
+        "plan_invalid",
+        "Provider CLI Turn Slack API host requires the Slack provider",
+      );
+    }
+    if (!/^https:\/\/127\.0\.0\.1:\d{1,5}$/.test(input.slackApiHost)) {
+      throw new ProviderCliTurnPlanError(
+        "plan_invalid",
+        "Provider CLI Turn Slack API host must be a loopback HTTPS endpoint",
+      );
+    }
   }
 }
 

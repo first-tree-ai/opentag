@@ -82,6 +82,11 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
     { action: "disconnect", operationId: ID, expectedRevision: 1, expectedRuntimeConfigRevision: 1, repository: null },
   ],
   internalToolsOffered: [],
+  githubIntegration: [],
+  startGitHubAuthorization: [{ intent: "create", returnSurface: "account-integrations", agentId: null }],
+  githubRepositories: [],
+  updateGitHubBindings: [{ expectedAuthorizationVersion: "1", bindings: [] }],
+  disconnectGitHub: [],
   resetAccountSetup: ["reboard"],
   issueComputerConnectCode: [],
   health: ["/healthz"],
@@ -94,6 +99,13 @@ function headerValue(init: RequestInit | undefined): string | undefined {
   return new Headers(init?.headers).get("x-opentag-csrf") ?? undefined;
 }
 
+/** jsdom exposes no Cookie Store API here; the platform setter writes the probe token. */
+function setDocumentCookie(value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(Document.prototype, "cookie")?.set;
+  if (!setter) throw new Error("The test DOM does not expose a cookie setter");
+  setter.call(document, value);
+}
+
 describe("BrowserApi mutations", () => {
   it("exercises every method the class exposes", () => {
     const exposed = Object.getOwnPropertyNames(BrowserApi.prototype).filter((name) => !INTERNAL.has(name));
@@ -101,7 +113,7 @@ describe("BrowserApi mutations", () => {
   });
 
   it("sends the double-submit token on every non-safe request", async () => {
-    document.cookie = "opentag_csrf=probe-token";
+    setDocumentCookie("opentag_csrf=probe-token");
     const missing: string[] = [];
 
     for (const [name, args] of Object.entries(INVOCATIONS)) {

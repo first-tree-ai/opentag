@@ -1,9 +1,12 @@
+import { createPrivateKey } from "node:crypto";
 import { isIP } from "node:net";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type ChannelConfig,
   type ChannelName,
   ChannelNameSchema,
+  GITHUB_OAUTH_CALLBACK_PATH,
   getChannelConfig,
   SLACK_OAUTH_CALLBACK_PATH,
 } from "@opentag/shared";
@@ -90,8 +93,149 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
+/*
+ * The v2 envelope key ring: a JSON object mapping stable key IDs to canonical base64-encoded
+ * 32-byte keys. Key IDs are printable slugs; the ApplicationCipher constructor re-validates them.
+ * Issues are reported without echoing any configured value, because the values are key material.
+ */
+const ENCRYPTION_KEY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+const EncryptionKeyRingSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .transform((value, context) => {
+    if (value === undefined) return undefined;
+    const invalid = (message: string) => {
+      context.addIssue({ code: "custom", message });
+      return z.NEVER;
+    };
+    let raw: unknown;
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return invalid("Must be a JSON object mapping key IDs to canonical base64-encoded 32-byte keys");
+    }
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      return invalid("Must be a JSON object mapping key IDs to canonical base64-encoded 32-byte keys");
+    }
+    const entries = Object.entries(raw);
+    if (entries.length === 0) return invalid("Must name at least one key");
+    const keys = new Map<string, Uint8Array>();
+    for (const [keyId, encoded] of entries) {
+      if (!ENCRYPTION_KEY_ID_PATTERN.test(keyId)) return invalid("Key IDs must be lowercase alphanumeric slugs");
+      if (typeof encoded !== "string") return invalid("Every ring key must be a base64-encoded 32-byte key");
+      const decoded = Buffer.from(encoded, "base64");
+      if (decoded.byteLength !== 32 || decoded.toString("base64") !== encoded) {
+        return invalid("Every ring key must be a canonical base64-encoded 32-byte key");
+      }
+      keys.set(keyId, new Uint8Array(decoded));
+    }
+    return keys;
+  });
+
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
+
+/*
+ * The App private key arrives either as a base64-encoded PEM (friendly to single-line environment
+ * variables) or as a PEM literal with escaped or real newlines. Validation only checks that the
+ * material parses as an RSA key of at least 2048 bits; the value itself never appears in an issue
+ * or error message, because it is key material.
+ */
+const GitHubAppPrivateKeySchema = z
+  .string()
+  .min(1)
+  .max(16 * 1024)
+  .optional()
+  .transform((value, context) => {
+    if (value === undefined) return undefined;
+    const pem = normalizeGitHubAppPrivateKey(value);
+    if (!pem) {
+      context.addIssue({ code: "custom", message: "Must be a base64-encoded or literal PEM private key" });
+      return z.NEVER;
+    }
+    try {
+      const key = createPrivateKey({ key: pem, format: "pem" });
+      if (key.asymmetricKeyType !== "rsa" || (key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
+        context.addIssue({ code: "custom", message: "Must be an RSA private key of at least 2048 bits" });
+        return z.NEVER;
+      }
+    } catch {
+      context.addIssue({ code: "custom", message: "Must be a parseable PEM private key" });
+      return z.NEVER;
+    }
+    return pem;
+  });
+
+function normalizeGitHubAppPrivateKey(value: string): string | undefined {
+  const trimmed = value.trim();
+  const candidates = [trimmed.replaceAll("\\n", "\n")];
+  try {
+    const decoded = Buffer.from(trimmed, "base64").toString("utf8");
+    if (decoded) candidates.push(decoded);
+  } catch {
+    // Not base64; the literal candidate above is the only one.
+  }
+  for (const candidate of candidates) {
+    if (candidate.includes("-----BEGIN") && candidate.includes("-----END")) {
+      // Canonical form: trimmed body with one trailing newline, so every spelling stores alike.
+      return `${candidate.trim()}\n`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The deployment GitHub App's cross-field rules: all five material values together or none, and an
+ * optional callback URL that stays on this server's origin (HTTPS there when hosted). Extracted from
+ * the schema's refinement so the App rule reads as one unit.
+ */
+function validateGitHubAppConfiguration(
+  value: {
+    OPENTAG_GITHUB_APP_ID?: string | undefined;
+    OPENTAG_GITHUB_APP_CLIENT_ID?: string | undefined;
+    OPENTAG_GITHUB_APP_CLIENT_SECRET?: string | undefined;
+    OPENTAG_GITHUB_APP_PRIVATE_KEY?: string | undefined;
+    OPENTAG_GITHUB_APP_WEBHOOK_SECRET?: string | undefined;
+    OPENTAG_GITHUB_OAUTH_REDIRECT_URL?: string | undefined;
+    OPENTAG_PUBLIC_URL: string;
+    OPENTAG_ENV: ChannelName;
+  },
+  context: z.RefinementCtx,
+): void {
+  const githubAppValues = [
+    value.OPENTAG_GITHUB_APP_ID,
+    value.OPENTAG_GITHUB_APP_CLIENT_ID,
+    value.OPENTAG_GITHUB_APP_CLIENT_SECRET,
+    value.OPENTAG_GITHUB_APP_PRIVATE_KEY,
+    value.OPENTAG_GITHUB_APP_WEBHOOK_SECRET,
+  ];
+  const githubAppConfiguredCount = githubAppValues.filter(Boolean).length;
+  if (githubAppConfiguredCount > 0 && githubAppConfiguredCount < githubAppValues.length) {
+    context.addIssue({
+      code: "custom",
+      message:
+        "OPENTAG_GITHUB_APP_ID, OPENTAG_GITHUB_APP_CLIENT_ID, OPENTAG_GITHUB_APP_CLIENT_SECRET, OPENTAG_GITHUB_APP_PRIVATE_KEY, and OPENTAG_GITHUB_APP_WEBHOOK_SECRET must be configured together",
+    });
+  }
+  if (value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL) {
+    const redirectUrl = parseGitHubOAuthRedirectUrl(value.OPENTAG_GITHUB_OAUTH_REDIRECT_URL, value.OPENTAG_PUBLIC_URL);
+    if (!redirectUrl) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "OPENTAG_GITHUB_OAUTH_REDIRECT_URL must be this server's public origin or the exact GitHub OAuth callback URL",
+      });
+    } else if (isHostedEnvironment(value.OPENTAG_ENV) && !redirectUrl.startsWith("https://")) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_GITHUB_OAUTH_REDIRECT_URL must use HTTPS in hosted environments",
+      });
+    }
+  }
+}
 
 export function isHostedEnvironment(environment: ChannelName): boolean {
   return environment !== "dev";
@@ -102,7 +246,23 @@ const ServerEnvironmentSchema = z
     BETTER_AUTH_SECRET: z.string().min(32),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
+    OPENTAG_RUNTIME_CONTROL_DIRECTORY: z
+      .string()
+      .trim()
+      .min(1)
+      .default(".opentag-control")
+      .transform((value) => resolve(value)),
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
+    OPENTAG_ENCRYPTION_KEY_RING: EncryptionKeyRingSchema,
+    OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1).optional(),
+    /*
+     * IM credential material writes stay on the legacy v1 envelope until a deployment opts into the
+     * authenticated v2 envelope; reads accept both envelopes regardless of this setting.
+     */
+    OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: z
+      .enum(["1", "2"])
+      .default("1")
+      .transform((value) => (value === "2" ? 2 : 1)),
     OPENTAG_ENV: ChannelNameSchema.default("dev"),
     OPENTAG_ENV_EXPLICIT: z.boolean(),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
@@ -121,6 +281,21 @@ const ServerEnvironmentSchema = z
     OPENTAG_SLACK_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_SIGNING_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
+    /*
+     * Deployment-level GitHub App. All five material values are configured together or not at all;
+     * an absent group disables the integration with explicit availability metadata rather than a
+     * half-configured one. The App must issue expiring user access tokens — the management plane
+     * refuses the non-expiring kind instead of silently accepting a credential it cannot maintain.
+     */
+    OPENTAG_GITHUB_APP_ID: z
+      .string()
+      .regex(/^[1-9][0-9]{0,18}$/, "Must be the GitHub App's numeric ID as a decimal string")
+      .optional(),
+    OPENTAG_GITHUB_APP_CLIENT_ID: z.string().trim().min(1).max(255).optional(),
+    OPENTAG_GITHUB_APP_CLIENT_SECRET: z.string().min(1).max(255).optional(),
+    OPENTAG_GITHUB_APP_PRIVATE_KEY: GitHubAppPrivateKeySchema,
+    OPENTAG_GITHUB_APP_WEBHOOK_SECRET: z.string().min(1).max(255).optional(),
+    OPENTAG_GITHUB_OAUTH_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
     /*
@@ -200,6 +375,7 @@ const ServerEnvironmentSchema = z
         });
       }
     }
+    validateGitHubAppConfiguration(value, context);
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
     }
@@ -231,6 +407,30 @@ const ServerEnvironmentSchema = z
           message: "Development authentication bypass requires loopback OPENTAG_HOST and OPENTAG_PUBLIC_URL",
         });
       }
+    }
+  })
+  .superRefine((value, context) => {
+    const keyRing = value.OPENTAG_ENCRYPTION_KEY_RING;
+    const activeKeyId = value.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID;
+    if (Boolean(keyRing) !== Boolean(activeKeyId)) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_ENCRYPTION_KEY_RING and OPENTAG_ENCRYPTION_ACTIVE_KEY_ID must be configured together",
+      });
+      return;
+    }
+    if (keyRing && activeKeyId && !keyRing.has(activeKeyId)) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_ENCRYPTION_ACTIVE_KEY_ID must name a key in OPENTAG_ENCRYPTION_KEY_RING",
+      });
+    }
+    if (value.OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION === 2 && !keyRing) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION=2 requires OPENTAG_ENCRYPTION_KEY_RING and OPENTAG_ENCRYPTION_ACTIVE_KEY_ID",
+      });
     }
   })
   .superRefine((value, context) => {
@@ -274,6 +474,28 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/**
+ * The GitHub OAuth callback always lives on this server's public origin; a deployment may spell
+ * the setting as the bare origin (the canonical callback path is appended) or as the exact
+ * callback URL. Anything else — another origin, credentials, query, fragment — is rejected.
+ */
+export function parseGitHubOAuthRedirectUrl(value: string, publicOrigin: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      return undefined;
+    }
+    if (url.origin !== publicOrigin) return undefined;
+    if (url.pathname === "/" || url.pathname === "") {
+      return new URL(GITHUB_OAUTH_CALLBACK_PATH, publicOrigin).toString();
+    }
+    if (url.pathname !== GITHUB_OAUTH_CALLBACK_PATH) return undefined;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export function parseSlackRedirectUrl(value: string, publicOrigin: string): string | undefined {
   try {
     const url = new URL(value);
@@ -299,6 +521,14 @@ export interface ServerConfig {
   channelTarget: { downloadBaseUrl: string; pollIntervalMs: number };
   databaseUrl: string;
   encryptionKey: Uint8Array;
+  /**
+   * Authenticated v2 envelope key ring for credential material, with the active write key. Absent
+   * while a deployment runs the single legacy key; retired IDs stay present for reads until their
+   * ciphertexts rotate away.
+   */
+  encryptionKeyRing?: { keys: ReadonlyMap<string, Uint8Array>; activeKeyId: string };
+  /** IM credential material write envelope. Reads accept v1 and v2 regardless of this setting. */
+  imCredentialEncryptionWriteVersion: 1 | 2;
   channel: ChannelConfig;
   environment: ChannelName;
   devAuth?: { email: string };
@@ -311,6 +541,14 @@ export interface ServerConfig {
   emailPasswordAuth: boolean;
   google?: { clientId: string; clientSecret: string };
   slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
+  /**
+   * The deployment-level GitHub App the management plane connects Accounts to, present only when
+   * coherently configured (all values together). Secrets stay in this object; they are never
+   * logged. `oauthCallbackUrl` is the resolved exact callback on this server's public origin.
+   */
+  githubApp?: GitHubAppConfig;
+  /** Persistent Server-private metadata and trusted Git staging root; never mounted into Sandboxes. */
+  runtimeControlDirectory: string;
   host: string;
   /** Signs Slack OAuth state. No longer signs any Account credential; Better Auth owns those. */
   jwtSecret: string;
@@ -347,6 +585,17 @@ export interface ServerConfig {
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
 
+export interface GitHubAppConfig {
+  /** The GitHub App's numeric ID (decimal string), not its client ID. */
+  appId: string;
+  clientId: string;
+  clientSecret: string;
+  /** Normalized PEM; parse-validated RSA >= 2048 bits at config load. */
+  privateKey: string;
+  webhookSecret: string;
+  oauthCallbackUrl: string;
+}
+
 export interface DatabaseConfig {
   databaseUrl: string;
   migrationsDirectory: string;
@@ -374,7 +623,11 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
+    OPENTAG_RUNTIME_CONTROL_DIRECTORY: environment.OPENTAG_RUNTIME_CONTROL_DIRECTORY,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
+    OPENTAG_ENCRYPTION_KEY_RING: emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING),
+    OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: emptyToUndefined(environment.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID),
+    OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: environment.OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION,
     OPENTAG_ENV: environment.OPENTAG_ENV,
     OPENTAG_ENV_EXPLICIT: environment.OPENTAG_ENV !== undefined,
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
@@ -387,6 +640,12 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SLACK_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_SECRET),
     OPENTAG_SLACK_SIGNING_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_SIGNING_SECRET),
     OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
+    OPENTAG_GITHUB_APP_ID: emptyToUndefined(environment.OPENTAG_GITHUB_APP_ID),
+    OPENTAG_GITHUB_APP_CLIENT_ID: emptyToUndefined(environment.OPENTAG_GITHUB_APP_CLIENT_ID),
+    OPENTAG_GITHUB_APP_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_APP_CLIENT_SECRET),
+    OPENTAG_GITHUB_APP_PRIVATE_KEY: emptyToUndefined(environment.OPENTAG_GITHUB_APP_PRIVATE_KEY),
+    OPENTAG_GITHUB_APP_WEBHOOK_SECRET: emptyToUndefined(environment.OPENTAG_GITHUB_APP_WEBHOOK_SECRET),
+    OPENTAG_GITHUB_OAUTH_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_GITHUB_OAUTH_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: environment.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,
@@ -413,7 +672,17 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     },
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
+    runtimeControlDirectory: parsed.OPENTAG_RUNTIME_CONTROL_DIRECTORY,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
+    ...(parsed.OPENTAG_ENCRYPTION_KEY_RING && parsed.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID
+      ? {
+          encryptionKeyRing: {
+            keys: parsed.OPENTAG_ENCRYPTION_KEY_RING,
+            activeKeyId: parsed.OPENTAG_ENCRYPTION_ACTIVE_KEY_ID,
+          },
+        }
+      : {}),
+    imCredentialEncryptionWriteVersion: parsed.OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION,
     environment: parsed.OPENTAG_ENV,
     ...(parsed.OPENTAG_DEV_AUTH_BYPASS_ENABLED && parsed.OPENTAG_DEV_AUTH_EMAIL
       ? { devAuth: { email: parsed.OPENTAG_DEV_AUTH_EMAIL } }
@@ -437,6 +706,27 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
+    ...(parsed.OPENTAG_GITHUB_APP_ID &&
+    parsed.OPENTAG_GITHUB_APP_CLIENT_ID &&
+    parsed.OPENTAG_GITHUB_APP_CLIENT_SECRET &&
+    parsed.OPENTAG_GITHUB_APP_PRIVATE_KEY &&
+    parsed.OPENTAG_GITHUB_APP_WEBHOOK_SECRET
+      ? {
+          githubApp: {
+            appId: parsed.OPENTAG_GITHUB_APP_ID,
+            clientId: parsed.OPENTAG_GITHUB_APP_CLIENT_ID,
+            clientSecret: parsed.OPENTAG_GITHUB_APP_CLIENT_SECRET,
+            privateKey: parsed.OPENTAG_GITHUB_APP_PRIVATE_KEY,
+            webhookSecret: parsed.OPENTAG_GITHUB_APP_WEBHOOK_SECRET,
+            oauthCallbackUrl: parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL
+              ? (parseGitHubOAuthRedirectUrl(
+                  parsed.OPENTAG_GITHUB_OAUTH_REDIRECT_URL,
+                  parsed.OPENTAG_PUBLIC_URL,
+                ) as string)
+              : new URL(GITHUB_OAUTH_CALLBACK_PATH, parsed.OPENTAG_PUBLIC_URL).toString(),
+          },
+        }
+      : {}),
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
     observability: {

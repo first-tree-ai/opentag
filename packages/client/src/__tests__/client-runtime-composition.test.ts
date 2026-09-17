@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type ContextTreeOperationFrame,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
@@ -23,15 +24,19 @@ import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-
 import {
   ComposedClientRuntime,
   codexProviderReadiness,
+  composeProviderCliLaunchPath,
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  createCredentialEnvironment,
   createLoginShellDiscovery,
+  createProxyValidationOpener,
   createRuntimeProviderReadinessRefresher,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
   resolvePiHome,
+  resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
 import * as contextTreeModule from "../runtime/context-tree.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
@@ -78,6 +83,161 @@ describe("createClientRuntime production composition", () => {
     } finally {
       runtime.stop();
       await runtime.run();
+    }
+  });
+
+  it("passes a caller-supplied host Context Tree environment into runtime preparation", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-host-environment-");
+    const ensureAgent = vi
+      .spyOn(contextTreeModule.ContextTreeManager.prototype, "ensureAgent")
+      .mockResolvedValue({ status: "unconfigured" });
+    cleanup.push(async () => {
+      ensureAgent.mockRestore();
+    });
+    const trustedEnvironment: Readonly<Record<string, string | undefined>> = {
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/context-tree", role: "context_tree" }]),
+      HTTPS_PROXY: "http://127.0.0.1:43119",
+    };
+    const requestedSessions: string[] = [];
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+      runtimeCredentials: {
+        contextTreeEnvironment: (sessionId) => {
+          requestedSessions.push(sessionId);
+          return trustedEnvironment;
+        },
+      },
+    });
+    const executionEnvironment = vi.spyOn(runtime.credentialEnvironment, "executionEnvironmentForSession");
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(requestedSessions).toEqual(["session-1"]);
+      expect(ensureAgent).toHaveBeenCalledTimes(1);
+      const [cwd, provider, repository, environment] = ensureAgent.mock.calls[0] ?? [];
+      expect(cwd).toBe(await runtime.workspace.cwd("agent-1"));
+      expect(provider).toBe("pi");
+      expect(repository).toBeNull();
+      expect(environment).toBe(trustedEnvironment);
+      // The trusted host mapping must win before the proxy execution environment is consulted.
+      expect(executionEnvironment).not.toHaveBeenCalled();
+    } finally {
+      executionEnvironment.mockRestore();
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("does not reuse the Sandbox execution environment when Cloud has no host Context Tree mapping", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-cloud-absent-mapping-");
+    const ensureAgent = vi
+      .spyOn(contextTreeModule.ContextTreeManager.prototype, "ensureAgent")
+      .mockResolvedValue({ status: "unconfigured" });
+    cleanup.push(async () => {
+      ensureAgent.mockRestore();
+    });
+    const connection = runtimeConnection();
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: new PiAgentRuntimeFactory({
+        probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+      }),
+      home,
+      runtimeCredentials: {
+        sandboxForSession: () => ({
+          sandboxId: randomUUID(),
+          resourceUid: "runtime-sandbox-resource",
+          environmentGeneration: 1,
+        }),
+      },
+    });
+    const executionEnvironment = vi.spyOn(runtime.credentialEnvironment, "executionEnvironmentForSession");
+    try {
+      await expect(
+        runtime.reconciler.reconcile(reconcileRequest(connection.installationId, { ...snapshot(), provider: "pi" })),
+      ).resolves.toMatchObject({ status: "ready" });
+      await runtime.runtimeManager.ensureRuntime("session-1");
+      expect(ensureAgent).toHaveBeenCalledTimes(1);
+      // Cloud keeps the Sandbox loopback out of Context Tree preparation until a trusted
+      // Runner-side mapping exists, so no execution environment argument is passed.
+      expect(ensureAgent.mock.calls[0]).toHaveLength(3);
+      expect(executionEnvironment).not.toHaveBeenCalled();
+    } finally {
+      executionEnvironment.mockRestore();
+      runtime.stop();
+      await runtime.run();
+    }
+  });
+
+  it("dispatches the caller-supplied managed environment to Context Tree settings operations", async () => {
+    const home = await temporaryDirectory("opentag-context-tree-management-environment-");
+    const connection = runtimeConnection();
+    const listeners: Array<Parameters<RuntimeConnection["subscribeBusinessFrames"]>[0]> = [];
+    const subscribe = connection.subscribeBusinessFrames.bind(connection);
+    const businessFrames = vi.spyOn(connection, "subscribeBusinessFrames").mockImplementation((listener) => {
+      listeners.push(listener);
+      return subscribe(listener);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const send = vi.spyOn(connection, "send").mockImplementation(async (frame) => {
+      sent.push(frame as Record<string, unknown>);
+    });
+    const managementEnvironments = vi.fn(() => ({
+      OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/other", role: "context_tree" }]),
+      HTTPS_PROXY: "http://127.0.0.1:43119",
+    }));
+    const runtime = await createClientRuntime(connection, {
+      clientVersion: "0.0.1",
+      credentialMode: "proxy",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory(),
+      home,
+      runtimeCredentials: { contextTreeManagementEnvironment: managementEnvironments },
+    });
+    let running: Promise<void> | undefined;
+    try {
+      running = runtime.run().catch(() => undefined);
+      const frame: ContextTreeOperationFrame = {
+        type: "context-tree:operation",
+        requestId: randomUUID(),
+        agentId: randomUUID(),
+        computerId: connection.installationId,
+        requireStopped: false,
+        input: {
+          operationId: randomUUID(),
+          expectedRevision: 1,
+          expectedRuntimeConfigRevision: 1,
+          action: "connect",
+          repository: "acme/trusted",
+        },
+      };
+      for (const listener of listeners) await listener(frame);
+      // `permission_denied` proves the managed environment reached the settings gate: without the
+      // composition injection the managed operation would fail `authentication_required` instead.
+      expect(managementEnvironments).toHaveBeenCalled();
+      expect(sent).toContainEqual({
+        type: "context-tree:operation:result",
+        requestId: frame.requestId,
+        result: { status: "failed", code: "permission_denied" },
+      });
+      runtime.stop();
+      await running;
+    } finally {
+      runtime.stop();
+      await running;
+      send.mockRestore();
+      businessFrames.mockRestore();
     }
   });
 
@@ -2418,6 +2578,110 @@ class CompositionPiRpcClient implements PiRpcClient {
 
   async close(): Promise<void> {}
 }
+
+describe("proxy CLI launch path composition", () => {
+  it("prepends the execution shim directory only when proxy material is active", () => {
+    expect(composeProviderCliLaunchPath("/execution/session-1/bin", "/plans/session-1")).toBe(
+      `/execution/session-1/bin${delimiter}/plans/session-1`,
+    );
+    expect(composeProviderCliLaunchPath(undefined, "/plans/session-1")).toBe("/plans/session-1");
+  });
+});
+
+describe("proxy validation opener", () => {
+  it("opens the Server-issued validation execution and exposes only execution-local material", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const prepareValidationSession = vi.fn(async () => ({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_handle" },
+      executionId: "exec-1",
+      signal: new AbortController().signal,
+      cleanup,
+    }));
+    const open = createProxyValidationOpener({ prepareValidationSession } as never);
+    await expect(
+      open({
+        agentId: "agent-1",
+        requestId: "11111111-1111-4111-8111-111111111111",
+        validationRunId: "77777777-7777-4777-8777-777777777777",
+      } as never),
+    ).resolves.toMatchObject({
+      arguments: ["--apihost", "https://127.0.0.1:9"],
+      environment: { SLACK_BOT_TOKEN: "otrh_handle" },
+    });
+    expect(prepareValidationSession).toHaveBeenCalledWith(
+      { agentId: "agent-1", placementGeneration: 1, validationRunId: "77777777-7777-4777-8777-777777777777" },
+      undefined,
+    );
+    // No Server-issued validation run or Agent fence: explicit rejection, never raw material.
+    await expect(open({ requestId: "x" } as never)).resolves.toBeUndefined();
+    await expect(open({ agentId: "agent-1" } as never)).resolves.toBeUndefined();
+    expect(prepareValidationSession).toHaveBeenCalledTimes(1);
+
+    const session = await open({
+      agentId: "agent-1",
+      validationRunId: "77777777-7777-4777-8777-777777777777",
+    } as never);
+    await session?.cleanup();
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  it("prefers an explicit opener and disables proxy readiness outside proxy mode", () => {
+    const injected = vi.fn(async () => undefined);
+    expect(resolveProxyValidationOpener({ credentialMode: "legacy", openProxyValidation: injected }, {} as never)).toBe(
+      injected,
+    );
+    const prepareValidationSession = vi.fn(async () => undefined);
+    expect(
+      resolveProxyValidationOpener({ credentialMode: "legacy" }, { prepareValidationSession } as never),
+    ).toBeUndefined();
+    const opener = resolveProxyValidationOpener({ credentialMode: "proxy" }, { prepareValidationSession } as never);
+    expect(opener).toBeTypeOf("function");
+  });
+});
+
+describe("credential environment composition", () => {
+  it("keeps legacy mode by default and forwards the Cloud injection seam in proxy mode", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-credential-mode-"));
+    directories.push(home);
+    const legacy = createCredentialEnvironment(
+      { clientVersion: "0.0.0", home } as never,
+      {
+        send: async () => undefined,
+        subscribeBusinessFrames: () => () => undefined,
+      } as never,
+      createLogger("test"),
+    );
+    expect(legacy.mode).toBe("legacy");
+    await legacy.close();
+
+    const proxy = createCredentialEnvironment(
+      {
+        clientVersion: "0.0.0",
+        credentialMode: "proxy",
+        home,
+        runtimeCredentials: {
+          dataConnectionFactory: async () =>
+            ({
+              closed: false,
+              close: async () => undefined,
+              openStream: async () => ({ status: 200, headers: {}, body: (async function* () {})() }),
+              settled: async () => undefined,
+            }) as never,
+          generateCa: async () => ({ certPath: resolve(home, "ca.pem"), keyPath: resolve(home, "ca-key.pem") }),
+          now: () => 0,
+          openBudgetMs: 100,
+          sandboxForSession: () => undefined,
+          scheduler: { schedule: () => ({ cancel: () => undefined }) },
+        },
+      } as never,
+      { serverUrl: "https://runtime.example" } as never,
+      createLogger("test"),
+    );
+    expect(proxy.mode).toBe("proxy");
+    await proxy.close();
+  });
+});
 
 function readyFactory(
   providerId = "codex",

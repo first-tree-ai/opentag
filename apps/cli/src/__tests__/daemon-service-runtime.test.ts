@@ -44,6 +44,7 @@ const directories: string[] = [];
 afterEach(async () => {
   vi.clearAllMocks();
   delete process.env.OPENTAG_SERVICE_MODE;
+  delete process.env.OPENTAG_RUNTIME_CREDENTIAL_MODE;
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -206,10 +207,49 @@ describe("daemon service runtime", () => {
     await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
 
     expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
-    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: CLI_VERSION });
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({
+      home,
+      clientVersion: CLI_VERSION,
+      credentialMode: "legacy",
+    });
     expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("propagates OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy from daemon.env into the Client Runtime", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-proxy-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy\n", { mode: 0o600 });
+    const signals = new EventEmitter();
+    const run = vi.fn(async () => undefined);
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    clientMocks.createClientRuntime.mockResolvedValue({ run, stop: vi.fn() });
+
+    await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
+
+    expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ credentialMode: "proxy" });
+    const runtimeEnvironment = clientMocks.createClientRuntime.mock.calls[0]?.[1].environment as NodeJS.ProcessEnv;
+    expect(runtimeEnvironment.OPENTAG_RUNTIME_CREDENTIAL_MODE).toBe("proxy");
+  });
+
+  it("fails closed on an invalid credential mode instead of composing a legacy runtime", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-mode-invalid-"));
+    directories.push(home);
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonEnvironment, "OPENTAG_RUNTIME_CREDENTIAL_MODE=sometimes\n", { mode: 0o600 });
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow(
+      "OPENTAG_RUNTIME_CREDENTIAL_MODE must be legacy or proxy",
+    );
+    expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
   });
 
   it("fails closed when the retired credential format cannot be read", async () => {

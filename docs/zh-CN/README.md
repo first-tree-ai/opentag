@@ -4,6 +4,8 @@
 
 从[快速开始](../../README.zh-CN.md#快速开始)或[开发指南](../../DEVELOPMENT.zh-CN.md)开始。
 
+- [平台集成与凭证下发](./platform-integrations-foundation.md)
+
 ## 运行时与消息
 
 - [Runtime 协议](./runtime-protocol.md)

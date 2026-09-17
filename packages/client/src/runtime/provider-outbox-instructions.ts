@@ -69,3 +69,7 @@ function providerBodyInstructions(provider: ProviderOutboxProvider): readonly st
     "Replace `...` with the version-specific lark-cli subcommand and provider-native target options before running it.",
   ];
 }
+
+/** Non-secret execution metadata is discovered without changing native CLI authentication. */
+export const GITHUB_NATIVE_CLI_INSTRUCTIONS =
+  "GitHub integration, when enabled, preconfigures native git and gh. Read OPENTAG_GITHUB_REPOSITORIES for granted repositories, role, branch, publish mode and workBranchPrefix. Create task branches under the supplied workBranchPrefix; Context Tree direct mode targets its configured branch. Authentication and renewal are automatic; do not run interactive login or replace managed credentials.";

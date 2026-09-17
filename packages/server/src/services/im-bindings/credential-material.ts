@@ -24,6 +24,38 @@ export const SlackCredentialSchema = z
 export type FeishuCredential = z.infer<typeof FeishuCredentialSchema>;
 export type SlackCredential = z.infer<typeof SlackCredentialSchema>;
 
+/*
+ * AAD identity contexts for IM credential material. Each binds the encryption purpose to the
+ * stable record that owns the ciphertext: the Feishu binding row, the Slack installation row, or
+ * the owning binding plus the setup attempt. Record IDs are server-generated and never reassigned,
+ * so a value written for one purpose or record can never be opened under another. v1 ciphertexts
+ * predate AAD and still open without a context; every write and read is context-aware regardless.
+ */
+function contextRecordId(value: string): string {
+  if (!value) throw new Error("IM credential encryption contexts require a stable record ID");
+  return value;
+}
+
+export function feishuBindingCredentialContext(bindingId: string): string {
+  return `im-binding-credential:feishu:${contextRecordId(bindingId)}`;
+}
+
+export function slackInstallationCredentialContext(slackInstallationId: string): string {
+  return `slack-installation-credential:${contextRecordId(slackInstallationId)}`;
+}
+
+export function feishuSetupAttemptContext(bindingId: string, attemptId: string): string {
+  return `feishu-setup-context:${contextRecordId(bindingId)}:${contextRecordId(attemptId)}`;
+}
+
+function feishuCredentialAad(options: CredentialDecodeOptions): string | undefined {
+  return options.bindingId ? feishuBindingCredentialContext(options.bindingId) : undefined;
+}
+
+function slackCredentialAad(options: CredentialDecodeOptions): string | undefined {
+  return options.slackInstallationId ? slackInstallationCredentialContext(options.slackInstallationId) : undefined;
+}
+
 export interface CredentialInspection {
   status: "valid" | "invalid";
   grantedCapabilities: string[];
@@ -65,7 +97,7 @@ export function decodeFeishuCredential(
   if (!encryptedCredential) return undefined;
   let plaintext: string;
   try {
-    plaintext = cipher.decrypt(encryptedCredential);
+    plaintext = cipher.decrypt(encryptedCredential, feishuCredentialAad(options));
   } catch {
     options.logger?.warn(
       {
@@ -114,7 +146,7 @@ export function decodeSlackCredential(
   if (!encryptedCredential) return undefined;
   let plaintext: string;
   try {
-    plaintext = cipher.decrypt(encryptedCredential);
+    plaintext = cipher.decrypt(encryptedCredential, slackCredentialAad(options));
   } catch {
     options.logger?.warn(
       {

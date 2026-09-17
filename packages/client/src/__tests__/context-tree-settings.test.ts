@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ContextTreeOperationFrame } from "@opentag/shared";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextTreeSettings, contextTreeStagingName } from "../runtime/context-tree-settings.js";
 
 const roots: string[] = [];
@@ -197,4 +197,40 @@ it("reports a thrown publication failure as uncertain across restart", async () 
     code: "publication_uncertain",
   });
   expect(run.mock.calls.filter(([args]) => args[0] === "publish")).toHaveLength(1);
+});
+
+describe("managed credential Context Tree settings", () => {
+  it("fails clearly without a host-side environment and keeps disconnect local", async () => {
+    const { settings, run } = await fixture();
+    const managed = new ContextTreeSettings({ ...settings.options, managedCredentials: true });
+    expect(await managed.run(frame("connect"))).toEqual({ status: "failed", code: "authentication_required" });
+    expect(await managed.run(frame("create"))).toEqual({ status: "failed", code: "authentication_required" });
+    expect(run).not.toHaveBeenCalled();
+    expect(await managed.run(frame("disconnect"))).toEqual({ status: "completed", repository: null });
+  });
+
+  it("rejects a managed connect outside the granted repository set", async () => {
+    const { settings, run } = await fixture();
+    const managed = new ContextTreeSettings({
+      ...settings.options,
+      managedCredentials: true,
+      managedEnvironment: () => ({ OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "other/memory" }]) }),
+    });
+    expect(await managed.run(frame("connect"))).toEqual({ status: "failed", code: "permission_denied" });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("runs managed connect and create with the host-side environment", async () => {
+    const { settings, run } = await fixture();
+    const managed = new ContextTreeSettings({
+      ...settings.options,
+      managedCredentials: true,
+      managedEnvironment: () => ({
+        OPENTAG_GITHUB_REPOSITORIES: JSON.stringify([{ fullName: "acme/memory", role: "context_tree" }]),
+      }),
+    });
+    expect(await managed.run(frame("connect"))).toEqual({ status: "completed", repository: "acme/memory" });
+    expect(await managed.run(frame("create"))).toEqual({ status: "completed", repository: "acme/memory" });
+    expect(run).toHaveBeenCalled();
+  });
 });

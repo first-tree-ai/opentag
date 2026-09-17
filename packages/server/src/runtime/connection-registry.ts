@@ -55,6 +55,17 @@ export interface ProviderCliCredentialObservation {
   status: IntegrationCredentialExecutionStatus;
 }
 
+/**
+ * Authenticated control identity of the current runtime connection. Nonsecret metadata only:
+ * `credentialId` identifies the machine or Cloud control credential, never a token.
+ */
+export interface RuntimeControlIdentity {
+  credentialId: string;
+  computerId: string;
+  installationId: string;
+  kind: "local" | "cloud";
+}
+
 export interface RuntimeConnectionEntry {
   active?: boolean;
   capabilities?: RuntimeClientCapabilities;
@@ -62,6 +73,7 @@ export interface RuntimeConnectionEntry {
   computerId: string;
   installationId: string;
   connectionId?: string;
+  control?: RuntimeControlIdentity;
   instanceId: string;
   lastHeartbeatAt: number;
   protocolVersion?: RuntimeProtocolVersion;
@@ -122,9 +134,33 @@ export class ConnectionRegistry {
     return current?.instanceId === instanceId && current.socket === socket;
   }
 
+  /** Exact v2 connection fence: the registered instance must still hold the same connectionId. */
+  isCurrentConnection(computerId: string, instanceId: string, connectionId: string): boolean {
+    const current = this.#entries.get(computerId);
+    return current?.instanceId === instanceId && current.active !== false && current.connectionId === connectionId;
+  }
+
   currentInstanceId(computerId: string): string | undefined {
     const current = this.#entries.get(computerId);
     return current?.active === false ? undefined : current?.instanceId;
+  }
+
+  /** Exact v2 connection fence value for Server-issued work bound to one control connection. */
+  currentConnectionId(computerId: string, instanceId: string): string | undefined {
+    const current = this.#entries.get(computerId);
+    if (!current || current.instanceId !== instanceId || current.active === false) return undefined;
+    return current.connectionId;
+  }
+
+  /**
+   * Authenticated identity of the current active Cloud connection, or undefined for Local/absent
+   * connections. Credential validity is re-checked per request by the caller (`isActive`), not at
+   * auth time only.
+   */
+  currentControlIdentity(computerId: string): RuntimeControlIdentity | undefined {
+    const current = this.#entries.get(computerId);
+    if (!current || current.active === false || current.control?.kind !== "cloud") return undefined;
+    return { ...current.control };
   }
 
   installationId(computerId: string): string | undefined {

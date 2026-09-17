@@ -277,3 +277,30 @@ test("a changed line inside an unrun multi-line statement is judged by that stat
   assert.equal(result.passed, false);
   assert.deepEqual(result.uncovered, ["src/example.ts:12"]);
 });
+
+test("a missing or non-string diff is rejected instead of passing as an empty patch", () => {
+  // The workflow once handed the gate `diff.stdout` of a string — undefined — and the parser
+  // coerced it to "", producing the explicit no-executable-lines pass on a pull request full of
+  // real changes. That wiring bug must throw, whatever shape the non-string takes.
+  for (const diff of [undefined, null, false, 0, {}, { stdout: "+export const covered = 1;" }, ["+line"]]) {
+    assert.throws(
+      () => evaluatePatchCoverage({ diff, coverage: {}, repositoryRoot: "/repo", threshold: 80 }),
+      /^Error: A unified diff string is required/,
+      `diff of type ${diff === null ? "null" : typeof diff} must be rejected`,
+    );
+  }
+  assert.throws(
+    () => evaluatePatchCoverage({ coverage: {}, repositoryRoot: "/repo", threshold: 80 }),
+    /^Error: A unified diff string is required/,
+    "an omitted diff property must be rejected",
+  );
+});
+
+test("a legitimately empty diff string keeps the explicit no-executable-lines pass", () => {
+  // An empty string is a real diff: the merge-base comparison found nothing to change.
+  const result = evaluatePatchCoverage({ diff: "", coverage: {}, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.total, 0);
+  assert.equal(result.covered, 0);
+  assert.equal(result.passed, true);
+  assert.equal(result.reason, "no executable changed lines");
+});

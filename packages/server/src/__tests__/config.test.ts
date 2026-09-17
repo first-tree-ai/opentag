@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -34,6 +35,12 @@ const required = {
   OPENTAG_JWT_SECRET: "a-secret-that-is-at-least-32-characters",
   OPENTAG_PUBLIC_URL: "http://localhost:8000",
 };
+
+const githubAppPrivateKeyPem = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: "spki", format: "pem" },
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+}).privateKey;
 
 describe("parseServerConfig", () => {
   it("offers Internal Tools on staging and keeps other environments closed by default", () => {
@@ -217,6 +224,68 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_LOG_LEVEL: "verbose" })).toThrow();
   });
 
+  it("keeps the legacy encryption defaults and fully validates the v2 key ring opt-in", () => {
+    const ringKey = Buffer.alloc(32, 23).toString("base64");
+    const retiredKey = Buffer.alloc(32, 11).toString("base64");
+    // Defaults: no ring, v1 writes, and the single legacy key keeps working untouched.
+    const defaults = parseServerConfig(required);
+    expect(defaults.encryptionKeyRing).toBeUndefined();
+    expect(defaults.imCredentialEncryptionWriteVersion).toBe(1);
+    expect([...defaults.encryptionKey]).toEqual([...Buffer.alloc(32, 7)]);
+
+    const configured = parseServerConfig({
+      ...required,
+      OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ "im-2026-08": retiredKey, "im-2026-09": ringKey }),
+      OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "im-2026-09",
+      OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "2",
+    });
+    expect(configured.encryptionKeyRing?.activeKeyId).toBe("im-2026-09");
+    expect(configured.encryptionKeyRing?.keys.get("im-2026-09")).toEqual(new Uint8Array(Buffer.alloc(32, 23)));
+    expect(configured.imCredentialEncryptionWriteVersion).toBe(2);
+
+    // Ring and active key are coupled; the active key must be in the ring; v2 writes need a ring.
+    expect(() => parseServerConfig({ ...required, OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "im-2026-09" })).toThrow();
+    expect(() =>
+      parseServerConfig({ ...required, OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }) }),
+    ).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }),
+        OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "other",
+      }),
+    ).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "2" })).toThrow();
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENCRYPTION_KEY_RING: JSON.stringify({ main: ringKey }),
+        OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "main",
+        OPENTAG_IM_CREDENTIAL_ENCRYPTION_WRITE_VERSION: "3",
+      }),
+    ).toThrow();
+
+    // Malformed rings fail closed without echoing key material.
+    for (const ring of [
+      "not-json",
+      "[]",
+      "{}",
+      JSON.stringify({ "BAD ID": ringKey }),
+      JSON.stringify({ main: "not-base64" }),
+      JSON.stringify({ main: Buffer.alloc(16).toString("base64") }),
+      JSON.stringify({ main: `${ringKey}==` }),
+      JSON.stringify({ main: 42 }),
+    ]) {
+      expect(() =>
+        parseServerConfig({
+          ...required,
+          OPENTAG_ENCRYPTION_KEY_RING: ring,
+          OPENTAG_ENCRYPTION_ACTIVE_KEY_ID: "main",
+        }),
+      ).toThrow();
+    }
+  });
+
   it("defaults the channel target coordinates to the public release endpoint", () => {
     expect(parseServerConfig(required).channelTarget).toEqual({
       downloadBaseUrl: "https://dl.opentag.build/releases",
@@ -323,6 +392,75 @@ describe("parseServerConfig", () => {
       },
     ]) {
       expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
+    }
+  });
+
+  it("requires complete GitHub App configuration and a callback on this origin", () => {
+    const github = {
+      OPENTAG_GITHUB_APP_ID: "871235",
+      OPENTAG_GITHUB_APP_CLIENT_ID: "Iv1.githubclient",
+      OPENTAG_GITHUB_APP_CLIENT_SECRET: "github-client-secret",
+      OPENTAG_GITHUB_APP_PRIVATE_KEY: githubAppPrivateKeyPem,
+      OPENTAG_GITHUB_APP_WEBHOOK_SECRET: "github-webhook-secret",
+    };
+    const configured = parseServerConfig({ ...required, ...github });
+    expect(configured.githubApp).toMatchObject({
+      appId: "871235",
+      clientId: "Iv1.githubclient",
+      clientSecret: "github-client-secret",
+      webhookSecret: "github-webhook-secret",
+      oauthCallbackUrl: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
+    });
+    expect(configured.githubApp?.privateKey).toContain("-----BEGIN");
+    expect(
+      parseServerConfig({
+        ...required,
+        ...github,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000",
+      }).githubApp?.oauthCallbackUrl,
+    ).toBe("http://localhost:8000/api/v1/integrations/github/oauth/callback");
+    expect(
+      parseServerConfig({
+        ...required,
+        ...github,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/integrations/github/oauth/callback",
+      }).githubApp?.oauthCallbackUrl,
+    ).toBe("http://localhost:8000/api/v1/integrations/github/oauth/callback");
+    // A base64-encoded PEM configures identically to the literal form.
+    expect(
+      parseServerConfig({
+        ...required,
+        ...github,
+        OPENTAG_GITHUB_APP_PRIVATE_KEY: Buffer.from(githubAppPrivateKeyPem, "utf8").toString("base64"),
+      }).githubApp?.privateKey,
+    ).toBe(configured.githubApp?.privateKey);
+    expect(parseServerConfig(required).githubApp).toBeUndefined();
+
+    for (const invalid of [
+      { OPENTAG_GITHUB_APP_ID: "871235" },
+      { ...github, OPENTAG_GITHUB_APP_WEBHOOK_SECRET: undefined },
+      { ...github, OPENTAG_GITHUB_APP_ID: "not-decimal" },
+      { ...github, OPENTAG_GITHUB_APP_PRIVATE_KEY: "not-a-pem" },
+      {
+        ...github,
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "https://evil.example/api/v1/integrations/github/oauth/callback",
+      },
+      { ...github, OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://localhost:8000/api/v1/auth/google/callback" },
+      {
+        ...github,
+        OPENTAG_ENV: "prod",
+        OPENTAG_PUBLIC_URL: "https://opentag.example.com",
+        OPENTAG_GITHUB_OAUTH_REDIRECT_URL: "http://opentag.example.com/api/v1/integrations/github/oauth/callback",
+      },
+    ]) {
+      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
+    }
+    // The all-or-none error never echoes configured material.
+    try {
+      parseServerConfig({ ...required, OPENTAG_GITHUB_APP_CLIENT_SECRET: "github-client-secret" });
+      expect.unreachable("partial GitHub App configuration must fail");
+    } catch (error) {
+      expect(error instanceof Error ? error.message : String(error)).not.toContain("github-client-secret");
     }
   });
 

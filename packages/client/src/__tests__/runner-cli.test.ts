@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -186,6 +186,47 @@ describe("runner CLI entry", () => {
       expect(stderr).not.toContain("canary1234567890".slice(0, length));
     }
   });
+
+  it("real accept treats the source --pi-config-dir as read-only and leaves it byte-identical", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "opentag-runner-src-"));
+    const home = await mkdtemp(join(tmpdir(), "opentag-runner-src-home-"));
+    const source = await mkdtemp(join(tmpdir(), "opentag-runner-src-cfg-"));
+    directories.push(cwd, home, source);
+    const auth = `${JSON.stringify({ deepseek: { type: "api_key", key: "canary-deepseek" }, openai: { type: "api_key", key: "canary-openai" } })}\n`;
+    const models = `${JSON.stringify({
+      models: [
+        { id: "a", provider: "deepseek" },
+        { id: "b", provider: "openai" },
+      ],
+    })}\n`;
+    const settings = `${JSON.stringify({ defaultProvider: "deepseek", theme: "dark" })}\n`;
+    await writeFile(join(source, "auth.json"), auth);
+    await writeFile(join(source, "models.json"), models);
+    await writeFile(join(source, "settings.json"), settings);
+    await writeFile(join(source, "sessions.jsonl"), "not-whitelisted\n");
+    const captured = io();
+    // Without probe tools the acceptance run must fail — but only after the whitelisted copy
+    // stage ran. The source directory is read exactly once by that copy; it is never the
+    // writable PI_CODING_AGENT_DIR (the run only ever sees the filtered scratch copy, which is
+    // removed with the scratch directory), so its bytes and file list must be identical after.
+    const code = await runRunnerCli(
+      ["accept", "--mode", "real", "--pi-config-dir", source, "--provider", "deepseek"],
+      { ...captured, env: { HOME: home, PATH: join(cwd, "empty-bin") } },
+      cwd,
+    );
+    expect(code).toBe(1);
+    // The acceptance report proves the run went through the copy stage and into acceptance
+    // (a copy failure would print a stderr error and no report at all).
+    const report = captured.stdout.chunks.join("");
+    expect(report).toMatch(/offline=failed/);
+    expect(report).toMatch(/model=failed/);
+    expect(await readFile(join(source, "auth.json"), "utf8")).toBe(auth);
+    expect(await readFile(join(source, "models.json"), "utf8")).toBe(models);
+    expect(await readFile(join(source, "settings.json"), "utf8")).toBe(settings);
+    expect((await readdir(source)).sort()).toEqual(["auth.json", "models.json", "sessions.jsonl", "settings.json"]);
+    const output = `${report}${captured.stderr.chunks.join("")}`;
+    expect(output).not.toContain("canary-openai");
+  }, 120_000);
 
   it("rejects real accept without a provider or config directory at parse time", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "opentag-runner-parse-"));

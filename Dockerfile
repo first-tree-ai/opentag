@@ -41,12 +41,18 @@ COPY --from=build /app/packages/server/drizzle packages/server/drizzle
 COPY --from=build /app/apps/web/dist apps/web/dist
 COPY LICENSE /app/LICENSE
 
-RUN addgroup -S opentag && adduser -S -G opentag opentag
+RUN apk add --no-cache git openssh-client ca-certificates \
+  && addgroup -S opentag && adduser -S -G opentag opentag \
+  && mkdir -p /var/lib/opentag/control \
+  && chown -R opentag:opentag /var/lib/opentag \
+  && chmod 700 /var/lib/opentag/control
 
 ENV NODE_ENV=production
 ENV OPENTAG_ENV=prod
 ENV OPENTAG_HOST=0.0.0.0
 ENV OPENTAG_PORT=8000
+ENV OPENTAG_RUNTIME_CONTROL_DIRECTORY=/var/lib/opentag/control
+VOLUME ["/var/lib/opentag/control"]
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -393,7 +393,7 @@ describe("background and WebSocket tracing", () => {
     const setup = new FeishuSetupService({
       activation: { activateAtomicAttempt: vi.fn() },
       cipher: {
-        encrypt: vi.fn().mockReturnValue("encrypted-qr"),
+        encryptCredential: vi.fn().mockReturnValue("encrypted-qr"),
         decrypt: vi.fn().mockReturnValue(JSON.stringify({ qrUrl: "https://example.test/qr" })),
       } as never,
       database: database as never,

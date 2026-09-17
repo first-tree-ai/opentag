@@ -7,6 +7,7 @@ import {
   computeRuntimeSnapshotHashes,
   RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  type RuntimeExecutionSandbox,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
@@ -59,7 +60,6 @@ import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
 import { ContextTreeSettings } from "./context-tree-settings.js";
-import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
@@ -68,13 +68,24 @@ import { cleanupOutgoingReplyRun, collectOutgoingReplyReceipts } from "./provide
 import { ProviderCliReconciler } from "./provider-cli/reconciler.js";
 import { ProviderCliTurnPlanManager } from "./provider-cli/turn-plan-manager.js";
 import { resolveProviderCliTurnRunnerInvocation } from "./provider-cli/turn-runner.js";
-import { ProviderCliValidationRunner } from "./provider-cli/validation-runner.js";
+import {
+  type ProviderCliProxyValidationSession,
+  type ProviderCliValidationRequest,
+  ProviderCliValidationRunner,
+  type ProviderCliValidationRunnerOptions,
+} from "./provider-cli/validation-runner.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import {
+  RuntimeCredentialEnvironmentManager,
+  type RuntimeCredentialMode,
+} from "./runtime-credential-environment-manager.js";
+import type { RuntimeProxyDataConnectionFactory, RuntimeRelayScheduler } from "./runtime-credential-relay.js";
 import {
   FileRuntimeDurabilityStore,
   RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
 } from "./runtime-durability.js";
+import type { RuntimeProxyLoopbackCaMaterial } from "./runtime-proxy-loopback-adapter.js";
 import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
@@ -256,6 +267,41 @@ export interface CreateClientRuntimeOptions {
   readonly capabilityRefreshIntervalMs?: number;
   readonly providerProbeDeadlineMs?: number;
   readonly clientVersion: string;
+  /**
+   * Explicit credential mode. `"proxy"` opens trusted executions with short-lived
+   * capabilities and local handles; it never falls back to raw materials. Default
+   * `"legacy"` preserves the existing Local behavior.
+   */
+  readonly credentialMode?: RuntimeCredentialMode;
+  /**
+   * Proxy mode injection seam for Cloud host composition. Local proxy mode uses the
+   * production defaults (loopback TLS, openssl CA, real WSS client).
+   */
+  readonly runtimeCredentials?: {
+    readonly dataConnectionFactory?: RuntimeProxyDataConnectionFactory;
+    readonly generateCa?: (materialDir: string) => Promise<RuntimeProxyLoopbackCaMaterial>;
+    readonly now?: () => number;
+    readonly openBudgetMs?: number;
+    readonly sandboxForSession?: (sessionId: string) => RuntimeExecutionSandbox | undefined;
+    readonly scheduler?: RuntimeRelayScheduler;
+    /**
+     * Host-side managed environment for the Context Tree CLI (`undefined` entries unset). Local
+     * proxy mode defaults to the live execution environment; Cloud must supply a trusted
+     * Runner-side mapping because the execution environment targets the Sandbox loopback.
+     */
+    readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
+    /** Trusted host-side environment for Context Tree settings operations, when one exists. */
+    readonly contextTreeManagementEnvironment?: () => NodeJS.ProcessEnv | undefined;
+  };
+  /**
+   * Proxy mode only: opens the Server-issued validation execution for CLI readiness.
+   * The Server issues `validationRunId`; the client never invents one. Without this the
+   * proxy readiness path clearly rejects (`needs_attention`) instead of using raw tokens.
+   */
+  readonly openProxyValidation?: (
+    request: ProviderCliValidationRequest,
+    signal?: AbortSignal,
+  ) => Promise<ProviderCliProxyValidationSession | undefined>;
   readonly codexCommand?: string;
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
@@ -278,7 +324,7 @@ export class ComposedClientRuntime {
   readonly #admission: AdmissionController;
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
-  readonly credentialEnvironment: ImCredentialEnvironmentManager;
+  readonly credentialEnvironment: RuntimeCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly reportOwner: TurnReportOwner;
@@ -303,7 +349,7 @@ export class ComposedClientRuntime {
       admission: AdmissionController;
       bindingStore: SessionBindingStore;
       custody: TurnCustodyOwner;
-      credentialEnvironment: ImCredentialEnvironmentManager;
+      credentialEnvironment: RuntimeCredentialEnvironmentManager;
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
@@ -618,11 +664,13 @@ export async function createClientRuntime(
     providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
+  const credentialMode = options.credentialMode ?? "legacy";
   const contextTree = new ContextTreeManager({
     environment: sourceEnvironment,
     codexHome,
     home: options.home,
     logger: moduleLogger("context-tree"),
+    managedCredentials: credentialMode === "proxy",
   });
   const durabilityStore =
     options.durabilityStore ??
@@ -635,18 +683,22 @@ export async function createClientRuntime(
     metrics: durabilityMetrics,
     persistence: durabilityStore,
   });
-  const credentialEnvironment = new ImCredentialEnvironmentManager({
+  const credentialEnvironment = createCredentialEnvironment(
+    options,
     connection,
-    home: options.home,
-    logger: moduleLogger("im-credential-environment"),
-  });
+    moduleLogger("im-credential-environment"),
+  );
   const providerCliReconciler = new ProviderCliReconciler({
     connection,
     logger: moduleLogger("provider-cli-reconciler"),
     manager: new ProviderCliManager({ accountHome: resolveAccountHome() }),
     refreshRuntimeProvider: createRuntimeProviderReadinessRefresher(refreshProviderReadiness, providers),
     signal: readinessSignal,
-    validation: new ProviderCliValidationRunner({ home: options.home }),
+    validation: new ProviderCliValidationRunner({
+      home: options.home,
+      openProxyValidation: resolveProxyValidationOpener(options, credentialEnvironment),
+      proxyCredentialMode: credentialMode === "proxy",
+    }),
   });
   await mkdir(options.home, { recursive: true, mode: 0o700 });
   const providerCliTurnPlans = new ProviderCliTurnPlanManager({
@@ -663,11 +715,24 @@ export async function createClientRuntime(
     cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     contextTree,
+    contextTreeEnvironment: (sessionId) => {
+      const hostSide = options.runtimeCredentials?.contextTreeEnvironment?.(sessionId);
+      if (hostSide) return hostSide;
+      // Cloud: the session execution environment targets the Sandbox-side loopback, so only a
+      // trusted Runner-side mapping from the parent composition can reach the Relay.
+      if (options.runtimeCredentials?.sandboxForSession) return undefined;
+      return credentialEnvironment.executionEnvironmentForSession(sessionId);
+    },
     ensureProviderReady,
     home: options.home,
     providers,
+    providerEnvironment: (sessionId) => credentialEnvironment.environmentForSession(sessionId),
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
-    providerCliLaunchPath: (sessionId) => providerCliTurnPlans.sessionDir(sessionId),
+    providerCliLaunchPath: (sessionId) =>
+      composeProviderCliLaunchPath(
+        credentialEnvironment.shimDirForSession(sessionId),
+        providerCliTurnPlans.sessionDir(sessionId),
+      ),
     slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
     workspace,
@@ -739,6 +804,10 @@ export async function createClientRuntime(
       environment: sourceEnvironment,
       hasAgentSessions: runtimeManager.hasAgentSessions.bind(runtimeManager),
       exclusive: contextTree.runExclusive.bind(contextTree),
+      managedCredentials: credentialMode === "proxy",
+      ...(options.runtimeCredentials?.contextTreeManagementEnvironment
+        ? { managedEnvironment: options.runtimeCredentials.contextTreeManagementEnvironment }
+        : {}),
     }),
     logger: moduleLogger("client-runtime"),
     reconciler,
@@ -1188,4 +1257,78 @@ function createOutgoingReplyCollector(
         runId,
       }),
   };
+}
+
+/**
+ * Credential mode selection plus the Cloud host injection seam. Local proxy mode uses the
+ * production defaults (loopback TLS, openssl CA, real WSS client); the parent harness can
+ * inject its own data connection, CA, sandbox facts, clock, and scheduler.
+ */
+export function createCredentialEnvironment(
+  options: CreateClientRuntimeOptions,
+  connection: RuntimeConnection,
+  logger: ClientLogger,
+): RuntimeCredentialEnvironmentManager {
+  const runtimeCredentials = options.runtimeCredentials;
+  return new RuntimeCredentialEnvironmentManager({
+    connection,
+    home: options.home,
+    logger,
+    mode: options.credentialMode ?? "legacy",
+    serverUrl: connection.serverUrl,
+    ...(runtimeCredentials?.dataConnectionFactory
+      ? { dataConnectionFactory: runtimeCredentials.dataConnectionFactory }
+      : {}),
+    ...(runtimeCredentials?.generateCa ? { generateCa: runtimeCredentials.generateCa } : {}),
+    ...(runtimeCredentials?.now ? { now: runtimeCredentials.now } : {}),
+    ...(runtimeCredentials?.openBudgetMs ? { openBudgetMs: runtimeCredentials.openBudgetMs } : {}),
+    ...(runtimeCredentials?.sandboxForSession ? { sandboxForSession: runtimeCredentials.sandboxForSession } : {}),
+    ...(runtimeCredentials?.scheduler ? { scheduler: runtimeCredentials.scheduler } : {}),
+  });
+}
+
+/**
+ * Explicit `openProxyValidation` injection wins; otherwise proxy mode uses the trusted
+ * manager-backed opener and legacy mode keeps the raw-grant readiness path unchanged.
+ */
+export function resolveProxyValidationOpener(
+  options: Pick<CreateClientRuntimeOptions, "credentialMode" | "openProxyValidation">,
+  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "prepareValidationSession">,
+): ProviderCliValidationRunnerOptions["openProxyValidation"] | undefined {
+  if (options.openProxyValidation) return options.openProxyValidation;
+  return options.credentialMode === "proxy" ? createProxyValidationOpener(credentialEnvironment) : undefined;
+}
+
+/**
+ * Proxy readiness opens the Server-issued validation execution (`validationRunId`) through
+ * the same trusted manager used for business Runs. No raw grant material is ever used, and
+ * a request without Server authority is an explicit rejection rather than a fallback.
+ */
+export function createProxyValidationOpener(
+  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "prepareValidationSession">,
+): (
+  request: ProviderCliValidationRequest,
+  signal?: AbortSignal,
+) => Promise<ProviderCliProxyValidationSession | undefined> {
+  return async (request, signal) => {
+    if (!request.validationRunId || !request.agentId) return undefined;
+    const session = await credentialEnvironment.prepareValidationSession(
+      { agentId: request.agentId, placementGeneration: 1, validationRunId: request.validationRunId },
+      signal,
+    );
+    return {
+      arguments: session.arguments,
+      environment: session.environment,
+      signal: session.signal,
+      cleanup: () => session.cleanup(),
+    };
+  };
+}
+
+/**
+ * Proxy mode prepends the execution shim directory (git/gh) ahead of the Turn launcher
+ * directory (slack/lark-cli) as one PATH prefix; legacy mode keeps the launcher only.
+ */
+export function composeProviderCliLaunchPath(proxyShimDir: string | undefined, turnPlanDir: string): string {
+  return proxyShimDir ? `${proxyShimDir}${delimiter}${turnPlanDir}` : turnPlanDir;
 }

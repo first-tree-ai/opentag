@@ -8,6 +8,7 @@ import type {
   ProviderCliRequirementFrame,
   ProviderCliValidationGrantFrame,
   ProviderCliValidationResultFrame,
+  ProviderCliValidationRunFrame,
   RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import {
@@ -16,6 +17,7 @@ import {
   ProviderCliPrewarmResultFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
+  ProviderCliValidationRunFrameSchema,
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
   RUNTIME_CAPABILITY,
@@ -93,6 +95,9 @@ interface GrantState {
   inflight: boolean;
   readonly requirementRequestId: string;
 }
+
+/** Shared fence shape of a raw validation grant and a Server-issued validation run. */
+type ValidationFenceFrame = ProviderCliValidationGrantFrame | ProviderCliValidationRunFrame;
 
 export class ProviderCliReconciler {
   readonly #connection: ProviderCliReconcilerOptions["connection"];
@@ -289,7 +294,12 @@ export class ProviderCliReconciler {
       return;
     }
     const grant = ProviderCliValidationGrantFrameSchema.safeParse(frame);
-    if (grant.success) await this.#handleGrant(grant.data);
+    if (grant.success) {
+      await this.#handleGrant(grant.data);
+      return;
+    }
+    const validationRun = ProviderCliValidationRunFrameSchema.safeParse(frame);
+    if (validationRun.success) await this.#handleValidationRun(validationRun.data);
   }
 
   async #handlePrewarm(frame: ProviderCliPrewarmFrame): Promise<void> {
@@ -585,7 +595,7 @@ export class ProviderCliReconciler {
 
   async #handleGrant(frame: ProviderCliValidationGrantFrame): Promise<void> {
     this.#pruneGrants();
-    if (!this.#acceptsGrant(frame)) return;
+    if (!this.#acceptsFence(frame)) return;
     if (Date.parse(frame.expiresAt) <= this.#now()) {
       this.#rememberGrant(frame, new AbortController(), true, false);
       await this.#publishValidation(frame, { status: "retrying", reason: "validation_expired" });
@@ -602,7 +612,31 @@ export class ProviderCliReconciler {
     await this.#runValidation(frame, live);
   }
 
-  #acceptsGrant(frame: ProviderCliValidationGrantFrame): boolean {
+  /**
+   * Proxy mode: the Server issues a single-use validation run instead of raw material. The
+   * runner opens a Server-authorized validation execution (read-only identity scope) and
+   * never falls back to raw Cloud tokens.
+   */
+  async #handleValidationRun(frame: ProviderCliValidationRunFrame): Promise<void> {
+    this.#pruneGrants();
+    if (!this.#acceptsFence(frame)) return;
+    if (Date.parse(frame.expiresAt) <= this.#now()) {
+      this.#rememberGrant(frame, new AbortController(), true, false);
+      await this.#publishValidation(frame, { status: "retrying", reason: "validation_expired" });
+      return;
+    }
+    const inspection = await this.#manager.inspect(frame.provider);
+    const ready = this.#readySelection.get(frame.provider);
+    const live = await readySelectionFromInspect(this.#manager.layout, frame.provider, inspection);
+    if (!ready || !live || !selectionsMatch(ready, live)) {
+      this.#rememberGrant(frame, new AbortController(), true, false);
+      await this.#publishValidation(frame, { status: "retrying", reason: "artifact_changed" });
+      return;
+    }
+    await this.#runProxyValidation(frame, live);
+  }
+
+  #acceptsFence(frame: ValidationFenceFrame): boolean {
     if (this.#closed || this.#signal?.aborted) return false;
     const current = this.#current.get(frame.integrationId);
     if (!current || current.requestId !== frame.requirementRequestId) return false;
@@ -613,12 +647,7 @@ export class ProviderCliReconciler {
     return !existing?.consumed && !existing?.inflight;
   }
 
-  #rememberGrant(
-    frame: ProviderCliValidationGrantFrame,
-    abort: AbortController,
-    consumed: boolean,
-    inflight: boolean,
-  ): void {
+  #rememberGrant(frame: ValidationFenceFrame, abort: AbortController, consumed: boolean, inflight: boolean): void {
     this.#grants.set(frame.requestId, {
       abort,
       consumed,
@@ -670,7 +699,51 @@ export class ProviderCliReconciler {
     }
   }
 
-  #finishGrant(frame: ProviderCliValidationGrantFrame, abort: AbortController): boolean {
+  /** Proxy validation run: opens the Server-authorized execution through the runner hook. */
+  async #runProxyValidation(frame: ProviderCliValidationRunFrame, live: ProviderCliReadySelection): Promise<void> {
+    const abort = new AbortController();
+    this.#rememberGrant(frame, abort, false, true);
+    const signal = this.#signal ? AbortSignal.any([this.#signal, abort.signal]) : abort.signal;
+    try {
+      const request: ProviderCliValidationRequest = {
+        expectedFingerprint: live.fingerprint,
+        expectedIdentity: frame.expectedIdentity,
+        expiresAt: frame.expiresAt,
+        requestId: frame.requestId,
+        targetPath: live.path,
+        version: live.version,
+        ...(live.managedDigest ? { managedDigest: live.managedDigest } : {}),
+        agentId: frame.agentId,
+        validationRunId: frame.validationRunId,
+      };
+      const result = await this.#validation.run(
+        request,
+        {
+          requestId: frame.requestId,
+          provider: frame.provider,
+          agentId: frame.agentId,
+          integrationId: frame.integrationId,
+          credentialGeneration: frame.credentialGeneration,
+        },
+        signal,
+      );
+      if (!this.#finishGrant(frame, abort)) return;
+      await this.#publishValidation(frame, result);
+    } catch (error) {
+      logger.debug(
+        {
+          code: "validation_run_failed",
+          provider: frame.provider,
+          error: String(error),
+        },
+        "Provider CLI proxy validation failed",
+      );
+      if (!this.#finishGrant(frame, abort)) return;
+      await this.#publishValidation(frame, { status: "needs_attention" });
+    }
+  }
+
+  #finishGrant(frame: ValidationFenceFrame, abort: AbortController): boolean {
     if (this.#closed || this.#signal?.aborted || abort.signal.aborted) return false;
     const state = this.#grants.get(frame.requestId);
     if (!state || this.#current.get(frame.integrationId)?.requestId !== frame.requirementRequestId) return false;
@@ -734,7 +807,7 @@ export class ProviderCliReconciler {
   }
 
   async #publishValidation(
-    frame: ProviderCliValidationGrantFrame,
+    frame: ValidationFenceFrame,
     result: Pick<ProviderCliValidationResultFrame, "status" | "reason">,
   ): Promise<void> {
     const payload: ProviderCliValidationResultFrame = {

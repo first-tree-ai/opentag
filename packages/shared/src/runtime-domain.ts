@@ -987,6 +987,26 @@ export const ProviderCliValidationGrantFrameSchema = z
     }
   });
 
+export const ProviderCliValidationRunFrameSchema = z
+  .object({
+    type: z.literal("provider-cli:validation:run"),
+    ...providerCliFenceShape,
+    requirementRequestId: RuntimeRequestIdSchema,
+    expiresAt: z.string().datetime({ offset: true }),
+    expectedIdentity: ProviderCliExpectedIdentitySchema,
+    validationRunId: z.string().uuid(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.expectedIdentity.provider !== frame.provider) {
+      context.addIssue({
+        code: "custom",
+        path: ["expectedIdentity", "provider"],
+        message: "The expected identity provider must match the run provider",
+      });
+    }
+  });
+
 export const ProviderCliCancelFrameSchema = z
   .object({
     type: z.literal("provider-cli:cancel"),
@@ -1064,6 +1084,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   ProviderCliPrewarmFrameSchema,
   ProviderCliRequirementFrameSchema,
   ProviderCliValidationGrantFrameSchema,
+  ProviderCliValidationRunFrameSchema,
   ProviderCliCancelFrameSchema,
 ]);
 
@@ -1122,6 +1143,7 @@ export type ProviderCliRequirementFrame = z.infer<typeof ProviderCliRequirementF
 export type ProviderCliArtifactStatusFrame = z.infer<typeof ProviderCliArtifactStatusFrameSchema>;
 export type ProviderCliCancelFrame = z.infer<typeof ProviderCliCancelFrameSchema>;
 export type ProviderCliValidationGrantFrame = z.infer<typeof ProviderCliValidationGrantFrameSchema>;
+export type ProviderCliValidationRunFrame = z.infer<typeof ProviderCliValidationRunFrameSchema>;
 export type ProviderCliValidationResultFrame = z.infer<typeof ProviderCliValidationResultFrameSchema>;
 export type ServerRuntimeBusinessFrame = z.infer<typeof ServerRuntimeBusinessFrameSchema>;
 export type ClientRuntimeBusinessFrame = z.infer<typeof ClientRuntimeBusinessFrameSchema>;

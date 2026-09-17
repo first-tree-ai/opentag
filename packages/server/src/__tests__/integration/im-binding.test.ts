@@ -5751,25 +5751,38 @@ describe("IM binding persistence", () => {
           .set({ currentInstanceId: instanceId })
           .where(eq(computers.id, value.computer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-lock-order-${transition}`));
+        const dispatchedFrame = deferred<DirectImMessageDeliveryRequest>();
         const runtime = await respondingRuntime({
           acceptDeliveries: false,
           database: value.database,
           computerId: value.computer.id,
           instanceId,
-          requestTimeoutMs: 100,
           installationId: value.computer.currentInstallationId,
+          onFrame: (frame) => {
+            if (frame.type !== "im:deliver") return;
+            dispatchedFrame.resolve(frame as unknown as DirectImMessageDeliveryRequest);
+          },
         });
         owners.push(runtime.domain);
-        await imDeliveryWorker({
+        const run = imDeliveryWorker({
           database: value.database,
           registry: runtime.registry,
           domain: runtime.domain,
         }).runOnce();
-        const dispatched = runtime.frames.find(
-          (frame): frame is DirectImMessageDeliveryRequest =>
-            typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "im:deliver",
-        );
-        if (!dispatched) throw new Error("The lock-order fixture was not dispatched");
+        let dispatched: DirectImMessageDeliveryRequest;
+        try {
+          dispatched = await settleWithin(dispatchedFrame.promise);
+          // The delivery is intentionally unanswered; closing the owner rejects the
+          // pending request so the worker pass settles immediately, and the deferred
+          // dispatch release keeps the persisted dispatch custody columns intact.
+          runtime.domain.close();
+          await run;
+        } finally {
+          // Settle the worker pass before teardown closes the database, even when the
+          // dispatch wait above timed out; the original error still propagates.
+          runtime.domain.close();
+          await run.catch(() => undefined);
+        }
         const placementLocked = deferred<void>();
         const releaseMove = deferred<void>();
         const move = new SessionService(value.database, {
@@ -7284,10 +7297,18 @@ describe("IM binding persistence", () => {
       await expect(
         value.imBindingService.requireReauthorization(value.imBindingId, 2, "SLACK_TOKEN_REVOKED"),
       ).resolves.toBe(true);
-      await expect(value.imBindingService.disableFromProvider(value.imBindingId, 2)).resolves.toBe(true);
+      // The reauthorization transition advanced the authorization epoch on both rows in one
+      // transaction, so generation 2 events are now stale.
       await expect(
         value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)),
-      ).resolves.toEqual([expect.objectContaining({ status: "disabled", credentialGeneration: 2 })]);
+      ).resolves.toEqual([expect.objectContaining({ status: "reauthorization_required", credentialGeneration: 3 })]);
+      await expect(value.imBindingService.disableFromProvider(value.imBindingId, 2)).resolves.toBe(false);
+      await expect(value.imBindingService.disableFromProvider(value.imBindingId, 3)).resolves.toBe(true);
+      // Terminal operations are idempotent: a repeated disable at the consumed fence is a no-op.
+      await expect(value.imBindingService.disableFromProvider(value.imBindingId, 3)).resolves.toBe(false);
+      await expect(
+        value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)),
+      ).resolves.toEqual([expect.objectContaining({ status: "disabled", credentialGeneration: 4 })]);
     } finally {
       await value.sql.end();
     }
@@ -7355,8 +7376,9 @@ describe("IM binding persistence", () => {
         bindingState: "active",
         identityClosure: { status: "pending", verifiedAt: null },
       });
+      // The disable consumed generation 1 and advanced the disabled row's epoch to 2.
       await expect(value.database.select().from(imBindings)).resolves.toEqual([
-        expect.objectContaining({ status: "disabled", credentialGeneration: 1, encryptedCredential: null }),
+        expect.objectContaining({ status: "disabled", credentialGeneration: 2, encryptedCredential: null }),
       ]);
     } finally {
       await value.sql.end();

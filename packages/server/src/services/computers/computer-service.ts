@@ -30,6 +30,12 @@ export interface ComputerServiceOptions {
   presenceTimeoutMs?: number;
   providerReadiness?: ProviderReadinessSource;
   cloudIdentities?: { enabled: boolean; runnerVersion?: string };
+  /**
+   * Deployment-injected Cloud control validity hook, invoked for every Cloud credential use.
+   * It must re-verify the authenticated control credential (`isActive`) against the deployment
+   * authority. Cloud registration/heartbeat fails closed when the hook is missing or rejects.
+   */
+  assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
 }
 
 export class ComputerService {
@@ -38,6 +44,7 @@ export class ComputerService {
   readonly #presenceTimeoutMs: number;
   readonly #providerReadiness?: ProviderReadinessSource;
   readonly #cloudIdentities: { enabled: boolean; runnerVersion?: string };
+  readonly #assertCloudControlCredential?: (context: ComputerAuthContext) => Promise<void> | void;
 
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
@@ -45,6 +52,7 @@ export class ComputerService {
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#providerReadiness = options.providerReadiness;
     this.#cloudIdentities = options.cloudIdentities ?? { enabled: false };
+    this.#assertCloudControlCredential = options.assertCloudControlCredential;
   }
 
   /**
@@ -186,7 +194,7 @@ export class ComputerService {
           and(
             eq(computers.id, context.computerId),
             eq(computers.currentInstallationId, context.installationId),
-            eq(computers.kind, "local"),
+            eq(computers.kind, context.kind ?? "local"),
           ),
         )
         .returning({ id: computers.id });
@@ -206,7 +214,7 @@ export class ComputerService {
             eq(computers.id, context.computerId),
             eq(computers.currentInstallationId, context.installationId),
             eq(computers.currentInstanceId, instanceId),
-            eq(computers.kind, "local"),
+            eq(computers.kind, context.kind ?? "local"),
           ),
         )
         .returning({ id: computers.id });
@@ -228,21 +236,37 @@ export class ComputerService {
         lastSeenAt: now,
         updatedAt: now,
       })
-      .where(
-        and(eq(computers.id, computerId), eq(computers.currentInstanceId, instanceId), eq(computers.kind, "local")),
-      )
+      .where(and(eq(computers.id, computerId), eq(computers.currentInstanceId, instanceId)))
       .returning({ id: computers.id });
     return updated.length === 1;
   }
 
   async #lockActiveCredential(transaction: DatabaseTransaction, context: ComputerAuthContext): Promise<void> {
+    const kind = context.kind ?? "local";
     const [computer] = await transaction
       .select({ id: computers.id })
       .from(computers)
-      .where(and(eq(computers.id, context.computerId), eq(computers.kind, "local")))
+      .where(and(eq(computers.id, context.computerId), eq(computers.kind, kind)))
       .limit(1)
       .for("update");
     if (!computer) throw unavailableComputer();
+    if (kind === "cloud") {
+      /*
+       * Cloud control connections have no `computer_credentials` row: their credential is the
+       * deployment-issued control secret verified at auth time. The row lock plus installation
+       * match below fences the logical Cloud Computer; rotation is deployment-side and a replaced
+       * control connection loses every execution through the registry fence.
+       */
+      const [cloudComputer] = await transaction
+        .select({ id: computers.id })
+        .from(computers)
+        .where(and(eq(computers.id, context.computerId), eq(computers.currentInstallationId, context.installationId)))
+        .limit(1);
+      if (!cloudComputer) throw unavailableComputer();
+      if (!this.#assertCloudControlCredential) throw unavailableComputer();
+      await this.#assertCloudControlCredential(context);
+      return;
+    }
     const [active] = await transaction
       .select({ id: computerCredentials.id })
       .from(computerCredentials)

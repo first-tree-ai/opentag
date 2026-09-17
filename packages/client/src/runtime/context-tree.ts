@@ -151,6 +151,11 @@ export interface ContextTreeManagerOptions {
   /** Omit to resolve the installed package; pass `null` for a manager that has none. */
   contextTreePackage?: ContextTreePackage | null;
   execFile?: ContextTreeExecFile;
+  /**
+   * Trusted credential mode. When true, Context Tree CLI children only run with an explicit
+   * execution-local environment and never fall back to ambient host credentials.
+   */
+  managedCredentials?: boolean;
   platform?: NodeJS.Platform;
   /** Absolute path to the Node.js runtime the generated shim should exec. */
   nodePath?: string;
@@ -172,6 +177,7 @@ export class ContextTreeManager {
   readonly #home: string;
   readonly #environment: NodeJS.ProcessEnv;
   readonly #logger: ClientLogger;
+  readonly #managedCredentials: boolean;
   readonly #package: ContextTreePackage | undefined;
   readonly #execFile: ContextTreeExecFile | undefined;
   readonly #platform: NodeJS.Platform;
@@ -191,6 +197,7 @@ export class ContextTreeManager {
     this.#home = resolve(options.home);
     this.#environment = { ...(options.environment ?? process.env) };
     this.#logger = options.logger ?? createLogger("context-tree");
+    this.#managedCredentials = options.managedCredentials === true;
     this.#package =
       options.contextTreePackage === undefined
         ? resolveContextTreePackage()
@@ -219,14 +226,16 @@ export class ContextTreeManager {
     cwd: string,
     provider?: AgentRuntimeProvider,
     repository: string | null = null,
+    environment?: Readonly<Record<string, string | undefined>>,
   ): Promise<ContextTreeStatus> {
-    return this.#withinSessionStartBudget(this.#prepareAgent(cwd, provider, repository));
+    return this.#withinSessionStartBudget(this.#prepareAgent(cwd, provider, repository, environment));
   }
 
   async #prepareAgent(
     cwd: string,
     provider: AgentRuntimeProvider | undefined,
     repository: string | null,
+    environment: Readonly<Record<string, string | undefined>> | undefined,
   ): Promise<ContextTreeStatus> {
     const shimReady = await this.#prepareShim();
     if (repository === null) {
@@ -245,6 +254,9 @@ export class ContextTreeManager {
       });
     }
     const executableFailure = !this.#package ? "PACKAGE_MISSING" : shimReady ? undefined : "SHIM_UNAVAILABLE";
+    const managedFailure = this.#managedFailure(repository, environment);
+    // Cached preparation never substitutes for the current execution grant.
+    if (managedFailure) return this.#unavailable(managedFailure, repository);
 
     const target = `${repository}:${provider ?? "codex"}`;
     if (this.#observedTarget.get(cwd) !== target) {
@@ -257,22 +269,46 @@ export class ContextTreeManager {
     const cooling = this.#cooldown.get(cwd);
     if (cooling?.target === target && cooling.until > Date.now()) return cooling.status;
     if (cooling) this.#cooldown.delete(cwd);
-    return this.#joinPreparation(cwd, repository, target, executableFailure, provider);
+    return this.#joinPreparation(cwd, repository, target, executableFailure ?? managedFailure, provider, environment);
   }
 
-  async #ensureAgentOnce(cwd: string, repository: string, provider?: AgentRuntimeProvider): Promise<ContextTreeStatus> {
+  /**
+   * Managed credential mode only runs the CLI with an explicit execution-local environment and
+   * only for repositories in that execution's granted GitHub set. Legacy mode returns undefined
+   * and keeps the existing ambient-credential behavior.
+   */
+  #managedFailure(
+    repository: string | null,
+    environment: Readonly<Record<string, string | undefined>> | undefined,
+  ): string | undefined {
+    if (!this.#managedCredentials || repository === null) return undefined;
+    if (!environment) return "AUTHENTICATION_REQUIRED";
+    return managedRepositoryAllowed(environment, repository) ? undefined : "GITHUB_PERMISSION";
+  }
+
+  async #ensureAgentOnce(
+    cwd: string,
+    repository: string,
+    provider: AgentRuntimeProvider | undefined,
+    environment: Readonly<Record<string, string | undefined>> | undefined,
+  ): Promise<ContextTreeStatus> {
     if (!this.#package) return this.#unavailable("PACKAGE_MISSING", repository);
-    if (provider === "pi") return this.#ensurePiAgent(cwd, repository);
+    if (provider === "pi") return this.#ensurePiAgent(cwd, repository, environment);
 
     try {
       // `connect` is idempotent for an identical connection and already returns the resolved
       // tree, so it is both the ensure operation and the source of the tree path.
-      const connected = await this.#run(["connect", repository, "--project-path", cwd, "--json"], cwd, true);
+      const connected = await this.#run(
+        ["connect", repository, "--project-path", cwd, "--json"],
+        cwd,
+        true,
+        environment,
+      );
       const treePath = (connected as { tree?: { path?: unknown } }).tree?.path;
       if (typeof treePath !== "string" || treePath.length === 0) return this.#unavailable("CONNECT_FAILED", repository);
       // Claude Code loads skills from the workspace because OpenTag passes `--setting-sources
       // project`; Codex loads them from the account home's `.agents/skills` directory.
-      await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false);
+      await this.#run(["install", "--host", "claude", "--project", cwd], cwd, false, environment);
       const codexInstall = await this.#run(["install", "--host", "codex"], cwd, false, {
         ...this.#environment,
         HOME: resolveAccountHome(this.#environment),
@@ -294,9 +330,18 @@ export class ContextTreeManager {
    * Pi receives the packaged skills through explicit `--skill` arguments in Client composition.
    * Connecting its workspace does not install or overwrite skills in the user's Pi home.
    */
-  async #ensurePiAgent(cwd: string, repository: string): Promise<ContextTreeStatus> {
+  async #ensurePiAgent(
+    cwd: string,
+    repository: string,
+    environment: Readonly<Record<string, string | undefined>> | undefined,
+  ): Promise<ContextTreeStatus> {
     try {
-      const connected = await this.#run(["connect", repository, "--project-path", cwd, "--json"], cwd, true);
+      const connected = await this.#run(
+        ["connect", repository, "--project-path", cwd, "--json"],
+        cwd,
+        true,
+        environment,
+      );
       const treePath = (connected as { tree?: { path?: unknown } }).tree?.path;
       if (typeof treePath !== "string" || treePath.length === 0) return this.#unavailable("CONNECT_FAILED", repository);
       this.#logger.info({ target: repository, treePath }, "Context Tree connected for a Pi Agent workspace");
@@ -309,13 +354,19 @@ export class ContextTreeManager {
   }
 
   /** OpenTag always invokes the packaged CLI directly, so a broken shim cannot redirect it. */
-  async #run(args: readonly string[], cwd: string, network: boolean, env?: NodeJS.ProcessEnv): Promise<unknown> {
+  async #run(
+    args: readonly string[],
+    cwd: string,
+    network: boolean,
+    environment?: Readonly<Record<string, string | undefined>>,
+  ): Promise<unknown> {
     if (!this.#package) throw new ContextTreeCliFailure("PACKAGE_MISSING");
+    if (this.#managedCredentials && network && !environment) throw new ContextTreeCliFailure("AUTHENTICATION_REQUIRED");
     const { payload, failureCode } = await runContextTreeCli(this.#package, args, {
       cwd,
       network,
       nodePath: this.#nodePath,
-      env: env ?? this.#environment,
+      env: mergeContextTreeEnvironment(this.#environment, environment),
       ...(this.#execFile ? { execFile: this.#execFile } : {}),
     });
     if (failureCode !== undefined) throw new ContextTreeCliFailure(failureCode);
@@ -371,17 +422,18 @@ export class ContextTreeManager {
     cwd: string,
     repository: string,
     target: string,
-    executableFailure?: string,
-    provider?: AgentRuntimeProvider,
+    preparationFailure: string | undefined,
+    provider: AgentRuntimeProvider | undefined,
+    environment: Readonly<Record<string, string | undefined>> | undefined,
   ): Promise<ContextTreeStatus> {
     const current = this.#inFlight.get(cwd);
     if (current?.target === target) return current.promise;
     // The CLI's connection store has no cross-process lock, so background work remains serialized
     // even though Session callers stop waiting after their short budget.
     const prepared = this.#serialize(async () =>
-      executableFailure
-        ? this.#unavailable(executableFailure, repository)
-        : this.#ensureAgentOnce(cwd, repository, provider),
+      preparationFailure
+        ? this.#unavailable(preparationFailure, repository)
+        : this.#ensureAgentOnce(cwd, repository, provider, environment),
     ).catch((error: unknown) => {
       this.#logger.error({ err: describe(error) }, "Context Tree preparation raised an unexpected failure");
       return { status: "unavailable", reason: "CLI_FAILED" } as const;
@@ -436,4 +488,48 @@ export class ContextTreeManager {
 /** Never log tree contents, credentials, or full command output. */
 function describe(error: unknown): string {
   return error instanceof Error ? error.name : "unknown";
+}
+
+/**
+ * Merge an execution-local environment over the base environment. `undefined` override entries
+ * unset the inherited variable, so a managed CLI child never inherits ambient credentials.
+ */
+export function mergeContextTreeEnvironment(
+  base: NodeJS.ProcessEnv,
+  overrides?: Readonly<Record<string, string | undefined>>,
+): NodeJS.ProcessEnv {
+  const merged: NodeJS.ProcessEnv = { ...base };
+  if (!overrides) return merged;
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete merged[key];
+    else merged[key] = value;
+  }
+  return merged;
+}
+
+/**
+ * True when the execution-local GitHub metadata grants this repository. Managed Context Tree
+ * preparation must never reach a repository outside the current execution's granted set; this is
+ * a consistency pre-check only, and the GitHub proxy still revalidates the exact target on every
+ * request.
+ */
+export function managedRepositoryAllowed(
+  environment: Readonly<Record<string, string | undefined>>,
+  repository: string,
+): boolean {
+  const raw = environment.OPENTAG_GITHUB_REPOSITORIES;
+  if (typeof raw !== "string" || raw.length === 0) return false;
+  let entries: unknown;
+  try {
+    entries = JSON.parse(raw);
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(entries)) return false;
+  const wanted = repository.toLowerCase();
+  return entries.some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const { fullName, role } = entry as { fullName?: unknown; role?: unknown };
+    return role === "context_tree" && typeof fullName === "string" && fullName.toLowerCase() === wanted;
+  });
 }

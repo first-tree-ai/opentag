@@ -15,6 +15,7 @@ import {
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../../storage/home-layout.js";
+import { runtimeProxyErrorReason } from "../runtime-credential-frames.js";
 import { findProviderCliCatalogEntry } from "./catalog.js";
 import { computeFileIdentity, computeTargetFingerprint } from "./fingerprint.js";
 import { providerCliProbeEnvironment } from "./probe.js";
@@ -47,6 +48,19 @@ export type ProviderCliValidationExecFile = (
   },
 ) => Promise<{ stderr: string; stdout: string }>;
 
+/**
+ * One Server-authorized validation execution: read-only identity scope, no business
+ * Session, no raw grant material. The environment carries execution-local handles and
+ * loopback TLS settings only; `signal` fires when the Server revokes the execution.
+ */
+export interface ProviderCliProxyValidationSession {
+  /** Extra CLI flags inserted after the managed `--skip-update --config-dir` prefix. */
+  readonly arguments?: readonly string[];
+  readonly environment: Readonly<Record<string, string | undefined>>;
+  readonly signal?: AbortSignal;
+  cleanup(): Promise<void>;
+}
+
 export interface ProviderCliValidationRunnerOptions {
   readonly exchangeFeishuToken?: (
     grant: Extract<ProviderCliValidationGrantFrame["grant"], { provider: "feishu" }>,
@@ -57,6 +71,17 @@ export interface ProviderCliValidationRunnerOptions {
   readonly home: string;
   readonly logger?: ClientLogger;
   readonly now?: () => number;
+  /**
+   * Proxy credential mode: raw grant material is never accepted. Proxy mode requires
+   * `openProxyValidation` to open a Server-issued validation execution
+   * (`source.kind === "validation"`); without it readiness clearly rejects
+   * (`needs_attention`) instead of falling back to raw Cloud tokens.
+   */
+  readonly openProxyValidation?: (
+    request: ProviderCliValidationRequest,
+    signal?: AbortSignal,
+  ) => Promise<ProviderCliProxyValidationSession | undefined>;
+  readonly proxyCredentialMode?: boolean;
   readonly verifyTarget?: (request: ProviderCliValidationRequest) => Promise<boolean>;
 }
 
@@ -64,12 +89,21 @@ export interface ProviderCliValidationRequest {
   readonly expectedFingerprint: string;
   readonly expectedIdentity: ProviderCliExpectedIdentity;
   readonly expiresAt: string;
-  readonly grant: ProviderCliValidationGrantFrame["grant"];
+  /** Legacy Local raw material; proxy validation runs carry `validationRunId` instead. */
+  readonly grant?: ProviderCliValidationGrantFrame["grant"];
+  /** Proxy mode: Server-issued validation run identity (never invented by the Client). */
+  readonly validationRunId?: string;
+  /** Proxy mode: Agent the Server fenced the validation run to. */
+  readonly agentId?: string;
   readonly managedDigest?: string;
   readonly requestId: string;
   readonly targetPath: string;
   readonly version: string;
 }
+
+type ProviderCliValidationGrantRequest = ProviderCliValidationRequest & {
+  readonly grant: ProviderCliValidationGrantFrame["grant"];
+};
 
 type ProviderCliValidationFence = Omit<ProviderCliValidationResultFrame, "status" | "reason" | "type">;
 type ProviderCliValidationResult = Omit<ProviderCliValidationResultFrame, "type">;
@@ -87,6 +121,8 @@ export class ProviderCliValidationRunner {
   readonly #home: string;
   readonly #logger: ClientLogger;
   readonly #now: () => number;
+  readonly #openProxyValidation?: ProviderCliValidationRunnerOptions["openProxyValidation"];
+  readonly #proxyCredentialMode: boolean;
   readonly #root: string;
   readonly #verifyTarget: (request: ProviderCliValidationRequest) => Promise<boolean>;
   #busy = false;
@@ -98,6 +134,8 @@ export class ProviderCliValidationRunner {
       ((grant, signal) => exchangeFeishuTenantToken(grant, signal, options.fetch ?? fetch));
     this.#execFile = options.execFile ?? defaultExecFile;
     this.#now = options.now ?? Date.now;
+    this.#openProxyValidation = options.openProxyValidation;
+    this.#proxyCredentialMode = options.proxyCredentialMode ?? false;
     this.#verifyTarget = options.verifyTarget ?? verifyTargetFingerprint;
     const layout = resolveOpenTagHomeLayout(options.home);
     this.#home = layout.home;
@@ -113,6 +151,7 @@ export class ProviderCliValidationRunner {
   ): Promise<ProviderCliValidationResult> {
     await this.#startupCleanup;
     signal?.throwIfAborted();
+    if (this.#proxyCredentialMode) return this.#runProxyValidation(request, fence, signal);
     if (Date.parse(request.expiresAt) <= this.#now()) {
       return { ...fence, status: "retrying", reason: "validation_expired" };
     }
@@ -132,10 +171,19 @@ export class ProviderCliValidationRunner {
       }
       const catalog = findProviderCliCatalogEntry(fence.provider);
       const env = scrubbedEnvironment(workDir, catalog?.managedEnvironment ?? {});
-      const classification = await this.#classifyRequest(request, env, workDir, signal);
+      if (!request.grant) return { ...fence, status: "needs_attention" };
+      const classification = await this.#classifyRequest(
+        request as ProviderCliValidationGrantRequest,
+        env,
+        workDir,
+        signal,
+      );
       return validationResult(fence, classification);
     } catch (error) {
-      this.#logger.debug({ code: "validation_run_failed", error: String(error) }, "Provider CLI validation run failed");
+      this.#logger.debug(
+        { code: "validation_run_failed", error: runtimeProxyErrorReason(error) },
+        "Provider CLI validation run failed",
+      );
       return validationFailureResult(fence, error, signal);
     } finally {
       try {
@@ -153,8 +201,119 @@ export class ProviderCliValidationRunner {
     await Promise.all(PRIVATE_DIRS.map((child) => mkdir(join(workDir, child), { mode: 0o700 })));
   }
 
-  async #classifyRequest(
+  /**
+   * Proxy readiness: open a Server-issued validation execution with read-only identity
+   * scope, run the same native identity probe with the execution-local environment, and
+   * always release the execution before reporting. Missing validation authority is an
+   * explicit `needs_attention`; raw grant material is never used.
+   */
+  async #runProxyValidation(
     request: ProviderCliValidationRequest,
+    fence: ProviderCliValidationFence,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliValidationResult> {
+    const open = this.#openProxyValidation;
+    if (!open) return { ...fence, status: "needs_attention" };
+    if (!request.validationRunId) return { ...fence, status: "needs_attention" };
+    if (Date.parse(request.expiresAt) <= this.#now()) {
+      return { ...fence, status: "retrying", reason: "validation_expired" };
+    }
+    if (this.#busy) {
+      return { ...fence, status: "retrying", reason: "validation_busy" };
+    }
+    this.#busy = true;
+    const requestKey = deriveProviderCliValidationRequestKey(request.requestId);
+    const workDir = join(this.#root, requestKey);
+    let session: ProviderCliProxyValidationSession | undefined;
+    try {
+      await this.#prepareWorkDirectory(workDir);
+      if (!(await this.#verifyTarget(request))) {
+        return { ...fence, status: "retrying", reason: "artifact_changed" };
+      }
+      session = await open(request, signal);
+      if (!session) return { ...fence, status: "needs_attention" };
+      const combinedSignal = combineSignals(signal, session.signal);
+      combinedSignal?.throwIfAborted();
+      const catalog = findProviderCliCatalogEntry(fence.provider);
+      const env = scrubbedEnvironment(workDir, catalog?.managedEnvironment ?? {});
+      for (const [key, value] of Object.entries(session.environment)) {
+        if (value === undefined) delete env[key];
+        else env[key] = value;
+      }
+      const classification = await this.#classifyProxyRequest(
+        fence.provider,
+        request,
+        env,
+        workDir,
+        session.arguments ?? [],
+        combinedSignal,
+      );
+      return validationResult(fence, classification);
+    } catch (error) {
+      this.#logger.debug(
+        { code: "validation_run_failed", error: runtimeProxyErrorReason(error) },
+        "Provider CLI proxy validation run failed",
+      );
+      return validationFailureResult(fence, error, signal);
+    } finally {
+      try {
+        await session?.cleanup().catch((error: unknown) => {
+          this.#logger.debug(
+            { code: "validation_session_cleanup_failed", error: runtimeProxyErrorReason(error) },
+            "Proxy validation session cleanup failed",
+          );
+        });
+        await rm(workDir, { recursive: true, force: true });
+      } finally {
+        this.#busy = false;
+      }
+    }
+  }
+
+  /** Read-only identity probes only; the Server enforces the validation purpose scope. */
+  async #classifyProxyRequest(
+    provider: "feishu" | "slack",
+    request: ProviderCliValidationRequest,
+    env: NodeJS.ProcessEnv,
+    workDir: string,
+    extraArguments: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ProviderCliValidationClassification> {
+    if (provider === "slack") {
+      return this.#runProcess(
+        request.targetPath,
+        ["--skip-update", "--config-dir", join(workDir, "config"), ...extraArguments, "api", "auth.test"],
+        env,
+        workDir,
+        (payload) =>
+          classifySlackAuthTest(
+            payload,
+            request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "slack" }>,
+            this.#logger,
+          ),
+        signal,
+      );
+    }
+    if (provider === "feishu" && request.expectedIdentity.provider === "feishu") {
+      return this.#runProcess(
+        request.targetPath,
+        ["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson", ...extraArguments],
+        env,
+        workDir,
+        (payload) =>
+          classifyLarkAuthStatus(
+            payload,
+            request.expectedIdentity as Extract<ProviderCliExpectedIdentity, { provider: "feishu" }>,
+            this.#logger,
+          ),
+        signal,
+      );
+    }
+    return { status: "needs_attention" };
+  }
+
+  async #classifyRequest(
+    request: ProviderCliValidationGrantRequest,
     env: NodeJS.ProcessEnv,
     workDir: string,
     signal?: AbortSignal,
@@ -179,7 +338,7 @@ export class ProviderCliValidationRunner {
   }
 
   async #classifyFeishuRequest(
-    request: ProviderCliValidationRequest,
+    request: ProviderCliValidationGrantRequest,
     env: NodeJS.ProcessEnv,
     workDir: string,
     signal?: AbortSignal,
@@ -219,7 +378,7 @@ export class ProviderCliValidationRunner {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       this.#logger.debug(
-        { code: "validation_cleanup_scan_failed", error: String(error) },
+        { code: "validation_cleanup_scan_failed", error: runtimeProxyErrorReason(error) },
         "Provider CLI validation cleanup scan failed",
       );
       throw error;
@@ -254,12 +413,17 @@ export class ProviderCliValidationRunner {
       return classifyProcessOutput(result, classify, this.#logger);
     } catch (error) {
       this.#logger.debug(
-        { code: "validation_process_failed", error: String(error) },
+        { code: "validation_process_failed", error: runtimeProxyErrorReason(error) },
         "Provider CLI validation process failed",
       );
       return classifyProcessFailure(error, signal, classify, this.#logger);
     }
   }
+}
+
+function combineSignals(first?: AbortSignal, second?: AbortSignal): AbortSignal | undefined {
+  if (first && second) return AbortSignal.any([first, second]);
+  return first ?? second;
 }
 
 function validationResult(
@@ -332,7 +496,7 @@ async function verifyTargetFingerprint(request: ProviderCliValidationRequest): P
     return computeTargetFingerprint(identity, request.version, request.managedDigest) === request.expectedFingerprint;
   } catch (error) {
     defaultValidationLogger.debug(
-      { code: "validation_target_verification_failed", error: String(error) },
+      { code: "validation_target_verification_failed", error: runtimeProxyErrorReason(error) },
       "Provider CLI validation target verification failed",
     );
     return false;
@@ -440,7 +604,7 @@ export async function exchangeFeishuTenantToken(
     });
   } catch (error) {
     defaultValidationLogger.debug(
-      { code: "feishu_token_exchange_request_failed", error: String(error) },
+      { code: "feishu_token_exchange_request_failed", error: runtimeProxyErrorReason(error) },
       "Feishu tenant token exchange request failed",
     );
     if (combined.aborted && signal?.aborted) throw new FeishuTokenExchangeError("aborted");
@@ -454,7 +618,7 @@ export async function exchangeFeishuTenantToken(
     body = JSON.parse(new TextDecoder().decode(buffer));
   } catch (error) {
     defaultValidationLogger.debug(
-      { code: "feishu_token_exchange_invalid_json", error: String(error) },
+      { code: "feishu_token_exchange_invalid_json", error: runtimeProxyErrorReason(error) },
       "Feishu tenant token exchange response was invalid",
     );
     throw new FeishuTokenExchangeError(response.status >= 500 ? "provider_unreachable" : "invalid");

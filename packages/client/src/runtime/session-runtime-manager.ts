@@ -69,6 +69,16 @@ export interface SessionRuntimeManagerOptions {
   readonly home?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly providerEnvironmentPath: (sessionId: string) => string;
+  /**
+   * Optional. Current CLI environment for automatic injection into the provider spawn
+   * environment (visible Sessions). Proxy mode returns the execution env map.
+   */
+  readonly providerEnvironment?: (sessionId: string) => Readonly<Record<string, string>> | undefined;
+  /**
+   * Optional. Managed Context Tree environment for the trusted CLI child. `undefined` entries
+   * unset inherited variables; legacy mode leaves it undefined and keeps ambient Local behavior.
+   */
+  readonly contextTreeEnvironment?: (sessionId: string) => Readonly<Record<string, string | undefined>> | undefined;
   readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   /**
    * Optional. Visible Sessions may receive the currently active Slack config leaf as one extra
@@ -90,6 +100,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #environment: NodeJS.ProcessEnv;
   readonly #home: string | undefined;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
+  readonly #providerEnvironment?: SessionRuntimeManagerOptions["providerEnvironment"];
+  readonly #contextTreeEnvironment?: SessionRuntimeManagerOptions["contextTreeEnvironment"];
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
@@ -111,6 +123,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#providers = options.providers;
     this.#home = options.home;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
+    this.#providerEnvironment = options.providerEnvironment;
+    this.#contextTreeEnvironment = options.contextTreeEnvironment;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
     this.#proofManager =
@@ -277,11 +291,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     // runs on every Turn admission, and this runs once per Provider Runtime start. The manager
     // caches per workspace, snapshot repository, and Provider, and
     // never throws, so a failure only changes what the prompt reports.
+    const contextTreeEnvironment = this.#contextTreeEnvironment?.(managed.binding.sessionId);
     const contextTree = await prepareContextTree(
       this.#contextTree,
       managed.cwd,
       managed.snapshot.provider,
       managed.snapshot.contextTreeRepository,
+      contextTreeEnvironment,
     );
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
     const common = {
@@ -304,6 +320,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
           ...(managed.sessionKind === "visible"
             ? {
                 OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId),
+                ...this.#providerEnvironment?.(managed.binding.sessionId),
               }
             : {}),
         },
@@ -489,8 +506,13 @@ async function prepareContextTree(
   cwd: string,
   provider: EffectiveRuntimeSnapshot["provider"],
   repository: string | null,
+  environment?: Readonly<Record<string, string | undefined>>,
 ): Promise<{ promptContext: { contextTree?: ContextTreeStatus }; writableRoots: readonly string[] }> {
-  const status = await manager?.ensureAgent(cwd, provider, repository);
+  // Keep the legacy call shape when no managed environment exists so existing tests and prompts
+  // observe identical arguments.
+  const status = environment
+    ? await manager?.ensureAgent(cwd, provider, repository, environment)
+    : await manager?.ensureAgent(cwd, provider, repository);
   if (!status) return { promptContext: {}, writableRoots: [] };
   return {
     promptContext: { contextTree: status },

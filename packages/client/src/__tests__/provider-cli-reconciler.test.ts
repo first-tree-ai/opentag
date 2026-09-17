@@ -185,6 +185,22 @@ function grantFrame(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function validationRunFrame(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "provider-cli:validation:run",
+    requestId: grantId,
+    requirementRequestId: requestId,
+    provider: "slack",
+    agentId,
+    integrationId,
+    credentialGeneration: 2,
+    expiresAt: "2026-08-31T00:00:20.000Z",
+    expectedIdentity: requirement.expectedIdentity,
+    validationRunId: "77777777-7777-4777-8777-777777777777",
+    ...overrides,
+  };
+}
+
 describe("provider CLI reconciler", () => {
   it("does not inspect or mutate without a binding requirement", async () => {
     const inspect = vi.fn();
@@ -1108,6 +1124,61 @@ describe("provider CLI reconciler", () => {
       },
     });
     expect(logs.filter((entry) => entry.level === "warn")).toEqual([]);
+    await reconciler.close();
+  });
+
+  it("runs proxy validation with the Server-issued validation run and no raw material", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn(async (_request, fence) => ({ ...fence, status: "ready" as const }));
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(validationRunFrame());
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: grantId,
+        agentId,
+        validationRunId: "77777777-7777-4777-8777-777777777777",
+      }),
+      expect.objectContaining({ provider: "slack", credentialGeneration: 2 }),
+      expect.anything(),
+    );
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty("grant");
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "provider-cli:validation:result", status: "ready" }),
+      expect.anything(),
+    );
+    await reconciler.close();
+  });
+
+  it("rejects proxy readiness without validation authority instead of falling back to raw material", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    const run = vi.fn(async (_request, fence) => ({ ...fence, status: "needs_attention" as const }));
+    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+      now: () => Date.parse("2026-08-31T00:00:10.000Z"),
+      validation: { run, cleanupAll: vi.fn() },
+    });
+    await runtime.emit(requirement);
+    await runtime.emit(validationRunFrame({ expiresAt: "2026-08-31T00:00:05.000Z" }));
+    expect(run).not.toHaveBeenCalled();
+    expect(runtime.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "provider-cli:validation:result",
+        status: "retrying",
+        reason: "validation_expired",
+      }),
+      expect.anything(),
+    );
     await reconciler.close();
   });
 

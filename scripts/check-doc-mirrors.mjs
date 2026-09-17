@@ -110,11 +110,28 @@ function rangesCoveredByMarkers(content, ranges) {
   return ranges.every(({ start, end }) => marked.some((section) => start >= section.start && end <= section.end));
 }
 
+/**
+ * Only Markdown paths can affect the mirror policy, so the Git diff is limited to them with a
+ * pathspec after `--`. Without the pathspec a large non-document change can exceed the child
+ * process buffer and abort the check with `spawnSync git ENOBUFS` before any policy runs.
+ */
+const MARKDOWN_PATHSPEC = "*.md";
+
 function gitDiff(repositoryRoot, base, head) {
   try {
     return execFileSync(
       "git",
-      ["-C", repositoryRoot, "diff", "--unified=0", "--no-color", "--find-renames", `${base}...${head}`],
+      [
+        "-C",
+        repositoryRoot,
+        "diff",
+        "--unified=0",
+        "--no-color",
+        "--find-renames",
+        `${base}...${head}`,
+        "--",
+        MARKDOWN_PATHSPEC,
+      ],
       { encoding: "utf8" },
     );
   } catch (error) {

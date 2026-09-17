@@ -10,12 +10,12 @@ import {
 import type { AgentInput } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
-import type {
-  ImCredentialEnvironmentManager,
-  PreparedImCredentialEnvironment,
-} from "./im-credential-environment-manager.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
-import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
+import { buildProviderOutboxInstructions, GITHUB_NATIVE_CLI_INSTRUCTIONS } from "./provider-outbox-instructions.js";
+import type {
+  PreparedRuntimeCredentialEnvironment,
+  RuntimeCredentialEnvironmentManager,
+} from "./runtime-credential-environment-manager.js";
 import {
   DEFAULT_RUNTIME_RETRY_POLICY,
   type DurableFailure,
@@ -46,7 +46,7 @@ interface RememberedMessage {
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
-  credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
+  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare">;
   turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
@@ -293,18 +293,23 @@ export class SessionMessageInbox {
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
     let credentialPrepared = false;
+    let preparedExecutionId: string | undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
     const timeout = new AbortController();
     let timer: { cancel(): void } | undefined;
     let runSignal: AbortSignal | undefined;
+    let executionSignal: AbortSignal | undefined;
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
       timer = this.#timeoutScheduler.schedule(
         next.request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS,
         () => timeout.abort(new Error("Session message Run timed out")),
       );
-      runSignal = AbortSignal.any([this.#abort.signal, timeout.signal]);
+      // Revocation or control/owner replacement aborts the Run and its provider children.
+      runSignal = executionSignal
+        ? AbortSignal.any([this.#abort.signal, timeout.signal, executionSignal])
+        : AbortSignal.any([this.#abort.signal, timeout.signal]);
       return runSignal;
     };
     try {
@@ -322,6 +327,8 @@ export class SessionMessageInbox {
         phase = "credential";
         const prepared = await this.#prepareCredentials(sessionId, next.request);
         credentialPrepared = true;
+        preparedExecutionId = prepared.executionId;
+        executionSignal = prepared.signal;
         if (!prepared.outboxContext) {
           this.#logger.warn(
             { code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED", messageId: next.request.messageId, sessionId },
@@ -362,7 +369,9 @@ export class SessionMessageInbox {
     } finally {
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
-      if (credentialPrepared) await this.#credentialEnvironment.cleanup(sessionId).catch(() => undefined);
+      if (credentialPrepared) {
+        await this.#credentialEnvironment.cleanup(sessionId, preparedExecutionId).catch(() => undefined);
+      }
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
         this.#reconciler.clearActivity(sessionId, runId);
         reservation.release();
@@ -373,7 +382,15 @@ export class SessionMessageInbox {
   async #prepareCredentials(sessionId: string, request: SessionMessageDeliveryRequest) {
     try {
       return await this.#credentialEnvironment.prepare(
-        { sessionId, agentId: request.agentId, placementGeneration: request.placementGeneration },
+        {
+          sessionId,
+          agentId: request.agentId,
+          placementGeneration: request.placementGeneration,
+          run: {
+            runId: request.requestId,
+            source: { kind: "session-message", messageId: request.messageId },
+          },
+        },
         this.#abort.signal,
       );
     } catch (error) {
@@ -393,15 +410,18 @@ export class SessionMessageInbox {
   async #prepareTurnPlan(
     sessionId: string,
     runId: string,
-    prepared: PreparedImCredentialEnvironment,
+    prepared: PreparedRuntimeCredentialEnvironment,
     signal: AbortSignal,
   ): Promise<ProviderCliTurnPlanPrepareInput | undefined> {
     if (!this.#turnPlan) return undefined;
+    if (!prepared.provider) throw new Error("Visible Session collaboration requires an IM provider grant");
     const input: ProviderCliTurnPlanPrepareInput = {
       provider: prepared.provider,
       sessionId,
       runId,
       ...(prepared.slackConfigDir ? { configDir: prepared.slackConfigDir } : {}),
+      ...(prepared.environmentManifest ? { environmentManifest: prepared.environmentManifest } : {}),
+      ...(prepared.slackApiHost ? { slackApiHost: prepared.slackApiHost } : {}),
     };
     await this.#turnPlan.prepare(input, signal);
     return input;
@@ -594,6 +614,7 @@ export function buildSessionMessageInput(
     turnContext.sessionKind === "visible"
       ? [
           '<opentag-session-message-context source="managed">',
+          GITHUB_NATIVE_CLI_INSTRUCTIONS,
           "OpenTag internal collaboration message continuing the visible Session's existing work.",
           `Message ID: ${request.messageId}`,
           `Source Session: ${request.sourceSessionId}`,
@@ -619,6 +640,7 @@ export function buildSessionMessageInput(
         ]
       : [
           '<opentag-session-message-context source="managed">',
+          GITHUB_NATIVE_CLI_INSTRUCTIONS,
           "OpenTag internal collaboration message.",
           `Message ID: ${request.messageId}`,
           `Source Session: ${request.sourceSessionId}`,

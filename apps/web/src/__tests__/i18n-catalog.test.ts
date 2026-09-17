@@ -35,10 +35,13 @@ const allowedUntranslatedValues = new Set([
   "Slack",
   "Feishu",
   "Lark",
+  "GitHub",
   "Lark CLI",
   "Slack CLI",
   "Token",
   "Tokens",
+  "Context Tree",
+  "refs/heads/master",
 ]);
 
 function messageTexts(value: unknown): string[] {

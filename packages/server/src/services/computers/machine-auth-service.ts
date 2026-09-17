@@ -33,6 +33,11 @@ export interface ComputerAuthContext {
   credentialId: string;
   computerId: string;
   installationId: string;
+  /**
+   * The authenticated Computer kind. Local is the default; Cloud comes only from the trusted
+   * deployment-injected Cloud control verifier and is bound to the existing logical Cloud Computer.
+   */
+  kind?: "local" | "cloud";
 }
 
 export interface IssuedComputerConnectCode {

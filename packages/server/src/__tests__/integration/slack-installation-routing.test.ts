@@ -338,7 +338,12 @@ describe("Slack installation routing", () => {
         .select()
         .from(slackInstallations)
         .where(eq(slackInstallations.id, installation.id));
-      expect(revoked).toMatchObject({ status: "reauthorization_required", lastErrorCode: "SLACK_TOKEN_REVOKED" });
+      // The reauthorization transition advanced the authorization epoch in the same transaction.
+      expect(revoked).toMatchObject({
+        status: "reauthorization_required",
+        credentialGeneration: 3,
+        lastErrorCode: "SLACK_TOKEN_REVOKED",
+      });
       await expect(
         activate(value.imBindingsService, value.second.id, "create", { token: "xoxb-second" }),
       ).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
@@ -349,10 +354,14 @@ describe("Slack installation routing", () => {
       expect(stillRevoked).toMatchObject({
         agentId: value.first.id,
         status: "reauthorization_required",
-        credentialGeneration: 2,
+        credentialGeneration: 3,
         lastErrorCode: "SLACK_TOKEN_REVOKED",
       });
+      // The pre-transition fence is stale; only the current generation may disable.
       await expect(value.imBindingsService.disableSlackInstallationFromProvider(installation.id, 2)).resolves.toBe(
+        false,
+      );
+      await expect(value.imBindingsService.disableSlackInstallationFromProvider(installation.id, 3)).resolves.toBe(
         true,
       );
       const [disabledInstallation] = await value.database

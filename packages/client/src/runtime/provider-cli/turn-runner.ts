@@ -2,7 +2,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLogger } from "../../observability/logger.js";
-import { validatePrivateDirectory } from "../../storage/durable-file.js";
+import { readSecureFile, validatePrivateDirectory } from "../../storage/durable-file.js";
 import { resolveAccountHome, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliCatalogEntry } from "./catalog.js";
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
@@ -131,6 +131,9 @@ export async function executeProviderCliTurnPlan(options: ExecuteProviderCliTurn
   const entry = requireProviderCliCatalogEntry(plan.provider, options.catalog ?? PROVIDER_CLI_CATALOG);
   const baseEnv = options.env ?? process.env;
   const env = plan.selectionKind === "managed" ? { ...baseEnv, ...entry.managedEnvironment } : { ...baseEnv };
+  // Runtime proxy mode: merge the current execution manifest (null unsets) so the CLI
+  // receives the execution-local handle, loopback proxy, and CA without manual source.
+  if (plan.environmentManifest) await mergeEnvironmentManifest(env, plan.environmentManifest);
   const args = await turnPlanArguments(plan, options.argv, entry);
   const plansRoot = options.plansRoot ?? resolveProviderCliAccountLayout(resolveAccountHome()).plans;
   if (options.spawnTarget) {
@@ -269,9 +272,76 @@ async function turnPlanArguments(
   if (plan.provider === "slack") {
     assertSlackTurnArgv(argv);
     await assertPrivateSlackConfigDirectory(plan.configDir);
-    return ["--skip-update", "--config-dir", plan.configDir, ...argv];
+    return [
+      "--skip-update",
+      "--config-dir",
+      plan.configDir,
+      ...(plan.slackApiHost ? ["--apihost", plan.slackApiHost] : []),
+      ...argv,
+    ];
   }
   return plan.selectionKind === "managed" ? [...entry.managedArguments, ...argv] : [...argv];
+}
+
+const PROXY_ENVIRONMENT_MANIFEST_MAX_BYTES = 16 * 1024;
+
+interface ProxyEnvironmentManifest {
+  readonly executionId: string;
+  readonly environment: Readonly<Record<string, string | null>>;
+}
+
+/** Merge the daemon-published execution manifest; fail closed when it is missing/invalid. */
+export async function mergeEnvironmentManifest(
+  env: NodeJS.ProcessEnv,
+  manifestPath: string,
+): Promise<ProxyEnvironmentManifest> {
+  const content = await readSecureFile(manifestPath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" || error === undefined) return undefined;
+    throw error;
+  });
+  if (content === undefined) {
+    throw new ProviderCliTurnPlanError("plan_missing", "The execution environment manifest is missing");
+  }
+  if (Buffer.byteLength(content, "utf8") > PROXY_ENVIRONMENT_MANIFEST_MAX_BYTES) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest is too large");
+  }
+  let manifest: ProxyEnvironmentManifest;
+  try {
+    manifest = parseProxyEnvironmentManifest(JSON.parse(content));
+  } catch (error) {
+    if (error instanceof ProviderCliTurnPlanError) throw error;
+    throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest is invalid");
+  }
+  for (const [key, value] of Object.entries(manifest.environment)) {
+    if (value === null) delete env[key];
+    else env[key] = value;
+  }
+  return manifest;
+}
+
+function parseProxyEnvironmentManifest(value: unknown): ProxyEnvironmentManifest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest is malformed");
+  }
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1 || typeof record.executionId !== "string" || record.executionId.length === 0) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest identity is malformed");
+  }
+  const environment = record.environment;
+  if (typeof environment !== "object" || environment === null || Array.isArray(environment)) {
+    throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest entries are malformed");
+  }
+  const entries: Record<string, string | null> = {};
+  for (const [key, entryValue] of Object.entries(environment as Record<string, unknown>)) {
+    if (/[\0=]/.test(key)) {
+      throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest key is unsafe");
+    }
+    if (entryValue !== null && (typeof entryValue !== "string" || entryValue.includes("\0"))) {
+      throw new ProviderCliTurnPlanError("plan_invalid", "The execution environment manifest value is unsafe");
+    }
+    entries[key] = entryValue as string | null;
+  }
+  return { executionId: record.executionId, environment: entries };
 }
 
 const RESERVED_SLACK_TURN_FLAGS = [
@@ -281,6 +351,7 @@ const RESERVED_SLACK_TURN_FLAGS = [
   "--workspace",
   "--config-dir",
   "--skip-update",
+  "--apihost",
 ] as const;
 
 function assertSlackTurnArgv(argv: readonly string[]): void {

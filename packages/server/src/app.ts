@@ -18,12 +18,14 @@ import {
 } from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
+import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
+import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
@@ -41,7 +43,8 @@ import {
   type AgentSetupService,
 } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
-import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
+import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "./services/computers/index.js";
+import { GitHubConnectionServiceError } from "./services/github/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import {
@@ -95,10 +98,14 @@ export interface CreateAppOptions {
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
   slackOAuth?: SlackOAuthRouteOptions;
+  /** GitHub integration management; always registered so the UI can read availability. */
+  githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
+  runtimeAuthService?: ComputerAuthVerifier;
+  runtimeProviderProxy?: RuntimeProviderProxyRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
@@ -124,7 +131,8 @@ type AccountFacingError =
   | TaskQueryError
   | SlackConfigurationServiceError
   | AccountSetupServiceError
-  | SandboxServiceError;
+  | SandboxServiceError
+  | GitHubConnectionServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
@@ -135,7 +143,8 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof TaskQueryError ||
     error instanceof SlackConfigurationServiceError ||
     error instanceof AccountSetupServiceError ||
-    error instanceof SandboxServiceError
+    error instanceof SandboxServiceError ||
+    error instanceof GitHubConnectionServiceError
   );
 }
 
@@ -506,6 +515,9 @@ export function createApp(options: CreateAppOptions = {}) {
       registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
     if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
+    if (options.githubIntegrations) {
+      registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
+    }
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }

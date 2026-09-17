@@ -82,7 +82,7 @@ export function useUpdateMcpServer(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.updateMcpServer>[1]) =>
-      browserApi.updateMcpServer(input.mcpServerId, input),
+      browserApi.updateMcpServer(input.mcpServerId, bodyOf(input)),
     onSuccess: invalidate,
   });
 }
@@ -115,7 +115,7 @@ export function useUpdateMcpBinding(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.updateAgentMcpServer>[2]) =>
-      browserApi.updateAgentMcpServer(agentId, input.mcpServerId, input),
+      browserApi.updateAgentMcpServer(agentId, input.mcpServerId, bodyOf(input)),
     onSuccess: invalidate,
   });
 }
@@ -124,7 +124,7 @@ export function useSetMcpAuthorization(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.setMcpAuthorization>[2]) =>
-      browserApi.setMcpAuthorization(agentId, input.mcpServerId, input),
+      browserApi.setMcpAuthorization(agentId, input.mcpServerId, bodyOf(input)),
     onSuccess: invalidate,
   });
 }
@@ -137,11 +137,26 @@ export function useRevokeMcpAuthorization(agentId: string) {
   });
 }
 
+/**
+ * Split a mutation input into the routing id and the request body.
+ *
+ * Each dialog holds one object carrying both, because `mcpServerId` is what the API helper needs for
+ * the URL while the rest is the body. Passing that object straight through as the body sends
+ * `mcpServerId` too, and every one of these request schemas is `.strict()` — so the Server answered
+ * `VALIDATION_ERROR: Unrecognized key "mcpServerId"` on OAuth start, authorization, binding updates,
+ * and shared-definition edits alike. TypeScript does not catch it: excess-property checking applies
+ * to object literals, and an object built elsewhere is assignable to a narrower type.
+ */
+function bodyOf<T extends { mcpServerId: string }>(input: T): Omit<T, "mcpServerId"> {
+  const { mcpServerId: _mcpServerId, ...body } = input;
+  return body;
+}
+
 export function useStartMcpOAuth(agentId: string) {
   const invalidate = useMcpInvalidation(agentId);
   return useMutation({
     mutationFn: (input: { mcpServerId: string } & Parameters<typeof browserApi.startMcpOAuth>[2]) =>
-      browserApi.startMcpOAuth(agentId, input.mcpServerId, input),
+      browserApi.startMcpOAuth(agentId, input.mcpServerId, bodyOf(input)),
     onSuccess: invalidate,
   });
 }

@@ -203,6 +203,39 @@ describe("McpPage", () => {
     expect(await screen.findByText("This will affect 2 Agents: Reviewer, Helper")).toBeTruthy();
   });
 
+  it("mounts the Server it just created, so it appears on the page that created it", async () => {
+    /*
+     * Creating a definition is Account-level and mounting it is per Agent. A definition left
+     * unmounted is invisible on this page, so a user who pressed "Create Server", typed a name and a
+     * URL, and saw the dialog close found nothing in the list and counted it as a failure — with an
+     * auth kind of `none` included, because the mount was missing rather than the authorization.
+     */
+    stub([]);
+    const created = { ...detail(1).server, id: SERVER_ID, name: "g" };
+    let attached: string | undefined;
+    vi.spyOn(browserApi, "createMcpServer").mockResolvedValue(created as never);
+    vi.spyOn(browserApi, "attachMcpServer").mockImplementation((async (
+      _agentId: string,
+      input: { mcpServerId: string },
+    ) => {
+      attached = input.mcpServerId;
+      return entry();
+    }) as never);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Create Server" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "g" } });
+    fireEvent.change(screen.getByLabelText("MCP endpoint URL"), { target: { value: "https://mcp.example.com/mcp" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create and continue" }));
+
+    // The mount is what puts it in this Agent's list; without it the create is invisible.
+    await waitFor(() => expect(attached).toBe(SERVER_ID));
+    expect(browserApi.createMcpServer).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "g", url: "https://mcp.example.com/mcp" }),
+    );
+    await waitFor(() => expect(screen.queryByText("New MCP Server")).toBeNull());
+  });
+
   it("does not offer to delete the definition while another Agent still uses it", async () => {
     stub([entry()], detail(2));
     wrap(<McpPage agentId={AGENT_ID} />);

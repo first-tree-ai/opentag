@@ -89,10 +89,8 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   disconnectGitHub: [],
   mcpServers: [],
   mcpServer: [ID],
-  createMcpServer: [
-    { name: "linear", displayName: "Linear", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" },
-  ],
-  updateMcpServer: [ID, { expectedRevision: 1, displayName: "Linear" }],
+  createMcpServer: [{ name: "linear", url: "https://mcp.example.com/mcp", defaultAuthKind: "oauth" }],
+  updateMcpServer: [ID, { expectedRevision: 1, description: "Issue tracking" }],
   removeMcpServer: [ID],
   agentMcpServers: [ID],
   availableMcpServers: [ID],

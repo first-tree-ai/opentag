@@ -1,9 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "mcp_add_existing": "添加已有 Server",
-  "mcp_add_existing_description": "该账户中已定义的 Server。添加并不会自动授权；授权按 Agent 独立配置，在下一步进行。",
-  "mcp_add_existing_empty": "该账户中的所有 Server 都已添加到此 Agent。请改为新建一个。",
-  "mcp_attach_action": "添加",
   "mcp_attach_failed": "无法添加此 Server，请重试。",
   "mcp_authorization_anonymous": "匿名",
   "mcp_authorization_bearer": "Bearer",
@@ -32,7 +28,7 @@
   "mcp_column_status": "授权状态",
   "mcp_create_action": "创建 Server",
   "mcp_create_advanced": "高级请求头设置",
-  "mcp_create_description": "Server 定义由所有添加它的 Agent 共享，且不保存任何凭据。",
+  "mcp_create_description": "Server 定义由所有添加它的 Agent 共享，且不保存任何凭据。创建后会自动添加到此 Agent，下一步再进行授权。",
   "mcp_create_failed": "无法创建此 Server。请检查 URL 与名称后重试。",
   "mcp_create_submit": "创建并继续",
   "mcp_create_title": "新建 MCP Server",

@@ -1,9 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "mcp_add_existing": "Add existing Server",
-  "mcp_add_existing_description": "Servers already defined for this Account. Adding one does not authorize it; authorization is per Agent and happens next.",
-  "mcp_add_existing_empty": "Every Server in this Account is already added to this Agent. Create a new one instead.",
-  "mcp_attach_action": "Add",
   "mcp_attach_failed": "Couldn’t add this Server. Try again.",
   "mcp_authorization_anonymous": "Anonymous",
   "mcp_authorization_bearer": "Bearer",
@@ -32,7 +28,7 @@
   "mcp_column_status": "Authorization status",
   "mcp_create_action": "Create Server",
   "mcp_create_advanced": "Advanced header settings",
-  "mcp_create_description": "A Server definition is shared by every Agent that adds it and holds no credential.",
+  "mcp_create_description": "A Server definition is shared by every Agent that adds it and holds no credential. Creating one also adds it to this Agent; authorize it in the next step.",
   "mcp_create_failed": "Couldn’t create this Server. Check the URL and name, then try again.",
   "mcp_create_submit": "Create and continue",
   "mcp_create_title": "New MCP Server",

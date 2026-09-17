@@ -1,4 +1,4 @@
-import type { MCPAgentServer, MCPAuthKind, MCPAvailableServer, MCPToolSnapshot } from "@opentag/shared/browser";
+import type { MCPAgentServer, MCPAuthKind, MCPToolSnapshot } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
@@ -23,7 +23,6 @@ import { canRevoke, rowStates, sharedDefinitionImpact } from "./mcp-page-model.j
 import {
   useAgentMcpServers,
   useAttachMcpServer,
-  useAvailableMcpServers,
   useCreateMcpServer,
   useDetachMcpServer,
   useMcpServerDetail,
@@ -51,7 +50,6 @@ import {
 
 type Panel =
   | { kind: "none" }
-  | { kind: "add" }
   | { kind: "create" }
   | { kind: "authorize"; entry: MCPAgentServer }
   | { kind: "edit"; entry: MCPAgentServer }
@@ -105,9 +103,6 @@ export function McpPage({ agentId }: { agentId: string }) {
         <Button onClick={() => setPanel({ kind: "create" })} variant="primary">
           <Icon name="plus" />
           {m.mcp_create_action()}
-        </Button>
-        <Button onClick={() => setPanel({ kind: "add" })} variant="secondary">
-          {m.mcp_add_existing()}
         </Button>
       </div>
 
@@ -164,8 +159,6 @@ function McpPanel({
   switch (panel.kind) {
     case "create":
       return <CreateServerDialog agentId={agentId} onClose={onClose} />;
-    case "add":
-      return <AddServerDialog agentId={agentId} onClose={onClose} />;
     case "authorize":
       return (
         <AuthorizeDialog agentDisplayName={agentDisplayName} agentId={agentId} entry={panel.entry} onClose={onClose} />
@@ -282,6 +275,13 @@ function McpRow({
 
 function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const create = useCreateMcpServer(agentId);
+  /*
+   * Creating a definition is Account-level and mounting it is per Agent, so these are two calls. Both
+   * belong here: the button says "new MCP Server" and the Agent page it is pressed from lists mounted
+   * Servers, so a definition that is left unmounted is invisible on the page that created it — the
+   * user sees a success and then nothing, which reads as a failure.
+   */
+  const attach = useAttachMcpServer(agentId);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [defaultAuthKind, setDefaultAuthKind] = useState<MCPAuthKind>("oauth");
@@ -293,13 +293,14 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
   const submit = async () => {
     setError(undefined);
     try {
-      await create.mutateAsync({
+      const created = await create.mutateAsync({
         name,
         url,
         defaultAuthKind,
         ...(authHeader ? { authHeader } : {}),
         ...(authScheme ? { authScheme } : {}),
       });
+      await attach.mutateAsync(created.id);
       onClose();
     } catch (cause) {
       setError(describeActionError(cause, m.mcp_create_failed()));
@@ -308,7 +309,7 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
 
   return (
     <Dialog
-      busy={create.isPending}
+      busy={create.isPending || attach.isPending}
       description={m.mcp_create_description()}
       onClose={onClose}
       title={m.mcp_create_title()}
@@ -355,53 +356,10 @@ function CreateServerDialog({ agentId, onClose }: { agentId: string; onClose: ()
           <Button onClick={onClose} variant="ghost">
             {m.common_cancel()}
           </Button>
-          <Button disabled={create.isPending || !name || !url} onClick={submit} variant="primary">
+          <Button disabled={create.isPending || attach.isPending || !name || !url} onClick={submit} variant="primary">
             {m.mcp_create_submit()}
           </Button>
         </div>
-      </div>
-    </Dialog>
-  );
-}
-
-function AddServerDialog({ agentId, onClose }: { agentId: string; onClose: () => void }) {
-  const available = useAvailableMcpServers(agentId, true);
-  const attach = useAttachMcpServer(agentId);
-  const [error, setError] = useState<string | undefined>();
-
-  const add = async (server: MCPAvailableServer) => {
-    setError(undefined);
-    try {
-      await attach.mutateAsync(server.id);
-      onClose();
-    } catch (cause) {
-      setError(describeActionError(cause, m.mcp_attach_failed()));
-    }
-  };
-
-  return (
-    <Dialog
-      busy={attach.isPending}
-      description={m.mcp_add_existing_description()}
-      onClose={onClose}
-      title={m.mcp_add_existing()}
-    >
-      <div className="grid gap-3">
-        {error ? <Banner variant="error">{error}</Banner> : null}
-        {available.data?.servers.length === 0 ? <Text variant="body">{m.mcp_add_existing_empty()}</Text> : null}
-        <ul className="grid gap-2">
-          {available.data?.servers.map((server) => (
-            <li className="flex items-center justify-between gap-2 rounded border border-kumo-line p-3" key={server.id}>
-              <div className="grid gap-0.5">
-                <Text variant="body">{server.name}</Text>
-                <Text variant="secondary">{server.description ?? server.name}</Text>
-              </div>
-              <Button onClick={() => add(server)} size="compact" variant="secondary">
-                {m.mcp_attach_action()}
-              </Button>
-            </li>
-          ))}
-        </ul>
       </div>
     </Dialog>
   );

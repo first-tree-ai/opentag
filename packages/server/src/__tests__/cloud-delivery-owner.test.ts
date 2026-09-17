@@ -8,7 +8,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   imBindings,
   imMessageDeliveries,
@@ -270,6 +270,7 @@ function cancelledBeforeStartReport(request: DirectImMessageDeliveryRequest, tur
 function makeOwner(
   options: {
     withModel?: boolean;
+    logger?: import("../observability/service-logger.js").ServiceLogger;
     allocationStatus?: (
       sandboxId: string,
     ) => Promise<import("../services/sandboxes/index.js").SandboxAllocationReconciliation | undefined>;
@@ -289,6 +290,7 @@ function makeOwner(
     fence,
     hub,
     modelBaseUrl: "https://server.example.com/api/v1/cloud-model",
+    ...(options.logger ? { logger: options.logger } : {}),
     ...(options.withModel === false ? {} : { modelGrants: grants }),
     ...(options.allocationStatus ? { allocationStatus: options.allocationStatus } : {}),
   });
@@ -1675,6 +1677,44 @@ describe("CloudDeliveryOwner", () => {
     expect(await grants.verify(firstToken)).toBeDefined();
   });
 
+  it("logs a sanitized diagnostic when a received re-verification mint fails", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const warn = vi.fn();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const { hub, fence, owner, grants } = makeOwner({ logger });
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    grants.issue = async () => undefined;
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "received" }));
+      }
+    };
+    sent.length = 0;
+
+    const outcome = await owner.recoverAccepted(deliveryId);
+
+    expect(outcome).toBe("pending");
+    expect(warn).toHaveBeenCalledTimes(1);
+    // Sanitized signal only: no token, request body, or raw upstream error in the bindings.
+    expect(warn.mock.calls[0]?.[0]).toEqual({
+      code: "CLOUD_DELIVERY_REVERIFY_MINT_FAILED",
+      deliveryId,
+      turnId,
+    });
+    expect(sent.filter((frame) => frame.type === "delivery:verified")).toHaveLength(0);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: null });
+  });
+
   it("does not send a stale rejection when a duplicate receipt's mint fails after the first duplicate accepted", async () => {
     const { scope, agent, cloud } = await cloudScope();
     const { hub, fence, owner, grants } = makeOwner();
@@ -1817,6 +1857,143 @@ describe("CloudDeliveryOwner", () => {
     expect(sent).toEqual([
       expect.objectContaining({ type: "delivery:verified", status: "rejected", code: "scope_inactive" }),
     ]);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "pending", reportedAt: null });
+  });
+
+  it("cancels accepted work for a releasing allocation even while the binding is paused", async () => {
+    const { scope, agent, cloud, bindingId } = await cloudScope();
+    const { hub, fence, owner } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, scope.sandboxId));
+    sent.length = 0;
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "started" }));
+      }
+    };
+
+    // Recovery: a retiring allocation is an independent explicit stop, so the paused binding must
+    // not suppress the truthful cancellation.
+    expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
+    expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(1);
+    sent.length = 0;
+
+    // The report-only/inactive receipt path cancels the same way.
+    await owner.handleInactiveDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(1);
+    expect(sent.filter((frame) => frame.type === "delivery:verified")).toHaveLength(0);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
+  });
+
+  it("answers a completed receipt while paused and still acks its report replay", async () => {
+    const { scope, agent, cloud, bindingId } = await cloudScope();
+    const { hub, fence, owner } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    await owner.handleDeliveryReport(connection, { requestId: randomUUID(), report: turnReport(request, turnId) });
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+    sent.length = 0;
+
+    // Completed custody is terminal: the stale received entry is answered, never cancelled.
+    await owner.handleInactiveDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    expect(sent).toEqual([
+      expect.objectContaining({ type: "delivery:verified", status: "rejected", code: "dispatch_unknown" }),
+    ]);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: expect.any(Date) });
+
+    // The real report replay stays ackable (and idempotent) while the binding is paused.
+    sent.length = 0;
+    await owner.handleDeliveryReport(connection, { requestId: randomUUID(), report: turnReport(request, turnId) });
+    expect(sent.filter((frame) => frame.type === "delivery:report:ack")).toHaveLength(1);
+    expect((sent[0] as { status: string }).status).toBe("already_recorded");
+  });
+
+  it("pauses accepted received work instead of cancelling it under reauthorization", async () => {
+    const { scope, agent, cloud, bindingId } = await cloudScope();
+    const { hub, fence, owner } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    sent.length = 0;
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+
+    await owner.handleInactiveDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+
+    // Transient reauthorization keeps the Runner's received evidence: no cancel, no rejection.
+    expect(sent).toEqual([]);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: null });
+
+    // A live receipt while paused must not mint execution permission for the same turn either.
+    await owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    expect(sent.filter((frame) => frame.type === "delivery:verified")).toHaveLength(0);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: null });
+  });
+
+  it("pauses a fresh received entry under reauthorization instead of rejecting the scope", async () => {
+    const { scope, agent, cloud, bindingId } = await cloudScope();
+    const { hub, fence, owner } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, messageId, placementGeneration } = await pendingDelivery({ sessionId: scope.sessionId });
+    const request = deliveryRequest({
+      deliveryId,
+      messageId,
+      sessionId: scope.sessionId,
+      agentId: agent.id,
+      placementGeneration,
+    });
+    await owner.dispatchDelivery({
+      computerId: cloud.computerId,
+      inputHash: computeDirectInputHash(request),
+      installationId: connection.installationId,
+      request,
+    });
+    sent.length = 0;
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+
+    await owner.handleInactiveDeliveryReceived(connection, {
+      deliveryId,
+      requestId: request.requestId,
+      turnId: randomUUID(),
+    });
+
+    expect(sent).toEqual([]);
     expect(await deliveryRow(deliveryId)).toMatchObject({ state: "pending", reportedAt: null });
   });
 

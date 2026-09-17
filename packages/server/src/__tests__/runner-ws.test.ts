@@ -1496,6 +1496,148 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     },
   );
 
+  it("reconnects a restored authority into a fresh execution-capable channel after a paused report-only reconnect", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const stack = await cloudDeliveryStack(accountId, { heartbeatIntervalMs: 40 });
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: row?.currentResourceName as string,
+    };
+    const token = await stack.tokens.issue(claims);
+    const [placement] = await unit.database
+      .select()
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, sandbox.sessionId))
+      .limit(1);
+    if (!placement) throw new Error("fixture placement missing");
+    const [binding] = await unit.database.select().from(imBindings).limit(1);
+    if (!binding) throw new Error("fixture binding missing");
+
+    // Active channel: accept one Cloud turn so durable `received` custody exists.
+    const first = await connectRunner(stack.address);
+    first.send({ type: "auth", requestId: randomUUID(), token, cloudDeliveryVersion: 1 });
+    expect(await first.waitFor("auth:result")).toMatchObject({ ok: true });
+    await first.waitFor("server:welcome");
+    first.send(readyFrame(claims.resourceName));
+    await waitForLifecycle(stack.service, accountId, sandbox.sandboxId, "ready");
+    const { deliveryId, messageId } = await pendingDelivery(sandbox.sessionId, placement.generation);
+    const request = e4DeliveryRequest({
+      deliveryId,
+      messageId,
+      sessionId: sandbox.sessionId,
+      placementGeneration: placement.generation,
+      agentId: binding.agentId,
+    });
+    await stack.owner.dispatchDelivery({
+      computerId: sandbox.computerId,
+      inputHash: computeDirectInputHash(request),
+      installationId: randomUUID(),
+      request,
+    });
+    const run = (await first.waitFor("delivery:run")) as { requestId: string };
+    const turnId = randomUUID();
+    first.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
+    expect(((await first.waitFor("delivery:verified")) as { status: string }).status).toBe("verified");
+    first.socket.close();
+    await first.closed;
+    await vi.waitFor(() => expect(stack.hub.describe(sandbox.sandboxId).connected).toBe(false));
+
+    // Reauthorization required: the reconnect latches report-only. It cannot become ready, and the
+    // accepted turn must not receive a grant on this execution-ineligible connection.
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, binding.id));
+    const paused = await connectRunner(stack.address);
+    paused.send({ type: "auth", requestId: randomUUID(), token, cloudDeliveryVersion: 1 });
+    expect(await paused.waitFor("auth:result")).toMatchObject({ ok: true });
+    await paused.waitFor("server:welcome");
+    paused.send(readyFrame(claims.resourceName));
+    expect(((await paused.waitFor("error")) as { code: string }).code).toBe("RUNNER_SCOPE_REPORT_ONLY");
+    expect(stack.hub.describe(sandbox.sandboxId)).toMatchObject({ connected: true, ready: false });
+
+    const recovery = stack.owner.recoverAccepted(deliveryId);
+    const query = (await paused.waitFor("delivery:query")) as { requestId: string };
+    paused.send({
+      type: "delivery:query:result",
+      requestId: query.requestId,
+      deliveryId,
+      turnId,
+      phase: "received",
+    });
+    expect(await recovery).toBe("pending");
+    expect(paused.frames.some((frame) => frame.type === "delivery:verified")).toBe(false);
+    expect(paused.socket.readyState).toBe(WebSocket.OPEN);
+
+    // The user restores authorization: the heartbeat cadence detects the active chain and retires
+    // the report-only connection so the Runner re-establishes an execution-capable handshake.
+    await unit.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, binding.id));
+    // Restoration alone must not mint a grant before the report-only socket is replaced.
+    const pausedConnection = stack.fence.connectionForSandbox(sandbox.sandboxId);
+    if (!pausedConnection) throw new Error("fixture paused connection missing");
+    expect(pausedConnection.executionEligible).toBe(false);
+    const issuance = vi.spyOn(stack.grants, "issue");
+    await stack.owner.handleDeliveryReceived(pausedConnection, { requestId: run.requestId, deliveryId, turnId });
+    expect(issuance).not.toHaveBeenCalled();
+    issuance.mockRestore();
+    paused.send({ type: "heartbeat", requestId: randomUUID() });
+    const closed = await paused.closed;
+    expect(closed.code).toBe(1013);
+    expect(closed.reason).toContain("authority restored");
+
+    // Fresh active handshake: readiness is accepted, the accepted turn re-verifies with a grant,
+    // and the credential execution-open is delegated instead of being denied by the latch.
+    const resumed = await connectRunner(stack.address);
+    resumed.send({ type: "auth", requestId: randomUUID(), token, cloudDeliveryVersion: 1 });
+    expect(await resumed.waitFor("auth:result")).toMatchObject({ ok: true });
+    const welcome = (await resumed.waitFor("server:welcome")) as {
+      cloudDeliveryVersion?: number;
+      resourceUid?: string;
+    };
+    expect(welcome.cloudDeliveryVersion).toBe(1);
+    resumed.send(readyFrame(claims.resourceName));
+    await vi.waitFor(() => expect(stack.hub.describe(sandbox.sandboxId).ready).toBe(true));
+
+    resumed.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
+    const verified = (await resumed.waitFor("delivery:verified")) as {
+      status: string;
+      model?: { token?: string };
+    };
+    expect(verified.status).toBe("verified");
+    expect(verified.model?.token).toBeTruthy();
+
+    const delegation = vi.spyOn(stack.owner, "handleCredentialFrame");
+    resumed.send({
+      type: "credential:frame",
+      frame: {
+        type: "runtime:execution:open",
+        requestId: randomUUID(),
+        sessionId: sandbox.sessionId,
+        agentId: binding.agentId,
+        placementGeneration: placement.generation,
+        runId: randomUUID(),
+        source: { kind: "session-message", messageId: randomUUID() },
+        sandbox: {
+          sandboxId: sandbox.sandboxId,
+          resourceUid: String(welcome.resourceUid),
+          environmentGeneration: 1,
+        },
+      },
+    });
+    const tunnel = (await resumed.waitFor("credential:frame")) as { frame: { status: string; code?: string } };
+    expect(delegation).toHaveBeenCalledTimes(1);
+    // No credential stack is wired into this fixture, so the delegated path fails closed; the
+    // report-only latch and the scope binding no longer reject it first.
+    expect(tunnel.frame).toMatchObject({ status: "rejected", code: "owner_unavailable" });
+    resumed.socket.close();
+    await resumed.closed;
+  });
+
   it("rejects a report-only reconnect for a released, superseded, or foreign allocation", async () => {
     const accountId = await account();
     const released = await ownedSandbox(accountId);

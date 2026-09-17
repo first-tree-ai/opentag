@@ -140,6 +140,13 @@ interface QueuedVerified {
   readonly generation: number;
 }
 
+/**
+ * Result of one start attempt: `started` occupies the turn slot, `settled` resolved the head
+ * without starting it (cancel/phase/generation) so the drain must continue, and `wait` keeps the
+ * head queued because starting now is impossible (closed/busy/canStart false).
+ */
+type StartTurnOutcome = "started" | "settled" | "wait";
+
 /** Worker stdout is captured bounded by the native sandbox; still refuse anything larger. */
 const CLOUD_TURN_WORKER_STDOUT_MAX_BYTES = 256 * 1024;
 /** Bounded Session queue: verified entries beyond this wait at `received` for re-verification. */
@@ -478,9 +485,9 @@ export class CloudTurnRunner {
     entry: CloudJournalEntry,
     frame: RunnerCloudDeliveryVerifiedFrame,
     generation: number,
-  ): Promise<boolean> {
-    if (this.#closed || this.#active) return false;
-    if (!(this.#options.canStart?.() ?? true)) return false;
+  ): Promise<StartTurnOutcome> {
+    if (this.#closed || this.#active) return "wait";
+    if (!(this.#options.canStart?.() ?? true)) return "wait";
     let settle: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
       settle = resolve;
@@ -496,20 +503,25 @@ export class CloudTurnRunner {
       }
       if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
       const current = await this.#options.journal.read(entry.deliveryId);
-      if (current?.phase !== "received" || this.#closed) return false;
+      if (this.#closed) return "wait";
+      if (current?.phase !== "received") {
+        // Another path already settled or started this head; the drain may advance.
+        this.#queue.delete(entry.requestId);
+        return "settled";
+      }
       if (generation !== this.#channelGeneration) {
         // The grant's connection closed while this read was pending: leave `received` for a fresh
-        // verification instead of marking started with a revoked grant.
+        // verification instead of marking started with a revoked grant, and advance the drain.
         this.#queue.delete(entry.requestId);
-        return false;
+        return "settled";
       }
       if (active.abort.signal.aborted) {
         // A stop arrived before the started boundary: no native effect happened, so settle an
-        // honest not_started result and never mark the entry started.
+        // honest not_started result, never mark the entry started, and advance to the next head.
         this.#queue.delete(entry.requestId);
         this.#cancelRequested.delete(entry.deliveryId);
         await this.#reportTerminal(current, cancelledBeforeStart());
-        return false;
+        return "settled";
       }
       const started = await this.#options.journal.markStarted(current.deliveryId, current.scope);
       active.execution = this.#executeTurn(started, frame, active.abort.signal, generation)
@@ -518,12 +530,11 @@ export class CloudTurnRunner {
           this.#completeActive(active);
           this.#scheduleDrain();
         });
-      return true;
+      return "started";
     } finally {
       if (!active.execution) {
-        // No execution was started (unusable namespace, journal failure, or a lost phase): the
-        // caller surfaces the failure and the entry stays queued. Scheduling another drain here
-        // would tight-loop the same failing head.
+        // Release the reserved slot. The caller advances a settled head; a wait or surfaced
+        // journal/namespace failure must not schedule another drain and spin on the same head.
         this.#completeActive(active);
       }
     }
@@ -617,10 +628,11 @@ export class CloudTurnRunner {
       return "continue";
     }
     if (!(this.#options.canStart?.() ?? true)) return "stop";
-    const started = await this.#startTurn(entry, next.frame, next.generation);
-    if (!started) return "stop";
+    const outcome = await this.#startTurn(entry, next.frame, next.generation);
+    if (outcome === "wait") return "stop";
     this.#queue.delete(next.frame.requestId);
-    return "started";
+    // A settled head must not stall the FIFO line: continue with the next queued delivery.
+    return outcome === "started" ? "started" : "continue";
   }
 
   async #settleCancelled(deliveryId: string): Promise<void> {

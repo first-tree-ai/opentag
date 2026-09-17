@@ -1482,6 +1482,103 @@ describe("Runner cancellation and connection lifetime", () => {
     }
   }, 30_000);
 
+  it("marks a non-signal exit as stopping before settling the controller so no relaunch follows", async () => {
+    let authCalls = 0;
+    const wss = await startWss(
+      () => {
+        authCalls += 1;
+        return authCalls === 1; // the replacement connection is explicitly rejected
+      },
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-nonsignal-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    let launchCalls = 0;
+    let probeCalls = 0;
+    let destroyCalls = 0;
+    let destroySawSettled: boolean | undefined;
+    let workerSettled = false;
+    let markWorkerStarted: () => void = () => undefined;
+    const workerStarted = new Promise<void>((resolve) => {
+      markWorkerStarted = resolve;
+    });
+    const sandboxFactory = () =>
+      ({
+        destroy: async () => {
+          destroyCalls += 1;
+          destroySawSettled = workerSettled;
+        },
+        exec: async () => {
+          throw new Error("unexpected native exec");
+        },
+        launch: async () => {
+          launchCalls += 1;
+        },
+        probe: async () => {
+          probeCalls += 1;
+          return { nodeVersion: "v24.19.0", piVersion: "0.84.2", runnerVersion: "1.0.0" };
+        },
+      }) as unknown as NativeSandbox;
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        cloudTurnSeams: {
+          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          runWorker: async (_input, signal) =>
+            new Promise((resolve) => {
+              signal.addEventListener(
+                "abort",
+                () => {
+                  workerSettled = true;
+                  resolve({ code: 143, stderr: "", stdout: "" });
+                },
+                { once: true },
+              );
+              markWorkerStarted();
+            }),
+        },
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory,
+        signal: stop.signal,
+        sleep: async () => undefined,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    const delivery = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    await wss.waitFor("delivery:received");
+    wss.send({
+      type: "delivery:verified",
+      requestId: delivery.requestId,
+      status: "verified",
+      model: modelGrantFor(delivery),
+    });
+    await workerStarted;
+    // Non-signal exit: the replacement connection's auth is rejected in-band.
+    wss.closeSocket();
+    expect(await running).toBe(1);
+    expect(authCalls).toBeGreaterThanOrEqual(2);
+    // One initial launch/probe, one namespace delete, and cleanup only after the worker settled.
+    expect(launchCalls).toBe(1);
+    expect(probeCalls).toBe(1);
+    expect(destroyCalls).toBe(1);
+    expect(destroySawSettled).toBe(true);
+    // The interrupted turn keeps a truthful durable cancellation.
+    const journal = await CloudJournal.open(join(stateDir, "journal"));
+    const entries = await journal.list();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.phase).toBe("reported");
+    expect(entries[0]?.report?.outcome).toBe("cancelled");
+    expect(entries[0]?.report?.executionEffects).toBe("may_have_occurred");
+    expect(entries[0]?.report?.errorReason).toBe("client_shutdown");
+  }, 30_000);
+
   it("keeps a legacy E3 welcome Cloud-free and still runs E3 acceptance", async () => {
     const wss = await startWss();
     const output = io();

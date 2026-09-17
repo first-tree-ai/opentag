@@ -1095,6 +1095,50 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
+  it("continues draining the queue after a head is cancelled during its startup read", async () => {
+    const xStarted = deferred<void>();
+    const releaseX = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const started: string[] = [];
+    const h = harness({
+      worker: async (input) => {
+        const deliveryId = (JSON.parse(input.stdin) as { delivery: { deliveryId: string } }).delivery.deliveryId;
+        started.push(deliveryId);
+        if (started.length === 1) {
+          xStarted.resolve();
+          return releaseX.promise;
+        }
+        return completedExec(`done-${deliveryId}`);
+      },
+    });
+    const x = h.delivery;
+    const a = cloudDeliveryFixture({ sessionId: x.sessionId });
+    const b = cloudDeliveryFixture({ sessionId: x.sessionId });
+    const gated = gateJournalRead(h.journal, gate.promise, () => gateEntered.resolve());
+    for (const delivery of [x, a, b]) await h.runner.handleDeliveryRun(runFrame(delivery));
+    await h.runner.handleVerified(verifiedFrame(x.requestId));
+    await xStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await h.runner.handleVerified(verifiedFrame(b.requestId));
+    gated.arm();
+    releaseX.resolve(completedExec("x"));
+    await gateEntered.promise; // A's startup read is held
+    h.runner.handleCancel(a.deliveryId);
+    gate.resolve();
+    // No further frame or notifyAvailable: settling A must advance the drain to B by itself.
+    await waitFor(() => started.length === 2, "B to start after A settles");
+    expect(started).toEqual([x.deliveryId, b.deliveryId]);
+    await waitFor(() => reportsOf(h.sent).length === 3, "all three reports");
+    const aReport = reportsOf(h.sent).find((frame) => frame.report.deliveryId === a.deliveryId)?.report;
+    const bReport = reportsOf(h.sent).find((frame) => frame.report.deliveryId === b.deliveryId)?.report;
+    expect(aReport?.outcome).toBe("cancelled");
+    expect(aReport?.executionEffects).toBe("not_started");
+    expect(bReport?.outcome).toBe("completed");
+    gated.restore();
+    await h.runner.close();
+  });
+
   it("never starts a verified frame captured before a close while it waited in the serial queue", async () => {
     const gate = deferred<void>();
     const gateEntered = deferred<void>();

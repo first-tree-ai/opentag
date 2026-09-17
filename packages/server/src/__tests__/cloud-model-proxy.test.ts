@@ -452,6 +452,97 @@ describe("Cloud model proxy route", () => {
     }
   });
 
+  it("accepts every pinned-Pi reasoning echo field and replays signed tool-call details unchanged", async () => {
+    const upstream = await startFixture({ kind: "sse" });
+    const { grants, port } = await makeStack({ upstream });
+    const issued = await issueToken(grants);
+    // Shape mirrored from pi-ai 0.84.2 convertMessages/buildParams: Pi records whichever of
+    // reasoning_content/reasoning/reasoning_text the upstream streamed and echoes it under the
+    // same key, and replays each parsed encrypted thoughtSignature as reasoning_details.
+    const toolCall = {
+      id: "call_reasoning_1",
+      type: "function",
+      function: { name: "read", arguments: '{"path":"src/a.ts"}' },
+    };
+    const detail = {
+      type: "reasoning.encrypted",
+      id: "call_reasoning_1",
+      data: "opaque-signed-payload",
+      format: "google-gemini-v1",
+      index: 0,
+    };
+    for (const field of ["reasoning_content", "reasoning", "reasoning_text"] as const) {
+      const body = {
+        model: "model-a",
+        messages: [
+          { role: "user", content: "read the file" },
+          {
+            role: "assistant",
+            content: "working",
+            tool_calls: [toolCall],
+            [field]: "private chain of thought",
+            reasoning_details: [detail],
+          },
+          { role: "tool", content: "file body", tool_call_id: "call_reasoning_1" },
+        ],
+        stream: true,
+        max_tokens: 8_192,
+      };
+      const response = await postModel(port, body, issued.token);
+      expect(response.status, field).toBe(200);
+      await response.text();
+      expect(upstream.stats.lastRequestBody, field).toEqual(body);
+      const echoed = (
+        upstream.stats.lastRequestBody as {
+          messages: { reasoning_details?: { data?: string; format?: string; index?: number }[] }[];
+        }
+      ).messages[1]?.reasoning_details?.[0];
+      expect(echoed).toEqual(detail);
+    }
+  });
+
+  it("rejects reasoning detail shapes the pinned Pi never replays", async () => {
+    const upstream = await startFixture({ kind: "json" });
+    // Raise the body cap so the 64 KB detail bound is what rejects the oversized payload here.
+    const { grants, port } = await makeStack({ upstream, configOverrides: { maxRequestBytes: 256 * 1024 } });
+    const issued = await issueToken(grants);
+    const withDetails = (details: unknown) => ({
+      model: "model-a",
+      messages: [
+        {
+          role: "assistant",
+          content: "working",
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }],
+          reasoning_details: details,
+        },
+      ],
+      stream: true,
+    });
+    const detail = { type: "reasoning.encrypted", id: "call_1", data: "opaque" };
+    const tooManyFields = {
+      ...detail,
+      a: 1,
+      b: 2,
+      c: 3,
+      d: 4,
+      e: 5,
+      f: 6,
+      g: 7,
+    };
+    for (const [caseName, body] of [
+      ["non encrypted type", withDetails([{ ...detail, type: "reasoning.text" }])],
+      ["nested object value", withDetails([{ ...detail, nested: { not: "scalar" } }])],
+      ["oversized signed payload", withDetails([{ ...detail, data: "x".repeat(65 * 1024) }])],
+      ["too many detail fields", withDetails([tooManyFields])],
+      ["top-level reasoning field", { model: "model-a", messages: CHAT_MESSAGES, reasoning: "not allowlisted here" }],
+    ] as const) {
+      const response = await postModel(port, body, issued.token);
+      expect(response.status, caseName).toBe(400);
+      expect(await errorCode(response), caseName).toBe("CLOUD_MODEL_REQUEST_INVALID");
+    }
+    expect(upstream.stats.hits).toBe(0);
+  });
+
   it("does not follow redirects off the fixed upstream", async () => {
     const target = await startFixture({ kind: "json" });
     const upstream = await startFixture({ kind: "redirect", location: `${target.baseUrl}/stolen` });

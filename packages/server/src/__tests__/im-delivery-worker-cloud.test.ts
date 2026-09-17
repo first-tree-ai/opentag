@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { computeDirectInputHash, type RunnerServerFrame } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeConfigs,
   computers,
@@ -107,6 +107,22 @@ async function cloudScope(options: { ready?: boolean } = {}) {
   return { accountId, agent, bindingId, sandbox, scope, cloud };
 }
 
+/** A definitively disabled binding: credentials cleared, disabledAt stamped (schema checks). */
+async function disableBinding(bindingId: string): Promise<void> {
+  await unit.database
+    .update(imBindings)
+    .set({
+      status: "disabled",
+      disabledAt: new Date(),
+      encryptedCredential: null,
+      encryptedSetupContext: null,
+      setupOwnerInstanceId: null,
+      connectionOwnerInstanceId: null,
+      connectionLeaseExpiresAt: null,
+    })
+    .where(eq(imBindings.id, bindingId));
+}
+
 function fakeSocket(sent: RunnerServerFrame[]): RunnerControlSocket {
   return {
     send(frame) {
@@ -190,12 +206,13 @@ interface AllocationCallLog {
   outcome: IngressAllocationOutcome;
 }
 
-function makeWorker(owner?: CloudDeliveryOwner, allocation?: AllocationCallLog) {
+function makeWorker(owner?: CloudDeliveryOwner, allocation?: AllocationCallLog, options: { now?: () => Date } = {}) {
   return new ImDeliveryWorker({
     assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
     database: unit.database,
     domain: {} as never,
     registry: new ConnectionRegistry(),
+    ...(options.now ? { now: options.now } : {}),
     ...(owner ? { cloudDelivery: owner } : {}),
     ...(allocation
       ? {
@@ -565,12 +582,9 @@ describe("ImDeliveryWorker Cloud routing", () => {
     const turnId = randomUUID();
     await stack.owner.handleDeliveryReceived(connection, { deliveryId, requestId: run.requestId, turnId });
 
-    // The binding is deactivated while the turn runs: the normal claim path excludes this row, so
-    // the bounded stopped-authority pass must still reach it and resend the missed cancel.
-    await unit.database
-      .update(imBindings)
-      .set({ status: "reauthorization_required" })
-      .where(eq(imBindings.id, bindingId));
+    // The binding is permanently disabled while the turn runs: the normal claim path excludes this
+    // row, so the bounded stopped-authority pass must still reach it and resend the missed cancel.
+    await disableBinding(bindingId);
     const send = socket.send.bind(socket);
     socket.send = (frame) => {
       send(frame);
@@ -590,12 +604,227 @@ describe("ImDeliveryWorker Cloud routing", () => {
     expect(row).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
   });
 
-  it("terminally rejects a pending Cloud input whose authority stopped", async () => {
-    const { scope, agent, bindingId } = await cloudScope();
+  it("backs off a persisted Cloud dispatch after the model path is disabled, keeping the frozen window", async () => {
+    const { scope, cloud } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    let clockMs = Date.now();
+    const worker = makeWorker(stack.owner, undefined, { now: () => new Date(clockMs) });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(clockMs - 1) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+
+    // First claim dispatches and freezes the execution window on the row.
+    await worker.runOnce();
+    expect(sent.some((frame) => frame.type === "delivery:run")).toBe(true);
+    const [dispatched] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    if (!dispatched?.dispatchRequestId || !dispatched.dispatchPayload) {
+      throw new Error("dispatch window was not persisted");
+    }
+
+    // The model path is disabled after dispatch: the persisted attempt must back off instead of
+    // retrying every 2 s, while retaining the frozen dispatch identity and payload.
+    vi.spyOn(stack.owner, "isModelPathConfigured").mockReturnValue(false);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(clockMs - 1) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await worker.runOnce();
+    const [firstRetry] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(firstRetry).toMatchObject({
+      state: "pending",
+      lastErrorCode: "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
+      dispatchRequestId: dispatched.dispatchRequestId,
+    });
+    expect(firstRetry?.dispatchPayload).toEqual(dispatched.dispatchPayload);
+    const firstDelay = (firstRetry?.nextAttemptAt.getTime() ?? 0) - clockMs;
+    expect(firstDelay).toBeGreaterThan(2_000);
+
+    clockMs = firstRetry?.nextAttemptAt.getTime() ?? clockMs;
+    await worker.runOnce();
+    const [secondRetry] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect((secondRetry?.nextAttemptAt.getTime() ?? 0) - clockMs).toBe(firstDelay * 2);
+    expect(secondRetry).toMatchObject({ dispatchRequestId: dispatched.dispatchRequestId });
+  });
+
+  it("backs off the model-unavailable dispatch path with the same attempt counter", async () => {
+    const { scope } = await cloudScope();
+    const stack = makeStack({ withModel: false });
+    const clockMs = Date.now();
+    const worker = makeWorker(stack.owner, undefined, { now: () => new Date(clockMs) });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(clockMs - 1) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+
+    await worker.runOnce();
+
+    const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
+    expect(row).toMatchObject({
+      state: "pending",
+      lastErrorCode: "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
+    });
+    expect((row?.nextAttemptAt.getTime() ?? 0) - clockMs).toBe(2_000);
+  });
+
+  it("backs off transient Cloud dispatch failures with the attempt count and caps the delay", async () => {
+    const { scope } = await cloudScope();
+    const stack = makeStack();
+    // No ready Runner is attached: every claim fails with runner_not_ready.
+    let clockMs = Date.now();
+    const worker = makeWorker(stack.owner, undefined, { now: () => new Date(clockMs) });
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(clockMs - 1) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+
+    const delays: number[] = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(row?.lastErrorCode).toBe("IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY");
+      if (!row) throw new Error("delivery row missing");
+      // Deterministic clock: the next retry is exactly the capped backoff for this attempt.
+      delays.push(row.nextAttemptAt.getTime() - clockMs);
+      clockMs = row.nextAttemptAt.getTime();
+    }
+    expect(delays).toEqual([2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+  });
+
+  it("pauses a pending Cloud input under reauthorization and delivers it after restoration", async () => {
+    const { scope, cloud, bindingId } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope });
+    const worker = makeWorker(stack.owner);
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
     await unit.database
       .update(imBindings)
       .set({ status: "reauthorization_required" })
       .where(eq(imBindings.id, bindingId));
+
+    await worker.runJanitorOnce();
+
+    // Transient reauthorization preserves the queued input: no terminal rejection, no dispatch.
+    const [paused] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(paused).toMatchObject({ state: "pending", reason: null, dispatchRequestId: null });
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(0);
+
+    // The user restores authorization: the queued input becomes deliverable again.
+    await unit.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, bindingId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await worker.runOnce();
+
+    const runs = sent.filter((frame) => frame.type === "delivery:run");
+    expect(runs).toHaveLength(1);
+    expect((runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>).delivery.deliveryId).toBe(deliveryId);
+  });
+
+  it("keeps an accepted Cloud turn paused under reauthorization and cancels it only on a definitive stop", async () => {
+    const { scope, cloud, bindingId } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    const worker = makeWorker(stack.owner);
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    await worker.runOnce();
+    const run = sent.filter((frame) => frame.type === "delivery:run")[0] as Extract<
+      RunnerServerFrame,
+      { type: "delivery:run" }
+    >;
+    const connection = stack.fence.connectionForSandbox(scope.sandboxId);
+    if (!connection) throw new Error("no live Cloud connection");
+    const turnId = randomUUID();
+    await stack.owner.handleDeliveryReceived(connection, { deliveryId, requestId: run.requestId, turnId });
+
+    await unit.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, bindingId));
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() =>
+          stack.owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "received" }),
+        );
+      }
+    };
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+
+    await worker.runJanitorOnce();
+
+    // Transient reauthorization preserves the accepted received evidence: no cancel, no fake loss.
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(false);
+    const [pausedRow] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(pausedRow).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
+
+    // Restoration to active re-verifies the still-received turn with a fresh grant: the normal
+    // claim/recovery path owns active chains, not the stopped-authority reconcile pass.
+    await unit.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, bindingId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const verifiedBefore = sent.filter(
+      (frame) => frame.type === "delivery:verified" && frame.status === "verified",
+    ).length;
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified").length).toBe(
+      verifiedBefore + 1,
+    );
+
+    // A definitive stop then cancels the still-unreported turn truthfully.
+    await disableBinding(bindingId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await worker.runJanitorOnce();
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(true);
+  });
+
+  it("terminally rejects a pending Cloud input whose authority stopped", async () => {
+    const { scope, agent, bindingId } = await cloudScope();
+    await disableBinding(bindingId);
     const stack = makeStack();
     const worker = makeWorker(stack.owner);
     const { deliveryId } = await pendingDelivery(scope.sessionId);

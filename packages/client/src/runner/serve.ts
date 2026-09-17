@@ -360,9 +360,11 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     if (error instanceof NativeSandboxError && error.code === "unavailable") launchAttempted = false;
     result = startupExitCode(error);
   } finally {
-    // Settle the Cloud controller (abort + await the active worker) BEFORE destroying the native
-    // sandbox, so a live in-sandbox execution is never left behind a deleted namespace.
-    await turns.close().catch(() => undefined);
+    // Any exit is a stop, including non-signal exits (auth failure, reconnect exhaustion, fatal).
+    // Mark it before settling the controller so an interrupted turn's verified reset can only
+    // delete the namespace, never relaunch it ahead of cleanup; then await the live worker and
+    // abort it before any sandbox deletion.
+    await settleCloudController(turns, state);
     // The probe listener and process handlers are released even when sandbox cleanup throws.
     try {
       if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
@@ -727,6 +729,12 @@ async function waitReconnect(
     else if (options.sleep) void options.sleep(delay).then(finish);
     else timer = setTimeout(finish, delay);
   });
+}
+
+/** Mark the exit as a stop, then settle (abort + await) the live Cloud controller first. */
+async function settleCloudController(turns: CloudTurnRunner, state: WorkState | undefined): Promise<void> {
+  if (state) state.stopping = true;
+  await turns.close().catch(() => undefined);
 }
 
 async function cleanupRunner(

@@ -152,7 +152,8 @@ export class ImDeliveryWorker {
       replyRole: (messageId, sessionKind, threadKey) => this.#replyRole(messageId, sessionKind, threadKey),
       buildDeliveryContent: (contentInput) => this.#buildDeliveryContent(contentInput),
       hasOtherAgentCustody: (agentId, deliveryId) => hasOtherAgentCustody(this.#database, agentId, deliveryId),
-      recordFailure: (deliveryId, code, claimToken) => this.#recordFailure(deliveryId, code, claimToken),
+      recordFailure: (deliveryId, code, claimToken, retryDelayMs) =>
+        this.#recordFailure(deliveryId, code, claimToken, retryDelayMs),
       releaseDispatch: (deliveryId, requestId, code, claimToken) =>
         this.#releaseDispatch(deliveryId, requestId, code, claimToken),
       rejectInput: (deliveryId, reason, claimToken) => this.#reject(deliveryId, reason, claimToken),
@@ -1153,12 +1154,17 @@ export class ImDeliveryWorker {
     return { admitted: true, result };
   }
 
-  async #recordFailure(deliveryId: string, code: string, claimToken?: string): Promise<void> {
+  async #recordFailure(
+    deliveryId: string,
+    code: string,
+    claimToken?: string,
+    retryDelayMs: number = RETRY_DELAY_MS,
+  ): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
     setActiveSpanAttributes(outcomeAttrs("failed", bounded));
     const [updated] = await this.#database
       .update(imMessageDeliveries)
-      .set({ lastErrorCode: bounded, nextAttemptAt: new Date(this.#now() + RETRY_DELAY_MS) })
+      .set({ lastErrorCode: bounded, nextAttemptAt: new Date(this.#now() + retryDelayMs) })
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),

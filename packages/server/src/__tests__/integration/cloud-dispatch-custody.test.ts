@@ -537,4 +537,98 @@ describe("E4 Cloud dispatch custody on real PostgreSQL", () => {
     expect(await owner.recoverAccepted(deliveryId)).toBe("noop");
     grants.close();
   });
+
+  it("pauses accepted Cloud work under reauthorization and cancels it only after a definitive stop", async () => {
+    const cloud = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const worker = makeWorker(owner);
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    hub.attach(cloud.scope, socket);
+    hub.markReady(cloud.scope, READINESS, socket);
+    const connection = fence.attach({
+      computerId: cloud.cloud.computerId,
+      installationId: randomUUID(),
+      scope: cloud.scope,
+      socket,
+    });
+    const { deliveryId, messageId } = await agedPendingDelivery(cloud.scope.sessionId);
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ expiresAt: new Date(Date.now() + 3_600_000), nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const request = deliveryRequest({
+      deliveryId,
+      messageId,
+      sessionId: cloud.scope.sessionId,
+      agentId: cloud.agent.id,
+    });
+    await owner.dispatchDelivery({
+      computerId: cloud.cloud.computerId,
+      inputHash: computeDirectInputHash(request),
+      installationId: connection.installationId,
+      request,
+    });
+    const turnId = randomUUID();
+    await owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "received" }));
+      }
+    };
+
+    // Transient reauthorization: the real worker/janitor must not reject or cancel the turn.
+    await client.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, cloud.bindingId));
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await worker.runJanitorOnce();
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(false);
+    const [paused] = await client.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(paused).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
+
+    // Restoration: the normal recovery path re-verifies the still-received turn with a fresh grant.
+    await client.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, cloud.bindingId));
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    const verifiedBefore = sent.filter(
+      (frame) => frame.type === "delivery:verified" && frame.status === "verified",
+    ).length;
+    await worker.runOnce();
+    expect(sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified").length).toBe(
+      verifiedBefore + 1,
+    );
+
+    // A definitive stop cancels the still-unreported turn truthfully.
+    await client.database
+      .update(imBindings)
+      .set({
+        status: "disabled",
+        disabledAt: new Date(),
+        encryptedCredential: null,
+        encryptedSetupContext: null,
+        setupOwnerInstanceId: null,
+        connectionOwnerInstanceId: null,
+        connectionLeaseExpiresAt: null,
+      })
+      .where(eq(imBindings.id, cloud.bindingId));
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    await worker.runJanitorOnce();
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(true);
+    grants.close();
+  });
 });

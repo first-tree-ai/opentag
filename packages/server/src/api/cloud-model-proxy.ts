@@ -14,9 +14,11 @@ import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-g
  * construction (no path parameter exists — the route is the whole allowlist). The request body is
  * a STRICT field allowlist: exactly the standard chat-completion fields the image-pinned Pi
  * (`scripts/runner/pi`: @earendil-works/pi-coding-agent 0.84.2, pi-ai openai-completions) emits,
- * plus the bounded DeepSeek reasoning fields. Router/credential overrides (`route`, `models`,
- * `provider`, `api_base`, `api_key`, …) are rejected before any upstream call, `n` is bounded to a
- * single choice, and every request carries a bounded output budget.
+ * plus the bounded reasoning echo fields (`reasoning_content`, `reasoning`, `reasoning_text`) and
+ * the bounded encrypted `reasoning_details` Pi replays for signed tool calls. Router/credential
+ * overrides (`route`, `models`, `provider`, `api_base`, `api_key`, …) are rejected before any
+ * upstream call, `n` is bounded to a single choice, and every request carries a bounded output
+ * budget.
  *
  * Responsibility boundaries:
  * - Client disconnect is detected on the RESPONSE socket (`reply.raw` close before the response
@@ -43,6 +45,9 @@ const MAX_MESSAGES_PER_REQUEST = 1_024;
 const MAX_CONTENT_PARTS_PER_MESSAGE = 64;
 const MAX_TOOLS_PER_REQUEST = 128;
 const MAX_TOOL_CALLS_PER_MESSAGE = 128;
+const MAX_REASONING_DETAILS_PER_MESSAGE = 128;
+const MAX_REASONING_DETAIL_CHARS = 64 * 1_024;
+const MAX_REASONING_DETAIL_FIELDS = 8;
 
 /** Clamp an output budget to the fixed ceiling; absent stays absent. */
 const outputTokenBudget = z
@@ -66,9 +71,35 @@ const functionToolCall = z
   .strict();
 
 /**
+ * One encrypted reasoning detail the pinned Pi re-emits: it JSON-parses each signed tool call's
+ * `thoughtSignature` (an upstream `reasoning.encrypted` object) and writes the parsed object back
+ * verbatim, so the opaque `id`/`data` and any provider metadata must round-trip unchanged. The
+ * signed payload is preserved; the object stays bounded and only exists inside an assistant
+ * message's `reasoning_details` — never at the request or message top level.
+ */
+const reasoningDetailScalar = z.union([
+  z.string().max(MAX_REASONING_DETAIL_CHARS),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+const encryptedReasoningDetail = z
+  .object({
+    type: z.literal("reasoning.encrypted"),
+    id: z.string().min(1).max(512),
+    data: z.string().min(1).max(MAX_REASONING_DETAIL_CHARS),
+  })
+  .catchall(reasoningDetailScalar)
+  .refine((detail) => Object.keys(detail).length <= MAX_REASONING_DETAIL_FIELDS, {
+    message: "too many reasoning detail fields",
+  });
+
+/**
  * The exact message shapes the pinned Pi's openai-completions conversion emits (system/user text,
- * assistant text-or-null with function tool calls and the DeepSeek `reasoning_content` echo, tool
- * results, and text/image user content parts). `developer` covers the OpenAI reasoning-model role.
+ * assistant text-or-null with function tool calls, the upstream reasoning echo under whichever of
+ * `reasoning_content`/`reasoning`/`reasoning_text` the provider streamed, encrypted
+ * `reasoning_details` for signed tool calls, tool results, and text/image user content parts).
+ * `developer` covers the OpenAI reasoning-model role.
  */
 const chatMessage = z.discriminatedUnion("role", [
   z.object({ role: z.literal("system"), content: z.string() }).strict(),
@@ -90,7 +121,13 @@ const chatMessage = z.discriminatedUnion("role", [
       role: z.literal("assistant"),
       content: z.string().nullable().optional(),
       tool_calls: z.array(functionToolCall).min(1).max(MAX_TOOL_CALLS_PER_MESSAGE).optional(),
+      // Pi tracks whichever reasoning field the upstream streamed (`reasoning_content`,
+      // `reasoning`, or `reasoning_text`) and echoes it under that same key on the next call.
       reasoning_content: z.string().optional(),
+      reasoning: z.string().optional(),
+      reasoning_text: z.string().optional(),
+      // Signed tool-call thinking: the parsed `thoughtSignature` objects, verbatim.
+      reasoning_details: z.array(encryptedReasoningDetail).min(1).max(MAX_REASONING_DETAILS_PER_MESSAGE).optional(),
     })
     .strict(),
   z.object({ role: z.literal("tool"), content: z.string(), tool_call_id: z.string().min(1).max(256) }).strict(),

@@ -11,15 +11,16 @@ import {
   type RuntimeCredentialServerFrame,
   type TurnReportRequest,
 } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
   imBindings,
   imMessageDeliveries,
-  type sandboxes,
+  sandboxes,
   sessionPlacements,
   sessions,
+  users,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -108,6 +109,24 @@ export interface CloudDeliveryOwnerOptions {
   modelGrants?: CloudModelGrantPort;
   /** Bounded physical allocation reconciliation from the existing SandboxRunnerService. */
   allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
+}
+
+/**
+ * A dispatch target must be the exact fenced connection for the allocation AND execution-eligible:
+ * a report-only reconnect never mints execution permission, so the fresh active handshake that
+ * replaces it is the only path back to dispatch.
+ */
+function requireDispatchableConnection(
+  connection: CloudConnectionRecord | undefined,
+  scope: RunnerScope,
+): CloudConnectionRecord {
+  if (!connection || connection.instanceId !== cloudInstanceIdFor(scope)) {
+    throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner connection is not fenced");
+  }
+  if (connection.executionEligible !== true) {
+    throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner connection is report-only");
+  }
+  return connection;
 }
 
 /** Transport allowance added to the dispatch deadline when minting an execution-scoped grant. */
@@ -225,10 +244,7 @@ export class CloudDeliveryOwner {
     if (!this.#modelGrants.isModelAllowed(request.runtime.model ?? "")) {
       throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not allowlisted");
     }
-    const connection = this.#fence.connectionForSandbox(row.id);
-    if (!connection || connection.instanceId !== cloudInstanceIdFor(snapshot.scope)) {
-      throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner connection is not fenced");
-    }
+    const connection = requireDispatchableConnection(this.#fence.connectionForSandbox(row.id), snapshot.scope);
     const socket = this.#socketFor(connection);
     if (!socket) throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner connection was replaced");
     const dispatch = await this.#custody.beginDeliveryDispatch(request, input.inputHash, {
@@ -311,13 +327,33 @@ export class CloudDeliveryOwner {
     frame: { deliveryId: string; requestId: string; turnId: string },
   ): Promise<void> {
     if (!this.#isExactConnection(connection)) return;
-    if (!(await this.#loadCurrentAllocation(connection, { allowReleasing: true }))) {
+    const allocation = await this.#loadCurrentAllocation(connection, { allowReleasing: true });
+    if (!allocation) {
       this.#sendVerified(connection, frame.requestId, "rejected", "stale_generation");
       return;
     }
+    const authority = await this.#loadAuthorityState(connection);
+    if (!this.#isExactConnection(connection)) return;
     const custodyRef = { deliveryId: frame.deliveryId, turnId: frame.turnId };
+    // Completed custody is terminal: the durable result already exists, so a stale received entry
+    // is answered (and can be retired) even while the authority is paused. This never grants new
+    // execution.
+    if (await this.#isAcceptedReported(connection, custodyRef)) {
+      this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_unknown");
+      return;
+    }
+    // A transient IM reauthorization PAUSES the chain only while the allocation is still live:
+    // keep accepted-unreported received evidence and fresh receipts silent — the normal path
+    // re-verifies after the user restores the binding, and this entrypoint never grants new
+    // execution. A retiring (`releasing`) allocation keeps settling below as an explicit stop.
+    if (authority === "paused" && allocation.lifecycle !== "releasing") return;
     if (await this.#isAcceptedUnfinished(connection, custodyRef)) {
-      if (this.#isExactConnection(connection)) this.#sendCancellation(connection, frame.deliveryId);
+      // A stopped authority or a retiring allocation can no longer let the turn finish, so reuse
+      // the explicit-stop cancellation for a truthful settlement. A live, active allocation keeps
+      // the evidence pending for the normal verification path.
+      if (authority !== "active" || allocation.lifecycle === "releasing") {
+        if (this.#isExactConnection(connection)) this.#sendCancellation(connection, frame.deliveryId);
+      }
       return;
     }
     if (await this.#isAcceptedReported(connection, custodyRef)) {
@@ -733,7 +769,15 @@ export class CloudDeliveryOwner {
     if (!this.#isExactConnection(record)) return "pending";
     const lifecycle = await this.#currentAllocationLifecycle(record);
     if (!lifecycle || !(await this.#isAcceptedUnfinished(record, deliveryRef))) return "pending";
-    if (lifecycle === "active" && (await this.#loadActiveAuthority(record))) {
+    const authority = await this.#loadAuthorityState(record);
+    if (!this.#isExactConnection(record)) return "pending";
+    // A transient IM reauthorization PAUSES the authority chain only while the allocation is still
+    // live: keep the accepted evidence pending and retry it after the user restores the binding,
+    // never cancel a turn the Runner can still report. A retiring (`releasing`) allocation is an
+    // independent explicit stop, so it falls through and settles truthfully. New execution
+    // permission stays blocked either way (`#canAuthorizeExecution`).
+    if (authority === "paused" && lifecycle === "active") return "pending";
+    if (authority === "active" && lifecycle === "active") {
       if (answer === "received") await this.#reverifyReceived(record, delivery);
       return "pending";
     }
@@ -785,7 +829,19 @@ export class CloudDeliveryOwner {
       return;
     }
     const grant = await this.#mintModelGrant(connection, custodyRef.turnId, parsed.data, { supersedeRevoked: true });
-    if (!grant) return;
+    if (!grant) {
+      // Sanitized operational signal only: the durable `received` evidence stays untouched and the
+      // next recovery pass retries; no token, request body, or upstream error is logged.
+      this.#logger?.warn(
+        {
+          code: "CLOUD_DELIVERY_REVERIFY_MINT_FAILED",
+          deliveryId: delivery.id,
+          turnId: custodyRef.turnId,
+        },
+        "Cloud received re-verification could not mint a model grant; the entry stays pending",
+      );
+      return;
+    }
     if (!(await this.#canAuthorizeExecution(connection, custodyRef))) {
       this.#revokeIfOwned(custodyRef.turnId, connection.connectionId);
       return;
@@ -868,6 +924,8 @@ export class CloudDeliveryOwner {
     installationId: string;
     scope: RunnerScope;
     socket?: RunnerControlSocket;
+    /** False for a report-only reconnect: settle/report only, never mint execution permission. */
+    executionEligible?: boolean;
   }): CloudConnectionRecord {
     // A same-Sandbox replacement (reconnect or newer generation) must tear down the superseded
     // connection's privileges even when the fence entry is replaced inside attach.
@@ -1010,8 +1068,9 @@ export class CloudDeliveryOwner {
     return this.#isAcceptedUnfinished(connection, delivery);
   }
 
-  /** Exact connection + current allocation + live authority chain, before any custody transition. */
+  /** Exact eligible connection + current allocation + live authority chain, before any custody transition. */
   async #canAuthorizeReceipt(connection: CloudConnectionRecord): Promise<boolean> {
+    if (connection.executionEligible !== true) return false;
     if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return false;
     return Boolean(await this.#loadActiveAuthority(connection));
   }
@@ -1035,6 +1094,36 @@ export class CloudDeliveryOwner {
       return undefined;
     }
     return owned;
+  }
+
+  /**
+   * Persisted authority state for this exact connection's Session: `active` (normal work and
+   * grants), `paused` (an IM reauthorization is required — queued input and accepted-unreported
+   * evidence are preserved and retried, but no new execution permission is granted), `stopped`
+   * (ended Session, non-active Agent, disabled/errored binding, suspended Account), or undefined
+   * when the exact row identity is gone. The distinction is deliberately query-local: no new
+   * model or table, only the existing binding/agent/session/account state.
+   */
+  async #loadAuthorityState(connection: CloudConnectionRecord): Promise<"active" | "paused" | "stopped" | undefined> {
+    const [row] = await this.#database
+      .select({
+        ended: isNotNull(sessions.endedAt),
+        agentStatus: agents.status,
+        bindingStatus: imBindings.status,
+        suspendedAt: users.suspendedAt,
+      })
+      .from(sandboxes)
+      .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(users, eq(users.id, agents.createdByUserId))
+      .where(and(eq(sandboxes.id, connection.scope.sandboxId), eq(sessions.id, connection.scope.sessionId)))
+      .limit(1);
+    if (!row) return undefined;
+    if (row.ended || row.agentStatus !== "active" || row.suspendedAt !== null) return "stopped";
+    if (row.bindingStatus === "active") return "active";
+    return row.bindingStatus === "reauthorization_required" ? "paused" : "stopped";
   }
 
   /** Completed accepted custody for this exact turn: its durable result exists, never mint for it. */

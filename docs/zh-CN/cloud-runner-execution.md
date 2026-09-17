@@ -89,12 +89,14 @@ journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id�
 保证实际公开 Unix socket 路径不超过 100 字节。输入 journal 达到 1,024 条时拒绝新条目，但仍允许
 重复回执与清理已有条目的确认。连接关闭时清除排队的验证授权；持久化的 received 条目必须在新
 连接上重新验证。旧连接中排队的帧不能在重连后授权新执行。
+排队 Turn 在启动前被取消时报告 not_started，并立即继续处理 FIFO 中的后续条目，不依赖新消息
+或可用性通知来唤醒队列。
 
 尚未 dispatch 的 Cloud 输入复用已有 ingress TTL 与每 Session 队列容量（direct 100 条、ambient
 500 条），过期或超量会记录明确终态原因。已 dispatch 的 Cloud 输入保留冻结的执行窗口；已接收但
 尚未报告的 custody 不作为 pending 输入清理。restore_required 与已停止的环境明确拒绝输入，
-不无限重试。暂时的模型或 Runner 不可用仍可在输入 deadline 内重试。Cloud 后续消息等待当前
-Turn 结束，不进入 Local steering 路径。
+不无限重试。暂时的模型或 Runner 不可用仍可在输入 deadline 内重试，复用现有尝试次数，按
+2 秒起步、最多 30 秒的指数间隔退避。Cloud 后续消息等待当前 Turn 结束，不进入 Local steering 路径。
 
 凭证与模型边界：#633 runtime-credential Relay 始终在可信父进程；Sandbox 只拿到只读 public
 材料（CA 证书、每 Turn 代理 socket、不透明 handle、每 Turn provider 环境文件），绝不包含平台
@@ -107,6 +109,8 @@ master key、bootstrap token 或原始 provider 凭证。平台提供的模型�
 模型代理只接受兼容 Pi 的严格 chat-completions 请求，拒绝路由和凭证覆盖字段，每个请求最多一个
 completion，输出预算上限为 65,536 token。省略两个输出预算字段时，代理补充 `max_tokens: 65536`，
 因此不能通过省略参数绕过限制。这是单次请求限制，不是累计费用配额。
+Assistant 历史保留 Pi 的 reasoning_content、reasoning、reasoning_text 回显，以及有大小限制的
+签名工具调用加密 reasoning_details。这些历史字段不放宽顶层路由或凭证字段白名单。
 
 授权登记表的 4,096 条上限用于限制 Server 状态量，并涵盖并发签发；它不是每 Account 执行配额
 或模型费用预算。账号级准入与公平性属于后续资源策略，当前单一 Account 仍可能占满全局上限。
@@ -124,11 +128,18 @@ Turn（取消、超时、失败或未知）结束时会立即执行与 E3 相同
 “安全取消”，使 Runner 不可用，并通过既有失败路径关闭 Runner，绝不静默复用；Cloud Turn 或待处理
 重置占用 Sandbox 时，E3 acceptance 不能启动。worker 非零退出即使 stdout 声称 completed，也绝不
 报告为 completed Turn。
+所有 Runner 退出路径都会先标记 stopping 再等待活动 worker 收尾。关闭时只验证删除命名空间，
+不重新创建；认证拒绝或重连次数耗尽等非进程信号退出也遵循此顺序。
 
 恢复时还会检查 Session、Agent、binding 或 Account 是否已停止授权。断线期间丢失 stop 帧时，
 若仍在线的 Runner 报告 received 或 started，Server 会重新发送取消。releasing 本身不代表结果
 已丢失；分配释放期间仍接收真实报告。worker 负责持久化的执行 deadline，父进程 exec 只增加
 5 秒作为清理与报告的兜底时间。
+IM binding 处于 reauthorization_required 时暂停新的执行授权，不仅因该状态就拒绝排队输入或
+取消已接收工作。输入 TTL／容量限制仍有效，已有报告仍可恢复。恢复认证后重新允许正常投递与
+恢复；Session／Agent／Account 停止以及释放分配仍会取消工作。
+暂停期间认证的连接不会获得执行授权。心跳或恢复交互检测到权限恢复后，Server 通过既有控制
+握手要求重新连接，恢复就绪状态和凭证打开能力，无需替换 Instance 或丢弃 journal。
 
 连续性与密钥：Pi 会话状态与持久化 provider binding 位于 Session workspace 的
 .opentag/pi-session 子树，因此同一 Agent Session 在多次 Turn 及原生 rootfs 重置后仍保留 Pi

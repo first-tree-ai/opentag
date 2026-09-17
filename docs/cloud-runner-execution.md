@@ -121,13 +121,16 @@ rejects new entries at its 1,024-entry capacity while still allowing duplicate r
 acknowledgements to retire existing entries. A channel close drops queued verification grants;
 the durable `received` entries require fresh verification on the replacement connection. A frame
 queued on the old connection cannot authorize a new start after reconnect.
+A queued Turn cancelled before it starts reports `not_started` and immediately advances the
+remaining FIFO queue; it does not require a new message or availability signal.
 
 Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
 direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
 inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
 pending input. `restore_required` and a stopped environment reject the input explicitly rather
 than retrying forever. Transient model/Runner unavailability remains retryable within the input
-deadline. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
+deadline, with exponential delays from two seconds to a thirty-second cap using the existing
+attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
 
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, per-turn proxy sockets,
@@ -144,6 +147,9 @@ The model proxy accepts a strict Pi-compatible chat-completions payload. Routing
 overrides are rejected, each request has at most one completion, and output budgets are capped at
 65,536 tokens. If both output-budget fields are omitted, the proxy supplies `max_tokens: 65536`;
 omission cannot bypass the limit. These are per-request bounds, not an aggregate spend quota.
+Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasoning_text` echoes,
+plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
+relax the top-level routing or credential allowlist.
 
 The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
 is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness
@@ -167,12 +173,23 @@ report instead of a safe cancellation, makes the Runner unusable, and shuts it d
 existing failure path rather than silently reusing the namespace; E3 acceptance cannot start while
 a Cloud Turn or a pending reset owns the Sandbox. A nonzero worker exit is never reported as a
 completed Turn, even if its stdout claims one.
+Every Runner exit marks the controller as stopping before settling its active worker. During
+shutdown, the verified cleanup deletes the namespace without relaunching it, including an
+authentication rejection or exhausted reconnects that did not involve a process signal.
 
 Recovery also checks whether the Session, Agent, binding or Account has stopped authorizing work.
 If a stop frame was lost during disconnection, a live Runner reporting `received` or `started`
 receives cancellation again. `releasing` alone is not evidence that its result was lost; the
 Server still accepts the real report while the allocation drains. The worker owns the persisted
 execution deadline; the parent exec adds five seconds only as a teardown/reporting backstop.
+An IM binding in `reauthorization_required` temporarily blocks new execution permission without
+rejecting queued input or cancelling accepted work solely for that status. Input TTL/capacity
+still apply, and existing reports remain recoverable. Restoring authorization permits normal
+delivery/recovery again; Session/Agent/Account stops and allocation release still cancel work.
+A connection authenticated during the pause remains ineligible for execution grants. Once a
+heartbeat or recovery exchange observes restored authority, the Server asks it to reconnect
+through the existing control handshake, restoring readiness and credential opens without
+replacing the Instance or discarding the journal.
 
 Continuity and secrets: Pi conversation state and the persisted provider binding live under the
 Session workspace's `.opentag/pi-session` subtree, so the same Agent Session keeps its Pi

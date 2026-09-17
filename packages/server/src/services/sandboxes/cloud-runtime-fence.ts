@@ -26,6 +26,12 @@ export interface CloudConnectionRecord {
    * while this exact connectionId is still the fence's current entry for the Sandbox.
    */
   readonly socket?: RunnerControlSocket;
+  /**
+   * Whether this connection may receive execution permission. A report-only reconnect (the active
+   * authority chain was inactive at handshake) sets false: existing custody may still be settled
+   * or reported, but no grant is ever minted until a fresh active handshake replaces the record.
+   */
+  readonly executionEligible: boolean;
 }
 
 /**
@@ -54,6 +60,7 @@ export class CloudRuntimeFence {
     installationId: string;
     scope: RunnerScope;
     socket?: RunnerControlSocket;
+    executionEligible?: boolean;
   }): CloudConnectionRecord {
     this.detachSandbox(input.scope.sandboxId);
     const record: CloudConnectionRecord = {
@@ -63,6 +70,7 @@ export class CloudRuntimeFence {
       instanceId: cloudInstanceIdFor(input.scope),
       scope: input.scope,
       ...(input.socket ? { socket: input.socket } : {}),
+      executionEligible: input.executionEligible !== false,
     };
     this.#byConnection.set(record.connectionId, record);
     this.#bySandbox.set(input.scope.sandboxId, record.connectionId);

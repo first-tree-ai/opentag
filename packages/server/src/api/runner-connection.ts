@@ -315,6 +315,9 @@ export class RunnerConnection {
         installationId: fence.installationId,
         scope: validated,
         socket: this.#adapter,
+        // A report-only reconnect may settle/report existing custody, but the owner must never
+        // mint execution permission for it; the fresh active handshake replaces the record.
+        executionEligible: !reportOnly,
       });
     }
     this.#sendAuthResult(true, requestId);
@@ -454,6 +457,22 @@ export class RunnerConnection {
     return this.#allocationHolds(current, () => this.#options.service.validateRunnerScope(claimsFromScope(current)));
   }
 
+  /**
+   * A report-only connection is latched at handshake while the authority chain was inactive. When
+   * the chain becomes active again (IM reauthorization restored), force the Runner back through
+   * the existing control reconnect: the fresh handshake resolves the active chain, accepts
+   * readiness and permits execution opens. Owner issuance is gated on `executionEligible`, so no
+   * grant can reach this socket in the meantime. Returns true when this connection was closed.
+   */
+  async #refreshReportOnlyConnection(current: RunnerScope): Promise<boolean> {
+    if (!this.#reportOnly || this.#closed) return false;
+    const active = await this.#activeAllocationHolds(current);
+    if (this.#closed) return true;
+    if (active !== true) return false;
+    this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "authority restored; reconnect for execution");
+    return true;
+  }
+
   /** Exact persisted allocation identity without the active chain. Gates report/query traffic. */
   async #channelAllocationHolds(current: RunnerScope): Promise<boolean | undefined> {
     return this.#allocationHolds(current, () =>
@@ -482,6 +501,7 @@ export class RunnerConnection {
 
   async #handleReady(current: RunnerScope, readiness: Omit<RunnerReadiness, "reportedAt">): Promise<void> {
     if (this.#reportOnly) {
+      if (await this.#refreshReportOnlyConnection(current)) return;
       this.#send({
         type: "error",
         code: "RUNNER_SCOPE_REPORT_ONLY",
@@ -562,6 +582,7 @@ export class RunnerConnection {
     if (this.#reportOnly) {
       // Existing custody must finish through cancellation/reporting; a blanket rejection would
       // erase an accepted received entry from the Runner journal and fabricate a lost result.
+      if (await this.#refreshReportOnlyConnection(current)) return;
       if (!(await this.#channelHolds(current))) return;
       const cloud = this.#requireCloudContext();
       if (cloud) await cloud.owner.handleInactiveDeliveryReceived(cloud.connection, frame);
@@ -591,6 +612,9 @@ export class RunnerConnection {
     const cloud = this.#requireCloudContext();
     if (!cloud) return;
     cloud.owner.handleQueryResult(cloud.connection, frame);
+    // The recovery query is the first server-driven traffic after a reauthorization restore:
+    // switch the Runner back to an execution-capable connection as soon as the chain is active.
+    await this.#refreshReportOnlyConnection(current);
   }
 
   async #handleCredentialFrame(
@@ -602,7 +626,8 @@ export class RunnerConnection {
     if (!cloud) return;
     if (this.#reportOnly && frame.frame.type === "runtime:execution:open") {
       // Report-only never mints a new execution permission, even if the credential owner's own
-      // fences would allow it.
+      // fences would allow it. A restored authority closes for a fresh active handshake instead.
+      if (await this.#refreshReportOnlyConnection(current)) return;
       this.#send({
         type: "credential:frame",
         frame: {
@@ -695,6 +720,9 @@ export class RunnerConnection {
 
   async #dispatchAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {
     if (data.type === "heartbeat") {
+      // The heartbeat cadence also re-evaluates a report-only latch: a restored authority chain
+      // closes for the fresh active reconnect instead of leaving the Runner execution-blocked.
+      if (await this.#refreshReportOnlyConnection(current)) return;
       this.#options.hub.acknowledge(current.sandboxId, this.#adapter, { type: "server:heartbeat" });
       return;
     }

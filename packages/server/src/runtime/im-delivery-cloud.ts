@@ -85,7 +85,7 @@ export interface CloudDeliveryCoordinatorOptions {
     receiveMode: (typeof agents.$inferSelect)["receiveMode"];
   }) => Promise<RuntimeImDeliveryContent>;
   hasOtherAgentCustody: (agentId: string, deliveryId: string) => Promise<boolean>;
-  recordFailure: (deliveryId: string, code: string, claimToken?: string) => Promise<void>;
+  recordFailure: (deliveryId: string, code: string, claimToken?: string, retryDelayMs?: number) => Promise<void>;
   releaseDispatch: (deliveryId: string, requestId: string, code: string, claimToken: string) => Promise<void>;
   rejectInput: (deliveryId: string, reason: string, claimToken?: string) => Promise<void>;
   withActiveAgentAdmission: ActiveAgentAdmission;
@@ -123,7 +123,7 @@ export class CloudDeliveryCoordinator {
       if (!cloudDelivery) return;
       await this.#dispatchToRunner(row, cloudDelivery, built, claimToken, signal);
     } catch (error) {
-      await this.#recordDispatchError(deliveryId, error, claimToken);
+      await this.#recordDispatchError(deliveryId, row.delivery.attemptCount, error, claimToken);
     }
   }
 
@@ -151,8 +151,14 @@ export class CloudDeliveryCoordinator {
     }
     if (!cloudDelivery.isModelPathConfigured()) {
       // Model-disabled configuration: report the transient inability instead of provisioning a
-      // Cloud environment that could never execute the delivery.
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE", claimToken);
+      // Cloud environment that could never execute the delivery. This is a transient dispatch
+      // failure too, so it backs off with the existing attempt counter instead of a 2 s hot retry.
+      await this.#options.recordFailure(
+        deliveryId,
+        "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
+        claimToken,
+        cloudDispatchRetryDelayMs(row.delivery.attemptCount),
+      );
       return { kind: "stop" };
     }
     const persisted = readPersistedDeliveryRequest({
@@ -176,7 +182,12 @@ export class CloudDeliveryCoordinator {
     if (!assembledRuntime) return { kind: "stop" };
     const runtime = persistedRequest ? assembledRuntime : cloudDelivery.resolveRuntimeModel(assembledRuntime);
     if (!runtime) {
-      await this.#options.recordFailure(deliveryId, "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE", claimToken);
+      await this.#options.recordFailure(
+        deliveryId,
+        "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
+        claimToken,
+        cloudDispatchRetryDelayMs(row.delivery.attemptCount),
+      );
       return { kind: "stop" };
     }
     return { kind: "continue", persistedRequest, replyRole, runtime };
@@ -282,10 +293,23 @@ export class CloudDeliveryCoordinator {
     await admitted.result;
   }
 
-  async #recordDispatchError(deliveryId: string, error: unknown, claimToken: string): Promise<void> {
+  async #recordDispatchError(
+    deliveryId: string,
+    attemptCount: number,
+    error: unknown,
+    claimToken: string,
+  ): Promise<void> {
     if (error instanceof CloudDeliveryDispatchError) {
+      const code = cloudDispatchFailureCode(error);
       setActiveSpanAttributes(outcomeAttrs("failed", error.code));
-      await this.#options.recordFailure(deliveryId, cloudDispatchFailureCode(error), claimToken);
+      // A Runner that is not ready yet (cold start, brief reconnect) or a model grant that is
+      // temporarily unavailable must not pin the worker to a 2 s hot retry until the frozen
+      // window runs out: back off with the existing attempt counter, capped well below the
+      // dispatch deadline. Every other failure keeps the immediate bounded retry.
+      const retryDelayMs = TRANSIENT_CLOUD_DISPATCH_CODES.has(code)
+        ? cloudDispatchRetryDelayMs(attemptCount)
+        : undefined;
+      await this.#options.recordFailure(deliveryId, code, claimToken, retryDelayMs);
       return;
     }
     await this.#options.recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED", claimToken);
@@ -384,10 +408,13 @@ export class CloudDeliveryCoordinator {
    * Bounded reconciliation for Cloud work whose authority chain is no longer active: the Session
    * ended, the Agent or binding was deactivated/suspended, or the Account was suspended. Those
    * rows are outside the normal claim filters, so this pass keeps them from being stranded.
-   * Pending inputs are terminally rejected with an explicit reason; accepted-unreported turns are
-   * re-driven through the owner's persisted-allocation recovery (never a blind replay) on a
-   * bounded cadence — a lost socket stays reconcilable and a genuine outcome is preserved until
-   * the Runner reports or the allocation is proven retired/superseded.
+   * Pending inputs whose stop is PERMANENT are terminally rejected with an explicit reason; a bare
+   * `reauthorization_required` binding is a TRANSIENT pause, so its queued input stays pending
+   * within the existing TTL/capacity and is delivered after the user restores authorization.
+   * Accepted-unreported turns are re-driven through the owner's persisted-allocation recovery
+   * (never a blind replay) on a bounded cadence — a paused authority keeps its evidence pending, a
+   * permanent stop cancels it truthfully, and a genuine outcome is preserved until the Runner
+   * reports or the allocation is proven retired/superseded.
    */
   async reconcileStoppedWork(): Promise<void> {
     const owner = this.#options.cloudDelivery;
@@ -442,13 +469,22 @@ export class CloudDeliveryCoordinator {
           eq(computers.kind, "cloud"),
           lte(imMessageDeliveries.nextAttemptAt, new Date(this.#options.now())),
           // Every authority filter the normal claim path applies, plus the ones it only checks
-          // later: an inactive chain must still reach bounded reconciliation.
-          or(
-            isNotNull(sessions.endedAt),
-            ne(agents.status, "active"),
-            ne(imBindings.status, "active"),
-            isNotNull(users.suspendedAt),
-          ),
+          // later: an inactive chain must still reach bounded reconciliation. Pending rows are
+          // only rejected for DEFINITIVE stops — `reauthorization_required` alone is a transient
+          // pause that keeps queued input within its TTL/capacity for delivery after reauth.
+          state === "pending"
+            ? or(
+                isNotNull(sessions.endedAt),
+                ne(agents.status, "active"),
+                isNotNull(users.suspendedAt),
+                and(ne(imBindings.status, "active"), ne(imBindings.status, "reauthorization_required")),
+              )
+            : or(
+                isNotNull(sessions.endedAt),
+                ne(agents.status, "active"),
+                ne(imBindings.status, "active"),
+                isNotNull(users.suspendedAt),
+              ),
         ),
       )
       .orderBy(asc(imMessageDeliveries.id))
@@ -504,6 +540,26 @@ export function cloudDispatchFailureCode(error: CloudDeliveryDispatchError): str
       : error.code === "dispatch_conflict"
         ? "IM_DELIVERY_CLOUD_DISPATCH_CONFLICT"
         : "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY";
+}
+
+/**
+ * Transient dispatch failures (Runner not ready yet, model grant temporarily unavailable) retry
+ * with a capped exponential backoff derived from the existing `attemptCount`. Local deliveries
+ * keep their unchanged fixed retry: only these Cloud codes pass a delay to `recordFailure`.
+ */
+const CLOUD_RETRY_BASE_DELAY_MS = 2_000;
+const CLOUD_RETRY_MAX_DELAY_MS = 30_000;
+
+/** The Cloud failures that back off instead of retrying on the fixed cadence. */
+const TRANSIENT_CLOUD_DISPATCH_CODES = new Set([
+  "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+  "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
+]);
+
+/** `attemptCount` is the post-claim attempt number: 1 -> 2 s, 2 -> 4 s, … capped at 30 s. */
+export function cloudDispatchRetryDelayMs(attemptCount: number): number {
+  const exponent = Math.min(Math.max(0, Math.trunc(attemptCount) - 1), 20);
+  return Math.min(CLOUD_RETRY_BASE_DELAY_MS * 2 ** exponent, CLOUD_RETRY_MAX_DELAY_MS);
 }
 
 export type PersistedDeliveryRequest =

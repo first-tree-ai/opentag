@@ -1172,8 +1172,9 @@ function codexThreadParams(
   method: "thread/start" | "thread/resume",
   expectedThreadId: string | undefined,
 ): Record<string, unknown> {
-  if (method === "thread/start") return {};
-  return { ...(expectedThreadId ? { threadId: expectedThreadId } : {}), excludeTurns: true };
+  // An exact resume always carries the bound thread id. `JSON.stringify` drops the key when it is
+  // absent, so a resume without one still sends no `threadId`.
+  return method === "thread/start" ? {} : { threadId: expectedThreadId, excludeTurns: true };
 }
 
 function parseCodexBinding(binding: AgentRuntimeBinding): { threadId: string; hostedToolsHash?: string } {

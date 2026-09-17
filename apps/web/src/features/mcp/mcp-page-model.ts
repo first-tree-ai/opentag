@@ -10,7 +10,14 @@ import type { MCPAgentServer, MCPAuthKind, MCPAuthorizationSummary } from "@open
  */
 export interface McpRowStates {
   mount: "enabled" | "disabled";
-  authorizationKind: MCPAuthKind | "none";
+  /**
+   * `unauthorized` is a mount with no authorization row at all, and it is not the same as `none`:
+   * `none` is a real anonymous authorization this Agent has been granted, while `unauthorized` means
+   * there is nothing yet. Rendering both as "Anonymous" put that label beside "Not authorized", which
+   * contradicts itself and hides the difference between "can use it anonymously" and "must authorize
+   * first".
+   */
+  authorizationKind: MCPAuthKind | "none" | "unauthorized";
   authorizationStatus: MCPAuthorizationSummary["status"] | "none";
   probe: "pending" | "succeeded" | "failed" | "unknown";
 }
@@ -19,7 +26,7 @@ export function rowStates(entry: MCPAgentServer): McpRowStates {
   const authorization = entry.authorization;
   return {
     mount: entry.enabled ? "enabled" : "disabled",
-    authorizationKind: authorization?.kind ?? "none",
+    authorizationKind: authorization?.kind ?? "unauthorized",
     authorizationStatus: authorization?.status ?? "none",
     probe: authorization?.probeState ?? "unknown",
   };

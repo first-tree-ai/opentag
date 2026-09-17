@@ -19,7 +19,7 @@ import {
   Text,
 } from "../../ui/design-system.js";
 import { readMcpOAuthOutcome } from "./mcp-oauth-outcome.js";
-import { canRevoke, rowStates, sharedDefinitionImpact } from "./mcp-page-model.js";
+import { canRevoke, type McpRowStates, rowStates, sharedDefinitionImpact } from "./mcp-page-model.js";
 import {
   useAgentMcpServers,
   useAttachMcpServer,
@@ -900,9 +900,11 @@ function describeImpact(count: number, names: string[]): string {
 
 // ------------------------------------------------------------------ helpers
 
-function describeKind(kind: MCPAuthKind | "none"): string {
+function describeKind(kind: McpRowStates["authorizationKind"]): string {
   if (kind === "bearer") return m.mcp_authorization_bearer();
   if (kind === "oauth") return m.mcp_authorization_oauth();
+  // No authorization at all, which is not the same claim as an anonymous one being in force.
+  if (kind === "unauthorized") return m.mcp_authorization_status_none();
   return m.mcp_authorization_anonymous();
 }
 

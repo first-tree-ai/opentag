@@ -352,6 +352,40 @@ describe("McpPage", () => {
     await waitFor(() => expect(window.location.search).toBe(""));
   });
 
+  it("labels a granted anonymous authorization as anonymous", async () => {
+    stub([
+      entry({
+        authorization: {
+          ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>),
+          kind: "none",
+          hasCredential: false,
+        },
+      }),
+    ]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    await waitFor(() => {
+      const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
+      expect(row?.textContent).toContain("Anonymous");
+    });
+  });
+
+  it("does not call a mount with no authorization 'anonymous'", async () => {
+    /*
+     * A mount with no authorization row rendered the "Anonymous" badge beside "Not authorized" — two
+     * contradictory statements, which also hid the difference between "this Agent may use the Server
+     * anonymously" and "this Agent has not authorized yet".
+     */
+    stub([entry({ authorization: null })]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    await waitFor(() => {
+      const row = document.querySelector('[data-ui="mcp-server-row"]') as HTMLElement | null;
+      expect(row?.textContent).toContain("None");
+      expect(row?.textContent).not.toContain("Anonymous");
+    });
+  });
+
   it("takes a Bearer key through a one-way input that is never echoed back", async () => {
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);

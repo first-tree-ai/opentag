@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { MCP_ERROR_CODES } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -324,18 +324,51 @@ describe("McpOutboundFetcher", () => {
 });
 
 /**
- * The regression gate: the three network modules must not call `fetch` themselves. Only the policy
- * module may, and every other module takes its `fetchOutbound` from it, so the gate is a property of
- * the dependency graph rather than of a reviewer's attention.
+ * The regression gate: no module under `services/mcp` and none of the MCP API routes may call `fetch`
+ * themselves. Only the policy module may, and every other module takes its `fetchOutbound` from it, so
+ * the gate is a property of the dependency graph rather than of a reviewer's attention.
+ *
+ * Swept by directory rather than from a list of names. The list was four files with a comment claiming
+ * three, and either way a module added later escaped the check silently — which is the failure mode the
+ * gate exists to prevent. `services/mcp/index.ts` and the test fixtures are exempt by path.
  */
 describe("MCP outbound gate regression", () => {
   const moduleDirectory = fileURLToPath(new URL("../services/mcp/", import.meta.url));
+  const apiDirectory = fileURLToPath(new URL("../api/", import.meta.url));
 
-  it("keeps a direct fetch() out of the transport, oauth, and probe modules", () => {
-    for (const file of ["mcp-transport.ts", "mcp-oauth.ts", "mcp-probe.ts", "mcp-oauth-flow-service.ts"]) {
-      const source = readFileSync(`${moduleDirectory}${file}`, "utf8");
-      expect(source, file).not.toMatch(/\bfetch\s*\(/);
-      expect(source, file).not.toMatch(/globalThis\.fetch/);
+  /** Every MCP source file that must reach the network only through the policy module. */
+  function outboundModules(): { name: string; path: string }[] {
+    const services = readdirSync(moduleDirectory)
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => ({ name: `services/mcp/${name}`, path: `${moduleDirectory}${name}` }));
+    const routes = readdirSync(apiDirectory)
+      .filter((name) => name.startsWith("mcp-") && name.endsWith(".ts"))
+      .map((name) => ({ name: `api/${name}`, path: `${apiDirectory}${name}` }));
+    return [...services, ...routes];
+  }
+
+  it("covers every module that dials, so a new one cannot escape the scan", () => {
+    const names = outboundModules().map((module) => module.name);
+    // The modules the gate was written for are still covered, and the sweep is not empty.
+    for (const expected of [
+      "services/mcp/mcp-transport.ts",
+      "services/mcp/mcp-oauth.ts",
+      "services/mcp/mcp-probe.ts",
+      "services/mcp/mcp-oauth-flow-service.ts",
+      "api/mcp-oauth.ts",
+    ]) {
+      expect(names, expected).toContain(expected);
+    }
+    expect(names.length).toBeGreaterThan(10);
+  });
+
+  it("keeps a direct fetch() out of every module but the policy", () => {
+    for (const { name, path } of outboundModules()) {
+      // The policy module is the one place a dial is allowed; `index.ts` is a barrel with no calls.
+      if (name === "services/mcp/mcp-url-policy.ts" || name === "services/mcp/index.ts") continue;
+      const source = readFileSync(path, "utf8");
+      expect(source, name).not.toMatch(/\bfetch\s*\(/);
+      expect(source, name).not.toMatch(/globalThis\.fetch/);
     }
   });
 

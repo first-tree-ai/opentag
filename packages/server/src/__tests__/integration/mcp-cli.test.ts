@@ -373,4 +373,36 @@ describe("MCP CLI end to end", () => {
     const invalid = await cli(booted.home, ["mcp", "add", "--name", "bad", "--url", "not-a-url"]);
     expect(invalid.code).not.toBe(0);
   }, 60_000);
+
+  it("refuses `mcp use --kind oauth` rather than silently writing a Bearer key", async () => {
+    /*
+     * `use` owns `bearer` and `none`. `oauth` used to fall through to Bearer, so
+     * `mcp use --kind oauth --bearer-key <value>` stored a Bearer key while the caller believed they
+     * were starting an OAuth flow — a silent kind change, which is the one thing this feature's
+     * per-Agent authorization must not do. `mcp authorize` owns OAuth.
+     */
+    const booted = await boot();
+    await cli(booted.home, ["mcp", "add", "--name", "linear", "--url", "https://mcp.example.com/mcp"]);
+    await cli(booted.home, ["agent", "mcp", "attach", booted.agentId, "linear"]);
+
+    const refused = await cli(booted.home, [
+      "mcp",
+      "use",
+      "linear",
+      "--agent",
+      booted.agentId,
+      "--kind",
+      "oauth",
+      "--bearer-key",
+      "sk-live",
+    ]);
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain("mcp authorize");
+
+    // And nothing was written: a refused kind must not leave a credential behind. The mount has no
+    // authorization at all, which is what the CLI reports as `none`.
+    const listed = await cli(booted.home, ["agent", "mcp", "list", booted.agentId]);
+    expect(listed.stdout).toContain("linear");
+    expect(listed.stdout).toContain("none");
+  }, 60_000);
 });

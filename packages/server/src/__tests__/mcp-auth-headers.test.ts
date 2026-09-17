@@ -174,8 +174,29 @@ describe("MCP extra header validation", () => {
     }
   });
 
+  it("refuses a value containing any other control character", () => {
+    /*
+     * CR and LF were the injection risk; a NUL and its neighbours were a worse user experience —
+     * undici rejects the value, which reached the user as "the MCP endpoint could not be reached", an
+     * error about the Server for a header this deployment refused to send.
+     */
+    for (const value of ["a\u0000b", "a\u0007b", "a\u001fb", "a\u007fb"]) {
+      expect(() => parseExtraHeaders({ "x-key": value }), JSON.stringify(value)).toThrow();
+    }
+  });
+
   it("refuses the reserved names", () => {
     for (const key of ["host", "content-type", "accept", "mcp-name"]) {
+      expect(() => parseExtraHeaders({ [key]: "v" }), key).toThrow();
+    }
+  });
+
+  it("refuses the connection-scoped names undici will not send", () => {
+    /*
+     * `te` and `proxy-authorization` are the ones that mattered most: they describe the hop rather than
+     * the request, so forwarding them was wrong independently of undici refusing the others.
+     */
+    for (const key of ["keep-alive", "upgrade", "expect", "te", "trailer", "proxy-authorization"]) {
       expect(() => parseExtraHeaders({ [key]: "v" }), key).toThrow();
     }
   });

@@ -60,6 +60,15 @@ export function resolveBearerKeySource(options: {
     }
     return { kind: "none" };
   }
+  /*
+   * `oauth` is not this command's kind. It used to fall through to Bearer, so
+   * `mcp use --kind oauth --bearer-key <value>` wrote a Bearer key while the caller believed they
+   * were starting an OAuth flow — a silent kind change, which is exactly what this feature's per-Agent
+   * authorization must not do. `mcp authorize` owns OAuth and is named in the message.
+   */
+  if (options.kind !== undefined && options.kind !== "bearer") {
+    throw new Error("--kind must be bearer or none; use `mcp authorize` to start an OAuth flow");
+  }
   if (options.bearerKeyStdin === true) return { kind: "bearer", source: "stdin" };
   if (options.bearerKey === undefined) return { kind: "bearer", source: "prompt" };
   return { kind: "bearer", source: "argument", value: String(options.bearerKey) };

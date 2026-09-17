@@ -79,6 +79,19 @@ export const MCP_RESERVED_HEADER_NAMES = [
   "transfer-encoding",
   "content-type",
   "accept",
+  /*
+   * Transport-owned or connection-scoped. undici throws on most of these, which a user met as "the
+   * MCP endpoint could not be reached" — an error about the Server for a header this deployment
+   * refused to send. `te` and `proxy-authorization` are worse than an error: they would be forwarded,
+   * and both describe the hop rather than the request.
+   */
+  "keep-alive",
+  "upgrade",
+  "expect",
+  "te",
+  "trailer",
+  "proxy-authorization",
+  "proxy-connection",
 ] as const;
 
 export const MCP_MAX_EXTRA_HEADERS = 16;
@@ -141,10 +154,28 @@ const ExtraHeaderKeySchema = z
     message: "An extra header may not be a reserved or transport-owned header",
   });
 
+/**
+ * Whether a string contains a control character.
+ *
+ * Checked in code rather than with a regex: an escape-form character class is what the linter forbids,
+ * and writing the literal bytes is worse. Every control character is refused, not only CR and LF — a
+ * NUL reaches undici as an invalid header value and surfaced to the user as an unreachable endpoint,
+ * an error about the Server for a header this deployment would not send.
+ */
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x20 || codePoint === 0x7f) return true;
+  }
+  return false;
+}
+
 const ExtraHeaderValueSchema = z
   .string()
   .max(MCP_MAX_EXTRA_HEADER_VALUE_BYTES)
-  .refine((value) => !/[\r\n]/.test(value), { message: "An extra header value may not contain CR or LF" });
+  .refine((value) => !hasControlCharacter(value), {
+    message: "An extra header value may not contain control characters",
+  });
 
 /**
  * Additional static headers sent alongside the authorization header for every kind. They are not

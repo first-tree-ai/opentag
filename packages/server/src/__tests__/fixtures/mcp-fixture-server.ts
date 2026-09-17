@@ -43,6 +43,14 @@ export interface McpFixtureOptions {
   toolPages?: McpFixtureToolsPage[];
   /** Answer the token endpoint with this error code, for the refresh failure classification. */
   tokenError?: string;
+  /**
+   * Run just before the token endpoint answers.
+   *
+   * The token request is the upstream round trip inside the callback, so this is the only place a test
+   * can act in the window between the callback resolving its row and writing the result — which is the
+   * window a revoke or a kind change during an exchange lands in.
+   */
+  onTokenRequest?: () => Promise<void> | void;
   /** The `iss` value the authorize redirect carries; `undefined` omits it. */
   issuerParameter?: string;
   /** Answer the authorize endpoint with `error=access_denied` instead of a code. */
@@ -298,6 +306,14 @@ export class McpFixtureServer {
   }
 
   #token(response: ServerResponse, body: unknown, authorization?: string): void {
+    if (this.#options.onTokenRequest) {
+      void Promise.resolve(this.#options.onTokenRequest()).then(() => this.#answerToken(response, body, authorization));
+      return;
+    }
+    this.#answerToken(response, body, authorization);
+  }
+
+  #answerToken(response: ServerResponse, body: unknown, authorization?: string): void {
     if (this.#tokenError) {
       json(response, 400, { error: this.#tokenError });
       return;

@@ -140,10 +140,17 @@ export class McpOAuthFlowService {
           authorizationServer: metadata.issuer,
           clientRegistrationId: registrationId,
           scopes,
-          status: "pending",
-          ciphertext: null,
-          keyId: null,
-          accessTokenExpiresAt: null,
+          /*
+           * The existing credential is deliberately left in place, and so is its `status`.
+           *
+           * Both used to be reset here, which meant that starting a flow destroyed a working token
+           * before the user had consented to anything: open the dialog on an Agent that already works,
+           * close the tab, and the Agent is unauthorized with no way back except authorizing again.
+           * A live flow is identified by `state` being set and unexpired — which is how the callback
+           * finds its row — so nothing needs `status` to be bent for the flow's sake. A row that has
+           * no credential yet still gets `pending`, because that is the honest description of it.
+           */
+          status: sql`case when ${mcpServerAuthorizations.ciphertext} is null then 'pending' else ${mcpServerAuthorizations.status} end`,
           failureCode: null,
           probeState: "pending",
           loginSessionHash: hashSecret(flowSecret),
@@ -423,55 +430,24 @@ export class McpOAuthFlowService {
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization response carried no code");
     }
     try {
-      const metadata = await this.#oauth.authorizationServerMetadata(accountId, requireIssuer(authorization));
-      /*
-       * `iss` is validated before anything from the response is used. On a mismatch the response's
-       * own `error` values are never shown or adopted, because a mismatched response is evidence of
-       * an attack rather than a hint about what went wrong.
-       */
-      this.#oauth.validateIssuer(metadata, query.iss, metadata.issuer);
-      const binding = { mcpServerId, agentId, authorizationServer: metadata.issuer };
-      const codeVerifier = this.#cipher.decryptPkceVerifier(binding, requirePkce(authorization));
-      const client = await this.#readClientCredentials(accountId, metadata, authorization.clientRegistrationId);
-      const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
-      const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
-      const tokens = await this.#oauth.exchangeAuthorizationCode(accountId, metadata, {
+      await this.#redeemCode({
+        accountId,
+        agentId,
+        authorization,
         code: query.code,
-        codeVerifier,
-        client,
-        resource: normalizeResource(undefined, effective.url),
+        issuedState: query.state,
+        iss: query.iss,
       });
-      const sealed = this.#cipher.encryptAuthorizationCredential(binding, {
-        accessToken: tokens.accessToken,
-        ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
-        ...(tokens.tokenType ? { tokenType: tokens.tokenType } : {}),
-      });
-      const now = this.#now();
-      await this.#database
-        .update(mcpServerAuthorizations)
-        .set({
-          status: "active",
-          ciphertext: sealed.ciphertext,
-          keyId: sealed.keyId,
-          scopes: tokens.scope ? tokens.scope.split(/\s+/).filter(Boolean) : authorization.scopes,
-          accessTokenExpiresAt: tokens.expiresIn ? new Date(now.getTime() + tokens.expiresIn * 1000) : null,
-          failureCode: null,
-          // Single use: the state, its verifier, and the flow binding are gone the moment the code is redeemed.
-          state: null,
-          stateExpiresAt: null,
-          pkceCiphertext: null,
-          loginSessionHash: null,
-          probeState: "pending",
-          revision: sql`${authorization.revision} + 1`,
-          updatedAt: now,
-        })
-        .where(eq(mcpServerAuthorizations.id, authorization.id));
     } catch (error) {
       /*
-       * A failed exchange is terminal too: the code is spent, so retrying cannot help and leaving the
-       * row `pending` would just be a wait that ends in a timeout. The flow is cleared and a terminal
-       * status recorded, and a transient failure is left pending because a retry can still succeed.
+       * A failed exchange is terminal, so the flow is cleared and a terminal status is recorded —
+       * leaving the row awaiting a callback that will never come would only be a wait that ends in a
+       * timeout. A transient failure is left alone, because a retry can still succeed.
+       *
+       * The superseded case is re-thrown untouched: the flow already belongs to a newer decision, and
+       * clearing or failing it here would undo that decision.
        */
+      if (error instanceof McpServiceError && error.code === MCP_ERROR_CODES.OAUTH_FLOW_INVALID) throw error;
       await this.#failFlow(
         authorization.id,
         error instanceof McpServiceError && error.category === "transient" ? undefined : MCP_ERROR_CODES.OAUTH_FAILED,
@@ -479,6 +455,92 @@ export class McpOAuthFlowService {
       throw error;
     }
     return { accountId, agentId, mcpServerId };
+  }
+
+  /**
+   * Exchange the code and store the credential, fenced on the flow that started it.
+   *
+   * Extracted from `callback` so that method reads as the decisions it makes — denied, no code,
+   * redeem — rather than as one long body, and because this is the half that talks upstream.
+   */
+  async #redeemCode(input: {
+    accountId: string;
+    agentId: string;
+    authorization: typeof mcpServerAuthorizations.$inferSelect;
+    code: string;
+    issuedState: string;
+    iss: string | undefined;
+  }): Promise<void> {
+    const { accountId, agentId, authorization, code, issuedState, iss } = input;
+    const mcpServerId = authorization.mcpServerId;
+    const metadata = await this.#oauth.authorizationServerMetadata(accountId, requireIssuer(authorization));
+    /*
+     * `iss` is validated before anything from the response is used. On a mismatch the response's
+     * own `error` values are never shown or adopted, because a mismatched response is evidence of
+     * an attack rather than a hint about what went wrong.
+     */
+    this.#oauth.validateIssuer(metadata, iss, metadata.issuer);
+    const binding = { mcpServerId, agentId, authorizationServer: metadata.issuer };
+    const codeVerifier = this.#cipher.decryptPkceVerifier(binding, requirePkce(authorization));
+    const client = await this.#readClientCredentials(accountId, metadata, authorization.clientRegistrationId);
+    const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
+    const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
+    const tokens = await this.#oauth.exchangeAuthorizationCode(accountId, metadata, {
+      code,
+      codeVerifier,
+      client,
+      resource: normalizeResource(undefined, effective.url),
+    });
+    const sealed = this.#cipher.encryptAuthorizationCredential(binding, {
+      accessToken: tokens.accessToken,
+      ...(tokens.refreshToken ? { refreshToken: tokens.refreshToken } : {}),
+      ...(tokens.tokenType ? { tokenType: tokens.tokenType } : {}),
+    });
+    const now = this.#now();
+    const [stored] = await this.#database
+      .update(mcpServerAuthorizations)
+      .set({
+        status: "active",
+        ciphertext: sealed.ciphertext,
+        keyId: sealed.keyId,
+        scopes: tokens.scope ? tokens.scope.split(/\s+/).filter(Boolean) : authorization.scopes,
+        accessTokenExpiresAt: tokens.expiresIn ? new Date(now.getTime() + tokens.expiresIn * 1000) : null,
+        failureCode: null,
+        // Single use: the state, its verifier, and the flow binding are gone the moment the code is redeemed.
+        state: null,
+        stateExpiresAt: null,
+        pkceCiphertext: null,
+        loginSessionHash: null,
+        probeState: "pending",
+        revision: sql`${authorization.revision} + 1`,
+        updatedAt: now,
+      })
+      /*
+       * Fenced on the flow this callback started, not just the row.
+       *
+       * The exchange takes an upstream round trip, and the user can revoke or switch to a Bearer key
+       * during it. Those writes clear `state`, so requiring the state we resolved to still be there
+       * means a callback that lost the race leaves the newer decision alone instead of resurrecting
+       * a credential the user just discarded.
+       */
+      .where(
+        and(
+          eq(mcpServerAuthorizations.id, authorization.id),
+          eq(mcpServerAuthorizations.state, hashSecret(issuedState)),
+        ),
+      )
+      .returning({ id: mcpServerAuthorizations.id });
+    /*
+     * The row was decided by someone else while the exchange was in flight: a revoke, a switch to a
+     * Bearer key, or a newer flow. Reporting success would tell the user their authorization landed
+     * when the credential they just discarded is still the one in force.
+     */
+    if (!stored) {
+      throw new McpServiceError(
+        MCP_ERROR_CODES.OAUTH_FLOW_INVALID,
+        "The authorization was superseded before it completed",
+      );
+    }
   }
 
   async #locateFlow(
@@ -529,10 +591,14 @@ export class McpOAuthFlowService {
       await this.#clearFlow(authorization.id);
       throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED, "The authorization flow has expired");
     }
-    if (authorization.status !== "pending") {
-      await this.#clearFlow(authorization.id);
-      throw new McpServiceError(MCP_ERROR_CODES.OAUTH_FLOW_INVALID, "The authorization flow is no longer pending");
-    }
+    /*
+     * `status` is not consulted here.
+     *
+     * A row can be `active` and still have a flow in flight, because starting a re-authorization no
+     * longer downgrades a working credential. What makes this row the callback's target is that the
+     * state resolved to it and has not expired — both checked above — and `#clearFlow` nulls the state
+     * the moment the code is redeemed, so a replay still finds nothing.
+     */
     return { authorization, agentId: authorization.agentId, accountId: row.accountId };
   }
 

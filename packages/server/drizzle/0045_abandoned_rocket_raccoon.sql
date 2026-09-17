@@ -92,7 +92,6 @@ CREATE TABLE "mcp_server_authorizations" (
 	CONSTRAINT "mcp_server_authorizations_flow_shape" CHECK (("mcp_server_authorizations"."state" is null) = ("mcp_server_authorizations"."state_expires_at" is null)),
 	CONSTRAINT "mcp_server_authorizations_flow_binding_shape" CHECK (("mcp_server_authorizations"."state" is null) = ("mcp_server_authorizations"."login_session_hash" is null)),
 	CONSTRAINT "mcp_server_authorizations_flow_requires_pkce" CHECK ("mcp_server_authorizations"."state" is null or ("mcp_server_authorizations"."kind" = 'oauth' and "mcp_server_authorizations"."pkce_ciphertext" is not null)),
-	CONSTRAINT "mcp_server_authorizations_flow_is_pending" CHECK ("mcp_server_authorizations"."state" is null or "mcp_server_authorizations"."status" = 'pending'),
 	CONSTRAINT "mcp_server_authorizations_refresh_claim_pair" CHECK (("mcp_server_authorizations"."refresh_claim_id" is null) = ("mcp_server_authorizations"."refresh_claimed_at" is null)),
 	CONSTRAINT "mcp_server_authorizations_refresh_claim_requires_oauth" CHECK ("mcp_server_authorizations"."refresh_claim_id" is null or "mcp_server_authorizations"."kind" = 'oauth'),
 	CONSTRAINT "mcp_server_authorizations_tools_object" CHECK ("mcp_server_authorizations"."tools" is null or (jsonb_typeof("mcp_server_authorizations"."tools") = 'array' and pg_column_size("mcp_server_authorizations"."tools") <= 262144))

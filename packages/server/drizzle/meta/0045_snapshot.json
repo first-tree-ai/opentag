@@ -3732,10 +3732,6 @@
           "name": "mcp_server_authorizations_flow_requires_pkce",
           "value": "\"mcp_server_authorizations\".\"state\" is null or (\"mcp_server_authorizations\".\"kind\" = 'oauth' and \"mcp_server_authorizations\".\"pkce_ciphertext\" is not null)"
         },
-        "mcp_server_authorizations_flow_is_pending": {
-          "name": "mcp_server_authorizations_flow_is_pending",
-          "value": "\"mcp_server_authorizations\".\"state\" is null or \"mcp_server_authorizations\".\"status\" = 'pending'"
-        },
         "mcp_server_authorizations_refresh_claim_pair": {
           "name": "mcp_server_authorizations_refresh_claim_pair",
           "value": "(\"mcp_server_authorizations\".\"refresh_claim_id\" is null) = (\"mcp_server_authorizations\".\"refresh_claimed_at\" is null)"

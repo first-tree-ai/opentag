@@ -552,6 +552,117 @@ describe("P3 — OAuth round trip against the fixture authorization server", () 
     }
   });
 
+  it("leaves a working credential alone when a restart of the flow is abandoned", async () => {
+    /*
+     * S8. Starting a flow used to clear the credential and set `status: pending`, so a user who
+     * clicked Authorize on an Agent that already worked and then closed the tab was left with an
+     * unauthorized Agent — the flow destroyed the very thing it was re-authorizing.
+     *
+     * A live flow is identified by `state` being set and unexpired, which is how the callback finds
+     * its row, so `status` does not have to be bent for the flow's sake.
+     */
+    const fixture = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+
+      // Complete one authorization so the Agent genuinely works.
+      const first = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(first.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+      const [before] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(before?.status).toBe("active");
+
+      // Start again and abandon it: the credential and its status must both survive.
+      await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const [after] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(after?.status).toBe("active");
+      expect(after?.ciphertext).toBe(before?.ciphertext);
+      // And it is still usable, which is the point of keeping it.
+      await expect(
+        harness.authorization.resolveActiveCredential(harness.accountId, harness.agentA, server.id),
+      ).resolves.toBeDefined();
+    } finally {
+      await fixture.stop();
+    }
+  });
+
+  it("does not resurrect a credential revoked while the exchange was in flight", async () => {
+    /*
+     * The exchange takes an upstream round trip, and the user can revoke or switch kind during it. The
+     * callback's final write is fenced on the flow's own state, so a callback that lost that race
+     * leaves the newer decision alone rather than restoring a credential the user just discarded.
+     *
+     * The revoke has to land *inside* the exchange to reach the fence: revoking before the callback
+     * clears `state`, so the lookup refuses it first and the write is never attempted. The fixture's
+     * `onTokenRequest` hook is that window.
+     */
+    // The hook fires inside the exchange, so it reads the ids from a holder the test fills first.
+    const race: { harness?: Awaited<ReturnType<typeof seed>>; serverId?: string } = {};
+    const fixture = await McpFixtureServer.start({
+      onTokenRequest: async () => {
+        // The user revokes while the token request is outstanding.
+        if (race.harness && race.serverId) {
+          await race.harness.authorization.revoke(race.harness.accountId, race.harness.agentA, race.serverId);
+        }
+      },
+    });
+    const harness = await seed();
+    race.harness = harness;
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      race.serverId = server.id;
+
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+
+      await expect(
+        harness.flows.callback(
+          {
+            code: callback.searchParams.get("code") ?? "",
+            state: callback.searchParams.get("state") ?? "",
+            iss: callback.searchParams.get("iss") ?? undefined,
+          },
+          FLOW_SECRET,
+        ),
+      ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
+
+      const [row] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      expect(row?.status).toBe("revoked");
+      expect(row?.ciphertext).toBeNull();
+    } finally {
+      await fixture.stop();
+    }
+  });
+
   it("redeems a callback only under the client registration the flow recorded", async () => {
     const fixture = await McpFixtureServer.start();
     const harness = await seed();

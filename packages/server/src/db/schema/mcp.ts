@@ -286,7 +286,16 @@ export const mcpServerAuthorizations = pgTable(
       "mcp_server_authorizations_flow_requires_pkce",
       sql`${table.state} is null or (${table.kind} = 'oauth' and ${table.pkceCiphertext} is not null)`,
     ),
-    check("mcp_server_authorizations_flow_is_pending", sql`${table.state} is null or ${table.status} = 'pending'`),
+    /*
+     * A live flow no longer forces `status: pending`.
+     *
+     * The two columns describe different things — `status` is the credential's condition and `state`
+     * is a flow in flight — and tying them meant that starting a flow made an Agent's working
+     * credential unusable before the user had consented to anything: click Authorize, close the tab,
+     * and the Agent is unauthorized. A live flow is identified by `state` being set and unexpired,
+     * which is already how the callback finds its row, so the pairing bought nothing and cost the
+     * ability to keep serving a working credential while a re-authorization is pending.
+     */
     check(
       "mcp_server_authorizations_refresh_claim_pair",
       sql`(${table.refreshClaimId} is null) = (${table.refreshClaimedAt} is null)`,

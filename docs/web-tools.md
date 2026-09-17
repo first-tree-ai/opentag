@@ -6,8 +6,10 @@
 
 Web tools expose `web_search` and `web_fetch` to Pi Agent Runs through OpenTag-managed Tavily access. The feature
 is **off by default**. Local Computer executions in proxy credential mode can enable it; native Cloud Runner
-execution stays closed for business until a real per-execution authority issuer exists (E4), because the existing
-native bootstrap credential is not an execution authority and is never used as one.
+execution stays closed for business. E4 (now on main) delivers Cloud *model* execution — IM turns running in
+Session sandboxes over the controlled model path — but it is not a web execution authority and wires none: the
+E4 per-turn credential bridge never requests the `web` service, and the existing native bootstrap credential is
+not an execution authority and is never used as one.
 
 ## Server configuration (Tavily access)
 
@@ -47,7 +49,8 @@ new service, and no database migration for this feature. There is no LiteLLM inv
 An opt-in flag alone never grants tools. The Server must also negotiate the `webTools` capability at version 1 and
 grant the execution the `web` service with `web:search` / `web:fetch` scopes. Without a grant the Pi extension does
 not register and no endpoint exists. Native `serve` additionally needs an injected, Server-authorized execution
-authority (`webAuthority` harness seam); production does not supply one yet, so E3 remains disabled.
+authority (`webAuthority` harness seam); production does not supply one, so the native web path stays disabled for
+E3 acceptance runners and E4 turn runners alike.
 
 ## Key custody and isolation
 
@@ -88,5 +91,5 @@ authority (`webAuthority` harness seam); production does not supply one yet, so 
 Unit tests cover the gateway, trusted Server client, native bridge, and Pi extension against **local stub
 transport** only. The parent cross-chain run exercises the actual Server and Router HTTP stack with a real
 PostgreSQL and Redis test instance and a stub Tavily HTTP transport. There is **no real Tavily account
-acceptance** in this repository, and no vendor call is made by tests. Native Cloud acceptance still requires the
-E4 execution-authority issuer; until then the native path is exercised with an injected test authority.
+acceptance** in this repository, and no vendor call is made by tests. E4 exists on main but provides no web
+execution-authority issuer; the native path is still exercised only with an injected test authority.

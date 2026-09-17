@@ -11,6 +11,7 @@ import {
 } from "@opentag/shared";
 import { z } from "zod";
 import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
+import { type CloudModelConfig, resolveCloudModelConfig } from "./cloud-model-config.js";
 import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
 
 export { parseCloudStorageBase } from "./cloud-identities-config.js";
@@ -677,6 +678,11 @@ export interface ServerConfig {
    * referenced deployment-secret variables at startup. Keys live only in this object.
    */
   web: WebToolsConfig;
+  /**
+   * E4 controlled model path for Sandbox Pi executions. Off by default; enabling requires the
+   * Cloud Runner plus the fixed upstream, environment-only master key, and a model allowlist.
+   */
+  cloudModel: CloudModelConfig;
 }
 
 export type WebToolsConfig =
@@ -855,6 +861,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     ),
     cloudRunner: resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED),
     web: resolveWebToolsConfig(parsed, environment),
+    cloudModel: resolveCloudModelConfig(
+      environment,
+      resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED).enabled,
+    ),
   };
 }
 

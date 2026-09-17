@@ -1,3 +1,4 @@
+import type { RuntimeCredentialServerFrame } from "@opentag/shared";
 import type { ServerConfig } from "./config.js";
 import type { DatabaseClient } from "./db/client.js";
 import type { ServiceLogger } from "./observability/service-logger.js";
@@ -8,6 +9,8 @@ import {
   createRuntimeCredentialServices,
   KindAwareComputerAuthVerifier,
   RouterWebClient,
+  type RuntimeConnectionFence,
+  type RuntimeControlAuthority,
   RuntimeExecutionRegistry,
   type TrustedCloudControlAuthority,
 } from "./runtime-credentials/index.js";
@@ -30,6 +33,10 @@ import { VerifiedTreeHead } from "./services/github-proxy/verified-tree-head.js"
  * volume, no file-backed write journal, and no additional file-backed Cloud credential store.
  * Git staging uses disposable temporary workspaces that are removed on a normal close and are
  * never restored as authority after a restart.
+ *
+ * E4 adds a second, independent Cloud control authority: the per-Sandbox Runner connection
+ * fence. It is composed with the Local registry for credential opens/sweeps/revocation routing,
+ * while the optional injected `cloudControl` verifier keeps its own Computer-level authority.
  */
 export async function createPlatformRuntime(options: {
   config: ServerConfig;
@@ -47,12 +54,20 @@ export async function createPlatformRuntime(options: {
    */
   cloudControl?: TrustedCloudControlAuthority;
   logger?: ServiceLogger;
+  /**
+   * E4 Cloud Runner connection fence: composed with the Local registry fence so credential
+   * executions opened over the per-Sandbox Runner channel pass the broker/data-transport exact
+   * connection checks. The Local registry and Computer online state stay untouched.
+   */
+  cloudRuntimeFence?: RuntimeConnectionFence & { isControlActive(identity: RuntimeControlIdentity): boolean };
+  /**
+   * Exact Cloud revocation routing (credential owner -> Cloud controller). The owner invalidates
+   * Server-side first and only then notifies the exact owning connection.
+   */
+  cloudRevocationSender?: (computerId: string, instanceId: string, frame: RuntimeCredentialServerFrame) => void;
 }) {
   const cloudControl = options.cloudControl;
-  const cloudControlActive = cloudControl
-    ? async (identity: RuntimeControlIdentity): Promise<boolean> =>
-        options.config.cloudIdentities.enabled && (await cloudControl.isActive(controlFacts(identity)))
-    : undefined;
+  const cloudControlActive = createCloudControlActive(options);
   const executions = new RuntimeExecutionRegistry();
   const policy = options.github
     ? new GitHubRuntimePolicy({
@@ -84,6 +99,7 @@ export async function createPlatformRuntime(options: {
       throw error;
     }
   }
+  const controlAuthority = createCloudControlAuthority(options);
   const credentials = createRuntimeCredentialServices({
     database: options.database,
     cipher: options.cipher,
@@ -91,6 +107,8 @@ export async function createPlatformRuntime(options: {
     custody: options.custody,
     executions,
     ...(cloudControlActive ? { cloudControlActive } : {}),
+    ...(controlAuthority ? { controlAuthority } : {}),
+    ...(options.cloudRuntimeFence ? { additionalConnectionFence: options.cloudRuntimeFence } : {}),
     ...(policy ? { taskPolicy: policy, gitHubAdmission: policy } : {}),
     ...(github ? { adapters: new Map([["github", github]]) } : {}),
     ...(options.config.web.enabled
@@ -136,6 +154,49 @@ export async function createPlatformRuntime(options: {
         // The ephemeral workspace root is removed even when GitHub credential cleanup fails.
         await workspace?.close();
       }
+    },
+  };
+}
+
+/**
+ * Cloud credential activity: the exact live native Runner connection OR the injected trusted
+ * verifier. Both obey `config.cloudIdentities.enabled`; absent or denied checks fail closed.
+ */
+function createCloudControlActive(options: {
+  config: ServerConfig;
+  cloudControl?: TrustedCloudControlAuthority;
+  cloudRuntimeFence?: RuntimeConnectionFence & { isControlActive(identity: RuntimeControlIdentity): boolean };
+}): ((identity: RuntimeControlIdentity) => Promise<boolean>) | undefined {
+  const fence = options.cloudRuntimeFence;
+  const verifier = options.cloudControl;
+  if (!options.config.cloudIdentities.enabled || (!fence && !verifier)) return undefined;
+  return async (identity: RuntimeControlIdentity): Promise<boolean> => {
+    if (fence?.isControlActive(identity) === true) return true;
+    return verifier ? await verifier.isActive(controlFacts(identity)) : false;
+  };
+}
+
+/**
+ * Composed Local + Cloud control authority for the credential owner (open/sweep/revocation):
+ * either fence recognizes the exact connection, and revocation reaches the exact owning channel.
+ */
+function createCloudControlAuthority(options: {
+  registry: ConnectionRegistry;
+  cloudRuntimeFence?: RuntimeConnectionFence & { isControlActive(identity: RuntimeControlIdentity): boolean };
+  cloudRevocationSender?: (computerId: string, instanceId: string, frame: RuntimeCredentialServerFrame) => void;
+}): RuntimeControlAuthority | undefined {
+  const fence = options.cloudRuntimeFence;
+  if (!fence) return undefined;
+  return {
+    isCurrentConnection: (computerId, instanceId, connectionId) =>
+      options.registry.isCurrentConnection(computerId, instanceId, connectionId) ||
+      fence.isCurrent(computerId, instanceId, connectionId),
+    currentInstanceId: (computerId) => options.registry.currentInstanceId(computerId),
+    currentControlIdentity: (computerId) =>
+      options.registry.currentControlIdentity(computerId) ?? fence.currentControlIdentity?.(computerId),
+    sendRevoked: (computerId, instanceId, frame) => {
+      void options.registry.send(computerId, instanceId, frame).catch(() => undefined);
+      options.cloudRevocationSender?.(computerId, instanceId, frame);
     },
   };
 }

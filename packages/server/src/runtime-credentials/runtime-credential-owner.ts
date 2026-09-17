@@ -15,7 +15,11 @@ import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "../runtime/runtime-session.js";
 import type { RuntimeCapabilityStore } from "./capability-store.js";
-import { type RuntimeCredentialBroker, RuntimeCredentialError } from "./credential-broker.js";
+import {
+  type RuntimeControlAuthority,
+  type RuntimeCredentialBroker,
+  RuntimeCredentialError,
+} from "./credential-broker.js";
 import type { RuntimeExecutionAuthority } from "./execution-authority.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { RuntimeGitHubAdmission } from "./github-admission.js";
@@ -32,6 +36,13 @@ export { VALIDATION_EXECUTION_MAX_LIFETIME_MS } from "./runtime-validation-execu
 
 export interface RuntimeCredentialOwnerOptions {
   registry: ConnectionRegistry;
+  /**
+   * Composed Local + Cloud control-connection authority. Defaults to the Local registry alone.
+   * The owner sweep, exact execution fence, and revocation notification all consult this one port,
+   * so a live Cloud execution is never revoked by the Local registry's absence and a Cloud
+   * revocation is routed to the exact owning connection.
+   */
+  controlAuthority?: RuntimeControlAuthority;
   executions: RuntimeExecutionRegistry;
   capabilities: RuntimeCapabilityStore;
   tickets: RuntimeProxyTicketStore;
@@ -58,12 +69,14 @@ export interface RuntimeCredentialOwnerOptions {
 export class RuntimeCredentialOwner {
   readonly #options: RuntimeCredentialOwnerOptions;
   readonly #logger?: ServiceLogger;
+  readonly #authority: RuntimeControlAuthority;
   readonly #sweep: ReturnType<typeof setInterval>;
   #closed = false;
 
   constructor(options: RuntimeCredentialOwnerOptions) {
     this.#options = options;
     this.#logger = options.logger;
+    this.#authority = options.controlAuthority ?? registryControlAuthority(options.registry);
     this.#sweep = setInterval(() => this.#sweepStale(), options.sweepIntervalMs ?? 5_000);
     this.#sweep.unref?.();
   }
@@ -84,6 +97,31 @@ export class RuntimeCredentialOwner {
     for (const record of this.#options.executions.executions()) {
       this.#revokeExecution(record.executionId, "owner_lost", false);
     }
+  }
+
+  /**
+   * Close every execution bound to one exact control connection (replacement or channel close).
+   * Server-local invalidation is the authority; notification is best effort.
+   */
+  closeConnection(connectionId: string, code: RuntimeCredentialRevokedCode): string[] {
+    const closed: string[] = [];
+    for (const record of this.#options.executions.executions()) {
+      if (record.connectionId !== connectionId) continue;
+      this.#revokeExecution(record.executionId, code, false);
+      closed.push(record.executionId);
+    }
+    return closed;
+  }
+
+  /** Close every execution opened for one Session; used by an explicit Cloud stop. */
+  closeSessionExecutions(sessionId: string, code: RuntimeCredentialRevokedCode): string[] {
+    const closed: string[] = [];
+    for (const record of this.#options.executions.executions()) {
+      if (record.sessionId !== sessionId) continue;
+      this.#revokeExecution(record.executionId, code, false);
+      closed.push(record.executionId);
+    }
+    return closed;
   }
 
   businessOptions(): RuntimeBusinessOptions {
@@ -130,18 +168,25 @@ export class RuntimeCredentialOwner {
     if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.runtimeCredential] !== 1 || !context.connectionId) {
       return rejected("capability_unsupported");
     }
-    if (this.#options.registry.currentInstanceId(context.computerId) !== context.instanceId) {
+    // Exact connection fence: the opening frame must come from the connection that is current for
+    // this instance right now. Local and Cloud share this one check through the composed port.
+    if (!this.#authority.isCurrentConnection(context.computerId, context.instanceId, context.connectionId)) {
       return rejected("placement_stale");
     }
     if (frame.source.kind === "validation") return this.#openValidation(frame, context);
-    return openRuntimeSessionExecution(this.#options, frame, context);
+    return openRuntimeSessionExecution(this.#sessionDeps(), frame, context);
+  }
+
+  /** Open functions consume the composed authority, never the raw Local registry. */
+  #sessionDeps(): Omit<RuntimeCredentialOwnerOptions, "registry"> & { registry: RuntimeControlAuthority } {
+    return { ...this.#options, registry: this.#authority };
   }
 
   async #openValidation(
     frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:execution:open" }>,
     context: RuntimeBusinessContext,
   ): Promise<RuntimeExecutionOpenResult> {
-    return openRuntimeValidationExecution(this.#options, frame, context);
+    return openRuntimeValidationExecution(this.#sessionDeps(), frame, context);
   }
 
   /**
@@ -157,7 +202,7 @@ export class RuntimeCredentialOwner {
     instanceId: string;
     connectionId?: string;
   }): Promise<{ validationRunId: string; expiresAt: number } | undefined> {
-    return issueRuntimeValidationRun(this.#options, input);
+    return issueRuntimeValidationRun(this.#sessionDeps(), input);
   }
 
   async #acquire(
@@ -269,7 +314,7 @@ export class RuntimeCredentialOwner {
       record.computerId !== context.computerId ||
       record.instanceId !== context.instanceId ||
       record.connectionId !== context.connectionId ||
-      !this.#options.registry.isCurrentConnection(record.computerId, record.instanceId, record.connectionId)
+      !this.#authority.isCurrentConnection(record.computerId, record.instanceId, record.connectionId)
     ) {
       return undefined;
     }
@@ -281,15 +326,21 @@ export class RuntimeCredentialOwner {
     if (!record) return;
     this.#options.capabilities.revokeExecution(executionId);
     this.#options.tickets.revokeExecution(executionId);
-    if (notify) {
-      void this.#options.registry
-        .send(record.computerId, record.instanceId, {
-          type: "runtime:credential:revoked",
-          executionId,
-          code,
-        })
-        .catch(() => undefined);
+    if (!notify) return;
+    const frame: RuntimeCredentialServerFrame = { type: "runtime:credential:revoked", executionId, code };
+    try {
+      const sending = this.#authority.sendRevoked
+        ? this.#authority.sendRevoked(record.computerId, record.instanceId, frame)
+        : this.#options.registry.send(record.computerId, record.instanceId, frame);
+      void Promise.resolve(sending).catch(() => undefined);
+    } catch {
+      // A failed revocation notification never resurrects the Server-local invalidation above.
     }
+  }
+
+  /** Public maintenance seam for tests and explicit maintenance runs; idempotent. */
+  sweepNow(): void {
+    this.#sweepStale();
   }
 
   #sweepStale(): void {
@@ -299,7 +350,7 @@ export class RuntimeCredentialOwner {
     this.#options.tickets.sweep();
     this.#options.validationRuns.sweep();
     for (const record of this.#options.executions.executions()) {
-      if (!this.#options.registry.isCurrentConnection(record.computerId, record.instanceId, record.connectionId)) {
+      if (!this.#authority.isCurrentConnection(record.computerId, record.instanceId, record.connectionId)) {
         this.#revokeExecution(record.executionId, "connection_replaced", true);
       }
     }
@@ -348,6 +399,15 @@ export class RuntimeCredentialOwner {
 
 function credentialRejected(requestId: string, code: RuntimeCredentialRejectCode): RuntimeCredentialResult {
   return { type: "runtime:credential:result", requestId, status: "rejected", code };
+}
+
+function registryControlAuthority(registry: ConnectionRegistry): RuntimeControlAuthority {
+  return {
+    isCurrentConnection: (computerId, instanceId, connectionId) =>
+      registry.isCurrentConnection(computerId, instanceId, connectionId),
+    currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+    currentControlIdentity: (computerId) => registry.currentControlIdentity(computerId),
+  };
 }
 
 function grantOutcome(

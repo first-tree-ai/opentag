@@ -132,6 +132,7 @@ async function fixture(
     taskPolicy?: RuntimeTaskPolicy;
     control?: RuntimeControlIdentity;
     cloudControlActive?: (identity: RuntimeControlIdentity) => boolean | Promise<boolean>;
+    controlAuthority?: import("../runtime-credentials/credential-broker.js").RuntimeControlAuthority;
   } = {},
 ) {
   const registry = new ConnectionRegistry();
@@ -183,6 +184,7 @@ async function fixture(
   });
   const owner = new RuntimeCredentialOwner({
     registry,
+    ...(overrides.controlAuthority ? { controlAuthority: overrides.controlAuthority } : {}),
     executions,
     capabilities,
     tickets,
@@ -513,6 +515,87 @@ describe("RuntimeCredentialOwner control flows", () => {
     state.owner.close();
     expect(state.executions.get(state.executionId)).toBeUndefined();
     if (acquire.opaqueToken) expect(state.capabilities.lookup(acquire.opaqueToken)).toBeUndefined();
+  });
+});
+
+describe("RuntimeCredentialOwner composed Cloud control authority", () => {
+  it("keeps a live Cloud execution through the sweep and revokes it only when the Cloud fence detaches", async () => {
+    const registry = new ConnectionRegistry();
+    const cloudConnectionId = randomUUID();
+    const cloudConnections = new Set<string>([cloudConnectionId]);
+    const sendRevoked = vi.fn();
+    const state = await fixture({
+      controlAuthority: {
+        isCurrentConnection: (computerId, instanceId, connectionId) =>
+          registry.isCurrentConnection(computerId, instanceId, connectionId) || cloudConnections.has(connectionId),
+        currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+        currentControlIdentity: (computerId) => registry.currentControlIdentity(computerId),
+        sendRevoked,
+      },
+    });
+    cleanup.push(() => state.owner.close());
+    const execution = state.executions.open({
+      accountId: randomUUID(),
+      agentId: AGENT,
+      agentRevision: 1,
+      computerId: COMPUTER,
+      computerKind: "cloud",
+      connectionId: cloudConnectionId,
+      instanceId: "cloud-instance-1",
+      placementGeneration: 1,
+      providers: new Map(),
+      purpose: "execution",
+      runId: randomUUID(),
+      sessionId: "session-cloud",
+      source: { kind: "delivery", deliveryId: randomUUID(), turnId: randomUUID() },
+    });
+    // The Local registry does not know this Cloud connection; the composed authority does.
+    state.owner.sweepNow();
+    expect(state.executions.get(execution.executionId)).toBeDefined();
+    expect(sendRevoked).not.toHaveBeenCalled();
+
+    // The Cloud fence detaches: the sweep now revokes the execution and notifies the exact
+    // owning connection through the composed send port.
+    cloudConnections.clear();
+    state.owner.sweepNow();
+    expect(state.executions.get(execution.executionId)).toBeUndefined();
+    expect(sendRevoked).toHaveBeenCalledWith(
+      COMPUTER,
+      "cloud-instance-1",
+      expect.objectContaining({ type: "runtime:credential:revoked", executionId: execution.executionId }),
+    );
+  });
+
+  it("closes executions by exact connection and by Session for an explicit Cloud stop", async () => {
+    const state = await fixture();
+    cleanup.push(() => state.owner.close());
+    const openExecution = (sessionId: string, connectionId: string, instanceId: string) =>
+      state.executions.open({
+        accountId: randomUUID(),
+        agentId: AGENT,
+        agentRevision: 1,
+        computerId: COMPUTER,
+        computerKind: "cloud",
+        connectionId,
+        instanceId,
+        placementGeneration: 1,
+        providers: new Map(),
+        purpose: "execution",
+        runId: randomUUID(),
+        sessionId,
+        source: { kind: "delivery", deliveryId: randomUUID(), turnId: randomUUID() },
+      });
+    const first = openExecution("session-a", randomUUID(), "cloud-instance-a");
+    const second = openExecution("session-a", randomUUID(), "cloud-instance-b");
+    const third = openExecution("session-b", randomUUID(), "cloud-instance-c");
+
+    expect(state.owner.closeConnection(first.connectionId, "connection_replaced")).toEqual([first.executionId]);
+    expect(state.executions.get(first.executionId)).toBeUndefined();
+    expect(state.executions.get(second.executionId)).toBeDefined();
+
+    expect(state.owner.closeSessionExecutions("session-a", "execution_closed")).toEqual([second.executionId]);
+    expect(state.executions.get(second.executionId)).toBeUndefined();
+    expect(state.executions.get(third.executionId)).toBeDefined();
   });
 });
 

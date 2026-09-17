@@ -95,6 +95,81 @@ export async function loadManagedSandboxById(
   return row;
 }
 
+/**
+ * The persisted Sandbox row for one Session WITHOUT the active authority chain. Accepted-turn
+ * recovery must keep working after an explicit Session end or Agent suspend: the durable stopped
+ * state plus the exact prior allocation identity is the reconciliation authority there, never a
+ * freshly re-derived "is this Session active". Ownership/authority is checked by the caller when
+ * it needs to start or accept new work.
+ */
+export async function loadSandboxRecordBySessionId(
+  executor: DatabaseTransaction | DatabaseClient,
+  sessionId: string,
+): Promise<typeof sandboxes.$inferSelect | undefined> {
+  const [row] = await executor.select().from(sandboxes).where(eq(sandboxes.sessionId, sessionId)).limit(1);
+  return row;
+}
+
+/** Sandbox-row lookup by primary key without the authority chain (same recovery boundary). */
+export async function loadSandboxRecordById(
+  executor: DatabaseTransaction | DatabaseClient,
+  sandboxId: string,
+): Promise<typeof sandboxes.$inferSelect | undefined> {
+  const [row] = await executor.select().from(sandboxes).where(eq(sandboxes.id, sandboxId)).limit(1);
+  return row;
+}
+
+/**
+ * Ownership facts (Sandbox + Session + Computer) without the active authority chain. Used where
+ * only the exact persisted allocation identity matters (report-capable channel authority), never
+ * to start new work.
+ */
+export async function loadSandboxOwnerById(
+  executor: DatabaseTransaction | DatabaseClient,
+  sandboxId: string,
+): Promise<{ sandbox: typeof sandboxes.$inferSelect; sessionId: string; computerId: string } | undefined> {
+  const [row] = await executor
+    .select({
+      sandbox: sandboxes,
+      sessionId: sessions.id,
+      computerId: computers.id,
+    })
+    .from(sandboxes)
+    .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .innerJoin(computers, eq(computers.id, agents.computerId))
+    .innerJoin(users, eq(users.id, agents.createdByUserId))
+    .where(eq(sandboxes.id, sandboxId))
+    .limit(1);
+  return row;
+}
+
+/** Session-keyed variant of `loadManagedSandboxById` for Cloud delivery dispatch. */
+export async function loadManagedSandboxBySessionId(
+  executor: DatabaseTransaction | DatabaseClient,
+  sessionId: string,
+): Promise<OwnedSandboxRow | undefined> {
+  const [row] = await executor
+    .select({
+      sandbox: sandboxes,
+      sessionId: sessions.id,
+      computerId: computers.id,
+      conversationKind: sessions.conversationKind,
+    })
+    .from(sandboxes)
+    .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .innerJoin(computers, eq(computers.id, agents.computerId))
+    .innerJoin(users, eq(users.id, agents.createdByUserId))
+    .where(and(eq(sandboxes.sessionId, sessionId), ...authorityGuards("manage")))
+    .limit(1);
+  return row;
+}
+
 function authorityGuards(authority: SandboxAuthority) {
   const guards = [
     eq(computers.ownerAccountId, agents.createdByUserId),

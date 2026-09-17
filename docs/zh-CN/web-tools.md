@@ -6,8 +6,10 @@
 ## 范围
 
 Web 工具通过 OpenTag 管理的 Tavily 访问，为 Pi Agent Run 暴露 `web_search` 与 `web_fetch`。该功能**默认关闭**。
-代理凭证模式下的本地 Computer 执行可以启用；在真实的逐执行授权签发方（E4）出现之前，原生 Cloud Runner
-执行保持关闭，因为现有原生 bootstrap 凭证不是执行授权，绝不会被当作授权使用。
+代理凭证模式下的本地 Computer 执行可以启用；原生 Cloud Runner 执行保持关闭。E4（已进入 main）交付的是 Cloud
+*模型*执行——IM turn 通过受控模型路径在 Session Sandbox 中运行——但它不是 web 执行授权，也没有接入任何 web
+执行授权：E4 的逐 turn 凭证桥从不请求 `web` service，现有原生 bootstrap 凭证不是执行授权，绝不会被当作授权
+使用。
 
 ## Server 配置（Tavily 访问）
 
@@ -45,8 +47,8 @@ Router 必须已经执行其自身的迁移（新增 `api_keys(scopes)`、web se
 
 仅打开开关永远不会授予工具：Server 还必须协商版本 1 的 `webTools` capability，并向该执行授予带
 `web:search` / `web:fetch` scope 的 `web` service。没有授权时 Pi 扩展不会注册，也不存在任何 endpoint。原生
-`serve` 还需要注入的、由 Server 授权的执行授权（`webAuthority` harness seam）；生产目前不提供该授权，因此
-E3 仍然禁用。
+`serve` 还需要注入的、由 Server 授权的执行授权（`webAuthority` harness seam）；生产不提供该授权，因此无论
+E3 验收 Runner 还是 E4 turn Runner，原生 web 路径都保持禁用。
 
 ## 密钥托管与隔离
 
@@ -82,5 +84,5 @@ E3 仍然禁用。
 
 单元测试只使用**本地 stub 传输**覆盖 gateway、受信任 Server client、原生 bridge 与 Pi 扩展。父级 cross-chain
 运行使用真实的 PostgreSQL 与 Redis 测试实例以及 stub Tavily HTTP 传输，验证实际 Server 与 Router HTTP 栈。
-本仓库**没有真实 Tavily 账号验收**，测试也不会调用 vendor。原生 Cloud 验收仍需要 E4 执行授权签发方；在此
-之前，原生路径通过注入的测试授权进行验证。
+本仓库**没有真实 Tavily 账号验收**，测试也不会调用 vendor。E4 已进入 main，但并不提供 web 执行授权签发方；
+原生路径仍只通过注入的测试授权进行验证。

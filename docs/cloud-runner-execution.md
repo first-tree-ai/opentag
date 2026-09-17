@@ -1,4 +1,4 @@
-# Cloud Runner execution (E3)
+# Cloud Runner execution (E3 and E4)
 
 [简体中文](./zh-CN/cloud-runner-execution.md)
 
@@ -67,8 +67,9 @@ The image includes a separate, image-built `/opt/sandbox-root`. Native launches 
 it: the CLI's default parent-root mount is never used. The platform resolver is never mounted
 directly: the Runner validates a bounded snapshot of `/etc/resolv.conf` bytes, writes it into a
 fresh private directory outside the workspace and rootfs, and bind-mounts that copy read-only at
-`/etc/resolv.conf`. Only the per-Session `/workspace` and that resolver copy are mounted. No host
-HOME, runtime state or bootstrap credential directory is mounted. A source-owned Linux init runs
+`/etc/resolv.conf`. The Runner mounts the per-Session `/workspace`, that resolver copy, and the
+read-only E4 public bridge directory described below. No parent HOME, private runtime state or
+bootstrap credential directory is mounted. A source-owned Linux init runs
 in both parent and native Sandbox and reaps adopted children.
 
 The Instance parent is privileged because the native sandbox launcher requires root: the exact
@@ -76,8 +77,8 @@ The Instance parent is privileged because the native sandbox launcher requires r
 through the image entrypoint (`identity`, `probe`, `skills`, `accept`, `worker`) execute as uid/gid
 10000 with supplementary groups cleared through the base image's `setpriv`; when the container is already started non-root,
 the entrypoint never elevates. The worker still only ever runs as a native sandbox child — the
-parent never executes the user task itself and the mount set stays exactly the per-Session
-workspace plus the read-only resolver copy. Native `sandbox exec` invokes the worker directly,
+parent never executes the user task itself, and mounts remain limited to the workspace, resolver
+copy and public bridge directory described above. Native `sandbox exec` invokes the worker directly,
 bypassing the image entrypoint: the current Cloud Run execution path runs as uid 0 inside the
 native Sandbox, as verified in the GCP diagnostic. It does not inherit the entrypoint's uid 10000
 drop. This boundary relies on the platform Sandbox and restricted mounts; it is not an additional
@@ -95,7 +96,142 @@ only after this cleanup. Reconnection waits for the same cleanup barrier. A clea
 terminates the Runner with a failing status. This E3 fixture reset is not a durable Session resume
 implementation.
 
+## E4 Cloud IM delivery (opt-in; native/IM acceptance pending)
+
+E4 delivers a normalized IM message to a Session's existing Cloud allocation over the same
+authenticated Runner control channel. It is additive to E3 protocol version 1 and disabled by
+default: the Server enables the Runner path only with `OPENTAG_CLOUD_RUNNER_ENABLED=true` plus the
+Cloud identity configuration below, and the model path only with `OPENTAG_CLOUD_MODEL_ENABLED=true`
+and an explicit allowlist. E4 adds no database table or migration; it reuses the existing
+delivery, custody and durable-work records.
+
+Control boundary: `delivery:run` (persisted Server dispatch) → the Runner journals the exact
+input, input hash and allocation scope in trusted parent storage with fsync → `delivery:received`
+→ Server persists durable custody → `delivery:verified` (with an execution-scoped model grant) →
+the native Sandbox worker executes → `delivery:report` → `delivery:report:ack`. A `received`
+entry resumes through a fresh verification; a `started` entry whose process died reports
+`unknown` exactly once and is never replayed; a `reported` entry re-sends until a matching
+durable acknowledgement clears it. A reopened journal under another allocation fails closed
+(`scope_mismatch`) without emitting a stale frame, and a same-id/different-input re-dispatch is a
+visible conflict rather than a second Turn.
+
+The default trusted state root is `$TMPDIR/ots/<bounded-sandbox-name>` (`/tmp` in the Runner
+image), keeping the real public Unix socket paths within their 100-byte limit. The input journal
+rejects new entries at its 1,024-entry capacity while still allowing duplicate receipts and
+acknowledgements to retire existing entries. A channel close drops queued verification grants;
+the durable `received` entries require fresh verification on the replacement connection. A frame
+queued on the old connection cannot authorize a new start after reconnect.
+A queued Turn cancelled before it starts reports `not_started` and immediately advances the
+remaining FIFO queue; it does not require a new message or availability signal.
+
+Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
+direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
+inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
+pending input. `restore_required` and a stopped environment reject the input explicitly rather
+than retrying forever. Transient model/Runner unavailability remains retryable within the input
+deadline, with exponential delays from two seconds to a thirty-second cap using the existing
+attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
+
+Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
+Sandbox receives only the read-only public material (CA certificate, per-turn proxy sockets,
+opaque handles, per-turn provider environment file) and never the platform master key, bootstrap
+token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
+the execution and its lifetime is bounded by the runtime deadline. In E4,
+credential and model grants are revoked when the Runner connection is lost (fail-closed,
+connection-scoped authority). Journal recovery still preserves the actual Turn outcome and never
+replays `started` work, but a transient Server or control-channel outage may fail an active
+model/tool call. E4 does not promise uninterrupted model continuation and adds no grant-renewal
+protocol; that remains future work if the product requires it.
+
+The model proxy accepts a strict Pi-compatible chat-completions payload. Routing and credential
+overrides are rejected, each request has at most one completion, and output budgets are capped at
+65,536 tokens. If both output-budget fields are omitted, the proxy supplies `max_tokens: 65536`;
+omission cannot bypass the limit. These are per-request bounds, not an aggregate spend quota.
+Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasoning_text` echoes,
+plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
+relax the top-level routing or credential allowlist.
+
+The grant registry's 4,096-entry bound protects Server state, including concurrent issuance. It
+is not a per-Account execution quota or a model-spend budget. Account-level admission and fairness
+remain resource-policy follow-ups; the current global limit can be consumed by one Account.
+
+Write boundary: the durable records E4 relies on are the Server's IM delivery custody and Turn
+report, plus the Runner's per-allocation input journal — not a generic provider write journal or
+receipt. Provider writes proxied on behalf of a Turn follow the #634 rules: one upstream attempt
+per proxied request, classified in memory as succeeded, definitely rejected, or unknown; an
+unknown write surfaces as an explicit `write_outcome_unknown` and is reconciled by the task layer
+instead of being replayed automatically. E4 therefore does not promise exactly-once provider
+effects across a crash.
+
+Cancellation boundary: killing the `sandbox exec` wrapper is not proof that the namespace process
+tree stopped. Immediately after any non-completed Cloud Turn (cancellation, deadline, failed or
+unknown execution) the Runner performs the same verified reset as E3, while the Turn occupation
+is still reserved and BEFORE it publishes the terminal report: `delete --force`, relaunch, and a
+fresh readiness probe. No next delivery is needed to trigger cleanup, so a stopped Session cannot
+leave orphan native children behind. A reset failure publishes an honest `unknown` cleanup-failure
+report instead of a safe cancellation, makes the Runner unusable, and shuts it down through the
+existing failure path rather than silently reusing the namespace; E3 acceptance cannot start while
+a Cloud Turn or a pending reset owns the Sandbox. A nonzero worker exit is never reported as a
+completed Turn, even if its stdout claims one.
+Every Runner exit marks the controller as stopping before settling its active worker. During
+shutdown, the verified cleanup deletes the namespace without relaunching it, including an
+authentication rejection or exhausted reconnects that did not involve a process signal.
+
+Recovery also checks whether the Session, Agent, binding or Account has stopped authorizing work.
+If a stop frame was lost during disconnection, a live Runner reporting `received` or `started`
+receives cancellation again. `releasing` alone is not evidence that its result was lost; the
+Server still accepts the real report while the allocation drains. The worker owns the persisted
+execution deadline; the parent exec adds five seconds only as a teardown/reporting backstop.
+An IM binding in `reauthorization_required` temporarily blocks new execution permission without
+rejecting queued input or cancelling accepted work solely for that status. Input TTL/capacity
+still apply, and existing reports remain recoverable. Restoring authorization permits normal
+delivery/recovery again; Session/Agent/Account stops and allocation release still cancel work.
+A connection authenticated during the pause remains ineligible for execution grants. Once a
+heartbeat or recovery exchange observes restored authority, the Server asks it to reconnect
+through the existing control handshake, restoring readiness and credential opens without
+replacing the Instance or discarding the journal.
+
+Continuity and secrets: Pi conversation state and the persisted provider binding live under the
+Session workspace's `.opentag/pi-session` subtree, so the same Agent Session keeps its Pi
+binding/history across Turns and across a native rootfs reset. Model grants and the published
+provider environment are per-turn scratch files with `0600` permissions and are deleted at Turn
+end; they are never part of the persisted conversation state. Production requires both real
+mounted `connect.sock`/`slack.sock` proxy sockets; a loopback fallback exists only behind the
+explicit local test seam and is never used by production composition.
+
+Compatibility and rollout: the Runner requests `cloudDeliveryVersion: 1` in the auth frame; a
+Cloud-enabled Server echoes the capability and the current allocation UID only for that
+connection and keeps the exact legacy E3 welcome shape otherwise. A Cloud-capable welcome without
+a tracked UID is treated as transient and retried. Roll out Server support first, then a pinned
+E4 Runner image; a new E4 Runner is not claimed backward compatible with an older strict Server,
+while E3 Runners against the new Server remain supported.
+
+E3 renewal and acceptance results still require the active authority chain. Only negotiated E4
+connections may retain a report-capable channel after that chain stops, while their exact
+allocation remains current; no new execution is authorized. Temporary database validation errors
+do not masquerade as revocation. Authentication facts are read before hub registration so a
+heartbeat cannot precede the authentication result.
+
+Boundary: E3 remains the native-execution acceptance path. E4 does not implement GCS workspace
+restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or Context Tree
+synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
+provider ingress/reply acceptance remain pending; current evidence is local composition and
+external local probes only. Do not claim E4 accepted from local results.
+
 ## Required configuration
+
+For E4, the Server additionally requires these model settings when enabling execution:
+
+| Server variable | Meaning |
+| --- | --- |
+| `OPENTAG_CLOUD_MODEL_ENABLED` | Default `false`; `true` opts into the Cloud model proxy |
+| `OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL` | Fixed HTTPS OpenAI-compatible API base URL |
+| `OPENTAG_CLOUD_MODEL_MASTER_KEY` | Server-only upstream secret; never copied into the Runner image or Sandbox |
+| `OPENTAG_CLOUD_MODEL_ALLOWED_MODELS` | Comma-separated model allowlist; the first is used when the Agent has no explicit model |
+
+Keep the bounded transport defaults unless acceptance shows a need to tune them. See
+[`cloud-model-config.ts`](../packages/server/src/cloud-model-config.ts) for the optional timeout,
+body-size, stream-count and token-lifetime settings. This document does not provision any setting.
 
 Cloud identities must already be enabled with `OPENTAG_CLOUD_IDENTITIES_ENABLED=true`,
 `OPENTAG_CLOUD_STORAGE_BASE` and `OPENTAG_CLOUD_RUNNER_VERSION` (the image's CLI version).
@@ -155,6 +291,22 @@ A local Docker pass, including an emulated amd64 pass, is not native Cloud Run a
 pnpm build
 node scripts/e2e/cloud-computer.mjs cloud-runner --help
 ```
+
+E4 has no GCP command yet. Its maintained local composition checks are:
+
+```bash
+pnpm build
+pnpm --filter @opentag/shared test
+pnpm --filter @opentag/client exec vitest run src/__tests__/cloud-journal.test.ts src/__tests__/cloud-turns.test.ts src/__tests__/cloud-turn-worker.test.ts src/__tests__/cloud-sandbox-credential-bridge.test.ts src/__tests__/runner-serve.test.ts
+pnpm typecheck
+```
+
+These exercise the durable journal boundaries, duplicate/concurrent dispatch, deadline/grant
+admission, replay and reconnect recovery, native namespace cleanup gating, loopback-seam-free
+socket handling, and the real loopback WebSocket dispatch path with local fixtures only. They do
+not prove native Cloud Run isolation, native Unix-socket mounts, real GCP acceptance, or real IM
+provider ingress/reply; those remain pending and must be evidenced by the Cloud harness plus a
+real IM acceptance before E4 is called accepted.
 
 The Cloud harness requires explicit project, region, digest, runtime service account, backend
 origin, VPC/subnet/tag and an environment-only short-lived Cloud Admin token. It runs a disposable

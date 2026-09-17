@@ -7,9 +7,10 @@ import type {
   RuntimeExecutionSource,
 } from "@opentag/shared";
 import { RUNTIME_CAPABILITY } from "@opentag/shared";
-import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
+import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import {
+  type RuntimeControlAuthority,
   type RuntimeCredentialBroker,
   RuntimeCredentialError,
   type RuntimeScopeMaterial,
@@ -32,7 +33,7 @@ type ExecutionOpenFrame = Extract<RuntimeCredentialClientFrame, { type: "runtime
 type CandidateProvider = "github" | "slack" | "feishu";
 
 export interface RuntimeSessionExecutionDeps {
-  registry: ConnectionRegistry;
+  registry: RuntimeControlAuthority;
   executions: RuntimeExecutionRegistry;
   authority: RuntimeExecutionAuthority;
   scopeResolver: RuntimeScopeResolverPort;
@@ -150,7 +151,7 @@ function sessionSandboxMismatch(
 }
 
 async function cloudControlActive(deps: RuntimeSessionExecutionDeps, computerId: string): Promise<boolean> {
-  const identity = deps.registry.currentControlIdentity(computerId);
+  const identity = deps.registry.currentControlIdentity?.(computerId);
   if (!identity) return false;
   return (await deps.cloudControlActive?.(identity)) === true;
 }

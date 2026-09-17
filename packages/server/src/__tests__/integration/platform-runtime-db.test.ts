@@ -1,11 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { RUNTIME_CAPABILITY } from "@opentag/shared";
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { parseServerConfig } from "../../config.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  sandboxes,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
 import { createPlatformRuntime } from "../../platform-runtime.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -15,6 +25,7 @@ import type {
   TrustedCloudControlIdentity,
 } from "../../runtime-credentials/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
+import { CloudRuntimeFence, cloudInstanceIdFor } from "../../services/sandboxes/cloud-runtime-fence.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let database: MigratedTestDatabase;
@@ -244,4 +255,235 @@ it("composes with no persistent control directory and writes nothing to the file
   await runtime.close();
   await client.sql.end();
   expect(await gitWorkspaceRoots()).toEqual(before);
+});
+
+/**
+ * Native Runner Cloud credential authority fixture: a Cloud Session with a ready allocation and an
+ * accepted (unfinished) delivery, plus the exact bootstrap scope the Runner would attach with.
+ */
+async function nativeRunnerFixture() {
+  const account = await admin();
+  const { computer, installationId } = await cloudComputer(account.userId);
+  const client = createDatabaseClient(database.databaseUrl);
+  try {
+    const agentId = randomUUID();
+    const bindingId = randomUUID();
+    const sessionId = randomUUID();
+    const sandboxId = randomUUID();
+    const messageId = randomUUID();
+    const deliveryId = randomUUID();
+    const turnId = randomUUID();
+    const resourceName = `projects/fixture/locations/us-west1/instances/ots-s-${sandboxId.slice(0, 8)}-1`;
+    const resourceUid = `uid-${sandboxId.slice(0, 8)}`;
+    await client.database.insert(agents).values({
+      id: agentId,
+      createdByUserId: account.userId,
+      computerId: computer.id,
+      name: `e4-${agentId.slice(0, 8)}`,
+      displayName: "E4",
+      runtimeProvider: "pi",
+    });
+    await client.database.insert(imBindings).values({
+      id: bindingId,
+      agentId,
+      provider: "feishu",
+      status: "active",
+      externalAppId: `app-${bindingId.slice(0, 8)}`,
+      externalBotId: "bot",
+      credentialSchemaVersion: 1,
+      credentialGeneration: 1,
+      encryptedCredential: "unit-only-unused",
+      activatedAt: new Date(),
+    });
+    await client.database.insert(sessions).values({
+      id: sessionId,
+      imBindingId: bindingId,
+      channelId: "unit-channel",
+      conversationKind: "channel",
+      kind: "channel",
+    });
+    await client.database.insert(sessionPlacements).values({ sessionId, computerId: computer.id, generation: 1 });
+    await client.database.insert(sandboxes).values({
+      id: sandboxId,
+      sessionId,
+      storageUri: "gs://fixture-bucket/sandboxes",
+      lifecycle: "ready",
+      environmentGeneration: 1,
+      currentResourceName: resourceName,
+      currentResourceUid: resourceUid,
+    });
+    await client.database.insert(imMessages).values({
+      id: messageId,
+      imBindingId: bindingId,
+      channelId: "unit-channel",
+      externalMessageId: `ext-${messageId.slice(0, 8)}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "unit-user",
+      content: { version: 1, fallbackText: "hello", blocks: [], truncated: false },
+      providerContext: { provider: "feishu" },
+      occurredAt: new Date(),
+    });
+    const scope = { sandboxId, sessionId, environmentGeneration: 1, resourceName };
+    const instanceId = cloudInstanceIdFor(scope);
+    await client.database.insert(imMessageDeliveries).values({
+      id: deliveryId,
+      messageId,
+      sessionId,
+      attention: "direct",
+      state: "accepted",
+      inputHash: "input-hash",
+      turnId,
+      reportOwnerInstanceId: instanceId,
+      placementGeneration: 1,
+      acceptedAt: new Date(),
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    return {
+      agentId,
+      bindingId,
+      computerId: computer.id,
+      deliveryId,
+      installationId,
+      resourceUid,
+      scope,
+      sessionId,
+      turnId,
+    };
+  } finally {
+    await client.sql.end();
+  }
+}
+
+type NativeRunnerFixture = Awaited<ReturnType<typeof nativeRunnerFixture>>;
+
+function runnerOpenFrame(fixture: NativeRunnerFixture) {
+  return {
+    type: "runtime:execution:open" as const,
+    requestId: randomUUID(),
+    sessionId: fixture.sessionId,
+    agentId: fixture.agentId,
+    placementGeneration: 1,
+    runId: randomUUID(),
+    source: { kind: "delivery" as const, deliveryId: fixture.deliveryId, turnId: fixture.turnId },
+    sandbox: {
+      sandboxId: fixture.scope.sandboxId,
+      resourceUid: fixture.resourceUid,
+      environmentGeneration: 1,
+    },
+  };
+}
+
+function runnerContext(fixture: NativeRunnerFixture, connection: { connectionId: string; instanceId: string }) {
+  return {
+    computerId: fixture.computerId,
+    installationId: fixture.installationId,
+    instanceId: connection.instanceId,
+    connectionId: connection.connectionId,
+    negotiatedCapabilities: {
+      [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+      [RUNTIME_CAPABILITY.providerProxy]: 1,
+    },
+    signal: new AbortController().signal,
+  };
+}
+
+function runnerAcquireFrame(fixture: NativeRunnerFixture, executionId: string) {
+  return {
+    type: "runtime:credential:acquire" as const,
+    requestId: randomUUID(),
+    executionId,
+    provider: "feishu" as const,
+    bindingId: fixture.bindingId,
+  };
+}
+
+it("admits native Runner Cloud credential authority through createPlatformRuntime and fails closed without it", async () => {
+  const fixture = await nativeRunnerFixture();
+  const client = createDatabaseClient(database.databaseUrl);
+  const fence = new CloudRuntimeFence();
+  const runtime = await createPlatformRuntime({
+    config: config(),
+    database: client.database,
+    cipher: new ApplicationCipher(Buffer.alloc(32, 9)),
+    registry: new ConnectionRegistry(),
+    custody: new PostgresRuntimeCustodyStore(client.database),
+    machineAuth: localAuth(),
+    cloudRuntimeFence: fence,
+  });
+  try {
+    const connection = fence.attach({
+      computerId: fixture.computerId,
+      installationId: fixture.installationId,
+      scope: fixture.scope,
+    });
+    const context = runnerContext(fixture, connection);
+    const opened = await runtime.credentials.owner.handle(runnerOpenFrame(fixture), context);
+    expect(opened).toMatchObject({ status: "succeeded" });
+    const executionId = (opened as { executionId: string }).executionId;
+
+    // The composed sweep keeps the live native Cloud execution...
+    runtime.credentials.owner.sweepNow();
+    expect(runtime.credentials.executions.get(executionId)).toBeDefined();
+    // ...and the broker admits a credential operation through the fence authority alone.
+    const acquired = await runtime.credentials.owner.handle(runnerAcquireFrame(fixture, executionId), context);
+    expect(acquired).toMatchObject({ status: "succeeded", provider: "feishu" });
+
+    // Losing the native connection revokes execution authority at the next sweep, fail closed.
+    fence.detach(connection.connectionId);
+    runtime.credentials.owner.sweepNow();
+    expect(runtime.credentials.executions.get(executionId)).toBeUndefined();
+    const denied = await runtime.credentials.owner.handle(runnerAcquireFrame(fixture, executionId), context);
+    expect(denied).toMatchObject({ status: "rejected", code: "execution_unknown" });
+
+    // A composition without the native fence never admits the Cloud execution.
+    const noFence = await createPlatformRuntime({
+      config: config(),
+      database: client.database,
+      cipher: new ApplicationCipher(Buffer.alloc(32, 9)),
+      registry: new ConnectionRegistry(),
+      custody: new PostgresRuntimeCustodyStore(client.database),
+      machineAuth: localAuth(),
+    });
+    try {
+      const rejected = await noFence.credentials.owner.handle(runnerOpenFrame(fixture), context);
+      expect(rejected).toMatchObject({ status: "rejected" });
+    } finally {
+      await noFence.close();
+    }
+  } finally {
+    await runtime.close();
+    await client.sql.end();
+  }
+
+  // Native Runner authority obeys config.cloudIdentities.enabled: disabled means fail closed even
+  // with the fence attached and a live connection record.
+  const disabledClient = createDatabaseClient(database.databaseUrl);
+  const disabledFence = new CloudRuntimeFence();
+  const disabledRuntime = await createPlatformRuntime({
+    config: config({ OPENTAG_CLOUD_IDENTITIES_ENABLED: "false" }),
+    database: disabledClient.database,
+    cipher: new ApplicationCipher(Buffer.alloc(32, 9)),
+    registry: new ConnectionRegistry(),
+    custody: new PostgresRuntimeCustodyStore(disabledClient.database),
+    machineAuth: localAuth(),
+    cloudRuntimeFence: disabledFence,
+  });
+  try {
+    const connection = disabledFence.attach({
+      computerId: fixture.computerId,
+      installationId: fixture.installationId,
+      scope: fixture.scope,
+    });
+    const rejected = await disabledRuntime.credentials.owner.handle(
+      runnerOpenFrame(fixture),
+      runnerContext(fixture, connection),
+    );
+    expect(rejected).toMatchObject({ status: "rejected", code: "execution_authority_denied" });
+  } finally {
+    await disabledRuntime.close();
+    await disabledClient.sql.end();
+  }
 });

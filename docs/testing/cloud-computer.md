@@ -195,3 +195,21 @@ can terminate the newly committed Session instead of leaving it active behind a 
 See [Cloud Runner execution](../cloud-runner-execution.md) for configuration, native Sandbox
 acceptance, resource receipts, cancellation, and verified teardown. The command is
 `node scripts/e2e/cloud-computer.mjs cloud-runner --help`; it creates real Cloud resources.
+
+## E4 Cloud delivery (local composition only)
+
+See [Cloud Runner execution](../cloud-runner-execution.md) for the E4 control, credential/model,
+continuity and cancellation boundaries. There is no GCP/IM E4 harness yet. The maintained local
+checks are:
+
+```bash
+pnpm build
+pnpm --filter @opentag/shared test
+pnpm --filter @opentag/client exec vitest run src/__tests__/cloud-journal.test.ts src/__tests__/cloud-turns.test.ts src/__tests__/cloud-turn-worker.test.ts src/__tests__/cloud-sandbox-credential-bridge.test.ts src/__tests__/runner-serve.test.ts
+pnpm typecheck
+```
+
+They use real loopback WebSockets, real local child processes and disposable fixture roots, but no
+native Cloud Run namespace, no real IM provider and no GCP allocation. Native cancellation/reset,
+native Unix-socket mounts, connection-loss grant revocation, and IM reply acceptance therefore
+remain pending real-environment evidence. E4 adds no new database tables, and E5–E8 stay deferred.

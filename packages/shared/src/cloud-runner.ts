@@ -1,5 +1,12 @@
 import { z } from "zod";
 import { runtimeUtf8Length } from "./runtime-config.js";
+import { RuntimeCredentialClientFrameSchema, RuntimeCredentialServerFrameSchema } from "./runtime-credentials.js";
+import {
+  DirectImMessageDeliveryRequestSchema,
+  RuntimeModelSchema,
+  RuntimeOpaqueIdSchema,
+  TurnReportRequestSchema,
+} from "./runtime-domain.js";
 import { SandboxLifecycleSchema } from "./sandbox.js";
 
 /**
@@ -13,6 +20,18 @@ import { SandboxLifecycleSchema } from "./sandbox.js";
  */
 
 export const RUNNER_WS_PROTOCOL_VERSION = 1;
+/**
+ * E4 Cloud-delivery capability negotiated inside the existing protocol version 1 auth/welcome
+ * exchange (E3 compatibility contract, `docs/cloud-runner-execution.md`). A new Runner requests it
+ * in the auth frame; a Cloud-enabled Server echoes it in the welcome ONLY for a requesting
+ * connection whose current allocation UID is already tracked. Legacy E3 channels never receive
+ * E4 frames.
+ */
+export const RUNNER_CLOUD_DELIVERY_VERSION = 1 as const;
+/** Server-mediated model proxy base path; the only paths below it are the source-owned allowlist. */
+export const CLOUD_MODEL_PROXY_PATH = "/api/v1/cloud-model" as const;
+/** The single OpenAI-compatible operation E4 admits. */
+export const CLOUD_MODEL_CHAT_COMPLETIONS_PATH = `${CLOUD_MODEL_PROXY_PATH}/chat/completions` as const;
 /** Runner control frames stay small; acceptance reports are bounded separately below. */
 export const RUNNER_WS_MAX_FRAME_BYTES = 256 * 1024;
 /** Bounded credential/config payloads: each document an Account may push for one acceptance run. */
@@ -252,7 +271,17 @@ const FrameBase = { requestId: RequestIdSchema.optional() };
 
 /** First frame, Runner -> Server. The token is a Server-minted bootstrap bearer credential. */
 export const RunnerAuthFrameSchema = z
-  .object({ ...FrameBase, type: z.literal("auth"), token: z.string().min(1).max(8192) })
+  .object({
+    ...FrameBase,
+    type: z.literal("auth"),
+    token: z.string().min(1).max(8192),
+    /**
+     * E4: an E4 Runner opts in to Cloud delivery frames. Additive and optional; an older Server
+     * with a strict schema rejects the extra field, so deployment order is Server-first with a
+     * pinned E4 Runner image (handoff contract). Legacy E3 Runners never set it.
+     */
+    cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+  })
   .strict();
 
 export const RunnerHeartbeatFrameSchema = z.object({ ...FrameBase, type: z.literal("heartbeat") }).strict();
@@ -282,11 +311,207 @@ export const RunnerAcceptanceResultFrameSchema = z
 
 export type RunnerAcceptanceResultFrame = z.infer<typeof RunnerAcceptanceResultFrameSchema>;
 
+/* ----------------------------------------------------------------------------------------------
+ * E4 Cloud IM delivery frames (additive; E3 acceptance frames are unchanged)
+ *
+ * A normalized IM delivery becomes a Session-scoped Cloud execution over this channel:
+ * `delivery:run` (Server, dispatch columns already persisted) -> the Runner journals the input in
+ * trusted parent storage with fsync -> `delivery:received` -> the Server persists durable custody
+ * (`acceptDelivery`) -> `delivery:verified` -> the Runner starts the native Pi worker ->
+ * `delivery:report` -> the Server records the Turn Report -> `delivery:report:ack`. A receipt or
+ * report is idempotent on reconnect; a verified delivery whose start outcome is unknown after a
+ * crash is reported `unknown`/`turn_state_unknown` and never blindly replayed.
+ *
+ * `credential:frame` tunnels the #633 runtime-credential control frames (execution open/acquire/
+ * renew/close/ticket) over this authenticated, scope-validated channel; the data plane stays the
+ * separate ticket-authenticated provider-proxy WebSocket. No frame here carries raw platform
+ * secrets.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Execution-scoped, short-lived model call permission minted by the Server. */
+export const RunnerCloudModelGrantSchema = z
+  .object({
+    /** Server model-proxy base URL (fixed deployment origin + path; never an arbitrary URL). */
+    baseUrl: z.string().url().max(1024),
+    /** Allowlisted model id the token is bound to; the proxy rejects any other model. */
+    model: RuntimeModelSchema,
+    /**
+     * Opaque execution-scoped bearer token; never a platform master key. The 4096-byte budget is
+     * the actual proxy bearer budget: a valid HS256 JWT with a 128-byte model id plus the wired
+     * claims measured 639 bytes, and the token must always fit the control frame.
+     */
+    token: z.string().min(32).max(4096),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type RunnerCloudModelGrant = z.infer<typeof RunnerCloudModelGrantSchema>;
+
+export const RunnerCloudDeliveryRunFrameSchema = z
+  .object({
+    type: z.literal("delivery:run"),
+    requestId: RequestIdSchema,
+    /** The exact persisted dispatch payload; `requestId` mirrors `delivery.requestId`. */
+    delivery: DirectImMessageDeliveryRequestSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.delivery.requestId !== value.requestId) {
+      context.addIssue({ code: "custom", path: ["requestId"], message: "Delivery request id mismatch" });
+    }
+    if (runtimeUtf8Length(JSON.stringify(value)) > RUNNER_WS_MAX_FRAME_BYTES) {
+      context.addIssue({
+        code: "custom",
+        path: ["delivery"],
+        message: "The delivery frame exceeds the channel budget",
+      });
+    }
+  });
+export type RunnerCloudDeliveryRunFrame = z.infer<typeof RunnerCloudDeliveryRunFrameSchema>;
+
+export const RunnerCloudDeliveryVerifiedFrameSchema = z
+  .object({
+    type: z.literal("delivery:verified"),
+    requestId: RequestIdSchema,
+    /**
+     * "verified": durable custody is persisted and execution may start. "rejected": the Server
+     * refused custody (stale generation/scope conflict); the Runner must not start and must
+     * settle its journal entry without executing.
+     */
+    status: z.enum(["verified", "rejected"]),
+    code: z.string().min(1).max(128).optional(),
+    /** Present only on "verified" when the deployment model proxy is enabled. */
+    model: RunnerCloudModelGrantSchema.optional(),
+  })
+  .strict();
+export type RunnerCloudDeliveryVerifiedFrame = z.infer<typeof RunnerCloudDeliveryVerifiedFrameSchema>;
+
+export const RunnerCloudDeliveryCancelFrameSchema = z
+  .object({
+    type: z.literal("delivery:cancel"),
+    requestId: RequestIdSchema.optional(),
+    deliveryId: RuntimeOpaqueIdSchema,
+  })
+  .strict();
+export type RunnerCloudDeliveryCancelFrame = z.infer<typeof RunnerCloudDeliveryCancelFrameSchema>;
+
+/**
+ * Server recovery query for one accepted delivery: the Runner answers from its durable journal
+ * (never from memory alone). "received"/"started" entries are resumed/settled exactly once; a
+ * missing entry means the allocation's writable state was lost and the turn outcome is unknown.
+ */
+export const RunnerCloudDeliveryQueryFrameSchema = z
+  .object({
+    type: z.literal("delivery:query"),
+    requestId: RequestIdSchema,
+    deliveryId: RuntimeOpaqueIdSchema,
+    turnId: RuntimeOpaqueIdSchema,
+  })
+  .strict();
+export type RunnerCloudDeliveryQueryFrame = z.infer<typeof RunnerCloudDeliveryQueryFrameSchema>;
+
+export const RunnerCloudDeliveryQueryResultFrameSchema = z
+  .object({
+    type: z.literal("delivery:query:result"),
+    requestId: RequestIdSchema,
+    deliveryId: RuntimeOpaqueIdSchema,
+    turnId: RuntimeOpaqueIdSchema,
+    phase: z.enum(["none", "received", "started", "reported"]),
+  })
+  .strict();
+export type RunnerCloudDeliveryQueryResultFrame = z.infer<typeof RunnerCloudDeliveryQueryResultFrameSchema>;
+
+export const RunnerCloudDeliveryReportAckFrameSchema = z
+  .object({
+    type: z.literal("delivery:report:ack"),
+    requestId: RequestIdSchema,
+    turnId: RuntimeOpaqueIdSchema,
+    status: z.enum(["recorded", "already_recorded", "conflict", "stale_generation"]),
+    resultHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type RunnerCloudDeliveryReportAckFrame = z.infer<typeof RunnerCloudDeliveryReportAckFrameSchema>;
+
+export const RunnerCloudDeliveryReceivedFrameSchema = z
+  .object({
+    type: z.literal("delivery:received"),
+    requestId: RequestIdSchema,
+    deliveryId: RuntimeOpaqueIdSchema,
+    /** Runner-allocated Turn id; stable across receipt retransmissions of the same dispatch. */
+    turnId: RuntimeOpaqueIdSchema,
+  })
+  .strict();
+export type RunnerCloudDeliveryReceivedFrame = z.infer<typeof RunnerCloudDeliveryReceivedFrameSchema>;
+
+export const RunnerCloudDeliveryReportFrameSchema = z
+  .object({
+    type: z.literal("delivery:report"),
+    requestId: RequestIdSchema,
+    report: TurnReportRequestSchema,
+  })
+  .strict();
+export type RunnerCloudDeliveryReportFrame = z.infer<typeof RunnerCloudDeliveryReportFrameSchema>;
+
+/** Runner -> Server tunnel of #633 credential control frames. */
+export const RunnerCredentialTunnelFrameSchema = z
+  .object({ type: z.literal("credential:frame"), frame: RuntimeCredentialClientFrameSchema })
+  .strict();
+export type RunnerCredentialTunnelFrame = z.infer<typeof RunnerCredentialTunnelFrameSchema>;
+
+/** Server -> Runner tunnel of #633 credential control results. */
+export const RunnerCredentialTunnelResultFrameSchema = z
+  .object({ type: z.literal("credential:frame"), frame: RuntimeCredentialServerFrameSchema })
+  .strict();
+export type RunnerCredentialTunnelResultFrame = z.infer<typeof RunnerCredentialTunnelResultFrameSchema>;
+
+/* ----------------------------------------------------------------------------------------------
+ * E4 in-sandbox Turn worker document (stdin, bounded)
+ * ------------------------------------------------------------------------------------------- */
+
+/** Bounded stdin document the trusted Runner hands to the in-sandbox Turn worker. */
+export const RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES = 256 * 1024;
+
+export const RunnerCloudTurnWorkerRequestSchema = z
+  .object({
+    kind: z.literal("turn"),
+    /** The exact delivery the Server dispatched (and persisted) for this Sandbox's Session. */
+    delivery: DirectImMessageDeliveryRequestSchema,
+    /** Execution-scoped model grant minted at the verified boundary. */
+    model: RunnerCloudModelGrantSchema,
+    /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
+    executionDir: z.string().min(1).max(512),
+    /**
+     * Optional allocation-stable in-sandbox directory for Pi conversation continuity across the
+     * turns of one Agent Session. When absent the worker uses its own default location inside the
+     * disposable Sandbox. The trusted Runner only ever supplies an in-sandbox path.
+     */
+    piSessionDirectory: z.string().min(1).max(512).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (runtimeUtf8Length(JSON.stringify(value)) > RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES) {
+      context.addIssue({ code: "custom", message: "The Turn worker document exceeds its stdin budget" });
+    }
+  });
+export type RunnerCloudTurnWorkerRequest = z.infer<typeof RunnerCloudTurnWorkerRequestSchema>;
+
+/** Serialize a Turn worker document, enforcing the stdin budget before any write. */
+export function serializeRunnerCloudTurnWorkerStdin(input: Omit<RunnerCloudTurnWorkerRequest, "kind">): string {
+  const serialized = JSON.stringify({ kind: "turn", ...input });
+  if (runtimeUtf8Length(serialized) > RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES) {
+    throw new Error("The Turn worker document exceeds its stdin budget");
+  }
+  return serialized;
+}
+
 export const RunnerClientFrameSchema = z.discriminatedUnion("type", [
   RunnerAuthFrameSchema,
   RunnerHeartbeatFrameSchema,
   RunnerReadyFrameSchema,
   RunnerAcceptanceResultFrameSchema,
+  RunnerCloudDeliveryReceivedFrameSchema,
+  RunnerCloudDeliveryReportFrameSchema,
+  RunnerCloudDeliveryQueryResultFrameSchema,
+  RunnerCredentialTunnelFrameSchema,
 ]);
 export type RunnerClientFrame = z.infer<typeof RunnerClientFrameSchema>;
 
@@ -298,6 +523,19 @@ export const RunnerWelcomeFrameSchema = z
     sessionId: UuidSchema,
     environmentGeneration: z.number().int().nonnegative(),
     resourceName: ResourceNameSchema,
+    /**
+     * E4 capability echo. Present ONLY for a connection that requested
+     * `cloudDeliveryVersion: 1` and whose Cloud allocation is enabled; the Client must not run
+     * Cloud journal reconciliation or Cloud frame handlers without it.
+     */
+    cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+    /**
+     * E4: verified Cloud UID of the CURRENT allocation, echoed by the Runner inside credential
+     * execution-open sandbox facts. Required when `cloudDeliveryVersion` is present; a
+     * Cloud-capable welcome with a null UID must be retried transiently until the UID is tracked
+     * (the attach never publishes a Cloud welcome without it).
+     */
+    resourceUid: z.string().min(1).max(128).nullable().optional(),
     heartbeatIntervalMs: z.number().int().positive(),
     heartbeatTimeoutMs: z.number().int().positive(),
   })
@@ -359,6 +597,12 @@ export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerServerHeartbeatFrameSchema,
   RunnerServerCredentialFrameSchema,
   RunnerServerErrorFrameSchema,
+  RunnerCloudDeliveryRunFrameSchema,
+  RunnerCloudDeliveryVerifiedFrameSchema,
+  RunnerCloudDeliveryCancelFrameSchema,
+  RunnerCloudDeliveryQueryFrameSchema,
+  RunnerCloudDeliveryReportAckFrameSchema,
+  RunnerCredentialTunnelResultFrameSchema,
 ]);
 export type RunnerServerFrame = z.infer<typeof RunnerServerFrameSchema>;
 

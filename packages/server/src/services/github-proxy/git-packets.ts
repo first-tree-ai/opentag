@@ -76,11 +76,19 @@ export function gitPacket(payload: Uint8Array | string): Buffer {
   return Buffer.concat([Buffer.from((bytes.length + 4).toString(16).padStart(4, "0")), bytes]);
 }
 
-/** A protocol-level rejection, with safe fixed text and the client's requested side-band framing. */
-export function gitReceiveFailure(commands: GitReceiveCommands): Buffer {
+/**
+ * A protocol-level failure report, with safe fixed text and the client's requested side-band
+ * framing. Definite rejections and unknown outcomes are deliberately different messages: a
+ * caller must be able to tell "not applied" apart from "verify the remote before retrying".
+ */
+export function gitReceiveFailure(commands: GitReceiveCommands, kind: "rejected" | "unknown" = "rejected"): Buffer {
+  const detail =
+    kind === "unknown"
+      ? "OpenTag publication outcome unknown; verify remote refs before retrying"
+      : "OpenTag publication rejected";
   const report = Buffer.concat([
     gitPacket("unpack ok\n"),
-    ...commands.updates.map((update) => gitPacket(`ng ${update.ref} OpenTag publication rejected\n`)),
+    ...commands.updates.map((update) => gitPacket(`ng ${update.ref} ${detail}\n`)),
     Buffer.from("0000"),
   ]);
   return commands.capabilities.has("side-band-64k")

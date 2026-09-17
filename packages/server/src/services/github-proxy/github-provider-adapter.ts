@@ -1,12 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { RuntimeProxyAuthorization } from "../../runtime-credentials/credential-broker.js";
-import type {
-  ProviderProxyAdapter,
-  ProviderProxyRequest,
-  ProviderProxyResponse,
+import {
+  type ProviderProxyAdapter,
+  type ProviderProxyRequest,
+  type ProviderProxyResponse,
+  RuntimeProxyError,
 } from "../../runtime-credentials/provider-proxy-adapter.js";
-import type { SessionControlStore } from "../session-control-store/index.js";
 import {
   CreatePullRequestBodySchema,
   PullRequestCommentBodySchema,
@@ -53,7 +52,6 @@ export interface GitHubProviderAdapterOptions {
   leases: GitHubIatLeases;
   reads: GitReadTransport;
   publication: GitPublicationGuard;
-  store: SessionControlStore;
   api?: GitHubProxyApiTransport;
   treeHeads?: VerifiedTreeHead;
 }
@@ -160,7 +158,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
         );
         validated = input;
       }
-      return await this.#write(context, request.method, url.pathname, validated, plan.operation);
+      return await this.#write(context, request.method, url.pathname, validated);
     } finally {
       await lease.release();
     }
@@ -194,7 +192,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
       const context = await this.#context(request, authorization, repository, lease.token);
       if (write) {
         await this.#validateGraphqlWrite(context, plan);
-        return await this.#write(context, "POST", "/graphql", body, plan.operation);
+        return await this.#write(context, "POST", "/graphql", body);
       }
       const constrained = await this.#constrainTreeGraphql(context, body);
       const response = await this.#api.request({
@@ -243,13 +241,6 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     token: string,
   ): Promise<ApiContext> {
     await authorization.recheck(request.signal);
-    await this.#options.store.recordSource({
-      sessionId: authorization.sessionId,
-      provider: "github",
-      resource: `repository:${repository.repositoryId}`,
-      policyRevision: authorization.scopeHash,
-      recordedAt: new Date().toISOString(),
-    });
     const metadata = await this.#metadata(repository, token, request.signal);
     const context = {
       request,
@@ -358,9 +349,7 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     if (!ref.startsWith(taskBranchPrefix(context.authorization.sessionId, "context_tree"))) return;
     if (!this.#options.treeHeads) throw new GitPublicationError("tree_invalid");
     const sha = await this.#options.treeHeads.verify({
-      sessionId: context.authorization.sessionId,
       repositoryId: context.repository.repositoryId,
-      policyRevision: context.authorization.scopeHash,
       ref,
       remote: new GitHubPublicationRemote({ fullName: context.repository.fullName, token: context.token }),
       signal: context.request.signal,
@@ -415,38 +404,20 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
     for (const child of Object.values(row)) if (child && typeof child === "object") this.#remember(context, child);
   }
 
-  async #recheckWrittenTree(context: ApiContext, succeeded: boolean): Promise<void> {
-    if (succeeded && context.treeHead)
-      await this.#verifyTreeHead(context, context.treeHead.ref.slice("refs/heads/".length));
+  async #recheckWrittenTree(context: ApiContext): Promise<void> {
+    if (context.treeHead) await this.#verifyTreeHead(context, context.treeHead.ref.slice("refs/heads/".length));
   }
 
-  async #write(
-    context: ApiContext,
-    method: string,
-    path: string,
-    body: unknown,
-    operation: string,
-  ): Promise<ProviderProxyResponse> {
-    const operationId = randomUUID();
-    const { intentHash } = await this.#options.store.beginWrite({
-      sessionId: context.authorization.sessionId,
-      executionId: context.request.executionId,
-      operationId,
-      provider: "github",
-      resource: `repository:${context.repository.repositoryId}`,
-      operation: `github.${operation}`.toLowerCase(),
-      requestHash: createHash("sha256")
-        .update(JSON.stringify([method, path, body, context.treeHead ?? null]))
-        .digest("hex"),
-      policyRevision: context.authorization.scopeHash,
-      createdAt: new Date().toISOString(),
-    });
-    let sent = false;
-    let recorded = false;
+  /**
+   * One upstream write attempt after the final fence revalidation, never replayed. Pre-send
+   * authorization or cancellation failures surface unchanged (nothing was sent); a lost
+   * post-send transport/parse outcome, 5xx/408, or a 2xx without real mutation evidence becomes
+   * `write_outcome_unknown`. A definite provider rejection stays visible as its own response.
+   */
+  async #write(context: ApiContext, method: string, path: string, body: unknown): Promise<ProviderProxyResponse> {
+    await context.recheck();
+    context.request.signal.throwIfAborted();
     try {
-      await context.recheck();
-      context.request.signal.throwIfAborted();
-      sent = true;
       const response = await this.#api.request({
         token: context.token,
         method,
@@ -455,43 +426,46 @@ export class GitHubProviderAdapter implements ProviderProxyAdapter {
         signal: context.request.signal,
       });
       const succeeded = confirmedWriteResponse(path, response.status, response.value);
-      await this.#recheckWrittenTree(context, succeeded);
-      const rejected = rejectedWriteResponse(response.status);
-      await this.#options.store.completeWrite(context.authorization.sessionId, {
-        operationId,
-        intentHash,
-        state: succeeded ? "succeeded" : rejected ? "rejected" : "unknown",
-        resultCode: succeeded ? "upstream_confirmed" : "upstream_rejected_or_unknown",
-        completedAt: new Date().toISOString(),
-      });
-      recorded = true;
+      if (!succeeded && !rejectedWriteResponse(response.status)) {
+        throw new RuntimeProxyError("write_outcome_unknown");
+      }
+      if (succeeded) await this.#recheckWrittenTree(context);
       await context.recheck();
-      this.#remember(context, response.value);
+      const value = sanitizeGitHubResponse(response.value, context.token);
+      if (succeeded) this.#remember(context, value);
       return {
         status: response.status,
         headers: response.headers,
-        body: jsonBody(sanitizeGitHubResponse(response.value, context.token)),
+        body: jsonBody(value),
       };
-    } catch (error) {
-      if (!recorded)
-        await this.#options.store.completeWrite(context.authorization.sessionId, {
-          operationId,
-          intentHash,
-          state: sent ? "unknown" : "rejected",
-          resultCode: sent ? "write_outcome_unknown" : "authorization_changed",
-          completedAt: new Date().toISOString(),
-        });
-      throw error;
+    } catch {
+      // The attempt may have applied even if a later fence or response-safety check failed.
+      // Keep credentials and unsafe responses private without implying non-application.
+      throw new RuntimeProxyError("write_outcome_unknown");
     }
   }
 }
 
+/** A definite 4xx (except the ambiguous 408) is provider rejection evidence, never a guess. */
 function rejectedWriteResponse(status: number): boolean {
   return status >= 400 && status < 500 && status !== 408;
 }
+
+/**
+ * Mutation success evidence. REST requires the created/updated object's identity; GraphQL
+ * requires an errors-free payload whose top-level mutation fields (including aliased ones) are
+ * all non-null objects — empty data, null mutation data, or partial errors are never success.
+ */
 function confirmedWriteResponse(path: string, status: number, value: unknown): boolean {
-  if (status < 200 || status >= 300 || !value || typeof value !== "object") return false;
-  const row = objectValue(value);
-  if (path === "/graphql") return !Array.isArray(row.errors) && !!row.data && typeof row.data === "object";
+  if (status < 200 || status >= 300) return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (path === "/graphql") {
+    if (Array.isArray(row.errors)) return false;
+    const data = row.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+    const fields = Object.values(data);
+    return fields.length > 0 && fields.every((field) => field !== null && typeof field === "object");
+  }
   return typeof row.id === "number" || typeof row.node_id === "string";
 }

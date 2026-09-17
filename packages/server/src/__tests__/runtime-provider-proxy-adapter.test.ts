@@ -1,7 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { FEISHU_TENANT_TOKEN_LOCAL_SENTINEL } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
@@ -13,11 +10,7 @@ import {
   RuntimeProxyError,
 } from "../runtime-credentials/provider-proxy-adapter.js";
 import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
-import type { RuntimeSourceRecorder } from "../runtime-credentials/source-recorder.js";
-import { RUNTIME_URL_HANDLE_PATH_PREFIX, RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
-import type { RuntimeWriteJournal } from "../runtime-credentials/write-journal.js";
-import { RuntimeWriteJournalUnavailableError } from "../runtime-credentials/write-journal.js";
-import { FileSessionControlStore } from "../services/session-control-store/index.js";
+import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
 
 const EXECUTION = randomUUID();
 const SESSION = randomUUID();
@@ -66,37 +59,8 @@ function authorization(overrides: Partial<RuntimeProxyAuthorization> = {}): Runt
   };
 }
 
-function recordingJournal(): RuntimeWriteJournal & {
-  intents: unknown[];
-  outcomes: unknown[];
-} {
-  const journal = {
-    intents: [] as unknown[],
-    outcomes: [] as unknown[],
-    async beginWrite(intent: unknown) {
-      this.intents.push(intent);
-      return { intentHash: "f".repeat(64) };
-    },
-    async completeWrite(sessionId: string, outcome: unknown) {
-      this.outcomes.push({ sessionId, outcome });
-    },
-  };
-  return journal;
-}
-
-const unavailableJournal: RuntimeWriteJournal = {
-  beginWrite: () => Promise.reject(new RuntimeWriteJournalUnavailableError()),
-  completeWrite: () => Promise.reject(new RuntimeWriteJournalUnavailableError()),
-};
-
 function adapter(
-  options: {
-    provider?: "slack" | "feishu";
-    fetchImpl?: typeof fetch;
-    journal?: RuntimeWriteJournal;
-    sourceRecorder?: RuntimeSourceRecorder;
-    urlHandles?: RuntimeUrlHandleStore;
-  } = {},
+  options: { provider?: "slack" | "feishu"; fetchImpl?: typeof fetch; urlHandles?: RuntimeUrlHandleStore } = {},
 ) {
   const provider = options.provider ?? "slack";
   const urlHandles = options.urlHandles ?? new RuntimeUrlHandleStore();
@@ -104,8 +68,6 @@ function adapter(
     provider,
     registry: new ProviderOperationRegistry(provider === "slack" ? SLACK_OPERATIONS : FEISHU_OPERATIONS),
     urlHandles,
-    journal: options.journal ?? recordingJournal(),
-    ...(options.sourceRecorder ? { sourceRecorder: options.sourceRecorder } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   });
   return { instance, urlHandles };
@@ -149,15 +111,6 @@ function captureFetch(payload: unknown = { ok: true, ts: "1710000000.000100" }):
     return jsonResponse(payload);
   }) as typeof fetch;
   return { calls, fetchImpl };
-}
-
-async function withRealStore<T>(run: (store: FileSessionControlStore) => Promise<T>): Promise<T> {
-  const root = await mkdtemp(join(await realpath(tmpdir()), "opentag-adapter-form-"));
-  try {
-    return await run(new FileSessionControlStore({ root }));
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
 }
 
 describe("ImProviderProxyAdapter operation registration", () => {
@@ -259,34 +212,20 @@ describe("ImProviderProxyAdapter upstream requests", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("does not automatically retry writes and records journal outcomes", async () => {
+  it("makes exactly one upstream attempt and relays a definite provider rejection", async () => {
     const calls: string[] = [];
     const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
       calls.push(String(input));
       return jsonResponse({ ok: false, error: "channel_not_found" });
     }) as typeof fetch;
-    const journal = recordingJournal();
-    const { instance } = adapter({ fetchImpl, journal });
+    const { instance } = adapter({ fetchImpl });
     const response = await instance.handle(
       request({ body: jsonBody({ channel: "C1", text: "hello" }) }),
       authorization(),
     );
     expect(response.status).toBe(200);
+    expect(JSON.parse(await readBody(response.body))).toMatchObject({ ok: false, error: "channel_not_found" });
     expect(calls).toHaveLength(1);
-    expect(journal.intents).toHaveLength(1);
-    expect(journal.outcomes).toHaveLength(1);
-    expect(journal.outcomes[0]).toMatchObject({
-      outcome: { state: "rejected", resultCode: "channel_not_found" },
-    });
-  });
-
-  it("fails closed before forwarding when the durable write journal is unavailable", async () => {
-    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true }));
-    const { instance } = adapter({ fetchImpl, journal: unavailableJournal });
-    await expect(instance.handle(request(), authorization())).rejects.toMatchObject({
-      code: "write_journal_unavailable",
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("filters protected response headers", async () => {
@@ -308,19 +247,9 @@ describe("ImProviderProxyAdapter protected handles", () => {
     file: { id: "F1", name: "report.txt", url_private: "https://files.slack.com/files-pri/T-F/report" },
   };
 
-  function recorder(): RuntimeSourceRecorder & { records: unknown[] } {
-    return {
-      records: [] as unknown[],
-      async recordSource(record: unknown) {
-        this.records.push(record);
-      },
-    };
-  }
-
-  it("rewrites native signed URLs to fixed-origin handles and records the read", async () => {
+  it("rewrites native signed URLs to fixed-origin handles", async () => {
     const fetchImpl = (async () => jsonResponse(fileInfo)) as typeof fetch;
-    const source = recorder();
-    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: source });
+    const { instance, urlHandles } = adapter({ fetchImpl });
     const response = await instance.handle(
       request({ path: "/api/files.info", body: jsonBody({ file: "F1" }) }),
       authorization(),
@@ -330,17 +259,7 @@ describe("ImProviderProxyAdapter protected handles", () => {
     };
     expect(payload.file.url_private).toMatch(/^https:\/\/slack\.com\/__opentag__\/handles\/[A-Za-z0-9_-]+$/);
     expect(payload.file.url_private).not.toContain("files.slack.com");
-    expect(source.records).toHaveLength(1);
-    expect(source.records[0]).toMatchObject({ sessionId: SESSION, provider: "slack" });
     expect(urlHandles.size).toBe(1);
-  });
-
-  it("fails closed when a protected read has no durable recorder", async () => {
-    const fetchImpl = (async () => jsonResponse(fileInfo)) as typeof fetch;
-    const { instance } = adapter({ fetchImpl });
-    await expect(
-      instance.handle(request({ path: "/api/files.info", body: jsonBody({ file: "F1" }) }), authorization()),
-    ).rejects.toMatchObject({ code: "source_record_unavailable" });
   });
 
   it("proxies a download handle with the current token, revalidation, and allowlisted redirects", async () => {
@@ -354,8 +273,7 @@ describe("ImProviderProxyAdapter protected handles", () => {
       return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "text/plain" } });
     }) as typeof fetch;
     const recheck = vi.fn(async () => undefined);
-    const source = recorder();
-    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: source });
+    const { instance, urlHandles } = adapter({ fetchImpl });
     const handleId = urlHandles.create({
       executionId: EXECUTION,
       provider: "slack",
@@ -378,9 +296,6 @@ describe("ImProviderProxyAdapter protected handles", () => {
     ]);
     expect((calls[0]?.init.headers as Record<string, string> | undefined)?.authorization).toBe("Bearer real-token");
     expect(recheck).toHaveBeenCalledTimes(2);
-    expect(source.records).toHaveLength(1);
-    expect(source.records[0]).toMatchObject({ provider: "slack", resource: `handle:${handleId}`, sessionId: SESSION });
-    expect(JSON.stringify(source.records)).not.toContain("files.slack.com");
     expect(await readBody(response.body)).toBe(Buffer.from([1, 2, 3]).toString("utf8"));
   });
 
@@ -390,8 +305,7 @@ describe("ImProviderProxyAdapter protected handles", () => {
         status: 302,
         headers: { location: "https://evil.example.com/steal" },
       })) as typeof fetch;
-    // A durable recorder keeps this test on the redirect policy rather than the recorder gate.
-    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: recorder() });
+    const { instance, urlHandles } = adapter({ fetchImpl });
     const handleId = urlHandles.create({
       executionId: EXECUTION,
       provider: "slack",
@@ -406,77 +320,27 @@ describe("ImProviderProxyAdapter protected handles", () => {
     ).rejects.toMatchObject({ code: "handle_invalid" });
   });
 
-  it("requires a durable source record for a download handle minted by a write response", async () => {
+  it("serves a download handle minted by a write response with a fresh fence check", async () => {
     const file = { id: "F1", thumb_360: "https://files.slack.com/files-tmb/T-F/thumb.png" };
-    const { instance, urlHandles } = adapter({
-      fetchImpl: (async () => jsonResponse({ ok: true, message: { files: [file] } })) as typeof fetch,
-    });
-    const write = await instance.handle(request({ body: jsonBody({ channel: "C1", text: "hi" }) }), authorization());
-    const payload = JSON.parse(await readBody(write.body)) as { message: { files: Array<{ thumb_360: string }> } };
-    const handlePath = new URL(payload.message.files[0]?.thumb_360 ?? "").pathname;
-    const handleId = handlePath.slice(RUNTIME_URL_HANDLE_PATH_PREFIX.length);
-    expect(
-      urlHandles.resolve(handleId, { executionId: EXECUTION, provider: "slack", kind: "download" })?.resource,
-    ).toBe("F1");
-
-    // The write only produced a write receipt, so the download still needs its own source record.
-    const downloads: string[] = [];
-    const strict = adapter({
-      fetchImpl: (async (input: Parameters<typeof fetch>[0]) => {
-        downloads.push(String(input));
-        return new Response("downloaded", { status: 200, headers: { "content-type": "text/plain" } });
-      }) as typeof fetch,
-      urlHandles,
-    });
-    await expect(
-      strict.instance.handle(request({ method: "GET", path: handlePath, body: bodyOf() }), authorization()),
-    ).rejects.toMatchObject({ code: "source_record_unavailable" });
-    expect(downloads).toHaveLength(0);
-  });
-
-  it("records handle.resource before exposing a write-created download", async () => {
-    const file = { id: "F1", thumb_360: "https://files.slack.com/files-tmb/T-F/thumb.png" };
-    const source = recorder();
+    const recheck = vi.fn(async () => undefined);
     const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input);
       if (url.endsWith("/api/chat.postMessage")) return jsonResponse({ ok: true, message: { files: [file] } });
       return new Response("downloaded body", { status: 200, headers: { "content-type": "text/plain" } });
     }) as typeof fetch;
-    const { instance } = adapter({ fetchImpl, sourceRecorder: source });
+    const { instance } = adapter({ fetchImpl });
     const write = await instance.handle(request({ body: jsonBody({ channel: "C1", text: "hi" }) }), authorization());
     const payload = JSON.parse(await readBody(write.body)) as { message: { files: Array<{ thumb_360: string }> } };
     const handlePath = new URL(payload.message.files[0]?.thumb_360 ?? "").pathname;
+    expect(handlePath).toMatch(/^\/__opentag__\/handles\//);
 
     const response = await instance.handle(
       request({ method: "GET", path: handlePath, body: bodyOf() }),
-      authorization(),
+      authorization({ recheck }),
     );
     expect(response.status).toBe(200);
-    expect(source.records).toHaveLength(1);
-    expect(source.records[0]).toMatchObject({ provider: "slack", resource: "F1", sessionId: SESSION });
-    expect(JSON.stringify(source.records)).not.toContain("files.slack.com");
+    expect(recheck).toHaveBeenCalled();
     expect(await readBody(response.body)).toBe("downloaded body");
-  });
-
-  it("uses a bounded opaque fallback resource when a handle has no metadata", async () => {
-    const source = recorder();
-    const fetchImpl = (async () =>
-      new Response("data", { status: 200, headers: { "content-type": "text/plain" } })) as typeof fetch;
-    const { instance, urlHandles } = adapter({ fetchImpl, sourceRecorder: source });
-    const handleId = urlHandles.create({
-      executionId: EXECUTION,
-      provider: "slack",
-      kind: "download",
-      url: "https://files.slack.com/files-pri/T-F/report",
-    });
-    const response = await instance.handle(
-      request({ method: "GET", path: `${RUNTIME_URL_HANDLE_PATH_PREFIX}${handleId}`, body: bodyOf() }),
-      authorization(),
-    );
-    expect(response.status).toBe(200);
-    expect(source.records[0]).toMatchObject({ provider: "slack", resource: `handle:${handleId}`, sessionId: SESSION });
-    expect(JSON.stringify(source.records)).not.toContain("files.slack.com");
-    expect(await readBody(response.body)).toBe("data");
   });
 
   it("binds handles to the exact execution, provider, and kind", async () => {
@@ -507,63 +371,47 @@ describe("ImProviderProxyAdapter native Slack form bodies", () => {
       form: "channel=C-FIXTURE&text=native+acceptance&token=otrh_local",
       operation: "chat.postMessage",
       path: "/api/chat.postMessage",
-      resource: "channel:C-FIXTURE",
     },
     {
       forwarded: "channel=C-FIXTURE&ts=1710000000.000100&text=native+acceptance+updated",
       form: "channel=C-FIXTURE&ts=1710000000.000100&text=native+acceptance+updated&token=otrh_local",
       operation: "chat.update",
       path: "/api/chat.update",
-      resource: "channel:C-FIXTURE",
     },
     {
       forwarded: "channel=C-FIXTURE&ts=1710000000.000100",
       form: "channel=C-FIXTURE&ts=1710000000.000100&token=otrh_local",
       operation: "chat.delete",
       path: "/api/chat.delete",
-      resource: "channel:C-FIXTURE",
     },
     {
       forwarded: "filename=upload.bin&length=1048576",
       form: "filename=upload.bin&length=1048576&token=otrh_local",
       operation: "files.getUploadURLExternal",
       path: "/api/files.getUploadURLExternal",
-      resource: "upload.bin",
     },
     {
       forwarded: "channel_id=C-FIXTURE&files=%5B%7B%22id%22%3A%22F_FIXTURE%22%7D%5D",
       form: "channel_id=C-FIXTURE&files=%5B%7B%22id%22%3A%22F_FIXTURE%22%7D%5D&token=otrh_local",
       operation: "files.completeUploadExternal",
       path: "/api/files.completeUploadExternal",
-      resource: "channel:C-FIXTURE",
     },
-  ])("forwards the native $operation form body untouched and journals it", async (fixture) => {
-    await withRealStore(async (store) => {
-      const beginWrite = vi.spyOn(store, "beginWrite");
-      const { calls, fetchImpl } = captureFetch();
-      const { instance } = adapter({ fetchImpl, journal: store });
+  ])("forwards the native $operation form body untouched in one upstream attempt", async (fixture) => {
+    const { calls, fetchImpl } = captureFetch();
+    const { instance } = adapter({ fetchImpl });
 
-      const response = await instance.handle(
-        request({ path: fixture.path, headers: FORM_HEADERS, body: bodyOf(new TextEncoder().encode(fixture.form)) }),
-        authorization(),
-      );
-      expect(response.status).toBe(200);
-      expect(calls).toHaveLength(1);
-      expect(calls[0]).toMatchObject({ method: "POST", url: `https://slack.com${fixture.path}` });
-      expect(calls[0]?.headers).toMatchObject({
-        authorization: "Bearer real-token",
-        "content-type": "application/x-www-form-urlencoded; charset=utf-8",
-      });
-      expect(calls[0]?.body).toBe(fixture.forwarded);
-
-      const intent = beginWrite.mock.calls[0]?.[0];
-      expect(intent).toMatchObject({ operation: fixture.operation, provider: "slack", resource: fixture.resource });
-      await expect(store.readWrite(SESSION, intent?.operationId as string)).resolves.toMatchObject({
-        outcome: { state: "succeeded" },
-        resolution: "succeeded",
-      });
-      expect(await store.listUnresolvedWrites(SESSION)).toEqual([]);
+    const response = await instance.handle(
+      request({ path: fixture.path, headers: FORM_HEADERS, body: bodyOf(new TextEncoder().encode(fixture.form)) }),
+      authorization(),
+    );
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "POST", url: `https://slack.com${fixture.path}` });
+    expect(calls[0]?.headers).toMatchObject({
+      authorization: "Bearer real-token",
+      "content-type": "application/x-www-form-urlencoded; charset=utf-8",
     });
+    expect(calls[0]?.body).toBe(fixture.forwarded);
   });
 
   it("keeps auth.test working with the empty scrubbed native form body", async () => {
@@ -607,10 +455,9 @@ describe("ImProviderProxyAdapter native Slack form bodies", () => {
     ["a duplicate resource field", "channel=C1&channel=C2", "body_invalid"],
     ["a duplicate credential field", "token=otrh_a&token=otrh_b", "body_invalid"],
     ["malformed percent encoding", "text=%zz", "body_invalid"],
-  ])("rejects %s before upstream or journal", async (_case, form, code) => {
+  ])("rejects %s before any upstream call", async (_case, form, code) => {
     const { calls, fetchImpl } = captureFetch();
-    const journal = recordingJournal();
-    const { instance } = adapter({ fetchImpl, journal });
+    const { instance } = adapter({ fetchImpl });
     await expect(
       instance.handle(
         request({ headers: FORM_HEADERS, body: bodyOf(new TextEncoder().encode(form)) }),
@@ -618,19 +465,16 @@ describe("ImProviderProxyAdapter native Slack form bodies", () => {
       ),
     ).rejects.toMatchObject({ code });
     expect(calls).toHaveLength(0);
-    expect(journal.intents).toHaveLength(0);
   });
 
   it("rejects an oversized native form before upstream", async () => {
     const { calls, fetchImpl } = captureFetch();
-    const journal = recordingJournal();
-    const { instance } = adapter({ fetchImpl, journal });
+    const { instance } = adapter({ fetchImpl });
     const oversized = new TextEncoder().encode(`text=${"x".repeat(140 * 1024)}`);
     await expect(
       instance.handle(request({ headers: FORM_HEADERS, body: bodyOf(oversized) }), authorization()),
     ).rejects.toMatchObject({ code: "body_too_large" });
     expect(calls).toHaveLength(0);
-    expect(journal.intents).toHaveLength(0);
   });
 
   it("rejects an unsupported content type without buffering the body", async () => {
@@ -671,8 +515,7 @@ describe("ImProviderProxyAdapter native Slack form bodies", () => {
 
   it("uses and forwards the query resource when the native form omits it", async () => {
     const { calls, fetchImpl } = captureFetch();
-    const journal = recordingJournal();
-    const { instance } = adapter({ fetchImpl, journal });
+    const { instance } = adapter({ fetchImpl });
     const response = await instance.handle(
       request({
         path: "/api/chat.delete?channel=C-QUERY",
@@ -683,67 +526,10 @@ describe("ImProviderProxyAdapter native Slack form bodies", () => {
     );
     expect(response.status).toBe(200);
     expect(calls[0]?.url).toBe("https://slack.com/api/chat.delete?channel=C-QUERY");
-    expect(journal.intents[0]).toMatchObject({ operation: "chat.delete", resource: "channel:C-QUERY" });
   });
 });
 
-describe("ImProviderProxyAdapter with the real durable SessionControlStore", () => {
-  it.each([
-    {
-      body: { channel: "C1", text: "hello" },
-      operation: "chat.postMessage",
-      path: "/api/chat.postMessage",
-      resource: "channel:C1",
-      upstream: { ok: true, ts: "1710000000.000100" },
-    },
-    {
-      body: { filename: "report.txt", length: 3 },
-      operation: "files.getUploadURLExternal",
-      path: "/api/files.getUploadURLExternal",
-      resource: "report.txt",
-      upstream: { file_id: "F1", ok: true, upload_url: "https://files.slack.com/upload/v1/ABC" },
-    },
-  ])("journals the native $operation intent through the real store and resolves it", async (fixture) => {
-    const root = await mkdtemp(join(await realpath(tmpdir()), "opentag-adapter-store-"));
-    try {
-      const store = new FileSessionControlStore({ root });
-      const beginWrite = vi.spyOn(store, "beginWrite");
-      const fetchImpl = (async () => jsonResponse(fixture.upstream)) as unknown as typeof fetch;
-      const { instance } = adapter({ fetchImpl, journal: store });
-
-      const response = await instance.handle(
-        request({ path: fixture.path, body: jsonBody(fixture.body) }),
-        authorization(),
-      );
-      expect(response.status).toBe(200);
-      expect(beginWrite).toHaveBeenCalledTimes(1);
-      const intent = beginWrite.mock.calls[0]?.[0];
-      expect(intent).toMatchObject({
-        operation: fixture.operation,
-        provider: "slack",
-        resource: fixture.resource,
-        sessionId: SESSION,
-      });
-      const stored = await store.readWrite(SESSION, intent?.operationId as string);
-      expect(stored).toMatchObject({
-        intent: { operation: fixture.operation, provider: "slack" },
-        outcome: { state: "succeeded" },
-        resolution: "succeeded",
-      });
-      expect(await store.listUnresolvedWrites(SESSION)).toEqual([]);
-
-      // A completed write releases the resource for a fresh, separately journaled intent.
-      await expect(
-        instance.handle(request({ path: fixture.path, body: jsonBody(fixture.body) }), authorization()),
-      ).resolves.toMatchObject({ status: 200 });
-      expect(beginWrite).toHaveBeenCalledTimes(2);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("ImProviderProxyAdapter write receipts", () => {
+describe("ImProviderProxyAdapter write outcomes", () => {
   function statusFetch(status: number, payload: unknown): typeof fetch {
     return (async () =>
       new Response(JSON.stringify(payload), {
@@ -752,92 +538,86 @@ describe("ImProviderProxyAdapter write receipts", () => {
       })) as typeof fetch;
   }
 
-  it("records proven success only for HTTP 2xx with explicit provider success evidence", async () => {
-    await withRealStore(async (store) => {
-      const beginWrite = vi.spyOn(store, "beginWrite");
-      const { instance } = adapter({ fetchImpl: captureFetch({ ok: true, ts: "1" }).fetchImpl, journal: store });
-      await expect(
-        instance.handle(request({ body: jsonBody({ channel: "C1", text: "hello" }) }), authorization()),
-      ).resolves.toMatchObject({ status: 200 });
-      const intent = beginWrite.mock.calls[0]?.[0];
-      await expect(store.readWrite(SESSION, intent?.operationId as string)).resolves.toMatchObject({
-        outcome: { state: "succeeded", resultCode: "http_200" },
-        resolution: "succeeded",
-      });
-    });
-  });
-
-  it("records an explicit provider rejection with its controlled code and relays the response", async () => {
-    await withRealStore(async (store) => {
-      const beginWrite = vi.spyOn(store, "beginWrite");
-      const { instance } = adapter({
-        fetchImpl: captureFetch({ ok: false, error: "channel_not_found" }).fetchImpl,
-        journal: store,
-      });
-      await expect(
-        instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
-      ).resolves.toMatchObject({ status: 200 });
-      const intent = beginWrite.mock.calls[0]?.[0];
-      await expect(store.readWrite(SESSION, intent?.operationId as string)).resolves.toMatchObject({
-        outcome: { state: "rejected", resultCode: "channel_not_found" },
-        resolution: "rejected",
-      });
-    });
+  it("relays a proven success (HTTP 2xx plus explicit provider success evidence)", async () => {
+    const { calls, fetchImpl } = captureFetch({ ok: true, ts: "1" });
+    const { instance } = adapter({ fetchImpl });
+    await expect(
+      instance.handle(request({ body: jsonBody({ channel: "C1", text: "hello" }) }), authorization()),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(calls).toHaveLength(1);
   });
 
   it.each([
-    ["an ambiguous 5xx provider failure", 503, { ok: false, error: "server_error" }, "http_503"],
-    ["a 408 provider timeout", 408, { ok: true, ts: "1" }, "http_408"],
-    ["a 2xx response without success evidence", 200, {}, "provider_outcome_unconfirmed"],
-  ])("records %s as unknown and never returns a successful write", async (_label, status, payload, resultCode) => {
-    await withRealStore(async (store) => {
-      const { instance } = adapter({ fetchImpl: statusFetch(status, payload), journal: store });
-      await expect(
-        instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
-      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-      const unresolved = await store.listUnresolvedWrites(SESSION);
-      expect(unresolved).toHaveLength(1);
-      expect(unresolved[0]).toMatchObject({ outcome: { state: "unknown", resultCode } });
+    ["an ambiguous 5xx provider failure", 503, { ok: false, error: "server_error" }],
+    ["a 408 provider timeout", 408, { ok: true, ts: "1" }],
+    ["a 2xx response without success evidence", 200, {}],
+  ])("surfaces %s as write_outcome_unknown, never a successful write", async (_label, status, payload) => {
+    const fetchImpl = vi.fn(statusFetch(status, payload));
+    const { instance } = adapter({ fetchImpl: fetchImpl as typeof fetch });
+    await expect(
+      instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("converts an unparseable write response to write_outcome_unknown but preserves response_invalid for reads", async () => {
+    const malformed = (async () =>
+      new Response("this is not json", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const { instance } = adapter({ fetchImpl: malformed });
+    await expect(
+      instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    await expect(instance.handle(request({ path: "/api/auth.test" }), authorization())).rejects.toMatchObject({
+      code: "response_invalid",
     });
   });
 
-  it("blocks a same-resource retry before upstream while an unknown receipt is unresolved", async () => {
-    await withRealStore(async (store) => {
-      const failed = adapter({ fetchImpl: statusFetch(503, {}), journal: store });
-      await expect(
-        failed.instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
-      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-      let calls = 0;
-      const retry = adapter({
-        fetchImpl: (async () => {
-          calls += 1;
-          return jsonResponse({ ok: true });
-        }) as typeof fetch,
-        journal: store,
-      });
-      await expect(
-        retry.instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
-      ).rejects.toMatchObject({ code: "conflict" });
-      expect(calls).toBe(0);
+  it("keeps pre-send fence failures intact with zero upstream calls", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true }));
+    const { instance } = adapter({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    const stale = authorization({
+      recheck: async () => {
+        throw Object.assign(new Error("revoked"), { code: "credential_stale" });
+      },
     });
+    await expect(instance.handle(request({ body: jsonBody({ channel: "C1" }) }), stale)).rejects.toMatchObject({
+      code: "credential_stale",
+    });
+    const materialGone = authorization({
+      resolveMaterial: async () => {
+        throw Object.assign(new Error("closed"), { code: "execution_closed" });
+      },
+    });
+    await expect(instance.handle(request({ body: jsonBody({ channel: "C1" }) }), materialGone)).rejects.toMatchObject({
+      code: "execution_closed",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("surfaces write_outcome_unknown when the durable completion fails and never retries cleanup", async () => {
-    await withRealStore(async (store) => {
-      const completeWrite = vi.spyOn(store, "completeWrite").mockRejectedValueOnce(new Error("disk unavailable"));
-      const { instance } = adapter({ fetchImpl: captureFetch({ ok: true }).fetchImpl, journal: store });
-      await expect(
-        instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
-      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-      expect(completeWrite).toHaveBeenCalledTimes(1);
-      const unresolved = await store.listUnresolvedWrites(SESSION);
-      expect(unresolved).toHaveLength(1);
-      expect(unresolved[0]?.outcome).toBeUndefined();
+  it("never replays a write after a transport failure; a caller retry is a fresh upstream request", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("connection reset");
     });
+    const { instance } = adapter({ fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(
+      instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // A caller-initiated new request is a fresh single attempt; the proxy itself never replays.
+    const second = captureFetch();
+    const retry = adapter({ fetchImpl: second.fetchImpl });
+    await expect(
+      retry.instance.handle(request({ body: jsonBody({ channel: "C1" }) }), authorization()),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(second.calls).toHaveLength(1);
   });
 });
 
-describe("ImProviderProxyAdapter upload handle receipts", () => {
+describe("ImProviderProxyAdapter upload handles", () => {
   function uploadRequest(handleId: string, body: AsyncIterable<Uint8Array>): ProviderProxyRequest {
     return request({
       method: "POST",
@@ -853,136 +633,103 @@ describe("ImProviderProxyAdapter upload handle receipts", () => {
       provider: "slack",
       kind: "upload",
       url: "https://files.slack.com/upload/v1/ABC",
-      resource: "F_FIXTURE",
     });
   }
 
-  it("journals the upload bytes intent before the first upstream byte and resolves a 2xx", async () => {
-    await withRealStore(async (store) => {
-      const urlHandles = new RuntimeUrlHandleStore();
-      const handleId = uploadHandle(urlHandles);
-      const originalBeginWrite = store.beginWrite.bind(store);
-      const order: string[] = [];
-      const beginWrite = vi.spyOn(store, "beginWrite").mockImplementation(async (intent) => {
-        order.push("journal");
-        return originalBeginWrite(intent as never);
+  it("revalidates the live fence before the first upstream byte and relays a 2xx", async () => {
+    const urlHandles = new RuntimeUrlHandleStore();
+    const handleId = uploadHandle(urlHandles);
+    const order: string[] = [];
+    const forwarded: string[] = [];
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      order.push("fetch");
+      const body = init?.body;
+      if (!body) throw new Error("upload body is missing");
+      for await (const chunk of body as AsyncIterable<Uint8Array>) {
+        forwarded.push(Buffer.from(chunk).toString("utf8"));
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
       });
-      const forwarded: string[] = [];
-      let operationsAtFetch: string[] = [];
-      const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
-        operationsAtFetch = (await store.listUnresolvedWrites(SESSION)).map((write) => write.intent.operation);
-        const body = init?.body;
-        if (!body) throw new Error("upload body is missing");
-        for await (const chunk of body as AsyncIterable<Uint8Array>) {
-          forwarded.push(Buffer.from(chunk).toString("utf8"));
-        }
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
+    }) as unknown as typeof fetch;
+    const recheck = vi.fn(async () => {
+      order.push("recheck");
+    });
+    const { instance } = adapter({ fetchImpl, urlHandles });
+
+    const response = await instance.handle(
+      uploadRequest(handleId, bodyOf(new TextEncoder().encode("file-"), new TextEncoder().encode("bytes"))),
+      authorization({ recheck }),
+    );
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["recheck", "fetch"]);
+    expect(forwarded.join("")).toBe("file-bytes");
+    expect(recheck).toHaveBeenCalledTimes(1);
+    expect(await readBody(response.body)).toContain('"ok":true');
+  });
+
+  it("relays a definite 4xx upload rejection", async () => {
+    const urlHandles = new RuntimeUrlHandleStore();
+    const handleId = uploadHandle(urlHandles);
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ error: "invalid" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    const { instance } = adapter({ fetchImpl, urlHandles });
+
+    const response = await instance.handle(
+      uploadRequest(handleId, bodyOf(new TextEncoder().encode("denied"))),
+      authorization(),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("surfaces an ambiguous 5xx upload as write_outcome_unknown after exactly one attempt", async () => {
+    const urlHandles = new RuntimeUrlHandleStore();
+    const handleId = uploadHandle(urlHandles);
+    const fetchImpl = vi.fn(
+      (async () =>
+        new Response(JSON.stringify({}), {
+          status: 503,
           headers: { "content-type": "application/json" },
-        });
-      }) as unknown as typeof fetch;
-      const recheck = vi.fn(async () => {
-        order.push("recheck");
-      });
-      const { instance } = adapter({ fetchImpl, journal: store, urlHandles });
+        })) as unknown as typeof fetch,
+    );
+    const { instance } = adapter({ fetchImpl, urlHandles });
 
-      const response = await instance.handle(
-        uploadRequest(handleId, bodyOf(new TextEncoder().encode("file-"), new TextEncoder().encode("bytes"))),
-        authorization({ recheck }),
-      );
-      expect(response.status).toBe(200);
-      expect(operationsAtFetch).toEqual(["slack.files.upload_bytes"]);
-      expect(order).toEqual(["journal", "recheck"]);
-      expect(forwarded.join("")).toBe("file-bytes");
-      expect(recheck).toHaveBeenCalledTimes(1);
-      expect(await readBody(response.body)).toContain('"ok":true');
-
-      const intent = beginWrite.mock.calls[0]?.[0];
-      expect(intent).toMatchObject({
-        executionId: EXECUTION,
-        operation: "slack.files.upload_bytes",
-        provider: "slack",
-        resource: "F_FIXTURE",
-        sessionId: SESSION,
-      });
-      expect(intent?.requestHash).toMatch(/^[a-f0-9]{64}$/);
-      const serialized = JSON.stringify(intent);
-      expect(serialized).not.toContain("file-bytes");
-      expect(serialized).not.toContain("files.slack.com");
-      await expect(store.readWrite(SESSION, intent?.operationId as string)).resolves.toMatchObject({
-        outcome: { state: "succeeded", resultCode: "http_200" },
-        resolution: "succeeded",
-      });
-    });
+    await expect(
+      instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), authorization()),
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("records a definite 4xx upload rejection and relays the provider response", async () => {
-    await withRealStore(async (store) => {
-      const urlHandles = new RuntimeUrlHandleStore();
-      const handleId = uploadHandle(urlHandles);
-      const beginWrite = vi.spyOn(store, "beginWrite");
-      const fetchImpl = (async () =>
-        new Response(JSON.stringify({ error: "invalid" }), {
-          status: 403,
-          headers: { "content-type": "application/json" },
-        })) as typeof fetch;
-      const { instance } = adapter({ fetchImpl, journal: store, urlHandles });
-
-      const response = await instance.handle(
-        uploadRequest(handleId, bodyOf(new TextEncoder().encode("denied"))),
-        authorization(),
-      );
-      expect(response.status).toBe(403);
-      const intent = beginWrite.mock.calls[0]?.[0];
-      await expect(store.readWrite(SESSION, intent?.operationId as string)).resolves.toMatchObject({
-        outcome: { state: "rejected", resultCode: "http_403" },
-        resolution: "rejected",
-      });
-    });
+  it("surfaces an upload transport failure as write_outcome_unknown without replaying", async () => {
+    const urlHandles = new RuntimeUrlHandleStore();
+    const handleId = uploadHandle(urlHandles);
+    const fetchImpl = vi.fn((async () => {
+      throw new Error("connection reset");
+    }) as unknown as typeof fetch);
+    const { instance } = adapter({ fetchImpl, urlHandles });
+    await expect(
+      instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), authorization()),
+    ).rejects.toMatchObject({ code: "write_outcome_unknown" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("records an unknown 5xx upload and blocks a same-resource retry before upstream", async () => {
-    await withRealStore(async (store) => {
-      const urlHandles = new RuntimeUrlHandleStore();
-      const handleId = uploadHandle(urlHandles);
-      let calls = 0;
-      const fetchImpl = (async () => {
-        calls += 1;
-        return new Response(JSON.stringify({}), { status: 503, headers: { "content-type": "application/json" } });
-      }) as unknown as typeof fetch;
-      const { instance } = adapter({ fetchImpl, journal: store, urlHandles });
-
-      await expect(
-        instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), authorization()),
-      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-      const unresolved = await store.listUnresolvedWrites(SESSION);
-      expect(unresolved).toHaveLength(1);
-      expect(unresolved[0]).toMatchObject({
-        intent: { operation: "slack.files.upload_bytes", resource: "F_FIXTURE" },
-        outcome: { state: "unknown", resultCode: "http_503" },
-      });
-
-      await expect(
-        instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), authorization()),
-      ).rejects.toMatchObject({ code: "conflict" });
-      expect(calls).toBe(1);
+  it("preserves the pre-send fence error for an upload with zero upstream calls", async () => {
+    const urlHandles = new RuntimeUrlHandleStore();
+    const handleId = uploadHandle(urlHandles);
+    const fetchImpl = vi.fn(async () => new Response("never", { status: 200 })) as unknown as typeof fetch;
+    const { instance } = adapter({ fetchImpl, urlHandles });
+    const stale = authorization({
+      recheck: async () => {
+        throw Object.assign(new Error("revoked"), { code: "credential_stale" });
+      },
     });
-  });
-
-  it("records an unknown receipt when the upload transport fails", async () => {
-    await withRealStore(async (store) => {
-      const urlHandles = new RuntimeUrlHandleStore();
-      const handleId = uploadHandle(urlHandles);
-      const fetchImpl = (async () => {
-        throw new Error("connection reset");
-      }) as unknown as typeof fetch;
-      const { instance } = adapter({ fetchImpl, journal: store, urlHandles });
-      await expect(
-        instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), authorization()),
-      ).rejects.toMatchObject({ code: "write_outcome_unknown" });
-      const unresolved = await store.listUnresolvedWrites(SESSION);
-      expect(unresolved).toHaveLength(1);
-      expect(unresolved[0]).toMatchObject({ outcome: { state: "unknown", resultCode: "proxy_error" } });
-    });
+    await expect(
+      instance.handle(uploadRequest(handleId, bodyOf(new TextEncoder().encode("bytes"))), stale),
+    ).rejects.toMatchObject({ code: "credential_stale" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

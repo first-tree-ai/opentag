@@ -152,7 +152,6 @@ export {
 } from "./runtime/runtime-durable-work-store.js";
 export { AgentService, AgentServiceError, AgentSetupService } from "./services/agents/index.js";
 export { AuthService, AuthServiceError } from "./services/auth/index.js";
-export { FileCloudControlAuthority } from "./services/cloud-control-authority.js";
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-reset/index.js";
 export { SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";

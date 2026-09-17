@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { parseJsonResponse } from "../runtime-credentials/provider-proxy-support.js";
 import {
-  classifyStatusWriteReceipt,
-  classifyWriteReceipt,
-  type WriteReceipt,
-} from "../runtime-credentials/write-receipt.js";
+  classifyStatusWriteOutcome,
+  classifyWriteOutcome,
+  type WriteOutcome,
+} from "../runtime-credentials/write-outcome.js";
 
 function streamOf(...chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -63,21 +63,21 @@ describe("parseJsonResponse bounded reading", () => {
   });
 });
 
-describe("write receipt classification", () => {
-  it("requires HTTP 2xx plus the provider success shape for a success receipt", () => {
-    expect(classifyWriteReceipt({ payload: { ok: true, ts: "1" }, provider: "slack", status: 200 })).toEqual({
+describe("write outcome classification", () => {
+  it("requires HTTP 2xx plus the provider success shape for a confirmed success", () => {
+    expect(classifyWriteOutcome({ payload: { ok: true, ts: "1" }, provider: "slack", status: 200 })).toEqual({
       state: "succeeded",
       code: "http_200",
     });
-    expect(classifyWriteReceipt({ payload: { code: 0, data: {} }, provider: "feishu", status: 200 })).toEqual({
+    expect(classifyWriteOutcome({ payload: { code: 0, data: {} }, provider: "feishu", status: 200 })).toEqual({
       state: "succeeded",
       code: "http_200",
     });
-    expect(classifyWriteReceipt({ payload: { ok: true }, provider: "feishu", status: 200 })).toEqual({
+    expect(classifyWriteOutcome({ payload: { ok: true }, provider: "feishu", status: 200 })).toEqual({
       state: "unknown",
       code: "provider_outcome_unconfirmed",
     });
-    expect(classifyWriteReceipt({ payload: { code: 0 }, provider: "slack", status: 200 })).toEqual({
+    expect(classifyWriteOutcome({ payload: { code: 0 }, provider: "slack", status: 200 })).toEqual({
       state: "unknown",
       code: "provider_outcome_unconfirmed",
     });
@@ -85,23 +85,23 @@ describe("write receipt classification", () => {
 
   it("uses controlled bounded codes for explicit provider rejections", () => {
     expect(
-      classifyWriteReceipt({ payload: { ok: false, error: "channel_not_found" }, provider: "slack", status: 200 }),
+      classifyWriteOutcome({ payload: { ok: false, error: "channel_not_found" }, provider: "slack", status: 200 }),
     ).toEqual({
       state: "rejected",
       code: "channel_not_found",
     });
     expect(
-      classifyWriteReceipt({ payload: { ok: false, error: "not a code!!" }, provider: "slack", status: 200 }),
+      classifyWriteOutcome({ payload: { ok: false, error: "not a code!!" }, provider: "slack", status: 200 }),
     ).toEqual({
       state: "rejected",
       code: "provider_rejected",
     });
-    expect(classifyWriteReceipt({ payload: { code: 99991400 }, provider: "feishu", status: 200 })).toEqual({
+    expect(classifyWriteOutcome({ payload: { code: 99991400 }, provider: "feishu", status: 200 })).toEqual({
       state: "rejected",
       code: "feishu_99991400",
     });
     // A definite 4xx is a rejection even without a provider shape.
-    expect(classifyWriteReceipt({ payload: { message: "bad" }, provider: "slack", status: 400 })).toEqual({
+    expect(classifyWriteOutcome({ payload: { message: "bad" }, provider: "slack", status: 400 })).toEqual({
       state: "rejected",
       code: "http_400",
     });
@@ -112,17 +112,17 @@ describe("write receipt classification", () => {
     ["a 408 timeout", 408, { ok: true, ts: "1" }],
     ["a 2xx body without success evidence", 200, {}],
   ] as Array<[string, number, unknown]>)("keeps %s unknown", (_label, status, payload) => {
-    const receipt: WriteReceipt = classifyWriteReceipt({ payload, provider: "slack", status });
-    expect(receipt.state).toBe("unknown");
-    expect(receipt.code).not.toBe("http_200");
+    const outcome: WriteOutcome = classifyWriteOutcome({ payload, provider: "slack", status });
+    expect(outcome.state).toBe("unknown");
+    expect(outcome.code).not.toBe("http_200");
   });
 });
 
-describe("status-only write receipt classification", () => {
+describe("status-only write outcome classification", () => {
   it("accepts 2xx, rejects definite 4xx, and keeps 5xx/408 unknown", () => {
-    expect(classifyStatusWriteReceipt(204)).toEqual({ state: "succeeded", code: "http_204" });
-    expect(classifyStatusWriteReceipt(403)).toEqual({ state: "rejected", code: "http_403" });
-    expect(classifyStatusWriteReceipt(408)).toEqual({ state: "unknown", code: "http_408" });
-    expect(classifyStatusWriteReceipt(503)).toEqual({ state: "unknown", code: "http_503" });
+    expect(classifyStatusWriteOutcome(204)).toEqual({ state: "succeeded", code: "http_204" });
+    expect(classifyStatusWriteOutcome(403)).toEqual({ state: "rejected", code: "http_403" });
+    expect(classifyStatusWriteOutcome(408)).toEqual({ state: "unknown", code: "http_408" });
+    expect(classifyStatusWriteOutcome(503)).toEqual({ state: "unknown", code: "http_503" });
   });
 });

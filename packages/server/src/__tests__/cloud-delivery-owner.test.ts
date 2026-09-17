@@ -249,6 +249,24 @@ function turnReport(request: DirectImMessageDeliveryRequest, turnId: string): Tu
   return { ...base, resultHash: computeTurnResultHash(base) };
 }
 
+/** The Client's not-started cancellation report, emitted when a received entry is cancelled. */
+function cancelledBeforeStartReport(request: DirectImMessageDeliveryRequest, turnId: string): TurnReportRequest {
+  const base = {
+    type: "turn:report" as const,
+    requestId: randomUUID(),
+    deliveryId: request.deliveryId,
+    turnId,
+    sessionId: request.sessionId,
+    agentId: request.agentId,
+    placementGeneration: request.placementGeneration,
+    outcome: "cancelled" as const,
+    executionEffects: "not_started" as const,
+    errorReason: "client_shutdown" as const,
+    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+  };
+  return { ...base, resultHash: computeTurnResultHash(base) };
+}
+
 function makeOwner(
   options: {
     withModel?: boolean;
@@ -1043,6 +1061,507 @@ describe("CloudDeliveryOwner", () => {
     expect(verified).toHaveLength(0);
     // The durable receipt stays; reconciliation settles it, but no permission leaks.
     expect((await deliveryRow(accepted.deliveryId)).state).toBe("accepted");
+  });
+
+  it("settles a receipt that committed after the stop selection via the Runner's not_started cancellation", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const hub = new RunnerHub();
+    const fence = new CloudRuntimeFence();
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const grants = new CloudModelGrantService("unit-test-jwt-secret-at-least-32-characters", {
+      allowedModels: [MODEL],
+      maxStreamsPerToken: 2,
+      ttlSeconds: 600,
+    });
+    // Gate the acceptance commit so the explicit stop's SELECT runs while the row is still
+    // pending: the receipt commits accepted AFTER the stop was decided.
+    const accept = custody.acceptDelivery.bind(custody);
+    let acceptEntered!: () => void;
+    const accepting = new Promise<void>((resolve) => {
+      acceptEntered = resolve;
+    });
+    let acceptRelease!: () => void;
+    const acceptGate = new Promise<void>((resolve) => {
+      acceptRelease = resolve;
+    });
+    custody.acceptDelivery = (async (...args: Parameters<typeof accept>) => {
+      acceptEntered();
+      await acceptGate;
+      return accept(...args);
+    }) as typeof custody.acceptDelivery;
+    const owner = new CloudDeliveryOwner({
+      custody,
+      database: unit.database,
+      fence,
+      hub,
+      modelBaseUrl: "https://server.example.com/api/v1/cloud-model",
+      modelGrants: grants,
+    });
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, messageId, placementGeneration } = await pendingDelivery({ sessionId: scope.sessionId });
+    const request = deliveryRequest({
+      deliveryId,
+      messageId,
+      sessionId: scope.sessionId,
+      agentId: agent.id,
+      placementGeneration,
+    });
+    await owner.dispatchDelivery({
+      computerId: cloud.computerId,
+      inputHash: computeDirectInputHash(request),
+      installationId: connection.installationId,
+      request,
+    });
+    const turnId = randomUUID();
+
+    let reportSettled!: () => void;
+    const reportLanded = new Promise<void>((resolve) => {
+      reportSettled = resolve;
+    });
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "received" }));
+      }
+      if (frame.type === "delivery:cancel") {
+        // The real Client's cancel path: a received entry settles durably as a not_started report.
+        setImmediate(() => {
+          void owner
+            .handleDeliveryReport(connection, {
+              requestId: randomUUID(),
+              report: cancelledBeforeStartReport(request, turnId),
+            })
+            .finally(reportSettled);
+        });
+      }
+    };
+
+    const receipt = owner.handleDeliveryReceived(connection, {
+      deliveryId,
+      requestId: request.requestId,
+      turnId,
+    });
+    await accepting;
+    // The explicit stop runs while the receipt is still uncommitted.
+    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, scope.sessionId));
+    expect(await owner.cancelSessionDeliveries(scope.sessionId)).toEqual([]);
+    acceptRelease();
+    await receipt;
+
+    // Verified was correctly suppressed, but the durable row is accepted and unreported on a
+    // still-ready allocation with its exact current Runner connection.
+    expect(sent.filter((frame) => frame.type === "delivery:verified")).toHaveLength(0);
+    const accepted = await deliveryRow(deliveryId);
+    expect(accepted.state).toBe("accepted");
+    expect(accepted.reportedAt).toBeNull();
+
+    // Stopped recovery asks the authenticated current Runner to settle the never-started entry
+    // through the same cancellation path an explicit stop uses, instead of looping on a reverify
+    // that can never be authorized.
+    expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(true);
+    await reportLanded;
+    const settled = await deliveryRow(deliveryId);
+    expect(settled.reportedAt).not.toBeNull();
+    expect(settled.turnReport).toMatchObject({ outcome: "cancelled", executionEffects: "not_started" });
+    // The loop is closed: a second recovery is a no-op and no execution permission was ever sent.
+    expect(await owner.recoverAccepted(deliveryId)).toBe("noop");
+    expect(sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified")).toHaveLength(0);
+    grants.close();
+  });
+
+  it("stopped recovery leaves a started journal entry pending instead of cancelling or settling it", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, scope.sessionId));
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "started" }));
+      }
+    };
+
+    // A started turn may still hold the real outcome: stopped recovery must not cancel or settle it.
+    expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
+    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(false);
+    const stillRunning = await deliveryRow(deliveryId);
+    expect(stillRunning.state).toBe("accepted");
+    expect(stillRunning.reportedAt).toBeNull();
+    grants.close();
+  });
+
+  it("rotates an accepted unfinished turn's permission on reconnect and keeps the old token invalid", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    const firstVerified = sent.find((frame) => frame.type === "delivery:verified") as {
+      model?: { token: string };
+    };
+    const firstToken = firstVerified.model?.token as string;
+    expect(await grants.verify(firstToken)).toBeDefined();
+
+    // The verified frame never reached the Runner: the control connection dropped, which revokes
+    // the permission, while the durable journal entry is still `received`.
+    owner.detachConnection(connection.connectionId);
+    hub.detach(scope.sandboxId, socket);
+
+    const retrySent: RunnerServerFrame[] = [];
+    const replacement = attachReady(hub, fence, scope, retrySent, cloud.computerId);
+    await owner.handleDeliveryReceived(replacement.connection, {
+      deliveryId,
+      requestId: request.requestId,
+      turnId,
+    });
+    const verified = retrySent.find((frame) => frame.type === "delivery:verified") as {
+      status: string;
+      model?: { token: string };
+    };
+    expect(verified.status).toBe("verified");
+    const rotatedToken = verified.model?.token as string;
+    // A NEW generation, and the old tombstones never become valid again.
+    expect(rotatedToken).not.toBe(firstToken);
+    expect(await grants.verify(firstToken)).toBeUndefined();
+    expect(await grants.verify(rotatedToken)).toMatchObject({ executionId: turnId });
+
+    // One durable report revokes the rotated generation too.
+    await owner.handleDeliveryReport(replacement.connection, {
+      requestId: randomUUID(),
+      report: turnReport(request, turnId),
+    });
+    expect(await grants.verify(rotatedToken)).toBeUndefined();
+  });
+
+  it("a stale in-flight receipt mint cannot take over or revoke the replacement connection's permission", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const old = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, messageId, placementGeneration } = await pendingDelivery({ sessionId: scope.sessionId });
+    const request = deliveryRequest({
+      deliveryId,
+      messageId,
+      sessionId: scope.sessionId,
+      agentId: agent.id,
+      placementGeneration,
+    });
+    await owner.dispatchDelivery({
+      computerId: cloud.computerId,
+      inputHash: computeDirectInputHash(request),
+      installationId: old.connection.installationId,
+      request,
+    });
+    const turnId = randomUUID();
+    // Gate the OLD connection's mint so a replacement can mint and deliver first.
+    let entered!: () => void;
+    const minting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const issue = grants.issue.bind(grants);
+    let calls = 0;
+    grants.issue = async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await gate;
+      }
+      return issue(input);
+    };
+
+    const previous = owner.handleDeliveryReceived(old.connection, { deliveryId, requestId: request.requestId, turnId });
+    await minting;
+    owner.detachConnection(old.connection.connectionId);
+    hub.detach(scope.sandboxId, old.socket);
+
+    const retrySent: RunnerServerFrame[] = [];
+    const replacement = attachReady(hub, fence, scope, retrySent, cloud.computerId);
+    await owner.handleDeliveryReceived(replacement.connection, {
+      deliveryId,
+      requestId: request.requestId,
+      turnId,
+    });
+    const verified = retrySent.find((frame) => frame.type === "delivery:verified") as {
+      status: string;
+      model?: { token: string };
+    };
+    expect(verified.status).toBe("verified");
+    const replacementToken = verified.model?.token as string;
+    expect(await grants.verify(replacementToken)).toBeDefined();
+
+    // The old connection's late completion reuses the replacement's token under the hood; it must
+    // neither hand it back to the dead socket nor revoke the replacement's permission.
+    release();
+    await previous;
+    expect(await grants.verify(replacementToken)).toMatchObject({ executionId: turnId });
+    expect(retrySent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified")).toHaveLength(
+      1,
+    );
+    expect(sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified")).toHaveLength(0);
+  });
+
+  it("a stale in-flight recovery mint cannot revoke the replacement connection's permission", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    const originalToken = (sent.find((frame) => frame.type === "delivery:verified") as { model?: { token: string } })
+      .model?.token as string;
+    expect(await grants.verify(originalToken)).toBeDefined();
+
+    let entered!: () => void;
+    const minting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const issue = grants.issue.bind(grants);
+    let calls = 0;
+    grants.issue = async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await gate;
+      }
+      return issue(input);
+    };
+    const send = socket.send.bind(socket);
+    socket.send = (frame) => {
+      send(frame);
+      if (frame.type === "delivery:query") {
+        setImmediate(() => owner.handleQueryResult(connection, { requestId: frame.requestId, phase: "received" }));
+      }
+    };
+
+    // Recovery asks this connection's Runner about its journal; the answer starts a gated re-mint.
+    const recovering = owner.recoverAccepted(deliveryId);
+    await minting;
+    owner.detachConnection(connection.connectionId);
+    hub.detach(scope.sandboxId, socket);
+
+    const retrySent: RunnerServerFrame[] = [];
+    const replacement = attachReady(hub, fence, scope, retrySent, cloud.computerId);
+    await owner.handleDeliveryReceived(replacement.connection, {
+      deliveryId,
+      requestId: request.requestId,
+      turnId,
+    });
+    const verified = retrySent.find((frame) => frame.type === "delivery:verified") as {
+      status: string;
+      model?: { token: string };
+    };
+    expect(verified.status).toBe("verified");
+    const replacementToken = verified.model?.token as string;
+
+    release();
+    expect(await recovering).toBe("pending");
+    expect(await grants.verify(originalToken)).toBeUndefined();
+    expect(await grants.verify(replacementToken)).toMatchObject({ executionId: turnId });
+  });
+
+  it("concurrent duplicate receipts on the same connection both verify without a spurious rejection", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    const firstVerified = sent.find((frame) => frame.type === "delivery:verified") as { model?: { token: string } };
+    const firstToken = firstVerified.model?.token as string;
+
+    let entered!: () => void;
+    const minting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const issue = grants.issue.bind(grants);
+    let calls = 0;
+    grants.issue = async (input) => {
+      calls += 1;
+      if (calls === 1) {
+        entered();
+        await gate;
+      }
+      return issue(input);
+    };
+
+    const previous = owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    await minting;
+    const current = owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    release();
+    await previous;
+    await current;
+
+    const verified = sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified");
+    const rejected = sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "rejected");
+    expect(verified).toHaveLength(3);
+    expect(rejected).toHaveLength(0);
+    const lastToken = (verified[2] as { model?: { token: string } }).model?.token as string;
+    expect(await grants.verify(lastToken)).toBeDefined();
+    expect(await grants.verify(firstToken)).toBeDefined();
+  });
+
+  it("denies permission rotation after the Session ended and never re-mints a reported turn", async () => {
+    const stopped = await cloudScope();
+    const stoppedStack = makeOwner();
+    const stoppedSent: RunnerServerFrame[] = [];
+    const stoppedAttached = attachReady(
+      stoppedStack.hub,
+      stoppedStack.fence,
+      stopped.scope,
+      stoppedSent,
+      stopped.cloud.computerId,
+    );
+    const stoppedDelivery = await dispatchAndAccept({
+      owner: stoppedStack.owner,
+      fence: stoppedStack.fence,
+      scope: stopped.scope,
+      agentId: stopped.agent.id,
+      computerId: stopped.cloud.computerId,
+    });
+    stoppedStack.owner.detachConnection(stoppedAttached.connection.connectionId);
+    stoppedStack.hub.detach(stopped.scope.sandboxId, stoppedAttached.socket);
+    const trackedBefore = stoppedStack.grants.trackedGrantCount;
+    await unit.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, stopped.scope.sessionId));
+
+    const deniedSent: RunnerServerFrame[] = [];
+    const denied = attachReady(
+      stoppedStack.hub,
+      stoppedStack.fence,
+      stopped.scope,
+      deniedSent,
+      stopped.cloud.computerId,
+    );
+    await stoppedStack.owner.handleDeliveryReceived(denied.connection, {
+      deliveryId: stoppedDelivery.deliveryId,
+      requestId: stoppedDelivery.request.requestId,
+      turnId: stoppedDelivery.turnId,
+    });
+    expect(deniedSent.filter((frame) => frame.type === "delivery:verified")).toHaveLength(0);
+    expect(stoppedStack.grants.trackedGrantCount).toBe(trackedBefore);
+    expect((await deliveryRow(stoppedDelivery.deliveryId)).state).toBe("accepted");
+    stoppedStack.grants.close();
+
+    // A completed turn rejects the receipt before any mint: dispatch columns were cleared.
+    const completed = await cloudScope();
+    const completedStack = makeOwner();
+    const completedSent: RunnerServerFrame[] = [];
+    const completedAttached = attachReady(
+      completedStack.hub,
+      completedStack.fence,
+      completed.scope,
+      completedSent,
+      completed.cloud.computerId,
+    );
+    const completedDelivery = await dispatchAndAccept({
+      owner: completedStack.owner,
+      fence: completedStack.fence,
+      scope: completed.scope,
+      agentId: completed.agent.id,
+      computerId: completed.cloud.computerId,
+    });
+    await completedStack.owner.handleDeliveryReport(completedAttached.connection, {
+      requestId: randomUUID(),
+      report: turnReport(completedDelivery.request, completedDelivery.turnId),
+    });
+    const replaySent: RunnerServerFrame[] = [];
+    const replay = attachReady(
+      completedStack.hub,
+      completedStack.fence,
+      completed.scope,
+      replaySent,
+      completed.cloud.computerId,
+    );
+    await completedStack.owner.handleDeliveryReceived(replay.connection, {
+      deliveryId: completedDelivery.deliveryId,
+      requestId: completedDelivery.request.requestId,
+      turnId: completedDelivery.turnId,
+    });
+    const replayVerified = replaySent.filter((frame) => frame.type === "delivery:verified");
+    expect(replayVerified).toHaveLength(1);
+    expect((replayVerified[0] as { status: string }).status).toBe("rejected");
+    completedStack.grants.close();
+  });
+
+  it("a superseded socket's late teardown cannot revoke the replacement connection's permission", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, request, turnId } = await dispatchAndAccept({
+      owner,
+      fence,
+      scope,
+      agentId: agent.id,
+      computerId: cloud.computerId,
+    });
+    owner.detachConnection(connection.connectionId);
+    hub.detach(scope.sandboxId, socket);
+
+    const retrySent: RunnerServerFrame[] = [];
+    const replacement = attachReady(hub, fence, scope, retrySent, cloud.computerId);
+    await owner.handleDeliveryReceived(replacement.connection, {
+      deliveryId,
+      requestId: request.requestId,
+      turnId,
+    });
+    const verified = retrySent.find((frame) => frame.type === "delivery:verified") as {
+      status: string;
+      model?: { token: string };
+    };
+    expect(verified.status).toBe("verified");
+    const rotatedToken = verified.model?.token as string;
+    expect(await grants.verify(rotatedToken)).toBeDefined();
+
+    // The old socket's close handler runs late, after the replacement re-minted for the same turn.
+    owner.detachConnection(connection.connectionId);
+    expect(await grants.verify(rotatedToken)).toMatchObject({ executionId: turnId });
+    expect((await deliveryRow(deliveryId)).reportedAt).toBeNull();
+    // The replacement connection is still the exact owner and can still report normally.
+    await owner.handleDeliveryReport(replacement.connection, {
+      requestId: randomUUID(),
+      report: turnReport(request, turnId),
+    });
+    expect((await deliveryRow(deliveryId)).reportedAt).not.toBeNull();
   });
 
   it("revokes the model permission when recovery settles the turn as unknown", async () => {

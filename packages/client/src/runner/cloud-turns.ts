@@ -283,17 +283,21 @@ export class CloudTurnRunner {
         await this.#reportTerminal(entry, denial.completion);
         return;
       }
-      if (this.#active) {
-        if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
-          this.#log(
-            `cloud turn queue is full; leaving ${entry.deliveryId} at the received boundary for re-verification`,
-          );
-          return;
-        }
-        this.#queue.set(entry.requestId, { deliveryId: entry.deliveryId, frame: { ...frame, model: frame.model } });
+      if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
+        this.#log(`cloud turn queue is full; leaving ${entry.deliveryId} at the received boundary for re-verification`);
         return;
       }
-      await this.#startTurn(entry, { ...frame, model: frame.model });
+      // Queue first, then drain: FIFO is the order verified frames were accepted, so a later
+      // verification can never overtake an earlier queued delivery. When this frame is the head
+      // and the slot is free, start it before resolving (the established frame contract);
+      // otherwise a serialized drain picks it up in order.
+      const queued = { deliveryId: entry.deliveryId, frame: { ...frame, model: frame.model } };
+      this.#queue.set(entry.requestId, queued);
+      if (!this.#active && this.#queue.keys().next().value === entry.requestId) {
+        await this.#processQueued(queued);
+        return;
+      }
+      this.#scheduleDrain();
     });
   }
 
@@ -433,12 +437,9 @@ export class CloudTurnRunner {
    * ------------------------------------------------------------------------------------------ */
 
   /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
-  async #startTurn(entry: CloudJournalEntry, frame: RunnerCloudDeliveryVerifiedFrame): Promise<void> {
-    if (this.#closed || this.#active) return;
-    if (!(this.#options.canStart?.() ?? true)) {
-      this.#queue.set(entry.requestId, { deliveryId: entry.deliveryId, frame });
-      return;
-    }
+  async #startTurn(entry: CloudJournalEntry, frame: RunnerCloudDeliveryVerifiedFrame): Promise<boolean> {
+    if (this.#closed || this.#active) return false;
+    if (!(this.#options.canStart?.() ?? true)) return false;
     let settle: () => void = () => undefined;
     const settled = new Promise<void>((resolve) => {
       settle = resolve;
@@ -454,7 +455,7 @@ export class CloudTurnRunner {
       }
       if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
       const current = await this.#options.journal.read(entry.deliveryId);
-      if (current?.phase !== "received" || this.#closed) return;
+      if (current?.phase !== "received" || this.#closed) return false;
       const started = await this.#options.journal.markStarted(current.deliveryId, current.scope);
       active.execution = this.#executeTurn(started, frame, active.abort.signal)
         .catch((error) => this.#reportPersistenceError(error))
@@ -462,16 +463,24 @@ export class CloudTurnRunner {
           this.#completeActive(active);
           this.#scheduleDrain();
         });
+      return true;
     } finally {
       if (!active.execution) {
+        // No execution was started (unusable namespace, journal failure, or a lost phase): the
+        // caller surfaces the failure and the entry stays queued. Scheduling another drain here
+        // would tight-loop the same failing head.
         this.#completeActive(active);
-        this.#scheduleDrain();
       }
     }
   }
 
+  /**
+   * Serialized, non-reentrant drain: only this path starts queued work, so a new verification or
+   * an extra availability signal can never overtake the FIFO head. Enqueuing from inside a drain
+   * (e.g. `#startTurn`'s finally) only chains a later no-op drain; it never awaits itself.
+   */
   #scheduleDrain(): void {
-    void this.#drain().catch((error) => this.#reportPersistenceError(error));
+    void this.#enqueue(() => this.#drain()).catch((error) => this.#reportPersistenceError(error));
   }
 
   /**
@@ -512,44 +521,51 @@ export class CloudTurnRunner {
 
   async #drain(): Promise<void> {
     for (;;) {
-      if (this.#closed || this.#active) return;
+      if (this.#closed || this.#active || this.#sandboxUnusable) return;
       const first = this.#queue.values().next().value as
         | { readonly frame: RunnerCloudDeliveryVerifiedFrame; readonly deliveryId: string }
         | undefined;
       if (!first) return;
-      this.#queue.delete(first.frame.requestId);
       const outcome = await this.#processQueued(first);
       if (outcome !== "continue") return;
     }
   }
 
-  /** Returns "started" when a turn now occupies the slot, "stop" when the queue must pause. */
+  /**
+   * Process the FIFO head. The entry stays queued until it is actually started, so losing the
+   * occupation race can never drop verified work, and cancellation is re-checked after every
+   * await so a delivery cancelled mid-drain is never started.
+   */
   async #processQueued(next: {
     readonly frame: RunnerCloudDeliveryVerifiedFrame;
     readonly deliveryId: string;
   }): Promise<"continue" | "started" | "stop"> {
     if (this.#cancelRequested.delete(next.deliveryId)) {
+      this.#queue.delete(next.frame.requestId);
       await this.#settleCancelled(next.deliveryId);
       return "continue";
     }
     const entry = await this.#entryByRequestId(next.frame.requestId);
-    if (entry?.phase !== "received") return "continue";
-    if (next.frame.status === "rejected") {
-      await this.#options.journal.clearRejected(entry.deliveryId, entry.scope);
+    if (entry?.phase !== "received") {
+      this.#queue.delete(next.frame.requestId);
+      return "continue";
+    }
+    if (this.#cancelRequested.delete(next.deliveryId)) {
+      this.#queue.delete(next.frame.requestId);
+      await this.#settleCancelled(next.deliveryId);
       return "continue";
     }
     const denial = this.#admit(entry.delivery, next.frame);
     if (denial) {
+      this.#queue.delete(next.frame.requestId);
       await this.#reportTerminal(entry, denial.completion);
       return "continue";
     }
-    if (!(this.#options.canStart?.() ?? true)) {
-      // The shared native occupation boundary is busy (acceptance cleanup): wait for its release.
-      this.#queue.set(next.frame.requestId, next);
-      return "stop";
-    }
-    await this.#startTurn(entry, next.frame);
-    return this.#active ? "started" : "continue";
+    if (!(this.#options.canStart?.() ?? true)) return "stop";
+    const started = await this.#startTurn(entry, next.frame);
+    if (!started) return "stop";
+    this.#queue.delete(next.frame.requestId);
+    return "started";
   }
 
   async #settleCancelled(deliveryId: string): Promise<void> {
@@ -741,64 +757,109 @@ export class CloudTurnRunner {
     const scope = input.scope;
     if (!scope.resourceUid) throw new Error("The Sandbox allocation UID is not tracked yet");
     const connection = new CloudCredentialConnection(this.#options.credentialChannel());
-    const relayOptions: RuntimeCredentialRelayOptions = {
-      connection: connection.relayConnection,
-      serverUrl: this.#options.serverUrl,
+    let relay: Awaited<ReturnType<typeof RuntimeCredentialRelay.open>> | undefined;
+    let adapter: Awaited<ReturnType<typeof RuntimeProxyLoopbackAdapter.start>> | undefined;
+    let sockets: ReturnType<typeof createBridgeSocketResources> | undefined;
+    let privateDirectory: string | undefined;
+    let publicDirectory: string | undefined;
+    let cleaned = false;
+    /**
+     * Idempotent local cleanup: every acquired handle is released exactly once and one failing
+     * step never stops the remaining ones. Failures are logged here and returned so the caller
+     * can decide whether the original open/close error is the one that surfaces.
+     */
+    const cleanup = async (reason: "execution_closed" | "open_failed"): Promise<unknown[]> => {
+      if (cleaned) return [];
+      cleaned = true;
+      const failures: unknown[] = [];
+      const step = async (operation: () => Promise<void> | void): Promise<void> => {
+        try {
+          await operation();
+        } catch (error) {
+          failures.push(error);
+        }
+      };
+      const ownedSockets = sockets;
+      const ownedAdapter = adapter;
+      const ownedRelay = relay;
+      const ownedPublic = publicDirectory;
+      const ownedPrivate = privateDirectory;
+      if (ownedSockets) await step(() => closeBridgeSockets(ownedSockets));
+      if (ownedAdapter) await step(() => ownedAdapter.close());
+      if (ownedRelay) await step(() => ownedRelay.close(reason));
+      await step(() => connection.close());
+      if (ownedPublic) await step(() => rm(ownedPublic, { recursive: true, force: true }));
+      if (ownedPrivate) await step(() => rm(ownedPrivate, { recursive: true, force: true }));
+      for (const failure of failures) {
+        this.#log(`cloud bridge ${reason} cleanup step failed: ${errorMessage(failure)}`);
+      }
+      return failures;
     };
-    const relay = await RuntimeCredentialRelay.open(
-      relayOptions,
-      {
-        agentId: input.delivery.agentId,
-        placementGeneration: input.delivery.placementGeneration,
-        runId: randomUUID(),
-        sandbox: {
-          environmentGeneration: scope.environmentGeneration,
-          resourceUid: scope.resourceUid,
-          sandboxId: scope.sandboxId,
-        },
-        sessionId: input.delivery.sessionId,
-        source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
-      },
-      input.signal,
-    );
-    const sockets = createBridgeSocketResources();
-    const privateDirectory = await mkdtemp(join(this.#options.stateDirectory, "turn-private-"));
-    const publicRoot = this.#options.publicDirectory ?? join(this.#options.stateDirectory, "public");
-    await mkdir(publicRoot, { recursive: true, mode: 0o700 });
-    const publicDirectory = await mkdtemp(join(publicRoot, "turn-"));
     try {
-      const adapter = await RuntimeProxyLoopbackAdapter.start({
-        executionId: relay.executionId,
+      relay = await RuntimeCredentialRelay.open(
+        {
+          connection: connection.relayConnection,
+          serverUrl: this.#options.serverUrl,
+        } satisfies RuntimeCredentialRelayOptions,
+        {
+          agentId: input.delivery.agentId,
+          placementGeneration: input.delivery.placementGeneration,
+          runId: randomUUID(),
+          sandbox: {
+            environmentGeneration: scope.environmentGeneration,
+            resourceUid: scope.resourceUid,
+            sandboxId: scope.sandboxId,
+          },
+          sessionId: input.delivery.sessionId,
+          source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
+        },
+        input.signal,
+      );
+      const openRelay = relay;
+      sockets = createBridgeSocketResources();
+      privateDirectory = await mkdtemp(join(this.#options.stateDirectory, "turn-private-"));
+      const publicRoot = this.#options.publicDirectory ?? join(this.#options.stateDirectory, "public");
+      await mkdir(publicRoot, { recursive: true, mode: 0o700 });
+      publicDirectory = await mkdtemp(join(publicRoot, "turn-"));
+      adapter = await RuntimeProxyLoopbackAdapter.start({
+        executionId: openRelay.executionId,
         localHandleFor: (provider) =>
-          relay.providers.some((entryPoint) => entryPoint.provider === provider)
-            ? relay.localHandleFor(provider)
+          openRelay.providers.some((entryPoint) => entryPoint.provider === provider)
+            ? openRelay.localHandleFor(provider)
             : undefined,
         materialDir: join(privateDirectory, "adapter"),
-        openStream: (request) => relay.openProviderStream(request),
-        verifyHandle: (provider, handle) => relay.verifyLocalHandle(provider, handle),
+        openStream: (request) => openRelay.openProviderStream(request),
+        verifyHandle: (provider, handle) => openRelay.verifyLocalHandle(provider, handle),
       });
       const inSandboxExecutionDir = `${CLOUD_EXECUTION_MOUNT}/${basename(publicDirectory)}`;
-      await publishExecutionMaterial({ adapter, relay }, sockets, publicDirectory, {
+      await publishExecutionMaterial({ adapter, relay: openRelay }, sockets, publicDirectory, {
         includeEntryPrograms: false,
         publicMountPath: inSandboxExecutionDir,
       });
       return {
         executionDir: inSandboxExecutionDir,
         close: async () => {
-          await closeBridgeSockets(sockets);
-          await adapter.close().catch(() => undefined);
-          await relay.close("execution_closed").catch(() => undefined);
-          connection.close();
-          await rm(publicDirectory, { recursive: true, force: true }).catch(() => undefined);
-          await rm(privateDirectory, { recursive: true, force: true }).catch(() => undefined);
+          const failures = await cleanup("execution_closed");
+          if (failures.length > 0) {
+            throw new Error(
+              `Cloud execution cleanup failed: ${failures.map((failure) => errorMessage(failure)).join("; ")}`,
+            );
+          }
         },
       };
     } catch (error) {
-      await closeBridgeSockets(sockets);
-      await relay.close("open_failed").catch(() => undefined);
-      connection.close();
-      await rm(publicDirectory, { recursive: true, force: true }).catch(() => undefined);
-      await rm(privateDirectory, { recursive: true, force: true }).catch(() => undefined);
+      const cleanupFailures = await cleanup("open_failed");
+      if (cleanupFailures.length > 0) {
+        // A leaked credential connection/adapter in the trusted parent is surfaced through the
+        // existing failure hook instead of being only logged; the original open error still wins.
+        this.#reportPersistenceError(
+          new Error(
+            `Cloud bridge open-failure cleanup left ${cleanupFailures.length} unresolved step(s): ${cleanupFailures
+              .map((failure) => errorMessage(failure))
+              .join("; ")}`,
+          ),
+        );
+      }
       throw error;
     }
   }
@@ -858,15 +919,6 @@ export class CloudTurnRunner {
   }
 }
 
-/**
- * Remaining legitimate runtime budget for the worker. Reuses the Local turn-budget helper
- * (runtime `budget.maxDurationMs` ∩ persisted deadline, floored at 1ms) so Cloud never invents a
- * longer fixed window than the persisted runtime deadline.
- */
-export function turnBudgetMs(delivery: DirectImMessageDeliveryRequest, now = Date.now()): number {
-  return turnTimeoutMs(delivery, now);
-}
-
 function cancelledBeforeStart(): TurnCompletion {
   return { errorReason: "client_shutdown", executionEffects: "not_started", outcome: "cancelled" };
 }
@@ -874,6 +926,11 @@ function cancelledBeforeStart(): TurnCompletion {
 /** A Turn that did not verifiably complete may have left native processes behind. */
 function isInterrupted(completion: TurnCompletion): boolean {
   return completion.outcome !== "completed" || completion.executionEffects !== "completed";
+}
+
+/** One-line error text for logs and aggregate cleanup errors. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Parse exactly one bounded in-sandbox result line; malformed output is an explicit unknown. */

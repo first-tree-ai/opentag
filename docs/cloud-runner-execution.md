@@ -126,6 +126,14 @@ replays `started` work, but a transient Server or control-channel outage may fai
 model/tool call. E4 does not promise uninterrupted model continuation and adds no grant-renewal
 protocol; that remains future work if the product requires it.
 
+Write boundary: the durable records E4 relies on are the Server's IM delivery custody and Turn
+report, plus the Runner's per-allocation input journal — not a generic provider write journal or
+receipt. Provider writes proxied on behalf of a Turn follow the #634 rules: one upstream attempt
+per proxied request, classified in memory as succeeded, definitely rejected, or unknown; an
+unknown write surfaces as an explicit `write_outcome_unknown` and is reconciled by the task layer
+instead of being replayed automatically. E4 therefore does not promise exactly-once provider
+effects across a crash.
+
 Cancellation boundary: killing the `sandbox exec` wrapper is not proof that the namespace process
 tree stopped. Immediately after any non-completed Cloud Turn (cancellation, deadline, failed or
 unknown execution) the Runner performs the same verified reset as E3, while the Turn occupation

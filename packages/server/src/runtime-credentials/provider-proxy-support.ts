@@ -7,9 +7,7 @@ export type RuntimeProxyFailureCode =
   | "header_rejected"
   | "body_invalid"
   | "body_too_large"
-  | "write_journal_unavailable"
   | "write_outcome_unknown"
-  | "source_record_unavailable"
   | "upstream_unavailable"
   | "handle_invalid"
   | "cancelled"
@@ -104,11 +102,6 @@ export function upstreamHeaders(
   return upstream;
 }
 
-export function journalSafeResource(resource: string): string {
-  const sanitized = resource.replace(/[^a-zA-Z0-9:._/@-]/g, "_").slice(0, 512);
-  return sanitized.length > 0 ? sanitized : "resource";
-}
-
 export function assertHandleUrlAllowed(provider: RuntimeCredentialProvider, url: string): void {
   let parsed: URL;
   try {
@@ -169,24 +162,12 @@ async function readBoundedResponse(response: Response, maxBytes: number): Promis
   return merged;
 }
 
-/** Counts created handles so a read with protected URL rewrites is audited through the recorder. */
+/** Bounded response JSON rewriting supplied by the operation registration (signed URL to Server-held handle). */
 export function rewriteOperationResponse(
   operation: ProviderOperation,
   payload: unknown,
   context: ProviderOperationRewriteContext,
-): { payload: unknown; handles: number } {
-  if (!operation.rewriteResponseJson) return { payload, handles: 0 };
-  let handles = 0;
-  const rewritten = operation.rewriteResponseJson(payload, {
-    ...context,
-    createDownloadHandle: (target, resource) => {
-      handles += 1;
-      return context.createDownloadHandle(target, resource);
-    },
-    createUploadHandle: (target, resource) => {
-      handles += 1;
-      return context.createUploadHandle(target, resource);
-    },
-  });
-  return { payload: rewritten, handles };
+): { payload: unknown } {
+  if (!operation.rewriteResponseJson) return { payload };
+  return { payload: operation.rewriteResponseJson(payload, context) };
 }

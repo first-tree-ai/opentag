@@ -93,6 +93,12 @@ master key、bootstrap token 或原始 provider 凭证。平台提供的模型�
 暂时的 Server／控制通道中断可能使进行中的模型／工具调用失败。E4 不承诺模型调用不中断，也不
 新增授权续期协议；如产品需要则属于后续工作。
 
+写入边界：E4 依赖的持久记录是 Server 的 IM 投递 custody 与 Turn 报告，以及 Runner 按分配保存的输入
+journal，而不是通用的 provider 写入账本或回执。Turn 期间代理的 provider 写入遵循 #634 规则：每个代理
+请求只向上游发起一次尝试，并在内存中分类为成功、确定拒绝或未知；未知写入以明确的
+`write_outcome_unknown` 呈现，由任务层核对结果，绝不自动重放。因此 E4 不承诺跨崩溃的 provider
+副作用 exactly-once。
+
 取消边界：杀掉 sandbox exec 包装进程不能证明命名空间进程树已停止。任何非 completed 的 Cloud
 Turn（取消、超时、失败或未知）结束时会立即执行与 E3 相同的已验证重置，此时 Turn 占用仍被保留，
 且发生在发布终态报告之前：delete --force、重新创建、重新就绪探测。清理不依赖下一次投递触发，

@@ -29,7 +29,7 @@ GitHub 连接属于 Account、GitHub host 和 App；同一命名空间只有一�
 - Runner capability 有效期 60 秒，约 30 秒续期，至多保留当前和前一份。长流每五秒复查，必须存在仍有效的同范围 capability。
 - 数据 WebSocket 用首帧中一次性的 15 秒 ticket 认证，拒绝 URL query、cookie 与 bearer header。每个二进制分块最多 64 KiB，另带四字节 stream ID；双向各有 1 MiB credit 窗口，消费字节后补充额度。流结束竞态仍检查未确认字节上限；未知/重用 stream ID 及超额度帧继续拒绝。
 - capability 仅在 Runner 内存；CLI 仅看到本次执行 handle、公开 CA、代理地址和有限仓库/IM 元数据。App key、UAT、IAT、Bot Token、tenant token 与 Cloud 控制凭证不进入 Sandbox。
-- IM 代理使用明确登记的 Slack/飞书接口，在 Bot 已获准访问的资源范围内校验当前绑定和 execution 权限。当前频道/话题是回复上下文，不是隐式的唯一允许目标。受保护读取先记录来源；写入先持久化 intent，再转发并记录结果。不确定结果禁止自动重放。JSON 写入必须同时获得 HTTP 与平台明确成功证据；缺少证据、5xx、超时或回执持久化失败保持 unknown。上传字节有独立 intent/outcome，与平台最终完成附件的调用分别记录。
+- IM 代理使用明确登记的 Slack/飞书接口，在 Bot 已获准访问的资源范围内校验当前绑定和 execution 权限。当前频道/话题是回复上下文，不是隐式的唯一允许目标。每次代理写入请求只向上游发起一次尝试（每个代理请求一次），不持久化任何账本：JSON 写入必须同时获得 HTTP 2xx 与平台明确成功证据；平台明确错误和确定的 4xx（408 除外）按拒绝原样返回；缺少成功证据、5xx、408、超时、传输失败或写入响应无法解析以明确的 `write_outcome_unknown` 错误呈现。结果不确定的写入绝不自动重放——与平台核对结果由任务层负责，调用方主动重试只是一个新的代理请求。上传字节本身是独立的单次尝试写入，与平台最终完成附件的调用互不相同。
 - Local 默认保留原有 IM 凭证模式，在 daemon 启动环境设置 `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` 可启用代理。Cloud 强制代理，禁止退回下发真实 IM 凭证。
 
 Agent 继续使用 `git`、`gh`、`slack api`、`lark-cli` 原生命令名与参数。launcher 自动完成认证、代理、CA、配置、续期与清理。支持范围受已授权仓库和已登记 API 约束；用户 OAuth 命令、任意管理操作与越权请求会被拒绝。
@@ -48,11 +48,13 @@ GitHub 代理解析 REST 路由与 GraphQL AST，处理 alias、fragment、varia
 
 ## 部署、持久化与恢复
 
-`createPlatformRuntime` 是 Server 装配入口，Server 镜像包含 Git 和固定版本 Tree verifier。`OPENTAG_RUNTIME_CONTROL_DIRECTORY` 必须指向 Server 私有持久卷：镜像默认 `/var/lib/opentag/control`，本地默认 `.opentag-control`。目录属于 Server 用户、权限 0700、祖先无软链接；记录权限 0600。重建 Server 保留此卷，与应用状态一起备份，禁止挂载到 Sandbox。
+`createPlatformRuntime` 是 Server 装配入口，Server 镜像包含 Git 和固定版本 Tree verifier。PostgreSQL 是唯一持久化的集成状态：GitHub 连接与 IM 凭证在 Server 重建后由数据库恢复。不存在 Server 本地控制卷、文件写入账本或持久来源记录——重建 Server 不需要恢复任何集成专用磁盘。短期 capability、ticket、IAT lease、URL handle 与 execution 状态只存在于有界 Server 内存，随进程结束；重启后 Runner 依据当前数据库事实重新鉴权。重启本身不会撤销已签发的平台令牌：installation token 只是不再被使用，并按 GitHub 自身规则过期。
 
-`FileSessionControlStore` 保存有上限的来源、intent、outcome 和 reconciliation 元数据，不保存 payload 或平台凭证。记录不可变、写入执行 fsync；同一 Session 由一个权威 Server owner 串行处理。这不是多 owner 的分布式文件锁；部署必须把 Session 路由到对应 owner。结果不确定会阻止向同一 provider resource 再次写入；owner 检查提供商后，用匹配的 Session、operation ID 与 intent hash 调用 `reconcileWrite`，记录判定且不会重新发送。仅在确认 Session 已结束后调用 `removeCompletedSession` 做保留期清理；有未解决写入时会拒绝删除。
+Git 读取快照、发布暂存与 Tree 验证工作目录是私有、有上限的临时工作目录。启用 GitHub 传输时，网关首次使用时才在操作系统临时目录下懒创建一个独占 `mkdtemp` 根目录，校验其属主与权限，并在关闭或构造部分失败时删除。这些临时工作区只是验证手段，永远不是权威状态；未启用 GitHub 集成时不写任何文件，临时目录也绝不挂载到 Sandbox。
 
-`FileCloudControlAuthority` 是可信部署侧签发、轮换、撤销和过期清理 API，仅持久化凭证哈希。签发结果绑定已有逻辑 Cloud Computer 与 installation，交给可信控制器，禁止进入 Agent 文件。先签发替代凭证、重新连接，再撤销旧凭证；撤销旧凭证不会误断开新连接。注册、心跳、请求和流持续检查控制身份。
+跨崩溃的操作账本与来源追踪承诺明确撤回。代理对每个写入请求只发起一次上游尝试，并在内存中把响应分类为成功、确定拒绝或未知；不承诺跨重启的持久资源封锁，也不保证平台副作用 exactly-once。如果产品确实要求崩溃后仍记住未决写入，那是持久业务状态，必须在 PostgreSQL 中显式建模并定义真实的所有权与保留语义，绝不能用外挂文件库实现。
+
+Cloud 控制身份归属 Computer/Cloud 编排；编排与此凭证运行时的接入仍待完成。集成运行期只消费显式注入的可信 verifier 与活跃检查器（`TrustedCloudControlAuthority`）：保留 credentialId/computerId/installationId 绑定、当前数据库中的 Computer 身份（`kind = 'cloud'` 与活跃 installation），以及逐请求撤销检查。当前默认启动不注入可信的 Cloud 控制 verifier 或活跃检查器，因此 Cloud 控制认证与 Cloud 凭证活跃检查一律拒绝；Local 保留既有 machine-token 路径与仅限 Local 的限制。不存在隐式自签发 Cloud 凭证、不允许 Local token 兜底，也没有 PostgreSQL 集成凭证之外的额外文件型 Cloud 凭证数据库。execution 仍绑定其精确的当前控制连接；本次修正不提供无状态多节点执行路由。
 
 `CloudSandboxCredentialBridge` 是 Cloud 编排使用的 Linux 命令边界：Relay 在命令容器外，只挂载本次 execution 的公开 socket 目录和 workspace。容器使用 UID 10000、无外网、无 capabilities、只读根目录、有资源上限及临时可写目录。控制丢失会结束容器，同一 execution 不可重放。它需要可信 Linux Docker 控制器，macOS 主机 socket 绑定不能等同验收；该入口支持后续 Cloud 编排，本身不创建云服务或模型网络通路。
 

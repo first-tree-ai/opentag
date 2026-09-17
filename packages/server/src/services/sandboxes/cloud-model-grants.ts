@@ -15,11 +15,16 @@ import { z } from "zod";
  * the configured `ttlSeconds` for existing callers. There is no renewal and no long-lived parent
  * credential: a turn whose permission expires without a report loses model access.
  *
- * Duplicate receipts for one execution reuse the same live token instead of accumulating grants;
- * a revoked or expired execution never silently receives a fresh permission. Revocation state is
- * process-local, consistent with the in-memory RunnerHub: a Server restart invalidates every
- * Runner connection, and the reconnecting Runner receives fresh grants for still-pending verified
- * deliveries only through the normal custody boundary.
+ * Duplicate receipts for one execution reuse the same live token instead of accumulating grants.
+ * A revoked execution is never silently re-minted; the only way to obtain a fresh permission for
+ * an accepted-but-unfinished turn is the explicit `supersedeRevoked` recovery rotation, which the
+ * Server requests only after re-validating the exact current connection, allocation, active
+ * Session/Agent chain, and unfinished custody. Rotation mints a NEW jti and leaves the old
+ * revocation tombstones in place, so every old token stays invalid; an expired or conflicting
+ * scope is refused, and `revokeExecution` still kills every generation for the execution.
+ * Revocation state is process-local, consistent with the in-memory RunnerHub: a Server restart
+ * invalidates every Runner connection, and the reconnecting Runner receives fresh grants for
+ * still-pending verified deliveries only through the normal custody boundary.
  */
 
 const MODEL_GRANT_AUDIENCE = "opentag-cloud-model";
@@ -67,6 +72,14 @@ export interface CloudModelGrantIssueInput {
    * service's configured `ttlSeconds`.
    */
   expiresAt?: Date;
+  /**
+   * Explicit recovery rotation for one accepted-but-unfinished turn whose permission was revoked
+   * by a lost Runner connection: mint a NEW token for the SAME execution identity while every old
+   * token stays an invalid revocation tombstone. The caller must have re-validated current
+   * custody immediately around this call; identical scope/model is required, and an expired
+   * execution is never rotated. Never implied by omission.
+   */
+  supersedeRevoked?: true;
 }
 
 interface GrantState {
@@ -136,8 +149,9 @@ export class CloudModelGrantService {
 
   /**
    * Mint a grant for one verified delivery. The model must already be allowlisted. An identical
-   * live grant for the same execution is reused (same token), a conflicting scope/model is
-   * refused, and a revoked/expired execution id is never re-minted.
+   * live grant for the same execution is reused (same token) and a conflicting scope/model is
+   * refused. A revoked execution is never re-minted unless the caller explicitly requests
+   * `supersedeRevoked` after re-validating current custody; an expired execution stays refused.
    */
   async issue(input: CloudModelGrantIssueInput): Promise<CloudModelGrantIssue | undefined> {
     if (!this.#allowedModels.has(input.model)) return undefined;
@@ -145,6 +159,8 @@ export class CloudModelGrantService {
     const existing = this.#checkExistingGrant(input, nowMs);
     if (existing.kind === "reuse") return existing.issue;
     if (existing.kind === "refuse") return undefined;
+    // A "rotate" decision keeps the old revoked jti as a tombstone and mints a fresh generation;
+    // the by-execution pointer moves to the new jti so revocation of the turn kills both.
     const expiresAtMs = this.#resolveExpiry(input.expiresAt, nowMs);
     if (expiresAtMs === undefined) return undefined;
     const claims = CloudModelGrantClaimsSchema.safeParse({
@@ -181,7 +197,7 @@ export class CloudModelGrantService {
   #checkExistingGrant(
     input: CloudModelGrantIssueInput,
     nowMs: number,
-  ): { kind: "none" } | { kind: "reuse"; issue: CloudModelGrantIssue } | { kind: "refuse" } {
+  ): { kind: "none" } | { kind: "reuse"; issue: CloudModelGrantIssue } | { kind: "rotate" } | { kind: "refuse" } {
     const existingJti = this.#byExecution.get(input.executionId);
     if (existingJti === undefined) return { kind: "none" };
     const existing = this.#grants.get(existingJti);
@@ -189,12 +205,19 @@ export class CloudModelGrantService {
       this.#byExecution.delete(input.executionId);
       return { kind: "none" };
     }
-    // Revoked or expired permission for this execution is final: never silently re-mint it.
-    if (existing.revoked || existing.expiresAtMs <= nowMs) return { kind: "refuse" };
     const sameScope =
       existing.claims.model === input.model &&
       existing.claims.sandboxId === input.sandboxId &&
       existing.claims.sessionId === input.sessionId;
+    if (existing.revoked) {
+      // The execution was revoked (connection loss, stop, report, or retirement). Only an
+      // explicit recovery rotation may supersede it, and only for the identical execution scope;
+      // expired or conflicting generations stay refused.
+      if (input.supersedeRevoked !== true || !sameScope) return { kind: "refuse" };
+      if (existing.expiresAtMs <= nowMs) return { kind: "refuse" };
+      return { kind: "rotate" };
+    }
+    if (existing.expiresAtMs <= nowMs) return { kind: "refuse" };
     if (!sameScope) return { kind: "refuse" };
     return {
       issue: { claims: existing.claims, expiresAt: new Date(existing.expiresAtMs), token: existing.token },

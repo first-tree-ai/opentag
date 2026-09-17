@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -19,7 +18,7 @@ import {
   type PublicationRemote,
   parseRejectedPushRefs,
 } from "../services/github-proxy/git-remote.js";
-import { FileSessionControlStore } from "../services/session-control-store/index.js";
+import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 
 const execute = promisify(execFile);
 let root: string;
@@ -28,7 +27,7 @@ let source: string;
 let initialSha: string;
 let newSha: string;
 let environment: NodeJS.ProcessEnv;
-let journal: FileSessionControlStore;
+let workspace: GitWorkspace;
 const ref = "refs/heads/opentag/test/topic";
 async function git(cwd: string, args: string[]): Promise<string> {
   const result = await execute("git", args, { cwd, env: environment, maxBuffer: 1024 * 1024 });
@@ -61,9 +60,10 @@ beforeEach(async () => {
   await writeFile(join(source, "file.txt"), "updated\n");
   await git(source, ["commit", "-am", "updated"]);
   newSha = await git(source, ["rev-parse", "HEAD"]);
-  journal = new FileSessionControlStore({ root: join(root, "control") });
+  workspace = new GitWorkspace();
 });
 afterEach(async () => {
+  await workspace?.close();
   await rm(root, { recursive: true, force: true });
 });
 
@@ -126,11 +126,7 @@ async function request(oldSha = GIT_ZERO_SHA, target = ref, next = newSha): Prom
 
 function input(body: Buffer, upstream = new LocalRemote()): GitPublicationInput {
   return {
-    sessionId: randomUUID(),
-    executionId: randomUUID(),
-    operationId: randomUUID(),
     repositoryId: "123",
-    policyRevision: "github:1",
     scopes: [{ role: "code", refPrefix: "refs/heads/opentag/test/" }],
     protectedTreeRefs: ["refs/heads/master"],
     body: chunks(body),
@@ -143,33 +139,40 @@ function guard(
   verifyTree?: (typeof GitPublicationGuard extends new (options: infer T) => unknown ? T : never)["verifyTree"],
 ) {
   return new GitPublicationGuard({
-    root: join(root, "staging"),
-    controlStore: journal,
+    workspace,
     ...(verifyTree ? { verifyTree } : {}),
   });
 }
 
+const REJECTED_TEXT = "OpenTag publication rejected";
+const UNKNOWN_TEXT = "OpenTag publication outcome unknown; verify remote refs before retrying";
+
+/** Staging directories left under the ephemeral root (must be empty after every operation). */
+async function leftoverStaging(): Promise<string[]> {
+  const current = workspace.root;
+  if (!current) return [];
+  return (await readdir(current)).filter((name) => name.startsWith("git-"));
+}
+
 describe("trusted Git publication", () => {
-  it("validates a real pack, journals intent, atomically publishes, and confirms the remote SHA", async () => {
+  it("validates a real pack, atomically publishes in one attempt, and confirms the remote SHA", async () => {
     const upstream = new LocalRemote();
-    const operation = input(await request(), upstream);
-    const result = await guard().receive(operation);
+    const result = await guard().receive(input(await request(), upstream));
     expect(result.toString()).toContain(`ok ${ref}`);
     expect(upstream.publishCalls).toBe(1);
     expect(await git(remote, ["rev-parse", ref])).toBe(newSha);
-    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
-      outcome: { state: "succeeded", resultCode: "remote_sha_confirmed" },
-    });
-    expect(await journal.listSources(operation.sessionId)).toHaveLength(1);
+    expect(await leftoverStaging()).toEqual([]);
   });
 
   it("rejects a protected Tree ref under a code grant before any remote update", async () => {
     const upstream = new LocalRemote();
     const operation = input(await request(GIT_ZERO_SHA, "refs/heads/master"), upstream);
     operation.scopes = [{ role: "code", refPrefix: "refs/heads/" }];
-    expect((await guard().receive(operation)).toString()).toContain("publication rejected");
+    const result = (await guard().receive(operation)).toString();
+    expect(result).toContain(REJECTED_TEXT);
+    expect(result).not.toContain("outcome unknown");
     expect(upstream.publishCalls).toBe(0);
-    expect(await journal.listUnresolvedWrites(operation.sessionId)).toEqual([]);
+    expect(await leftoverStaging()).toEqual([]);
   });
 
   it("runs Tree verification on the actual received commit before publishing", async () => {
@@ -179,34 +182,53 @@ describe("trusted Git publication", () => {
     });
     const operation = input(await request(GIT_ZERO_SHA, "refs/heads/master"), upstream);
     operation.scopes = [{ role: "context_tree", exactRef: "refs/heads/master" }];
-    expect((await guard(verifyTree).receive(operation)).toString()).toContain("publication rejected");
+    expect((await guard(verifyTree).receive(operation)).toString()).toContain(REJECTED_TEXT);
     expect(verifyTree).toHaveBeenCalledWith(expect.any(String), newSha, expect.any(Object));
     expect(upstream.publishCalls).toBe(0);
+    expect(await leftoverStaging()).toEqual([]);
   });
 
   it("rejects a stale expected old SHA without touching upstream", async () => {
     const upstream = new LocalRemote();
     const operation = input(await request(GIT_ZERO_SHA, "refs/heads/main"), upstream);
     operation.scopes = [{ role: "code", exactRef: "refs/heads/main" }];
-    expect((await guard().receive(operation)).toString()).toContain("publication rejected");
+    expect((await guard().receive(operation)).toString()).toContain(REJECTED_TEXT);
     expect(upstream.publishCalls).toBe(0);
     expect(await git(remote, ["rev-parse", "main"])).toBe(initialSha);
   });
 
-  it("records unknown and blocks reuse when remote acceptance cannot be confirmed", async () => {
+  it("rejects pre-send when authorization is lost at the publish boundary", async () => {
+    const upstream = new LocalRemote();
+    const operation = input(await request(), upstream);
+    // Validation passes through staging but fails at the final pre-send check inside publish.
+    let validations = 0;
+    operation.revalidate = async () => {
+      validations++;
+      if (validations >= 4) throw new Error("authorization changed");
+    };
+    const result = (await guard().receive(operation)).toString();
+    expect(result).toContain(REJECTED_TEXT);
+    expect(result).not.toContain("outcome unknown");
+    expect(upstream.publishCalls).toBe(0);
+    expect(await leftoverStaging()).toEqual([]);
+  });
+
+  it("reports outcome unknown without replay when the push landed but ref confirmation was lost", async () => {
     const upstream = new LocalRemote();
     upstream.refs = async () => {
       throw new Error("transport lost");
     };
-    const operation = input(await request(), upstream);
-    expect((await guard().receive(operation)).toString()).toContain("publication rejected");
+    const result = (await guard().receive(input(await request(), upstream))).toString();
+    // The push landed but could not be confirmed: the caller gets the unknown-outcome text, the
+    // gateway made exactly one attempt, and it never replays the push on its own.
+    expect(result).toContain(UNKNOWN_TEXT);
+    expect(result).not.toContain(REJECTED_TEXT);
+    expect(upstream.publishCalls).toBe(1);
     expect(await git(remote, ["rev-parse", ref])).toBe(newSha);
-    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
-      outcome: { state: "unknown" },
-    });
+    expect(await leftoverStaging()).toEqual([]);
   });
 
-  it("classifies git's definitive all-refs rejection as rejected even when the remote moved", async () => {
+  it("classifies git's definitive all-refs rejection as failed even when the remote moved", async () => {
     const upstream = new LocalRemote();
     const baseSeed = upstream.seed.bind(upstream);
     let moved = false;
@@ -219,37 +241,30 @@ describe("trusted Git publication", () => {
         await git(remote, ["update-ref", ref, "main"]);
       }
     };
-    const operation = input(await request(), upstream);
-    expect((await guard().receive(operation)).toString()).toContain(`ng ${ref}`);
+    const rejected = (await guard().receive(input(await request(), upstream))).toString();
+    expect(rejected).toContain(REJECTED_TEXT);
+    expect(rejected).not.toContain("outcome unknown");
     expect(upstream.publishCalls).toBe(1);
-    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
-      outcome: { state: "rejected", resultCode: "remote_push_rejected" },
-    });
-    // The rejection is terminal: the no-replay fence does not block the Session's fresh push,
-    // which retries against the moved ref and completes.
-    expect(await journal.listUnresolvedWrites(operation.sessionId)).toEqual([]);
-    const retry = { ...input(await request(initialSha), upstream), sessionId: operation.sessionId };
-    expect((await guard().receive(retry)).toString()).toContain(`ok ${ref}`);
-    expect(await journal.readWrite(operation.sessionId, retry.operationId)).toMatchObject({
-      outcome: { state: "succeeded" },
-    });
+    // A caller-initiated fresh push is a new single attempt against the moved ref and completes.
+    expect((await guard().receive(input(await request(initialSha), upstream))).toString()).toContain(`ok ${ref}`);
+    expect(await git(remote, ["rev-parse", ref])).toBe(newSha);
   });
 
-  it("keeps transport-failure outcomes unknown when the observed refs moved elsewhere", async () => {
+  it("reports outcome unknown when the push transport fails and the observed refs moved elsewhere", async () => {
     const upstream = new LocalRemote();
+    let publishAttempts = 0;
     upstream.publish = async () => {
+      publishAttempts++;
       throw new Error("socket hangup before report-status");
     };
     upstream.refs = async (_repository, refs) => new Map(refs.map((name) => [name, initialSha]));
-    const operation = input(await request(), upstream);
-    expect((await guard().receive(operation)).toString()).toContain(`ng ${ref}`);
-    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
-      outcome: { state: "unknown" },
-    });
-    expect((await journal.listUnresolvedWrites(operation.sessionId)).length).toBe(1);
+    const result = (await guard().receive(input(await request(), upstream))).toString();
+    expect(result).toContain(UNKNOWN_TEXT);
+    expect(result).not.toContain(REJECTED_TEXT);
+    expect(publishAttempts).toBe(1);
   });
 
-  it("keeps unknown when the push landed but another writer advanced the ref before confirmation", async () => {
+  it("reports outcome unknown when the push landed but another writer advanced the ref before confirmation", async () => {
     const upstream = new LocalRemote();
     const baseRefs = upstream.refs.bind(upstream);
     upstream.refs = async (repository: string, refs: string[]) => {
@@ -257,41 +272,33 @@ describe("trusted Git publication", () => {
       for (const name of current.keys()) current.set(name, initialSha);
       return current;
     };
-    const operation = input(await request(), upstream);
-    expect((await guard().receive(operation)).toString()).toContain(`ng ${ref}`);
-    expect(await journal.readWrite(operation.sessionId, operation.operationId)).toMatchObject({
-      outcome: { state: "unknown" },
-    });
+    const result = (await guard().receive(input(await request(), upstream))).toString();
+    expect(result).toContain(UNKNOWN_TEXT);
+    expect(result).not.toContain(REJECTED_TEXT);
+    expect(upstream.publishCalls).toBe(1);
+    expect(await git(remote, ["rev-parse", ref])).toBe(newSha);
   });
 
   it("rejects a pack that exceeds the staged object budget, which includes seeded history", async () => {
     // The staged snapshot holds the full seeded history plus the received pack; the object
     // budget applies to that total inventory, not to the incoming pack alone.
     const upstream = new LocalRemote();
-    const operation = input(await request(), upstream);
-    const limited = new GitPublicationGuard({
-      root: join(root, "staging-budget"),
-      controlStore: journal,
-      maxObjects: 2,
-    });
-    expect((await limited.receive(operation)).toString()).toContain("publication rejected");
+    const limited = new GitPublicationGuard({ workspace, maxObjects: 2 });
+    const result = (await limited.receive(input(await request(), upstream))).toString();
+    expect(result).toContain(REJECTED_TEXT);
+    expect(result).not.toContain("outcome unknown");
     expect(upstream.publishCalls).toBe(0);
+    expect(await leftoverStaging()).toEqual([]);
   });
 
   it("enforces the pack spool limit at the exact byte boundary", async () => {
     const body = await request();
-    const over = new GitPublicationGuard({
-      root: join(root, "staging-over"),
-      controlStore: journal,
-      maxPackBytes: body.length - 1,
-    });
+    const over = new GitPublicationGuard({ workspace, maxPackBytes: body.length - 1 });
     await expect(over.receive(input(body))).rejects.toThrow(/resource_limit/);
-    const exact = new GitPublicationGuard({
-      root: join(root, "staging-exact"),
-      controlStore: journal,
-      maxPackBytes: body.length,
-    });
+    expect(await leftoverStaging()).toEqual([]);
+    const exact = new GitPublicationGuard({ workspace, maxPackBytes: body.length });
     expect((await exact.receive(input(body))).toString()).toContain(`ok ${ref}`);
+    expect(await leftoverStaging()).toEqual([]);
   });
 
   it("rejects duplicate ref commands and malformed framing", async () => {

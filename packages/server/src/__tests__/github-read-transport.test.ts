@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -13,13 +12,13 @@ import type { GitProcessOptions } from "../services/github-proxy/git-process.js"
 import { GitPublicationGuard } from "../services/github-proxy/git-publication.js";
 import { GitReadTransport } from "../services/github-proxy/git-read-transport.js";
 import { type PublicationRemote, seedRefspecsForAllowedRefs } from "../services/github-proxy/git-remote.js";
-import { FileSessionControlStore } from "../services/session-control-store/index.js";
+import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 
 const exec = promisify(execFile);
 let root: string, upstream: string, baseUrl: string, server: Server;
 let environment: NodeJS.ProcessEnv;
 let allowedRefs: string[] | undefined;
-let sessionId: string;
+let workspace: GitWorkspace;
 async function git(cwd: string, args: string[]) {
   return (await exec("git", args, { cwd, env: environment, maxBuffer: 1024 * 1024, timeout: 20_000 })).stdout.trim();
 }
@@ -74,11 +73,10 @@ beforeEach(async () => {
   await git(source, ["checkout", "main"]);
   upstream = join(root, "upstream.git");
   await git(root, ["clone", "--bare", source, upstream]);
-  sessionId = randomUUID();
   allowedRefs = undefined;
-  const controlStore = new FileSessionControlStore({ root: join(root, "control") });
-  const reads = new GitReadTransport({ root: join(root, "reads"), controlStore });
-  const writes = new GitPublicationGuard({ root: join(root, "writes"), controlStore });
+  workspace = new GitWorkspace();
+  const reads = new GitReadTransport({ workspace });
+  const writes = new GitPublicationGuard({ workspace });
   const remote = new FixtureRemote();
   server = createServer((request, response) => {
     const abort = new AbortController();
@@ -90,11 +88,7 @@ beforeEach(async () => {
       if (service !== "git-upload-pack" && service !== "git-receive-pack") throw new Error("fixture route");
       if (service === "git-receive-pack" && !advertise) {
         const body = await writes.receive({
-          sessionId,
-          executionId: randomUUID(),
-          operationId: randomUUID(),
           repositoryId: "1",
-          policyRevision: "1",
           scopes: [{ role: "code", refPrefix: "refs/heads/opentag/" }],
           protectedTreeRefs: ["refs/heads/main"],
           body: request,
@@ -107,9 +101,7 @@ beforeEach(async () => {
         return;
       }
       const result = await reads.handle({
-        sessionId,
         repositoryId: "1",
-        policyRevision: "1",
         service,
         advertise,
         protocol: request.headers["git-protocol"] as string | undefined,
@@ -135,6 +127,7 @@ beforeEach(async () => {
 afterEach(async () => {
   server?.closeAllConnections();
   await new Promise<void>((resolve) => server?.close(() => resolve()));
+  await workspace?.close();
   await rm(root, { recursive: true, force: true });
 });
 

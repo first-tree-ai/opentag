@@ -83,6 +83,58 @@ describe("CloudModelGrantService", () => {
     expect(await service.issue(issueInput())).toBeUndefined();
   });
 
+  it("rotates a revoked but unfinished execution only with the explicit recovery flag", async () => {
+    service = makeService();
+    const first = await service.issue(issueInput());
+    if (!first) throw new Error("grant issue failed");
+    const admission = service.beginRequest(first.claims.jti);
+    admission?.signal.addEventListener("abort", () => undefined);
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    expect(await service.verify(first.token)).toBeUndefined();
+    // A revoked execution is never silently re-minted.
+    expect(await service.issue(issueInput())).toBeUndefined();
+
+    const rotated = await service.issue(issueInput({ supersedeRevoked: true }));
+    if (!rotated) throw new Error("rotation failed");
+    expect(rotated.claims.jti).not.toBe(first.claims.jti);
+    expect(rotated.token).not.toBe(first.token);
+    expect(rotated.claims.executionId).toBe("turn-1");
+    // The old generation stays an invalid tombstone; the new one is live and admitted.
+    expect(await service.verify(first.token)).toBeUndefined();
+    expect(service.beginRequest(first.claims.jti)).toBeUndefined();
+    expect(await service.verify(rotated.token)).toEqual(rotated.claims);
+    expect(service.beginRequest(rotated.claims.jti)).toBeDefined();
+
+    // Revocation of the turn kills every generation it has produced.
+    expect(service.revokeExecution("turn-1")).toBe(1);
+    expect(await service.verify(rotated.token)).toBeUndefined();
+  });
+
+  it("refuses recovery rotation for a conflicting scope or an expired execution", async () => {
+    let now = new Date("2026-09-17T00:00:00.000Z");
+    service = makeService({ now: () => now });
+    const expiring = new Date(now.getTime() + 10 * 60 * 1_000);
+    const first = await service.issue(issueInput({ expiresAt: expiring }));
+    if (!first) throw new Error("grant issue failed");
+    expect(service.revokeExecution("turn-1")).toBe(1);
+
+    // A different model, Sandbox, or Session is a different execution identity: never rotated.
+    expect(await service.issue(issueInput({ supersedeRevoked: true, model: "model-b" }))).toBeUndefined();
+    expect(
+      await service.issue(issueInput({ supersedeRevoked: true, sandboxId: "33333333-3333-4333-8333-333333333333" })),
+    ).toBeUndefined();
+    expect(
+      await service.issue(issueInput({ supersedeRevoked: true, sessionId: "44444444-4444-4444-8444-444444444444" })),
+    ).toBeUndefined();
+
+    // Once the original window has passed, the execution is temporally final: no rotation.
+    now = new Date(now.getTime() + 11 * 60 * 1_000);
+    expect(
+      await service.issue(issueInput({ supersedeRevoked: true, expiresAt: new Date(now.getTime() + 10 * 60 * 1_000) })),
+    ).toBeUndefined();
+    expect(await service.verify(first.token)).toBeUndefined();
+  });
+
   it("honours an explicit bounded per-turn expiry and falls back to the configured ttl", async () => {
     const now = new Date("2026-09-17T00:00:00.000Z");
     service = makeService({ now: () => now });

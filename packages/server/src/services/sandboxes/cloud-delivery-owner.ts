@@ -76,7 +76,8 @@ export class CloudDeliveryDispatchError extends Error {
  * reaching into its internals; revocation always goes through the injected dependency.
  */
 export interface CloudModelGrantPort {
-  readonly defaultModel?: string;
+  /** First configured allowlisted model; the deployment default for an unspecified runtime model. */
+  readonly defaultModel: string;
   isModelAllowed(model: string): boolean;
   issue(input: {
     executionId: string;
@@ -105,8 +106,6 @@ export interface CloudDeliveryOwnerOptions {
   modelBaseUrl?: string;
   /** Present exactly when the deployment model proxy is enabled. */
   modelGrants?: CloudModelGrantPort;
-  /** Deployment default for Agents that carry no explicit model; resolved before the hash freeze. */
-  resolveDefaultModel?: () => string | undefined;
   /** Bounded physical allocation reconciliation from the existing SandboxRunnerService. */
   allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
 }
@@ -128,10 +127,15 @@ export class CloudDeliveryOwner {
   readonly #logger?: ServiceLogger;
   readonly #modelBaseUrl?: string;
   readonly #modelGrants?: CloudModelGrantPort;
-  readonly #resolveDefaultModel?: () => string | undefined;
   readonly #allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
-  /** Live model grants per turn -> the exact connection that received them. */
-  readonly #grantConnectionByTurn = new Map<string, string>();
+  /**
+   * Live model-grant ownership per turn: which connection is allowed to hand out or revoke this
+   * turn's permission. `generation` distinguishes concurrent mint attempts on the same connection
+   * so a late completion still counts as its own, while any attempt from a superseded connection
+   * can never take over or clean up the replacement's permission.
+   */
+  readonly #grantOwnershipByTurn = new Map<string, { connectionId: string; generation: number }>();
+  #grantGeneration = 0;
   /** Per-connection abort for in-flight credential broker calls. */
   readonly #signals = new Map<string, AbortController>();
   /** In-flight recovery queries awaiting the Runner's journaled answer. */
@@ -153,7 +157,6 @@ export class CloudDeliveryOwner {
     this.#logger = options.logger;
     this.#modelBaseUrl = options.modelBaseUrl;
     this.#modelGrants = options.modelGrants;
-    this.#resolveDefaultModel = options.resolveDefaultModel;
     this.#allocationStatus = options.allocationStatus;
   }
 
@@ -171,8 +174,9 @@ export class CloudDeliveryOwner {
     if (!grants || !this.#modelBaseUrl) return undefined;
     if (runtime.model && grants.isModelAllowed(runtime.model)) return runtime;
     if (runtime.model) return undefined;
-    const fallback = this.#resolveDefaultModel?.() ?? grants.defaultModel;
-    if (!fallback || !grants.isModelAllowed(fallback)) return undefined;
+    // The grant service owns the deployment default (first configured allowlisted model).
+    const fallback = grants.defaultModel;
+    if (!grants.isModelAllowed(fallback)) return undefined;
     return { ...runtime, model: fallback };
   }
 
@@ -277,49 +281,109 @@ export class CloudDeliveryOwner {
       this.#sendVerified(connection, frame.requestId, "rejected", custody);
       return;
     }
-    if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return;
-    const grant = await this.#mintModelGrant(connection, frame.turnId, request);
+    // Revalidate the FULL current authorization immediately around the async mint: exact
+    // connection, current allocation, active Session/Agent chain, and unfinished custody. Only
+    // then may an accepted turn whose permission was revoked by a lost connection rotate it.
+    const custodyRef = { deliveryId: frame.deliveryId, turnId: frame.turnId };
+    if (!(await this.#canAuthorizeExecution(connection, custodyRef))) return;
+    const grant = await this.#mintModelGrant(connection, frame.turnId, request, { supersedeRevoked: true });
     if (!grant) {
       this.#sendVerified(connection, frame.requestId, "rejected", "model_unavailable");
       return;
     }
     // The exact socket is frozen with the connection record: a replacement connection that owns
     // the same Sandbox id must never receive the superseded turn's execution permission. The
-    // active authority chain is re-checked AFTER the grant await, because an explicit stop or
-    // Agent suspend may have landed while the permission was minting.
-    if (!(await this.#canAuthorizeExecution(connection))) {
-      this.#revokeModelGrant(frame.turnId);
+    // full authorization (including unfinished custody) is re-checked AFTER the grant await,
+    // because a stop, report, or replacement may have landed while the permission was minting.
+    if (!(await this.#canAuthorizeExecution(connection, custodyRef))) {
+      this.#revokeIfOwned(frame.turnId, connection.connectionId);
       return;
     }
     const frameWithGrant = this.#verifiedFrame(frame.requestId, "verified", undefined, grant);
-    if (!this.#sendToConnection(connection, frameWithGrant)) this.#revokeModelGrant(frame.turnId);
+    if (!this.#sendToConnection(connection, frameWithGrant)) {
+      this.#revokeIfOwned(frame.turnId, connection.connectionId);
+    }
   }
 
   async #mintModelGrant(
     connection: CloudConnectionRecord,
     turnId: string,
     request: DirectImMessageDeliveryRequest,
+    options: { supersedeRevoked?: boolean } = {},
   ): Promise<RunnerCloudModelGrant | undefined> {
     const grants = this.#modelGrants;
     const baseUrl = this.#modelBaseUrl;
     const model = request.runtime.model;
     if (!grants || !baseUrl || !model) return undefined;
-    const deadlineMs = request.deadlineAt === undefined ? Number.NaN : Date.parse(request.deadlineAt);
-    if (!Number.isFinite(deadlineMs)) return undefined;
-    // The execution permission covers exactly the frozen dispatch window plus a bounded transport
-    // allowance; an already-expired window never becomes a fresh permission.
-    const expiresAt = new Date(deadlineMs + CLOUD_MODEL_GRANT_TRANSPORT_MS);
-    if (expiresAt.getTime() <= Date.now()) return undefined;
+    const expiresAt = this.#resolveMintExpiry(request);
+    if (!expiresAt) return undefined;
+    // Only the exact current connection may mint for this turn. Claim it before the async mint so
+    // a superseded connection's late completion can never take over or revoke the replacement's
+    // permission; the grant service itself is idempotent per execution identity.
+    if (!this.#isExactConnection(connection)) return undefined;
+    const ownership = { connectionId: connection.connectionId, generation: ++this.#grantGeneration };
+    this.#grantOwnershipByTurn.set(turnId, ownership);
     const issued = await grants.issue({
       executionId: turnId,
       model,
       sandboxId: connection.scope.sandboxId,
       sessionId: connection.scope.sessionId,
       expiresAt,
+      ...(options.supersedeRevoked ? { supersedeRevoked: true } : {}),
     });
-    if (!issued) return undefined;
-    this.#grantConnectionByTurn.set(turnId, connection.connectionId);
-    return { baseUrl, expiresAt: issued.expiresAt.toISOString(), model, token: issued.token };
+    return this.#resolveMintOutcome({ baseUrl, connection, issued, model, ownership, turnId });
+  }
+
+  /** The exact bounded permission window: the frozen dispatch deadline plus transport allowance. */
+  #resolveMintExpiry(request: DirectImMessageDeliveryRequest): Date | undefined {
+    const deadlineMs = request.deadlineAt === undefined ? Number.NaN : Date.parse(request.deadlineAt);
+    if (!Number.isFinite(deadlineMs)) return undefined;
+    // An already-expired window never becomes a fresh permission.
+    const expiresAt = new Date(deadlineMs + CLOUD_MODEL_GRANT_TRANSPORT_MS);
+    return expiresAt.getTime() <= Date.now() ? undefined : expiresAt;
+  }
+
+  /**
+   * Decide the outcome of one async mint against the CURRENT ownership: only the connection that
+   * still owns the turn may receive the permission. A late generation from a superseded connection
+   * is dropped without revoking the replacement's live token, and a terminal revoke (missing
+   * ownership) kills the orphaned generation.
+   */
+  #resolveMintOutcome(input: {
+    baseUrl: string;
+    connection: CloudConnectionRecord;
+    issued: { expiresAt: Date; token: string } | undefined;
+    model: string;
+    ownership: { connectionId: string; generation: number };
+    turnId: string;
+  }): RunnerCloudModelGrant | undefined {
+    const current = this.#grantOwnershipByTurn.get(input.turnId);
+    if (!input.issued) {
+      if (current?.generation === input.ownership.generation) this.#grantOwnershipByTurn.delete(input.turnId);
+      return undefined;
+    }
+    if (!current || current.connectionId !== input.connection.connectionId) {
+      // The turn was terminally revoked (report/stop/unknown) or handed to a replacement while
+      // this mint was in flight: with no owner the late generation is orphaned and unreachable,
+      // with an owner it belongs to that connection and must not be revoked here.
+      if (!current) this.#modelGrants?.revokeExecution(input.turnId);
+      return undefined;
+    }
+    if (!this.#isExactConnection(input.connection)) {
+      // This connection ended while signing and no replacement claimed the turn yet: release the
+      // claim and kill the generation this call produced (it can never be delivered).
+      if (current.generation === input.ownership.generation) {
+        this.#grantOwnershipByTurn.delete(input.turnId);
+        this.#modelGrants?.revokeExecution(input.turnId);
+      }
+      return undefined;
+    }
+    return {
+      baseUrl: input.baseUrl,
+      expiresAt: input.issued.expiresAt.toISOString(),
+      model: input.model,
+      token: input.issued.token,
+    };
   }
 
   #verifiedFrame(
@@ -370,7 +434,7 @@ export class CloudDeliveryOwner {
     const mapped: "recorded" | "already_recorded" | "conflict" | "stale_generation" =
       status === "recorded" || status === "already_recorded" || status === "stale_generation" ? status : "conflict";
     if (mapped === "recorded" || mapped === "already_recorded") {
-      this.#revokeModelGrant(report.turnId);
+      this.#revokeTurnGrants(report.turnId);
     }
     this.#sendReportAck(connection, frame.requestId, report, mapped, report.turnId);
     if (mapped === "conflict" || mapped === "stale_generation") {
@@ -423,7 +487,7 @@ export class CloudDeliveryOwner {
         ),
       );
     for (const row of rows) {
-      if (row.turnId) this.#revokeModelGrant(row.turnId);
+      if (row.turnId) this.#revokeTurnGrants(row.turnId);
     }
     this.#credentials?.owner.closeSessionExecutions(sessionId, "execution_closed");
     const outcomes: CloudSessionCancelOutcome[] = [];
@@ -523,7 +587,7 @@ export class CloudDeliveryOwner {
     });
     if (!answer || answer === "reported") return "pending";
     if (answer === "received") {
-      await this.#reverifyReceived(record, delivery);
+      await this.#recoverReceivedEntry(record, delivery);
       return "pending";
     }
     // "started" is the LIVE phase of a turn the current Runner still executes: it must stay
@@ -532,6 +596,37 @@ export class CloudDeliveryOwner {
     // crash-unknown, not a missing socket.
     if (answer === "started") return "pending";
     return this.#settleUnknown(delivery.id);
+  }
+
+  /**
+   * A never-started journal entry. While the active authority chain is alive, re-verify with a
+   * fresh rotated permission (the reconnect path). Once the chain is definitively stopped, the
+   * exact current Runner is asked to settle the entry through the SAME `delivery:cancel` path an
+   * explicit stop uses, so a receipt that committed after the stop selection still produces a
+   * truthful `not_started` cancellation instead of looping on a reverify that can never authorize.
+   * Started/reported entries are never cancelled here: they may hold a real outcome.
+   */
+  async #recoverReceivedEntry(
+    record: CloudConnectionRecord,
+    delivery: typeof imMessageDeliveries.$inferSelect,
+  ): Promise<void> {
+    const deliveryRef = { deliveryId: delivery.id, turnId: delivery.turnId as string };
+    // Re-check after the query await: a replaced connection, superseded allocation, or terminal
+    // report must never turn into a cancellation of another resource's work.
+    if (!this.#isExactConnection(record) || !(await this.#isExactAllocation(record))) return;
+    if (!(await this.#isAcceptedUnfinished(record, deliveryRef))) return;
+    if (await this.#loadActiveAuthority(record)) {
+      await this.#reverifyReceived(record, delivery);
+      return;
+    }
+    // Persisted stopped authority + a never-started entry: reuse the explicit-stop cancellation
+    // to the authenticated current Runner; its `not_started` report lands through the normal
+    // durable report path. A disconnected/replaced socket is left pending, never settled here.
+    this.#sendToConnection(record, {
+      type: "delivery:cancel",
+      deliveryId: delivery.id,
+      requestId: randomUUID(),
+    });
   }
 
   async #settleUnknown(deliveryId: string): Promise<"resolved" | "noop"> {
@@ -547,7 +642,7 @@ export class CloudDeliveryOwner {
     if (recorded !== "recorded" && recorded !== "already_recorded") return "noop";
     // A turn settled as unknown must lose its execution permission immediately, even when the
     // granting Server already restarted (revocation is by execution/turn id).
-    if (scope.delivery.turnId) this.#revokeModelGrant(scope.delivery.turnId);
+    if (scope.delivery.turnId) this.#revokeTurnGrants(scope.delivery.turnId);
     return "resolved";
   }
 
@@ -558,17 +653,18 @@ export class CloudDeliveryOwner {
   ): Promise<void> {
     const parsed = DirectImMessageDeliveryRequestSchema.safeParse(delivery.dispatchPayload);
     if (!parsed.success || !delivery.dispatchRequestId) return;
-    if (!(await this.#canAuthorizeExecution(connection))) return;
-    const grant = await this.#mintModelGrant(connection, delivery.turnId as string, parsed.data);
+    const custodyRef = { deliveryId: delivery.id, turnId: delivery.turnId as string };
+    if (!(await this.#canAuthorizeExecution(connection, custodyRef))) return;
+    const grant = await this.#mintModelGrant(connection, custodyRef.turnId, parsed.data, { supersedeRevoked: true });
     if (!grant) return;
-    if (!(await this.#canAuthorizeExecution(connection))) {
-      this.#revokeModelGrant(delivery.turnId as string);
+    if (!(await this.#canAuthorizeExecution(connection, custodyRef))) {
+      this.#revokeIfOwned(custodyRef.turnId, connection.connectionId);
       return;
     }
     if (
       !this.#sendToConnection(connection, this.#verifiedFrame(delivery.dispatchRequestId, "verified", undefined, grant))
     ) {
-      this.#revokeModelGrant(delivery.turnId as string);
+      this.#revokeIfOwned(custodyRef.turnId, connection.connectionId);
     }
   }
 
@@ -671,14 +767,29 @@ export class CloudDeliveryOwner {
       pending.resolve(undefined);
     }
     this.#credentials?.owner.closeConnection(connectionId, "connection_replaced");
-    for (const [turnId, ownerConnectionId] of [...this.#grantConnectionByTurn.entries()]) {
-      if (ownerConnectionId !== connectionId) continue;
-      this.#revokeModelGrant(turnId);
+    for (const [turnId, ownership] of [...this.#grantOwnershipByTurn.entries()]) {
+      if (ownership.connectionId !== connectionId) continue;
+      this.#revokeIfOwned(turnId, connectionId);
     }
   }
 
-  #revokeModelGrant(turnId: string): void {
-    this.#grantConnectionByTurn.delete(turnId);
+  /**
+   * Revoke the turn's permission only while THIS connection still owns it. A replacement that
+   * claimed the turn during an await must never lose its fresh permission to a stale cleanup.
+   */
+  #revokeIfOwned(turnId: string, connectionId: string): void {
+    const ownership = this.#grantOwnershipByTurn.get(turnId);
+    if (!ownership || ownership.connectionId !== connectionId) return;
+    this.#grantOwnershipByTurn.delete(turnId);
+    this.#modelGrants?.revokeExecution(turnId);
+  }
+
+  /**
+   * Terminal revocation (report recorded, explicit stop, unknown settlement): kill every
+   * generation for the turn regardless of which connection minted it.
+   */
+  #revokeTurnGrants(turnId: string): void {
+    this.#grantOwnershipByTurn.delete(turnId);
     this.#modelGrants?.revokeExecution(turnId);
   }
 
@@ -757,18 +868,62 @@ export class CloudDeliveryOwner {
   }
 
   /**
-   * Execution permission needs BOTH the exact allocation and the CURRENT active authority chain.
-   * Checked after every await that can outlive a stop/suspend, so a grant minted during an
-   * explicit stop is revoked instead of sent.
+   * Execution permission needs the exact connection, the exact current allocation, the CURRENT
+   * active authority chain, and UNFINISHED custody for this specific turn. Checked immediately
+   * around every await that can outlive a stop, report, or replacement, so a permission minted
+   * during one of those is revoked instead of sent.
    */
-  async #canAuthorizeExecution(connection: CloudConnectionRecord): Promise<boolean> {
+  async #canAuthorizeExecution(
+    connection: CloudConnectionRecord,
+    delivery: { deliveryId: string; turnId: string },
+  ): Promise<boolean> {
     if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return false;
+    if (!(await this.#loadActiveAuthority(connection))) return false;
+    return this.#isAcceptedUnfinished(connection, delivery);
+  }
+
+  /**
+   * The persisted ACTIVE authority chain for this exact connection, or undefined when it is
+   * definitively stopped (ended Session, suspended Agent/Account, inactive binding) or belongs to
+   * another allocation. Undefined is authority evidence, never a transient-error signal: database
+   * failures throw and stay pending.
+   */
+  async #loadActiveAuthority(
+    connection: CloudConnectionRecord,
+  ): Promise<Awaited<ReturnType<typeof loadManagedSandboxBySessionId>> | undefined> {
     const owned = await loadManagedSandboxBySessionId(this.#database, connection.scope.sessionId);
+    if (
+      !owned ||
+      owned.sandbox.id !== connection.scope.sandboxId ||
+      owned.sandbox.environmentGeneration !== connection.scope.environmentGeneration ||
+      owned.sandbox.currentResourceName !== connection.scope.resourceName
+    ) {
+      return undefined;
+    }
+    return owned;
+  }
+
+  /** The delivery is still accepted, unreported, and owned by this exact allocation instance. */
+  async #isAcceptedUnfinished(
+    connection: CloudConnectionRecord,
+    delivery: { deliveryId: string; turnId: string },
+  ): Promise<boolean> {
+    const [row] = await this.#database
+      .select({
+        state: imMessageDeliveries.state,
+        turnId: imMessageDeliveries.turnId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
+      })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, delivery.deliveryId))
+      .limit(1);
     return Boolean(
-      owned &&
-        owned.sandbox.id === connection.scope.sandboxId &&
-        owned.sandbox.environmentGeneration === connection.scope.environmentGeneration &&
-        owned.sandbox.currentResourceName === connection.scope.resourceName,
+      row &&
+        row.state === "accepted" &&
+        row.turnId === delivery.turnId &&
+        row.reportedAt === null &&
+        row.reportOwnerInstanceId === connection.instanceId,
     );
   }
 

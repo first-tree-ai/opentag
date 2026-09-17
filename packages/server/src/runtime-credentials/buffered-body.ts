@@ -63,13 +63,13 @@ function decodeSlackFormPart(value: string): string {
   }
 }
 
-/** Form/JSON fields that select the authoritative Slack resource for journaling and policy. */
+/** Form/JSON fields that select the authoritative Slack resource for the operation policy. */
 const SLACK_RESOURCE_FIELDS = ["bot", "channel", "channel_id", "file", "filename", "user", "users"] as const;
 
 /**
  * Query/body resource integrity: a query credential is refused outright, duplicate query
  * resource fields are ambiguous, and a body field that disagrees with the same query field is
- * rejected before journaling or forwarding. The query itself is otherwise forwarded verbatim.
+ * rejected before anything is forwarded. The query itself is otherwise forwarded verbatim.
  */
 export function assertSlackQueryResourceIntegrity(parsed: unknown, query: URLSearchParams): void {
   if (query.has("token")) throw new RuntimeProxyError("body_invalid", "Slack query credentials are not accepted");

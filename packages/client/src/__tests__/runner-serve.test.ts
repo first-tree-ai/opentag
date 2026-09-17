@@ -1087,8 +1087,14 @@ describe("Runner cancellation and connection lifetime", () => {
       if (socket.readyState === socket.CLOSED) resolve();
       else socket.once("close", () => resolve());
     });
-    // The failure is reported and the receipt is never acknowledged as durable.
-    expect(output.chunks.stderr.join("")).toMatch(/durable boundary failed|delivery:run failed/);
+    // The failure is reported after the connection cycles; wait briefly for the surfaced log
+    // instead of racing the socket close event.
+    await vi.waitFor(
+      () => {
+        expect(output.chunks.stderr.join("")).toMatch(/durable boundary failed|delivery:run failed/);
+      },
+      { timeout: 5_000 },
+    );
     expect(wss.frames.some((frame) => frame.type === "delivery:received")).toBe(false);
     stop.abort();
     expect(await running).toBe(143);

@@ -1,9 +1,6 @@
-import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readdir, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import type { SessionControlStore } from "../session-control-store/index.js";
-import { ensureControlDirectory } from "../session-control-store/private-files.js";
+import { lstat, mkdir, open, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
 import {
   GIT_ZERO_SHA,
   GitPublicationError,
@@ -14,6 +11,7 @@ import {
 } from "./git-packets.js";
 import { type GitProcessOptions, runTrustedGit, runTrustedProcess } from "./git-process.js";
 import { GitPushRejectedError, type PublicationRemote } from "./git-remote.js";
+import type { GitWorkspace } from "./git-workspace.js";
 import { verifyPublishedContextTree } from "./tree-verifier.js";
 
 export interface GitPublicationScope {
@@ -22,11 +20,7 @@ export interface GitPublicationScope {
   refPrefix?: string;
 }
 export interface GitPublicationInput {
-  sessionId: string;
-  executionId: string;
-  operationId: string;
   repositoryId: string;
-  policyRevision: string;
   scopes: GitPublicationScope[];
   protectedTreeRefs: string[];
   body: AsyncIterable<Uint8Array>;
@@ -35,8 +29,7 @@ export interface GitPublicationInput {
   revalidate(): Promise<void>;
 }
 export interface GitPublicationOptions {
-  root: string;
-  controlStore: SessionControlStore;
+  workspace: GitWorkspace;
   maxPackBytes?: number;
   maxRepositoryBytes?: number;
   maxObjectBytes?: number;
@@ -58,7 +51,6 @@ export class GitPublicationGuard {
       timeoutMs: 120_000,
       verifyTree: verifyPublishedContextTree,
       ...options,
-      root: resolve(options.root),
     };
   }
 
@@ -74,8 +66,7 @@ export class GitPublicationGuard {
 
   async #receive(input: GitPublicationInput): Promise<Buffer> {
     await input.revalidate();
-    await ensureControlDirectory(this.#options.root);
-    const workspace = await mkdtemp(join(this.#options.root, "git-"));
+    const workspace = await this.#options.workspace.stagingDirectory("git-");
     const abort = new AbortController();
     const signal = AbortSignal.any([input.signal, abort.signal, AbortSignal.timeout(this.#options.timeoutMs)]);
     let commands: GitReceiveCommands | undefined;
@@ -99,13 +90,6 @@ export class GitPublicationGuard {
       const options: GitProcessOptions = { cwd: workspace, signal, environment: trustedGitEnvironment(home) };
       const repository = join(workspace, "repository.git");
       await runTrustedGit(["-c", "init.templateDir=", "init", "--bare", repository], options);
-      await this.#options.controlStore.recordSource({
-        sessionId: input.sessionId,
-        provider: "github",
-        resource: `repository:${input.repositoryId}`,
-        policyRevision: input.policyRevision,
-        recordedAt: new Date().toISOString(),
-      });
       await input.remote.seed(repository, options);
       await input.revalidate();
       await assertDirectoryBudget(workspace, this.#options.maxRepositoryBytes);
@@ -133,7 +117,7 @@ export class GitPublicationGuard {
         if (roles[index] === "context_tree") await this.#options.verifyTree(repository, update.newSha, options);
       }
       await input.revalidate();
-      return await this.#publish(input, commands, repository, options, request.hash, accepted.stdout);
+      return await this.#publish(input, commands, repository, options, accepted.stdout);
     } catch (error) {
       if (commands) return gitReceiveFailure(commands);
       if (error instanceof GitPublicationError) throw error;
@@ -148,7 +132,6 @@ export class GitPublicationGuard {
   async #spool(body: AsyncIterable<Uint8Array>, workspace: string, signal: AbortSignal) {
     const path = join(workspace, "receive-pack");
     const file = await open(path, "wx", 0o600);
-    const hash = createHash("sha256");
     const chunks: Buffer[] = [];
     let headerBytes = 0;
     let bytes = 0;
@@ -162,39 +145,35 @@ export class GitPublicationGuard {
           chunks.push(part);
           headerBytes += part.length;
         }
-        hash.update(chunk);
         await file.writeFile(chunk);
       }
     } finally {
       await file.close();
     }
-    return { path, hash: hash.digest("hex"), commands: parseGitReceiveCommands(Buffer.concat(chunks)) };
+    return { path, commands: parseGitReceiveCommands(Buffer.concat(chunks)) };
   }
 
+  /**
+   * Publishes once, then classifies the single attempt from confirmed remote refs. There is no
+   * durable receipt: a definite rejection and an unknown outcome are reported through different
+   * receive-pack failure texts, and the attempt is never replayed by the gateway.
+   */
   async #publish(
     input: GitPublicationInput,
     commands: GitReceiveCommands,
     repository: string,
     options: GitProcessOptions,
-    hash: string,
     success: Buffer,
   ): Promise<Buffer> {
-    const { intentHash } = await this.#options.controlStore.beginWrite({
-      sessionId: input.sessionId,
-      executionId: input.executionId,
-      operationId: input.operationId,
-      provider: "github",
-      resource: `repository:${input.repositoryId}`,
-      operation: "git.push",
-      requestHash: hash,
-      policyRevision: input.policyRevision,
-      createdAt: new Date().toISOString(),
-    });
-    let sent = false;
+    // Pre-send: an authorization or cancellation failure is a definite rejection — no upstream
+    // byte was sent, so nothing can have been applied.
     try {
       await input.revalidate();
       options.signal.throwIfAborted();
-      sent = true;
+    } catch {
+      return gitReceiveFailure(commands);
+    }
+    try {
       let remoteRejected: readonly string[] | undefined;
       try {
         await input.remote.publish(repository, commands.updates, options);
@@ -210,24 +189,13 @@ export class GitPublicationGuard {
         commands.updates.map((update) => update.ref),
         options,
       );
-      const { state, resultCode } = classifyPublication(commands.updates, refs, remoteRejected);
-      await this.#options.controlStore.completeWrite(input.sessionId, {
-        operationId: input.operationId,
-        intentHash,
-        state,
-        resultCode,
-        completedAt: new Date().toISOString(),
-      });
-      return state === "succeeded" ? success : gitReceiveFailure(commands);
+      const state = classifyPublication(commands.updates, refs, remoteRejected);
+      if (state === "succeeded") return success;
+      return gitReceiveFailure(commands, state === "rejected" ? "rejected" : "unknown");
     } catch {
-      await this.#options.controlStore.completeWrite(input.sessionId, {
-        operationId: input.operationId,
-        intentHash,
-        state: sent ? "unknown" : "rejected",
-        resultCode: sent ? "publication_unconfirmed" : "authorization_changed",
-        completedAt: new Date().toISOString(),
-      });
-      return gitReceiveFailure(commands);
+      // Post-send authorization change, transport loss, or ref confirmation failure: the push
+      // outcome is unknown to the caller and the gateway never retries it.
+      return gitReceiveFailure(commands, "unknown");
     }
   }
 }
@@ -241,20 +209,16 @@ function classifyPublication(
   updates: GitRefUpdate[],
   refs: Map<string, string>,
   remoteRejected: readonly string[] | undefined,
-): { state: "succeeded" | "rejected" | "unknown"; resultCode: string } {
+): "succeeded" | "rejected" | "unknown" {
   const published = updates.every((update) => refs.get(update.ref) === update.newSha);
   const unchanged = updates.every((update) => (refs.get(update.ref) ?? GIT_ZERO_SHA) === update.oldSha);
   const evidenceRejected =
     remoteRejected !== undefined &&
     updates.every((update) => remoteRejected.includes(update.ref)) &&
     updates.every((update) => refs.get(update.ref) !== update.newSha);
-  if (published) return { state: "succeeded", resultCode: "remote_sha_confirmed" };
-  if (unchanged || evidenceRejected)
-    return {
-      state: "rejected",
-      resultCode: evidenceRejected && !unchanged ? "remote_push_rejected" : "remote_conflict",
-    };
-  return { state: "unknown", resultCode: "remote_conflict" };
+  if (published) return "succeeded";
+  if (unchanged || evidenceRejected) return "rejected";
+  return "unknown";
 }
 
 function trustedGitEnvironment(home: string): NodeJS.ProcessEnv {

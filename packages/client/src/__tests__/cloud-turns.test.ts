@@ -8,7 +8,7 @@ import type {
   RunnerCloudDeliveryVerifiedFrame,
   RunnerCloudModelGrant,
 } from "@opentag/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudJournal, CloudJournalError } from "../runner/cloud-journal.js";
 import { CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
@@ -82,6 +82,39 @@ function reportsOf(sent: RunnerClientFrame[]) {
     RunnerClientFrame,
     { type: "delivery:report" }
   >[];
+}
+
+/**
+ * Gate the real journal's list() so a drain can be held inside actual filesystem I/O; consumers
+ * still read the real journal once the gate opens. One-shot so later lookups pass through.
+ */
+function gateJournalList(journal: CloudJournal, gate: Promise<void>, onGated: () => void) {
+  const realList = journal.list.bind(journal);
+  let armed = false;
+  let consumed = false;
+  // Real journal snapshot taken when the gate is armed: non-gated lookups resolve from the same
+  // durable state without adding filesystem-latency nondeterminism to the race under test.
+  let snapshot: Promise<Awaited<ReturnType<CloudJournal["list"]>>> | undefined;
+  const spy = vi.spyOn(journal, "list").mockImplementation(async () => {
+    if (armed && !consumed) {
+      consumed = true;
+      onGated();
+      await gate;
+      // The gated delivery's journal read stays slow past the gate, so a racer is never hidden
+      // by filesystem timing: any overtake happens while this read is still pending.
+      await new Promise((resolve) => setImmediate(resolve));
+      return realList();
+    }
+    if (!snapshot) return realList();
+    return snapshot;
+  });
+  return {
+    arm: () => {
+      armed = true;
+      snapshot ??= realList();
+    },
+    restore: () => spy.mockRestore(),
+  };
 }
 
 /** Bounded explicit completion waiter; never an unbounded loop, and it fails with a real signal. */
@@ -795,6 +828,118 @@ describe("CloudTurnRunner", () => {
     expect(stale.workerInputs).toHaveLength(0);
     expect(await stale.journal.list()).toHaveLength(1);
     await stale.runner.close();
+    await h.runner.close();
+  });
+
+  it("starts queued verified work in FIFO order when a drain is gated on journal I/O", async () => {
+    const started: string[] = [];
+    const releaseA = deferred<ExecResult>();
+    const aStarted = deferred<void>();
+    const bStarted = deferred<void>();
+    const dStarted = deferred<void>();
+    const releaseD = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async (input) => {
+        const deliveryId = (JSON.parse(input.stdin) as { delivery: { deliveryId: string } }).delivery.deliveryId;
+        started.push(deliveryId);
+        return dStartedFor(deliveryId);
+      },
+    });
+    function dStartedFor(deliveryId: string): Promise<ExecResult> {
+      if (deliveryId === h.delivery.deliveryId) {
+        aStarted.resolve();
+        return releaseA.promise;
+      }
+      if (deliveryId === b.deliveryId) {
+        bStarted.resolve();
+        return Promise.resolve(completedExec("b"));
+      }
+      if (deliveryId === d.deliveryId) {
+        dStarted.resolve();
+        return releaseD.promise;
+      }
+      return Promise.resolve(completedExec("c"));
+    }
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const c = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const d = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleDeliveryRun(runFrame(c));
+    await h.runner.handleDeliveryRun(runFrame(d));
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await aStarted.promise;
+    // B and C are already queued behind the live A when the drain starts.
+    await h.runner.handleVerified(verifiedFrame(b.requestId));
+    await h.runner.handleVerified(verifiedFrame(c.requestId));
+    gated.arm();
+    releaseA.resolve(completedExec("a")); // A settles; the drain for B starts and blocks in list()
+    await gateEntered.promise;
+    // A concurrent verification and an extra availability signal must not overtake B or C.
+    const verifyingD = h.runner.handleVerified(verifiedFrame(d.requestId));
+    h.runner.notifyAvailable();
+    // Give the pre-fix scheduler's fs-backed direct-start path a bounded chance to overtake the
+    // gated FIFO head. On the fixed scheduler D cannot progress while B's drain holds the head.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const firstStarted = Promise.race([bStarted.promise.then(() => "b"), dStarted.promise.then(() => "d")]);
+    gate.resolve();
+    // D starting before B is exactly the pre-fix overtake this regression pins down.
+    expect(await firstStarted).toBe("b");
+    releaseD.resolve(completedExec("d"));
+    await verifyingD;
+    await waitFor(() => reportsOf(h.sent).length === 4, "all four reports");
+    expect(started).toEqual([a.deliveryId, b.deliveryId, c.deliveryId, d.deliveryId]);
+    expect(new Set(started).size).toBe(4);
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("never starts work cancelled while its drain is waiting on journal I/O", async () => {
+    const started: string[] = [];
+    const releaseA = deferred<ExecResult>();
+    const aStarted = deferred<void>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async (input) => {
+        const deliveryId = (JSON.parse(input.stdin) as { delivery: { deliveryId: string } }).delivery.deliveryId;
+        started.push(deliveryId);
+        if (started.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec(`done-${deliveryId}`);
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const c = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleDeliveryRun(runFrame(c));
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId)); // B queued behind the live A
+    gated.arm();
+    releaseA.resolve(completedExec("a"));
+    await gateEntered.promise;
+    // Cancellation arrives while B's drain is blocked in journal I/O.
+    h.runner.handleCancel(b.deliveryId);
+    const verifyingC = h.runner.handleVerified(verifiedFrame(c.requestId));
+    gate.resolve();
+    await verifyingC;
+    await waitFor(() => reportsOf(h.sent).length === 3, "cancelled and remaining reports");
+    // B must never start; the later C still runs after the cancellation settles.
+    expect(started).toEqual([a.deliveryId, c.deliveryId]);
+    const cancelled = reportsOf(h.sent).find((frame) => frame.report.deliveryId === b.deliveryId)?.report;
+    expect(cancelled?.outcome).toBe("cancelled");
+    expect(cancelled?.executionEffects).toBe("not_started");
+    gated.restore();
     await h.runner.close();
   });
 

@@ -198,7 +198,6 @@ describe("GitHubApiClient REST endpoints", () => {
       expect(String(url)).toBe("https://api.github.com/user/installations/55123456/repositories?per_page=100&page=1");
       return jsonResponse(200, {
         total_count: 1,
-        repository_selection: "selected",
         repositories: [
           {
             id: 987_654_321,
@@ -215,12 +214,150 @@ describe("GitHubApiClient REST endpoints", () => {
       installationId: "55123456",
       page: 1,
     });
-    expect(page.repositories[0]).toEqual({
-      repositoryId: "987654321",
-      fullName: "octocat/hello-world",
-      private: true,
-      defaultBranch: "main",
-      permissions: { admin: false, pull: true, push: true },
+    expect(page).toEqual({
+      totalCount: 1,
+      repositories: [
+        {
+          repositoryId: "987654321",
+          fullName: "octocat/hello-world",
+          private: true,
+          defaultBranch: "main",
+          permissions: { admin: false, pull: true, push: true },
+        },
+      ],
+    });
+  });
+
+  it("returns an empty repositories page at the requested page index", async () => {
+    const client = clientWithFetch(async (url) => {
+      expect(String(url)).toBe("https://api.github.com/user/installations/55123456/repositories?per_page=100&page=3");
+      return jsonResponse(200, { total_count: 2, repositories: [] });
+    });
+    const page = await client.listInstallationRepositories({
+      accessToken: "ghu_token",
+      installationId: "55123456",
+      page: 3,
+    });
+    expect(page).toEqual({ totalCount: 2, repositories: [] });
+  });
+
+  it("rejects repository pages with a malformed total_count", async () => {
+    for (const totalCount of ["2", -1, 1.5, 1_000_001]) {
+      const client = clientWithFetch(async () => jsonResponse(200, { total_count: totalCount, repositories: [] }));
+      await expect(
+        client.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
+      ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
+    }
+  });
+
+  it("rejects repository pages whose repositories are not a bounded array", async () => {
+    const notArray = clientWithFetch(async () => jsonResponse(200, { total_count: 1, repositories: {} }));
+    await expect(
+      notArray.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
+    const oversized = clientWithFetch(async () =>
+      jsonResponse(200, {
+        total_count: 101,
+        repositories: Array.from({ length: 101 }, () => ({
+          id: 987_654_321,
+          full_name: "octocat/hello-world",
+          private: true,
+          default_branch: "main",
+          permissions: { admin: false, pull: true, push: true },
+        })),
+      }),
+    );
+    await expect(
+      oversized.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
+  });
+
+  it("rejects repository entries whose permissions lack the boolean grants", async () => {
+    const missingGrant = clientWithFetch(async () =>
+      jsonResponse(200, {
+        total_count: 1,
+        repositories: [
+          {
+            id: 987_654_321,
+            full_name: "octocat/hello-world",
+            private: true,
+            default_branch: "main",
+            permissions: { pull: true, push: true },
+          },
+        ],
+      }),
+    );
+    await expect(
+      missingGrant.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
+    const nonBooleanGrant = clientWithFetch(async () =>
+      jsonResponse(200, {
+        total_count: 1,
+        repositories: [
+          {
+            id: 987_654_321,
+            full_name: "octocat/hello-world",
+            private: true,
+            default_branch: "main",
+            permissions: { admin: "yes", pull: true, push: true },
+          },
+        ],
+      }),
+    );
+    await expect(
+      nonBooleanGrant.listInstallationRepositories({ accessToken: "ghu_token", installationId: "55123456", page: 1 }),
+    ).rejects.toMatchObject({ code: GITHUB_API_CLIENT_ERROR_CODES.RESPONSE_INVALID });
+  });
+
+  it("accepts the official repositories page shape, which carries no repository_selection", async () => {
+    // API 2022-11-28: GET /user/installations/{id}/repositories
+    // answers HTTP 200 with exactly total_count and repositories; repository_selection exists
+    // only on the installation object, never on this page.
+    const client = clientWithFetch(async (url) => {
+      expect(String(url)).toBe("https://api.github.com/user/installations/55123456/repositories?per_page=100&page=1");
+      return jsonResponse(200, {
+        total_count: 2,
+        repositories: [
+          {
+            id: 987_654_321,
+            full_name: "staging-org/alpha-private",
+            private: true,
+            default_branch: "main",
+            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+          },
+          {
+            id: 987_654_322,
+            full_name: "staging-org/beta-private",
+            private: true,
+            default_branch: "main",
+            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+          },
+        ],
+      });
+    });
+    const page = await client.listInstallationRepositories({
+      accessToken: "ghu_token",
+      installationId: "55123456",
+      page: 1,
+    });
+    expect(page).toEqual({
+      totalCount: 2,
+      repositories: [
+        {
+          repositoryId: "987654321",
+          fullName: "staging-org/alpha-private",
+          private: true,
+          defaultBranch: "main",
+          permissions: { admin: true, pull: true, push: true },
+        },
+        {
+          repositoryId: "987654322",
+          fullName: "staging-org/beta-private",
+          private: true,
+          defaultBranch: "main",
+          permissions: { admin: true, pull: true, push: true },
+        },
+      ],
     });
   });
 

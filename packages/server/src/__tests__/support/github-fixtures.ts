@@ -81,7 +81,7 @@ export function repositoriesPage(
   repositories: GitHubInstallationRepositoriesPage["repositories"],
   totalCount = repositories.length,
 ): GitHubInstallationRepositoriesPage {
-  return { totalCount, repositorySelection: "selected", repositories };
+  return { totalCount, repositories };
 }
 
 export function repository(overrides: Partial<GitHubInstallationRepositoriesPage["repositories"][number]> = {}) {

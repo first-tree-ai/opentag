@@ -45,6 +45,81 @@ function installationsOf(count: number) {
   );
 }
 
+describe("GitHubRepositoryAdmissionService selection and per-user permission enforcement", () => {
+  it("discovers from the installation-level selection and enforces per-user repository rights", async () => {
+    const api = stubGitHubApi();
+    api.listUserInstallations.mockResolvedValue(installationsPage([installation({ repositorySelection: "selected" })]));
+    // The repositories page carries no selection of its own: the installation object is the
+    // only source of truth for all-vs-selected, and each repository carries the exact user's
+    // boolean grants.
+    api.listInstallationRepositories.mockResolvedValue(
+      repositoriesPage(
+        [
+          repository({ repositoryId: "111", permissions: { admin: false, pull: true, push: true } }),
+          repository({ repositoryId: "222", permissions: { admin: false, pull: true, push: false } }),
+        ],
+        2,
+      ),
+    );
+    const service = serviceFor(api);
+
+    const discovery = await service.discoverRepositories({ accessToken: "ghu_token" });
+    expect(discovery.installations).toEqual([
+      {
+        installationId: "55123456",
+        accountLogin: "octocat",
+        accountType: "Organization",
+        repositorySelection: "selected",
+        suspended: false,
+      },
+    ]);
+    expect(discovery.repositories.map((entry) => [entry.repositoryId, entry.permissions])).toEqual([
+      ["111", { pull: true, push: true }],
+      ["222", { pull: true, push: false }],
+    ]);
+
+    const bindingFor = (repositoryId: string, access: "read" | "write"): GitHubRepositoryBinding => ({
+      bindingId: randomUUID(),
+      installationId: "55123456",
+      repositoryId,
+      fullNameDisplay: "octocat/hello-world",
+      agentScopes: [
+        {
+          agentId: randomUUID(),
+          role: "code" as const,
+          access,
+          ...(access === "write" ? { publish: "direct" as const } : {}),
+        },
+      ],
+    });
+
+    // Read on the pull-only repository and write on the push repository are both attested.
+    const admitted = [bindingFor("222", "read"), bindingFor("111", "write")];
+    const proof = await service.verifyAdmission({
+      accessToken: "ghu_token",
+      connectionId: randomUUID(),
+      authorizationVersion: 1n,
+      githubUserId: "42",
+      bindings: admitted,
+    });
+    expect(proof.bindingsHash).toBe(hashGitHubRepositoryBindings(admitted));
+
+    // Write on the pull-only repository is denied on the connected user's own grants.
+    await expect(
+      service.verifyAdmission({
+        accessToken: "ghu_token",
+        connectionId: randomUUID(),
+        authorizationVersion: 1n,
+        githubUserId: "42",
+        bindings: [bindingFor("222", "write")],
+      }),
+    ).rejects.toMatchObject({
+      code: GITHUB_CONNECTION_ERROR_CODES.ADMISSION_PERMISSION_INSUFFICIENT,
+      statusCode: 403,
+    });
+  });
+});
+
 describe("GitHubRepositoryAdmissionService verification budget", () => {
   it("verifies a configuration inside the hard total page budget", async () => {
     const api = stubGitHubApi();

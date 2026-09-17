@@ -106,7 +106,6 @@ export interface GitHubInstallationRepository {
 
 export interface GitHubInstallationRepositoriesPage {
   totalCount: number;
-  repositorySelection: "all" | "selected";
   repositories: GitHubInstallationRepository[];
 }
 
@@ -405,7 +404,12 @@ export class GitHubApiClient {
     };
   }
 
-  /** One page of repositories the user can reach through one installation. */
+  /**
+   * One page of repositories the user can reach through one installation. The official API
+   * 2022-11-28 response carries exactly `total_count` and `repositories`; whether an installation
+   * covers all or only selected repositories is attested on the installation object itself
+   * (`GitHubUserInstallation.repositorySelection`), never on this page.
+   */
   async listInstallationRepositories(input: {
     accessToken: string;
     installationId: string;
@@ -423,13 +427,8 @@ export class GitHubApiClient {
       input.signal,
     );
     if (!isRecord(payload)) throw invalidResponse("The GitHub API repositories response is malformed");
-    const selection = payload.repository_selection;
-    if (selection !== "all" && selection !== "selected") {
-      throw invalidResponse("The GitHub API repositories selection is malformed");
-    }
     return {
       totalCount: parseTotalCount(payload.total_count),
-      repositorySelection: selection,
       repositories: parsePageItems(payload.repositories, "repositories", parseRepository),
     };
   }

@@ -1,9 +1,16 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES, RunnerPiConfigInputSchema } from "@opentag/shared";
+import {
+  RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
+  RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES,
+  type RunnerCloudTurnWorkerRequest,
+  RunnerCloudTurnWorkerRequestSchema,
+  RunnerPiConfigInputSchema,
+} from "@opentag/shared";
 import { z } from "zod";
 import { runRunnerAcceptance } from "./acceptance.js";
+import { runCloudTurnWorker } from "./cloud-turn-worker.js";
 import { copyIsolatedPiConfig } from "./config.js";
 import { registerRunnerSignalCleanup } from "./signals.js";
 
@@ -13,26 +20,35 @@ import { registerRunnerSignalCleanup } from "./signals.js";
  * and land only in a disposable Pi home inside the disposable sandbox filesystem — never in
  * argv, env, logs, or any parent-visible storage. stdout carries exactly one JSON result line;
  * the report is already redacted by the acceptance runner.
+ *
+ * E4 adds the "turn" kind: one Cloud IM delivery Turn through the same disposable-home discipline,
+ * with the model grant and the #633 proxy manifest instead of a raw account-supplied Pi config.
  */
 
-export const WORKER_STDIN_MAX_BYTES = RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES;
+export const WORKER_STDIN_MAX_BYTES = Math.max(
+  RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
+  RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES,
+);
 export const WORKER_DEFAULT_WORKSPACE = "/workspace";
 
-const WorkerRequestSchema = z
-  .object({
-    kind: z.literal("acceptance"),
-    mode: z.enum(["offline", "real"]),
-    piConfig: RunnerPiConfigInputSchema.optional(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.kind === "acceptance" && value.mode === "real" && !value.piConfig) {
-      context.addIssue({ code: "custom", path: ["piConfig"], message: "Real acceptance requires piConfig" });
-    }
-    if (value.mode === "offline" && value.piConfig) {
-      context.addIssue({ code: "custom", path: ["piConfig"], message: "Offline acceptance must not carry piConfig" });
-    }
-  });
+const WorkerRequestSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("acceptance"),
+      mode: z.enum(["offline", "real"]),
+      piConfig: RunnerPiConfigInputSchema.optional(),
+    })
+    .strict()
+    .superRefine((value, context) => {
+      if (value.mode === "real" && !value.piConfig) {
+        context.addIssue({ code: "custom", path: ["piConfig"], message: "Real acceptance requires piConfig" });
+      }
+      if (value.mode === "offline" && value.piConfig) {
+        context.addIssue({ code: "custom", path: ["piConfig"], message: "Offline acceptance must not carry piConfig" });
+      }
+    }),
+  RunnerCloudTurnWorkerRequestSchema,
+]);
 
 export type WorkerRequest = z.infer<typeof WorkerRequestSchema>;
 
@@ -46,6 +62,7 @@ export interface WorkerIo {
 export interface WorkerOptions {
   readonly workspace?: string;
   readonly runAcceptance?: typeof runRunnerAcceptance;
+  readonly runCloudTurn?: typeof runCloudTurnWorker;
   readonly now?: () => number;
 }
 
@@ -94,6 +111,9 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
       emit({ kind: "error", code: "worker_request_invalid", message: "The worker stdin payload is invalid" });
       return 2;
     }
+    if (parsed.kind === "turn") {
+      return await runCloudTurn(parsed, emit, options);
+    }
     // Everything disposable lives under one owned scratch root inside the sandbox filesystem.
     scratch = await mkdtemp(join(tmpdir(), "opentag-runner-worker-"));
     registerRunnerSignalCleanup(async () => {
@@ -136,5 +156,23 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
   } finally {
     registerRunnerSignalCleanup(undefined);
     if (scratch) await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** E4 Cloud Turn: one delivery inside the disposable sandbox filesystem; emits the completion. */
+async function runCloudTurn(
+  request: RunnerCloudTurnWorkerRequest,
+  emit: (value: unknown) => void,
+  options: WorkerOptions,
+): Promise<number> {
+  try {
+    const completion = await (options.runCloudTurn ?? runCloudTurnWorker)(request, {
+      workspace: options.workspace ?? WORKER_DEFAULT_WORKSPACE,
+    });
+    emit({ kind: "result", completion });
+    return completion.outcome === "completed" ? 0 : 1;
+  } catch {
+    emit({ kind: "error", code: "worker_failed", message: "The in-sandbox Turn worker failed" });
+    return 1;
   }
 }

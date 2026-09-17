@@ -89,6 +89,7 @@ export function classifyImInboundPersistenceError(error: unknown): ImInboundPers
 export class ImMessageInbox {
   readonly #afterAdmissionFence: (() => Promise<void>) | undefined;
   readonly #afterMessageAuthority: (() => Promise<void>) | undefined;
+  readonly #afterOverflowExpiry: (() => Promise<void>) | undefined;
   readonly #beforeReliableThreadRootLookup: (() => void) | undefined;
   readonly #beforeSupersedeDeliveries: (() => Promise<void>) | undefined;
   readonly #beforeOverflowExpiry: (() => Promise<void>) | undefined;
@@ -106,6 +107,7 @@ export class ImMessageInbox {
       now?: () => Date;
       afterAdmissionFence?: () => Promise<void>;
       afterMessageAuthority?: () => Promise<void>;
+      afterOverflowExpiry?: () => Promise<void>;
       beforeReliableThreadRootLookup?: () => void;
       beforeSupersedeDeliveries?: () => Promise<void>;
       beforeOverflowExpiry?: () => Promise<void>;
@@ -118,6 +120,7 @@ export class ImMessageInbox {
     this.#onTaskCreated = options.onTaskCreated;
     this.#afterAdmissionFence = options.afterAdmissionFence;
     this.#afterMessageAuthority = options.afterMessageAuthority;
+    this.#afterOverflowExpiry = options.afterOverflowExpiry;
     this.#beforeReliableThreadRootLookup = options.beforeReliableThreadRootLookup;
     this.#beforeSupersedeDeliveries = options.beforeSupersedeDeliveries;
     this.#beforeOverflowExpiry = options.beforeOverflowExpiry;
@@ -665,6 +668,15 @@ export class ImMessageInbox {
           eq(imMessageDeliveries.attention, attention),
           eq(imMessageDeliveries.state, "pending"),
           isNull(imMessageDeliveries.reason),
+          // A bucket only overflows while its Session is positively placed on a Local Computer:
+          // Cloud-placed or unclassifiable buckets keep every pending delivery durable, no pass queued.
+          sql`exists (
+            select 1
+            from session_placements as placement
+            inner join computers as computer on computer.id = placement.computer_id
+            where placement.session_id = im_message_deliveries.session_id
+              and computer.kind = 'local'
+          )`,
         ),
       );
     return Number(row?.count ?? 0) > capacity;
@@ -696,6 +708,7 @@ export class ImMessageInbox {
         await this.#database.transaction((transaction) =>
           this.#expireOverflow(transaction, candidate.sessionId, candidate.attention),
         );
+        await this.#afterOverflowExpiry?.();
       })
       .catch((error: unknown) => {
         this.#logger?.error(
@@ -719,6 +732,8 @@ export class ImMessageInbox {
     attention: DeliveryAttention,
   ): Promise<void> {
     const capacity = attention === "direct" ? 100 : 500;
+    // Re-check the current placement here: it can change since the count, and a bucket no longer
+    // positively Local-placed must lose nothing.
     await transaction.execute(sql`
       with overflow as (
         select d.id
@@ -728,6 +743,13 @@ export class ImMessageInbox {
           and d.attention = ${attention}
           and d.state = 'pending'
           and d.reason is null
+          and exists (
+            select 1
+            from session_placements as placement
+            inner join computers as computer on computer.id = placement.computer_id
+            where placement.session_id = d.session_id
+              and computer.kind = 'local'
+          )
         order by m.occurred_at desc, d.id desc
         offset ${capacity}
       )

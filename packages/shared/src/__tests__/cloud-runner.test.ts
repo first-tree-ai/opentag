@@ -4,7 +4,12 @@ import {
   RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
   RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES,
   RunnerAcceptanceRunFrameSchema,
+  RunnerAuthFrameSchema,
+  RunnerClientFrameSchema,
+  RunnerCloudModelGrantSchema,
+  RunnerCloudTurnWorkerRequestSchema,
   RunnerPiConfigInputSchema,
+  RunnerServerFrameSchema,
   serializeRunnerAcceptanceWorkerStdin,
 } from "../cloud-runner.js";
 
@@ -74,5 +79,135 @@ describe("Runner Pi config wire bounds", () => {
       kind: "acceptance",
       mode: "offline",
     });
+  });
+});
+
+describe("E4 Cloud delivery protocol", () => {
+  it("parses a worst-case issued model grant token inside the 4096-byte wire budget", () => {
+    // Worst supported claim lengths: 128-char model, 256-char execution id, two UUIDs + jti.
+    const model = "m".repeat(128);
+    const executionId = "e".repeat(256);
+    const uuid = "12345678-1234-4123-8123-123456789abc";
+    const payload = Buffer.from(
+      JSON.stringify({
+        aud: "opentag-cloud-model",
+        exec: executionId,
+        exp: 1_900_000_000,
+        iat: 1_800_000_000,
+        iss: "opentag",
+        jti: uuid,
+        model,
+        sandboxId: uuid,
+        sessionId: uuid,
+      }),
+      "utf8",
+    ).toString("base64url");
+    const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" }), "utf8").toString("base64url");
+    // HS256 signature is exactly 32 bytes -> 43 base64url characters.
+    const worstCaseToken = `${header}.${payload}.${"s".repeat(43)}`;
+    expect(Buffer.byteLength(worstCaseToken, "utf8")).toBeLessThan(4096);
+    const frame = {
+      type: "delivery:verified" as const,
+      requestId: "0b12b3c0-0000-4000-8000-000000000001",
+      status: "verified" as const,
+      model: {
+        baseUrl: "https://server.example.com/api/v1/cloud-model",
+        expiresAt: new Date(1_900_000_000_000).toISOString(),
+        model,
+        token: worstCaseToken,
+      },
+    };
+    expect(RunnerServerFrameSchema.safeParse(frame).success).toBe(true);
+    // The bound is inclusive at 4096 and rejects a single byte more.
+    expect(RunnerCloudModelGrantSchema.safeParse({ ...frame.model, token: "t".repeat(4096) }).success).toBe(true);
+    expect(RunnerCloudModelGrantSchema.safeParse({ ...frame.model, token: "t".repeat(4097) }).success).toBe(false);
+  });
+
+  it("negotiates the Cloud capability as an optional additive auth/welcome field", () => {
+    const auth = {
+      cloudDeliveryVersion: 1,
+      requestId: "0b12b3c0-0000-4000-8000-000000000002",
+      token: "bootstrap-token",
+      type: "auth" as const,
+    };
+    expect(RunnerAuthFrameSchema.safeParse(auth).success).toBe(true);
+    expect(RunnerClientFrameSchema.safeParse(auth).success).toBe(true);
+    // Legacy E3 auth shape stays parseable without the capability.
+    expect(
+      RunnerAuthFrameSchema.safeParse({
+        requestId: auth.requestId,
+        token: auth.token,
+        type: "auth",
+      }).success,
+    ).toBe(true);
+    const welcome = {
+      cloudDeliveryVersion: 1,
+      environmentGeneration: 1,
+      heartbeatIntervalMs: 15_000,
+      heartbeatTimeoutMs: 45_000,
+      protocolVersion: 1,
+      resourceName: "projects/p/locations/r/instances/ots-s-x",
+      resourceUid: "uid-1",
+      sandboxId: "0b12b3c0-0000-4000-8000-000000000003",
+      sessionId: "0b12b3c0-0000-4000-8000-000000000004",
+      type: "server:welcome" as const,
+    };
+    expect(RunnerServerFrameSchema.safeParse(welcome).success).toBe(true);
+    expect(RunnerServerFrameSchema.safeParse({ ...welcome, resourceUid: null }).success).toBe(true);
+    // Legacy E3 welcome keeps the exact old shape (no capability/resourceUid).
+    const { cloudDeliveryVersion: _capability, resourceUid: _uid, ...legacy } = welcome;
+    expect(RunnerServerFrameSchema.safeParse(legacy).success).toBe(true);
+  });
+
+  it("carries the allocation-stable Pi continuity directory in the Turn worker document", () => {
+    const request = {
+      delivery: {
+        agentId: "0b12b3c0-0000-4000-8000-000000000005",
+        attention: "direct",
+        content: {
+          kind: "text",
+          providerRef: {
+            appId: "app",
+            botOpenId: "bot",
+            chatId: "chat",
+            messageId: "msg",
+            provider: "feishu",
+            teamBrand: "feishu",
+          },
+          text: "hello",
+        },
+        deliveryId: "0b12b3c0-0000-4000-8000-000000000006",
+        imMessageId: "0b12b3c0-0000-4000-8000-000000000007",
+        placementGeneration: 1,
+        requestId: "0b12b3c0-0000-4000-8000-000000000008",
+        runtime: {
+          agentId: "0b12b3c0-0000-4000-8000-000000000005",
+          contextTreeRepository: null,
+          execution: { approvalPolicy: "never", networkAccess: true },
+          instructions: { agent: "Agent.", platform: "Platform." },
+          model: "deepseek-v4.1-flash-expires-on-0910",
+          provider: "pi",
+          revision: {
+            agent: { id: "0b12b3c0-0000-4000-8000-000000000009", sequence: 1 },
+            session: { id: "0b12b3c0-0000-4000-8000-00000000000a", sequence: 1 },
+          },
+          workspace: { mode: "empty_on_create", sharing: "agent", workspaceId: "0b12b3c0-0000-4000-8000-00000000000b" },
+        },
+        sessionId: "0b12b3c0-0000-4000-8000-00000000000c",
+        type: "im:deliver" as const,
+      },
+      executionDir: "/run/opentag-execution/turn-1",
+      kind: "turn" as const,
+      model: {
+        baseUrl: "https://server.example.com/api/v1/cloud-model",
+        expiresAt: new Date(1_900_000_000_000).toISOString(),
+        model: "deepseek-v4.1-flash-expires-on-0910",
+        token: "unit-execution-token-0123456789abcdef",
+      },
+      piSessionDirectory: "/tmp/opentag-cloud-turn/pi-session",
+    };
+    expect(RunnerCloudTurnWorkerRequestSchema.safeParse(request).success).toBe(true);
+    const { piSessionDirectory: _continuity, ...withoutContinuity } = request;
+    expect(RunnerCloudTurnWorkerRequestSchema.safeParse(withoutContinuity).success).toBe(true);
   });
 });

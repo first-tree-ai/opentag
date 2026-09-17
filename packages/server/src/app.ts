@@ -16,6 +16,7 @@ import {
   rateLimitFailureMetadata,
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
+import { type CloudModelProxyRouteOptions, registerCloudModelProxyRoutes } from "./api/cloud-model-proxy.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
 import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
@@ -54,6 +55,7 @@ import {
 } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
+import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
@@ -81,7 +83,11 @@ export interface CreateAppOptions {
   runnerChannel?: {
     tokens: RunnerBootstrapTokenService;
     hub: RunnerHub;
+    /** E4 Session-scoped Cloud IM delivery over the Runner channel. */
+    cloudDelivery?: CloudDeliveryOwner;
   };
+  /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
+  cloudModel?: CloudModelProxyRouteOptions;
   machineAuthService?: MachineAuthService;
   connectCode?: {
     issuer: ConnectCodeIssuer;
@@ -525,6 +531,12 @@ export function createApp(options: CreateAppOptions = {}) {
       registerComputerRoutes(app, options.machineAuthService);
     }
     registerExecutionWebSocketRoutes(app, options);
+  }
+
+  // The controlled Cloud model path authenticates with its own execution-scoped bearer token and
+  // never needs the account auth surface, so it registers whenever the deployment configured it.
+  if (options.cloudModel) {
+    registerCloudModelProxyRoutes(app, options.cloudModel);
   }
 
   if (options.webAppRoot) registerWebApp(app, options.webAppRoot);

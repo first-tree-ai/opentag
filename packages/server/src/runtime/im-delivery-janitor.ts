@@ -173,14 +173,24 @@ export interface ImDeliveryJanitorOptions {
 export async function runImDeliveryExpiry(database: DatabaseClient, options: ImDeliveryJanitorOptions): Promise<void> {
   const now = options.clock().getTime();
   const expiryNow = new Date(now).toISOString();
+  // Expire only deliveries whose Session is positively placed on a Local Computer: Cloud-placed
+  // deliveries stay durable while Cloud execution is pending, and a missing placement or Computer
+  // row fails conservative. The guard precedes the batch limit so a Cloud backlog cannot starve it.
   await database.execute(sql`
     with expired as (
-      select id
-      from im_message_deliveries
-      where state = 'pending'
-        and reason is null
-        and expires_at <= ${expiryNow}::timestamptz
-      order by expires_at asc, id asc
+      select delivery.id
+      from im_message_deliveries as delivery
+      where delivery.state = 'pending'
+        and delivery.reason is null
+        and delivery.expires_at <= ${expiryNow}::timestamptz
+        and exists (
+          select 1
+          from session_placements as placement
+          inner join computers as computer on computer.id = placement.computer_id
+          where placement.session_id = delivery.session_id
+            and computer.kind = 'local'
+        )
+      order by delivery.expires_at asc, delivery.id asc
       limit ${options.expiryBatchSize}
       for update skip locked
     )

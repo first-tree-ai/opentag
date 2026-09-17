@@ -12,6 +12,7 @@ import {
 } from "@opentag/shared";
 import { z } from "zod";
 import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
+import { type CloudModelConfig, resolveCloudModelConfig } from "./cloud-model-config.js";
 import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
 
 export { parseCloudStorageBase } from "./cloud-identities-config.js";
@@ -581,6 +582,11 @@ export interface ServerConfig {
    * digest-pinned Runner image, GCP coordinates, backend origin, and Direct VPC attachment.
    */
   cloudRunner: CloudRunnerConfig;
+  /**
+   * E4 controlled model path for Sandbox Pi executions. Off by default; enabling requires the
+   * Cloud Runner plus the fixed upstream, environment-only master key, and a model allowlist.
+   */
+  cloudModel: CloudModelConfig;
 }
 
 export type CloudIdentitiesConfig = { enabled: false } | { enabled: true; storageBase: string; runnerVersion: string };
@@ -747,6 +753,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       parsed.OPENTAG_CLOUD_RUNNER_VERSION,
     ),
     cloudRunner: resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED),
+    cloudModel: resolveCloudModelConfig(
+      environment,
+      resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED).enabled,
+    ),
   };
 }
 

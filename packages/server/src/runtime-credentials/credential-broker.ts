@@ -1,4 +1,9 @@
-import type { RuntimeCredentialProvider, RuntimeCredentialRejectCode, RuntimeImOutboxContext } from "@opentag/shared";
+import type {
+  RuntimeCredentialProvider,
+  RuntimeCredentialRejectCode,
+  RuntimeCredentialServerFrame,
+  RuntimeImOutboxContext,
+} from "@opentag/shared";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeCapabilityRecord, RuntimeCapabilityStore } from "./capability-store.js";
 import type { RuntimeExecutionAuthority } from "./execution-authority.js";
@@ -65,6 +70,21 @@ export interface RuntimeConnectionFence {
   isCurrent(computerId: string, instanceId: string, connectionId: string): boolean;
   /** Current active Cloud control identity; undefined for Local/absent connections. */
   currentControlIdentity?(computerId: string): RuntimeControlIdentity | undefined;
+}
+
+/**
+ * The single control-connection authority the credential owner consults. Production composes the
+ * Local registry fence with the E4 Cloud Runner fence so one owner sweep, one open check, and one
+ * revocation route cover both transports without either transport knowing the other's authority
+ * chain. Revocation notifications go to the exact owning connection through `sendRevoked`; absent
+ * means the registry's own send path is used.
+ */
+export interface RuntimeControlAuthority {
+  isCurrentConnection(computerId: string, instanceId: string, connectionId: string): boolean;
+  /** Registry-shaped current-instance lookup; Cloud delegates to the exact connection fence. */
+  currentInstanceId?(computerId: string): string | undefined;
+  currentControlIdentity?(computerId: string): RuntimeControlIdentity | undefined;
+  sendRevoked?(computerId: string, instanceId: string, frame: RuntimeCredentialServerFrame): Promise<void> | void;
 }
 
 export interface RuntimeCredentialBrokerOptions {

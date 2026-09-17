@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -16,6 +16,7 @@ import {
   SANDBOX_ROOTFS,
 } from "../runner/native-sandbox.js";
 import {
+  cloudRunnerDirectories,
   loadRunnerServeConfig,
   type RunnerServeConfig,
   resolveRunnerBackendUrl,
@@ -23,11 +24,14 @@ import {
 } from "../runner/serve.js";
 import type { RunnerAcceptanceReport } from "../runner/types.js";
 import { runRunnerWorker, WORKER_STDIN_MAX_BYTES } from "../runner/worker.js";
+import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
 
 const BOOTSTRAP_TOKEN = "unit-bootstrap-token-secret";
+/** Fixed welcome Session identity the WSS harness uses; Cloud deliveries must match it. */
+const WSS_SESSION_ID = "5f9a1c3e-2d4b-4e6f-8a1b-9c0d1e2f3a4b";
 
 function io() {
   const stdout: string[] = [];
@@ -490,6 +494,7 @@ async function startWss(
   onAuth?: (frame: Record<string, unknown>) => boolean,
   timing = { interval: 50, timeout: 100_000 },
   behavior: WssBehavior = {},
+  cloud: { readonly capability?: 1; readonly resourceUid?: string | null } = {},
 ): Promise<WssHarness> {
   const port = await freePort();
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
@@ -511,9 +516,11 @@ async function startWss(
           type: "server:welcome",
           protocolVersion: 1,
           sandboxId: "2b63a21e-f6c7-4474-91ea-4dabf0566a24",
-          sessionId: "5f9a1c3e-2d4b-4e6f-8a1b-9c0d1e2f3a4b",
+          sessionId: WSS_SESSION_ID,
           environmentGeneration: 1,
           resourceName: "projects/p/locations/r/instances/ots-s-2b63a21ef6c7-1",
+          ...(cloud.capability ? { cloudDeliveryVersion: cloud.capability } : {}),
+          ...(cloud.capability ? { resourceUid: cloud.resourceUid ?? null } : {}),
           heartbeatIntervalMs: timing.interval,
           heartbeatTimeoutMs: timing.timeout,
         }),
@@ -578,7 +585,27 @@ function serveConfig(url: string): RunnerServeConfig {
     bootstrapToken: BOOTSTRAP_TOKEN,
     sandboxName: "ots-s-2b63a21ef6c7-1",
     workspace: "/tmp/opentag-runner-test-ws",
+    stateDir: "/tmp/opentag-runner-test-state",
   };
+}
+
+function modelGrantFor(delivery: ReturnType<typeof cloudDeliveryFixture>) {
+  return {
+    baseUrl: "https://server.example.com/api/v1/cloud-model",
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    model: delivery.runtime.model,
+    token: "unit-execution-token-0123456789abcdef",
+  };
+}
+
+/** Bounded explicit completion waiter for real-socket assertions. */
+async function waitFor(check: () => boolean | Promise<boolean>, description: string, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await check()) return;
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${description}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 describe("runRunnerServe", () => {
@@ -940,6 +967,347 @@ describe("Runner cancellation and connection lifetime", () => {
     stop.abort();
     expect(await running).toBe(143);
   });
+  it("mounts only the public state root and keeps the journal/private material disjoint", () => {
+    const dirs = cloudRunnerDirectories("/tmp/opentag-runner-state-layout");
+    expect(dirs.publicRoot).toBe("/tmp/opentag-runner-state-layout/bridge-public");
+    for (const privatePath of [dirs.journalDir, dirs.privateTurnRoot]) {
+      expect(privatePath === dirs.publicRoot || privatePath.startsWith(`${dirs.publicRoot}/`)).toBe(false);
+      expect(dirs.publicRoot.startsWith(`${privatePath}/`)).toBe(false);
+    }
+  });
+
+  it("negotiates E4 Cloud delivery and runs a real loopback duplicate-verify burst exactly once", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-cloud-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    const stop = new AbortController();
+    const workerInputs: { stdin: string; timeoutMs: number }[] = [];
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        cloudTurnSeams: {
+          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          runWorker: async (input) => {
+            workerInputs.push(input);
+            return {
+              code: 0,
+              stderr: "",
+              stdout: `${JSON.stringify({
+                kind: "result",
+                completion: { executionEffects: "completed", finalText: "burst", outcome: "completed" },
+              })}\n`,
+            };
+          },
+        },
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory: fakeSandboxFactory(),
+        signal: stop.signal,
+        stderr: output.stderr,
+      },
+    );
+    const auth = await wss.waitFor("auth");
+    expect(auth.cloudDeliveryVersion).toBe(1);
+    await wss.waitFor("runner:ready");
+    const delivery = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    const received = (await wss.waitFor("delivery:received")) as { deliveryId?: string };
+    expect(received.deliveryId).toBe(delivery.deliveryId);
+    const verified = {
+      type: "delivery:verified",
+      requestId: delivery.requestId,
+      status: "verified",
+      model: {
+        baseUrl: "https://server.example.com/api/v1/cloud-model",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        model: delivery.runtime.model,
+        token: "unit-execution-token-0123456789abcdef",
+      },
+    };
+    // Burst duplicate verifies concurrently over the real socket: exactly one worker may start.
+    for (let index = 0; index < 4; index += 1) wss.send(verified);
+    const reportFrame = (await wss.waitFor("delivery:report")) as {
+      report: { outcome: string; resultHash: string; turnId: string };
+    };
+    expect(reportFrame.report.outcome).toBe("completed");
+    await waitFor(() => workerInputs.length === 1, "single cloud worker");
+    // The worker stdin never carries any trusted (private/journal) host path from the Runner state root.
+    expect(workerInputs[0]?.stdin).not.toContain(stateDir);
+    expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(1);
+    wss.send({
+      type: "delivery:report:ack",
+      requestId: "ack-1",
+      resultHash: reportFrame.report.resultHash,
+      status: "recorded",
+      turnId: reportFrame.report.turnId,
+    });
+    await waitFor(async () => (await readdir(join(stateDir, "journal"))).length === 0, "durable ack retirement");
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("surfaces a durable-receive store failure instead of swallowing it", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-storefail-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    const delivery = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        cloudTurnSeams: {
+          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          runWorker: async () => ({ code: 0, stderr: "", stdout: "" }),
+        },
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory: fakeSandboxFactory(),
+        signal: stop.signal,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    // A directory squatting on the journal entry path makes the durable write fail for real.
+    await mkdir(join(stateDir, "journal", `${delivery.deliveryId}.json`), { recursive: true });
+    wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    const socket = wss.sockets[0] as WsSocket;
+    await new Promise<void>((resolve) => {
+      if (socket.readyState === socket.CLOSED) resolve();
+      else socket.once("close", () => resolve());
+    });
+    // The failure is reported and the receipt is never acknowledged as durable.
+    expect(output.chunks.stderr.join("")).toMatch(/durable boundary failed|delivery:run failed/);
+    expect(wss.frames.some((frame) => frame.type === "delivery:received")).toBe(false);
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("cleans the native namespace immediately after an interrupted turn and blocks queued turns and acceptance until verified", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-reset-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    let markResetStarted: () => void = () => undefined;
+    const resetStarted = new Promise<void>((resolve) => {
+      markResetStarted = resolve;
+    });
+    let releaseReset: () => void = () => undefined;
+    const resetGate = new Promise<void>((resolve) => {
+      releaseReset = resolve;
+    });
+    let destroyCalls = 0;
+    let launchCalls = 0;
+    let probeCalls = 0;
+    let child: ReturnType<typeof spawn> | undefined;
+    let markChildExited: () => void = () => undefined;
+    const childExited = new Promise<void>((resolve) => {
+      markChildExited = resolve;
+    });
+    const workerCalls: string[] = [];
+    const sandboxFactory = () =>
+      ({
+        destroy: async () => {
+          destroyCalls += 1;
+          markResetStarted();
+          await resetGate;
+          // Emulate the native `delete --force` reclaiming the whole namespace process tree.
+          if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+          await childExited;
+        },
+        exec: async () => {
+          throw new Error("unexpected native exec");
+        },
+        launch: async () => {
+          launchCalls += 1;
+        },
+        probe: async () => {
+          probeCalls += 1;
+          return { nodeVersion: "v24.19.0", piVersion: "0.84.2", runnerVersion: "1.0.0" };
+        },
+      }) as unknown as NativeSandbox;
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        cloudTurnSeams: {
+          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          runWorker: async (input) => {
+            const deliveryId = (JSON.parse(input.stdin) as { delivery: { deliveryId: string } }).delivery.deliveryId;
+            workerCalls.push(deliveryId);
+            if (workerCalls.length === 1) {
+              // The exec wrapper exits while its owned child keeps running: a cancelled report
+              // must wait for the verified namespace cleanup.
+              child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], { stdio: "ignore" });
+              child.once("exit", () => markChildExited());
+              return {
+                code: 1,
+                stderr: "",
+                stdout: `${JSON.stringify({
+                  kind: "result",
+                  completion: {
+                    errorReason: "client_shutdown",
+                    executionEffects: "may_have_occurred",
+                    outcome: "cancelled",
+                  },
+                })}\n`,
+              };
+            }
+            return {
+              code: 0,
+              stderr: "",
+              stdout: `${JSON.stringify({
+                kind: "result",
+                completion: { executionEffects: "completed", finalText: "after-reset", outcome: "completed" },
+              })}\n`,
+            };
+          },
+        },
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory,
+        signal: stop.signal,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    // Startup already launched/probed once; the reset must add exactly one more verified cycle.
+    const launchesBefore = launchCalls;
+    const probesBefore = probeCalls;
+    const first = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    wss.send({ type: "delivery:run", requestId: first.requestId, delivery: first });
+    await wss.waitFor("delivery:received");
+    wss.send({
+      type: "delivery:verified",
+      requestId: first.requestId,
+      status: "verified",
+      model: modelGrantFor(first),
+    });
+    // NO next delivery is sent: cleanup starts immediately, while the turn occupation is reserved.
+    await resetStarted;
+    expect(destroyCalls).toBe(1);
+    expect(child?.exitCode).toBeNull();
+    expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(0);
+    // A queued second turn and E3 acceptance stay blocked through the pending cleanup.
+    wss.send({ type: "acceptance:run", requestId: "busy-1", mode: "offline", deadlineAtMs: Date.now() + 60_000 });
+    const busy = (await wss.waitFor("acceptance:result")) as { failure?: { code?: string } };
+    expect(busy.failure?.code).toBe("runner_busy");
+    const second = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    wss.send({ type: "delivery:run", requestId: second.requestId, delivery: second });
+    await waitFor(
+      () => wss.frames.filter((frame) => frame.type === "delivery:received").length === 2,
+      "second receipt",
+    );
+    wss.send({
+      type: "delivery:verified",
+      requestId: second.requestId,
+      status: "verified",
+      model: modelGrantFor(second),
+    });
+    const secondReceipt = wss.frames.find(
+      (frame) => frame.type === "delivery:received" && frame.deliveryId === second.deliveryId,
+    ) as { turnId?: string } | undefined;
+    // The query result is serialized behind the second verified frame: observing it proves that
+    // frame was processed and only queued, never started before cleanup completed.
+    wss.send({
+      type: "delivery:query",
+      requestId: "probe-q",
+      deliveryId: second.deliveryId,
+      turnId: secondReceipt?.turnId,
+    });
+    await waitFor(
+      () => wss.frames.some((frame) => frame.type === "delivery:query:result" && frame.requestId === "probe-q"),
+      "second verified processed",
+    );
+    expect(workerCalls).toHaveLength(1);
+    expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(0);
+    releaseReset();
+    await waitFor(() => wss.frames.filter((frame) => frame.type === "delivery:report").length === 1, "first report");
+    const firstReport = wss.frames.find((frame) => frame.type === "delivery:report") as {
+      report?: { outcome?: string };
+    };
+    expect(firstReport.report?.outcome).toBe("cancelled");
+    expect(child?.signalCode).toBe("SIGKILL");
+    await waitFor(() => wss.frames.filter((frame) => frame.type === "delivery:report").length === 2, "second report");
+    expect(workerCalls).toHaveLength(2);
+    expect(destroyCalls).toBe(1);
+    expect(launchCalls - launchesBefore).toBe(1);
+    expect(probeCalls - probesBefore).toBe(1);
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("keeps a legacy E3 welcome Cloud-free and still runs E3 acceptance", async () => {
+    const wss = await startWss();
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-legacy-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    const execs: FakeSandbox["execs"] = [];
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory: fakeSandboxFactory(execs),
+        signal: stop.signal,
+        sleep: async () => undefined,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    const delivery = cloudDeliveryFixture({ sessionId: WSS_SESSION_ID });
+    wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    const firstSocket = wss.sockets[0] as WsSocket;
+    await new Promise<void>((resolve) => {
+      if (firstSocket.readyState === firstSocket.CLOSED) resolve();
+      else firstSocket.once("close", () => resolve());
+    });
+    // A Cloud frame on a legacy channel is a protocol violation and never reaches Cloud handlers.
+    expect(wss.frames.some((frame) => String(frame.type).startsWith("delivery:"))).toBe(false);
+    await waitFor(() => wss.frames.filter((frame) => frame.type === "runner:ready").length >= 2, "legacy reconnect");
+    wss.send({ type: "acceptance:run", requestId: "e3-1", mode: "offline", deadlineAtMs: Date.now() + 60_000 });
+    const result = await wss.waitFor("acceptance:result");
+    expect(["passed", "failed"]).toContain(result.outcome);
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("retries transiently when a Cloud welcome has no tracked allocation UID", async () => {
+    const wss = await startWss(undefined, { interval: 50, timeout: 100_000 }, {}, { capability: 1, resourceUid: null });
+    const stop = new AbortController();
+    const output = io();
+    // Real backoff: the first UID-less welcome cycles the connection and the backoff path
+    // reconnects; the Runner must never publish runner:ready or Cloud state on that connection.
+    const running = runRunnerServe(serveConfig(wss.url), {
+      installSignalHandlers: false,
+      randomJitter: () => 0,
+      sandboxFactory: fakeSandboxFactory(),
+      signal: stop.signal,
+      stderr: output.stderr,
+    });
+    await waitFor(() => wss.sockets.length >= 2, "transient UID reattach");
+    expect(wss.frames.filter((frame) => frame.type === "runner:ready")).toHaveLength(0);
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
   it("rejects expired commands without running a worker", async () => {
     const wss = await startWss(),
       stop = new AbortController(),

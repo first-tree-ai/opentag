@@ -1,7 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { once } from "node:events";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
-import { connect, createServer, type Server, type Socket } from "node:net";
+import { chmod, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import {
@@ -14,23 +12,15 @@ import {
   type RuntimeProxyLoopbackCaMaterial,
 } from "../runtime/runtime-proxy-loopback-adapter.js";
 import {
-  buildRuntimeProxyEnvironment,
-  type RuntimeProxyExecutionLayout,
-  renderRuntimeProxyGitCredentialHelper,
-} from "../runtime/runtime-proxy-material.js";
-import {
-  CLOUD_CONNECT_PROXY_PORT,
-  CLOUD_EXECUTION_MOUNT,
-  CLOUD_SANDBOX_CA_FILE,
-  CLOUD_SANDBOX_CA_PROGRAM,
-  CLOUD_SANDBOX_ENTRY_PROGRAM,
-  CLOUD_SLACK_API_PORT,
-} from "./sandbox-entry.js";
+  type BridgeSocketResources,
+  closeBridgeSockets,
+  createBridgeSocketResources,
+  publishExecutionMaterial,
+} from "./bridge-material.js";
+import { CLOUD_EXECUTION_MOUNT } from "./sandbox-entry.js";
 
 const IMAGE = /^(?:[a-zA-Z0-9][a-zA-Z0-9_.:/-]*)(?:@sha256:[a-f0-9]{64})?$/;
-const MAX_PROXY_SOCKETS = 64;
 const MAX_PIPE_BYTES = 4 * 1024 * 1024;
-const SOCKET_PATH_MAX_BYTES = 100;
 
 export interface CloudSandboxCommandOptions {
   /** Trusted deployment image selection, not a value read from Agent content. */
@@ -55,14 +45,11 @@ export interface CloudSandboxCredentialBridgeOpenOptions extends RuntimeCredenti
   readonly spawnProcess?: typeof spawn;
 }
 
-interface BridgeResources {
+interface BridgeResources extends BridgeSocketResources {
   adapter?: RuntimeProxyLoopbackAdapter;
-  readonly closing: { value: boolean };
   readonly directory: string;
   public?: string;
   relay?: RuntimeCredentialRelay;
-  readonly servers: Server[];
-  readonly sockets: Set<Socket>;
 }
 
 interface ReadyBridgeResources extends BridgeResources {
@@ -118,7 +105,7 @@ export class CloudSandboxCredentialBridge {
     options.signal?.throwIfAborted();
 
     const directory = await createBridgeDirectory(options.temporaryRoot);
-    const resources: BridgeResources = { closing: { value: false }, directory, servers: [], sockets: new Set() };
+    const resources: BridgeResources = { ...createBridgeSocketResources(), directory };
     try {
       const relay = await RuntimeCredentialRelay.open(options, options.subject, options.signal);
       resources.relay = relay;
@@ -133,7 +120,12 @@ export class CloudSandboxCredentialBridge {
         openStream: (request) => relay.openProviderStream(request),
         verifyHandle: (provider, handle) => relay.verifyLocalHandle(provider, handle),
       });
-      resources.public = await publishBridgeMaterial(resources);
+      resources.public = await publishExecutionMaterial(
+        { adapter: resources.adapter, relay },
+        resources,
+        join(directory, "public"),
+        { includeEntryPrograms: true },
+      );
       const bridge = new CloudSandboxCredentialBridge(resources as ReadyBridgeResources, options.spawnProcess ?? spawn);
       const abort = () => void bridge.close();
       relay.signal.addEventListener("abort", abort, { once: true });
@@ -252,100 +244,6 @@ export class CloudSandboxCredentialBridge {
   }
 }
 
-/** Public per-execution material only: handles, public CA, CLI config, and opaque local endpoints. */
-async function publishBridgeMaterial(resources: BridgeResources): Promise<string> {
-  const adapter = resources.adapter;
-  const relay = resources.relay;
-  if (!adapter || !relay) throw new Error("Cloud execution material cannot be published");
-  const published = join(resources.directory, "public");
-  await mkdir(published, { mode: 0o755 });
-  const caFile = join(published, CLOUD_SANDBOX_CA_FILE);
-  await copyFile(adapter.caCertPath, caFile);
-  await chmod(caFile, 0o444);
-  await listenProxySocket(resources, "connect", adapter.connectProxyUrl, join(published, "connect.sock"));
-  await listenProxySocket(resources, "slack", adapter.slackApiHost, join(published, "slack.sock"));
-  const handles = new Map(relay.providers.map((entry) => [entry.provider, relay.localHandleFor(entry.provider)]));
-  const layout: RuntimeProxyExecutionLayout = {
-    adapterCaCertPath: `${CLOUD_EXECUTION_MOUNT}/${CLOUD_SANDBOX_CA_FILE}`,
-    executionDir: CLOUD_EXECUTION_MOUNT,
-    gitCredentialHelperPath: `${CLOUD_EXECUTION_MOUNT}/git-credential-helper`,
-    gitConfigPath: `${CLOUD_EXECUTION_MOUNT}/gitconfig`,
-    larkConfigDir: "/tmp/opentag/lark",
-    slackConfigDir: "/tmp/opentag/slack",
-  };
-  const environment = buildRuntimeProxyEnvironment({
-    adapterCaCertPath: layout.adapterCaCertPath,
-    cliMetadata: (provider) => relay.cliMetadataFor(provider),
-    connectProxyUrl: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,
-    handles,
-    layout,
-    slackApiHost: `https://127.0.0.1:${CLOUD_SLACK_API_PORT}`,
-  });
-  await writePublicFile(
-    join(published, "environment.json"),
-    JSON.stringify({ executionId: relay.executionId, environment }),
-  );
-  await writePublicFile(join(published, "entry.mjs"), CLOUD_SANDBOX_ENTRY_PROGRAM);
-  await writePublicFile(join(published, "sandbox-ca.mjs"), CLOUD_SANDBOX_CA_PROGRAM);
-  await writePublicFile(join(published, "gitconfig"), "");
-  await writePublicFile(
-    join(published, "git-credential-helper"),
-    renderRuntimeProxyGitCredentialHelper(handles.get("github") ?? "unavailable"),
-    0o555,
-  );
-  await mkdir(join(published, "bin"), { mode: 0o755 });
-  await writePublicFile(
-    join(published, "bin", "slack"),
-    `#!/bin/sh\nexec /opt/opentag/tools/bin/slack --apihost https://127.0.0.1:${CLOUD_SLACK_API_PORT} "$@"\n`,
-    0o555,
-  );
-  return published;
-}
-
-async function listenProxySocket(
-  resources: BridgeResources,
-  name: string,
-  endpoint: string,
-  socketPath: string,
-): Promise<void> {
-  const target = new URL(endpoint);
-  const port = Number(target.port);
-  if (!Number.isInteger(port) || port <= 0 || port > 65_535) throw new Error("Invalid loopback endpoint");
-  if (Buffer.byteLength(socketPath) > SOCKET_PATH_MAX_BYTES) {
-    throw new Error(`The trusted ${name} socket path is too long`);
-  }
-  const server = createServer();
-  server.on("connection", (client) => proxyLoopbackConnection(client, port, resources));
-  resources.servers.push(server);
-  server.listen(socketPath);
-  await once(server, "listening");
-  await chmod(socketPath, 0o666);
-}
-
-/** Bridges one in-container loopback connection to the trusted per-execution Unix socket. */
-function proxyLoopbackConnection(client: Socket, port: number, resources: BridgeResources): void {
-  resources.sockets.add(client);
-  client.once("close", () => resources.sockets.delete(client));
-  if (resources.closing.value || resources.sockets.size > MAX_PROXY_SOCKETS) {
-    client.destroy();
-    return;
-  }
-  const remote = connect({ host: "127.0.0.1", port });
-  resources.sockets.add(remote);
-  const close = () => {
-    client.destroy();
-    remote.destroy();
-    resources.sockets.delete(client);
-    resources.sockets.delete(remote);
-  };
-  client.once("error", close);
-  remote.once("error", close);
-  client.once("close", close);
-  remote.once("close", close);
-  client.pipe(remote);
-  remote.pipe(client);
-}
-
 async function createBridgeDirectory(temporaryRoot?: string): Promise<string> {
   const root = await realpath(temporaryRoot ?? tmpdir());
   const directory = await mkdtemp(join(root, "ot-bridge-"));
@@ -372,11 +270,6 @@ async function assertSandboxWorkspace(workspace: string, resources: BridgeResour
 
 function isSameOrWithin(parent: string, child: string): boolean {
   return child === parent || child.startsWith(`${parent}${sep}`);
-}
-
-async function writePublicFile(path: string, content: string, mode = 0o444): Promise<void> {
-  await writeFile(path, content, { mode });
-  await chmod(path, mode);
 }
 
 function captureDockerOutput(
@@ -412,10 +305,7 @@ function waitForDockerExit(child: ChildProcess): Promise<number> {
 }
 
 async function disposeBridgeResources(resources: BridgeResources): Promise<void> {
-  resources.closing.value = true;
-  for (const socket of [...resources.sockets]) socket.destroy();
-  resources.sockets.clear();
-  await Promise.all(resources.servers.map((server) => new Promise<void>((done) => server.close(() => done()))));
+  await closeBridgeSockets(resources);
   await resources.adapter?.close().catch(() => undefined);
   await resources.relay?.close("cloud_bridge_closed").catch(() => undefined);
   await rm(resources.directory, { recursive: true, force: true }).catch(() => undefined);

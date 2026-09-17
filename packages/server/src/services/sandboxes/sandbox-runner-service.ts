@@ -6,10 +6,15 @@ import type {
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, notInArray, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { sandboxes } from "../../db/schema/index.js";
+import { computers, sandboxes } from "../../db/schema/index.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
 import { SandboxServiceError, sandboxNotFound } from "./errors.js";
-import { loadManagedSandboxById, loadOwnedSandbox } from "./owned-sandbox.js";
+import {
+  loadManagedSandboxById,
+  loadOwnedSandbox,
+  loadSandboxOwnerById,
+  loadSandboxRecordById,
+} from "./owned-sandbox.js";
 import type { RunnerBootstrapClaims, RunnerBootstrapTokenService } from "./runner-bootstrap-token.js";
 import { RunnerAcceptanceUnavailableError, type RunnerHub, type RunnerScope } from "./runner-hub.js";
 
@@ -89,6 +94,21 @@ function isDefinitiveNoResourceMarker(marker: string | null): boolean {
 }
 
 export type RunnerReadyOutcome = "ready" | "deferred" | "stale" | "version_mismatch";
+
+/** Automatic ingress allocation outcome; `restore_required` is the E5 guard, never a retry loop. */
+export type IngressAllocationOutcome = "ready" | "pending" | "stopped" | "restore_required";
+
+/**
+ * Bounded, read-only allocation reconciliation through the injected Cloud API. `physical` is the
+ * only field that may prove a persisted resource is gone; `untracked` means the create outcome
+ * was never verified and therefore proves nothing.
+ */
+export interface SandboxAllocationReconciliation {
+  scope: RunnerScope | null;
+  lifecycle: "unallocated" | "preparing" | "ready" | "releasing";
+  resourceUid: string | null;
+  physical: "present" | "absent" | "untracked" | "unknown";
+}
 
 export class SandboxRunnerService {
   readonly #database: DatabaseClient;
@@ -208,6 +228,61 @@ export class SandboxRunnerService {
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "read" });
     if (!owned) throw sandboxNotFound();
     return this.#toStatus(owned.sandbox);
+  }
+
+  /**
+   * Normal-ingress allocation (IM delivery worker). Unlike the account-facing start this never
+   * creates a replacement generation for previously used storage: a released generation > 0 whose
+   * workspace would be blank (`restore_required`) is reported instead of allocating, until the E5
+   * restore path exists. The first generation and an in-flight reservation converge through the
+   * existing idempotent start/reconcile logic, so repeated claim attempts are safe.
+   */
+  async ensureIngressAllocation(accountId: string, sandboxId: string): Promise<IngressAllocationOutcome> {
+    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { lock: true, authority: "manage" });
+    if (!owned) throw sandboxNotFound();
+    const row = owned.sandbox;
+    if (row.lifecycle === "ready") return "ready";
+    if (row.lifecycle === "releasing") return "stopped";
+    if (row.lifecycle === "unallocated" && row.environmentGeneration > 0) return "restore_required";
+    const status = await this.startForAccount(accountId, sandboxId);
+    return status.lifecycle === "ready" ? "ready" : "pending";
+  }
+
+  /**
+   * Read-only allocation status reconciliation through the injected Cloud API. Never creates,
+   * deletes, tracks, or mutates anything: it answers whether the persisted allocation identity is
+   * still physically present, definitively absent, or unverified.
+   */
+  async reconcileAllocation(sandboxId: string): Promise<SandboxAllocationReconciliation | undefined> {
+    const row = await loadSandboxRecordById(this.#database, sandboxId);
+    if (!row) return undefined;
+    const scope: RunnerScope | null =
+      row.currentResourceName === null
+        ? null
+        : {
+            sandboxId: row.id,
+            sessionId: row.sessionId,
+            environmentGeneration: row.environmentGeneration,
+            resourceName: row.currentResourceName,
+          };
+    const base = {
+      scope,
+      lifecycle: row.lifecycle,
+      resourceUid: row.currentResourceUid,
+    } as const;
+    if (scope === null || row.lifecycle === "unallocated" || row.lifecycle === "releasing") {
+      return { ...base, physical: "untracked" };
+    }
+    if (row.currentResourceUid === null) return { ...base, physical: "untracked" };
+    let view: Awaited<ReturnType<CloudRunAdmin["getInstance"]>>;
+    try {
+      view = await this.#cloud.getInstance(scope.resourceName);
+    } catch {
+      // A failed read proves nothing; the caller must keep awaiting the Runner's replay.
+      return { ...base, physical: "unknown" };
+    }
+    if (!view || view.uid !== row.currentResourceUid) return { ...base, physical: "absent" };
+    return { ...base, physical: "present" };
   }
 
   async stopForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
@@ -337,6 +412,65 @@ export class SandboxRunnerService {
       sessionId: row.sessionId,
       environmentGeneration: row.environmentGeneration,
       resourceName: row.currentResourceName,
+    };
+  }
+
+  /**
+   * Report/query-capable channel scope: the exact persisted allocation identity without requiring
+   * the active Agent/binding/Session/Account chain. An already accepted turn's final or
+   * cancellation report must remain deliverable after an explicit Session end or Agent suspend;
+   * starting NEW work still requires `validateRunnerScope` (manage). Ownership is unaffected:
+   * the channel still has to have authenticated with a current bootstrap token, and every new
+   * execution is fenced again by the credential scope resolver.
+   */
+  async validateRunnerChannelScope(claims: RunnerBootstrapClaims): Promise<RunnerScope | undefined> {
+    const row = await loadSandboxRecordById(this.#database, claims.sandboxId);
+    if (!row) return undefined;
+    if (row.sessionId !== claims.sessionId) return undefined;
+    if (row.lifecycle === "unallocated") return undefined;
+    if (row.environmentGeneration !== claims.environmentGeneration) return undefined;
+    if (row.currentResourceName === null || row.currentResourceName !== claims.resourceName) return undefined;
+    if (row.lastErrorCode === "cloud_instance_unverified" || isDefinitiveNoResourceMarker(row.lastErrorCode)) {
+      return undefined;
+    }
+    return {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName,
+    };
+  }
+
+  /**
+   * E4: authority facts for an already-validated Runner scope — the owning Cloud Computer, its
+   * current installation, and the tracked resource UID. Re-validates the exact allocation, so a
+   * superseded generation never yields authority facts. Used by the control channel to fence the
+   * per-attach connection and to echo the UID inside the welcome frame.
+   */ async describeScopeAuthority(
+    scope: RunnerScope,
+  ): Promise<{ computerId: string; installationId: string; resourceUid: string | null } | undefined> {
+    // Allocation facts only: an already authenticated E4 channel may reconnect after the active
+    // chain ended and still needs the exact Computer/installation/UID for report-only delivery.
+    // New work is fenced separately by the manage authority chain.
+    const owned = await loadSandboxOwnerById(this.#database, scope.sandboxId);
+    if (
+      !owned ||
+      owned.sandbox.sessionId !== scope.sessionId ||
+      owned.sandbox.environmentGeneration !== scope.environmentGeneration ||
+      owned.sandbox.currentResourceName !== scope.resourceName
+    ) {
+      return undefined;
+    }
+    const [computer] = await this.#database
+      .select({ id: computers.id, currentInstallationId: computers.currentInstallationId })
+      .from(computers)
+      .where(eq(computers.id, owned.computerId))
+      .limit(1);
+    if (!computer) return undefined;
+    return {
+      computerId: computer.id,
+      installationId: computer.currentInstallationId,
+      resourceUid: owned.sandbox.currentResourceUid,
     };
   }
 

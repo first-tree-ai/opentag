@@ -4,15 +4,22 @@ import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
   RunnerAcceptanceReportWireSchema,
   type RunnerAcceptanceRunFrame,
+  type RunnerClientFrame,
   type RunnerServerFrame,
   RunnerServerFrameSchema,
   type RunnerWelcomeFrame,
+  type RuntimeCredentialServerFrame,
   serializeRunnerAcceptanceWorkerStdin,
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions } from "ws";
+import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import type { CloudCredentialChannel } from "./cloud-credential-connection.js";
+import { CloudJournal } from "./cloud-journal.js";
+import { CloudTurnRunner, type CloudTurnRunnerOptions, type CloudTurnScope } from "./cloud-turns.js";
 import { type RunnerHealthListener, startRunnerHealthListener } from "./health.js";
 import {
   NativeSandbox,
@@ -45,6 +52,11 @@ export interface RunnerServeConfig {
   readonly bootstrapToken: string;
   readonly sandboxName: string;
   readonly workspace: string;
+  /**
+   * E4 trusted state root (durable delivery journal + per-turn credential bridge material).
+   * Always outside the Session workspace and every Sandbox mount.
+   */
+  readonly stateDir: string;
   /** Declared platform container port for the startup probe; absent means no health listener. */
   readonly healthPort?: number;
 }
@@ -62,6 +74,11 @@ export interface RunnerServeOptions {
   readonly installSignalHandlers?: boolean;
   /** Graceful stop (the SIGTERM analog); production uses process signals, tests use this. */
   readonly signal?: AbortSignal;
+  /**
+   * Local acceptance harness seams for the Cloud Turn worker pipeline. Production never sets
+   * these; the real native Sandbox/credential bridge path stays the only production execution.
+   */
+  readonly cloudTurnSeams?: Pick<CloudTurnRunnerOptions, "openExecution" | "runWorker">;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -112,6 +129,7 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     bootstrapToken: token,
     sandboxName,
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
+    stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? join(tmpdir(), "opentag-runner-state", sandboxName),
     ...(healthPort !== undefined ? { healthPort } : {}),
   };
 }
@@ -130,6 +148,25 @@ function parseRunnerHealthPort(value: string | undefined): number | undefined {
   return port;
 }
 
+/** Bound on queued Cloud control work per connection; overflow is a protocol anomaly, not memory. */
+const MAX_PENDING_CLOUD_CONTROL = 128;
+
+/**
+ * Trusted E4 state layout. The public root is the ONLY directory that becomes a Sandbox mount;
+ * the journal and per-turn private material (adapter CA private key) stay disjoint from it.
+ */
+export function cloudRunnerDirectories(stateDir: string): {
+  journalDir: string;
+  privateTurnRoot: string;
+  publicRoot: string;
+} {
+  return {
+    journalDir: join(stateDir, "journal"),
+    privateTurnRoot: join(stateDir, "turn-material"),
+    publicRoot: join(stateDir, "bridge-public"),
+  };
+}
+
 interface WorkState {
   active?: { requestId: string; abort: AbortController; done: Promise<void> };
   probe: SandboxProbeResult;
@@ -137,19 +174,127 @@ interface WorkState {
   fatal: boolean;
   present: boolean;
   token: string;
+  /** Per-connection hook surfacing durable-boundary failures instead of swallowing them. */
+  persistenceFailure?: (error: unknown) => void;
 }
+
+/**
+ * The single per-process Cloud Turn controller. `canStart` composes the shared native occupation
+ * boundary with the E3 acceptance run so Cloud Turns wait instead of racing a destroy/relaunch.
+ */
+function createCloudTurnRunner(input: {
+  bridge: RunnerChannelBridge;
+  journal: CloudJournal;
+  options: RunnerServeOptions;
+  privateTurnRoot: string;
+  publicRoot: string;
+  sandbox: NativeSandbox;
+  serverUrl: string;
+  state: () => WorkState | undefined;
+}): CloudTurnRunner {
+  return new CloudTurnRunner({
+    canStart: () => {
+      const current = input.state();
+      return current !== undefined && !current.stopping && current.active === undefined;
+    },
+    credentialChannel: () => input.bridge,
+    journal: input.journal,
+    onPersistenceError: (error) => input.state()?.persistenceFailure?.(error),
+    publicDirectory: input.publicRoot,
+    sandbox: input.sandbox,
+    // A non-completed Cloud Turn may leave native processes behind; only a verified
+    // delete/relaunch/probe reopens the single-Sandbox occupation boundary.
+    sandboxReset: async () => {
+      const current = input.state();
+      if (!current) throw new Error("The Runner sandbox state is not established");
+      await recycleNativeSandbox(input.sandbox, current);
+    },
+    scope: () => input.bridge.scope,
+    send: (frame) => input.bridge.sendFrame(frame),
+    serverUrl: input.serverUrl,
+    stateDirectory: input.privateTurnRoot,
+    log: (message) => logLine(input.options.stderr, message),
+    ...(input.options.cloudTurnSeams ?? {}),
+  });
+}
+
+/**
+ * Per-process E4 channel bridge: the current connection's send function plus the credential
+ * tunnel dispatch. A dropped connection removes its send function; journal-backed retransmission
+ * happens on the next welcome, so a frame written to a dead connection is never lost silently —
+ * it simply waits for the next reconcile.
+ */
+class RunnerChannelBridge implements CloudCredentialChannel {
+  sendFn?: (frame: RunnerClientFrame) => void;
+  scope?: CloudTurnScope;
+  /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
+  cloudEnabled = false;
+  readonly credentialListeners = new Set<(frame: RuntimeCredentialServerFrame) => void>();
+  readonly stateListeners = new Set<(state: "registered" | "closed") => void>();
+
+  sendFrame(frame: RunnerClientFrame): void {
+    if (!this.sendFn) throw new Error("The Runner control channel is not connected");
+    this.sendFn(frame);
+  }
+
+  onCredentialFrame(listener: (frame: RuntimeCredentialServerFrame) => void): () => void {
+    this.credentialListeners.add(listener);
+    return () => this.credentialListeners.delete(listener);
+  }
+
+  onChannelState(listener: (state: "registered" | "closed") => void): () => void {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
+
+  emitCredential(frame: RuntimeCredentialServerFrame): void {
+    for (const listener of [...this.credentialListeners]) listener(frame);
+  }
+
+  emitState(state: "registered" | "closed"): void {
+    for (const listener of [...this.stateListeners]) listener(state);
+  }
+}
+
 export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
+  // E4 trusted state root: PRIVATE journal + per-turn credential material roots that are NEVER
+  // mounted, plus the public-only root that becomes the read-only Sandbox mount.
+  const { journalDir, privateTurnRoot, publicRoot } = cloudRunnerDirectories(config.stateDir);
+  await mkdir(privateTurnRoot, { recursive: true, mode: 0o700 });
+  await mkdir(publicRoot, { recursive: true, mode: 0o700 });
+  const journal = await CloudJournal.open(journalDir);
+  const bridge = new RunnerChannelBridge();
   let sandbox: NativeSandbox;
   try {
-    sandbox = (options.sandboxFactory ?? ((name, workspace) => new NativeSandbox({ name, workspace })))(
-      config.sandboxName,
-      config.workspace,
-    );
+    // ONLY the public per-turn subtree is mounted read-only at the fixed execution mount. The
+    // journal, adapter CA private key, and per-turn private material stay outside every mount.
+    sandbox = (
+      options.sandboxFactory ??
+      ((name, workspace) =>
+        new NativeSandbox({
+          name,
+          workspace,
+          extraMounts: [{ source: publicRoot, destination: CLOUD_EXECUTION_MOUNT }],
+        }))
+    )(config.sandboxName, config.workspace);
   } catch (error) {
     reportStartupError(error, options);
     return startupExitCode(error);
   }
   let state: WorkState | undefined;
+  // Per-connection hook: a durable-boundary failure surfaces through the current channel, never
+  // through an empty catch that would silently drop a received delivery.
+  const turns = createCloudTurnRunner({
+    bridge,
+    journal,
+    options,
+    privateTurnRoot,
+    publicRoot,
+    sandbox,
+    serverUrl: config.backendUrl,
+    state: () => state,
+  });
+
   let health: RunnerHealthListener | undefined;
   let stopping = false,
     exitCode = 143,
@@ -162,6 +307,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       state.stopping = true;
       state.active?.abort.abort();
     }
+    turns.onChannelClosed();
     for (const listener of stopListeners) listener();
   };
   const removeSignals = installRunnerSignals(requestStop, options);
@@ -181,7 +327,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       });
       logLine(options.stderr, `startup health listener ready on port ${health.port}`);
     }
-    await maintainConnections(config, state, sandbox, options, stopListeners);
+    await maintainConnections(config, state, sandbox, options, stopListeners, turns, bridge);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
   } catch (error) {
     reportStartupError(error, options);
@@ -192,6 +338,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     try {
       if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
     } finally {
+      await turns.close().catch(() => undefined);
       await health?.close();
       removeSignals();
     }
@@ -212,6 +359,8 @@ async function serveOnce(
   sandbox: NativeSandbox,
   options: RunnerServeOptions,
   stopListeners: Set<() => void>,
+  turns: CloudTurnRunner,
+  bridge: RunnerChannelBridge,
 ): Promise<ConnectionOutcome> {
   const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
     maxPayload: 256 * 1024,
@@ -225,13 +374,55 @@ async function serveOnce(
     let heartbeatTimer: ReturnType<typeof setInterval> | undefined,
       silenceTimer: ReturnType<typeof setTimeout> | undefined;
     let welcomeAt = 0;
+    // Cloud control work is serialized per connection: one durable state mutation at a time,
+    // while heartbeat/credential replies/cancel stay on the synchronous path. Overflow is a
+    // protocol anomaly, not unbounded memory.
+    let controlTail: Promise<void> = Promise.resolve();
+    let controlPending = 0;
+    const enqueueCloudControl = (label: string, operation: () => Promise<void>): void => {
+      if (closed) return;
+      if (controlPending >= MAX_PENDING_CLOUD_CONTROL) {
+        logLine(options.stderr, `too many queued cloud control operations (${label})`);
+        finish();
+        return;
+      }
+      controlPending += 1;
+      controlTail = controlTail.then(operation).then(
+        () => {
+          controlPending -= 1;
+        },
+        (error: unknown) => {
+          controlPending -= 1;
+          logLine(
+            options.stderr,
+            `cloud delivery ${label} failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          finish();
+        },
+      );
+    };
+    // A durable-boundary failure (journal/report store) is never swallowed: the frame that failed
+    // is visible in the log and the connection cycles so durable reconciliation runs again.
+    state.persistenceFailure = (error: unknown) => {
+      logLine(
+        options.stderr,
+        `cloud delivery durable boundary failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      finish();
+    };
     const finish = (kind: ConnectionOutcome["kind"] = "closed") => {
       if (closed) return;
       closed = true;
+      state.persistenceFailure = undefined;
       clearTimeout(authTimer);
       clearInterval(heartbeatTimer);
       clearTimeout(silenceTimer);
       stopListeners.delete(stop);
+      bridge.sendFn = undefined;
+      bridge.scope = undefined;
+      bridge.cloudEnabled = false;
+      bridge.emitState("closed");
+      turns.onChannelClosed();
       state.active?.abort.abort();
       socket.terminate();
       // Work owns its own cleanup promise. Reconnect only after it settles.
@@ -264,7 +455,14 @@ async function serveOnce(
         requestId: randomUUID(),
         readiness: { sandboxName: config.sandboxName, rootfs: SANDBOX_ROOTFS, ...state.probe },
       });
-    socket.on("open", () => send({ type: "auth", requestId: randomUUID(), token: state.token }));
+    socket.on("open", () =>
+      send({
+        type: "auth",
+        requestId: randomUUID(),
+        token: state.token,
+        cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
+      }),
+    );
     const onWelcome = (data: RunnerWelcomeFrame) => {
       if (
         welcome ||
@@ -274,25 +472,47 @@ async function serveOnce(
         finish();
         return;
       }
+      const cloudCapable = data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION;
+      // A Cloud-capable welcome must carry the verified current allocation UID. A null UID means
+      // the create caller has not tracked it yet: retry transiently instead of running Cloud
+      // journal reconciliation against an unbound allocation.
+      if (cloudCapable && !data.resourceUid) {
+        logLine(options.stderr, "cloud welcome has no tracked allocation UID; retrying attachment");
+        finish();
+        return;
+      }
       welcome = data;
       welcomeAt = Date.now();
       clearTimeout(authTimer);
+      bridge.scope = {
+        sandboxId: data.sandboxId,
+        sessionId: data.sessionId,
+        environmentGeneration: data.environmentGeneration,
+        resourceName: data.resourceName,
+        resourceUid: data.resourceUid ?? null,
+      };
+      bridge.cloudEnabled = cloudCapable;
+      bridge.sendFn = send;
+      bridge.emitState("registered");
       ready();
       armSilence();
       heartbeatTimer = setInterval(
         () => send({ type: "heartbeat", requestId: randomUUID() }),
         data.heartbeatIntervalMs,
       );
+      // Journal-driven retransmission of durable Cloud delivery state on every (re)attach, for
+      // NEGOTIATED Cloud connections only. A legacy E3 channel never touches Cloud state.
+      if (cloudCapable) enqueueCloudControl("reconcile", () => turns.reconcile());
       logLine(options.stderr, "authenticated control channel ready");
       return;
     };
     const onAcceptance = (data: RunnerAcceptanceRunFrame) => {
-      if (state.active) {
+      if (state.active || turns.hasPendingWork) {
         send({
           type: "acceptance:result",
           requestId: data.requestId,
           outcome: "failed",
-          failure: { code: "runner_busy", message: "An acceptance run is already active" },
+          failure: { code: "runner_busy", message: "A Cloud Turn or acceptance run already owns the sandbox" },
         });
         return;
       }
@@ -300,7 +520,13 @@ async function serveOnce(
         send({ type: "acceptance:result", requestId: data.requestId, outcome: "cancelled" });
         return;
       }
-      startAcceptance(data, state, sandbox, { send, ready, finish, isClosed: () => closed });
+      startAcceptance(data, state, sandbox, {
+        send,
+        ready,
+        finish,
+        isClosed: () => closed,
+        turnSlotAvailable: () => turns.notifyAvailable(),
+      });
       return;
     };
     const handle = (data: RunnerServerFrame) =>
@@ -312,6 +538,9 @@ async function serveOnce(
         armSilence,
         onWelcome,
         onAcceptance,
+        turns,
+        bridge,
+        enqueueCloudControl,
         authResult: (ok) => {
           // Only an explicit in-band rejection is permanent; a duplicate grant is idempotent.
           if (!ok) finish("auth_failed");
@@ -415,10 +644,12 @@ async function maintainConnections(
   sandbox: NativeSandbox,
   options: RunnerServeOptions,
   stopListeners: Set<() => void>,
+  turns: CloudTurnRunner,
+  bridge: RunnerChannelBridge,
 ): Promise<void> {
   let failures = 0;
   while (!state.stopping && !state.fatal) {
-    const outcome = await serveOnce(config, state, sandbox, options, stopListeners);
+    const outcome = await serveOnce(config, state, sandbox, options, stopListeners, turns, bridge);
     // This barrier covers worker exit AND native deletion/recreation. No successor connection
     // can dispatch work into a sandbox still owned by the prior connection.
     await state.active?.done;
@@ -488,7 +719,29 @@ interface WorkCallbacks {
   ready: () => void;
   finish: () => void;
   isClosed: () => boolean;
+  turnSlotAvailable: () => void;
 }
+
+/**
+ * Verified native namespace cleanup shared by E3 acceptance and E4 Cloud Turns: native
+ * `delete --force`, relaunch, and a fresh readiness probe. Killing the `sandbox exec` wrapper
+ * proves nothing about the process tree it started, so only this reset may reopen the single
+ * Sandbox occupation boundary. A failure marks the Runner fatal instead of reusing the namespace.
+ */
+async function recycleNativeSandbox(sandbox: NativeSandbox, state: WorkState): Promise<void> {
+  try {
+    await sandbox.destroy();
+    state.present = false;
+    if (state.stopping) return;
+    state.present = true;
+    await sandbox.launch();
+    state.probe = await sandbox.probe();
+  } catch (error) {
+    state.fatal = true;
+    throw error;
+  }
+}
+
 function startAcceptance(
   data: RunnerAcceptanceRunFrame,
   state: WorkState,
@@ -508,15 +761,8 @@ function startAcceptance(
     // Reclaim every descendant and the disposable credential filesystem on ALL outcomes.
     // Keep only the Session workspace mount, then validate a fresh native environment.
     try {
-      await sandbox.destroy();
-      state.present = false;
-      if (!state.stopping) {
-        state.present = true;
-        await sandbox.launch();
-        state.probe = await sandbox.probe();
-      }
+      await recycleNativeSandbox(sandbox, state);
     } catch {
-      state.fatal = true;
       result = {
         outcome: "failed",
         failure: { code: "sandbox_cleanup_failed", message: "Native sandbox cleanup could not be verified" },
@@ -528,6 +774,8 @@ function startAcceptance(
     }
     state.active = undefined;
     if (state.fatal) callbacks.finish();
+    // The native occupation boundary reopened: queued Cloud turns can use the sandbox again.
+    callbacks.turnSlotAvailable();
   })();
   state.active = { requestId: data.requestId, abort, done };
 }
@@ -587,6 +835,9 @@ interface FrameDispatch {
   armSilence: () => void;
   onWelcome: (frame: RunnerWelcomeFrame) => void;
   onAcceptance: (frame: RunnerAcceptanceRunFrame) => void;
+  turns: CloudTurnRunner;
+  bridge: RunnerChannelBridge;
+  enqueueCloudControl: (label: string, operation: () => Promise<void>) => void;
   authResult: (ok: boolean) => void;
   heartbeat: () => void;
   credential: (token: string) => void;
@@ -614,6 +865,10 @@ function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
     return;
   }
   c.armSilence();
+  if (isCloudServerFrame(data)) {
+    dispatchCloudFrame(data, c);
+    return;
+  }
   switch (data.type) {
     case "server:heartbeat":
       c.heartbeat();
@@ -629,6 +884,62 @@ function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
       break;
     case "error":
       c.error();
+      break;
+  }
+}
+
+type CloudServerFrame = Extract<
+  RunnerServerFrame,
+  {
+    type:
+      | "delivery:run"
+      | "delivery:verified"
+      | "delivery:cancel"
+      | "delivery:report:ack"
+      | "delivery:query"
+      | "credential:frame";
+  }
+>;
+
+function isCloudServerFrame(frame: RunnerServerFrame): frame is CloudServerFrame {
+  return (
+    frame.type === "delivery:run" ||
+    frame.type === "delivery:verified" ||
+    frame.type === "delivery:cancel" ||
+    frame.type === "delivery:report:ack" ||
+    frame.type === "delivery:query" ||
+    frame.type === "credential:frame"
+  );
+}
+
+/**
+ * Cloud delivery frames exist only on a negotiated `cloudDeliveryVersion: 1` channel. On a legacy
+ * E3 channel they are a protocol violation: the connection cycles instead of touching Cloud state.
+ * Cancellation stays synchronous so it never waits behind queued durable work.
+ */
+function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
+  if (!c.bridge.cloudEnabled) {
+    c.finish();
+    return;
+  }
+  switch (data.type) {
+    case "delivery:run":
+      c.enqueueCloudControl("delivery:run", () => c.turns.handleDeliveryRun(data));
+      break;
+    case "delivery:verified":
+      c.enqueueCloudControl("delivery:verified", () => c.turns.handleVerified(data));
+      break;
+    case "delivery:cancel":
+      c.turns.handleCancel(data.deliveryId);
+      break;
+    case "delivery:report:ack":
+      c.enqueueCloudControl("delivery:report:ack", () => c.turns.handleReportAck(data));
+      break;
+    case "delivery:query":
+      c.enqueueCloudControl("delivery:query", () => c.turns.handleQuery(data));
+      break;
+    case "credential:frame":
+      c.bridge.emitCredential(data.frame);
       break;
   }
 }

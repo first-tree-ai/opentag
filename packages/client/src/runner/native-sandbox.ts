@@ -59,6 +59,12 @@ export interface NativeSandboxOptions {
   readonly spawnProcess?: SpawnProcess;
   readonly sandboxBinary?: string;
   readonly rootfs?: string;
+  /**
+   * E4: additional read-only bind mounts (e.g. the trusted per-turn credential bridge root).
+   * Each source must be an absolute, comma-free path outside the workspace; destinations are
+   * fixed absolute paths. The Session workspace contract is unchanged.
+   */
+  readonly extraMounts?: readonly { source: string; destination: string }[];
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -100,6 +106,8 @@ export function buildSandboxRunArgv(input: {
   resolverCopy: string;
   rootfs?: string;
   sandboxBinary?: string;
+  /** E4: additional read-only bind mounts (validated absolute paths). */
+  extraMounts?: readonly { source: string; destination: string }[];
 }): readonly string[] {
   assertSafeOperand(input.resolverCopy, "resolver copy path");
   if (
@@ -108,6 +116,20 @@ export function buildSandboxRunArgv(input: {
     input.resolverCopy.split("/").includes("..")
   ) {
     throw new NativeSandboxError("launch_failed", "Unsafe resolver copy mount");
+  }
+  for (const mount of input.extraMounts ?? []) {
+    assertSafeOperand(mount.source, "extra mount source");
+    assertSafeOperand(mount.destination, "extra mount destination");
+    if (
+      !mount.source.startsWith("/") ||
+      mount.source.includes(",") ||
+      mount.source.split("/").includes("..") ||
+      !mount.destination.startsWith("/") ||
+      mount.destination.includes(",") ||
+      mount.destination.split("/").includes("..")
+    ) {
+      throw new NativeSandboxError("launch_failed", "Unsafe extra mount");
+    }
   }
   return [
     input.sandboxBinary ?? SANDBOX_BINARY,
@@ -122,6 +144,10 @@ export function buildSandboxRunArgv(input: {
     `type=bind,source=${input.workspace},destination=${SANDBOX_WORKSPACE_DESTINATION}`,
     "--mount",
     `type=bind,source=${input.resolverCopy},destination=${RESOLVER_DESTINATION},readonly`,
+    ...(input.extraMounts ?? []).flatMap((mount) => [
+      "--mount",
+      `type=bind,source=${mount.source},destination=${mount.destination},readonly`,
+    ]),
     "--env",
     `PATH=${SANDBOX_PATH}`,
     "--",
@@ -195,6 +221,7 @@ export class NativeSandbox {
   readonly #spawn: SpawnProcess;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #resolverSource: string;
+  readonly #extraMounts: readonly { source: string; destination: string }[];
   // Retained across delete/relaunch, so readiness also proves the previous writable layer vanished.
   readonly #rootfsCanary = `/tmp/opentag-rootfs-${randomUUID()}`;
   #resolverSnapshot?: { readonly directory: string; readonly copy: string };
@@ -215,6 +242,7 @@ export class NativeSandbox {
     this.#rootfs = options.rootfs ?? SANDBOX_ROOTFS;
     this.#binary = options.sandboxBinary ?? SANDBOX_BINARY;
     this.#resolverSource = options.resolverSource ?? SANDBOX_RESOLVER_SOURCE;
+    this.#extraMounts = options.extraMounts ?? [];
     assertSafeOperand(this.#resolverSource, "resolver source path");
     if (!this.#resolverSource.startsWith("/"))
       throw new NativeSandboxError("launch_failed", "Unsafe resolver source path");
@@ -238,6 +266,7 @@ export class NativeSandbox {
       resolverCopy: resolver.copy,
       rootfs: this.#rootfs,
       sandboxBinary: this.#binary,
+      extraMounts: this.#extraMounts,
     });
     const [command, ...args] = argv as [string, ...string[]];
     try {

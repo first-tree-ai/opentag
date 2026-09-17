@@ -5,7 +5,11 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
-import { type RuntimeConnectionFence, RuntimeCredentialBroker } from "./credential-broker.js";
+import {
+  type RuntimeConnectionFence,
+  type RuntimeControlAuthority,
+  RuntimeCredentialBroker,
+} from "./credential-broker.js";
 import { RuntimeProviderProxyTransport } from "./data-transport.js";
 import { PostgresRuntimeExecutionAuthority, type RuntimeExecutionAuthority } from "./execution-authority.js";
 import { RuntimeExecutionRegistry } from "./execution-registry.js";
@@ -58,6 +62,18 @@ export interface RuntimeCredentialServicesOptions {
   custody: RuntimeCustodyStore;
   logger?: ServiceLogger;
   /**
+   * Additional exact connection fence composed with the Local registry fence (E4 Cloud Runner
+   * connections). Local registry behavior is unchanged; a frame is current when EITHER fence
+   * recognizes its exact (computerId, instanceId, connectionId).
+   */
+  additionalConnectionFence?: RuntimeConnectionFence;
+  /**
+   * Composed Local + Cloud control-connection authority for the credential owner (sweep, open
+   * fence, revocation routing). Defaults to the Local registry alone; production passes the same
+   * composed fence used by `additionalConnectionFence` plus the Cloud revocation sender.
+   */
+  controlAuthority?: RuntimeControlAuthority;
+  /**
    * Parent-constructed execution registry. The parent builds it before the GitHub runtime policy
    * (whose constructor needs `execution.get`) and passes the same instance here so both share one
    * live execution view.
@@ -94,6 +110,10 @@ export interface RuntimeCredentialServices {
   validationRuns: RuntimeValidationRunRegistry;
   urlHandles: RuntimeUrlHandleStore;
   broker: RuntimeCredentialBroker;
+  /** Exposed for the E4 Cloud credential tunnel; the same live instances the owner uses. */
+  authority: RuntimeExecutionAuthority;
+  gitHubAdmission: RuntimeGitHubAdmission;
+  scopeResolver: RuntimeScopeResolverPort;
   close(): void;
 }
 
@@ -132,7 +152,9 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     cipher: options.cipher,
     tenantTokens,
   });
-  const connectionFence = registryConnectionFence(options.registry);
+  const connectionFence = options.additionalConnectionFence
+    ? composeConnectionFences(registryConnectionFence(options.registry), options.additionalConnectionFence)
+    : registryConnectionFence(options.registry);
   const broker = new RuntimeCredentialBroker({
     capabilities,
     executions,
@@ -152,6 +174,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
   const adapters = createImAdapters(options, urlHandles, journal, sourceRecorder);
   const owner = new RuntimeCredentialOwner({
     registry: options.registry,
+    ...(options.controlAuthority ? { controlAuthority: options.controlAuthority } : {}),
     executions,
     capabilities,
     tickets,
@@ -185,10 +208,28 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     validationRuns,
     urlHandles,
     broker,
+    authority,
+    gitHubAdmission,
+    scopeResolver,
     close: () => {
       unsubscribeHandles();
       owner.close();
       tenantTokens.clear();
+    },
+  };
+}
+
+/** A frame/execution is current when ANY composed fence recognizes its exact connection. */
+function composeConnectionFences(...fences: readonly RuntimeConnectionFence[]): RuntimeConnectionFence {
+  return {
+    isCurrent: (computerId, instanceId, connectionId) =>
+      fences.some((fence) => fence.isCurrent(computerId, instanceId, connectionId)),
+    currentControlIdentity: (computerId) => {
+      for (const fence of fences) {
+        const identity = fence.currentControlIdentity?.(computerId);
+        if (identity) return identity;
+      }
+      return undefined;
     },
   };
 }

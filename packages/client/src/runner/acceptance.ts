@@ -85,7 +85,8 @@ function toolEvents(events: readonly AgentRuntimeEvent[], runId: string) {
   };
 }
 
-function skillArgsOf(skillPaths: readonly string[]): readonly string[] {
+/** Exact Pi arguments for an explicit managed skill set (never the ambient Local set). */
+export function skillArgsOf(skillPaths: readonly string[]): readonly string[] {
   return ["--no-skills", ...skillPaths.flatMap((path) => ["--skill", path])];
 }
 

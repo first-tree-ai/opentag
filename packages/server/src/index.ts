@@ -1,12 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { InternalNavigationVisibility, ProviderReadinessStatus } from "@opentag/shared";
+import type {
+  InternalNavigationVisibility,
+  ProviderReadinessStatus,
+  RuntimeCredentialServerFrame,
+} from "@opentag/shared";
 import { sandboxRunnerWebSocketUrl } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import {
+  cloudAppOptions,
+  collectKnownSecrets,
+  createCloudDeliveryComposition,
+  createCloudIngressAllocationPort,
+  type SandboxRunnerRuntime,
+} from "./cloud-runtime-composition.js";
 import { isHostedEnvironment, parseServerConfig, type ServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient, type DatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
@@ -20,16 +31,22 @@ import {
 } from "./observability/index.js";
 import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
-import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
+import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ContextTreeOperationOwner } from "./runtime/context-tree-operation-owner.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
+import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
-import { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
+import {
+  AgentRuntimeTestService,
+  AgentService,
+  type AgentSessionStopTarget,
+  AgentSetupService,
+} from "./services/agents/index.js";
 import {
   AuthService,
   ConnectCodeService,
@@ -66,10 +83,15 @@ import {
 import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
+import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import { RunnerHub } from "./services/sandboxes/runner-hub.js";
-import { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
+import {
+  type SandboxAllocationReconciliation,
+  SandboxRunnerService,
+} from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { TaskService } from "./services/tasks/index.js";
@@ -202,19 +224,94 @@ function createSandboxRunnerRuntime(
   return { sandboxRunnerService, runnerChannel: { tokens, hub } };
 }
 
-interface SandboxRunnerRuntime {
-  sandboxRunnerService: SandboxRunnerService;
-  runnerChannel: { tokens: RunnerBootstrapTokenService; hub: RunnerHub };
+/** The live Cloud fence exists exactly when the Cloud Runner runtime is enabled. */
+function cloudRuntimeFenceFor(runtime: SandboxRunnerRuntime | undefined): CloudRuntimeFence | undefined {
+  return runtime ? new CloudRuntimeFence() : undefined;
 }
 
-/** Only pass the Runner route options when allocation is actually enabled. */
-function sandboxRunnerRouteOptions(runtime: SandboxRunnerRuntime | undefined):
-  | {
-      sandboxRunnerService: SandboxRunnerService;
-      runnerChannel: { tokens: RunnerBootstrapTokenService; hub: RunnerHub };
+/** Optional platform-runtime fence/revocation wiring; absent keeps the Local-only behavior. */
+function cloudPlatformRuntimeOptions(
+  fence: CloudRuntimeFence | undefined,
+  sender: (computerId: string, instanceId: string, frame: RuntimeCredentialServerFrame) => void,
+): { cloudRuntimeFence?: CloudRuntimeFence; cloudRevocationSender?: typeof sender } {
+  if (!fence) return {};
+  return { cloudRuntimeFence: fence, cloudRevocationSender: sender };
+}
+
+/** The optional fence input for the delivery composition. */
+function optionalCloudFence(fence: CloudRuntimeFence | undefined): { cloudRuntimeFence?: CloudRuntimeFence } {
+  return fence ? { cloudRuntimeFence: fence } : {};
+}
+
+/** The optional allocation-status seam for the delivery composition. */
+function optionalAllocationStatus(runtime: SandboxRunnerRuntime | undefined): {
+  allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
+} {
+  if (!runtime) return {};
+  return { allocationStatus: (sandboxId) => runtime.sandboxRunnerService.reconcileAllocation(sandboxId) };
+}
+
+/** The optional normal-ingress allocation port for the delivery worker. */
+function cloudAllocationPortFor(
+  runtime: SandboxRunnerRuntime | undefined,
+  sandboxService: SandboxService,
+): CloudSessionAllocationPort | undefined {
+  if (!runtime) return undefined;
+  return createCloudIngressAllocationPort({
+    sandboxService,
+    sandboxRunnerService: runtime.sandboxRunnerService,
+  });
+}
+
+/** The optional Cloud inputs for the delivery worker. */
+function workerCloudOptions(
+  cloudDelivery: CloudDeliveryOwner | undefined,
+  cloudAllocation: CloudSessionAllocationPort | undefined,
+): { cloudDelivery?: CloudDeliveryOwner; cloudAllocation?: CloudSessionAllocationPort } {
+  return {
+    ...(cloudDelivery ? { cloudDelivery } : {}),
+    ...(cloudAllocation ? { cloudAllocation } : {}),
+  };
+}
+
+/** Surface non-cancelled stop outcomes without turning a best-effort cancel into a hard failure. */
+function reportCloudStopOutcomes(
+  outcomes: Awaited<ReturnType<CloudDeliveryOwner["cancelSessionDeliveries"]>>,
+  onDiagnostic?: (code: string) => void,
+): void {
+  for (const outcome of outcomes) {
+    // A cancelled owning turn needs no diagnostic; a lost socket or a failed frame send stays
+    // explicitly visible instead of being swallowed as "best effort".
+    if (outcome.status === "cancelled") continue;
+    onDiagnostic?.(
+      outcome.status === "no_connection" ? "CLOUD_DELIVERY_STOP_NO_CONNECTION" : "CLOUD_DELIVERY_STOP_SEND_FAILED",
+    );
+  }
+}
+
+/**
+ * Explicit Session stop for Cloud Sessions cancels the in-flight Cloud turn on its owning Runner
+ * (best-effort; the cancellation report still flows through the durable report path) before the
+ * Local reconcile-based stop runs. Cloud cancel failures never block the Local stop path.
+ */
+async function stopCloudThenLocalAgentSessions(
+  database: DatabaseClient,
+  targets: AgentSessionStopTarget[],
+  cloudDelivery: CloudDeliveryOwner | undefined,
+  dependencies: AgentSessionStopDependencies,
+  onDiagnostic?: (code: string) => void,
+): Promise<void> {
+  if (cloudDelivery) {
+    for (const target of targets) {
+      try {
+        reportCloudStopOutcomes(await cloudDelivery.cancelSessionDeliveries(target.sessionId), onDiagnostic);
+      } catch {
+        // The cancel path itself failed; Local stop and Runner scope invalidation still proceed.
+        onDiagnostic?.("CLOUD_DELIVERY_STOP_FAILED");
+      }
     }
-  | Record<string, never> {
-  return runtime ? { sandboxRunnerService: runtime.sandboxRunnerService, runnerChannel: runtime.runnerChannel } : {};
+  }
+  await stopAgentSessions(database, targets, dependencies);
 }
 
 /*
@@ -232,25 +329,6 @@ function createApplicationCipher(config: ServerConfig): ApplicationCipher {
 }
 
 /** Every configured value startup errors must never echo, including the raw key ring JSON. */
-function collectKnownSecrets(environment: NodeJS.ProcessEnv): string[] {
-  return [
-    environment.OPENTAG_DATABASE_URL ?? "",
-    environment.OPENTAG_JWT_SECRET ?? "",
-    environment.BETTER_AUTH_SECRET ?? "",
-    environment.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
-    environment.OPENTAG_ENCRYPTION_KEY ?? "",
-    environment.OPENTAG_ENCRYPTION_KEY_RING ?? "",
-    environment.OPENTAG_OTEL_HEADERS ?? "",
-    environment.OPENTAG_SLACK_CLIENT_SECRET ?? "",
-    environment.OPENTAG_SLACK_SIGNING_SECRET ?? "",
-    environment.OPENTAG_GITHUB_APP_CLIENT_SECRET ?? "",
-    environment.OPENTAG_GITHUB_APP_PRIVATE_KEY ?? "",
-    environment.OPENTAG_GITHUB_APP_WEBHOOK_SECRET ?? "",
-    // The dev-only static Cloud Runner token is a live Google access token while it is set.
-    environment.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN ?? "",
-  ];
-}
-
 function cipherKeySecrets(config: ServerConfig): string[] {
   return Array.from(config.encryptionKeyRing?.keys.values() ?? [], (key) => Buffer.from(key).toString("base64"));
 }
@@ -355,6 +433,17 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const custody = new PostgresRuntimeCustodyStore(database);
+    const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config);
+    /*
+     * E4: the Cloud Runner fence exists before the platform runtime so credential executions
+     * opened over the per-Sandbox Runner channel compose into the broker/data-transport fences.
+     * It is a standalone live-connection map; the Local registry above is never shared with it.
+     */
+    const cloudRuntimeFence = cloudRuntimeFenceFor(cloudRunnerRuntime);
+    // Exact Cloud revocation sender: the credential owner's sweep/close notifications reach the
+    // owning Runner connection through the controller created below. Declared here because the
+    // platform runtime is composed before the delivery owner.
+    let cloudDeliveryOwnerRef: CloudDeliveryOwner | undefined;
     const platformRuntime = await createPlatformRuntime({
       config,
       database,
@@ -363,6 +452,9 @@ export async function startServer(): Promise<void> {
       custody,
       machineAuth: machineAuthService,
       ...(github ? { github } : {}),
+      ...cloudPlatformRuntimeOptions(cloudRuntimeFence, (computerId, instanceId, frame) => {
+        cloudDeliveryOwnerRef?.sendRevocationToInstance(computerId, instanceId, frame);
+      }),
       logger: serviceLogger("platform-runtime"),
     });
     const computerService = new ComputerService(database, authService, {
@@ -442,7 +534,6 @@ export async function startServer(): Promise<void> {
     });
     const sessionService = new SessionService(database, { logger: serviceLogger("session") });
     const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
-    const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config);
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
@@ -476,11 +567,17 @@ export async function startServer(): Promise<void> {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       onProviderCliPlacementChanged: (input) => providerCliReconcileOwner?.onAgentPlacementChanged(input),
       stopSessions: (targets) =>
-        stopAgentSessions(database, targets, {
-          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
-          requestReconcile: (computerId, instanceId, request, onDispatched) =>
-            domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
-        }),
+        stopCloudThenLocalAgentSessions(
+          database,
+          targets,
+          cloudDeliveryOwner,
+          {
+            currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+            requestReconcile: (computerId, instanceId, request, onDispatched) =>
+              domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
+          },
+          reportDiagnostic,
+        ),
     });
     const contextTreeOperationService = new ContextTreeOperationService(agentService, contextTreeOperationOwner);
     const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
@@ -534,11 +631,33 @@ export async function startServer(): Promise<void> {
     const slackWebhookReceipts = new SlackWebhookReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Slack webhook receipt metric"),
     });
+    /*
+     * E4 Cloud delivery owner: present exactly when Cloud Runner allocation is enabled. The model
+     * grant service additionally requires the deployment model path (default disabled); without
+     * it Cloud deliveries stay pending on transient IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE retries —
+     * nothing executes against a model the deployment did not explicitly configure. The SAME
+     * factory and grant instance feed the owner and the createApp model route below.
+     */
+    const cloudDelivery = createCloudDeliveryComposition({
+      cloudModel: config.cloudModel,
+      jwtSecret: config.jwtSecret,
+      publicUrl: config.publicUrl,
+      database,
+      custody,
+      hub: cloudRunnerRuntime?.runnerChannel.hub,
+      ...optionalCloudFence(cloudRuntimeFence),
+      credentialOwner: platformRuntime.credentials.owner,
+      ...optionalAllocationStatus(cloudRunnerRuntime),
+      logger: serviceLogger("cloud-delivery"),
+    });
+    const cloudDeliveryOwner = cloudDelivery.cloudDeliveryOwner;
+    cloudDeliveryOwnerRef = cloudDeliveryOwner;
     const imDeliveryLogger = serviceLogger("im-delivery");
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,
+      ...workerCloudOptions(cloudDeliveryOwner, cloudAllocationPortFor(cloudRunnerRuntime, sandboxService)),
       logger: imDeliveryLogger,
       onMetric: (metric) => imDeliveryLogger.info({ metric }, "IM delivery worker metric"),
       registry,
@@ -584,7 +703,11 @@ export async function startServer(): Promise<void> {
       },
       computerService,
       sandboxService,
-      ...sandboxRunnerRouteOptions(cloudRunnerRuntime),
+      ...cloudAppOptions({
+        runnerRuntime: cloudRunnerRuntime,
+        composition: cloudDelivery,
+        cloudModel: config.cloudModel,
+      }),
       machineAuthService,
       imBindingService,
       feishuSetupService,

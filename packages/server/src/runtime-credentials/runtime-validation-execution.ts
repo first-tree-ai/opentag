@@ -4,9 +4,13 @@ import type {
   RuntimeExecutionOpenRejectCode,
   RuntimeExecutionOpenResult,
 } from "@opentag/shared";
-import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
+import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
-import { type RuntimeCredentialBroker, RuntimeCredentialError } from "./credential-broker.js";
+import {
+  type RuntimeControlAuthority,
+  type RuntimeCredentialBroker,
+  RuntimeCredentialError,
+} from "./credential-broker.js";
 import type { RuntimeExecutionAuthority } from "./execution-authority.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { RuntimeScopeResolverPort, RuntimeValidationScopeSnapshot } from "./scope-resolver.js";
@@ -62,7 +66,7 @@ export function issueImBindingValidationRun(
 export const VALIDATION_EXECUTION_MAX_LIFETIME_MS = 10 * 60 * 1_000;
 
 export interface RuntimeValidationExecutionDeps {
-  registry: ConnectionRegistry;
+  registry: RuntimeControlAuthority;
   executions: RuntimeExecutionRegistry;
   validationRuns: RuntimeValidationRunRegistry;
   authority: RuntimeExecutionAuthority;
@@ -204,7 +208,7 @@ function validationFenceFailure(
 }
 
 async function cloudControlActive(deps: RuntimeValidationExecutionDeps, computerId: string): Promise<boolean> {
-  const identity = deps.registry.currentControlIdentity(computerId);
+  const identity = deps.registry.currentControlIdentity?.(computerId);
   if (!identity) return false;
   return (await deps.cloudControlActive?.(identity)) === true;
 }

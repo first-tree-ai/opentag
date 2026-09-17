@@ -23,6 +23,8 @@ interface AgentSessionStopDependencies {
   ): Promise<SessionReconcileResult>;
 }
 
+export type { AgentSessionStopDependencies };
+
 export async function stopAgentSessions(
   database: DatabaseClient,
   targets: AgentSessionStopTarget[],

@@ -145,10 +145,13 @@ export class McpServerService {
     }
     /*
      * The snapshot was taken with the old configuration, so every mount is marked pending for a
-     * re-probe, and a changed endpoint additionally drops the cached era. Existing tools stay
-     * readable until a new result lands, so the UI never goes blank.
+     * re-probe, and a changed endpoint additionally drops the cached era and revokes OAuth credentials
+     * that were issued for the old origin. Existing tools stay readable until a new result lands, so
+     * the UI never goes blank.
      */
-    if (definitionChanged) await this.markProbesPending(mcpServerId, [], { invalidateEra: originChanged });
+    if (definitionChanged) {
+      await this.markProbesPending(mcpServerId, [], { dropCredential: originChanged, invalidateEra: originChanged });
+    }
     const aggregates = await this.aggregatesFor([mcpServerId]);
     return toServerDto(updated, aggregates.get(mcpServerId));
   }
@@ -331,7 +334,10 @@ export class McpServerService {
      * overridden endpoint moves this Agent's origin, so its cached era goes with it.
      */
     if (overrideChanged(patch)) {
-      await this.markProbesPending(mcpServerId, [agentId], { invalidateEra: "urlOverride" in patch });
+      await this.markProbesPending(mcpServerId, [agentId], {
+        dropCredential: "urlOverride" in patch,
+        invalidateEra: "urlOverride" in patch,
+      });
     }
     return await this.readAgentServer(accountId, agentId, mcpServerId);
   }
@@ -345,11 +351,19 @@ export class McpServerService {
    * `url` changed: the era is a property of the origin, so a new endpoint may be a different Server
    * speaking a different protocol, and reusing the old answer would send the modern request shape to
    * a legacy Server (or the reverse) until the cache happened to fail.
+   *
+   * `dropCredential` additionally revokes OAuth credentials, which is required for the same event for a
+   * stronger reason: an access token is issued for one resource, and the authorization server's
+   * `resource` binding is what stops it being presented elsewhere. A changed origin therefore makes the
+   * stored token invalid — presenting it to the new host is exactly what the specification forbids — so
+   * the row goes back to unauthorized and the user authorizes the new origin deliberately. A Bearer key
+   * is left alone: nothing binds it to an origin, and discarding a working key because a URL was
+   * corrected would be its own surprise.
    */
   async markProbesPending(
     mcpServerId: string,
     agentIds: readonly string[],
-    options: { invalidateEra?: boolean } = {},
+    options: { dropCredential?: boolean; invalidateEra?: boolean } = {},
   ): Promise<void> {
     const scope =
       agentIds.length === 0
@@ -358,13 +372,27 @@ export class McpServerService {
             eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
             inArray(mcpServerAuthorizations.agentId, [...agentIds]),
           );
+    const reset = {
+      probeState: "pending" as const,
+      ...(options.invalidateEra === true ? { protocolEra: null, protocolVersion: null } : {}),
+    };
+    if (options.dropCredential !== true) {
+      await this.#database.update(mcpServerAuthorizations).set(reset).where(scope);
+      return;
+    }
+    /*
+     * Scoped to OAuth rows that actually hold a credential: `none` rows have nothing to drop, and a
+     * Bearer row's key is not origin-bound. The envelope is cleared together with its key id, because
+     * `credential_pair` requires the two to be present or absent as a pair.
+     */
     await this.#database
       .update(mcpServerAuthorizations)
-      .set({
-        probeState: "pending",
-        ...(options.invalidateEra === true ? { protocolEra: null, protocolVersion: null } : {}),
-      })
-      .where(scope);
+      .set({ ...reset, status: "revoked", ciphertext: null, keyId: null, accessTokenExpiresAt: null })
+      .where(and(scope, eq(mcpServerAuthorizations.kind, "oauth")));
+    await this.#database
+      .update(mcpServerAuthorizations)
+      .set(reset)
+      .where(and(scope, ne(mcpServerAuthorizations.kind, "oauth")));
   }
 
   // ---------------------------------------------------------------- effective values

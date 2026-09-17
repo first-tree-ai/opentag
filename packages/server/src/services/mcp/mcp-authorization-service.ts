@@ -243,6 +243,14 @@ export class McpAuthorizationService {
       );
     }
     const effective = McpServerService.resolveEffectiveConfig(context.server, context.binding);
+    /*
+     * The revision this probe was built from. Every write below is fenced on it, because the probe
+     * takes an upstream round trip and the row can be re-authorized or revoked while it is in flight:
+     * without the fence a slow result landed on a row that had since been changed — revoking a
+     * credential and immediately re-probing brought back `succeeded` and a tool snapshot on the
+     * revoked row, and replacing key A with key B let A's slower answer overwrite B's.
+     */
+    const revision = authorization.revision;
     let result: McpProbeResult;
     try {
       const headers = await this.buildHeaders(accountId, agentId, mcpServerId);
@@ -254,14 +262,14 @@ export class McpAuthorizationService {
         cachedVersion: authorization.protocolVersion,
       });
     } catch (error) {
-      return await this.#persistProbeFailure(mcpServerId, agentId, error, false);
+      return await this.#persistProbeFailure(mcpServerId, agentId, error, false, revision);
     }
     if (result.probeState === "failed") {
-      return await this.#persistProbeFailure(mcpServerId, agentId, result, result.eraInvalidated);
+      return await this.#persistProbeFailure(mcpServerId, agentId, result, result.eraInvalidated, revision);
     }
     // The write can still be refused for exceeding the Account's snapshot budget, in which case the
     // reported outcome must match what was stored rather than what the Server answered.
-    const refusal = await this.#persistProbeSuccess(mcpServerId, agentId, result);
+    const refusal = await this.#persistProbeSuccess(mcpServerId, agentId, result, revision);
     if (refusal) return refusal;
     return {
       probeState: "succeeded",
@@ -306,6 +314,7 @@ export class McpAuthorizationService {
     agentId: string,
     failure: unknown,
     eraInvalidated: boolean,
+    revision: number,
   ): Promise<McpProbeOutcome> {
     const probeError = probeErrorOf(failure);
     const now = this.#now();
@@ -322,7 +331,14 @@ export class McpAuthorizationService {
         ...(eraInvalidated ? { protocolEra: null, protocolVersion: null } : {}),
         updatedAt: now,
       })
-      .where(and(eq(mcpServerAuthorizations.agentId, agentId), eq(mcpServerAuthorizations.mcpServerId, mcpServerId)));
+      .where(
+        and(
+          eq(mcpServerAuthorizations.agentId, agentId),
+          eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
+          // Fenced: a row changed while this probe ran keeps the newer decision.
+          eq(mcpServerAuthorizations.revision, revision),
+        ),
+      );
     return {
       probeState: "failed",
       probeError,
@@ -347,6 +363,7 @@ export class McpAuthorizationService {
     mcpServerId: string,
     agentId: string,
     result: McpProbeResult,
+    revision: number,
   ): Promise<McpProbeOutcome | undefined> {
     const now = this.#now();
     if (await this.#exceedsAccountSnapshotBudget(mcpServerId, agentId, result.tools)) {
@@ -358,6 +375,7 @@ export class McpAuthorizationService {
           "The Account's stored MCP tool snapshots would exceed 64 MiB; remove unused Servers",
         ),
         false,
+        revision,
       );
     }
     await this.#database
@@ -376,7 +394,19 @@ export class McpAuthorizationService {
         protocolVersion: result.protocolVersion,
         updatedAt: now,
       })
-      .where(and(eq(mcpServerAuthorizations.agentId, agentId), eq(mcpServerAuthorizations.mcpServerId, mcpServerId)));
+      .where(
+        and(
+          eq(mcpServerAuthorizations.agentId, agentId),
+          eq(mcpServerAuthorizations.mcpServerId, mcpServerId),
+          /*
+           * Fenced on the revision this probe read, so a result that lost the race is dropped rather
+           * than written over the newer state. A dropped result is correct and silent: the row it
+           * would have described no longer exists in that form, and whatever replaced it has its own
+           * probe pending.
+           */
+          eq(mcpServerAuthorizations.revision, revision),
+        ),
+      );
     return undefined;
   }
 

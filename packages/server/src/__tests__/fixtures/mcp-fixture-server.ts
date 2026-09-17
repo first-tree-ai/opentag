@@ -44,6 +44,14 @@ export interface McpFixtureOptions {
   /** Answer the token endpoint with this error code, for the refresh failure classification. */
   tokenError?: string;
   /**
+   * Run just before an `/mcp` request is answered, and awaited.
+   *
+   * The probe's upstream round trip is this endpoint, so this is where a test can hold a probe in
+   * flight while it changes the row underneath — which is the only deterministic way to exercise a
+   * write that is fenced against a newer one.
+   */
+  onMcpRequest?: () => Promise<void> | void;
+  /**
    * Run just before the token endpoint answers.
    *
    * The token request is the upstream round trip inside the callback, so this is the only place a test
@@ -181,7 +189,7 @@ export class McpFixtureServer {
       this.#unauthorized(response);
       return;
     }
-    if (this.#route(response, url, body, request.headers.authorization)) return;
+    if (await this.#route(response, url, body, request.headers.authorization)) return;
 
     this.#unauthorized(response);
   }
@@ -202,8 +210,12 @@ export class McpFixtureServer {
     response.end(JSON.stringify({ error: "unauthorized" }));
   }
 
-  /** Returns true when this URL belonged to a fixture route and a response was sent. */
-  #route(response: ServerResponse, url: string, body: unknown, authorization?: string): boolean {
+  /**
+   * Returns true when this URL belonged to a fixture route and a response was sent.
+   *
+   * Async only because `#mcp` may await a test hook; every other branch answers synchronously.
+   */
+  async #route(response: ServerResponse, url: string, body: unknown, authorization?: string): Promise<boolean> {
     if (url.startsWith("/.well-known/oauth-protected-resource")) {
       json(response, 200, this.#protectedResourceMetadata());
       return true;
@@ -239,7 +251,7 @@ export class McpFixtureServer {
       return true;
     }
     if (url === "/mcp" || url.startsWith("/mcp?")) {
-      this.#mcp(response, body);
+      await this.#mcp(response, body);
       return true;
     }
     return false;
@@ -360,7 +372,8 @@ export class McpFixtureServer {
     });
   }
 
-  #mcp(response: ServerResponse, body: unknown): void {
+  async #mcp(response: ServerResponse, body: unknown): Promise<void> {
+    if (this.#options.onMcpRequest) await this.#options.onMcpRequest();
     const request = body as { id?: unknown; method?: string; params?: { cursor?: string } };
     const method = request.method ?? "";
     if (method === "server/discover") {

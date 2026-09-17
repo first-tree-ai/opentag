@@ -1429,6 +1429,133 @@ describe("Agent-level overrides", () => {
     }
   }, 30_000);
 
+  it("revokes an OAuth credential when the endpoint moves to a new origin", async () => {
+    /*
+     * S2. An access token is issued for one resource, and the AS's `resource` binding is what stops it
+     * being presented elsewhere — the specification forbids the reuse this would have allowed. A Bearer
+     * key is left alone, because nothing binds it to an origin.
+     */
+    const first = await McpFixtureServer.start();
+    const second = await McpFixtureServer.start();
+    const harness = await seed();
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: first.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      await harness.servers.attachServer(harness.accountId, harness.agentB, server.id, true);
+
+      // Agent A holds an OAuth token; Agent B holds a Bearer key.
+      const started = await harness.flows.start(harness.accountId, harness.agentA, server.id, [], FLOW_SECRET);
+      const authorize = await fetch(started.authorizationUrl, { redirect: "manual" });
+      const callback = new URL(authorize.headers.get("location") as string);
+      await harness.flows.callback(
+        {
+          code: callback.searchParams.get("code") ?? "",
+          state: callback.searchParams.get("state") ?? "",
+          iss: callback.searchParams.get("iss") ?? undefined,
+        },
+        FLOW_SECRET,
+      );
+      await harness.authorization.setBearerOrNone(harness.accountId, harness.agentB, server.id, {
+        kind: "bearer",
+        bearerKey: "key_b",
+      });
+
+      const stateOf = async (agentId: string) => {
+        const [row] = await harness.database
+          .select()
+          .from(mcpServerAuthorizations)
+          .where(and(eq(mcpServerAuthorizations.mcpServerId, server.id), eq(mcpServerAuthorizations.agentId, agentId)));
+        return row;
+      };
+      expect((await stateOf(harness.agentA))?.status).toBe("active");
+
+      // A different origin: the token was issued for the old resource and must not follow.
+      const definition = (await harness.servers.listServers(harness.accountId))[0];
+      await harness.servers.updateServer(harness.accountId, server.id, {
+        expectedRevision: definition?.revision as number,
+        url: second.endpoint,
+      });
+
+      const moved = await stateOf(harness.agentA);
+      expect(moved?.status).toBe("revoked");
+      expect(moved?.ciphertext).toBeNull();
+      // The Bearer key is untouched: it is not bound to an origin, and dropping it would be a surprise.
+      const bearer = await stateOf(harness.agentB);
+      expect(bearer?.status).toBe("active");
+      expect(bearer?.ciphertext).not.toBeNull();
+    } finally {
+      await first.stop();
+      await second.stop();
+    }
+  }, 30_000);
+
+  it("drops a probe result that lost the race against a newer write", async () => {
+    /*
+     * S4. The probe takes an upstream round trip and its write was keyed only on `(agent, server)`, so
+     * a slow result landed on whatever the row had become: revoking and immediately re-probing brought
+     * back `succeeded` and a tool snapshot on the revoked row.
+     *
+     * The row has to change *during* the probe for this to be the real race, so the fixture holds the
+     * upstream request open until the newer write has landed. Racing two promises without that would
+     * pass or fail on timing rather than on the fence.
+     */
+    const race: { harness?: Awaited<ReturnType<typeof seed>>; serverId?: string; release?: () => void } = {};
+    const held = new Promise<void>((resolve) => {
+      race.release = resolve;
+    });
+    const fixture = await McpFixtureServer.start({
+      onMcpRequest: async () => {
+        // The probe is now in flight; change the row, then let it finish.
+        if (race.harness && race.serverId) {
+          await race.harness.authorization.setBearerOrNone(race.harness.accountId, race.harness.agentA, race.serverId, {
+            kind: "bearer",
+            bearerKey: "key_b",
+          });
+        }
+        await held;
+      },
+    });
+    const harness = await seed();
+    race.harness = harness;
+    try {
+      const server = await harness.servers.createServer(harness.accountId, {
+        name: "fixture",
+        url: fixture.endpoint,
+        defaultAuthKind: "bearer",
+      });
+      await harness.servers.attachServer(harness.accountId, harness.agentA, server.id, true);
+      race.serverId = server.id;
+      await harness.authorization.setBearerOrNone(harness.accountId, harness.agentA, server.id, {
+        kind: "bearer",
+        bearerKey: "key_a",
+      });
+      const [before] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+
+      // The probe runs against the current revision; the row changes while it is in flight.
+      const probe = harness.authorization.probe(harness.accountId, harness.agentA, server.id);
+      race.release?.();
+      await probe;
+
+      const [after] = await harness.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.agentId, harness.agentA));
+      // The newer write's revision stands, and the stale result did not overwrite its probe state.
+      expect(after?.revision).toBeGreaterThan(before?.revision as number);
+      expect(after?.probeState).toBe("pending");
+      expect(after?.probedAt).toBeNull();
+    } finally {
+      await fixture.stop();
+    }
+  }, 30_000);
+
   it("drops only the overriding Agent's cached era when its URL override changes", async () => {
     const shared = await McpFixtureServer.start();
     const overridden = await McpFixtureServer.start();

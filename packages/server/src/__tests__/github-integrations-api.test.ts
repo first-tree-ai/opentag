@@ -55,6 +55,8 @@ const NOW = new Date("2026-09-16T00:00:00.000Z");
 const REDIRECT_URI = "https://opentag.example.com/api/v1/integrations/github/oauth/callback";
 const PUBLIC_ORIGIN = "https://opentag.example.com";
 const OAUTH_COOKIE = "opentag_github_oauth_context";
+/* The fixed authorization issuer GitHub documents for its OAuth callback `iss` parameter. */
+const GITHUB_CALLBACK_ISSUER = "https://github.com/login/oauth";
 const ACCESS_TOKEN = "token-owner";
 const OTHER_TOKEN = "token-other";
 const GITHUB_USER_ONE = "42";
@@ -210,17 +212,25 @@ async function startAuthorization(
 
 async function completeCallback(
   app: ReturnType<typeof createApp>,
-  input: { state: string; cookie: string; token?: string; code?: string; error?: string },
+  input: { state: string; cookie: string; token?: string; code?: string; error?: string; iss?: string | string[] },
 ) {
   const query = new URLSearchParams();
   if (input.code !== undefined) query.set("code", input.code);
   if (input.error !== undefined) query.set("error", input.error);
   query.set("state", input.state);
+  const issuers = input.iss === undefined ? [] : Array.isArray(input.iss) ? input.iss : [input.iss];
+  for (const issuer of issuers) query.append("iss", issuer);
   return app.inject({
     method: "GET",
     url: `${GITHUB_OAUTH_CALLBACK_PATH}?${query.toString()}`,
     headers: { ...ownerHeaders(input.token), cookie: input.cookie },
   });
+}
+
+/** The stored flow phase proves a rejected callback never claimed or aborted the flow. */
+async function storedFlowPhase(accountId: string): Promise<string | null> {
+  const [row] = await unit.database.select().from(githubConnections).where(eq(githubConnections.accountId, accountId));
+  return row?.oauthContext?.phase ?? null;
 }
 
 /** An active connection for the owner, created through the real start/callback round trip. */
@@ -431,6 +441,93 @@ describe("GitHub OAuth callback", () => {
       state: started.state,
       cookie: started.cookie,
       error: "access_denied",
+    });
+    const location = locationOf(denied);
+    expect(location.pathname).toBe("/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/integrations");
+    expect(location.searchParams.get("github_oauth")).toBe("error");
+    expect(location.searchParams.get("github_oauth_error")).toBe("GITHUB_OAUTH_DENIED");
+    expect(fixture.api.exchangeCodeForUserToken).not.toHaveBeenCalled();
+  });
+
+  it("accepts the fixed GitHub issuer on the callback and activates the connection", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    fixture.api.exchangeCodeForUserToken.mockResolvedValue(tokenMaterial());
+    fixture.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_ONE, login: "octocat" });
+    const started = await startAuthorization(fixture.app);
+
+    const callback = await completeCallback(fixture.app, {
+      state: started.state,
+      cookie: started.cookie,
+      code: "issuer-code",
+      iss: GITHUB_CALLBACK_ISSUER,
+    });
+    const location = locationOf(callback);
+    expect(location.pathname).toBe("/account");
+    expect(location.searchParams.get("github_oauth")).toBe("success");
+    expect(location.toString()).not.toContain("issuer-code");
+    expect(fixture.api.exchangeCodeForUserToken).toHaveBeenCalledTimes(1);
+    const [row] = await unit.database
+      .select()
+      .from(githubConnections)
+      .where(eq(githubConnections.accountId, fixture.owner.id));
+    expect(row?.status).toBe("active");
+    expect(row?.githubUserId).toBe(GITHUB_USER_ONE);
+  });
+
+  it("rejects an invalid, malformed, or duplicated issuer before claiming or aborting the flow", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    fixture.api.exchangeCodeForUserToken.mockResolvedValue(tokenMaterial());
+    fixture.api.getAuthenticatedUser.mockResolvedValue({ id: GITHUB_USER_ONE, login: "octocat" });
+    const started = await startAuthorization(fixture.app);
+
+    const attempts = [
+      // A foreign issuer.
+      { code: "issuer-code", iss: "https://attacker.example.com/login/oauth" },
+      // A malformed issuer value.
+      { code: "issuer-code", iss: "not-a-url" },
+      // A near-miss on the fixed issuer is still a miss.
+      { code: "issuer-code", iss: "https://github.com/login/oauth2" },
+      // A duplicated parameter arrives as an array and never matches the literal.
+      { code: "issuer-code", iss: [GITHUB_CALLBACK_ISSUER, GITHUB_CALLBACK_ISSUER] },
+      // A forged issuer must not reach the denial/abort path either.
+      { error: "access_denied", iss: "https://attacker.example.com" },
+    ];
+    for (const attempt of attempts) {
+      const response = await completeCallback(fixture.app, {
+        state: started.state,
+        cookie: started.cookie,
+        ...attempt,
+      });
+      const location = locationOf(response);
+      expect(location.searchParams.get("github_oauth")).toBe("error");
+      expect(location.searchParams.get("github_oauth_error")).toBe("GITHUB_OAUTH_FLOW_INVALID");
+      expect(location.toString()).not.toContain("issuer-code");
+      expect(await storedFlowPhase(fixture.owner.id)).toBe("awaiting_callback");
+    }
+    expect(fixture.api.exchangeCodeForUserToken).not.toHaveBeenCalled();
+
+    // The unconsumed state still completes exactly once, through the legacy issuer-less shape.
+    const legacy = await completeCallback(fixture.app, {
+      state: started.state,
+      cookie: started.cookie,
+      code: "issuer-code",
+    });
+    expect(locationOf(legacy).searchParams.get("github_oauth")).toBe("success");
+    expect(fixture.api.exchangeCodeForUserToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps a denial carrying the fixed GitHub issuer to the fixed surface without exchanging", async () => {
+    const fixture = await appFixture({ withManagement: true });
+    const started = await startAuthorization(fixture.app, {
+      intent: "create",
+      returnSurface: "agent-integrations",
+      agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+    });
+    const denied = await completeCallback(fixture.app, {
+      state: started.state,
+      cookie: started.cookie,
+      error: "access_denied",
+      iss: GITHUB_CALLBACK_ISSUER,
     });
     const location = locationOf(denied);
     expect(location.pathname).toBe("/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/integrations");

@@ -55,12 +55,21 @@ import { parseRequest } from "./request-validation.js";
 const GITHUB_OAUTH_CONTEXT_COOKIE = "opentag_github_oauth_context";
 const GITHUB_OAUTH_CONTEXT_COOKIE_MAX_AGE_SECONDS = 10 * 60;
 
+/*
+ * GitHub appends `iss` to the OAuth callback carrying its fixed authorization issuer
+ * (https://docs.github.com/en/apps/github-authentication-discovery-endpoints). Accept the field
+ * only as that exact literal — there is no issuer discovery — while legacy callbacks without it
+ * stay valid, and `.strict()` keeps rejecting every other unknown key.
+ */
+const GITHUB_OAUTH_CALLBACK_ISSUER = "https://github.com/login/oauth";
+
 const CallbackQuerySchema = z
   .object({
     code: z.string().min(1).max(4096).optional(),
     state: z.string().min(1).max(512),
     error: z.string().min(1).max(256).optional(),
     error_description: z.string().max(1024).optional(),
+    iss: z.literal(GITHUB_OAUTH_CALLBACK_ISSUER).optional(),
   })
   .strict();
 

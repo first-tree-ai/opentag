@@ -817,6 +817,9 @@ function prepareRunnerConnection(
     return;
   }
   callbacks.enqueue("restore", async () => {
+    // A failed save must never hide an already-journaled result behind another restore attempt.
+    // Admission remains blocked by workspace.ready while custody/report acknowledgments flow.
+    if (cloudCapable) await turns.reconcile();
     if (!(await workspace.prepare()) || callbacks.isClosed()) return;
     await state.afterWorkspaceRestore?.();
     state.afterWorkspaceRestore = undefined;

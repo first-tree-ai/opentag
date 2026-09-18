@@ -22,6 +22,7 @@ function fixture() {
   };
   const workspace = {
     initialized: false,
+    terminalFailure: false,
     pendingSave: false,
     sealed: false,
     initialize: vi.fn(async () => {
@@ -99,6 +100,22 @@ describe("Runner workspace occupation", () => {
     expect(f.events).toEqual(["destroy"]);
     expect(await f.controller.prepare()).toBe(true);
     expect(f.events).toEqual(["destroy", "restore", "launch", "probe"]);
+  });
+
+  it("keeps a terminal save failure connected but never retries unchanged files or admits work", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.workspace.save.mockImplementationOnce(async () => {
+      f.workspace.terminalFailure = true;
+      throw new Error("unsupported archive entry");
+    });
+    await expect(f.controller.checkpoint()).rejects.toThrow();
+    const restores = f.workspace.initialize.mock.calls.length;
+    expect(await f.controller.prepare()).toBe(false);
+    expect(await f.controller.prepare()).toBe(false);
+    expect(f.workspace.initialize).toHaveBeenCalledTimes(restores);
+    expect(f.controller.ready).toBe(false);
+    expect(f.state.present).toBe(false);
   });
 
   it("waits for result acknowledgment before sealing and never relaunches a sealed allocation", async () => {

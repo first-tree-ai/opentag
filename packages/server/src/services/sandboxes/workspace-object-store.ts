@@ -783,8 +783,8 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       });
     } catch (error) {
       if (error instanceof WorkspaceObjectStoreError) {
-        // A source-framing violation truncates the request before the epilogue, so the upload
-        // provably cannot have committed; anything else transport-level leaves the outcome open.
+        // Preserve a direct framing error when the transport exposes it. Undici may instead
+        // wrap a body-stream failure in TypeError, so that path conservatively uses read-back.
         if (error.code === "invalid_input") throw error;
         if (error.code === "timeout" || error.code === "unavailable") {
           fail("unknown_result", "Workspace upload outcome is uncertain; read-back verification required");

@@ -1,8 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { RunnerClientFrameSchema, RunnerServerFrameSchema } from "../cloud-runner.js";
+import {
+  AccountSandboxRunnerStopRequestSchema,
+  RunnerClientFrameSchema,
+  RunnerServerFrameSchema,
+} from "../cloud-runner.js";
 import { RunnerWorkspaceObjectSchema } from "../runner-workspace.js";
 
 describe("workspace persistence wire boundary", () => {
+  it("requires an explicit current allocation generation to discard unsaved workspace files", () => {
+    expect(AccountSandboxRunnerStopRequestSchema.parse({})).toEqual({});
+    const discard = { discardUnsavedChanges: true, environmentGeneration: 4 };
+    expect(AccountSandboxRunnerStopRequestSchema.parse(discard)).toEqual(discard);
+    for (const invalid of [
+      { discardUnsavedChanges: true },
+      { ...discard, environmentGeneration: 0 },
+      { ...discard, environmentGeneration: Number.MAX_SAFE_INTEGER + 1 },
+      { ...discard, environmentGeneration: "4" },
+      { ...discard, force: true },
+      { environmentGeneration: 4 },
+    ]) {
+      expect(AccountSandboxRunnerStopRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
   it("negotiates independently of legacy delivery and rejects unsupported versions", () => {
     const auth = { type: "auth", token: "test-bootstrap", cloudDeliveryVersion: 1 };
     expect(RunnerClientFrameSchema.safeParse(auth).success).toBe(true);

@@ -13,6 +13,7 @@ import {
   AccountSandboxRunnerAcceptanceRequestSchema,
   AccountSandboxRunnerAcceptanceResponseSchema,
   AccountSandboxRunnerStatusResponseSchema,
+  AccountSandboxRunnerStopRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AgentAdminConfigSchema,
@@ -267,8 +268,8 @@ export function registerAccountRoutes(
 
     app.post(ACCOUNT_SANDBOX_RUNNER_STOP_TEMPLATE, { preHandler }, async (request, reply) => {
       const { sandboxId } = parseRequest(SandboxParamsSchema, request.params);
-      parseRequest(EmptyBodySchema, request.body ?? {});
-      const status = await sandboxRunnerService.stopForAccount(accountId(request), sandboxId);
+      const input = parseRequest(AccountSandboxRunnerStopRequestSchema, request.body ?? {});
+      const status = await sandboxRunnerService.stopForAccount(accountId(request), sandboxId, input);
       return reply
         .header("Cache-Control", "no-store")
         .code(200)

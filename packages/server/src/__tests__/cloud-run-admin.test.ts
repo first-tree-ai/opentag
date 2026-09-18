@@ -113,6 +113,26 @@ describe("runner instance identity", () => {
 });
 
 describe("CloudRunAdmin create", () => {
+  it("distinguishes confirmed legacy allocations from malformed or unknown persistence flags", async () => {
+    const cases: [unknown, boolean | undefined][] = [
+      [[{ name: "runner" }], false],
+      [[{ name: "runner", env: [] }], false],
+      [[{ name: "runner", env: [{ name: "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE", value: "1" }] }], true],
+      [[{ name: "runner", env: [{ name: "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE", value: "0" }] }], undefined],
+      [[{ name: "runner", env: {} }], undefined],
+      [[{ name: "runner", env: [null] }], undefined],
+      [[], undefined],
+      [undefined, undefined],
+    ];
+    for (const [containers, expected] of cases) {
+      const { fetchImpl } = fakeFetch(() => ({ status: 200, body: instanceBody({ containers }) }));
+      const service = admin(fetchImpl);
+      expect(
+        (await service.getInstance(service.resourceNameFor(runnerInstanceId(IDENTITY))))?.workspacePersistence,
+      ).toBe(expected);
+    }
+  });
+
   it("creates the pinned 1CPU/1GiB sandbox-launcher instance with Direct VPC and hardened surface", async () => {
     const { calls, fetchImpl } = fakeFetch((call) => {
       if (call.method === "POST")

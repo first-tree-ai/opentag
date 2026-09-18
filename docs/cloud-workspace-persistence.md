@@ -27,12 +27,26 @@ not replace its current local files with an older archive.
 At a Turn boundary, the Runner keeps the Session execution slot occupied, stops native Sandbox
 writers, saves the workspace, and then reopens execution. Native deletion also removes orphaned
 background processes. The workspace survives that namespace reset. A completed external action
-does not become safe to replay merely because persistence failed.
+does not become safe to replay merely because persistence failed. A failed save produces an honest
+`workspace_failed` Turn report while preserving the execution-effects classification and local files.
+Reconciliation sends that report before attempting another save. Deterministic archive violations
+(size/count limits, unsupported entries, unsafe paths) stop retries of unchanged files and keep
+execution blocked, but retain the control/report connection. Transient storage failures retry on
+reconnection. A crash during the save, before journaling the terminal report, is reconciled as
+unknown execution effects and never automatically replayed.
 
 Normal release first closes admission through `releasing`, then asks the Runner to quiesce,
 receive durable Server acknowledgments for terminal reports, and save a sealed archive. The
 Server verifies that archive for the exact current environment before deleting the Instance. Failed saving retains the resource binding and local copy for retry.
 A confirmed missing Instance has no local copy to save; recovery uses the last successful archive.
+For a permanently unsaveable or unavailable Runner, the Account stop endpoint supports an explicit
+`{ "discardUnsavedChanges": true, "environmentGeneration": <current generation> }` body. It records
+the discard intent for that allocation, preserves the previous archive, and performs the same
+UID-verified deletion. A stale generation is rejected. Ordinary stop never silently discards files.
+Instances that the provider confirms were created without persistence keep their legacy stop
+behavior; a missing archive alone is not proof of a legacy Instance. The default seal wait is
+480 seconds to cover drain, checkpoint, final upload, and archive work; individual HTTP transfers
+retain the 120-second deadline.
 
 OOM, SIGKILL, and machine loss cannot guarantee a final save. Changes since the last successful
 boundary may be lost, including progress within a long-running Turn. Already-started operations
@@ -67,6 +81,8 @@ The fixed configuration remains 1 vCPU / 1 GiB. Archive processing streams rathe
 the whole payload. Initial safety limits are 128 MiB compressed, 256 MiB expanded, and 50,000
 entries; exceeding a limit fails saving/restoring explicitly. Temporary files also consume the
 Instance's memory-backed filesystem, so these limits are not a guarantee against workload OOM.
+The Cloud system prompt explains these limits and directs disposable dependency caches/build output
+outside the saved workspace; those files must be recreated on subsequent Turns.
 Relative workspace symlinks are supported. Hard links (including internal hard links), unsafe
 paths, external symlinks, special files, and malformed archives are rejected by the initial format.
 
@@ -74,7 +90,7 @@ Deploy the Server before its matching pinned Runner image. Persistence capabilit
 readiness are explicitly negotiated. The Server identity needs GCS object read/create/delete/update
 permissions for the configured storage prefix; the Instance identity does not gain those permissions.
 Existing E3/E4 allocations are not automatically migrated: a previously allocated Sandbox without
-an archive fails restoration. Initial acceptance uses a new Session; retaining an existing live
+an archive is rejected before creating a replacement Instance. Initial acceptance uses a new Session; retaining an existing live
 workspace requires a separate migration procedure before switching its Runner.
 Existing storage configuration and allocation identity are reused. The ingress/reverse proxy must
 allow the archive body size (128 MiB) and the transfer deadline (120 seconds); verify these values
@@ -103,6 +119,11 @@ alone still do not prove Session restoration.
 5. Deny an upload in the test fixture: stopping must keep the Instance bound in `releasing`.
    Restore access and retry. Also replace an already-missing Instance and confirm only the last
    successful saved boundary is recoverable.
-6. Record all temporary Instance and object names, then remove only resources created by this
+6. Create an unsupported hard link in the fixture workspace. The task must report save failure,
+   keep the last good object, and remain controllable across reconnect. Ordinary stop preserves
+   the Instance; explicit generation-bound discard releases it. Verify a stale discard request
+   cannot affect a replacement allocation. A legacy released Session with no archive must not
+   allocate a new Instance.
+7. Record all temporary Instance and object names, then remove only resources created by this
    acceptance. Allocation release retains the latest archive by design; storage cleanup is
    separate and must use the recorded owned prefix.

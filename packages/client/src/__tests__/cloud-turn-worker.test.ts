@@ -156,6 +156,10 @@ describe("cloud-turn-worker", () => {
     expect(prompt).toContain("Platform.");
     expect(prompt).toContain("Agent.");
     expect(prompt).toContain("Session-scoped Cloud Sandbox");
+    expect(prompt).toContain("256 MiB");
+    expect(prompt).toContain("50,000 entries");
+    expect(prompt).toContain("128 MiB");
+    expect(prompt).toContain("Hard links, sockets, FIFOs");
     expect(prompt).not.toContain("Agent Home");
     expect(prompt).not.toContain("Context Tree");
     expect(prompt).not.toContain("shared across this Agent's Sessions");

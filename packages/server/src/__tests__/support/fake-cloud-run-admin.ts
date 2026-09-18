@@ -230,6 +230,7 @@ export class FakeCloudRunAdmin {
       networkInterfaces: [{ network: "n", subnetwork: "s", tags: ["t"] }],
       vpcEgress: "ALL_TRAFFIC",
       reconciling: false,
+      workspacePersistence: instance.spec.workspacePersistence === true,
       policy: {
         ingress: "INGRESS_TRAFFIC_INTERNAL_ONLY",
         defaultUriDisabled: true,

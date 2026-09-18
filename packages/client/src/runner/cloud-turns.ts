@@ -26,6 +26,7 @@ import {
 import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
 import type { TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { turnTimeoutMs } from "../runtime/agent-turn-runner.js";
+import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
 import { RuntimeCredentialRelay, type RuntimeCredentialRelayOptions } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import { type CloudCredentialChannel, CloudCredentialConnection } from "./cloud-credential-connection.js";
@@ -37,6 +38,7 @@ import {
   type CloudJournalScope,
   computeCloudDeliveryInputHash,
 } from "./cloud-journal.js";
+import { CloudWorkspaceError } from "./cloud-workspace.js";
 import { type NativeSandbox, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 
 /**
@@ -773,14 +775,28 @@ export class CloudTurnRunner {
 
   /** Build the fsynced report and send it; the entry retires only on the Server's durable ack. */
   async #reportTerminal(entry: CloudJournalEntry, completion: TurnCompletion, checkpoint = false): Promise<void> {
+    let checkpointError: unknown;
+    if (checkpoint) {
+      try {
+        await this.#options.checkpoint?.();
+      } catch (error) {
+        checkpointError = error;
+        completion = workspaceSaveFailure(completion);
+      }
+    }
+    // Record exactly one honest result AFTER the save attempt. A crash before this point leaves
+    // started/unknown custody (never automatic replay), not a success whose workspace was lost.
     const report = entry.report ?? this.#buildReport(entry.delivery, entry, completion);
     const recorded = await this.#options.journal.recordReport(entry.deliveryId, entry.scope, report);
     if (!recorded.report) return;
     this.#notifyJournalChanged();
-    // A failed save leaves the honest report in the trusted journal, ready for replay AFTER
-    // the local workspace has been saved on reconnect. It never re-runs the external action.
-    if (checkpoint) await this.#options.checkpoint?.();
     this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
+    if (
+      checkpointError !== undefined &&
+      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
+    ) {
+      this.#reportPersistenceError(checkpointError);
+    }
   }
 
   #buildReport(
@@ -1082,6 +1098,21 @@ export class CloudTurnRunner {
 
 function cancelledBeforeStart(): TurnCompletion {
   return { errorReason: "client_shutdown", executionEffects: "not_started", outcome: "cancelled" };
+}
+
+function workspaceSaveFailure(completion: TurnCompletion): TurnCompletion {
+  const message =
+    "Workspace save failed. Execution effects may already exist, but these files are not durably saved. " +
+    "Further execution is blocked. If saving cannot recover, explicitly discard unsaved changes to release the environment. " +
+    "Do not repeat completed external actions.\n\n";
+  return {
+    ...completion,
+    outcome: "failed",
+    errorReason: "workspace_failed",
+    finalText:
+      message +
+      truncateUtf8(completion.finalText ?? "", RUNTIME_FINAL_TEXT_MAX_BYTES - Buffer.byteLength(message)).text,
+  };
 }
 
 /** A Turn that did not verifiably complete may have left native processes behind. */

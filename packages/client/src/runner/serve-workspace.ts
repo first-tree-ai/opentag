@@ -43,7 +43,7 @@ export class ServeWorkspace {
   }
 
   async prepare(): Promise<boolean> {
-    if (this.#sealing || this.#workspace.sealed) return false;
+    if (this.#sealing || this.#workspace.sealed || this.#workspace.terminalFailure) return false;
     if (this.#workspace.initialized && !this.#workspace.pendingSave && this.#state().present && !this.#blocked) {
       return true;
     }

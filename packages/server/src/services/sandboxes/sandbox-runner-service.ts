@@ -2,6 +2,7 @@ import type {
   AccountSandboxRunnerAcceptanceRequest,
   AccountSandboxRunnerAcceptanceResponse,
   AccountSandboxRunnerStatusResponse,
+  AccountSandboxRunnerStopRequest,
   RunnerReadiness,
 } from "@opentag/shared";
 import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
@@ -9,7 +10,7 @@ import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzl
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { computers, sandboxes } from "../../db/schema/index.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
-import { SandboxServiceError, sandboxNotFound, WorkspaceSaveError } from "./errors.js";
+import { SandboxServiceError, sandboxNotFound, WorkspaceRestoreRequiredError, WorkspaceSaveError } from "./errors.js";
 import {
   loadManagedSandboxById,
   loadOwnedSandbox,
@@ -72,7 +73,7 @@ export interface SandboxRunnerServiceOptions {
    */
   workspace?: {
     store: WorkspaceObjectStore;
-    /** Bounds the seal request wait; defaults to the shared workspace timeout (120s). */
+    /** Covers drain, two uploads and archive processing; defaults to 4 x the transfer timeout. */
     sealTimeoutMs?: number;
   };
 }
@@ -109,7 +110,12 @@ const CREATE_PHASE_MARKER_LIST: string[] = [
  */
 const WORKSPACE_SAVE_REQUIRED = "workspace_save_required";
 const WORKSPACE_SAVE_FAILED = "workspace_save_failed";
-const WORKSPACE_RELEASE_MARKER_LIST: string[] = [WORKSPACE_SAVE_REQUIRED, WORKSPACE_SAVE_FAILED];
+const WORKSPACE_DISCARD_REQUESTED = "workspace_discard_requested";
+const WORKSPACE_RELEASE_MARKER_LIST: string[] = [
+  WORKSPACE_SAVE_REQUIRED,
+  WORKSPACE_SAVE_FAILED,
+  WORKSPACE_DISCARD_REQUESTED,
+];
 
 /**
  * Markers a weaker failure write must never overwrite. A workspace release marker may overwrite
@@ -118,8 +124,25 @@ const WORKSPACE_RELEASE_MARKER_LIST: string[] = [WORKSPACE_SAVE_REQUIRED, WORKSP
  */
 function preservedMarkersFor(incomingCode: string): string[] {
   return WORKSPACE_RELEASE_MARKER_LIST.includes(incomingCode)
-    ? CREATE_PHASE_MARKER_LIST
+    ? [...CREATE_PHASE_MARKER_LIST, WORKSPACE_DISCARD_REQUESTED]
     : [...CREATE_PHASE_MARKER_LIST, ...WORKSPACE_RELEASE_MARKER_LIST];
+}
+
+/** The discard opt-in is checked under the same row lock that records its allocation-bound intent. */
+function stopReleaseMarker(
+  row: Pick<typeof sandboxes.$inferSelect, "lifecycle" | "environmentGeneration" | "lastErrorCode">,
+  input: AccountSandboxRunnerStopRequest,
+  persistence: boolean,
+): string | undefined {
+  if ("discardUnsavedChanges" in input) {
+    if (input.environmentGeneration !== row.environmentGeneration) {
+      throw runnerConflict("The discard request refers to a different environment generation");
+    }
+    if (row.lifecycle === "ready" || WORKSPACE_RELEASE_MARKER_LIST.includes(row.lastErrorCode ?? "")) {
+      return WORKSPACE_DISCARD_REQUESTED;
+    }
+  }
+  return persistence && row.lifecycle === "ready" ? WORKSPACE_SAVE_REQUIRED : undefined;
 }
 
 /** Evidence that no create for this generation can still materialize. */
@@ -174,7 +197,7 @@ export class SandboxRunnerService {
     this.#workspace = options.workspace
       ? {
           store: options.workspace.store,
-          sealTimeoutMs: options.workspace.sealTimeoutMs ?? RUNNER_WORKSPACE_TIMEOUT_MS,
+          sealTimeoutMs: options.workspace.sealTimeoutMs ?? 4 * RUNNER_WORKSPACE_TIMEOUT_MS,
         }
       : undefined;
     this.#now = options.now ?? (() => new Date());
@@ -191,7 +214,7 @@ export class SandboxRunnerService {
    * ---------------------------------------------------------------------------------------- */
 
   async startForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
-    await this.#initializeFirstWorkspace(accountId, sandboxId);
+    await this.#prepareWorkspaceAllocation(accountId, sandboxId);
     const reservation = await this.#database.transaction(async (transaction) => {
       // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
       // un-ended Session, non-suspended Account, owned Cloud Computer.
@@ -225,14 +248,24 @@ export class SandboxRunnerService {
     return this.statusForAccount(accountId, sandboxId);
   }
 
-  /** Seed before generation 1 is reserved; a rejected first create must not strand generation 2. */
-  async #initializeFirstWorkspace(accountId: string, sandboxId: string): Promise<void> {
+  /** Validate storage before reservation, without holding a transaction through storage I/O. */
+  async #prepareWorkspaceAllocation(accountId: string, sandboxId: string): Promise<void> {
     if (!this.#workspace) return;
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
     if (!owned) throw sandboxNotFound();
     const row = owned.sandbox;
-    if (row.lifecycle !== "unallocated" || row.environmentGeneration !== 0) return;
+    if (row.lifecycle !== "unallocated") return;
     try {
+      if (row.environmentGeneration > 0) {
+        const object = await this.#workspace.store.head({
+          storageUri: row.storageUri,
+          sandboxId: row.id,
+          sessionId: row.sessionId,
+          environmentGeneration: row.environmentGeneration,
+        });
+        if (!object) throw new WorkspaceRestoreRequiredError();
+        return;
+      }
       // No DB transaction spans storage I/O. Conditional creation coalesces concurrent starters;
       // the reservation below revalidates current authority and allocation under the row lock.
       await this.#workspace.store.claim(
@@ -244,11 +277,12 @@ export class SandboxRunnerService {
         },
         { initialize: true },
       );
-    } catch {
+    } catch (error) {
+      if (error instanceof WorkspaceRestoreRequiredError) throw error;
       throw new SandboxServiceError(
         "SERVICE_UNAVAILABLE",
         "transient",
-        "The initial workspace could not be prepared",
+        "The workspace storage could not be prepared",
         503,
       );
     }
@@ -323,8 +357,13 @@ export class SandboxRunnerService {
     if (row.lifecycle === "ready") return "ready";
     if (row.lifecycle === "releasing") return "stopped";
     if (row.lifecycle === "unallocated" && row.environmentGeneration > 0 && !this.#workspace) return "restore_required";
-    const status = await this.startForAccount(accountId, sandboxId);
-    return status.lifecycle === "ready" ? "ready" : "pending";
+    try {
+      const status = await this.startForAccount(accountId, sandboxId);
+      return status.lifecycle === "ready" ? "ready" : "pending";
+    } catch (error) {
+      if (error instanceof WorkspaceRestoreRequiredError) return "restore_required";
+      throw error;
+    }
   }
 
   /**
@@ -364,24 +403,28 @@ export class SandboxRunnerService {
     return { ...base, physical: "present" };
   }
 
-  async stopForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
+  async stopForAccount(
+    accountId: string,
+    sandboxId: string,
+    input: AccountSandboxRunnerStopRequest = {},
+  ): Promise<AccountSandboxRunnerStatusResponse> {
     const transition = await this.#database.transaction(async (transaction) => {
       const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, { lock: true, authority: "read" });
       if (!owned) throw sandboxNotFound();
       const row = owned.sandbox;
       const now = this.#now();
+      const releaseMarker = stopReleaseMarker(row, input, this.#workspace !== undefined);
       if (row.lifecycle === "unallocated") return { action: "report" as const, row };
-      if (row.lifecycle === "releasing") return { action: "release" as const, row };
-      // E5: a ready environment may hold unsaved workspace progress. Stamp the durable
-      // save-required phase atomically with the transition so a Server restart can never mistake
-      // a used environment for an unused one; a `ready` row carries no create-phase marker, so
-      // this never erases create evidence.
-      const workspaceSaveRequired = this.#workspace !== undefined && row.lifecycle === "ready";
+      if (row.lifecycle === "releasing" && releaseMarker !== WORKSPACE_DISCARD_REQUESTED) {
+        return { action: "release" as const, row };
+      }
+      // Stamp save/discard intent with the phase transition. Pending-create markers remain
+      // untouched: a never-ready allocation owes no workspace save, even on explicit discard.
       const [updated] = await transaction
         .update(sandboxes)
         .set({
           lifecycle: "releasing",
-          ...(workspaceSaveRequired ? { lastErrorCode: WORKSPACE_SAVE_REQUIRED, lastErrorAt: now } : {}),
+          ...(releaseMarker ? { lastErrorCode: releaseMarker, lastErrorAt: now } : {}),
           lastActivityAt: now,
           updatedAt: now,
         })
@@ -389,7 +432,7 @@ export class SandboxRunnerService {
           and(
             eq(sandboxes.id, row.id),
             eq(sandboxes.environmentGeneration, row.environmentGeneration),
-            or(eq(sandboxes.lifecycle, "preparing"), eq(sandboxes.lifecycle, "ready")),
+            inArray(sandboxes.lifecycle, ["preparing", "ready", "releasing"]),
           ),
         )
         .returning();
@@ -977,7 +1020,7 @@ export class SandboxRunnerService {
     const saveOwed = row.lastErrorCode === WORKSPACE_SAVE_REQUIRED || row.lastErrorCode === WORKSPACE_SAVE_FAILED;
     if (resourceName !== null && resourceUid !== null && saveOwed) {
       const view = await this.#cloud.getInstance(resourceName);
-      if (view !== undefined && view.uid === resourceUid) {
+      if (view !== undefined && view.uid === resourceUid && view.workspacePersistence !== false) {
         await this.#sealWorkspaceForRelease(row);
       }
     }

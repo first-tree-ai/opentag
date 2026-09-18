@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerWorkspaceObject } from "@opentag/shared";
@@ -115,6 +115,23 @@ async function client(fixture: ReturnType<typeof storageFixture>, generation = 1
 }
 
 describe("Cloud workspace transfer", () => {
+  it("classifies unsaveable hard links as terminal without overwriting the saved object", async () => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const previous = store.object();
+    await writeFile(join(runner.workspace, "work"), "unsaved work");
+    await link(join(runner.workspace, "work"), join(runner.workspace, "hard-link"));
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed", retryable: false });
+    expect(runner.client.terminalFailure).toBe(true);
+    expect(runner.client.pendingSave).toBe(true);
+    const requests = store.requests.length;
+    await expect(runner.client.save(true)).rejects.toMatchObject({ retryable: false });
+    expect(store.requests).toHaveLength(requests);
+    expect(store.object()).toEqual(previous);
+    expect(await readFile(join(runner.workspace, "work"), "utf8")).toBe("unsaved work");
+  });
+
   it("recovers files and Pi binding/history into a replacement and excludes trusted parent state", async () => {
     const store = storageFixture();
     const first = await client(store);

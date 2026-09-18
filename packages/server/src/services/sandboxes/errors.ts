@@ -27,3 +27,15 @@ export class WorkspaceSaveError extends Error {
     this.name = "WorkspaceSaveError";
   }
 }
+
+export class WorkspaceRestoreRequiredError extends SandboxServiceError {
+  constructor() {
+    super(
+      "SANDBOX_RUNNER_CONFLICT",
+      "deterministic",
+      "The saved workspace is missing; restore it before allocating an environment",
+      409,
+    );
+    this.name = "WorkspaceRestoreRequiredError";
+  }
+}

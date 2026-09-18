@@ -845,6 +845,114 @@ describe("workspace capability negotiation", () => {
 });
 
 describe("workspace release and restore", () => {
+  async function readyWorkspaceWithoutRunner() {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const started = await startedSandbox(stack, accountId);
+    const runner = await authenticatedWorkspaceRunner(stack, started.token);
+    const claimed = (await (await claimRequest(stack, started.token)).json()) as RunnerWorkspaceObject;
+    const saved = (await (
+      await putArchive(stack, started.token, claimed, Buffer.from("last-good"), false)
+    ).json()) as RunnerWorkspaceObject;
+    runner.send(readyFrame(started.claims.resourceName, true));
+    await waitForLifecycle(stack, accountId, started.sandbox.sandboxId, "ready");
+    runner.socket.close();
+    await runner.closed;
+    await vi.waitFor(() => expect(stack.hub.describe(started.sandbox.sandboxId).connected).toBe(false));
+    return { accountId, stack, started, saved, row: await sandboxRow(started.sandbox.sandboxId) };
+  }
+
+  it("releases an unavailable Runner only after explicit generation-bound discard and retains its archive", async () => {
+    const { accountId, stack, started, saved, row } = await readyWorkspaceWithoutRunner();
+    const id = started.sandbox.sandboxId;
+    await expect(stack.service.stopForAccount(accountId, id)).rejects.toMatchObject({ statusCode: 503 });
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    const endpoint = `${stack.address}${accountSandboxRunnerStopPath(id)}`;
+    const post = (body: unknown) =>
+      fetch(endpoint, {
+        method: "POST",
+        headers: { authorization: "Bearer access", "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect((await post({ discardUnsavedChanges: true })).status).toBe(400);
+    expect(
+      (await post({ discardUnsavedChanges: true, environmentGeneration: row.environmentGeneration + 1 })).status,
+    ).toBe(409);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+    expect((await post({ discardUnsavedChanges: true, environmentGeneration: row.environmentGeneration })).status).toBe(
+      200,
+    );
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+    expect(stack.store.stored(row.storageUri)).toEqual(saved);
+    expect(stack.store.storedBytes(row.storageUri)?.toString()).toBe("last-good");
+    await stack.service.startForAccount(accountId, id);
+    expect((await post({ discardUnsavedChanges: true, environmentGeneration: row.environmentGeneration })).status).toBe(
+      409,
+    );
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    await expect(
+      stack.service.stopForAccount(await account(), id, {
+        discardUnsavedChanges: true,
+        environmentGeneration: row.environmentGeneration + 1,
+      }),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("keeps explicit discard intent through a failed delete so ordinary retry can finish cleanup", async () => {
+    const { accountId, stack, started, saved, row } = await readyWorkspaceWithoutRunner();
+    stack.fake.deleteFailures = 1;
+    await expect(
+      stack.service.stopForAccount(accountId, started.sandbox.sandboxId, {
+        discardUnsavedChanges: true,
+        environmentGeneration: row.environmentGeneration,
+      }),
+    ).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(row.id)).toMatchObject({
+      lifecycle: "releasing",
+      lastErrorCode: "workspace_discard_requested",
+    });
+    expect((await stack.service.stopForAccount(accountId, row.id)).lifecycle).toBe("unallocated");
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+    expect(stack.store.stored(row.storageUri)).toEqual(saved);
+  });
+
+  it.each([false, undefined])("uses only explicit provider legacy proof to bypass saving (%s)", async (capability) => {
+    const { accountId, stack, row } = await readyWorkspaceWithoutRunner();
+    const get = stack.fake.getInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "getInstance").mockImplementation(async (name) => {
+      const view = await get(name);
+      if (view) {
+        if (capability === false) view.workspacePersistence = false;
+        else delete view.workspacePersistence;
+      }
+      return view;
+    });
+    if (capability === false) {
+      expect((await stack.service.stopForAccount(accountId, row.id)).lifecycle).toBe("unallocated");
+      expect(stack.fake.liveInstanceCount()).toBe(0);
+    } else {
+      await expect(stack.service.stopForAccount(accountId, row.id)).rejects.toMatchObject({ statusCode: 503 });
+      expect(stack.fake.liveInstanceCount()).toBe(1);
+    }
+  });
+
+  it("rejects missing or unavailable storage before allocating a previously-used Session", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const sandbox = await ownedSandbox(accountId);
+    await unit.database.update(sandboxes).set({ environmentGeneration: 1 }).where(eq(sandboxes.id, sandbox.sandboxId));
+    await expect(stack.service.startForAccount(accountId, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(await stack.service.ensureIngressAllocation(accountId, sandbox.sandboxId)).toBe("restore_required");
+    vi.spyOn(stack.store, "head").mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(stack.service.startForAccount(accountId, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 503,
+    });
+    expect(stack.fake.createCalls).toHaveLength(0);
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({ lifecycle: "unallocated", environmentGeneration: 1 });
+  });
+
   /** Drive the runner side of a seal request: upload the sealed archive, then ack. */
   async function answerSeal(
     stack: WorkspaceStack,

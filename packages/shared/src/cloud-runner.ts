@@ -208,6 +208,15 @@ export const AccountSandboxRunnerAcceptanceRequestSchema = z
 
 export type AccountSandboxRunnerAcceptanceRequest = z.infer<typeof AccountSandboxRunnerAcceptanceRequestSchema>;
 
+/** Ordinary stop saves first; discarding local files requires an explicit allocation generation. */
+export const AccountSandboxRunnerStopRequestSchema = z.union([
+  z.object({}).strict(),
+  z
+    .object({ discardUnsavedChanges: z.literal(true), environmentGeneration: z.number().int().positive().safe() })
+    .strict(),
+]);
+export type AccountSandboxRunnerStopRequest = z.infer<typeof AccountSandboxRunnerStopRequestSchema>;
+
 /**
  * Native-sandbox/tool readiness as the Runner reported it after authentication. `runnerVersion`
  * is the pinned Runner build the image reports from its identity document; the Server requires

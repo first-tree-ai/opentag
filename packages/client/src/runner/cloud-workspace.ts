@@ -9,10 +9,18 @@ import {
   type RunnerWorkspaceObject,
   RunnerWorkspaceObjectSchema,
 } from "@opentag/shared";
-import { createWorkspaceArchive, restoreWorkspaceArchive, type WorkspaceArchiveInfo } from "./workspace-archive.js";
+import {
+  createWorkspaceArchive,
+  restoreWorkspaceArchive,
+  WorkspaceArchiveError,
+  type WorkspaceArchiveInfo,
+} from "./workspace-archive.js";
 
 export class CloudWorkspaceError extends Error {
-  constructor(readonly code: "restore_failed" | "save_failed" | "scope_unavailable") {
+  constructor(
+    readonly code: "restore_failed" | "save_failed" | "scope_unavailable",
+    readonly retryable = true,
+  ) {
     super(`Cloud workspace ${code}`);
     this.name = "CloudWorkspaceError";
   }
@@ -82,6 +90,7 @@ export class CloudWorkspace {
   #object?: RunnerWorkspaceObject;
   #restored = false;
   #pendingSave = false;
+  #terminalFailure = false;
   #serial: Promise<unknown> = Promise.resolve();
 
   constructor(options: CloudWorkspaceOptions) {
@@ -98,6 +107,10 @@ export class CloudWorkspace {
   }
   get pendingSave(): boolean {
     return this.#pendingSave;
+  }
+  /** An unchanged directory cannot recover from an archive format/size violation by retrying. */
+  get terminalFailure(): boolean {
+    return this.#terminalFailure;
   }
   get sealed(): boolean {
     return this.#object?.sealed === true;
@@ -137,6 +150,7 @@ export class CloudWorkspace {
   }
 
   async #save(sealed: boolean): Promise<void> {
+    if (this.#terminalFailure) throw new CloudWorkspaceError("save_failed", false);
     if (this.sealed) {
       if (sealed) return;
       throw new CloudWorkspaceError("save_failed");
@@ -150,8 +164,16 @@ export class CloudWorkspace {
         this.#object = await this.#upload(path, previous, info, sealed);
       });
       this.#pendingSave = false;
-    } catch {
-      throw new CloudWorkspaceError("save_failed");
+    } catch (error) {
+      if (
+        error instanceof WorkspaceArchiveError &&
+        ["too-many-entries", "workspace-too-large", "archive-too-large", "unsafe-entry", "unsupported-entry"].includes(
+          error.code,
+        )
+      ) {
+        this.#terminalFailure = true;
+      }
+      throw new CloudWorkspaceError("save_failed", !this.#terminalFailure);
     }
   }
 

@@ -223,16 +223,11 @@ describe("workspace lifecycle recovery on PostgreSQL", () => {
     await service.startForAccount(accountId, sandbox.sandboxId);
     await service.stopForAccount(accountId, sandbox.sandboxId);
     persisted.clear();
-    await service.startForAccount(accountId, sandbox.sandboxId);
-    const row = await sandboxRow(sandbox.sandboxId);
-    await expect(
-      persisted.store.claim({
-        storageUri: row.storageUri,
-        sandboxId: row.id,
-        sessionId: row.sessionId,
-        environmentGeneration: 2,
-      }),
-    ).rejects.toThrow("Missing previously allocated workspace");
+    await expect(service.startForAccount(accountId, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 409 });
+    expect(await service.ensureIngressAllocation(accountId, sandbox.sandboxId)).toBe("restore_required");
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.liveInstanceCount()).toBe(0);
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({ lifecycle: "unallocated", environmentGeneration: 1 });
   });
 
   it("a late create callback cannot clear the save requirement while a ready environment is stopping", async () => {

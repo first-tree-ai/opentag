@@ -274,7 +274,7 @@ describe("CloudTurnRunner", () => {
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
     await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
     await saving.promise;
-    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("reported");
+    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("started");
     expect(h.runner.activeDeliveryId).toBe(h.delivery.deliveryId);
     expect(reportsOf(h.sent)).toHaveLength(0);
     const entry = await h.journal.read(h.delivery.deliveryId);
@@ -308,11 +308,16 @@ describe("CloudTurnRunner", () => {
     await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
     await h.runner.waitForActive();
     expect(failed).toHaveBeenCalledOnce();
-    expect(reportsOf(h.sent)).toHaveLength(0);
-    expect((await h.journal.read(h.delivery.deliveryId))?.report?.outcome).toBe("completed");
-    // Serve restores/saves before reconciling on the successor connection.
-    await h.runner.reconcile();
     expect(reportsOf(h.sent)).toHaveLength(1);
+    expect((await h.journal.read(h.delivery.deliveryId))?.report).toMatchObject({
+      outcome: "failed",
+      errorReason: "workspace_failed",
+      executionEffects: "completed",
+    });
+    expect(reportsOf(h.sent)[0]?.report.finalText).toContain("not durably saved");
+    // Reconciliation publishes the failure even when saving cannot recover.
+    await h.runner.reconcile();
+    expect(reportsOf(h.sent)).toHaveLength(2);
     expect(h.workerInputs).toHaveLength(1);
     await h.runner.close();
   });

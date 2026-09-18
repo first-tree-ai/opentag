@@ -459,11 +459,13 @@ async function collectOfflineEvents(options: RunnerAcceptanceOptions): Promise<{
   skillArguments?: readonly string[];
 }> {
   // Probe under the same conditions the runtime gets: the runtime HOME and PATH, with exact
-  // version expectations whenever the image identity is known.
+  // version expectations whenever the image identity is known, and the same bounded native
+  // startup allowance as `createTrackedFactory` (Pi `--version` is a native process start).
   const defaultProbeTools = () =>
     probeRunnerTools({
       env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: options.runtimeHome },
       ...(options.identity ? { expected: expectedFromIdentity(options.identity) } : {}),
+      timeoutMs: RUNNER_PI_PROBE_TIMEOUT_MS,
     });
   const probes = await (options.probeTools ?? defaultProbeTools)();
   const events = probes.map((probe) => event(`probe:${probe.name}`, probe.ok ? "passed" : "failed", probe.detail));

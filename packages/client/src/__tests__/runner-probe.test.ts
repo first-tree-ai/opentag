@@ -77,6 +77,36 @@ describe("runner tool probes", () => {
     );
   });
 
+  it("keeps an exec failure diagnostic when stdout and stderr are empty", async () => {
+    const execFile = (async () => {
+      throw Object.assign(new Error("Command failed: pi --version\n"), {
+        stdout: "",
+        stderr: "",
+        killed: true,
+        signal: "SIGTERM",
+      });
+    }) as unknown as ExecFile;
+    const probes = await probeRunnerTools({ execFile, env: { HOME: "/tmp" } });
+    const pi = probes.find((probe) => probe.name === "pi");
+    expect(pi).toMatchObject({ ok: false });
+    expect(pi?.detail).toContain("Command failed: pi --version");
+    expect(pi?.detail).toContain("signal=SIGTERM");
+    expect(pi?.detail).toContain("killed");
+  });
+
+  it("prefers captured stderr over the generic failure message", async () => {
+    const execFile = (async () => {
+      throw Object.assign(new Error("Command failed: pi --version\n"), {
+        stdout: "",
+        stderr: "pi: error while loading shared libraries\n",
+      });
+    }) as unknown as ExecFile;
+    const probes = await probeRunnerTools({ execFile, env: { HOME: "/tmp" } });
+    const pi = probes.find((probe) => probe.name === "pi");
+    expect(pi?.detail).toContain("error while loading shared libraries");
+    expect(pi?.detail).not.toContain("Command failed");
+  });
+
   it("passes exact versions and reviewed surface banners", async () => {
     const probes = await probeRunnerTools({
       execFile: router(GOOD_OUTPUTS),

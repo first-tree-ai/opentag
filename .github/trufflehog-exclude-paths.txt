@@ -1,0 +1,19 @@
+# Paths TruffleHog does not scan.
+#
+# Scope: test fixtures and nothing else. A negative test for a credential-handling
+# path has to contain something that looks like a credential — `https://user:pw@host`,
+# a fake `postgres://user:pw@host` DSN, a placeholder token — and the case under test
+# is that the code refuses it. Those literals are unverifiable by construction, and
+# they are the only findings this file exists to silence.
+#
+# Production code is deliberately NOT excluded, and neither are the integration and
+# end-to-end suites, which carry real credentials (`OPENTAG_JWT_SECRET`,
+# `BETTER_AUTH_SECRET`) through `.env` files and workflow variables. A scanner that
+# skipped those would be silent exactly where a leak would matter.
+#
+# One pattern per line, as a regular expression matched against the path. The `__tests__`
+# directory and the `.test.`/`.spec.` filename conventions are asserted by the tests in
+# this repository, so these two forms cover every test file there is.
+__tests__/
+\.test\.[cm]?tsx?$
+\.spec\.[cm]?tsx?$

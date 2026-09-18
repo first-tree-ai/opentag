@@ -74,7 +74,11 @@ export interface RunnerServeConfig {
    * Always outside the Session workspace and every Sandbox mount.
    */
   readonly stateDir: string;
-  /** Declared platform container port for the startup probe; absent means no health listener. */
+  /**
+   * Declared platform container port for the startup probe. `loadRunnerServeConfig` always
+   * supplies it (the declared 8080 unless PORT overrides); direct/test constructions may omit it
+   * and then no listener starts.
+   */
   readonly healthPort?: number;
   /**
    * E7 physical control credential from the Instance env. Old Runners ignore it; a Runner that
@@ -156,6 +160,13 @@ export function resolveRunnerBackendUrl(raw: string): string {
   return url.toString();
 }
 
+/**
+ * The Runner image and the Cloud Run Instance declare exactly this single container port, and the
+ * platform's default startup TCP probe targets it. An injected `PORT` stays the strict override;
+ * absence must not disable the listener.
+ */
+const DECLARED_CONTAINER_PORT = 8080;
+
 export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig {
   const backendRaw = env.OPENTAG_RUNNER_BACKEND_URL;
   if (!backendRaw) throw new Error("OPENTAG_RUNNER_BACKEND_URL is required for serve mode");
@@ -165,7 +176,7 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(sandboxName)) {
     throw new Error("OPENTAG_RUNNER_SANDBOX_NAME is not a safe sandbox name");
   }
-  const healthPort = parseRunnerHealthPort(env.PORT);
+  const healthPort = parseRunnerHealthPort(env.PORT) ?? DECLARED_CONTAINER_PORT;
   const persistence = env.OPENTAG_RUNNER_WORKSPACE_PERSISTENCE;
   if (persistence !== undefined && persistence !== "1" && persistence !== "0") {
     throw new Error("OPENTAG_RUNNER_WORKSPACE_PERSISTENCE must be 1 or 0");
@@ -181,7 +192,7 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     sandboxName,
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
     stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? defaultRunnerStateDir(sandboxName),
-    ...(healthPort !== undefined ? { healthPort } : {}),
+    healthPort,
     ...(persistence === "1" ? { workspacePersistence: true } : {}),
     ...parseRunnerWebTools(env.OPENTAG_RUNNER_WEB_TOOLS),
   };
@@ -198,9 +209,9 @@ function parseRunnerWebTools(value: string | undefined): { readonly webTools?: b
 }
 
 /**
- * The platform sets PORT because the Instance declares its single container port. Only an exact
- * integer 1..65535 is accepted; 0 and out-of-range values are configuration errors (the helper
- * itself accepts 0 so tests can request an ephemeral port directly).
+ * Only an exact integer 1..65535 is accepted; absence falls back to the declared container port
+ * in `loadRunnerServeConfig`, while 0 and out-of-range values remain configuration errors (the
+ * helper itself accepts 0 so tests can request an ephemeral port directly).
  */
 function parseRunnerHealthPort(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -676,8 +687,9 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     };
     attachWorkspace(config, options, state, sandbox, bridge);
     await prepareServeWebExecution(state, webGateway, sandbox, options);
-    // The platform's default TCP startup probe needs a listening socket on the declared port.
-    // Start it only after native readiness is proven, and only when the platform provided PORT.
+    // The platform's default TCP startup probe needs a listening socket on the declared port,
+    // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). Start
+    // it only after native readiness is proven.
     health = await startServeHealthListener(config, options, stopping);
     await maintainConnections(config, state, sandbox, options, stopListeners, bridge, rebindAssignment);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
@@ -729,7 +741,7 @@ async function openServeWebExecution(
   options.onWebExecution?.(channel);
 }
 
-/** Platform TCP startup probe: started only after native readiness, only when PORT was declared. */
+/** Platform TCP startup probe: started after native readiness when a health port is configured. */
 async function startServeHealthListener(
   config: RunnerServeConfig,
   options: RunnerServeOptions,

@@ -29,10 +29,12 @@ allocation. An uncertain create or delete retains the row's resource reference a
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
 
-The Instance runs `opentag-runner serve`. It declares the single container port `8080` so the
-platform's default TCP startup probe has a listening socket; after native readiness is verified,
-the Runner listens on that port only to accept and immediately end connections — no data is read
-or written, and the listener carries no command, HTTP, or credential surface. The control channel
+The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
+native readiness is verified the Runner listens on that **declared port by default** (an injected
+`PORT` remains the explicit override), so the platform's default TCP startup probe always has a
+socket even when the runtime does not provide `PORT`. The listener only accepts and immediately
+ends connections — no data is read or written, and it carries no command, HTTP, or credential
+surface. The control channel
 remains the Runner's outbound WSS connection to `/api/v1/sandbox-runners/ws`; the Instance exposes
 no parent HTTP control service. Authentication is
 in the first frame, never the URL. Tokens are scoped to the current Sandbox/Session/generation/

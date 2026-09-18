@@ -97,8 +97,10 @@ describe("loadRunnerServeConfig", () => {
     expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_SANDBOX_NAME: "9bad" })).toThrow(/SANDBOX_NAME/);
   });
 
-  it("accepts only an exact integer PORT in range for the declared health port", () => {
-    expect(loadRunnerServeConfig(base).healthPort).toBeUndefined();
+  it("defaults the declared 8080 health port and accepts only an exact PORT override", () => {
+    // Cloud Run's default TCP startup probe targets the declared 8080 even when the platform does
+    // not inject PORT; the runtime must not silently ship without the probe listener.
+    expect(loadRunnerServeConfig(base).healthPort).toBe(8080);
     expect(loadRunnerServeConfig({ ...base, PORT: "8080" }).healthPort).toBe(8080);
     expect(loadRunnerServeConfig({ ...base, PORT: "65535" }).healthPort).toBe(65535);
     for (const PORT of ["0", "-1", "65536", "1.5", "abc", "", " 8080", "08080"]) {

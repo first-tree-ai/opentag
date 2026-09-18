@@ -21,8 +21,9 @@ Runner 属于 Client，沿用 CLI 发布版本；不新增数据表或迁移。
 资源名，并发请求核对同一个分配。创建或删除结果不明时保留归属和错误状态；创建仍可能到达时，
 GET 404 不代表已清理。删除同时校验 UID 和 etag，避免误删同名替换资源。
 
-Instance 内运行 opentag-runner serve。仅为平台默认 TCP 启动探针声明唯一的容器端口 8080；原生就绪
-验证通过后，Runner 只在该端口接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。
+Instance 内运行 opentag-runner serve。声明唯一的容器端口 8080；原生就绪验证通过后，Runner 默认
+监听该**声明端口**（注入的 PORT 仍是显式覆盖），因此即使运行时未提供 PORT，平台默认 TCP 启动探针
+也一定有可用 socket。该监听器只接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。
 控制通道仍是 Runner 主动连接 /api/v1/sandbox-runners/ws 的 WSS；Instance 不开放父容器 HTTP
 控制接口。令牌在首帧发送，绑定当前 Sandbox、Session、generation、资源名，不进入 URL。
 Server 回复心跳，通过当前已认证连接续期令牌。重连使用父进程内存中的新令牌；接收工作及结果前

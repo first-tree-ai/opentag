@@ -49,6 +49,12 @@ export interface RunnerConnectionSnapshot {
   readonly connected: boolean;
   readonly ready: boolean;
   readonly readiness: RunnerReadiness | null;
+  /**
+   * Whether this connection negotiated E7 physical-instance reuse (control credential + workspace
+   * persistence). Only a reuse-capable connection may be the runner side of a Session-to-Session
+   * transfer; a legacy connection keeps the exact-scope contract.
+   */
+  readonly reuseCapable: boolean;
   readonly scope: RunnerScope | null;
 }
 
@@ -79,6 +85,7 @@ interface HubEntry {
   pending: Map<string, PendingAcceptance>;
   activeAcceptanceId: string | null;
   pendingSeal: PendingWorkspaceSeal | null;
+  reuseCapable: boolean;
 }
 
 export class RunnerAcceptanceUnavailableError extends Error {
@@ -108,8 +115,23 @@ export class RunnerHub {
 
   describe(sandboxId: string): RunnerConnectionSnapshot {
     const entry = this.#entries.get(sandboxId);
-    if (!entry) return { connected: false, ready: false, readiness: null, scope: null };
-    return { connected: true, ready: entry.readiness !== null, readiness: entry.readiness, scope: entry.scope };
+    if (!entry) return { connected: false, ready: false, readiness: null, scope: null, reuseCapable: false };
+    return {
+      connected: true,
+      ready: entry.readiness !== null,
+      readiness: entry.readiness,
+      scope: entry.scope,
+      reuseCapable: entry.reuseCapable,
+    };
+  }
+
+  /**
+   * True while a Server-side operation already owns this Runner's control work: an in-flight
+   * acceptance run or a pending workspace seal. Automatic reclamation must never interrupt it.
+   */
+  isBusy(sandboxId: string): boolean {
+    const entry = this.#entries.get(sandboxId);
+    return entry !== undefined && (entry.activeAcceptanceId !== null || entry.pendingSeal !== null);
   }
 
   /** The current socket for a scope, or undefined when a different connection owns it now. */
@@ -133,7 +155,7 @@ export class RunnerHub {
   attach(
     scope: RunnerScope,
     socket: RunnerControlSocket,
-    options: { liveWindowMs?: number } = {},
+    options: { liveWindowMs?: number; reuseCapable?: boolean } = {},
   ): RunnerAttachOutcome {
     const existing = this.#entries.get(scope.sandboxId);
     let outcome: RunnerAttachOutcome = "attached";
@@ -158,6 +180,7 @@ export class RunnerHub {
       pending: new Map(),
       activeAcceptanceId: null,
       pendingSeal: null,
+      reuseCapable: options.reuseCapable === true,
     });
     return outcome;
   }
@@ -215,7 +238,19 @@ export class RunnerHub {
   async runAcceptance(
     sandboxId: string,
     command: Omit<RunnerAcceptanceRunFrame, "type" | "requestId">,
-    options: { timeoutMs: number; signal?: AbortSignal; socket?: RunnerControlSocket },
+    options: {
+      timeoutMs: number;
+      signal?: AbortSignal;
+      socket?: RunnerControlSocket;
+      /**
+       * Final authority check that runs AFTER the acceptance is registered but BEFORE the run
+       * frame leaves the Server. The database-backed caller takes the Sandbox row lock here, so
+       * an automatic idle claim (which consults this hub entry under the same lock) and an
+       * acceptance can never both win. The check must be short: execution starts only after it
+       * resolves and the transaction is released.
+       */
+      authorize?: () => Promise<boolean>;
+    },
   ): Promise<RunnerAcceptanceResultFrame> {
     const entry = this.#entries.get(sandboxId);
     if (!entry) throw new RunnerAcceptanceUnavailableError("No Runner is connected for this Sandbox");
@@ -277,12 +312,35 @@ export class RunnerHub {
         onAbort();
         return;
       }
-      try {
-        entry.socket.send(frame);
-        frameSent = true;
-      } catch {
-        finish(new RunnerAcceptanceUnavailableError("The Runner control channel is not writable"));
+      const send = () => {
+        try {
+          entry.socket.send(frame);
+          frameSent = true;
+        } catch {
+          finish(new RunnerAcceptanceUnavailableError("The Runner control channel is not writable"));
+        }
+      };
+      if (!options.authorize) {
+        send();
+        return;
       }
+      void options.authorize().then(
+        (allowed) => {
+          if (settled) return;
+          if (!allowed) {
+            finish(new RunnerAcceptanceUnavailableError("The Sandbox environment can no longer run acceptance"));
+            return;
+          }
+          if (options.signal?.aborted) {
+            onAbort();
+            return;
+          }
+          send();
+        },
+        () => {
+          finish(new RunnerAcceptanceUnavailableError("The acceptance authority could not be validated"));
+        },
+      );
     });
   }
 

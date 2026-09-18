@@ -230,6 +230,11 @@
       "idx": 45,
       "tag": "0045_abandoned_rocket_raccoon",
       "sha256": "454cdf4714d670ba8e87799a3db8fecddcfa13b23484cea0d47cf256b0644885"
+    },
+    {
+      "idx": 46,
+      "tag": "0046_wild_skullbuster",
+      "sha256": "b1c5af12dbb7d5b377bd9a3eba6de29e68781c1cb079c53e1c14ae55e7866506"
     }
   ]
 }

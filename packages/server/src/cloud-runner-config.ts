@@ -57,6 +57,13 @@ export const CloudRunnerEnvironmentSchema = z
     OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(120_000),
     OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS: z.coerce.number().int().min(300).max(7_200).default(1_800),
     OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS: z.coerce.number().int().min(60_000).max(1_800_000).default(900_000),
+    /*
+     * E7 single idle budget. Automatic reclamation seals and deletes a ready environment with no
+     * business activity for this long. A same-account borrow is on demand for any quiescent
+     * candidate and is NOT gated on this budget. There is deliberately no second
+     * retention/tuning window.
+     */
+    OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(120_000),
   })
   .strict();
 
@@ -80,6 +87,7 @@ export type CloudRunnerConfig =
       createConvergeTimeoutMs: number;
       bootstrapTokenTtlSeconds: number;
       acceptanceTimeoutMs: number;
+      idleTimeoutMs: number;
     };
 
 const REQUIRED_FIELDS = [
@@ -113,6 +121,7 @@ export function resolveCloudRunnerConfig(
     OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS,
     OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS: environment.OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS,
     OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS,
+    OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS,
   });
   if (!parsed.OPENTAG_CLOUD_RUNNER_ENABLED) return { enabled: false };
   if (parsed.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN && environment.OPENTAG_ENV !== "dev") {
@@ -146,6 +155,7 @@ export function resolveCloudRunnerConfig(
     createConvergeTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_CREATE_CONVERGE_TIMEOUT_MS,
     bootstrapTokenTtlSeconds: parsed.OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS,
     acceptanceTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS,
+    idleTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS,
   };
 }
 

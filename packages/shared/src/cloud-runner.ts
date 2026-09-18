@@ -33,6 +33,13 @@ export const RUNNER_WS_PROTOCOL_VERSION = 1;
  * E4 frames.
  */
 export const RUNNER_CLOUD_DELIVERY_VERSION = 1 as const;
+/**
+ * E7 physical-instance reuse capability negotiated in the same auth/welcome exchange. A Runner
+ * that holds a physical control credential requests it; the Server echoes it only after a
+ * control-token attach resolved a current owner. Legacy Runners never send it, so they are never
+ * asked to follow a Session-to-Session hand-off (idle deletion still saves them through E5).
+ */
+export const RUNNER_REUSE_VERSION = 1 as const;
 /** Server-mediated model proxy base path; the only paths below it are the source-owned allowlist. */
 export const CLOUD_MODEL_PROXY_PATH = "/api/v1/cloud-model" as const;
 /** The single OpenAI-compatible operation E4 admits. */
@@ -298,6 +305,14 @@ export const RunnerAuthFrameSchema = z
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /** Opt in to renewal-only replies for an expired token of a still-live allocation. */
     renewExpired: z.literal(true).optional(),
+    /**
+     * E7: physical control credential, separate audience from the Session bootstrap bearer. It is
+     * the only credential allowed to resolve a Runner to a DIFFERENT current holder after a
+     * transfer; the Session token is never used for cross-assignment authority.
+     */
+    controlToken: z.string().min(1).max(8192).optional(),
+    /** E7: opt in to physical-instance reuse negotiation. Only sent with a control token. */
+    reuseVersion: z.literal(RUNNER_REUSE_VERSION).optional(),
   })
   .strict();
 
@@ -556,6 +571,8 @@ export const RunnerWelcomeFrameSchema = z
      */
     resourceUid: z.string().min(1).max(128).nullable().optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
+    /** E7: echo of the physical-reuse capability for a control-authenticated Runner. */
+    reuseVersion: z.literal(RUNNER_REUSE_VERSION).optional(),
     heartbeatIntervalMs: z.number().int().positive(),
     heartbeatTimeoutMs: z.number().int().positive(),
   })
@@ -606,14 +623,29 @@ export const RunnerServerHeartbeatFrameSchema = z.object({ type: z.literal("serv
  * uses it for the next reconnect. Never sent to a stale or detached connection.
  */
 export const RunnerServerCredentialFrameSchema = z
-  .object({ type: z.literal("server:credential"), token: z.string().min(1).max(8192) })
+  .object({
+    type: z.literal("server:credential"),
+    token: z.string().min(1).max(8192),
+    /** E7: refreshed physical control credential for the same immutable instance identity. */
+    controlToken: z.string().min(1).max(8192).optional(),
+  })
   .strict();
 
 export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerWelcomeFrameSchema,
   RunnerAuthResultFrameSchema,
   // This is not authentication success: reconnect with the fresh token before any other frame.
-  z.object({ type: z.literal("auth:renewed"), token: z.string().min(1).max(8192) }).strict(),
+  z
+    .object({
+      type: z.literal("auth:renewed"),
+      token: z.string().min(1).max(8192).optional(),
+      /** E7: a fresh physical control credential when only that credential could be renewed. */
+      controlToken: z.string().min(1).max(8192).optional(),
+    })
+    .strict()
+    .refine((frame) => frame.token !== undefined || frame.controlToken !== undefined, {
+      message: "auth:renewed must carry at least one refreshed credential",
+    }),
   RunnerAcceptanceRunFrameSchema,
   RunnerAcceptanceCancelFrameSchema,
   RunnerServerHeartbeatFrameSchema,

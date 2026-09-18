@@ -109,6 +109,8 @@ export interface CloudDeliveryOwnerOptions {
   modelGrants?: CloudModelGrantPort;
   /** Bounded physical allocation reconciliation from the existing SandboxRunnerService. */
   allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
+  /** E7 business-activity clock: called on real work boundaries only, never on heartbeats. */
+  noteActivity?: (sandboxId: string) => Promise<void>;
 }
 
 /**
@@ -147,6 +149,7 @@ export class CloudDeliveryOwner {
   readonly #modelBaseUrl?: string;
   readonly #modelGrants?: CloudModelGrantPort;
   readonly #allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
+  readonly #noteActivity?: (sandboxId: string) => Promise<void>;
   /**
    * Live model-grant ownership per turn: which connection is allowed to hand out or revoke this
    * turn's permission. `generation` distinguishes concurrent mint attempts on the same connection
@@ -177,6 +180,7 @@ export class CloudDeliveryOwner {
     this.#modelBaseUrl = options.modelBaseUrl;
     this.#modelGrants = options.modelGrants;
     this.#allocationStatus = options.allocationStatus;
+    this.#noteActivity = options.noteActivity;
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -224,7 +228,7 @@ export class CloudDeliveryOwner {
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
-    if (row.lifecycle !== "ready" || row.currentResourceName === null) {
+    if (row.lifecycle !== "ready" || row.currentResourceName === null || row.idleReclaimAt !== null) {
       throw new CloudDeliveryDispatchError("environment_not_ready", "The Sandbox environment is not ready");
     }
     const snapshot = this.#hub.describe(row.id);
@@ -257,12 +261,46 @@ export class CloudDeliveryOwner {
     if (dispatch === "conflict") {
       throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
     }
+    if (dispatch === "claimed") {
+      throw new CloudDeliveryDispatchError(
+        "environment_not_ready",
+        "The Sandbox environment is being reclaimed; the input stays pending",
+      );
+    }
+    await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
     const sent = this.#hub.sendToCurrent(row.id, socket, {
       type: "delivery:run",
       requestId: request.requestId,
       delivery: request,
     });
     if (!sent) throw new CloudDeliveryDispatchError("send_failed", "The Runner control channel is not writable");
+    await this.#recordActivity(row.id);
+  }
+
+  /**
+   * Re-check the durable authority AFTER custody committed: an idle claim that won the Sandbox
+   * row lock between the initial read and the dispatch transaction must never leave frozen
+   * dispatch columns behind. Release them so the pending input retries on the next environment.
+   */
+  async #assertEnvironmentStillOwned(
+    row: typeof sandboxes.$inferSelect,
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+  ): Promise<void> {
+    const current = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
+    const stillOwned =
+      current !== undefined &&
+      current.sandbox.lifecycle === "ready" &&
+      current.sandbox.idleReclaimAt === null &&
+      current.sandbox.environmentGeneration === row.environmentGeneration &&
+      current.sandbox.currentResourceName === row.currentResourceName &&
+      current.sandbox.currentResourceUid === row.currentResourceUid;
+    if (stillOwned) return;
+    await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry");
+    throw new CloudDeliveryDispatchError(
+      "environment_not_ready",
+      "The Sandbox environment changed while the dispatch was being accepted",
+    );
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -414,6 +452,7 @@ export class CloudDeliveryOwner {
       this.#sendVerified(connection, frame.requestId, "rejected", custody);
       return;
     }
+    await this.#recordActivity(connection.scope.sandboxId);
     // The exact socket is frozen with the connection record: a replacement connection that owns
     // the same Sandbox id must never receive the superseded turn's execution permission. The
     // full authorization (including unfinished custody) is re-checked AFTER the grant await,
@@ -611,6 +650,7 @@ export class CloudDeliveryOwner {
       status === "recorded" || status === "already_recorded" || status === "stale_generation" ? status : "conflict";
     if (mapped === "recorded" || mapped === "already_recorded") {
       this.#revokeTurnGrants(report.turnId);
+      await this.#recordActivity(connection.scope.sandboxId);
     }
     this.#sendReportAck(connection, frame.requestId, report, mapped, report.turnId);
     if (mapped === "conflict" || mapped === "stale_generation") {
@@ -995,6 +1035,23 @@ export class CloudDeliveryOwner {
   /* ------------------------------------------------------------------------------------------
    * Small helpers
    * ---------------------------------------------------------------------------------------- */
+
+  /**
+   * E7 business-activity clock. A failed touch must never fail a durable dispatch/report, but it
+   * is surfaced as a sanitized operational signal; heartbeats deliberately do not call this.
+   */
+  async #recordActivity(sandboxId: string): Promise<void> {
+    const note = this.#noteActivity;
+    if (!note) return;
+    try {
+      await note(sandboxId);
+    } catch {
+      this.#logger?.warn(
+        { code: "CLOUD_DELIVERY_ACTIVITY_TOUCH_FAILED", sandboxId },
+        "Sandbox business-activity clock update failed",
+      );
+    }
+  }
 
   #context(connection: CloudConnectionRecord): RuntimeBusinessContext {
     return {

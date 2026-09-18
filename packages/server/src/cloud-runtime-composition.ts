@@ -93,6 +93,7 @@ export function createSandboxRunnerRuntime(
     expectedRunnerVersion: cloudIdentities.runnerVersion,
     acceptanceTimeoutMs: cloudRunner.acceptanceTimeoutMs,
     createConvergeTimeoutMs: cloudRunner.createConvergeTimeoutMs,
+    idleTimeoutMs: cloudRunner.idleTimeoutMs,
     workspace: { store },
   });
   const runnerWorkspace = new RunnerWorkspaceService(database, {
@@ -120,6 +121,8 @@ export function createCloudDeliveryComposition(input: {
   cloudRuntimeFence?: CloudRuntimeFence;
   credentialOwner: RuntimeCredentialOwner;
   allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
+  /** E7 business-activity clock from the allocation service; absent keeps Cloud delivery untracked. */
+  noteActivity?: (sandboxId: string) => Promise<void>;
   logger?: ServiceLogger;
 }): CloudDeliveryComposition {
   if (!input.cloudRuntimeFence || !input.hub) return {};
@@ -137,6 +140,7 @@ export function createCloudDeliveryComposition(input: {
     hub: input.hub,
     credentials: { owner: input.credentialOwner },
     ...(input.allocationStatus ? { allocationStatus: input.allocationStatus } : {}),
+    ...(input.noteActivity ? { noteActivity: input.noteActivity } : {}),
     ...(input.logger ? { logger: input.logger } : {}),
     ...(input.cloudModel.enabled ? { modelBaseUrl: `${input.publicUrl}${CLOUD_MODEL_PROXY_PATH}` } : {}),
     ...(cloudModelGrants ? { modelGrants: cloudModelGrants } : {}),

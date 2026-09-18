@@ -181,6 +181,28 @@ export class CloudJournal {
   }
 
   /**
+   * E7 rebind cleanup: remove every entry that belongs to exactly the seal-complete assignment.
+   * Any entry from another allocation fails closed instead of being silently discarded, so a
+   * broken rebind can never erase durable work that was not proven settled.
+   */
+  async resetScope(scope: CloudJournalScope): Promise<void> {
+    return this.#mutate(async () => {
+      const entries = await this.list();
+      for (const entry of entries) {
+        try {
+          assertCloudJournalScope(entry, scope);
+        } catch {
+          throw new CloudJournalError(
+            "scope_mismatch",
+            `The Cloud delivery journal holds ${entry.deliveryId} outside the sealed assignment; refusing to discard`,
+          );
+        }
+      }
+      for (const entry of entries) await this.#remove(entry.deliveryId);
+    });
+  }
+
+  /**
    * Durable receipt: fsync BEFORE the receipt frame is sent. Recording the same dispatch twice
    * (idempotent retransmission) keeps the original turn id; a different request id, a different
    * input payload, or a different allocation for the same delivery is a visible conflict and must

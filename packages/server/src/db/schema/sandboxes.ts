@@ -11,6 +11,13 @@ export const sandboxLifecycle = pgEnum("sandbox_lifecycle", ["unallocated", "pre
  * and not `computers.current_instance_id`. GCP resource identity is the full resource name plus UID,
  * kept until a later phase verifies removal. This table records facts only: it does not allocate,
  * execute, or reclaim resources.
+ *
+ * `idle_reclaim_at` is E7's single automatic-reclaim marker. It is set atomically before a ready
+ * environment is quiesced so execution authority is revoked while the physical binding still
+ * exists, and it is the only hand-off between an idle allocation, its automatic deletion, and a
+ * same-account Session that borrows the physical Instance. It is not a business identity: the
+ * storage URI, physical resource name and UID stay on this row until the binding is transferred
+ * or removed.
  */
 export const sandboxes = pgTable(
   "sandboxes",
@@ -25,6 +32,7 @@ export const sandboxes = pgTable(
     currentResourceUid: text("current_resource_uid"),
     currentOperationName: text("current_operation_name"),
     environmentGeneration: bigint("environment_generation", { mode: "number" }).notNull().default(0),
+    idleReclaimAt: timestamp("idle_reclaim_at", { withTimezone: true }),
     lastErrorCode: text("last_error_code"),
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
@@ -41,7 +49,12 @@ export const sandboxes = pgTable(
       .on(table.currentResourceUid)
       .where(sql`${table.currentResourceUid} is not null`),
     index("sandboxes_lifecycle_last_activity_idx").on(table.lifecycle, table.lastActivityAt),
+    index("sandboxes_idle_reclaim_at_idx").on(table.idleReclaimAt).where(sql`${table.idleReclaimAt} is not null`),
     check("sandboxes_environment_generation_nonnegative", sql`${table.environmentGeneration} >= 0`),
+    check(
+      "sandboxes_idle_reclaim_requires_allocation",
+      sql`${table.idleReclaimAt} is null or (${table.currentResourceName} is not null and ${table.currentResourceUid} is not null)`,
+    ),
     check("sandboxes_storage_uri_bounds", sql`char_length(${table.storageUri}) between 1 and 2048`),
     check(
       "sandboxes_current_resource_name_bounds",

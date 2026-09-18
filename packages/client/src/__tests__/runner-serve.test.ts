@@ -262,14 +262,18 @@ describe("NativeSandbox", () => {
         return fakeChild(() => ({ code: 0, stdout: "v24.19.0" })) as never;
       },
     });
+    const controlToken = "unit-control-token-secret";
     process.env.OPENTAG_RUNNER_BOOTSTRAP_TOKEN = BOOTSTRAP_TOKEN;
+    process.env.OPENTAG_RUNNER_CONTROL_TOKEN = controlToken;
     await sandbox.launch();
     for (const env of seen) {
       expect(JSON.stringify(env)).not.toContain(BOOTSTRAP_TOKEN);
+      expect(JSON.stringify(env)).not.toContain(controlToken);
       expect(Object.keys(env.env ?? {})).toEqual(["PATH"]);
     }
     await sandbox.destroy();
     delete process.env.OPENTAG_RUNNER_BOOTSTRAP_TOKEN;
+    delete process.env.OPENTAG_RUNNER_CONTROL_TOKEN;
   });
 });
 
@@ -1484,10 +1488,12 @@ describe("Runner cancellation and connection lifetime", () => {
         model: modelGrantFor(delivery),
       });
       wss.closeSocket();
-      // The runner reconnected, proving the old connection closed and its generation advanced.
+      // The closing connection drains its control tail before the reconnect, so release the
+      // blocked journal read first; the queued verified frame must still be skipped because the
+      // connection is already closed when it reaches the head of the queue.
+      releaseRead();
       await waitFor(() => wss.sockets.length >= 2, "replacement connection");
       await waitFor(() => wss.frames.filter((frame) => frame.type === "runner:ready").length >= 2, "replacement ready");
-      releaseRead();
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));

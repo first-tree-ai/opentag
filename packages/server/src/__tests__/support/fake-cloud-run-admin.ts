@@ -1,6 +1,8 @@
 import type { CloudRunCreateResult, CloudRunInstanceView, RunnerInstanceSpec } from "../../services/cloud-run/index.js";
 import { CloudRunAdminError } from "../../services/cloud-run/index.js";
 import {
+  RUNNER_INSTANCE_LABELS,
+  RUNNER_INSTANCE_MANAGED_BY,
   type RunnerInstanceIdentityInput,
   runnerInstanceId,
   runnerInstanceLabels,
@@ -87,6 +89,28 @@ export class FakeCloudRunAdmin {
     }
     if (view.networkInterfaces.length !== 1) {
       throw new CloudRunAdminError("invalid", "Cloud Run Instance does not match the required network policy");
+    }
+  }
+
+  /** E7 tracked binding: name + UID + managed labels survive a Session ownership transfer. */
+  verifyTrackedInstance(
+    view: CloudRunInstanceView,
+    input: { resourceName: string; resourceUid: string; environment: string },
+  ): void {
+    this.verifyTrackedOwnership(view, input);
+  }
+
+  verifyTrackedOwnership(
+    view: CloudRunInstanceView,
+    input: { resourceName: string; resourceUid: string; environment: string },
+  ): void {
+    if (
+      view.name !== input.resourceName ||
+      view.uid !== input.resourceUid ||
+      view.labels[RUNNER_INSTANCE_LABELS.managedBy] !== RUNNER_INSTANCE_MANAGED_BY ||
+      view.labels[RUNNER_INSTANCE_LABELS.environment] !== input.environment
+    ) {
+      throw new CloudRunAdminError("ownership_mismatch", "Cloud Run Instance does not match the tracked binding");
     }
   }
 

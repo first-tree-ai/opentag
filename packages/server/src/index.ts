@@ -90,6 +90,7 @@ import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
+import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
@@ -201,6 +202,14 @@ function optionalAllocationStatus(runtime: SandboxRunnerRuntime | undefined): {
 } {
   if (!runtime) return {};
   return { allocationStatus: (sandboxId) => runtime.sandboxRunnerService.reconcileAllocation(sandboxId) };
+}
+
+/** The optional E7 business-activity clock for the delivery composition. */
+function optionalNoteActivity(runtime: SandboxRunnerRuntime | undefined): {
+  noteActivity?: (sandboxId: string) => Promise<void>;
+} {
+  if (!runtime) return {};
+  return { noteActivity: (sandboxId) => runtime.sandboxRunnerService.noteActivity(sandboxId) };
 }
 
 /** The optional normal-ingress allocation port for the delivery worker. */
@@ -386,6 +395,18 @@ export async function startServer(): Promise<void> {
       : undefined;
     const custody = new PostgresRuntimeCustodyStore(database);
     const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config);
+    /*
+     * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
+     * budget from lastActivityAt, bounded batches, and a database CAS that converges across
+     * restarts. It is created only when the Cloud Runner allocation is enabled.
+     */
+    const sandboxIdleReclaimer = cloudRunnerRuntime
+      ? new SandboxIdleReclaimer({
+          service: cloudRunnerRuntime.sandboxRunnerService,
+          supervisor: backgroundFailureSupervisor,
+          onDiagnostic: reportDiagnostic,
+        })
+      : undefined;
     /*
      * E4: the Cloud Runner fence exists before the platform runtime so credential executions
      * opened over the per-Sandbox Runner channel compose into the broker/data-transport fences.
@@ -600,6 +621,7 @@ export async function startServer(): Promise<void> {
       ...optionalCloudFence(cloudRuntimeFence),
       credentialOwner: platformRuntime.credentials.owner,
       ...optionalAllocationStatus(cloudRunnerRuntime),
+      ...optionalNoteActivity(cloudRunnerRuntime),
       logger: serviceLogger("cloud-delivery"),
     });
     const cloudDeliveryOwner = cloudDelivery.cloudDeliveryOwner;
@@ -756,6 +778,7 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    sandboxIdleReclaimer?.start();
     github?.worker.start();
     mcpRefreshWorker.start();
     channelTargetPoller.start();
@@ -768,6 +791,7 @@ export async function startServer(): Promise<void> {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
+      sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
       mcpRefreshWorker.stop();
       if (github) await github.worker.stop();

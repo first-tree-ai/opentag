@@ -53,6 +53,14 @@ import { completeAuth, heartbeatResult, registrationResult } from "./support/run
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
 const cleanup: Array<() => Promise<void>> = [];
+/**
+ * Shared-owner tests assert which caller owns a readiness probe, never the probe deadline itself.
+ * The deadline must therefore stay far out of reach of the test's own wall clock: a saturated CI
+ * runner can stall a single step for several seconds, and an elapsed deadline aborts the live owner
+ * so the next caller legitimately starts another refresh. Deadline behaviour has its own cases,
+ * which pin their own small values.
+ */
+const SHARED_OWNERSHIP_PROBE_DEADLINE_MS = 600_000;
 
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((close) => close()));
@@ -1218,14 +1226,19 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     await running;
   });
 
-  it("publishes delivery-triggered Provider recovery before the next periodic refresh", async () => {
+  it("accepts a delivery while the Provider artifact is missing and republishes its recovery", async () => {
     const home = await temporaryDirectory("opentag-client-delivery-readiness-");
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
     const observed: string[] = [];
-    let probeCount = 0;
+    // The periodic refresher probes on its own cadence, so how many probes land before the delivery
+    // arrives is wall-clock dependent: a script keyed on the probe index, or an absolute probe
+    // count, turns a slow runner into a failure. Drive the Provider state through a flag and assert
+    // only monotonic facts. Which refresh observes the recovery is deliberately not asserted — the
+    // delivery joins whichever shared probe is live, so it is not attributable here.
+    let providerReady = true;
     const binding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } };
     const state = { phase: "idle" as "idle" | "closed", queuedRunCount: 0 };
     const agentRuntime: AgentRuntime = {
@@ -1245,12 +1258,11 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     };
     const factory = {
       manifest: agentRuntime.manifest,
-      probe: vi.fn(async () => {
-        probeCount += 1;
-        return probeCount === 2
-          ? { ready: false, issues: [{ code: "artifact_missing" as const, message: "temporarily missing" }] }
-          : { ready: true, issues: [] };
-      }),
+      probe: vi.fn(async () =>
+        providerReady
+          ? { ready: true, issues: [] }
+          : { ready: false, issues: [{ code: "artifact_missing" as const, message: "temporarily missing" }] },
+      ),
       create: async () => agentRuntime,
       resume: async () => agentRuntime,
     } satisfies AgentRuntimeFactory;
@@ -1287,17 +1299,24 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       status: "ready",
     });
     const running = runtime.run();
-    await vi.waitFor(() => expect(observed).toContain("install"), { timeout: 1_000 });
+    providerReady = false;
+    await vi.waitFor(() => expect(observed).toContain("install"), { timeout: 2_000 });
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "install" });
 
+    // The artifact returns while the Provider is still published as missing, so the delivery below
+    // is admitted during the gap and readiness has to be republished from a fresh observation.
+    providerReady = true;
+    const probesBeforeDelivery = factory.probe.mock.calls.length;
+    const unavailableIndex = observed.lastIndexOf("install");
     const accepted = await runtime.custody.accept(delivery(snapshot()));
 
     expect(accepted.result).toMatchObject({ status: "accepted" });
     await accepted.onAcceptedSent?.();
-    await vi.waitFor(() => expect(factory.probe).toHaveBeenCalledTimes(3));
-    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
-    const unavailableIndex = observed.lastIndexOf("install");
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" }));
+    // A stale ready flag must not stand in for a fresh observation: recovery required at least one
+    // probe started after the delivery arrived.
+    expect(factory.probe.mock.calls.length).toBeGreaterThan(probesBeforeDelivery);
     await vi.waitFor(() => expect(observed.slice(unavailableIndex + 1)).toContain("ready"));
-    expect(factory.probe).toHaveBeenCalledTimes(3);
     runtime.stop();
     await running;
   });
@@ -1793,7 +1812,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex", probe),
@@ -1873,7 +1892,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex", probe),
@@ -2037,7 +2056,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       environment: { HOME: home, PATH: process.env.PATH },
       factory,
       home,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
     });
     expect(await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()))).toMatchObject({
       status: "ready",
@@ -2074,7 +2093,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex"),
@@ -2144,7 +2163,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex"),
@@ -2218,7 +2237,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     });
     const runtime = await createClientRuntime(connection, {
       capabilityRefreshIntervalMs: 60_000,
-      providerProbeDeadlineMs: 5_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
       factory: readyFactory("codex", probe),

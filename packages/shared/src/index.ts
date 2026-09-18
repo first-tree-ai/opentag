@@ -328,6 +328,7 @@ export {
 export * from "./im-binding.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
+export * from "./runner-workspace.js";
 export {
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,

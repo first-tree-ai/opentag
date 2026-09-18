@@ -1,4 +1,4 @@
-# Cloud Runner 执行（E3 与 E4）
+# Cloud Runner 执行（E3–E5）
 
 [English](../cloud-runner-execution.md)
 
@@ -12,8 +12,8 @@ Runner 属于 Client，沿用 CLI 发布版本；不新增数据表或迁移。
 - Agent Session 复用现有执行会话，由 IM binding 与 channel/thread 定位，不新增对话模型。
 - sandboxes 关联 Session 与当前资源，使用 generation、确定的资源名、provider UID、operation name
   防止晚到回调影响新分配，storage_uri 保留稳定持久化地址。
-- E3 尚未保存或恢复 storage_uri。**删除 Instance 会丢失本地工作目录。**持久化恢复属于 E5，
-  IM 可靠投递属于 E4，复用及空闲回收随后实现。不能仅凭 E3 验收开启默认产品 Cloud 执行。
+- 单独的 E3 不保存或恢复 storage_uri。E5 增加[最新工作目录保存与恢复](./cloud-workspace-persistence.md)，
+  包括 Pi 会话状态。IM 可靠投递属于 E4，复用及空闲回收随后实现；E3 验收本身不证明 Cloud 的持久化能力。
 
 ## 生命周期与控制
 
@@ -94,8 +94,9 @@ journal 会 fail closed（scope_mismatch）且不发送任何陈旧帧；同 id�
 
 尚未 dispatch 的 Cloud 输入复用已有 ingress TTL 与每 Session 队列容量（direct 100 条、ambient
 500 条），过期或超量会记录明确终态原因。已 dispatch 的 Cloud 输入保留冻结的执行窗口；已接收但
-尚未报告的 custody 不作为 pending 输入清理。restore_required 与已停止的环境明确拒绝输入，
-不无限重试。暂时的模型或 Runner 不可用仍可在输入 deadline 内重试，复用现有尝试次数，按
+尚未报告的 custody 不作为 pending 输入清理。未配置 E5 持久化时，restore_required 明确拒绝替换环境；
+配置 E5 后允许重新分配，但必须恢复并校验成功后才能执行。已停止的环境明确拒绝输入。
+暂时的模型或 Runner 不可用仍可在输入 deadline 内重试，复用现有尝试次数，按
 2 秒起步、最多 30 秒的指数间隔退避。Cloud 后续消息等待当前 Turn 结束，不进入 Local steering 路径。
 
 凭证与模型边界：#633 runtime-credential Relay 始终在可信父进程；Sandbox 只拿到只读 public

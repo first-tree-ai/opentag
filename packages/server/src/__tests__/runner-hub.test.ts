@@ -128,3 +128,127 @@ describe("RunnerHub attach policy", () => {
     expect(hub.isCurrent(scope.sandboxId, second)).toBe(true);
   });
 });
+
+describe("RunnerHub workspace seal", () => {
+  it("sends the seal frame to the exact current socket and resolves on its correlated result", async () => {
+    const hub = new RunnerHub({ now: () => 10_000 });
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    const sealPromise = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000, socket });
+    const seal = socket.sent.find((frame) => frame.type === "workspace:seal") as
+      | { type: "workspace:seal"; requestId: string }
+      | undefined;
+    expect(seal?.type).toBe("workspace:seal");
+    const settled = hub.settleWorkspaceSeal(
+      scope.sandboxId,
+      { type: "workspace:seal:result", requestId: seal?.requestId as string, ok: true },
+      socket,
+    );
+    expect(settled).toBe(true);
+    await expect(sealPromise).resolves.toMatchObject({ ok: true, requestId: seal?.requestId });
+  });
+
+  it("joins concurrent seal requests onto the single in-flight seal", async () => {
+    const hub = new RunnerHub({ now: () => 10_000 });
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    const first = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000, socket });
+    const second = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000, socket });
+    const seals = socket.sent.filter((frame) => frame.type === "workspace:seal");
+    expect(seals).toHaveLength(1);
+    const seal = seals[0] as { requestId: string };
+    hub.settleWorkspaceSeal(
+      scope.sandboxId,
+      { type: "workspace:seal:result", requestId: seal.requestId, ok: true },
+      socket,
+    );
+    await expect(first).resolves.toMatchObject({ ok: true });
+    await expect(second).resolves.toMatchObject({ ok: true });
+  });
+
+  it("rejects immediately without a connected Runner and never sends a frame", async () => {
+    const hub = new RunnerHub({ now: () => 10_000 });
+    await expect(hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000 })).rejects.toMatchObject({
+      name: "RunnerWorkspaceSealUnavailableError",
+    });
+  });
+
+  it("rejects when the pinned socket is no longer the current connection", async () => {
+    const hub = new RunnerHub({ now: () => 10_000 });
+    const stale = fakeSocket();
+    const current = fakeSocket();
+    hub.attach(scope, stale);
+    hub.attach(scope, current);
+    await expect(hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000, socket: stale })).rejects.toMatchObject({
+      name: "RunnerWorkspaceSealUnavailableError",
+      message: "The Runner connection was replaced",
+    });
+    expect(current.sent.some((frame) => frame.type === "workspace:seal")).toBe(false);
+  });
+
+  it("ignores results from a stale socket or an unknown request id", async () => {
+    const hub = new RunnerHub({ now: () => 10_000 });
+    const socket = fakeSocket();
+    const stale = fakeSocket();
+    hub.attach(scope, socket);
+    const sealPromise = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000, socket });
+    const seal = socket.sent.find((frame) => frame.type === "workspace:seal") as { requestId: string };
+    // A stale socket may not settle it, even with the right request id.
+    expect(
+      hub.settleWorkspaceSeal(
+        scope.sandboxId,
+        { type: "workspace:seal:result", requestId: seal.requestId, ok: true },
+        stale,
+      ),
+    ).toBe(false);
+    // The current socket may not invent an id either.
+    expect(
+      hub.settleWorkspaceSeal(
+        scope.sandboxId,
+        { type: "workspace:seal:result", requestId: crypto.randomUUID(), ok: true },
+        socket,
+      ),
+    ).toBe(false);
+    hub.settleWorkspaceSeal(
+      scope.sandboxId,
+      { type: "workspace:seal:result", requestId: seal.requestId, ok: true },
+      socket,
+    );
+    await expect(sealPromise).resolves.toMatchObject({ ok: true });
+  });
+
+  it("rejects the waiters on detach and on scope close", async () => {
+    const hub = new RunnerHub({ now: () => 10_000 });
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    const pending = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 60_000, socket });
+    hub.detach(scope.sandboxId, socket);
+    // The shared pending-rejection path (same as acceptance runs) fails the seal waiters.
+    await expect(pending).rejects.toThrow("The Runner disconnected");
+
+    hub.attach(scope, socket);
+    const pendingClosed = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 60_000, socket });
+    hub.closeScope(scope);
+    await expect(pendingClosed).rejects.toThrow("The Sandbox environment was released");
+  });
+
+  it("times out a seal that never settles and lets a later request retry", async () => {
+    const now = 10_000;
+    const hub = new RunnerHub({ now: () => now });
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    const pending = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 50, socket });
+    await expect(pending).rejects.toMatchObject({ message: "The workspace seal exceeded its deadline" });
+    // The slot is released: a retry issues a fresh frame and can settle.
+    const retry = hub.requestWorkspaceSeal(scope.sandboxId, { timeoutMs: 5_000, socket });
+    const seals = socket.sent.filter((frame) => frame.type === "workspace:seal");
+    expect(seals).toHaveLength(2);
+    const second = seals[1] as { requestId: string };
+    hub.settleWorkspaceSeal(
+      scope.sandboxId,
+      { type: "workspace:seal:result", requestId: second.requestId, ok: true },
+      socket,
+    );
+    await expect(retry).resolves.toMatchObject({ ok: true });
+  });
+});

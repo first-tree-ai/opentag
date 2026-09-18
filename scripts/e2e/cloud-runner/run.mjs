@@ -29,13 +29,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  CLOUD_STORAGE_URI,
-  e2Binding,
-  gitState,
-  loadShared,
-  readCliVersion,
-} from "../cloud-computer/cloud-identities-data.mjs";
+import { e2Binding, gitState, loadShared, readCliVersion } from "../cloud-computer/cloud-identities-data.mjs";
 import { createCloudIdentitiesFixture } from "../cloud-computer/cloud-identities-fixture.mjs";
 import { cloudIdentityHeaders, record, requestJson } from "../cloud-computer/cloud-identities-net.mjs";
 import { createStepper, sleep } from "../cloud-computer/common.mjs";
@@ -55,6 +49,7 @@ Required (flag or OPENTAG_E3_* env):
   --vpc-network NAME        Direct VPC network
   --vpc-subnet NAME         Direct VPC subnetwork
   --execution-tag NAME      Network execution tag
+  --storage-base URI        Owned GCS prefix (gs://bucket/prefix), required by E5 persistence
 
 Environment:
   OPENTAG_E3_GCP_ACCESS_TOKEN   Short-lived Cloud Admin token (required, env only)
@@ -80,6 +75,7 @@ const REQUIRED_INPUTS = [
   "vpcNetwork",
   "vpcSubnet",
   "executionTag",
+  "storageBase",
 ];
 
 /**
@@ -110,6 +106,7 @@ function parseArgs(argv, env) {
     vpcNetwork: env.OPENTAG_E3_VPC_NETWORK,
     vpcSubnet: env.OPENTAG_E3_VPC_SUBNET,
     executionTag: env.OPENTAG_E3_EXECUTION_TAG,
+    storageBase: env.OPENTAG_E3_STORAGE_BASE,
     mode: "offline",
     provider: undefined,
     piConfigDir: undefined,
@@ -123,6 +120,7 @@ function parseArgs(argv, env) {
     "--vpc-network": "vpcNetwork",
     "--vpc-subnet": "vpcSubnet",
     "--execution-tag": "executionTag",
+    "--storage-base": "storageBase",
     "--mode": "mode",
     "--provider": "provider",
     "--pi-config-dir": "piConfigDir",
@@ -209,7 +207,7 @@ export async function main(argv, { createFixture = createCloudIdentitiesFixture 
         port: process.env.OPENTAG_E3_PORT,
         serverEnv: {
           OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
-          OPENTAG_CLOUD_STORAGE_BASE: CLOUD_STORAGE_URI,
+          OPENTAG_CLOUD_STORAGE_BASE: values.storageBase,
           OPENTAG_CLOUD_RUNNER_VERSION: cliVersion,
           OPENTAG_CLOUD_RUNNER_ENABLED: "true",
           OPENTAG_CLOUD_RUNNER_IMAGE: values.image,
@@ -459,6 +457,8 @@ export async function finalizeRun({
 function invalidInputs(values, accessToken) {
   const missing = REQUIRED_INPUTS.filter((key) => !values[key]);
   if (missing.length) return `Missing required inputs: ${missing.join(", ")}`;
+  if (!/^gs:\/\/[a-z0-9][a-z0-9._-]+[a-z0-9]\/[A-Za-z0-9._/-]+$/.test(values.storageBase))
+    return "--storage-base must be an owned gs://bucket/prefix";
   if (!accessToken) return "OPENTAG_E3_GCP_ACCESS_TOKEN is required (env only)";
   if (values.mode === "real" && (!values.piConfigDir || values.provider !== "deepseek"))
     return "Real mode requires --pi-config-dir and --provider deepseek";

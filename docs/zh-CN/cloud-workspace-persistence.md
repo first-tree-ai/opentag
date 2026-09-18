@@ -1,0 +1,71 @@
+# Cloud 工作目录持久化（E5）
+
+E5 在更换 Cloud Run Instance 后恢复同一个 Agent Session 的工作文件和 Pi 会话，不恢复进程内存。
+继续使用现有 Sandbox 关联 Session、固定的 `storage_uri` 和当前 Instance；不增加数据表、历史归档目录或可选版本。
+
+## 保存范围
+
+Google Cloud Storage 中的 `<storage_uri>/state.tar.gz` 保存最新完整归档，包含 Session 工作目录、Git 文件和
+`.opentag/pi-session`（Pi 历史及绑定）。镜像、rootfs、运行进程、可信 Runner 的收件日志、临时模型授权、
+Provider 凭证、代理 Socket 和私有签名材料均位于归档范围之外。执行及结果仍由 Server 现有的可靠托管记录负责。
+
+平台凭证通过目录边界排除，不代表会识别 Agent 或用户自行写入工作目录的秘密。其他 Session 的目录不挂载、
+不同步；Agent 级 Context Tree 集成仍属于 E8。
+
+## 保存与恢复时机
+
+Runner 恢复并校验成功后才报告可执行状态。归档先在相邻的临时目录完整验证，然后安装；预期归档缺失或无效时，
+不会退回空目录并声称恢复成功。同一 Runner 的网络重连不会用旧归档覆盖当前本地文件。
+
+每轮结束时继续占用 Session 执行位置，停止原生 Sandbox 的全部写入进程，保存后重新开放执行。
+原生 Sandbox 的删除同时清理遗留后台进程，工作目录保留。已产生的外部效果不会因保存失败而被当成可以安全重放。
+
+正常释放先进入 `releasing` 阻止新执行，再请求 Runner 停止写入，等待最终执行报告获得 Server 的持久化确认，然后保存封存归档。
+Server 验证归档属于当前执行环境后才删除 Instance。保存失败时保留资源绑定及本地副本，允许重试。若已确认 Instance 不存在，就没有本地副本可再保存，
+恢复只能使用上次成功归档。
+
+OOM、SIGKILL 或机器丢失时，无法保证最后保存；上次成功保存后产生的变化可能丢失，包括长任务中的进展。
+已经开始且效果未知的操作仍按现有可靠托管机制核对，不自动重放。
+
+## 存储与权限
+
+Server 复用自己的 Google 身份访问 GCS。可信 Runner 使用当前执行环境限定的 bootstrap 凭证，通过 HTTP 流式传输
+归档；WSS 只传小型控制消息。不向 Sandbox 下发 Google 令牌，也不新增父容器管理端口。
+存储地址由 Server 根据数据库确定，调用方不能指定其他 Bucket、对象或 Session 的地址。
+
+Server 在首次分配之前有条件地初始化空对象；失败时环境代次仍为零，可以安全重试。
+Runner 恢复时不能重建缺失对象，即使仍是第一代环境。新环境读取前先更新同一个对象的所有者元数据。上传同时校验 GCS generation 与 metageneration，
+因此即使新 Instance 尚未保存新的文件，旧 Instance 的迟到上传也无法覆盖其已接管的状态。
+新 Runner 进程在恢复后、上报就绪前还会进行一次条件保存，防止同一分配下旧进程的延迟上传覆盖新进展。
+这些是原生条件写入标识，不是应用层存储版本。参考 Google 的[请求前置条件](https://docs.cloud.google.com/storage/docs/request-preconditions)
+和[对象条件写入](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert)。
+
+上传中断保留上次完整对象。上传响应丢失时，只有回读的所有者、长度、校验值及封存状态全部吻合，才确认成功。
+不进行无条件覆盖，也不自动退回空状态。
+
+## 资源与上线边界
+
+保持 1 vCPU / 1 GiB。归档流式处理，不将整个载荷载入内存。初始保护上限为压缩后 128 MiB、展开后 256 MiB、
+50,000 个条目；超限会明确导致保存或恢复失败。临时文件也占用 Instance 的内存文件系统，所以上限不保证任务不会 OOM。
+支持工作目录内部的相对软链接；首版拒绝所有硬链接（包括目录内部硬链接）、危险路径、外部软链接、特殊文件及损坏归档。
+
+先部署 Server，再部署版本匹配且固定摘要的 Runner 镜像。显式协商持久化能力并校验恢复完成状态。
+Server 身份需要配置存储前缀下对象的读取、创建、删除和元数据更新权限；不向 Instance 身份增加这些权限。
+复用已有存储配置与环境身份。本地测试不能代替 Cloud Run 原生 Sandbox 或真实 GCS 验收；真实验收需要独立完成
+保存、确认 Instance 删除、新环境分配、同一 Session 继续执行的全链路。
+
+部署验收还必须确认入口及反向代理允许 128 MiB 请求体和 120 秒传输时限。
+当前 Runner Hub 在进程内记录连接归属，因此工作目录 HTTP 请求与 Runner WSS 必须到达同一个 Server 进程。
+
+## 上线前真实验收
+
+在 staging 的 us-west1 使用临时 Account/Session 和专属 GCS 前缀。现有 `cloud-runner`
+工具需传入 `--storage-base gs://<bucket>/<owned-prefix>` 或 `OPENTAG_E3_STORAGE_BASE`，
+不再使用虚构 bucket；其基础 native/Pi 检查本身仍不足以证明 Session 恢复。
+
+1. 使用候选 Server 与匹配的固定摘要 Runner；记录源提交、镜像摘要、Sandbox ID、Instance UID，确认存储权限和入口限制。
+2. 执行一个写入唯一文件并建立 Pi 历史的任务；核对结果及保存对象校验值，验收材料不得包含凭证。
+3. 释放分配，确认结果已被 Server 接收、当前环境归档已封存、实例实际删除，Sandbox ID 与 storage URI 不变。
+4. 同一 Session 重新分配实例，检查文件、Pi 绑定和后续对话连续性；已开始但结果不明的任务不能自动重放。
+5. 在测试配置中拒绝一次上传，确认实例保持绑定且停在 releasing；恢复访问后重试。对已消失实例验证只恢复最后成功保存的进展。
+6. 记录并清理本次验收创建的实例与存储对象。正常释放会保留最新归档，测试存储清理应单独限定在已记录的专属前缀内。

@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  RUNNER_WORKSPACE_VERSION,
+  RunnerWorkspaceSealFrameSchema,
+  RunnerWorkspaceSealResultFrameSchema,
+} from "./runner-workspace.js";
 import { runtimeUtf8Length } from "./runtime-config.js";
 import { RuntimeCredentialClientFrameSchema, RuntimeCredentialServerFrameSchema } from "./runtime-credentials.js";
 import {
@@ -281,6 +286,7 @@ export const RunnerAuthFrameSchema = z
      * pinned E4 Runner image (handoff contract). Legacy E3 Runners never set it.
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
+    workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
   })
   .strict();
 
@@ -292,6 +298,7 @@ export const RunnerReadyFrameSchema = z
     ...FrameBase,
     type: z.literal("runner:ready"),
     readiness: RunnerReadinessSchema.omit({ reportedAt: true }),
+    workspaceRestored: z.literal(true).optional(),
   })
   .strict();
 
@@ -512,6 +519,7 @@ export const RunnerClientFrameSchema = z.discriminatedUnion("type", [
   RunnerCloudDeliveryReportFrameSchema,
   RunnerCloudDeliveryQueryResultFrameSchema,
   RunnerCredentialTunnelFrameSchema,
+  RunnerWorkspaceSealResultFrameSchema,
 ]);
 export type RunnerClientFrame = z.infer<typeof RunnerClientFrameSchema>;
 
@@ -536,6 +544,7 @@ export const RunnerWelcomeFrameSchema = z
      * (the attach never publishes a Cloud welcome without it).
      */
     resourceUid: z.string().min(1).max(128).nullable().optional(),
+    workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     heartbeatIntervalMs: z.number().int().positive(),
     heartbeatTimeoutMs: z.number().int().positive(),
   })
@@ -603,6 +612,7 @@ export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerCloudDeliveryQueryFrameSchema,
   RunnerCloudDeliveryReportAckFrameSchema,
   RunnerCredentialTunnelResultFrameSchema,
+  RunnerWorkspaceSealFrameSchema,
 ]);
 export type RunnerServerFrame = z.infer<typeof RunnerServerFrameSchema>;
 

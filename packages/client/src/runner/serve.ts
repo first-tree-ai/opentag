@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
+  RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
   RunnerAcceptanceReportWireSchema,
   type RunnerAcceptanceRunFrame,
@@ -12,6 +13,7 @@ import {
   type RunnerServerFrame,
   RunnerServerFrameSchema,
   type RunnerWelcomeFrame,
+  type RunnerWorkspaceSealFrame,
   type RuntimeCredentialServerFrame,
   serializeRunnerAcceptanceWorkerStdin,
 } from "@opentag/shared";
@@ -20,6 +22,7 @@ import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
 import type { CloudCredentialChannel } from "./cloud-credential-connection.js";
 import { CloudJournal } from "./cloud-journal.js";
 import { CloudTurnRunner, type CloudTurnRunnerOptions, type CloudTurnScope } from "./cloud-turns.js";
+import { CloudWorkspace } from "./cloud-workspace.js";
 import { type RunnerHealthListener, startRunnerHealthListener } from "./health.js";
 import {
   NativeSandbox,
@@ -30,6 +33,7 @@ import {
   type SandboxProbeResult,
 } from "./native-sandbox.js";
 import { redactAcceptanceRecord } from "./redact.js";
+import { ServeWorkspace } from "./serve-workspace.js";
 
 /**
  * Runner serve mode: the long-lived process a Cloud Run Instance runs. It launches the native
@@ -59,6 +63,8 @@ export interface RunnerServeConfig {
   readonly stateDir: string;
   /** Declared platform container port for the startup probe; absent means no health listener. */
   readonly healthPort?: number;
+  /** Set by a persistence-enabled Server; legacy E3 acceptance does not negotiate storage. */
+  readonly workspacePersistence?: boolean;
 }
 
 export interface RunnerServeOptions {
@@ -79,6 +85,7 @@ export interface RunnerServeOptions {
    * these; the real native Sandbox/credential bridge path stays the only production execution.
    */
   readonly cloudTurnSeams?: Pick<CloudTurnRunnerOptions, "openExecution" | "runWorker">;
+  readonly workspaceFetchImpl?: typeof fetch;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -124,6 +131,10 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     throw new Error("OPENTAG_RUNNER_SANDBOX_NAME is not a safe sandbox name");
   }
   const healthPort = parseRunnerHealthPort(env.PORT);
+  const persistence = env.OPENTAG_RUNNER_WORKSPACE_PERSISTENCE;
+  if (persistence !== undefined && persistence !== "1" && persistence !== "0") {
+    throw new Error("OPENTAG_RUNNER_WORKSPACE_PERSISTENCE must be 1 or 0");
+  }
   return {
     backendUrl: resolveRunnerBackendUrl(backendRaw),
     bootstrapToken: token,
@@ -131,6 +142,7 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
     stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? defaultRunnerStateDir(sandboxName),
     ...(healthPort !== undefined ? { healthPort } : {}),
+    ...(persistence === "1" ? { workspacePersistence: true } : {}),
   };
 }
 
@@ -202,6 +214,7 @@ interface WorkState {
   token: string;
   /** Per-connection hook surfacing durable-boundary failures instead of swallowing them. */
   persistenceFailure?: (error: unknown) => void;
+  workspace?: ServeWorkspace;
 }
 
 /**
@@ -217,11 +230,17 @@ function createCloudTurnRunner(input: {
   sandbox: NativeSandbox;
   serverUrl: string;
   state: () => WorkState | undefined;
+  workspacePersistence: boolean;
 }): CloudTurnRunner {
   return new CloudTurnRunner({
     canStart: () => {
       const current = input.state();
-      return current !== undefined && !current.stopping && current.active === undefined;
+      return (
+        current !== undefined &&
+        !current.stopping &&
+        current.active === undefined &&
+        (!input.workspacePersistence || current.workspace?.ready === true)
+      );
     },
     credentialChannel: () => input.bridge,
     journal: input.journal,
@@ -235,6 +254,15 @@ function createCloudTurnRunner(input: {
       if (!current) throw new Error("The Runner sandbox state is not established");
       await recycleNativeSandbox(input.sandbox, current);
     },
+    ...(input.workspacePersistence
+      ? {
+          checkpoint: async () => {
+            const workspace = input.state()?.workspace;
+            if (!workspace) throw new Error("Workspace persistence is not initialized");
+            await workspace.checkpoint();
+          },
+        }
+      : {}),
     scope: () => input.bridge.scope,
     send: (frame) => input.bridge.sendFrame(frame),
     serverUrl: input.serverUrl,
@@ -282,6 +310,30 @@ class RunnerChannelBridge implements CloudCredentialChannel {
   }
 }
 
+function attachWorkspace(
+  config: RunnerServeConfig,
+  options: RunnerServeOptions,
+  current: WorkState,
+  sandbox: NativeSandbox,
+  turns: CloudTurnRunner,
+  bridge: RunnerChannelBridge,
+): void {
+  if (!config.workspacePersistence) return;
+  current.workspace = new ServeWorkspace({
+    workspace: new CloudWorkspace({
+      backendUrl: config.backendUrl,
+      workspace: config.workspace,
+      stateDirectory: join(config.stateDir, "workspace-private"),
+      token: () => current.token,
+      environmentGeneration: () => bridge.scope?.environmentGeneration,
+      ...(options.workspaceFetchImpl ? { fetchImpl: options.workspaceFetchImpl } : {}),
+    }),
+    sandbox,
+    state: () => current,
+    turns,
+  });
+}
+
 export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
   // E4 trusted state root: PRIVATE journal + per-turn credential material roots that are NEVER
   // mounted, plus the public-only root that becomes the read-only Sandbox mount.
@@ -319,6 +371,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     sandbox,
     serverUrl: config.backendUrl,
     state: () => state,
+    workspacePersistence: config.workspacePersistence === true,
   });
 
   let health: RunnerHealthListener | undefined;
@@ -344,6 +397,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     launchAttempted = true;
     await sandbox.launch();
     state = { probe: await sandbox.probe(), stopping, fatal: false, present: true, token: config.bootstrapToken };
+    attachWorkspace(config, options, state, sandbox, turns, bridge);
     // The platform's default TCP startup probe needs a listening socket on the declared port.
     // Start it only after native readiness is proven, and only when the platform provided PORT.
     if (!stopping && config.healthPort !== undefined) {
@@ -490,18 +544,22 @@ async function serveOnce(
     // slow connect (Server restart, cold ingress) is a transport failure, never a permanent
     // rejection: finish with "auth_timeout" and let the backoff path reconnect.
     const authTimer = setTimeout(() => finish("auth_timeout"), options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
-    const ready = () =>
+    const ready = () => {
+      if (state.workspace && !state.workspace.ready) return;
       send({
         type: "runner:ready",
         requestId: randomUUID(),
         readiness: { sandboxName: config.sandboxName, rootfs: SANDBOX_ROOTFS, ...state.probe },
+        ...(state.workspace?.ready ? { workspaceRestored: true } : {}),
       });
+    };
     socket.on("open", () =>
       send({
         type: "auth",
         requestId: randomUUID(),
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
+        ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
       }),
     );
     const onWelcome = (data: RunnerWelcomeFrame) => {
@@ -514,6 +572,11 @@ async function serveOnce(
         return;
       }
       const cloudCapable = data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION;
+      if (config.workspacePersistence && data.workspaceVersion !== RUNNER_WORKSPACE_VERSION) {
+        logLine(options.stderr, "Server does not support required workspace persistence");
+        finish("auth_failed");
+        return;
+      }
       // A Cloud-capable welcome must carry the verified current allocation UID. A null UID means
       // the create caller has not tracked it yet: retry transiently instead of running Cloud
       // journal reconciliation against an unbound allocation.
@@ -535,7 +598,6 @@ async function serveOnce(
       bridge.cloudEnabled = cloudCapable;
       bridge.sendFn = send;
       bridge.emitState("registered");
-      ready();
       armSilence();
       heartbeatTimer = setInterval(
         () => send({ type: "heartbeat", requestId: randomUUID() }),
@@ -543,12 +605,16 @@ async function serveOnce(
       );
       // Journal-driven retransmission of durable Cloud delivery state on every (re)attach, for
       // NEGOTIATED Cloud connections only. A legacy E3 channel never touches Cloud state.
-      if (cloudCapable) enqueueCloudControl("reconcile", () => turns.reconcile());
+      prepareRunnerConnection(state, turns, cloudCapable, {
+        ready,
+        isClosed: () => closed,
+        enqueue: enqueueCloudControl,
+      });
       logLine(options.stderr, "authenticated control channel ready");
       return;
     };
     const onAcceptance = (data: RunnerAcceptanceRunFrame) => {
-      if (state.active || turns.hasPendingWork) {
+      if (state.active || turns.hasPendingWork || (state.workspace && !state.workspace.ready)) {
         send({
           type: "acceptance:result",
           requestId: data.requestId,
@@ -579,6 +645,25 @@ async function serveOnce(
         armSilence,
         onWelcome,
         onAcceptance,
+        onWorkspaceSeal: (frame) => {
+          const workspace = state.workspace;
+          if (!workspace) {
+            finish();
+            return;
+          }
+          // Report acks and credential traffic must keep flowing while drainForRelease waits.
+          // This promise deliberately does not occupy enqueueCloudControl's receive queue.
+          void workspace.seal().then(
+            () => send({ type: "workspace:seal:result", requestId: frame.requestId, ok: true }),
+            () =>
+              send({
+                type: "workspace:seal:result",
+                requestId: frame.requestId,
+                ok: false,
+                code: "workspace_save_failed",
+              }),
+          );
+        },
         turns,
         bridge,
         enqueueCloudControl,
@@ -623,6 +708,30 @@ async function serveOnce(
     if (state.stopping) finish();
   });
 }
+function prepareRunnerConnection(
+  state: WorkState,
+  turns: CloudTurnRunner,
+  cloudCapable: boolean,
+  callbacks: {
+    ready: () => void;
+    isClosed: () => boolean;
+    enqueue: (label: string, operation: () => Promise<void>) => void;
+  },
+): void {
+  const workspace = state.workspace;
+  if (!workspace) {
+    callbacks.ready();
+    if (cloudCapable) callbacks.enqueue("reconcile", () => turns.reconcile());
+    return;
+  }
+  callbacks.enqueue("restore", async () => {
+    if (!(await workspace.prepare()) || callbacks.isClosed()) return;
+    callbacks.ready();
+    if (cloudCapable) await turns.reconcile();
+    turns.notifyAvailable();
+  });
+}
+
 interface AcceptanceRunResult {
   outcome: "passed" | "failed" | "cancelled";
   report?: unknown;
@@ -705,10 +814,16 @@ async function maintainConnections(
       logLine(options.stderr, "Runner authentication timed out; reconnecting");
     }
     failures = outcome.healthy ? 0 : failures + 1;
-    if (failures >= (options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS)) break;
+    // Storage outages must not turn a bounded reconnect policy into destruction of the only
+    // unsaved local workspace. Keep the parent and health listener alive at bounded backoff.
+    if (reconnectLimitReached(config, options, failures)) break;
     const delay = Math.min(1_000 * 2 ** failures, 30_000) + (options.randomJitter ?? randomInt)(500);
     await waitReconnect(delay, state, options, stopListeners);
   }
+}
+
+function reconnectLimitReached(config: RunnerServeConfig, options: RunnerServeOptions, failures: number): boolean {
+  return !config.workspacePersistence && failures >= (options.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS);
 }
 
 async function waitReconnect(
@@ -808,7 +923,8 @@ function startAcceptance(
     // Reclaim every descendant and the disposable credential filesystem on ALL outcomes.
     // Keep only the Session workspace mount, then validate a fresh native environment.
     try {
-      await recycleNativeSandbox(sandbox, state);
+      if (state.workspace) await state.workspace.checkpoint();
+      else await recycleNativeSandbox(sandbox, state);
     } catch {
       result = {
         outcome: "failed",
@@ -820,7 +936,7 @@ function startAcceptance(
       if (!state.fatal && !state.stopping) callbacks.ready();
     }
     state.active = undefined;
-    if (state.fatal) callbacks.finish();
+    if (state.fatal || (state.workspace && !state.workspace.ready && !state.workspace.sealing)) callbacks.finish();
     // The native occupation boundary reopened: queued Cloud turns can use the sandbox again.
     callbacks.turnSlotAvailable();
   })();
@@ -882,6 +998,7 @@ interface FrameDispatch {
   armSilence: () => void;
   onWelcome: (frame: RunnerWelcomeFrame) => void;
   onAcceptance: (frame: RunnerAcceptanceRunFrame) => void;
+  onWorkspaceSeal: (frame: RunnerWorkspaceSealFrame) => void;
   turns: CloudTurnRunner;
   bridge: RunnerChannelBridge;
   enqueueCloudControl: (label: string, operation: () => Promise<void>) => void;
@@ -917,6 +1034,9 @@ function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
     return;
   }
   switch (data.type) {
+    case "workspace:seal":
+      c.onWorkspaceSeal(data);
+      break;
     case "server:heartbeat":
       c.heartbeat();
       break;

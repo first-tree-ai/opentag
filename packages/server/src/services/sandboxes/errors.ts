@@ -19,3 +19,11 @@ export function sandboxNotFound(): SandboxServiceError {
 export function sandboxScopeInvalid(): SandboxServiceError {
   return new SandboxServiceError("VALIDATION_ERROR", "validation", "The request payload is invalid", 400);
 }
+
+/** The current environment could not prove a final workspace save; retain its allocation. */
+export class WorkspaceSaveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceSaveError";
+  }
+}

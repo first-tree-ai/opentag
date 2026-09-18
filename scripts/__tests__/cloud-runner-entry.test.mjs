@@ -22,6 +22,8 @@ const REQUIRED_ARGS = [
   "fixture-subnet",
   "--execution-tag",
   "fixture-tag",
+  "--storage-base",
+  "gs://fixture-bucket/e5-tests",
   "--mode",
   "offline",
 ];
@@ -37,7 +39,8 @@ async function runFailingEntry() {
   try {
     let called = 0;
     const exit = await main(REQUIRED_ARGS, {
-      createFixture: async () => {
+      createFixture: async (options) => {
+        assert.equal(options.serverEnv.OPENTAG_CLOUD_STORAGE_BASE, "gs://fixture-bucket/e5-tests");
         called += 1;
         throw new Error(`fixture unavailable ${credential}`);
       },

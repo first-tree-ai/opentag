@@ -4,11 +4,12 @@ import type {
   AccountSandboxRunnerStatusResponse,
   RunnerReadiness,
 } from "@opentag/shared";
-import { and, eq, inArray, isNotNull, isNull, notInArray, or } from "drizzle-orm";
+import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
+import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { computers, sandboxes } from "../../db/schema/index.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
-import { SandboxServiceError, sandboxNotFound } from "./errors.js";
+import { SandboxServiceError, sandboxNotFound, WorkspaceSaveError } from "./errors.js";
 import {
   loadManagedSandboxById,
   loadOwnedSandbox,
@@ -17,6 +18,7 @@ import {
 } from "./owned-sandbox.js";
 import type { RunnerBootstrapClaims, RunnerBootstrapTokenService } from "./runner-bootstrap-token.js";
 import { RunnerAcceptanceUnavailableError, type RunnerHub, type RunnerScope } from "./runner-hub.js";
+import type { WorkspaceObjectScope, WorkspaceObjectStore } from "./workspace-object-store.js";
 
 /**
  * E3 allocation orchestration for Session-owned Sandboxes: exactly one Cloud Run Instance per
@@ -62,6 +64,17 @@ export interface SandboxRunnerServiceOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   deleteVerifyTimeoutMs?: number;
+  /**
+   * E5 workspace persistence, present exactly when the deployment configured the object store.
+   * With it, Instances are created with the workspace env flag, execution-capable Runners must
+   * negotiate and restore the workspace, and releasing a previously-ready environment must first
+   * prove the sealed archive (Runner seal request + metadata read-back) before deletion.
+   */
+  workspace?: {
+    store: WorkspaceObjectStore;
+    /** Bounds the seal request wait; defaults to the shared workspace timeout (120s). */
+    sealTimeoutMs?: number;
+  };
 }
 
 const DELETE_VERIFY_DEFAULT_MS = 60_000;
@@ -88,12 +101,33 @@ const CREATE_PHASE_MARKER_LIST: string[] = [
   "cloud_instance_unverified",
 ];
 
+/**
+ * E5 durable release-phase markers. `workspace_save_required` is stamped atomically by the
+ * ready -> releasing transition so a Server restart can never mistake a used environment for an
+ * unused one; `workspace_save_failed` records a seal/save failure that kept the resource binding.
+ * Neither may be erased by a weaker delete-phase or uncertain-phase write.
+ */
+const WORKSPACE_SAVE_REQUIRED = "workspace_save_required";
+const WORKSPACE_SAVE_FAILED = "workspace_save_failed";
+const WORKSPACE_RELEASE_MARKER_LIST: string[] = [WORKSPACE_SAVE_REQUIRED, WORKSPACE_SAVE_FAILED];
+
+/**
+ * Markers a weaker failure write must never overwrite. A workspace release marker may overwrite
+ * another workspace release marker (same phase, newer fact), but create-phase evidence is never
+ * erased by anything but a stronger create/adopt verdict.
+ */
+function preservedMarkersFor(incomingCode: string): string[] {
+  return WORKSPACE_RELEASE_MARKER_LIST.includes(incomingCode)
+    ? CREATE_PHASE_MARKER_LIST
+    : [...CREATE_PHASE_MARKER_LIST, ...WORKSPACE_RELEASE_MARKER_LIST];
+}
+
 /** Evidence that no create for this generation can still materialize. */
 function isDefinitiveNoResourceMarker(marker: string | null): boolean {
   return marker !== null && RETRYABLE_MARKERS.has(marker);
 }
 
-export type RunnerReadyOutcome = "ready" | "deferred" | "stale" | "version_mismatch";
+export type RunnerReadyOutcome = "ready" | "deferred" | "stale" | "version_mismatch" | "workspace_not_restored";
 
 /** Automatic ingress allocation outcome; `restore_required` is the E5 guard, never a retry loop. */
 export type IngressAllocationOutcome = "ready" | "pending" | "stopped" | "restore_required";
@@ -121,6 +155,7 @@ export class SandboxRunnerService {
   readonly #acceptanceTimeoutMs: number;
   readonly #createConvergeTimeoutMs: number;
   readonly #deleteVerifyTimeoutMs: number;
+  readonly #workspace: { store: WorkspaceObjectStore; sealTimeoutMs: number } | undefined;
   readonly #now: () => Date;
   readonly #sleep: (ms: number) => Promise<void>;
 
@@ -136,8 +171,19 @@ export class SandboxRunnerService {
     this.#acceptanceTimeoutMs = options.acceptanceTimeoutMs;
     this.#createConvergeTimeoutMs = options.createConvergeTimeoutMs;
     this.#deleteVerifyTimeoutMs = options.deleteVerifyTimeoutMs ?? DELETE_VERIFY_DEFAULT_MS;
+    this.#workspace = options.workspace
+      ? {
+          store: options.workspace.store,
+          sealTimeoutMs: options.workspace.sealTimeoutMs ?? RUNNER_WORKSPACE_TIMEOUT_MS,
+        }
+      : undefined;
     this.#now = options.now ?? (() => new Date());
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  }
+
+  /** True when this deployment persists workspaces; the Runner capability gates key off this. */
+  get workspacePersistenceEnabled(): boolean {
+    return this.#workspace !== undefined;
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -145,6 +191,7 @@ export class SandboxRunnerService {
    * ---------------------------------------------------------------------------------------- */
 
   async startForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
+    await this.#initializeFirstWorkspace(accountId, sandboxId);
     const reservation = await this.#database.transaction(async (transaction) => {
       // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
       // un-ended Session, non-suspended Account, owned Cloud Computer.
@@ -176,6 +223,35 @@ export class SandboxRunnerService {
     }
     await this.#promoteReadyIfReported(sandboxId);
     return this.statusForAccount(accountId, sandboxId);
+  }
+
+  /** Seed before generation 1 is reserved; a rejected first create must not strand generation 2. */
+  async #initializeFirstWorkspace(accountId: string, sandboxId: string): Promise<void> {
+    if (!this.#workspace) return;
+    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
+    if (!owned) throw sandboxNotFound();
+    const row = owned.sandbox;
+    if (row.lifecycle !== "unallocated" || row.environmentGeneration !== 0) return;
+    try {
+      // No DB transaction spans storage I/O. Conditional creation coalesces concurrent starters;
+      // the reservation below revalidates current authority and allocation under the row lock.
+      await this.#workspace.store.claim(
+        {
+          storageUri: row.storageUri,
+          sandboxId: row.id,
+          sessionId: row.sessionId,
+          environmentGeneration: 1,
+        },
+        { initialize: true },
+      );
+    } catch {
+      throw new SandboxServiceError(
+        "SERVICE_UNAVAILABLE",
+        "transient",
+        "The initial workspace could not be prepared",
+        503,
+      );
+    }
   }
 
   /** `unallocated -> preparing`, generation + 1, deterministic name persisted before any I/O. */
@@ -231,11 +307,14 @@ export class SandboxRunnerService {
   }
 
   /**
-   * Normal-ingress allocation (IM delivery worker). Unlike the account-facing start this never
-   * creates a replacement generation for previously used storage: a released generation > 0 whose
-   * workspace would be blank (`restore_required`) is reported instead of allocating, until the E5
-   * restore path exists. The first generation and an in-flight reservation converge through the
-   * existing idempotent start/reconcile logic, so repeated claim attempts are safe.
+   * Normal-ingress allocation (IM delivery worker). Without workspace persistence this never
+   * creates a replacement generation for previously used storage: a released generation > 0
+   * whose workspace would be blank (`restore_required`) is reported instead of allocating. With
+   * persistence configured, the replacement Runner restores the sealed archive from the stable
+   * storage URI, so replacement is permitted; a Runner that cannot restore never reports
+   * `workspaceRestored`, so the allocation stays `preparing` and no blank environment is ever
+   * dispatched. The first generation and an in-flight reservation converge through the existing
+   * idempotent start/reconcile logic, so repeated claim attempts are safe.
    */
   async ensureIngressAllocation(accountId: string, sandboxId: string): Promise<IngressAllocationOutcome> {
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { lock: true, authority: "manage" });
@@ -243,7 +322,7 @@ export class SandboxRunnerService {
     const row = owned.sandbox;
     if (row.lifecycle === "ready") return "ready";
     if (row.lifecycle === "releasing") return "stopped";
-    if (row.lifecycle === "unallocated" && row.environmentGeneration > 0) return "restore_required";
+    if (row.lifecycle === "unallocated" && row.environmentGeneration > 0 && !this.#workspace) return "restore_required";
     const status = await this.startForAccount(accountId, sandboxId);
     return status.lifecycle === "ready" ? "ready" : "pending";
   }
@@ -293,9 +372,19 @@ export class SandboxRunnerService {
       const now = this.#now();
       if (row.lifecycle === "unallocated") return { action: "report" as const, row };
       if (row.lifecycle === "releasing") return { action: "release" as const, row };
+      // E5: a ready environment may hold unsaved workspace progress. Stamp the durable
+      // save-required phase atomically with the transition so a Server restart can never mistake
+      // a used environment for an unused one; a `ready` row carries no create-phase marker, so
+      // this never erases create evidence.
+      const workspaceSaveRequired = this.#workspace !== undefined && row.lifecycle === "ready";
       const [updated] = await transaction
         .update(sandboxes)
-        .set({ lifecycle: "releasing", lastActivityAt: now, updatedAt: now })
+        .set({
+          lifecycle: "releasing",
+          ...(workspaceSaveRequired ? { lastErrorCode: WORKSPACE_SAVE_REQUIRED, lastErrorAt: now } : {}),
+          lastActivityAt: now,
+          updatedAt: now,
+        })
         .where(
           and(
             eq(sandboxes.id, row.id),
@@ -309,21 +398,7 @@ export class SandboxRunnerService {
     });
 
     if (transition.action === "release") {
-      // Invalidate Runner execution immediately: a releasing environment must never accept or
-      // resolve work while its Instance is being removed.
-      this.#closeRunnerScope(transition.row);
-      try {
-        await this.#releaseAllocation(transition.row);
-      } catch (error) {
-        // A delete-phase failure must never erase create-phase evidence: `cloud_create_pending`
-        // is the only proof a winner may still POST, `cloud_create_rejected` /
-        // `cloud_create_failed` are the only definitive markers a later stop can release from,
-        // and `cloud_instance_unverified` is a diagnostic that must survive. Without this, one
-        // failed `getInstance` during stop strands the row in `releasing` forever: the next
-        // stop reads 404, finds no definitive marker, and can never clear.
-        await this.#recordError(transition.row, "cloud_delete_incomplete", error, { preserveCreateMarkers: true });
-        throw mapCloudError(error, "release the Sandbox environment");
-      }
+      await this.#releaseCurrentAllocation(transition.row);
     }
     return this.statusForAccount(accountId, sandboxId);
   }
@@ -485,8 +560,16 @@ export class SandboxRunnerService {
    * rejected: the connection stays authenticated, the create caller promotes the deferred
    * report when tracking completes, and a later start reconciles the deterministic name.
    */
-  async markRunnerReady(scope: RunnerScope, readiness: RunnerReadiness): Promise<RunnerReadyOutcome> {
+  async markRunnerReady(
+    scope: RunnerScope,
+    readiness: RunnerReadiness,
+    options: { workspaceRestored?: boolean } = {},
+  ): Promise<RunnerReadyOutcome> {
     if (readiness.runnerVersion !== this.#expectedRunnerVersion) return "version_mismatch";
+    // E5: with persistence configured, an execution-capable Runner proves it restored the claimed
+    // workspace archive before anything may become ready; an old Runner without the capability
+    // fails closed here and can never promote the environment.
+    if (this.#workspace && options.workspaceRestored !== true) return "workspace_not_restored";
     const current = await this.#currentScopeRow(scope);
     if (!current) return "stale";
     if (current.lifecycle === "ready") return "ready";
@@ -547,6 +630,8 @@ export class SandboxRunnerService {
           environment: this.#environment,
           backendUrl: this.#backendUrl,
           bootstrapToken,
+          // E5: only a workspace-enabled allocation arms the Runner-side restore/save path.
+          ...(this.#workspace ? { workspacePersistence: true } : {}),
         },
         { onOperation: (operationName) => this.#trackOperation(row, resourceName, operationName) },
       );
@@ -759,6 +844,12 @@ export class SandboxRunnerService {
     const [row] = await this.#rowById(sandboxId);
     if (!row) return;
     if (row.lifecycle === "releasing") {
+      // Another request may have promoted and then stopped this allocation while create was
+      // in flight. Always use the current durable release marker and the same seal-proof funnel.
+      if (this.#workspace) {
+        await this.#releaseCurrentAllocation(row);
+        return;
+      }
       this.#closeRunnerScope(row);
       await this.#releaseAllocation(row);
       return;
@@ -784,8 +875,8 @@ export class SandboxRunnerService {
       .set({
         currentResourceUid: resourceUid,
         currentOperationName: operationName,
-        lastErrorCode: null,
-        lastErrorAt: null,
+        lastErrorCode: sql`case when ${inArray(sandboxes.lastErrorCode, WORKSPACE_RELEASE_MARKER_LIST)} then ${sandboxes.lastErrorCode} else null end`,
+        lastErrorAt: sql`case when ${inArray(sandboxes.lastErrorCode, WORKSPACE_RELEASE_MARKER_LIST)} then ${sandboxes.lastErrorAt} else null end`,
         lastActivityAt: now,
         updatedAt: now,
       })
@@ -833,7 +924,132 @@ export class SandboxRunnerService {
   }
 
   /**
-   * Stop's release half. The Runner was already detached. A resource with a tracked UID is
+   * The single release funnel (account stop and the late-track reconcile both land here).
+   * Legacy mode keeps the exact E3/E4 behavior: the Runner scope is invalidated immediately and
+   * the existing verified cleanup runs. With workspace persistence the Runner channel stays alive
+   * until the sealed archive is proven (or proven unnecessary), and every failure is recorded
+   * without erasing create-phase or workspace-phase evidence.
+   */
+  async #releaseCurrentAllocation(row: typeof sandboxes.$inferSelect): Promise<void> {
+    try {
+      if (this.#workspace) {
+        await this.#releaseSavingWorkspace(row);
+      } else {
+        // Invalidate Runner execution immediately: a releasing environment must never accept or
+        // resolve work while its Instance is being removed.
+        this.#closeRunnerScope(row);
+        await this.#releaseAllocation(row);
+      }
+    } catch (error) {
+      if (error instanceof WorkspaceSaveError) {
+        // The sealed archive could not be proven: keep the physical resource binding and the
+        // releasing lifecycle so a later stop retries. Never erased by delete-phase writes.
+        await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, { preserveCreateMarkers: true });
+        throw new SandboxServiceError(
+          "SERVICE_UNAVAILABLE",
+          "transient",
+          `Failed to release the Sandbox environment: the workspace could not be saved (${error.message})`,
+          503,
+        );
+      }
+      // A delete-phase failure must never erase create-phase evidence: `cloud_create_pending`
+      // is the only proof a winner may still POST, `cloud_create_rejected` /
+      // `cloud_create_failed` are the only definitive markers a later stop can release from,
+      // and `cloud_instance_unverified` is a diagnostic that must survive. Without this, one
+      // failed `getInstance` during stop strands the row in `releasing` forever: the next
+      // stop reads 404, finds no definitive marker, and can never clear.
+      await this.#recordError(row, "cloud_delete_incomplete", error, { preserveCreateMarkers: true });
+      throw mapCloudError(error, "release the Sandbox environment");
+    }
+  }
+
+  /**
+   * E5 release path. A save is owed exactly when the durable marker says this environment was
+   * previously ready (used). A PRESENT resource of the tracked UID is sealed first; a resource
+   * proven absent or owned by a different UID has no local copy to save, so the last archived
+   * object is retained and the existing safe release proceeds. Without a tracked UID the create
+   * outcome is resolved by the existing bounded reconciliation (a generation whose UID was never
+   * tracked was never ready, so it owes no save).
+   */
+  async #releaseSavingWorkspace(row: typeof sandboxes.$inferSelect): Promise<void> {
+    const resourceName = row.currentResourceName;
+    const resourceUid = row.currentResourceUid;
+    const saveOwed = row.lastErrorCode === WORKSPACE_SAVE_REQUIRED || row.lastErrorCode === WORKSPACE_SAVE_FAILED;
+    if (resourceName !== null && resourceUid !== null && saveOwed) {
+      const view = await this.#cloud.getInstance(resourceName);
+      if (view !== undefined && view.uid === resourceUid) {
+        await this.#sealWorkspaceForRelease(row);
+      }
+    }
+    // Only now does the Runner channel close; the existing verified cloud cleanup follows.
+    this.#closeRunnerScope(row);
+    await this.#releaseAllocation(row);
+  }
+
+  /**
+   * Prove the sealed archive for the exact current environment before deletion. The Runner's
+   * ack alone is never proof: the object metadata read-back must show a saved, sealed archive
+   * owned by this exact environment generation. A stored proof short-circuits the Runner
+   * round-trip, so a retry after a dropped ack or a Server crash needs no live Runner.
+   */
+  async #sealWorkspaceForRelease(row: typeof sandboxes.$inferSelect): Promise<void> {
+    const workspace = this.#workspace;
+    if (!workspace) return;
+    const scope: WorkspaceObjectScope = {
+      storageUri: row.storageUri,
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+    };
+    if (await this.#workspaceSealProven(scope, row.environmentGeneration)) return;
+    const socket = this.#hub.currentSocket(row.id);
+    const snapshot = this.#hub.describe(row.id);
+    if (
+      !socket ||
+      !snapshot.connected ||
+      snapshot.scope === null ||
+      snapshot.scope.sessionId !== row.sessionId ||
+      snapshot.scope.environmentGeneration !== row.environmentGeneration ||
+      snapshot.scope.resourceName !== row.currentResourceName
+    ) {
+      throw new WorkspaceSaveError("no live Runner holds the current allocation");
+    }
+    let result: Awaited<ReturnType<RunnerHub["requestWorkspaceSeal"]>>;
+    try {
+      result = await this.#hub.requestWorkspaceSeal(row.id, { timeoutMs: workspace.sealTimeoutMs, socket });
+    } catch (error) {
+      throw new WorkspaceSaveError(
+        error instanceof Error ? error.message : "the workspace seal could not be requested",
+      );
+    }
+    if (!result.ok) {
+      throw new WorkspaceSaveError(
+        `the Runner reported a failed workspace save (${result.code ?? "workspace_save_failed"})`,
+      );
+    }
+    if (!(await this.#workspaceSealProven(scope, row.environmentGeneration))) {
+      throw new WorkspaceSaveError("the saved workspace archive could not be verified");
+    }
+  }
+
+  /** The only proof bar: saved + sealed + exact current owner generation, from a fresh read. */
+  async #workspaceSealProven(scope: WorkspaceObjectScope, ownerGeneration: number): Promise<boolean> {
+    const workspace = this.#workspace;
+    if (!workspace) return false;
+    let head: Awaited<ReturnType<WorkspaceObjectStore["head"]>>;
+    try {
+      head = await workspace.store.head(scope);
+    } catch {
+      // A store read failure is not proof of anything; the caller keeps the allocation and retries.
+      return false;
+    }
+    return (
+      head !== undefined && head.saved === true && head.sealed === true && head.ownerGeneration === ownerGeneration
+    );
+  }
+
+  /**
+   * Stop's release half. A resource with a tracked UID is
    * deleted and verified by read-back. Without a UID the create outcome is awaited for a bounded
    * window: a visible Instance is verified/tracked and then deleted, a completed operation with
    * an error proves nothing was allocated, and anything still unknown keeps `releasing` plus the
@@ -1097,8 +1313,10 @@ export class SandboxRunnerService {
           eq(sandboxes.environmentGeneration, row.environmentGeneration),
           inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
           ...(preserveCreateMarkers
-            ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, CREATE_PHASE_MARKER_LIST))]
-            : []),
+            ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, preservedMarkersFor(code)))]
+            : [
+                or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, WORKSPACE_RELEASE_MARKER_LIST)),
+              ]),
         ),
       );
   }
@@ -1125,8 +1343,15 @@ export class SandboxRunnerService {
             eq(sandboxes.environmentGeneration, row.environmentGeneration),
             inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
             ...(options.preserveCreateMarkers
-              ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, CREATE_PHASE_MARKER_LIST))]
-              : []),
+              ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, preservedMarkersFor(code)))]
+              : WORKSPACE_RELEASE_MARKER_LIST.includes(code)
+                ? []
+                : [
+                    or(
+                      isNull(sandboxes.lastErrorCode),
+                      notInArray(sandboxes.lastErrorCode, WORKSPACE_RELEASE_MARKER_LIST),
+                    ),
+                  ]),
           ),
         );
     } catch (recordError) {

@@ -100,6 +100,8 @@ export interface CloudTurnRunnerOptions {
    * after a verified clean namespace. A failure makes the runner unusable (no silent reuse).
    */
   readonly sandboxReset?: () => Promise<void>;
+  /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
+  readonly checkpoint?: () => Promise<void>;
   readonly log?: (message: string) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
   readonly onPersistenceError?: (error: unknown) => void;
@@ -204,6 +206,7 @@ export class CloudTurnRunner {
   #resetInFlight?: Promise<void>;
   /** Serializes control-state mutations only; the worker itself runs outside the queue. */
   #serial: Promise<unknown> = Promise.resolve();
+  readonly #journalListeners = new Set<() => void>();
 
   constructor(options: CloudTurnRunnerOptions) {
     this.#options = options;
@@ -211,6 +214,10 @@ export class CloudTurnRunner {
 
   get activeDeliveryId(): string | undefined {
     return this.#active?.deliveryId;
+  }
+
+  async waitForActive(): Promise<void> {
+    await this.#active?.settled;
   }
 
   /** True while a turn is running or verified work waits for the single turn slot. */
@@ -235,6 +242,9 @@ export class CloudTurnRunner {
   /** Journal + fsync the input, THEN acknowledge receipt. Idempotent across duplicate dispatch. */
   async handleDeliveryRun(frame: RunnerCloudDeliveryRunFrame): Promise<void> {
     await this.#enqueue(async () => {
+      // A draining allocation must not acknowledge newly arriving work. The Server retains
+      // unaccepted input for delivery; accepting it here would create a new release obligation.
+      if (this.#closed) return;
       const delivery = frame.delivery;
       const scope = this.#options.scope();
       if (!scope || delivery.sessionId !== scope.sessionId) {
@@ -383,6 +393,7 @@ export class CloudTurnRunner {
         status: frame.status,
         turnId: frame.turnId,
       });
+      this.#notifyJournalChanged();
     });
   }
 
@@ -399,7 +410,7 @@ export class CloudTurnRunner {
         requestId: frame.requestId,
         turnId: frame.turnId,
       });
-      if (phase === "reported" && entry?.report) {
+      if (phase === "reported" && entry?.report && !this.#isCheckpointing(entry.deliveryId)) {
         this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
       }
     });
@@ -433,6 +444,7 @@ export class CloudTurnRunner {
       return;
     }
     if (entry.phase === "reported" && entry.report) {
+      if (this.#isCheckpointing(entry.deliveryId)) return;
       this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
       return;
     }
@@ -443,6 +455,10 @@ export class CloudTurnRunner {
       return;
     }
     await this.#reportTerminal(entry, UNKNOWN_COMPLETION);
+  }
+
+  #isCheckpointing(deliveryId: string): boolean {
+    return this.#options.checkpoint !== undefined && this.#active?.deliveryId === deliveryId;
   }
 
   #sendReceipt(entry: CloudJournalEntry): void {
@@ -474,6 +490,59 @@ export class CloudTurnRunner {
     this.#active?.abort.abort();
     await this.#active?.settled;
     await this.#serial.catch(() => undefined);
+  }
+
+  /**
+   * Quiesce execution and wait for durable Server report acknowledgments before the parent
+   * seals storage. This wait never holds the control queue that must receive those acks.
+   */
+  async drainForRelease(timeoutMs: number): Promise<void> {
+    await this.close();
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let notify: () => void = () => undefined;
+      const changed = new Promise<void>((resolveChanged) => {
+        notify = resolveChanged;
+      });
+      this.#journalListeners.add(notify);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const remaining = await this.#enqueue(async () => {
+          const entries = await this.#options.journal.list();
+          for (const entry of entries) {
+            this.#assertCurrentScope(entry);
+            if (entry.phase === "reported" && entry.report) {
+              this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
+            } else {
+              await this.#reportTerminal(
+                entry,
+                entry.phase === "received" ? cancelledBeforeStart() : UNKNOWN_COMPLETION,
+              );
+            }
+          }
+          return entries.length;
+        });
+        if (remaining === 0) return;
+        const waitMs = deadline - Date.now();
+        if (waitMs <= 0) throw new CloudJournalError("store_failed", "Release reports were not acknowledged");
+        await Promise.race([
+          changed,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new CloudJournalError("store_failed", "Release reports were not acknowledged")),
+              waitMs,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+        this.#journalListeners.delete(notify);
+      }
+    }
+  }
+
+  #notifyJournalChanged(): void {
+    for (const listener of this.#journalListeners) listener();
   }
 
   /* --------------------------------------------------------------------------------------------
@@ -683,7 +752,7 @@ export class CloudTurnRunner {
     // verified reset: a stopped Session must never leave orphan children behind, and a failed
     // reset must never be reported as a safe cancellation.
     let cleanupFailure: unknown;
-    if (isInterrupted(completion) && this.#options.sandboxReset) {
+    if (isInterrupted(completion) && this.#options.sandboxReset && !this.#options.checkpoint) {
       this.#markSandboxDirty();
       try {
         await this.#resetSandboxNamespace();
@@ -696,17 +765,21 @@ export class CloudTurnRunner {
         };
       }
     }
-    await this.#reportTerminal(current, completion);
+    await this.#reportTerminal(current, completion, true);
     // Publish the honest report first; then surface the cleanup failure through the existing
     // Runner failure path (serve marks the environment fatal and exits).
     if (cleanupFailure !== undefined) this.#reportPersistenceError(cleanupFailure);
   }
 
   /** Build the fsynced report and send it; the entry retires only on the Server's durable ack. */
-  async #reportTerminal(entry: CloudJournalEntry, completion: TurnCompletion): Promise<void> {
+  async #reportTerminal(entry: CloudJournalEntry, completion: TurnCompletion, checkpoint = false): Promise<void> {
     const report = entry.report ?? this.#buildReport(entry.delivery, entry, completion);
     const recorded = await this.#options.journal.recordReport(entry.deliveryId, entry.scope, report);
     if (!recorded.report) return;
+    this.#notifyJournalChanged();
+    // A failed save leaves the honest report in the trusted journal, ready for replay AFTER
+    // the local workspace has been saved on reconnect. It never re-runs the external action.
+    if (checkpoint) await this.#options.checkpoint?.();
     this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
   }
 

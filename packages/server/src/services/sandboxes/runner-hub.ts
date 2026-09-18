@@ -5,6 +5,8 @@ import {
   type RunnerAcceptanceRunFrame,
   type RunnerReadiness,
   type RunnerServerFrame,
+  type RunnerWorkspaceSealFrame,
+  type RunnerWorkspaceSealResultFrame,
 } from "@opentag/shared";
 
 /**
@@ -57,6 +59,18 @@ interface PendingAcceptance {
   readonly timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * One in-flight workspace seal. A second concurrent request JOINS the same promise: stop retries
+ * are idempotent and the proof bar (the object metadata read-back) is identical for every waiter.
+ */
+interface PendingWorkspaceSeal {
+  readonly requestId: string;
+  readonly promise: Promise<RunnerWorkspaceSealResultFrame>;
+  readonly resolve: (frame: RunnerWorkspaceSealResultFrame) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
 interface HubEntry {
   scope: RunnerScope;
   socket: RunnerControlSocket;
@@ -64,12 +78,21 @@ interface HubEntry {
   lastSeenAt: number;
   pending: Map<string, PendingAcceptance>;
   activeAcceptanceId: string | null;
+  pendingSeal: PendingWorkspaceSeal | null;
 }
 
 export class RunnerAcceptanceUnavailableError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RunnerAcceptanceUnavailableError";
+  }
+}
+
+/** A workspace seal could not be requested or settled; the caller keeps the allocation and retries. */
+export class RunnerWorkspaceSealUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RunnerWorkspaceSealUnavailableError";
   }
 }
 
@@ -134,6 +157,7 @@ export class RunnerHub {
       lastSeenAt: this.#now(),
       pending: new Map(),
       activeAcceptanceId: null,
+      pendingSeal: null,
     });
     return outcome;
   }
@@ -273,6 +297,74 @@ export class RunnerHub {
     return true;
   }
 
+  /**
+   * Ask the CURRENT connection to quiesce its writers and save the sealed workspace archive, and
+   * await the correlated result. No readiness requirement: the release path seals through the
+   * report-capable channel even after the environment left `ready`. The wait lives in the
+   * caller (the account stop path), never in the per-connection frame chain, so heartbeats and
+   * other frames keep flowing while a seal is outstanding. The request is pinned to the exact
+   * current socket; a replacement, detach, or deadline rejects every waiter.
+   */
+  async requestWorkspaceSeal(
+    sandboxId: string,
+    options: { timeoutMs: number; socket?: RunnerControlSocket },
+  ): Promise<RunnerWorkspaceSealResultFrame> {
+    const entry = this.#entries.get(sandboxId);
+    if (!entry) throw new RunnerWorkspaceSealUnavailableError("No Runner is connected for this Sandbox");
+    if (options.socket && entry.socket !== options.socket) {
+      throw new RunnerWorkspaceSealUnavailableError("The Runner connection was replaced");
+    }
+    if (entry.pendingSeal) return entry.pendingSeal.promise;
+    const requestId = randomUUID();
+    const frame: RunnerWorkspaceSealFrame = { type: "workspace:seal", requestId };
+    let resolvePromise!: (frame: RunnerWorkspaceSealResultFrame) => void;
+    let rejectPromise!: (error: Error) => void;
+    const promise = new Promise<RunnerWorkspaceSealResultFrame>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    let settled = false;
+    const finish = (error?: Error, result?: RunnerWorkspaceSealResultFrame) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (entry.pendingSeal?.requestId === requestId) entry.pendingSeal = null;
+      if (error) rejectPromise(error);
+      else if (result) resolvePromise(result);
+    };
+    const timer = setTimeout(() => {
+      finish(new RunnerWorkspaceSealUnavailableError("The workspace seal exceeded its deadline"));
+    }, options.timeoutMs);
+    timer.unref?.();
+    entry.pendingSeal = {
+      requestId,
+      promise,
+      resolve: (result) => finish(undefined, result),
+      reject: (error) => finish(error),
+      timer,
+    };
+    try {
+      entry.socket.send(frame);
+    } catch {
+      finish(new RunnerWorkspaceSealUnavailableError("The Runner control channel is not writable"));
+    }
+    return promise;
+  }
+
+  /**
+   * Route an inbound seal result to its waiter. Only the exact current socket AND the exact
+   * pending requestId may settle it — a stale socket or a fabricated/unknown id changes nothing.
+   */
+  settleWorkspaceSeal(sandboxId: string, frame: RunnerWorkspaceSealResultFrame, socket: RunnerControlSocket): boolean {
+    const entry = this.#entries.get(sandboxId);
+    if (!entry || entry.socket !== socket) return false;
+    const pending = entry.pendingSeal;
+    if (!pending || pending.requestId !== frame.requestId) return false;
+    entry.lastSeenAt = this.#now();
+    pending.resolve(frame);
+    return true;
+  }
+
   /** Terminate the current connection only if it belongs to exactly this (superseded) scope. */
   closeScope(scope: RunnerScope): void {
     const entry = this.#entries.get(scope.sandboxId);
@@ -343,6 +435,7 @@ export class RunnerHub {
     for (const pending of entry.pending.values()) pending.reject(error);
     entry.pending.clear();
     entry.activeAcceptanceId = null;
+    entry.pendingSeal?.reject(error);
   }
 
   #sameScope(left: RunnerScope, right: RunnerScope): boolean {

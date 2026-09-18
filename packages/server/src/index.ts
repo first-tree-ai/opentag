@@ -5,7 +5,6 @@ import type {
   ProviderReadinessStatus,
   RuntimeCredentialServerFrame,
 } from "@opentag/shared";
-import { sandboxRunnerWebSocketUrl } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -16,6 +15,7 @@ import {
   collectKnownSecrets,
   createCloudDeliveryComposition,
   createCloudIngressAllocationPort,
+  createSandboxRunnerRuntime,
   type SandboxRunnerRuntime,
 } from "./cloud-runtime-composition.js";
 import { isHostedEnvironment, parseServerConfig, type ServerConfig, serverEnvironmentSummary } from "./config.js";
@@ -55,11 +55,6 @@ import {
   PostAuthenticationService,
 } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
-import {
-  CloudRunAdmin,
-  createMetadataServerTokenProvider,
-  createStaticTokenProvider,
-} from "./services/cloud-run/index.js";
 import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { createGitHubIntegration } from "./services/github/index.js";
@@ -96,12 +91,7 @@ import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/ind
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
 import { SandboxService } from "./services/sandboxes/index.js";
-import { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
-import { RunnerHub } from "./services/sandboxes/runner-hub.js";
-import {
-  type SandboxAllocationReconciliation,
-  SandboxRunnerService,
-} from "./services/sandboxes/sandbox-runner-service.js";
+import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { TaskService } from "./services/tasks/index.js";
@@ -184,53 +174,6 @@ class InternalNavigationVisibilityService {
     this.#value = { ...value };
     return this.#value;
   }
-}
-
-/**
- * E3 Cloud Runner wiring: present only when explicitly enabled. Token acquisition is the GCE
- * metadata server in production; the acceptance harness may inject a short-lived static token
- * through the environment. The signing key for bootstrap tokens is the Server's own JWT secret
- * under a dedicated audience; no machine/daemon credential is reused for runners.
- */
-function createSandboxRunnerRuntime(
-  database: DatabaseClient,
-  config: Pick<ServerConfig, "environment" | "jwtSecret" | "cloudRunner" | "cloudIdentities">,
-): SandboxRunnerRuntime | undefined {
-  const cloudRunner = config.cloudRunner;
-  if (!cloudRunner.enabled) return undefined;
-  const cloudIdentities = config.cloudIdentities;
-  if (!cloudIdentities.enabled) {
-    throw new Error("Cloud Runner requires cloud identities (Runner build version) to be enabled");
-  }
-  const tokenProvider = cloudRunner.staticAccessToken
-    ? createStaticTokenProvider(cloudRunner.staticAccessToken)
-    : createMetadataServerTokenProvider();
-  const cloudAdmin = new CloudRunAdmin(
-    {
-      project: cloudRunner.project,
-      region: cloudRunner.region,
-      serviceAccount: cloudRunner.serviceAccount,
-      image: cloudRunner.image,
-      vpc: cloudRunner.vpc,
-      apiTimeoutMs: cloudRunner.apiTimeoutMs,
-    },
-    { tokenProvider },
-  );
-  const tokens = new RunnerBootstrapTokenService(config.jwtSecret, {
-    ttlSeconds: cloudRunner.bootstrapTokenTtlSeconds,
-  });
-  const hub = new RunnerHub();
-  const sandboxRunnerService = new SandboxRunnerService(database, {
-    cloudAdmin,
-    tokens,
-    hub,
-    environment: config.environment,
-    backendUrl: sandboxRunnerWebSocketUrl(cloudRunner.backendOrigin),
-    expectedRunnerVersion: cloudIdentities.runnerVersion,
-    acceptanceTimeoutMs: cloudRunner.acceptanceTimeoutMs,
-    createConvergeTimeoutMs: cloudRunner.createConvergeTimeoutMs,
-  });
-  return { sandboxRunnerService, runnerChannel: { tokens, hub } };
 }
 
 /** The live Cloud fence exists exactly when the Cloud Runner runtime is enabled. */

@@ -1,30 +1,107 @@
-import { CLOUD_MODEL_PROXY_PATH } from "@opentag/shared";
+import { CLOUD_MODEL_PROXY_PATH, sandboxRunnerWebSocketUrl } from "@opentag/shared";
 import type { CloudModelProxyRouteOptions } from "./api/cloud-model-proxy.js";
 import type { CloudModelConfig } from "./cloud-model-config.js";
+import type { ServerConfig } from "./config.js";
 import type { DatabaseClient } from "./db/client.js";
 import type { ServiceLogger } from "./observability/service-logger.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import type { RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import type { RuntimeCredentialOwner } from "./runtime-credentials/runtime-credential-owner.js";
+import {
+  type AccessTokenProvider,
+  CloudRunAdmin,
+  createMetadataServerTokenProvider,
+  createStaticTokenProvider,
+} from "./services/cloud-run/index.js";
 import { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import { CloudModelGrantService } from "./services/sandboxes/cloud-model-grants.js";
 import type { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
 import type { SandboxService } from "./services/sandboxes/index.js";
-import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
-import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
-import type {
-  SandboxAllocationReconciliation,
+import { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
+import { RunnerHub } from "./services/sandboxes/runner-hub.js";
+import { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
+import {
+  type SandboxAllocationReconciliation,
   SandboxRunnerService,
 } from "./services/sandboxes/sandbox-runner-service.js";
+import type { WorkspaceObjectStore } from "./services/sandboxes/workspace-object-store.js";
+import { GcsWorkspaceObjectStore } from "./services/sandboxes/workspace-object-store.js";
 
 export interface SandboxRunnerRuntime {
   sandboxRunnerService: SandboxRunnerService;
   runnerChannel: { tokens: RunnerBootstrapTokenService; hub: RunnerHub };
+  /** E5 workspace HTTP authority; the production runtime always configures it with the store. */
+  runnerWorkspace?: RunnerWorkspaceService;
 }
 
 export interface CloudDeliveryComposition {
   cloudModelGrants?: CloudModelGrantService;
   cloudDeliveryOwner?: CloudDeliveryOwner;
+}
+
+/**
+ * E3–E5 Cloud Runner wiring, present only when explicitly enabled. Token acquisition is the GCE
+ * metadata server in production; the acceptance harness may inject a short-lived static token
+ * through the environment. The signing key for bootstrap tokens is the Server's own JWT secret
+ * under a dedicated audience; no machine/daemon credential is reused for runners.
+ *
+ * E5: the workspace object store is always configured with the SAME Server Google token provider
+ * the Cloud Run Admin uses, and production uses the GCS adapter. No Google credential ever
+ * reaches a Runner; archive bytes cross only the authenticated workspace HTTP routes. The
+ * composition regression calls this same factory, so a wiring drift (a missing workspace route,
+ * a runner service without the store) is a test failure rather than a production surprise.
+ */
+export function createSandboxRunnerRuntime(
+  database: DatabaseClient,
+  config: Pick<ServerConfig, "environment" | "jwtSecret" | "cloudRunner" | "cloudIdentities">,
+  options: {
+    /** Tests inject a fake store factory; production defaults to the GCS object store adapter. */
+    workspaceStoreFactory?: (input: { tokenProvider: AccessTokenProvider }) => WorkspaceObjectStore;
+  } = {},
+): SandboxRunnerRuntime | undefined {
+  const cloudRunner = config.cloudRunner;
+  if (!cloudRunner.enabled) return undefined;
+  const cloudIdentities = config.cloudIdentities;
+  if (!cloudIdentities.enabled) {
+    throw new Error("Cloud Runner requires cloud identities (Runner build version) to be enabled");
+  }
+  const tokenProvider = cloudRunner.staticAccessToken
+    ? createStaticTokenProvider(cloudRunner.staticAccessToken)
+    : createMetadataServerTokenProvider();
+  const cloudAdmin = new CloudRunAdmin(
+    {
+      project: cloudRunner.project,
+      region: cloudRunner.region,
+      serviceAccount: cloudRunner.serviceAccount,
+      image: cloudRunner.image,
+      vpc: cloudRunner.vpc,
+      apiTimeoutMs: cloudRunner.apiTimeoutMs,
+    },
+    { tokenProvider },
+  );
+  const tokens = new RunnerBootstrapTokenService(config.jwtSecret, {
+    ttlSeconds: cloudRunner.bootstrapTokenTtlSeconds,
+  });
+  const hub = new RunnerHub();
+  const store = options.workspaceStoreFactory?.({ tokenProvider }) ?? new GcsWorkspaceObjectStore({ tokenProvider });
+  const sandboxRunnerService = new SandboxRunnerService(database, {
+    cloudAdmin,
+    tokens,
+    hub,
+    environment: config.environment,
+    backendUrl: sandboxRunnerWebSocketUrl(cloudRunner.backendOrigin),
+    expectedRunnerVersion: cloudIdentities.runnerVersion,
+    acceptanceTimeoutMs: cloudRunner.acceptanceTimeoutMs,
+    createConvergeTimeoutMs: cloudRunner.createConvergeTimeoutMs,
+    workspace: { store },
+  });
+  const runnerWorkspace = new RunnerWorkspaceService(database, {
+    tokens,
+    hub,
+    store,
+    runnerService: sandboxRunnerService,
+  });
+  return { sandboxRunnerService, runnerChannel: { tokens, hub }, runnerWorkspace };
 }
 
 /**
@@ -108,11 +185,15 @@ export function cloudAppOptions(input: {
 }): {
   sandboxRunnerService?: SandboxRunnerService;
   runnerChannel?: { tokens: RunnerBootstrapTokenService; hub: RunnerHub; cloudDelivery?: CloudDeliveryOwner };
+  runnerWorkspace?: RunnerWorkspaceService;
   cloudModel?: CloudModelProxyRouteOptions;
 } {
   const runnerOptions = sandboxRunnerRouteOptions(input.runnerRuntime, input.composition.cloudDeliveryOwner);
   return {
     ...runnerOptions,
+    // The workspace routes exist exactly when the runtime configured persistence; without them a
+    // workspace Runner can never claim/restore and fails closed before readiness.
+    ...(input.runnerRuntime?.runnerWorkspace ? { runnerWorkspace: input.runnerRuntime.runnerWorkspace } : {}),
     ...(input.composition.cloudModelGrants && input.cloudModel.enabled
       ? { cloudModel: { config: input.cloudModel, grants: input.composition.cloudModelGrants } }
       : {}),

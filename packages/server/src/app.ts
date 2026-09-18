@@ -26,6 +26,7 @@ import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
 import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
+import { registerRunnerWorkspaceRoutes } from "./api/runner-workspace.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
@@ -63,6 +64,7 @@ import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-own
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
+import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
 import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
@@ -92,6 +94,12 @@ export interface CreateAppOptions {
   };
   /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
   cloudModel?: CloudModelProxyRouteOptions;
+  /**
+   * E5 Runner workspace persistence HTTP routes; present exactly when the Runner runtime
+   * configured the object store. Authenticates the Runner bootstrap bearer token only — never
+   * the account session surface.
+   */
+  runnerWorkspace?: RunnerWorkspaceService;
   machineAuthService?: MachineAuthService;
   connectCode?: {
     issuer: ConnectCodeIssuer;
@@ -580,6 +588,12 @@ export function createApp(options: CreateAppOptions = {}) {
   // never needs the account auth surface, so it registers whenever the deployment configured it.
   if (options.cloudModel) {
     registerCloudModelProxyRoutes(app, options.cloudModel);
+  }
+
+  // The E5 Runner workspace path likewise authenticates the Runner's own allocation-scoped
+  // bootstrap token and is independent of the account auth surface.
+  if (options.runnerWorkspace) {
+    registerRunnerWorkspaceRoutes(app, options.runnerWorkspace);
   }
 
   if (options.webAppRoot) registerWebApp(app, options.webAppRoot);

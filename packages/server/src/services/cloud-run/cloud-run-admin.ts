@@ -22,6 +22,8 @@ export interface RunnerInstanceSpec extends RunnerInstanceIdentityInput {
   environment: ChannelName;
   backendUrl: string;
   bootstrapToken: string;
+  /** E5: arm the Runner-side workspace restore/save path; set only for workspace-enabled allocations. */
+  workspacePersistence?: boolean;
 }
 export interface CloudRunInstanceView {
   name: string;
@@ -310,6 +312,7 @@ export class CloudRunAdmin {
         { name: "OPENTAG_RUNNER_BACKEND_URL", value: spec.backendUrl },
         { name: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN", value: spec.bootstrapToken },
         { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
+        ...(spec.workspacePersistence === true ? [{ name: "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE", value: "1" }] : []),
       ],
       resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
       // The Instance ingress policy and the default TCP startup probe both require exactly this

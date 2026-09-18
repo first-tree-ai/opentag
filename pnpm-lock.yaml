@@ -181,6 +181,9 @@ importers:
       semver:
         specifier: ^7.8.5
         version: 7.8.5
+      tar-stream:
+        specifier: 3.2.0
+        version: 3.2.0
       ws:
         specifier: ^8.21.3
         version: 8.21.3
@@ -194,6 +197,9 @@ importers:
       '@types/semver':
         specifier: ^7.8.0
         version: 7.8.0
+      '@types/tar-stream':
+        specifier: ^3.1.4
+        version: 3.1.4
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -1911,6 +1917,9 @@ packages:
 
   '@types/ssh2@1.15.5':
     resolution: {integrity: sha512-N1ASjp/nXH3ovBHddRJpli4ozpk6UdDYIX4RJWFa9L1YKnzdhTlVmiGHm4DZnj/jLbqZpes4aeR30EFGQtvhQQ==}
+
+  '@types/tar-stream@3.1.4':
+    resolution: {integrity: sha512-921gW0+g29mCJX0fRvqeHzBlE/XclDaAG0Ousy1LCghsOhvaKacDeRGEVzQP9IPfKn8Vysy7FEXAIxycpc/CMg==}
 
   '@types/unist@2.0.11':
     resolution: {integrity: sha512-CmBKiL6NNo/OqgmMn95Fk9Whlp2mtvIv+KNpQKN2F4SjvrEesubTRWGYSg+BnWZOnlCaSTU1sMpsBOzgbYhnsA==}
@@ -6149,6 +6158,10 @@ snapshots:
   '@types/ssh2@1.15.5':
     dependencies:
       '@types/node': 18.19.130
+
+  '@types/tar-stream@3.1.4':
+    dependencies:
+      '@types/node': 26.4.0
 
   '@types/unist@2.0.11': {}
 

@@ -220,13 +220,20 @@ test("generates complete notices for bundled CLI dependencies", async () => {
     "thread-stream",
     "ws",
     "zod",
+    "semver",
+    "tar-stream",
+    "b4a",
+    "fast-fifo",
+    "streamx",
+    "events-universal",
+    "text-decoder",
   ]) {
     assert.match(notices, new RegExp(`^## ${packageName.replace("/", "\\/")}@\\d+\\.\\d+\\.\\d+$`, "m"));
   }
   assert.match(notices, /Copyright \(c\) 2011 TJ Holowaychuk/);
   assert.match(notices, /Copyright \(c\) 2011 Einar Otto Stangvik/);
   assert.match(notices, /Copyright \(c\) 2025 Colin McDonnell/);
-  assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 12);
+  assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 15);
 });
 
 test("orders stable and staging release versions on one scale", () => {

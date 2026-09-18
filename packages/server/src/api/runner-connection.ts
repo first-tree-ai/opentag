@@ -1,5 +1,6 @@
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
+  RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_CLOSE,
   RUNNER_WS_MAX_FRAME_BYTES,
   RUNNER_WS_PROTOCOL_VERSION,
@@ -128,6 +129,8 @@ export class RunnerConnection {
   #reportOnly = false;
   /** Set at attach: only a connection that negotiated E4 may use the channel-scope fallback. */
   #cloudNegotiated = false;
+  /** Set at attach: E5 workspace persistence was requested AND is configured on this Server. */
+  #workspaceNegotiated = false;
   #authTimer: ReturnType<typeof setTimeout> | undefined;
   #credentialTimer: ReturnType<typeof setInterval> | undefined;
   #queued = 0;
@@ -216,16 +219,27 @@ export class RunnerConnection {
    * Authentication and channel attachment
    * ---------------------------------------------------------------------------------------- */
 
-  async #handleAuth(token: string, requestId: string | undefined, wantsCloudDelivery: boolean): Promise<void> {
+  async #handleAuth(
+    token: string,
+    requestId: string | undefined,
+    wantsCloudDelivery: boolean,
+    wantsWorkspace: boolean,
+  ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
       return;
     }
     const claims = await this.#verifyBootstrapToken(token, requestId);
     if (!claims || this.#closed) return;
-    const resolved = await this.#resolveAuthenticatedScope(claims, requestId, wantsCloudDelivery);
+    const resolved = await this.#resolveAuthenticatedScope(claims, requestId, wantsCloudDelivery, wantsWorkspace);
     if (!resolved) return;
-    await this.#attachAuthenticatedRunner(resolved.scope, requestId, wantsCloudDelivery, resolved.reportOnly);
+    await this.#attachAuthenticatedRunner(
+      resolved.scope,
+      requestId,
+      wantsCloudDelivery,
+      wantsWorkspace,
+      resolved.reportOnly,
+    );
   }
 
   async #verifyBootstrapToken(
@@ -241,20 +255,34 @@ export class RunnerConnection {
   }
 
   /**
-   * Active authority first; for a negotiated E4 connection whose active chain has ended/suspended,
-   * the exact still-current persisted allocation is accepted in report-only mode. Legacy E3 auth
-   * keeps the exact old behavior: an ended chain is rejected.
+   * Active authority first; for a negotiated E4/E5 connection whose active chain has
+   * ended/suspended, the exact still-current persisted allocation is accepted in report-only mode,
+   * so a result the Runner saved in its journal (or a release seal) is not lost when it
+   * reconnects after the effect. Report-only connections can never mark readiness, receive
+   * deliveries, or open new credential executions. When the Server persists workspaces, an
+   * execution-capable Runner must have negotiated the workspace capability: a Runner without it
+   * fails closed here rather than ever dispatching a blank environment.
    */
   async #resolveAuthenticatedScope(
     claims: RunnerBootstrapClaims,
     requestId: string | undefined,
     wantsCloudDelivery: boolean,
+    wantsWorkspace: boolean,
   ): Promise<{ scope: RunnerScope; reportOnly: boolean } | undefined> {
     try {
+      const workspaceEnabled = this.#options.service.workspacePersistenceEnabled;
       const active = await this.#options.service.validateRunnerScope(claims);
       if (this.#closed) return undefined;
-      if (active) return { scope: active, reportOnly: false };
-      if (!wantsCloudDelivery || !this.#options.cloudDelivery) {
+      if (active) {
+        if (workspaceEnabled && !wantsWorkspace) {
+          this.#rejectAuth(requestId, "runner workspace persistence capability is required");
+          return undefined;
+        }
+        return { scope: active, reportOnly: false };
+      }
+      const channelCapable =
+        (wantsCloudDelivery && this.#options.cloudDelivery) || (wantsWorkspace && workspaceEnabled);
+      if (!channelCapable) {
         this.#rejectAuth(requestId, "no current Sandbox allocation matches the bootstrap token");
         return undefined;
       }
@@ -278,9 +306,13 @@ export class RunnerConnection {
     validated: RunnerScope,
     requestId: string | undefined,
     wantsCloudDelivery: boolean,
+    wantsWorkspace: boolean,
     reportOnly: boolean,
   ): Promise<void> {
     const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
+    // E5 capability negotiation is independent of delivery: echo only when the Runner requested
+    // the workspace capability AND this Server has persistence configured.
+    const workspaceNegotiated = wantsWorkspace && this.#options.service.workspacePersistenceEnabled;
     // The asynchronous Cloud fence facts are resolved BEFORE the hub attach: once this socket is
     // the hub's current entry, the route's cadenced heartbeat sweep can write to it, and no server
     // frame may ever reach the Runner ahead of its auth:result. Everything between the hub attach
@@ -307,6 +339,7 @@ export class RunnerConnection {
     this.#scope = validated;
     this.#reportOnly = reportOnly;
     this.#cloudNegotiated = cloudNegotiated;
+    this.#workspaceNegotiated = workspaceNegotiated;
     if (this.#authTimer) clearTimeout(this.#authTimer);
     this.#authTimer = undefined;
     if (fence) {
@@ -332,6 +365,7 @@ export class RunnerConnection {
       // echo and no resourceUid are added for it.
       ...(cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
       ...(cloudNegotiated && fence?.resourceUid ? { resourceUid: fence.resourceUid } : {}),
+      ...(workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
     });
@@ -420,17 +454,18 @@ export class RunnerConnection {
       return;
     }
     // The active authority chain is gone (Session ended, Agent suspended, binding disabled). A
-    // connection that never negotiated E4 has no report-capable fallback: a definitive miss is a
-    // revocation and must take effect on the live socket instead of leaving the Runner connected
-    // and credentialed until some later sweep.
-    if (!this.#cloudNegotiated) {
+    // connection that never negotiated E4 delivery or E5 workspace persistence has no
+    // report-capable fallback: a definitive miss is a revocation and must take effect on the live
+    // socket instead of leaving the Runner connected and credentialed until some later sweep.
+    if (!this.#cloudNegotiated && !this.#workspaceNegotiated) {
       this.#closeWith(RUNNER_WS_CLOSE.staleScope, "runner scope is no longer current");
       return;
     }
-    // A negotiated E4 connection keeps a report-capable channel while the exact persisted
+    // A negotiated E4/E5 connection keeps a report-capable channel while the exact persisted
     // allocation identity is current, so already accepted work can still deliver its
-    // final/cancellation report. Every NEW work frame re-checks the active chain before it is
-    // handled. A transient lookup failure here is not a revocation either.
+    // final/cancellation report (and a releasing environment can still be sealed). Every NEW work
+    // frame re-checks the active chain before it is handled. A transient lookup failure here is
+    // not a revocation either.
     let channel: RunnerScope | undefined;
     try {
       channel = await this.#options.service.validateRunnerChannelScope(claimsFromScope(current));
@@ -499,7 +534,11 @@ export class RunnerConnection {
    * Frame handlers
    * ---------------------------------------------------------------------------------------- */
 
-  async #handleReady(current: RunnerScope, readiness: Omit<RunnerReadiness, "reportedAt">): Promise<void> {
+  async #handleReady(
+    current: RunnerScope,
+    readiness: Omit<RunnerReadiness, "reportedAt">,
+    workspaceRestored: boolean,
+  ): Promise<void> {
     if (this.#reportOnly) {
       if (await this.#refreshReportOnlyConnection(current)) return;
       this.#send({
@@ -526,7 +565,7 @@ export class RunnerConnection {
       return;
     }
     const reported: RunnerReadiness = { ...readiness, reportedAt: new Date(this.#now()).toISOString() };
-    const outcome = await this.#options.service.markRunnerReady(current, reported);
+    const outcome = await this.#options.service.markRunnerReady(current, reported, { workspaceRestored });
     await this.#settleReadyOutcome(current, reported, outcome);
   }
 
@@ -547,6 +586,16 @@ export class RunnerConnection {
         type: "error",
         code: "RUNNER_VERSION_MISMATCH",
         message: "The Runner build does not match the version this Server requires",
+      });
+      return;
+    }
+    if (outcome === "workspace_not_restored") {
+      // E5 fail-closed: without a restored workspace the environment must never become ready and
+      // must never dispatch a blank state. The connection stays authenticated for diagnosis.
+      this.#send({
+        type: "error",
+        code: "RUNNER_WORKSPACE_NOT_RESTORED",
+        message: "The Runner did not restore its workspace; readiness is not accepted",
       });
       return;
     }
@@ -665,6 +714,19 @@ export class RunnerConnection {
     }
   }
 
+  /**
+   * E5 release seal results belong to the channel scope, never the manage scope: a releasing
+   * environment (or an inactive Session) must still settle its save. The hub correlates the
+   * result to the exact current socket and the exact pending request; anything else is dropped.
+   */
+  async #handleWorkspaceSealResult(
+    current: RunnerScope,
+    frame: Extract<RunnerClientFrame, { type: "workspace:seal:result" }>,
+  ): Promise<void> {
+    if (!(await this.#channelHolds(current))) return;
+    this.#options.hub.settleWorkspaceSeal(current.sandboxId, frame, this.#adapter);
+  }
+
   /** Report/query check with the shared close-on-miss semantics; false means the frame is dropped. */
   async #channelHolds(current: RunnerScope): Promise<boolean> {
     const holds = await this.#channelAllocationHolds(current);
@@ -726,12 +788,14 @@ export class RunnerConnection {
       this.#options.hub.acknowledge(current.sandboxId, this.#adapter, { type: "server:heartbeat" });
       return;
     }
-    if (data.type === "runner:ready") return this.#handleReady(current, data.readiness);
+    if (data.type === "runner:ready")
+      return this.#handleReady(current, data.readiness, data.workspaceRestored === true);
     if (data.type === "acceptance:result") return this.#handleResult(current, data);
     if (data.type === "delivery:received") return this.#handleDeliveryReceived(current, data);
     if (data.type === "delivery:report") return this.#handleDeliveryReport(current, data);
     if (data.type === "delivery:query:result") return this.#handleQueryResult(current, data);
     if (data.type === "credential:frame") return this.#handleCredentialFrame(current, data);
+    if (data.type === "workspace:seal:result") return this.#handleWorkspaceSealResult(current, data);
   }
 
   async #handleFirstFrame(data: RunnerClientFrame): Promise<void> {
@@ -739,9 +803,14 @@ export class RunnerConnection {
       this.#closeWith(RUNNER_WS_CLOSE.authFailed, "the first frame must authenticate");
       return;
     }
-    // E4 capability negotiation happens on the auth frame; a legacy E3 auth never sets it and
-    // keeps the exact legacy welcome/behavior.
-    await this.#handleAuth(data.token, data.requestId, data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION);
+    // E4/E5 capability negotiation happens on the auth frame; a legacy E3 auth never sets either
+    // capability and keeps the exact legacy welcome/behavior.
+    await this.#handleAuth(
+      data.token,
+      data.requestId,
+      data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
+      data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
+    );
   }
 
   async #handleAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {

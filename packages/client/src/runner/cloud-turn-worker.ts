@@ -44,8 +44,8 @@ import { assembleRunnerToolSkills } from "./skills.js";
  * conversation directory and the persisted provider binding under the Session workspace's private
  * `.opentag/pi-session` subtree across Turns of that allocation (it survives a native rootfs
  * reset). A same-Session second message resumes the exact binding/history instead of starting a
- * blank Pi session; a fresh allocation starts clean because its filesystem is new (E5 restore is
- * deferred). Model grants and the published proxy environment are per-turn scratch files and are
+ * blank Pi session; E5 restores that directory before a replacement allocation becomes ready.
+ * Model grants and the published proxy environment are per-turn scratch files and are
  * never part of the persisted conversation state.
  *
  * The proxy environment manifest the trusted Runner published is applied to the Pi process so IM
@@ -157,7 +157,7 @@ function terminateTrackedProcesses(pids: Set<number>, options: { immediate?: boo
 /**
  * Cloud-accurate managed system prompt. The Local renderer (`renderManagedSystemPrompt`) asserts a
  * persistent Agent Home shared across an Agent's Sessions and Context Tree/Session-CLI access —
- * none of which hold inside a Session-scoped Cloud Sandbox (E5/E8 are deferred), so the Cloud
+ * none of which hold inside a Session-scoped Cloud Sandbox (E8 is deferred), so the Cloud
  * worker renders the deployment's platform/agent/session instructions with Cloud-true context and
  * never reuses the Local wording.
  */
@@ -170,7 +170,7 @@ export function renderCloudSystemPrompt(snapshot: EffectiveRuntimeSnapshot): str
     "## Cloud execution context",
     "",
     "- You run inside a Session-scoped Cloud Sandbox. The workspace is this Session's own; it is not shared with other Sessions.",
-    "- Conversation continuity for this Session is preserved by the Agent Runtime across Turns of this allocation; engine session files do not survive environment reallocation yet.",
+    "- The workspace and Pi conversation for this Session recover from the last successful save when the environment is replaced. Unsaved changes can be lost; running processes and background services do not survive Turn cleanup or replacement.",
     "- Credentials are execution-scoped and short-lived; the managed IM/Git CLIs reach providers through the platform proxy. Never ask the user for tokens and never persist credential material.",
     "",
     "## Platform",

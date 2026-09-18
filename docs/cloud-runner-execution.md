@@ -1,4 +1,4 @@
-# Cloud Runner execution (E3 and E4)
+# Cloud Runner execution (E3–E5)
 
 [简体中文](./zh-CN/cloud-runner-execution.md)
 
@@ -16,9 +16,10 @@ CLI release version. E3 adds no database migration or table.
 - `sandboxes` owns the association between that Session and the current physical allocation.
   `environment_generation`, deterministic resource name, provider UID and operation name fence
   late callbacks. `storage_uri` remains the stable persistence address.
-- E3 does not save or restore that address yet. **Instance deletion loses the local workspace.**
-  Durable restoration is E5; IM dispatch and reliable receipts are E4; reuse/idle recycling is
-  subsequent work. Do not enable default product Cloud execution based on E3 acceptance alone.
+- E3 alone does not save or restore that address. E5 adds
+  [latest workspace persistence and restoration](./cloud-workspace-persistence.md), including Pi
+  conversation state. IM dispatch and reliable receipts are E4; reuse/idle recycling remains
+  subsequent work. E3 acceptance alone does not establish durable Cloud execution.
 
 ## Lifecycle and control
 
@@ -127,8 +128,9 @@ remaining FIFO queue; it does not require a new message or availability signal.
 Undispatched Cloud inputs use the existing ingress TTL and per-Session queue capacities (100
 direct, 500 ambient). Expiry/overflow records an explicit terminal reason. Dispatched Cloud
 inputs retain their frozen dispatch window; accepted-but-unreported custody is never pruned as
-pending input. `restore_required` and a stopped environment reject the input explicitly rather
-than retrying forever. Transient model/Runner unavailability remains retryable within the input
+pending input. Without E5 persistence, `restore_required` rejects replacement explicitly. With E5,
+replacement allocation is permitted but cannot execute before verified restoration. A stopped
+environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
 attempt counter. Cloud follow-ups wait for the current Turn and never enter the Local steering path.
 

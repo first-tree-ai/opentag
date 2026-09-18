@@ -186,4 +186,6 @@ pnpm typecheck
 
 这些用例使用真实 loopback WebSocket、真实本地子进程和一次性 fixture 根目录，但不包含原生
 Cloud Run 命名空间、真实 IM provider 或 GCP 分配。因此原生取消／重置、原生 Unix socket 挂载、
-连接丢失时的授权撤销以及 IM 回复验收仍需真实环境证据。E4 不新增数据库表，E5–E8 仍延后。
+连接丢失时的授权撤销以及 IM 回复验收仍需真实环境证据。E4 不新增数据库表。E5 见
+[Cloud 工作目录持久化](../cloud-workspace-persistence.md)，其真实验收必须包含释放与替换实例，
+不能将本 E3/E4 验收工具当作持久化证据。E6–E8 仍为独立工作。

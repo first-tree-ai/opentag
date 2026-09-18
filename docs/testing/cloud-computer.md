@@ -212,4 +212,7 @@ pnpm typecheck
 They use real loopback WebSockets, real local child processes and disposable fixture roots, but no
 native Cloud Run namespace, no real IM provider and no GCP allocation. Native cancellation/reset,
 native Unix-socket mounts, connection-loss grant revocation, and IM reply acceptance therefore
-remain pending real-environment evidence. E4 adds no new database tables, and E5–E8 stay deferred.
+remain pending real-environment evidence. E4 adds no new database tables. E5 workspace persistence is described in
+[Cloud workspace persistence](../cloud-workspace-persistence.md); its live acceptance must
+include release and replacement, rather than treating this E3/E4 harness as persistence evidence.
+E6–E8 remain separate work.

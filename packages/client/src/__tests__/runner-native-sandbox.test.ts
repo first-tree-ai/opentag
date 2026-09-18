@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,6 +8,7 @@ import {
   buildSandboxRunArgv,
   MAX_RESOLVER_BYTES,
   NativeSandbox,
+  NativeSandboxError,
   SANDBOX_NODE,
   SANDBOX_PI,
   SANDBOX_ROOTFS,
@@ -256,5 +258,56 @@ describe("native sandbox resolver snapshot", () => {
     await sandbox.destroy();
     expect(canaries).toHaveLength(2);
     expect(canaries[1]).toBe(canaries[0]);
+  });
+});
+
+describe("native sandbox duplex pipe", () => {
+  /** A Sandbox whose exec argv runs under the local Node runtime with real stdio pipes. */
+  function realChildSandbox(onSpawn?: () => void): NativeSandbox {
+    const spawnProcess: SpawnProcess = (_command, args) => {
+      const separator = args.indexOf("--");
+      const [binary, ...rest] = args.slice(separator + 1);
+      expect(binary).toBe(SANDBOX_NODE);
+      onSpawn?.();
+      return spawn(process.execPath, rest, { stdio: "pipe" });
+    };
+    return new NativeSandbox({
+      name: "ots-duplex-epipe",
+      workspace: join(tmpdir(), "opentag-duplex-epipe-ws"),
+      spawnProcess,
+    });
+  }
+
+  it("delivers a child closed-stdin EPIPE to onError exactly once instead of crashing", async () => {
+    const uncaught: string[] = [];
+    const onUncaught = (error: Error) => {
+      uncaught.push(error.message);
+    };
+    process.on("uncaughtException", onUncaught);
+    try {
+      const duplex = realChildSandbox().openDuplex(SANDBOX_NODE, [
+        "-e",
+        "require('node:fs').closeSync(0);console.log('ready');setTimeout(()=>{},250)",
+      ]);
+      const errors: Error[] = [];
+      const firstError = new Promise<Error>((resolve) => {
+        duplex.onError((error) => {
+          errors.push(error);
+          resolve(error);
+        });
+      });
+      duplex.onData(() => duplex.write(Buffer.alloc(1024 * 1024)));
+      const error = await firstError;
+      expect(error).toBeInstanceOf(NativeSandboxError);
+      expect((error as NativeSandboxError).code).toBe("exec_failed");
+      // Later writes and teardown must neither crash nor re-classify the same failure.
+      duplex.write(Buffer.alloc(64));
+      duplex.end();
+      await new Promise<void>((resolve) => duplex.onExit(() => resolve()));
+      expect(errors).toHaveLength(1);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("uncaughtException", onUncaught);
+    }
   });
 });

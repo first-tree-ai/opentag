@@ -35,6 +35,7 @@ export class NativeSandboxError extends Error {
 }
 
 export const SANDBOX_NODE = "/usr/local/bin/node";
+export const SANDBOX_WEB_BRIDGE_DIRECTORY = "/tmp";
 export const SANDBOX_ROOTFS = "/opt/sandbox-root";
 export const SANDBOX_WORKER_ENTRY = "/opt/opentag/client/dist/runner/bin.mjs";
 

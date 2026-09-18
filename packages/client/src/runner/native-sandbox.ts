@@ -27,6 +27,12 @@ export const SANDBOX_NODE = "/usr/local/bin/node";
 /** Explicit PATH inside the sandbox; matches the image layout and nothing else. */
 export const SANDBOX_PATH = "/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin";
 export const SANDBOX_PI = "/opt/opentag/tools/bin/pi";
+/**
+ * Directory the in-Sandbox web bridge may use for its fresh per-execution listener. The bridge
+ * creates and removes its own short socket inside the Sandbox namespace; the parent never mounts
+ * a socket or listener into the Sandbox, so the path is a nonsecret descriptor only.
+ */
+export const SANDBOX_WEB_BRIDGE_DIRECTORY = "/tmp";
 /** Platform resolver source; its bytes are snapshotted so this sensitive path is never mounted. */
 export const SANDBOX_RESOLVER_SOURCE = "/etc/resolv.conf";
 /** Upper bound on the copied resolver; the source is validated before any private file is written. */
@@ -79,6 +85,20 @@ export interface SandboxExecResult {
   readonly stdout: string;
   /** Bounded; diagnostics only, never credential-bearing (worker prints no secrets). */
   readonly stderr: string;
+}
+
+/**
+ * Minimal duplex surface over one `sandbox exec` process. Framing and limits stay with the
+ * trusted parent caller; this type deliberately exposes no raw process or environment access.
+ */
+export interface SandboxExecDuplex {
+  write(chunk: Uint8Array): void;
+  end(): void;
+  kill(signal?: NodeJS.Signals): void;
+  onData(listener: (chunk: Buffer) => void): () => void;
+  onStderr(listener: (chunk: Buffer) => void): () => void;
+  onError(listener: (error: Error) => void): () => void;
+  onExit(listener: (code: number | null, signal: NodeJS.Signals | null) => void): () => void;
 }
 
 function classifySpawnError(error: unknown): NativeSandboxError {
@@ -391,6 +411,98 @@ export class NativeSandbox {
     const argv = buildSandboxExecArgv({ name: this.#name, command, args, sandboxBinary: this.#binary });
     const [binary, ...rest] = argv as [string, ...string[]];
     return this.#runToExit(binary, rest, options);
+  }
+
+  /**
+   * Long-lived duplex `sandbox exec` channel: stdin/stdout, no shell, no interpolation. This is
+   * the verified native transport for the in-Sandbox web bridge — the parent process is the only
+   * peer, so no network listener or credential ever enters the Sandbox. Callers own framing and
+   * must close the handle on revocation.
+   */
+  openDuplex(command: string, args: readonly string[]): SandboxExecDuplex {
+    assertSafeOperand(command, "exec command");
+    const argv = buildSandboxExecArgv({ name: this.#name, command, args, sandboxBinary: this.#binary });
+    const [binary, ...rest] = argv as [string, ...string[]];
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = this.#spawn(binary, rest, { env: { PATH: "/usr/local/bin:/usr/bin:/bin" } });
+    } catch (error) {
+      throw classifySpawnError(error);
+    }
+    /*
+     * Eager single-delivery error pipeline. Streams (notably stdin EPIPE when the child closes
+     * fd0, and stdout/stderr after teardown) must have a listener attached from the moment the
+     * process exists, or Node raises an unhandled 'error' and can crash the trusted Runner. The
+     * first classified error is stored and delivered exactly once to every current and future
+     * onError listener; later stream errors are absorbed.
+     */
+    let firstError: NativeSandboxError | undefined;
+    const errorListeners = new Set<(error: NativeSandboxError) => void>();
+    const classifyPipeError = (error: unknown): NativeSandboxError => {
+      if (error instanceof NativeSandboxError) return error;
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "EPIPE") {
+        return new NativeSandboxError("exec_failed", "The sandbox duplex peer closed its input pipe");
+      }
+      return new NativeSandboxError("exec_failed", "The sandbox duplex pipe failed");
+    };
+    const deliverError = (error: unknown) => {
+      if (firstError) return;
+      firstError = classifyPipeError(error);
+      for (const listener of [...errorListeners]) {
+        try {
+          listener(firstError);
+        } catch {
+          // A subscriber failure must not break the remaining error delivery.
+        }
+      }
+    };
+    child.on("error", deliverError);
+    child.stdin.on("error", deliverError);
+    child.stdout.on("error", deliverError);
+    child.stderr.on("error", deliverError);
+    return {
+      write(chunk) {
+        if (child.stdin.destroyed) return;
+        try {
+          child.stdin.write(Buffer.from(chunk));
+        } catch (error) {
+          deliverError(error);
+        }
+      },
+      end() {
+        if (child.stdin.destroyed) return;
+        try {
+          child.stdin.end();
+        } catch (error) {
+          deliverError(error);
+        }
+      },
+      kill(signal = "SIGTERM") {
+        try {
+          child.kill(signal);
+        } catch {
+          // The process already exited; exit listeners own the outcome.
+        }
+      },
+      onData(listener) {
+        child.stdout.on("data", listener);
+        return () => child.stdout.off("data", listener);
+      },
+      onStderr(listener) {
+        child.stderr.on("data", listener);
+        return () => child.stderr.off("data", listener);
+      },
+      onError(listener) {
+        errorListeners.add(listener);
+        if (firstError) listener(firstError);
+        return () => errorListeners.delete(listener);
+      },
+      onExit(listener) {
+        child.once("close", listener);
+        return () => child.off("close", listener);
+      },
+    };
   }
 
   /**

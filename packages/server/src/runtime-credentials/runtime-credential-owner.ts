@@ -30,6 +30,7 @@ import type { RuntimeTaskPolicy } from "./task-policy.js";
 import type { RuntimeProxyTicketStore } from "./ticket-store.js";
 import type { RuntimeExecutionRecord } from "./types.js";
 import type { RuntimeValidationRunRegistry } from "./validation-runs.js";
+import type { RuntimeWebServicePolicy } from "./web-policy.js";
 
 export { VALIDATION_EXECUTION_MAX_LIFETIME_MS } from "./runtime-validation-execution.js";
 
@@ -53,6 +54,8 @@ export interface RuntimeCredentialOwnerOptions {
   gitHubAdmission: RuntimeGitHubAdmission;
   /** Live Cloud control credential check; Cloud open fails closed when missing or denied. */
   cloudControlActive?: (identity: RuntimeControlIdentity) => Promise<boolean> | boolean;
+  /** Deployment web service policy; absent keeps the web service fully off at execution open. */
+  webPolicy?: RuntimeWebServicePolicy;
   logger?: ServiceLogger;
   sweepIntervalMs?: number;
 }

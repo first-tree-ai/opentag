@@ -31,6 +31,7 @@ import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
+import { type RuntimeWebRoutesOptions, registerRuntimeWebRoutes } from "./api/runtime-web.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
@@ -147,6 +148,8 @@ export interface CreateAppOptions {
   runtimeProviderProxy?: RuntimeProviderProxyRoutesOptions;
   runtimeSessions?: RuntimeSessionRoutesOptions;
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
+  /** Fixed runtime web routes; present only when the deployment enabled the web service. */
+  runtimeWeb?: RuntimeWebRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /**
    * Undoing setup so onboarding can be walked again. Any staging deployment supplies it, and every
@@ -436,6 +439,7 @@ export function createApp(options: CreateAppOptions = {}) {
 
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
+  if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
 
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,

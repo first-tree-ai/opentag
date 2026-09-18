@@ -5,8 +5,10 @@ import type { ServiceLogger } from "./observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "./runtime/connection-registry.js";
 import type { RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import {
+  ConfigRuntimeWebPolicy,
   createRuntimeCredentialServices,
   KindAwareComputerAuthVerifier,
+  RouterWebClient,
   type RuntimeConnectionFence,
   type RuntimeControlAuthority,
   RuntimeExecutionRegistry,
@@ -109,6 +111,17 @@ export async function createPlatformRuntime(options: {
     ...(options.cloudRuntimeFence ? { additionalConnectionFence: options.cloudRuntimeFence } : {}),
     ...(policy ? { taskPolicy: policy, gitHubAdmission: policy } : {}),
     ...(github ? { adapters: new Map([["github", github]]) } : {}),
+    ...(options.config.web.enabled
+      ? {
+          web: {
+            policy: new ConfigRuntimeWebPolicy({ tenants: options.config.web.tenants }),
+            router: new RouterWebClient({
+              baseUrl: options.config.web.routerBaseUrl,
+              ...(options.logger ? { logger: options.logger } : {}),
+            }),
+          },
+        }
+      : {}),
     ...(options.logger ? { logger: options.logger } : {}),
   });
   const unsubscribe = executions.onClose(({ executionId }) => {

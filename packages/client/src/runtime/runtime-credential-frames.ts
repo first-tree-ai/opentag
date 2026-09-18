@@ -36,6 +36,8 @@ export type {
   RuntimeExecutionOpenResult,
   RuntimeExecutionProvider,
   RuntimeExecutionSandbox,
+  RuntimeExecutionService,
+  RuntimeExecutionServiceRequest,
   RuntimeExecutionSource,
   RuntimeProviderProxyAuthFrame,
   RuntimeProviderProxyCancelFrame,
@@ -93,6 +95,8 @@ export {
 /** Capability negotiation names offered/negotiated at version 1. */
 export const RUNTIME_CREDENTIAL_CAPABILITY = RUNTIME_CAPABILITY.runtimeCredential;
 export const RUNTIME_PROVIDER_PROXY_CAPABILITY = RUNTIME_CAPABILITY.providerProxy;
+/** The `web_tools_v1` negotiation: both ends speak the fixed web tools protocol at version 1. */
+export const RUNTIME_WEB_TOOLS_CAPABILITY = RUNTIME_CAPABILITY.webTools;
 
 /** Short aliases used across the Client runtime modules. */
 export const RUNTIME_PROXY_DATA_HEADER_MAX_BYTES = PROVIDER_PROXY_HEADER_MAX_BYTES;

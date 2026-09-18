@@ -9,6 +9,7 @@ import { expect, it, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
+import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const sandboxId = "2b63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -164,6 +165,10 @@ it("checkpoints a completed Turn, seals after report ACK, and cold-restores Pi s
   const peer = await protocolPeer();
   const stops: AbortController[] = [];
   const processes: Promise<number>[] = [];
+  const webExecutions = vi.fn(async () => {
+    expect(peer.object().saved).toBe(true);
+    return {} as NativeWebExecutionChannel;
+  });
   const start = (generation: number) => {
     const workspace = join(root, `workspace-${generation}`);
     const native = {
@@ -183,12 +188,17 @@ it("checkpoints a completed Turn, seals after report ACK, and cold-restores Pi s
         workspace,
         stateDir: join(root, `private-${generation}`),
         workspacePersistence: true,
+        webTools: true,
       },
       {
         installSignalHandlers: false,
         signal: stop.signal,
         stderr: { write: () => undefined },
         sandboxFactory: () => native as unknown as NativeSandbox,
+        webAuthority: {} as never,
+        onWebGateway: (gateway) => {
+          vi.spyOn(gateway, "openExecution").mockImplementation(webExecutions);
+        },
         cloudTurnSeams: {
           openExecution: async () => ({ close: async () => undefined, executionDir: "/run/test" }),
           runWorker: async () => {
@@ -215,6 +225,7 @@ it("checkpoints a completed Turn, seals after report ACK, and cold-restores Pi s
     const first = start(1);
     expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
     expect(peer.readyObjects[0]?.saved).toBe(true);
+    expect(webExecutions).toHaveBeenCalledTimes(1);
     const delivery = cloudDeliveryFixture({ sessionId });
     peer.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
     await peer.wait("delivery:received");
@@ -233,6 +244,8 @@ it("checkpoints a completed Turn, seals after report ACK, and cold-restores Pi s
     const report = reportFrame.report as { turnId: string; resultHash: string };
     const savedGeneration = peer.object().generation;
     expect(Number(savedGeneration)).toBeGreaterThan(Number(peer.readyObjects[0]?.generation));
+    // Namespace replacement must not silently renew an execution-scoped web authority.
+    expect(webExecutions).toHaveBeenCalledTimes(1);
     const requestId = randomUUID();
     peer.send({ type: "workspace:seal", requestId });
     // The report is the only parent-private state needed by Server; ACK must unblock the seal
@@ -258,6 +271,7 @@ it("checkpoints a completed Turn, seals after report ACK, and cold-restores Pi s
     );
     expect(peer.object().ownerGeneration).toBe(2);
     expect(peer.object().sealed).toBe(false);
+    expect(webExecutions).toHaveBeenCalledTimes(2);
   } finally {
     for (const stop of stops) stop.abort();
     await Promise.allSettled(processes);

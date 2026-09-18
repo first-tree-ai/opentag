@@ -483,6 +483,67 @@ describe("AgentTurnRunner", () => {
     expect(onRuntimeEvent).toHaveBeenCalledTimes(2);
   });
 
+  it("passes prepared web tools launch facts only to the Pi provider", async () => {
+    const runWith = async (providerId: string | undefined) => {
+      const prompt = vi.fn(
+        async (_request: unknown): Promise<AgentRunResult> => ({ runId: "turn-1", status: "completed", output: [] }),
+      );
+      const runner = new AgentTurnRunner({
+        bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+        connection: { send: vi.fn(async () => undefined) },
+        custody: { markReporting: vi.fn(async () => undefined), recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+        reportOwner: {
+          create: vi.fn((input) => ({
+            ...input,
+            type: "turn:report",
+            requestId: randomUUID(),
+            resultHash: "a".repeat(64),
+          })),
+          submit: vi.fn(async () => undefined),
+        } as unknown as TurnReportOwner,
+        runtimeManager: {
+          sessionKind: () => "visible",
+          ensureRuntime: async () => ({ prompt }),
+          providerId: () => providerId,
+          cwd: () => "/workspace",
+          observe: () => () => undefined,
+        } as unknown as SessionRuntimeManager,
+        credentialEnvironment: {
+          prepare: vi.fn(async () => ({
+            path: "/tmp/provider-env.sh",
+            provider: "slack" as const,
+            web: {
+              extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+              socketPath: "/tmp/opentag-web-test/web.sock",
+            },
+          })),
+          cleanup: vi.fn(async () => undefined),
+        },
+      });
+      runner.start(liveOwner(delivery()));
+      await runner.settled();
+      return prompt;
+    };
+
+    const piPrompt = await runWith("pi");
+    expect(piPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configuration: {
+          provider: {
+            webTools: {
+              extensionPath: "/opt/opentag/client/dist/pi-extensions/web-tools.mjs",
+              socketPath: "/tmp/opentag-web-test/web.sock",
+            },
+          },
+        },
+      }),
+    );
+    for (const providerId of ["codex", undefined]) {
+      const other = await runWith(providerId);
+      expect(other.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
+    }
+  });
+
   it("reports unavailable credentials as a recoverable typed failure before Provider execution", async () => {
     const create = vi.fn((input) => ({
       ...input,

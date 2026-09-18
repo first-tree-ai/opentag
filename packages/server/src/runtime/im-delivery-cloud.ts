@@ -26,6 +26,7 @@ import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
 import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
+import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
 import type { CloudSessionAllocationPort } from "./im-delivery-worker.types.js";
 
 /**
@@ -84,7 +85,8 @@ export interface CloudDeliveryCoordinatorOptions {
     imBinding: typeof imBindings.$inferSelect;
     receiveMode: (typeof agents.$inferSelect)["receiveMode"];
   }) => Promise<RuntimeImDeliveryContent>;
-  hasOtherAgentCustody: (agentId: string, deliveryId: string) => Promise<boolean>;
+  /** Occupancy recheck at the last boundary: a competing owner of the delivery's scope. */
+  hasOtherCustody: (subject: DeliveryOccupancySubject) => Promise<boolean>;
   recordFailure: (deliveryId: string, code: string, claimToken?: string, retryDelayMs?: number) => Promise<void>;
   releaseDispatch: (deliveryId: string, requestId: string, code: string, claimToken: string) => Promise<void>;
   rejectInput: (deliveryId: string, reason: string, claimToken?: string) => Promise<void>;
@@ -108,7 +110,14 @@ export class CloudDeliveryCoordinator {
     if (await this.#releaseUnusableDispatch(row, deliveryId, claimToken)) return;
     const prepared = await this.#prepareDispatch(row, claimToken);
     if (prepared.kind !== "continue") return;
-    if (await this.#options.hasOtherAgentCustody(row.agent.id, deliveryId)) {
+    if (
+      await this.#options.hasOtherCustody({
+        deliveryId,
+        agentId: row.agent.id,
+        sessionId: row.session.id,
+        computerKind: row.computer.kind,
+      })
+    ) {
       await this.#options.recordFailure(deliveryId, "IM_DELIVERY_AGENT_CUSTODY_FENCED", claimToken);
       return;
     }

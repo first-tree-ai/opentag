@@ -246,3 +246,52 @@ loopback 端口，供另行批准的 WSS-only proxy／tunnel 使用；脚本不�
 删除云资源，再清理本地 fixture；清理不明则失败并保留资源记录。SIGKILL／主机丢失仍需按记录人工
 核对，不宣称已经有 E7 后台回收。最终验收要求本地门禁、真实云执行与资源删除全部有证据；
 validate-only API 仅证明请求兼容。
+
+## E6：Cloud Session 并发
+
+同一 Cloud Agent 可以并发执行多个 **Agent Session**。每个 Session 仍独占一个 Sandbox 和一个
+Instance，不共享可写工作目录或 Pi 历史。Cloud Computer 是 Account 的逻辑身份，不是执行锁。
+
+现有 IM delivery worker 对 Cloud 使用 Session 队列，对 Local 保持 Agent 队列。持久化执行占用
+遵循相同边界：运行中或结果不确定的 Cloud delivery 只阻挡自己的 Session；Local 保持 Agent 级
+占用。PostgreSQL advisory lock 仍按 Agent 短暂串行化领取决策，在资源分配、投递和执行前就已释放。
+提交后的持久化占用阻止其他 Worker 在同一个 Session 内重复准入。
+
+尚未投递的 Cloud 输入还须等待同一 Session 中更早的 pending 输入，包括等待重试或被其他 Worker
+锁住的输入。排序复用消息历史顺序（occurredAt、provider revision、message ID）。已经领取或冻结
+dispatch 的工作保留恢复路径：即便更早的 provider 事件晚到，过期 claim 也不能等待被自己阻挡的输入。
+其他 Session 可以独立推进，晚到的 provider 事件不会重新排序已经领取的工作。
+
+不新增表、migration、执行状态机或共享工作区。现有 Worker 并发及队列上限约束投递工作，不代表
+Cloud Instance 数量或模型运行任务数上限；Account 资源配额后续独立处理。Session 停止和连接断开
+沿用 Session／Sandbox／generation 权限边界；Agent 暂停仍阻止其所有 Session 的新执行准入。
+
+### 本地证据与真实环境验收边界
+
+```bash
+pnpm --filter @opentag/server exec vitest run src/__tests__/im-delivery-custody.test.ts src/__tests__/im-delivery-worker-cloud.test.ts
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/cloud-session-concurrency.test.ts --maxWorkers=1
+pnpm --filter @opentag/client exec vitest run src/__tests__/runner-workspace-wire.test.ts
+```
+
+PostgreSQL 集成测试使用真实 migration、竞争 Worker，以及接入生产 delivery owner 的 loopback
+WebSocket，检查 Session 并发、重试顺序、队首锁定、取消及模型授权隔离、跨 Session 伪造回执和结果
+拒绝、结果去重及 Agent 暂停。Runner peer 从已认证分配开始，不覆盖 bootstrap 认证或真实模型执行。
+Client 测试运行生产 Runner HTTP／WebSocket 编排，原生执行和存储使用本地替身。这些检查相互补充，
+不代表原生 Cloud Run 验收通过。
+
+云配置获得确认后，在 staging 进行一次 E4–E6 组合验收：
+
+1. 记录 Server revision 和 Runner image digest。让两个真实 IM 对话绑定**同一个** Cloud Agent，
+   记录各自不同的 Session、Sandbox、Instance ID 和 storage URI。
+2. 让 A 执行有时间上限的任务，再向 A 发送第二条输入，同时让 B 完成短任务。记录执行重叠时间；
+   A 的第二条输入须等待，B 的回复只到达 B。
+3. 写入不同的标记文件和 Pi 对话历史。B 运行期间取消或断开 A，确认 B 正常完成且模型授权仍有效，
+   A 自身结果须准确反映实际执行情况。
+4. 分别保存并正常释放环境，再创建替代环境继续各自 Session。确认恢复自己的文件及 Pi 历史，
+   看不到另一个 Session 的数据。
+5. 暂停 Agent，确认两个 Session 都不接受新执行。收敛未完成 delivery，释放任务创建的环境，
+   按资源名称和 UID 验证删除。
+
+保存时间戳、delivery／turn ID、结果和清理记录，不保存凭证。E3 cloud-runner 脚本本身尚未实现上述
+IM／持久化组合验收；本地通过或发布镜像不能作为这项验收的完成证据。

@@ -4,9 +4,10 @@ import { link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunnerWorkspaceObject } from "@opentag/shared";
-import { expect, it, vi } from "vitest";
+import type { DirectImMessageDeliveryRequest, RunnerWorkspaceObject } from "@opentag/shared";
+import { expect, it, type Mock, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
+import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
@@ -14,6 +15,12 @@ import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const sandboxId = "2b63a21e-f6c7-4474-91ea-4dabf0566a24";
 const sessionId = "5f9a1c3e-2d4b-4e6f-8a1b-9c0d1e2f3a4b";
+// E6: two different Sessions of ONE Agent on separate Runner/Sandbox allocations.
+const agentId = "0f1e2d3c-4b5a-4968-8777-000000000001";
+const sessionA = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+const sessionB = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+const sandboxA = "cccccccc-3333-4333-8333-cccccccccccc";
+const sandboxB = "dddddddd-4444-4444-8444-dddddddddddd";
 
 function digest(bytes: Buffer) {
   return {
@@ -23,9 +30,22 @@ function digest(bytes: Buffer) {
   };
 }
 
+interface ProtocolPeerOptions {
+  /** Allocation instance prefix; the welcome resource name and the Runner sandbox name must match it. */
+  readonly instancePrefix?: string;
+  readonly sandboxId?: string;
+  readonly sessionId?: string;
+  /** Deterministic save failure: reject the Nth and every later archive upload without storing it. */
+  readonly rejectUploadsFrom?: number;
+}
+
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
-async function protocolPeer() {
+async function protocolPeer(options: ProtocolPeerOptions = {}) {
+  const instancePrefix = options.instancePrefix ?? "ots-test";
+  const peerSandboxId = options.sandboxId ?? sandboxId;
+  const peerSessionId = options.sessionId ?? sessionId;
   let generation = 1;
+  let uploads = 0;
   let bytes = Buffer.alloc(0);
   let object: RunnerWorkspaceObject = {
     generation: "1",
@@ -40,6 +60,11 @@ async function protocolPeer() {
   const waiters = new Set<() => void>();
   const readyObjects: RunnerWorkspaceObject[] = [];
   const upload = async (request: IncomingMessage, response: ServerResponse) => {
+    uploads += 1;
+    if (options.rejectUploadsFrom !== undefined && uploads >= options.rejectUploadsFrom) {
+      response.writeHead(412).end();
+      return;
+    }
     if (
       request.headers["x-opentag-storage-generation"] !== object.generation ||
       request.headers["x-opentag-storage-metageneration"] !== object.metageneration
@@ -102,10 +127,10 @@ async function protocolPeer() {
           JSON.stringify({
             type: "server:welcome",
             protocolVersion: 1,
-            sandboxId,
-            sessionId,
+            sandboxId: peerSandboxId,
+            sessionId: peerSessionId,
             environmentGeneration: generation,
-            resourceName: `projects/p/locations/r/instances/ots-test-${generation}`,
+            resourceName: `projects/p/locations/r/instances/${instancePrefix}-${generation}`,
             resourceUid: `uid-${generation}`,
             cloudDeliveryVersion: 1,
             workspaceVersion: 1,
@@ -125,8 +150,13 @@ async function protocolPeer() {
   if (!address || typeof address === "string") throw new Error("missing listener");
   return {
     url: `ws://127.0.0.1:${address.port}/ws`,
+    instancePrefix,
+    identity: { sandboxId: peerSandboxId, sessionId: peerSessionId },
     readyObjects,
     object: () => ({ ...object }),
+    count(type: string) {
+      return frames.filter((frame) => frame.type === type).length;
+    },
     advance() {
       generation += 1;
       frames.length = 0;
@@ -317,3 +347,402 @@ it.each([false, true])(
     }
   },
 );
+
+/* ------------------------------------------------------------------------------------------------
+ * E6: two concurrent Sessions of ONE Agent, each on its own trusted runRunnerServe instance.
+ *
+ * Everything below stays an explicit double: the loopback peers stand in for the Server storage
+ * and control protocol, and the native Sandbox plus cloud-turn seams stand in for native execution.
+ * These tests prove Runner composition over real HTTP/WS sockets; they never call GCP or a model.
+ * ---------------------------------------------------------------------------------------------- */
+
+type CloudTurnSeams = Pick<CloudTurnRunnerOptions, "openExecution" | "runWorker">;
+type WirePeer = Awaited<ReturnType<typeof protocolPeer>>;
+
+/** A single-shot explicit barrier; overlap is proven by the barrier, never guessed from timing. */
+interface Deferred {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+}
+
+function deferred(): Deferred {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+/** A real in-sandbox worker reacts to cancellation; the execution double must not finish anyway. */
+function untilAbortedOr(signal: AbortSignal, released: Promise<void>): Promise<void> {
+  if (signal.aborted) return Promise.reject(new Error("worker aborted"));
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => reject(new Error("worker aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+    released.then(
+      () => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Session-specific Pi continuity and output files; the real worker owns these, not the Runner. */
+async function writeSessionFiles(workspace: string, label: "a" | "b", ownSessionId: string): Promise<void> {
+  const sessionDirectory = join(workspace, ".opentag/pi-session");
+  await mkdir(sessionDirectory, { recursive: true });
+  await writeFile(join(sessionDirectory, "binding.json"), JSON.stringify({ sessionId: ownSessionId }));
+  await writeFile(join(sessionDirectory, "history.jsonl"), `${JSON.stringify({ text: `${label}-history` })}\n`);
+  await writeFile(join(workspace, `output-${label}.txt`), `${label}-output`);
+}
+
+/** Explicit execution double for one Session: both Sessions share the overlap/release barriers. */
+function sessionWorker(control: {
+  readonly label: "a" | "b";
+  readonly sessionId: string;
+  readonly workspace: string;
+  readonly entered: Deferred;
+  readonly siblingEntered: Deferred;
+  readonly release?: Deferred;
+  readonly running: Set<string>;
+}): NonNullable<CloudTurnSeams["runWorker"]> {
+  return async (workerInput, signal) => {
+    const request = JSON.parse(workerInput.stdin) as { delivery: { sessionId: string }; executionDir: string };
+    expect(request.delivery.sessionId).toBe(control.sessionId);
+    expect(request.executionDir).toBe(`/run/${control.label}`);
+    await writeSessionFiles(control.workspace, control.label, control.sessionId);
+    control.running.add(control.label);
+    control.entered.resolve();
+    try {
+      await untilAbortedOr(signal, control.siblingEntered.promise);
+      await untilAbortedOr(signal, control.release?.promise ?? Promise.resolve());
+      return {
+        code: 0,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: { outcome: "completed", executionEffects: "completed", finalText: `${control.label} done` },
+        })}\n`,
+      };
+    } finally {
+      control.running.delete(control.label);
+    }
+  };
+}
+
+async function expectSessionFiles(
+  workspace: string,
+  own: "a" | "b",
+  ownSessionId: string,
+  other: "a" | "b",
+): Promise<void> {
+  expect(await readFile(join(workspace, `output-${own}.txt`), "utf8")).toBe(`${own}-output`);
+  expect(await readFile(join(workspace, ".opentag/pi-session/binding.json"), "utf8")).toContain(ownSessionId);
+  const history = await readFile(join(workspace, ".opentag/pi-session/history.jsonl"), "utf8");
+  expect(history).toContain(`${own}-history`);
+  expect(history).not.toContain(`${other}-history`);
+  await expect(readFile(join(workspace, `output-${other}.txt`), "utf8")).rejects.toThrow();
+}
+
+/** Same Agent, different Session of that Agent on each Runner. */
+function sessionDelivery(ownSessionId: string): DirectImMessageDeliveryRequest {
+  const fixture = cloudDeliveryFixture({ sessionId: ownSessionId });
+  return { ...fixture, agentId, runtime: { ...fixture.runtime, agentId } };
+}
+
+function modelGrant(delivery: DirectImMessageDeliveryRequest) {
+  return {
+    baseUrl: "https://server.example.com/api/v1/cloud-model",
+    token: "fixture-model-token-1234567890123456",
+    model: delivery.runtime.model,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+}
+
+interface WireTurnReport {
+  readonly sessionId: string;
+  readonly outcome: string;
+  readonly errorReason?: string;
+  readonly executionEffects: string;
+  readonly finalText?: string;
+  readonly turnId: string;
+  readonly resultHash: string;
+}
+
+interface WireRunner {
+  readonly sandboxName: string;
+  readonly workspace: string;
+  readonly native: { launch: Mock; destroy: Mock; probe: Mock };
+  readonly webExecutions: Mock;
+  readonly stop: AbortController;
+  readonly running: Promise<number>;
+}
+
+/** One trusted Runner instance against one loopback peer; native/storage seams remain doubles. */
+function startWireRunner(input: {
+  root: string;
+  peer: WirePeer;
+  label: "a" | "b";
+  generation: number;
+  workspace: string;
+  seams: CloudTurnSeams;
+}): WireRunner {
+  const sandboxName = `${input.peer.instancePrefix}-${input.generation}`;
+  const native = {
+    launch: vi.fn(async () => {
+      await mkdir(input.workspace, { recursive: true });
+    }),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const webExecutions = vi.fn(async () => {
+    expect(input.peer.object().saved).toBe(true);
+    return {} as NativeWebExecutionChannel;
+  });
+  const stop = new AbortController();
+  const running = runRunnerServe(
+    {
+      backendUrl: input.peer.url,
+      bootstrapToken: `fixture-${input.generation}`,
+      sandboxName,
+      workspace: input.workspace,
+      stateDir: join(input.root, `state-${input.label}-${input.generation}`),
+      workspacePersistence: true,
+      webTools: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      webAuthority: {} as never,
+      onWebGateway: (gateway) => {
+        vi.spyOn(gateway, "openExecution").mockImplementation(webExecutions);
+      },
+      cloudTurnSeams: {
+        openExecution: async () => ({ close: async () => undefined, executionDir: `/run/${input.label}` }),
+        ...input.seams,
+      },
+    },
+  );
+  return { sandboxName, workspace: input.workspace, native, webExecutions, stop, running };
+}
+
+it("runs two Sessions of one Agent concurrently and restores each Session independently", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e6-wire-"));
+  const peerA = await protocolPeer({ instancePrefix: "ots-e6-a", sandboxId: sandboxA, sessionId: sessionA });
+  const peerB = await protocolPeer({ instancePrefix: "ots-e6-b", sandboxId: sandboxB, sessionId: sessionB });
+  const stops: AbortController[] = [];
+  const processes: Promise<number>[] = [];
+  const entered = { a: deferred(), b: deferred() };
+  const release = { a: deferred(), b: deferred() };
+  const running = new Set<string>();
+  const delivery = { a: sessionDelivery(sessionA), b: sessionDelivery(sessionB) };
+  const start = (label: "a" | "b", generation: number, workspace: string) => {
+    const runner = startWireRunner({
+      root,
+      peer: label === "a" ? peerA : peerB,
+      label,
+      generation,
+      workspace,
+      seams: {
+        runWorker: sessionWorker({
+          label,
+          sessionId: label === "a" ? sessionA : sessionB,
+          workspace,
+          entered: entered[label],
+          siblingEntered: entered[label === "a" ? "b" : "a"],
+          release: release[label],
+          running,
+        }),
+      },
+    });
+    stops.push(runner.stop);
+    processes.push(runner.running);
+    return runner;
+  };
+  try {
+    const runnerA = start("a", 1, join(root, "workspace-a"));
+    const runnerB = start("b", 1, join(root, "workspace-b"));
+    expect(peerA.identity.sessionId).not.toBe(peerB.identity.sessionId);
+    expect(peerA.identity.sandboxId).not.toBe(peerB.identity.sandboxId);
+    expect(runnerA.sandboxName).not.toBe(runnerB.sandboxName);
+    expect(runnerA.workspace).not.toBe(runnerB.workspace);
+    expect(delivery.a.agentId).toBe(delivery.b.agentId);
+    expect(delivery.a.sessionId).not.toBe(delivery.b.sessionId);
+
+    expect((await peerA.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect((await peerB.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(peerA.readyObjects.at(-1)?.saved).toBe(true);
+    expect(peerB.readyObjects.at(-1)?.saved).toBe(true);
+    expect(runnerA.webExecutions).toHaveBeenCalledTimes(1);
+    expect(runnerB.webExecutions).toHaveBeenCalledTimes(1);
+
+    for (const [peer, each] of [
+      [peerA, delivery.a],
+      [peerB, delivery.b],
+    ] as const) {
+      peer.send({ type: "delivery:run", requestId: each.requestId, delivery: each });
+      await peer.wait("delivery:received");
+      peer.send({
+        type: "delivery:verified",
+        requestId: each.requestId,
+        status: "verified",
+        model: modelGrant(each),
+      });
+    }
+
+    // Explicit overlap barrier: both native execution doubles are inside their worker at once.
+    await Promise.all([entered.a.promise, entered.b.promise]);
+    expect(running).toEqual(new Set(["a", "b"]));
+    expect(peerA.count("delivery:report")).toBe(0);
+    expect(peerB.count("delivery:report")).toBe(0);
+    await expectSessionFiles(runnerA.workspace, "a", sessionA, "b");
+    await expectSessionFiles(runnerB.workspace, "b", sessionB, "a");
+
+    // Cancelling Session A while both run must not stop Session B's live execution.
+    peerA.send({ type: "delivery:cancel", requestId: randomUUID(), deliveryId: delivery.a.deliveryId });
+    const reportA = (await peerA.wait("delivery:report")).report as WireTurnReport;
+    expect(reportA).toMatchObject({
+      sessionId: sessionA,
+      outcome: "cancelled",
+      errorReason: "client_shutdown",
+      executionEffects: "may_have_occurred",
+    });
+    expect(running.has("b")).toBe(true);
+    expect(peerB.count("delivery:report")).toBe(0);
+
+    release.b.resolve();
+    const reportB = (await peerB.wait("delivery:report")).report as WireTurnReport;
+    expect(reportB).toMatchObject({ sessionId: sessionB, outcome: "completed", executionEffects: "completed" });
+    // Each Session checkpointed its own files, independent of the other's outcome.
+    expect(Number(peerA.object().generation)).toBeGreaterThan(Number(peerA.readyObjects.at(-1)?.generation));
+    expect(Number(peerB.object().generation)).toBeGreaterThan(Number(peerB.readyObjects.at(-1)?.generation));
+
+    runnerA.stop.abort();
+    runnerB.stop.abort();
+    await Promise.all([runnerA.running, runnerB.running]);
+    peerA.advance();
+    peerB.advance();
+
+    // Independent checkpoint/restore: each Session restores only its own files and Pi history.
+    const restoredA = start("a", 2, join(root, "restored-a"));
+    const restoredB = start("b", 2, join(root, "restored-b"));
+    expect((await peerA.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect((await peerB.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(restoredA.workspace).not.toBe(runnerA.workspace);
+    expect(restoredB.workspace).not.toBe(runnerB.workspace);
+    await expectSessionFiles(restoredA.workspace, "a", sessionA, "b");
+    await expectSessionFiles(restoredB.workspace, "b", sessionB, "a");
+  } finally {
+    for (const stop of stops) stop.abort();
+    await Promise.allSettled(processes);
+    await Promise.all([peerA.close(), peerB.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("keeps Session B running to its own checkpoint when Session A cannot save", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e6-save-"));
+  const peerA = await protocolPeer({
+    instancePrefix: "ots-e6-a",
+    sandboxId: sandboxA,
+    sessionId: sessionA,
+    rejectUploadsFrom: 2,
+  });
+  const peerB = await protocolPeer({ instancePrefix: "ots-e6-b", sandboxId: sandboxB, sessionId: sessionB });
+  const stops: AbortController[] = [];
+  const processes: Promise<number>[] = [];
+  const entered = { a: deferred(), b: deferred() };
+  const releaseB = deferred();
+  const running = new Set<string>();
+  const delivery = { a: sessionDelivery(sessionA), b: sessionDelivery(sessionB) };
+  const start = (label: "a" | "b", generation: number, workspace: string) => {
+    const runner = startWireRunner({
+      root,
+      peer: label === "a" ? peerA : peerB,
+      label,
+      generation,
+      workspace,
+      seams: {
+        runWorker: sessionWorker({
+          label,
+          sessionId: label === "a" ? sessionA : sessionB,
+          workspace,
+          entered: entered[label],
+          siblingEntered: entered[label === "a" ? "b" : "a"],
+          ...(label === "b" ? { release: releaseB } : {}),
+          running,
+        }),
+      },
+    });
+    stops.push(runner.stop);
+    processes.push(runner.running);
+    return runner;
+  };
+  try {
+    const runnerA = start("a", 1, join(root, "workspace-a"));
+    const runnerB = start("b", 1, join(root, "workspace-b"));
+    expect((await peerA.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect((await peerB.wait("runner:ready")).workspaceRestored).toBe(true);
+    // Each Session committed exactly once after its restore; Session A's next save fails.
+    expect(peerA.readyObjects.at(-1)?.saved).toBe(true);
+    expect(peerB.readyObjects.at(-1)?.saved).toBe(true);
+
+    for (const [peer, each] of [
+      [peerA, delivery.a],
+      [peerB, delivery.b],
+    ] as const) {
+      peer.send({ type: "delivery:run", requestId: each.requestId, delivery: each });
+      await peer.wait("delivery:received");
+      peer.send({
+        type: "delivery:verified",
+        requestId: each.requestId,
+        status: "verified",
+        model: modelGrant(each),
+      });
+    }
+    await Promise.all([entered.a.promise, entered.b.promise]);
+    expect(running.has("b")).toBe(true);
+
+    const reportA = (await peerA.wait("delivery:report")).report as WireTurnReport;
+    expect(reportA).toMatchObject({
+      sessionId: sessionA,
+      outcome: "failed",
+      errorReason: "workspace_failed",
+      executionEffects: "completed",
+    });
+    expect(reportA.finalText).toContain("not durably saved");
+    // Session B kept executing through Session A's durable-boundary failure.
+    expect(running.has("b")).toBe(true);
+    expect(peerB.count("delivery:report")).toBe(0);
+
+    releaseB.resolve();
+    const reportB = (await peerB.wait("delivery:report")).report as WireTurnReport;
+    expect(reportB).toMatchObject({ sessionId: sessionB, outcome: "completed", executionEffects: "completed" });
+    expect(Number(peerB.object().generation)).toBeGreaterThan(Number(peerB.readyObjects.at(-1)?.generation));
+    await expectSessionFiles(runnerB.workspace, "b", sessionB, "a");
+    // Session A's unsaved local effects stay on Session A's own root, never in Session B's.
+    await expectSessionFiles(runnerA.workspace, "a", sessionA, "b");
+
+    runnerA.stop.abort();
+    runnerB.stop.abort();
+    await Promise.all([runnerA.running, runnerB.running]);
+    peerB.advance();
+
+    // Session B's own checkpoint still restores cleanly; Session A's failed save stays out of it.
+    const restoredB = start("b", 2, join(root, "restored-b"));
+    expect((await peerB.wait("runner:ready")).workspaceRestored).toBe(true);
+    await expectSessionFiles(restoredB.workspace, "b", sessionB, "a");
+  } finally {
+    for (const stop of stops) stop.abort();
+    await Promise.allSettled(processes);
+    await Promise.all([peerA.close(), peerB.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30_000);

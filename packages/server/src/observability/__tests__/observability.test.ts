@@ -502,7 +502,9 @@ describe("background and WebSocket tracing", () => {
     const failingWorker = new ImDeliveryWorker({
       assembler: {} as never,
       database: {
-        transaction: vi.fn().mockResolvedValue({ id: randomUUID(), kind: "pending", claimToken: "claim" }),
+        transaction: vi
+          .fn()
+          .mockResolvedValue({ id: randomUUID(), kind: "pending", claimToken: "claim", laneKey: "agent:unit" }),
         select: vi.fn(() => {
           throw deliveryFailure;
         }),

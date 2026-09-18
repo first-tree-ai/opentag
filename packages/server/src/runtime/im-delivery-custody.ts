@@ -8,11 +8,19 @@ import {
   type RuntimeProviderMessageRef,
   runtimeFrameByteLength,
 } from "@opentag/shared";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notExists, or } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notExists, or, type SQL, sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
-import { agents, imBindings, imMessageDeliveries, imMessages, sessions } from "../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  sessionPlacements,
+  sessions,
+} from "../db/schema/index.js";
 import { threadRootExternalId } from "../services/im/provider-thread-context.js";
 import { DISPATCH_CLAIM_PREFIX } from "./im-delivery-claim.js";
 import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
@@ -38,15 +46,88 @@ export type CustodyDeliveryColumns = {
   lastErrorCode: AnyPgColumn;
 };
 
-export async function hasOtherAgentCustody(
-  database: CustodyQuery,
-  agentId: string,
-  deliveryId: string,
-): Promise<boolean> {
-  return (await findOtherAgentCustody(database, agentId, deliveryId)) !== undefined;
+/**
+ * The concurrency scope of one delivery. A Local Computer executes one Turn at a time for its
+ * Agent, so a Local delivery occupies the whole Agent. A Cloud Computer is only the Account's
+ * logical identity: every Agent Session owns its own Sandbox Runner, so a Cloud delivery occupies
+ * just its Session. This is the E6 contract: different Cloud Sessions of one Agent execute
+ * concurrently, the same Cloud Session keeps exactly one custody owner and stays ordered, and a
+ * live Local occupancy still fences every Session of its Agent.
+ */
+export type DeliveryOccupancyScope =
+  | { kind: "agent"; agentId: string }
+  | { kind: "session"; agentId: string; sessionId: string };
+
+/** The identity a delivery needs to resolve its occupancy scope and scheduler lane. */
+export interface DeliveryOccupancySubject {
+  deliveryId: string;
+  agentId: string;
+  sessionId: string;
+  computerKind: "local" | "cloud";
 }
 
-export async function findOtherAgentCustody(database: CustodyQuery, agentId: string, deliveryId: string) {
+export function deliveryOccupancyScope(subject: {
+  computerKind: "local" | "cloud";
+  agentId: string;
+  sessionId: string;
+}): DeliveryOccupancyScope {
+  return subject.computerKind === "cloud"
+    ? { kind: "session", agentId: subject.agentId, sessionId: subject.sessionId }
+    : { kind: "agent", agentId: subject.agentId };
+}
+
+export function occupancyScopeKey(scope: DeliveryOccupancyScope): string {
+  return scope.kind === "agent" ? `agent:${scope.agentId}` : `session:${scope.sessionId}`;
+}
+
+/** One side of the occupancy comparison: a column or a bound value for each identity. */
+export interface OccupancyRef {
+  deliveryId: AnyPgColumn | string;
+  sessionId: AnyPgColumn | string;
+  agentId: AnyPgColumn | string;
+  /** True when this side occupies its whole Agent (Local), false for Session-scoped Cloud. */
+  local: SQL;
+}
+
+/**
+ * Whether two deliveries cannot execute concurrently: the same Session, or the same Agent with at
+ * least one Agent-scoped (Local) occupant. The claim subquery and the pre-dispatch recheck share
+ * this one rule, so the atomic claim decision and the last-boundary check can never diverge.
+ * Composed as one SQL template because either side may be a column or a bound value.
+ */
+export function occupancyConflict(candidate: OccupancyRef, other: OccupancyRef): SQL {
+  return sql`(${other.deliveryId} <> ${candidate.deliveryId}) and (
+    (${other.sessionId} = ${candidate.sessionId})
+    or ((${other.agentId} = ${candidate.agentId}) and ((${candidate.local}) or (${other.local})))
+  )`;
+}
+
+const AGENT_SCOPED: SQL = sql.raw("true");
+const SESSION_SCOPED: SQL = sql.raw("false");
+
+/** The scope-checked value form of one side of {@link occupancyConflict}. */
+export function occupancyRefFor(subject: DeliveryOccupancySubject): OccupancyRef {
+  return {
+    deliveryId: subject.deliveryId,
+    sessionId: subject.sessionId,
+    agentId: subject.agentId,
+    local: subject.computerKind === "cloud" ? SESSION_SCOPED : AGENT_SCOPED,
+  };
+}
+
+export async function hasOtherCustody(database: CustodyQuery, subject: DeliveryOccupancySubject): Promise<boolean> {
+  return (await findOtherCustody(database, subject)) !== undefined;
+}
+
+/**
+ * The occupancy owner of another delivery, if any, computed from committed custody. Used as the
+ * last-boundary recheck before any frame reaches a runtime; `skip locked` claims that another
+ * Worker has only claimed (not committed) leave no durable trace, which is why the claim itself
+ * also evaluates the scope rule in its SQL and the Agent-scoped advisory lock serializes it.
+ */
+export async function findOtherCustody(database: CustodyQuery, subject: DeliveryOccupancySubject) {
+  const otherPlacement = alias(sessionPlacements, "occupancy_other_placement");
+  const otherComputer = alias(computers, "occupancy_other_computer");
   const [row] = await database
     .select({
       id: imMessageDeliveries.id,
@@ -60,14 +141,20 @@ export async function findOtherAgentCustody(database: CustodyQuery, agentId: str
     .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
     .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
     .innerJoin(agents, eq(agents.id, imBindings.agentId))
+    .leftJoin(otherPlacement, eq(otherPlacement.sessionId, imMessageDeliveries.sessionId))
+    .leftJoin(otherComputer, eq(otherComputer.id, otherPlacement.computerId))
     .where(
       and(
-        eq(imBindings.agentId, agentId),
-        ne(imMessageDeliveries.id, deliveryId),
         isNull(sessions.endedAt),
         eq(imBindings.status, "active"),
         ne(agents.status, "deleted"),
         uncertainAgentCustody(imMessageDeliveries),
+        occupancyConflict(occupancyRefFor(subject), {
+          deliveryId: imMessageDeliveries.id,
+          sessionId: imMessageDeliveries.sessionId,
+          agentId: imBindings.agentId,
+          local: eq(otherComputer.kind, "local"),
+        }),
       ),
     )
     .limit(1);
@@ -82,16 +169,37 @@ export function uncertainAgentCustody(delivery: CustodyDeliveryColumns) {
   );
 }
 
-export function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {
+/** The columns that define ingress order within one Session. */
+export interface MessageOrderColumns {
+  occurredAt: AnyPgColumn;
+  providerRevisionKey: AnyPgColumn;
+  id: AnyPgColumn;
+}
+
+export interface MessageOrderBoundary {
+  occurredAt: Date | AnyPgColumn;
+  providerRevisionKey: string | AnyPgColumn;
+  id: string | AnyPgColumn;
+}
+
+/** Ingress order within one Session: occurredAt, then provider revision, then message id. */
+export function messageOrderBefore(earlier: MessageOrderColumns, boundary: MessageOrderBoundary) {
   return or(
-    lt(imMessages.occurredAt, occurredAt),
+    lt(earlier.occurredAt, boundary.occurredAt),
     and(
-      eq(imMessages.occurredAt, occurredAt),
+      eq(earlier.occurredAt, boundary.occurredAt),
       or(
-        lt(imMessages.providerRevisionKey, providerRevisionKey),
-        and(eq(imMessages.providerRevisionKey, providerRevisionKey), lt(imMessages.id, messageId)),
+        lt(earlier.providerRevisionKey, boundary.providerRevisionKey),
+        and(eq(earlier.providerRevisionKey, boundary.providerRevisionKey), lt(earlier.id, boundary.id)),
       ),
     ),
+  );
+}
+
+export function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {
+  return messageOrderBefore(
+    { occurredAt: imMessages.occurredAt, providerRevisionKey: imMessages.providerRevisionKey, id: imMessages.id },
+    { occurredAt, providerRevisionKey, id: messageId },
   );
 }
 

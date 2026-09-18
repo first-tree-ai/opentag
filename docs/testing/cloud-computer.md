@@ -215,4 +215,6 @@ native Unix-socket mounts, connection-loss grant revocation, and IM reply accept
 remain pending real-environment evidence. E4 adds no new database tables. E5 workspace persistence is described in
 [Cloud workspace persistence](../cloud-workspace-persistence.md); its live acceptance must
 include release and replacement, rather than treating this E3/E4 harness as persistence evidence.
-E6–E8 remain separate work.
+E6 concurrent Session checks and the combined E4–E6 staging procedure are documented in
+[Cloud Runner execution](../cloud-runner-execution.md#e6-concurrent-cloud-sessions).
+E7–E8 remain separate work. Local E6 evidence does not complete the pending native Cloud/IM acceptance.

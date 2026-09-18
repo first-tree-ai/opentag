@@ -11,9 +11,9 @@ import {
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, exists, inArray, isNotNull, isNull, lte, ne, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNotNull, isNull, like, lte, ne, notExists, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import type { DatabaseClient } from "../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
   computers,
@@ -37,14 +37,18 @@ import {
 } from "../services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
-import { dispatchClaimToken } from "./im-delivery-claim.js";
+import { DISPATCH_CLAIM_PREFIX, dispatchClaimToken } from "./im-delivery-claim.js";
 import { CloudDeliveryCoordinator, readPersistedDeliveryRequest } from "./im-delivery-cloud.js";
 import {
   type ClaimLease,
-  findOtherAgentCustody,
+  deliveryOccupancyScope,
+  findOtherCustody,
   fitDeliveryFrame,
-  hasOtherAgentCustody,
+  hasOtherCustody,
   loadDirectHistory,
+  messageOrderBefore,
+  occupancyConflict,
+  occupancyScopeKey,
   truncateUtf8,
   uncertainAgentCustody,
 } from "./im-delivery-custody.js";
@@ -72,16 +76,70 @@ const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
 // Replica model: persisted recoverable ownership. The durable marker bridges the
-// transaction-to-runtime gap. Advisory locks serialize competing claims; the
-// marker keeps later transactions fenced after commit.
+// transaction-to-runtime gap. An Agent-scoped advisory lock serializes competing
+// claim decisions; the marker and the occupancy fence then keep later transactions
+// out of a Session or Agent that is already owned.
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
+const acceptedPlacements = alias(sessionPlacements, "agent_accepted_placements");
+const acceptedComputers = alias(computers, "agent_accepted_computers");
+const earlierPendingDeliveries = alias(imMessageDeliveries, "pending_earlier_deliveries");
+const earlierPendingMessages = alias(imMessages, "pending_earlier_messages");
 
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
+}
+
+/** A claim deferred by another occupant: Local rows are declined steers, Cloud rows are custody races. */
+function custodyDeferralCode(computerKind: "local" | "cloud"): string {
+  return computerKind === "cloud" ? "IM_DELIVERY_CUSTODY_DEFERRED" : "IM_DELIVERY_STEER_DEFERRED";
+}
+
+/**
+ * E6 ordering guard for undispatched Cloud inputs: an input never overtakes an earlier live input
+ * of the same Session. The earlier row's own retry backoff and another Worker's in-flight
+ * (skip-locked) claim are exactly the cases the durable custody fence cannot see, so ingress order
+ * is enforced here on the committed rows. The predicate is scoped to the Session, so it never
+ * blocks another Session's claim. A prior claim or frozen dispatch already occupies the Session:
+ * keep its recovery path open if an earlier provider event arrives late. Otherwise that new input
+ * and the expired claim would fence each other forever. The outer query still checks the lease.
+ */
+function cloudPendingOrderingGuard(transaction: DatabaseTransaction) {
+  return or(
+    ne(imMessageDeliveries.state, "pending"),
+    ne(computers.kind, "cloud"),
+    isNotNull(imMessageDeliveries.dispatchRequestId),
+    like(imMessageDeliveries.lastErrorCode, `${DISPATCH_CLAIM_PREFIX}%`),
+    notExists(
+      transaction
+        .select({ id: earlierPendingDeliveries.id })
+        .from(earlierPendingDeliveries)
+        .innerJoin(earlierPendingMessages, eq(earlierPendingMessages.id, earlierPendingDeliveries.messageId))
+        .where(
+          and(
+            eq(earlierPendingDeliveries.sessionId, imMessageDeliveries.sessionId),
+            ne(earlierPendingDeliveries.id, imMessageDeliveries.id),
+            eq(earlierPendingDeliveries.state, "pending"),
+            isNull(earlierPendingDeliveries.reason),
+            messageOrderBefore(
+              {
+                occurredAt: earlierPendingMessages.occurredAt,
+                providerRevisionKey: earlierPendingMessages.providerRevisionKey,
+                id: earlierPendingMessages.id,
+              },
+              {
+                occurredAt: imMessages.occurredAt,
+                providerRevisionKey: imMessages.providerRevisionKey,
+                id: imMessages.id,
+              },
+            ),
+          ),
+        ),
+    ),
+  );
 }
 
 export class ImDeliveryWorker {
@@ -151,7 +209,7 @@ export class ImDeliveryWorker {
         this.#assembleRuntime(deliveryId, sessionId, mode, claimToken),
       replyRole: (messageId, sessionKind, threadKey) => this.#replyRole(messageId, sessionKind, threadKey),
       buildDeliveryContent: (contentInput) => this.#buildDeliveryContent(contentInput),
-      hasOtherAgentCustody: (agentId, deliveryId) => hasOtherAgentCustody(this.#database, agentId, deliveryId),
+      hasOtherCustody: (subject) => hasOtherCustody(this.#database, subject),
       recordFailure: (deliveryId, code, claimToken, retryDelayMs) =>
         this.#recordFailure(deliveryId, code, claimToken, retryDelayMs),
       releaseDispatch: (deliveryId, requestId, code, claimToken) =>
@@ -255,7 +313,7 @@ export class ImDeliveryWorker {
         if (!failed) resolve();
       }
     };
-    const enqueued = this.#scheduler.enqueue(`agent:${claimed.agentId}`, run, () => {
+    const enqueued = this.#scheduler.enqueue(claimed.laneKey, run, () => {
       this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
       void this.#recordFailure(
         claimed.id,
@@ -313,6 +371,7 @@ export class ImDeliveryWorker {
           sessionId: imMessageDeliveries.sessionId,
           computerId: sessionPlacements.computerId,
           steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
+          computerKind: computers.kind,
         })
         .from(imMessageDeliveries)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
@@ -320,6 +379,7 @@ export class ImDeliveryWorker {
         .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
         .innerJoin(agents, eq(agents.id, imBindings.agentId))
         .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+        .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
         .where(
           and(
             isNull(sessions.endedAt),
@@ -356,14 +416,33 @@ export class ImDeliveryWorker {
                       .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
                       .innerJoin(acceptedImBindings, eq(acceptedImBindings.id, acceptedSessions.imBindingId))
                       .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedImBindings.agentId))
+                      .leftJoin(acceptedPlacements, eq(acceptedPlacements.sessionId, acceptedDeliveries.sessionId))
+                      .leftJoin(acceptedComputers, eq(acceptedComputers.id, acceptedPlacements.computerId))
                       .where(
                         and(
-                          eq(acceptedImBindings.agentId, imBindings.agentId),
-                          ne(acceptedDeliveries.id, imMessageDeliveries.id),
                           isNull(acceptedSessions.endedAt),
                           eq(acceptedImBindings.status, "active"),
                           ne(acceptedAgents.status, "deleted"),
                           uncertainAgentCustody(acceptedDeliveries),
+                          // E6 occupancy: a Cloud delivery is fenced only by its own Session (or by
+                          // an Agent-scoped Local occupancy of the same Agent); a Local delivery
+                          // keeps the Agent-wide fence. The left joins keep Local semantics exact:
+                          // an Agent-scoped candidate conflicts regardless of the other row's
+                          // placement row, exactly as before.
+                          occupancyConflict(
+                            {
+                              deliveryId: imMessageDeliveries.id,
+                              sessionId: imMessageDeliveries.sessionId,
+                              agentId: imBindings.agentId,
+                              local: eq(computers.kind, "local"),
+                            },
+                            {
+                              deliveryId: acceptedDeliveries.id,
+                              sessionId: acceptedDeliveries.sessionId,
+                              agentId: acceptedImBindings.agentId,
+                              local: eq(acceptedComputers.kind, "local"),
+                            },
+                          ),
                         ),
                       ),
                   ),
@@ -393,6 +472,8 @@ export class ImDeliveryWorker {
                     ),
                   ),
                 ),
+                // E6 ordering: see `cloudPendingOrderingGuard`.
+                cloudPendingOrderingGuard(transaction),
               ),
               and(
                 eq(imMessageDeliveries.state, "accepted"),
@@ -406,11 +487,21 @@ export class ImDeliveryWorker {
         .limit(1)
         .for("update", { of: imMessageDeliveries, skipLocked: true });
       if (!row) return undefined;
+      // The advisory lock stays Agent-scoped on purpose. It serializes only this claim decision,
+      // never execution: a claimed Cloud Turn runs after commit in its own Session lane. The Agent
+      // key also orders the cross-scope Local/Cloud conflict exactly as the fence does, so two
+      // claims of one Agent can never both pass on a snapshot that predates the other's commit.
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${row.agentId}`}, 0))`,
       );
-      const otherCustody =
-        row.state === "accepted" ? undefined : await findOtherAgentCustody(transaction, row.agentId, row.id);
+      const subject = {
+        deliveryId: row.id,
+        agentId: row.agentId,
+        sessionId: row.sessionId,
+        computerKind: row.computerKind,
+      };
+      const otherCustody = row.state === "accepted" ? undefined : await findOtherCustody(transaction, subject);
+      const laneKey = occupancyScopeKey(deliveryOccupancyScope(subject));
       let steerTarget: { id: string; turnId: string } | undefined;
       if (otherCustody) {
         const instanceId = this.#registry.currentInstanceId(row.computerId);
@@ -428,11 +519,13 @@ export class ImDeliveryWorker {
         ) {
           // A declined steer must be deferred, not skipped: returning without advancing the row
           // makes the same earliest row win every tick and block all other tenants' deliveries.
+          // A Cloud row defers the same way when a competing claim took its Session first; there
+          // is no steer frame, so it waits for its turn instead of re-selecting every tick.
           await transaction
             .update(imMessageDeliveries)
             .set({
               nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
-              lastErrorCode: "IM_DELIVERY_STEER_DEFERRED",
+              lastErrorCode: custodyDeferralCode(row.computerKind),
             })
             .where(eq(imMessageDeliveries.id, row.id));
           return undefined;
@@ -448,7 +541,13 @@ export class ImDeliveryWorker {
             lastErrorCode: null,
           })
           .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "accepted")));
-        return { id: row.id, agentId: row.agentId, queuedAt: row.nextAttemptAt.getTime(), kind: "recovery" as const };
+        return {
+          id: row.id,
+          agentId: row.agentId,
+          laneKey,
+          queuedAt: row.nextAttemptAt.getTime(),
+          kind: "recovery" as const,
+        };
       }
       const persistedRequest = row.dispatchPayload
         ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
@@ -518,6 +617,7 @@ export class ImDeliveryWorker {
         ? {
             id: row.id,
             agentId: row.agentId,
+            laneKey,
             queuedAt: row.nextAttemptAt.getTime(),
             kind: "steer" as const,
             claimToken,
@@ -527,6 +627,7 @@ export class ImDeliveryWorker {
         : {
             id: row.id,
             agentId: row.agentId,
+            laneKey,
             queuedAt: row.nextAttemptAt.getTime(),
             kind: "pending" as const,
             claimToken,
@@ -809,7 +910,16 @@ export class ImDeliveryWorker {
     if (!runtime) return;
     // A late acceptance may commit after this delivery was claimed. Recheck at
     // the last boundary before any reconcile or delivery frame reaches runtime.
-    if (await hasOtherAgentCustody(this.#database, row.agent.id, deliveryId)) {
+    // The subject is Local here (the Cloud branch returned above), so this is the
+    // unchanged Agent-wide fence.
+    if (
+      await hasOtherCustody(this.#database, {
+        deliveryId,
+        agentId: row.agent.id,
+        sessionId: row.session.id,
+        computerKind: row.computer.kind,
+      })
+    ) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_CUSTODY_FENCED", claimToken);
       return;
     }

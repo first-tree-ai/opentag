@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeConfigs,
+  agents,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -14,6 +15,7 @@ import {
   users,
 } from "../db/schema/index.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { dispatchClaimToken } from "../runtime/im-delivery-claim.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { AgentService } from "../services/agents/index.js";
@@ -143,7 +145,7 @@ const READINESS = {
   reportedAt: new Date().toISOString(),
 };
 
-async function pendingDelivery(sessionId: string, expiresAt?: Date) {
+async function pendingDelivery(sessionId: string, expiresAt?: Date, occurredAt?: Date) {
   const messageId = randomUUID();
   const deliveryId = randomUUID();
   const [binding] = await unit.database.select().from(imBindings).limit(1);
@@ -166,7 +168,7 @@ async function pendingDelivery(sessionId: string, expiresAt?: Date) {
     authorExternalId: "unit-user",
     content: { version: 1, fallbackText: "hello cloud", blocks: [], truncated: false },
     providerContext: { provider: "feishu" },
-    occurredAt: new Date(),
+    occurredAt: occurredAt ?? new Date(),
   });
   await unit.database.insert(imMessageDeliveries).values({
     id: deliveryId,
@@ -178,6 +180,110 @@ async function pendingDelivery(sessionId: string, expiresAt?: Date) {
     expiresAt: expiresAt ?? new Date(Date.now() + 3_600_000),
   });
   return { deliveryId, messageId };
+}
+
+/** A second Cloud Session of the SAME Agent: another channel with its own Sandbox and Runner. */
+async function addCloudSession(
+  origin: Awaited<ReturnType<typeof cloudScope>>,
+  options: { channelId?: string; ready?: boolean } = {},
+) {
+  const sandbox = await new SandboxService(unit.database, new SessionService(unit.database), {
+    cloudIdentities,
+  }).ensureForAccount(origin.accountId, {
+    imBindingId: origin.bindingId,
+    channelId: options.channelId ?? `unit-channel-${randomUUID().slice(0, 8)}`,
+    conversationKind: "channel",
+    kind: "channel",
+  });
+  const resourceName = `projects/unit/locations/us-west1/instances/ots-s-${sandbox.sandboxId.slice(0, 8)}-1`;
+  if (options.ready !== false) {
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "ready",
+        environmentGeneration: 1,
+        currentResourceName: resourceName,
+        currentResourceUid: `unit-uid-${sandbox.sandboxId.slice(0, 8)}`,
+      })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+  }
+  const scope: RunnerScope = {
+    sandboxId: sandbox.sandboxId,
+    sessionId: sandbox.sessionId,
+    environmentGeneration: 1,
+    resourceName,
+  };
+  return { sandbox, scope };
+}
+
+/**
+ * A minimal Local Agent with two Sessions on its Local Computer. Only the claim and its Agent-wide
+ * occupancy fence are exercised, so the fixture stops at the claim's inputs (no runtime config).
+ */
+async function localScope() {
+  const accountId = randomUUID();
+  await unit.database
+    .insert(users)
+    .values({ id: accountId, email: `${accountId}@example.test`, displayName: "E6 Local" });
+  const computerId = randomUUID();
+  const instanceId = randomUUID();
+  await unit.database.insert(computers).values({
+    id: computerId,
+    ownerAccountId: accountId,
+    kind: "local",
+    currentInstallationId: randomUUID(),
+    currentInstanceId: instanceId,
+    displayName: "Local",
+    platform: "linux",
+    arch: "x64",
+    clientVersion: "test",
+  });
+  const agentId = randomUUID();
+  await unit.database.insert(agents).values({
+    id: agentId,
+    createdByUserId: accountId,
+    computerId,
+    name: `e6-local-${agentId}`,
+    displayName: "E6 Local",
+    runtimeProvider: "pi",
+  });
+  const bindingId = randomUUID();
+  await unit.database.insert(imBindings).values({
+    id: bindingId,
+    agentId,
+    provider: "feishu",
+    status: "active",
+    externalAppId: `unit-app-${randomUUID().slice(0, 8)}`,
+    externalBotId: "unit-bot",
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: "unit-only-unused",
+    activatedAt: new Date(),
+  });
+  const firstSessionId = randomUUID();
+  const secondSessionId = randomUUID();
+  for (const sessionId of [firstSessionId, secondSessionId]) {
+    await unit.database.insert(sessions).values({
+      id: sessionId,
+      imBindingId: bindingId,
+      channelId: `unit-channel-${sessionId.slice(0, 8)}`,
+      conversationKind: "channel",
+      kind: "channel",
+    });
+    await unit.database.insert(sessionPlacements).values({ sessionId, computerId, generation: 1 });
+  }
+  const registry = new ConnectionRegistry();
+  await registry.register(
+    {
+      computerId,
+      installationId: randomUUID(),
+      instanceId,
+      lastHeartbeatAt: Date.now(),
+      socket: { close: vi.fn(), terminate: vi.fn() } as never,
+    },
+    async () => undefined,
+  );
+  return { accountId, agentId, bindingId, computerId, instanceId, firstSessionId, secondSessionId, registry };
 }
 
 function makeStack(options: { withModel?: boolean } = {}) {
@@ -206,13 +312,18 @@ interface AllocationCallLog {
   outcome: IngressAllocationOutcome;
 }
 
-function makeWorker(owner?: CloudDeliveryOwner, allocation?: AllocationCallLog, options: { now?: () => Date } = {}) {
+function makeWorker(
+  owner?: CloudDeliveryOwner,
+  allocation?: AllocationCallLog,
+  options: { now?: () => Date; beforeDeliveryAdmission?: (signal: AbortSignal) => Promise<void> } = {},
+) {
   return new ImDeliveryWorker({
     assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
     database: unit.database,
     domain: {} as never,
     registry: new ConnectionRegistry(),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.beforeDeliveryAdmission ? { beforeDeliveryAdmission: options.beforeDeliveryAdmission } : {}),
     ...(owner ? { cloudDelivery: owner } : {}),
     ...(allocation
       ? {
@@ -874,5 +985,291 @@ describe("ImDeliveryWorker Cloud routing", () => {
     if (!secondRow) throw new Error("delivery row missing");
     expect(secondRow.state).toBe("pending");
     expect(secondRow.dispatchRequestId).toBeNull();
+  });
+});
+
+/**
+ * E6 Session occupancy. Different Cloud Sessions of one Agent execute concurrently, the same Cloud
+ * Session keeps exactly one custody owner and its input order, and Local keeps its Agent-wide
+ * exclusion. The PostgreSQL race behavior is exercised by the integration suite; these cases are
+ * deterministic and coordinate with gates instead of sleeps.
+ */
+describe("ImDeliveryWorker Cloud Session occupancy", () => {
+  it("executes different Cloud Sessions of one Agent concurrently", async () => {
+    const first = await cloudScope();
+    const second = await addCloudSession(first);
+    const stack = makeStack();
+    const firstSent: RunnerServerFrame[] = [];
+    const secondSent: RunnerServerFrame[] = [];
+    const firstSocket = fakeSocket(firstSent);
+    const secondSocket = fakeSocket(secondSent);
+    stack.hub.attach(first.scope, firstSocket);
+    stack.hub.markReady(first.scope, READINESS, firstSocket);
+    stack.fence.attach({
+      computerId: first.cloud.computerId,
+      installationId: randomUUID(),
+      scope: first.scope,
+      socket: firstSocket,
+    });
+    stack.hub.attach(second.scope, secondSocket);
+    stack.hub.markReady(second.scope, READINESS, secondSocket);
+    stack.fence.attach({
+      computerId: first.cloud.computerId,
+      installationId: randomUUID(),
+      scope: second.scope,
+      socket: secondSocket,
+    });
+    const firstDelivery = await pendingDelivery(first.scope.sessionId);
+    const secondDelivery = await pendingDelivery(second.scope.sessionId);
+
+    // The first delivery parks inside its admission boundary; the second may only reach its own
+    // boundary while the first is still there. That is exactly the E6 concurrency proof: with an
+    // Agent-keyed lane the second run could not start until the first finished.
+    let firstAdmissionReached: () => void = () => undefined;
+    const firstAdmission = new Promise<void>((resolve) => {
+      firstAdmissionReached = resolve;
+    });
+    let secondAdmissionReached: () => void = () => undefined;
+    const secondAdmission = new Promise<void>((resolve) => {
+      secondAdmissionReached = resolve;
+    });
+    let releaseFirst: () => void = () => undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releaseSecond: () => void = () => undefined;
+    const secondGate = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let releaseFallback: () => void = () => undefined;
+    const fallback = new Promise<void>((resolve) => {
+      releaseFallback = resolve;
+    });
+    const fallbackTimer = setTimeout(releaseFallback, 3_000);
+    fallbackTimer.unref?.();
+    let admissions = 0;
+    let firstExited = false;
+    const worker = makeWorker(stack.owner, undefined, {
+      beforeDeliveryAdmission: async () => {
+        admissions += 1;
+        if (admissions === 1) {
+          firstAdmissionReached();
+          await Promise.race([firstGate, fallback]);
+          firstExited = true;
+          return;
+        }
+        secondAdmissionReached();
+        await Promise.race([secondGate, fallback]);
+      },
+    });
+
+    const firstRun = worker.runOnce();
+    await firstAdmission;
+    const secondRun = worker.runOnce();
+    await secondAdmission;
+    // Both lanes are live at the same time: the first has not left its boundary yet.
+    expect(firstExited).toBe(false);
+    expect(admissions).toBe(2);
+
+    // Release sequentially so the assertions do not depend on driver-level query interleaving.
+    releaseFirst();
+    await firstRun;
+    releaseSecond();
+    await secondRun;
+    clearTimeout(fallbackTimer);
+
+    const firstRuns = firstSent.filter((frame) => frame.type === "delivery:run");
+    const secondRuns = secondSent.filter((frame) => frame.type === "delivery:run");
+    expect(firstRuns.map((frame) => frame.delivery.deliveryId)).toEqual([firstDelivery.deliveryId]);
+    expect(secondRuns.map((frame) => frame.delivery.deliveryId)).toEqual([secondDelivery.deliveryId]);
+    for (const [deliveryId, run] of [
+      [firstDelivery.deliveryId, firstRuns[0]],
+      [secondDelivery.deliveryId, secondRuns[0]],
+    ] as const) {
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(row?.dispatchRequestId).toBe(run?.requestId);
+    }
+  });
+
+  it("fences a Cloud Session input behind another Worker's in-flight claim of a newer input", async () => {
+    const { scope, cloud } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    // The candidate is the OLDER message, so only the custody claim (not ingress order) can fence
+    // it: another Worker claimed the newer input first and its lease is the durable trace.
+    const candidate = await pendingDelivery(scope.sessionId, undefined, new Date(Date.now() - 10_000));
+    const inFlight = await pendingDelivery(scope.sessionId, undefined, new Date());
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, inFlight.deliveryId));
+
+    const worker = makeWorker(stack.owner);
+    await worker.runOnce();
+
+    expect(sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(0);
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, candidate.deliveryId));
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null, lastErrorCode: null });
+  });
+
+  it("does not let a same-Session follow-up overtake an earlier input in retry backoff", async () => {
+    const session = await cloudScope();
+    const otherSession = await addCloudSession(session);
+    const stack = makeStack();
+    // Only the unrelated Session has a Runner: the earlier input of the first Session fails its
+    // dispatch transiently and backs off, then the follow-up becomes due before the retry.
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(otherSession.scope, socket);
+    stack.hub.markReady(otherSession.scope, READINESS, socket);
+    stack.fence.attach({
+      computerId: session.cloud.computerId,
+      installationId: randomUUID(),
+      scope: otherSession.scope,
+      socket,
+    });
+    const earlier = await pendingDelivery(session.scope.sessionId, undefined, new Date(Date.now() - 20_000));
+    const followUp = await pendingDelivery(session.scope.sessionId, undefined, new Date(Date.now() - 10_000));
+    const otherDelivery = await pendingDelivery(otherSession.scope.sessionId);
+    const now = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(now - 3_000) })
+      .where(eq(imMessageDeliveries.id, earlier.deliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(now - 2_000) })
+      .where(eq(imMessageDeliveries.id, followUp.deliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(now - 1_000) })
+      .where(eq(imMessageDeliveries.id, otherDelivery.deliveryId));
+
+    const worker = makeWorker(stack.owner);
+    // First tick claims the earlier input, which fails transiently and backs off.
+    await worker.runOnce();
+
+    // The earlier input is now in transient backoff...
+    const [backingOff] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, earlier.deliveryId));
+    expect(backingOff).toMatchObject({
+      state: "pending",
+      dispatchRequestId: null,
+      lastErrorCode: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+    });
+    expect(backingOff?.nextAttemptAt.getTime()).toBeGreaterThan(now);
+
+    // Second tick: the follow-up is due, but it must wait behind the backed-off earlier input,
+    // while the other Session is free to proceed.
+    await worker.runOnce();
+
+    const [deferred] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, followUp.deliveryId));
+    expect(deferred).toMatchObject({ state: "pending", dispatchRequestId: null, lastErrorCode: null });
+    const runs = sent.filter((frame) => frame.type === "delivery:run");
+    expect(runs.map((frame) => frame.delivery.deliveryId)).toEqual([otherDelivery.deliveryId]);
+    const [otherRow] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, otherDelivery.deliveryId));
+    expect(otherRow?.dispatchRequestId).toBe(
+      (runs[0] as Extract<RunnerServerFrame, { type: "delivery:run" }>).requestId,
+    );
+  });
+
+  it("keeps the Agent-wide custody fence for Local deliveries across Sessions", async () => {
+    const scope = await localScope();
+    const occupant = await pendingDelivery(scope.firstSessionId);
+    const candidate = await pendingDelivery(scope.secondSessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, occupant.deliveryId));
+
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {} as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue({} as never) },
+      registry: scope.registry,
+    });
+    await worker.runOnce();
+
+    // A Local Turn owns the whole Agent: the other Local Session may not start.
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, candidate.deliveryId));
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null, lastErrorCode: null });
+  });
+
+  it("claims a later Local delivery while an earlier Local input backs off (Local order unchanged)", async () => {
+    const scope = await localScope();
+    const earlier = await pendingDelivery(scope.firstSessionId, undefined, new Date(Date.now() - 20_000));
+    const later = await pendingDelivery(scope.secondSessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE", nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, earlier.deliveryId));
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .where(eq(imMessageDeliveries.id, later.deliveryId));
+
+    const requestDelivery = vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+      onDispatched?.();
+      return {
+        type: "im:deliver:result" as const,
+        requestId: request.requestId,
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "accepted" as const,
+        turnId: `turn-${request.deliveryId}`,
+      };
+    });
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {
+        requestReconcile: vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+          onDispatched?.();
+          return {
+            type: "session:reconcile:result" as const,
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "ready" as const,
+          };
+        }),
+        requestDelivery,
+      } as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue({} as never) },
+      registry: scope.registry,
+    });
+    await worker.runOnce();
+
+    // Local has no same-Agent ordering predicate: a backed-off earlier input never blocks this
+    // Agent's other Session, exactly as before E6.
+    expect(requestDelivery).toHaveBeenCalledTimes(1);
+    const deliveredRequest = requestDelivery.mock.calls[0]?.[2] as { deliveryId: string } | undefined;
+    expect(deliveredRequest?.deliveryId).toBe(later.deliveryId);
+    const [earlierRow] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, earlier.deliveryId));
+    expect(earlierRow).toMatchObject({ state: "pending", attemptCount: 0 });
   });
 });

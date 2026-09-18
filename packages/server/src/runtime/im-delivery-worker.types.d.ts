@@ -14,17 +14,26 @@ export interface RuntimeDeliveryWorkerMetric {
 }
 
 export type WorkerClaim =
-  | { id: string; agentId: string; queuedAt: number; kind: "pending"; claimToken: string }
   | {
       id: string;
       agentId: string;
+      /** In-process scheduler lane: the delivery's occupancy scope (Agent for Local, Session for Cloud). */
+      laneKey: string;
+      queuedAt: number;
+      kind: "pending";
+      claimToken: string;
+    }
+  | {
+      id: string;
+      agentId: string;
+      laneKey: string;
       queuedAt: number;
       kind: "steer";
       claimToken: string;
       rootDeliveryId: string;
       expectedTurnId: string;
     }
-  | { id: string; agentId: string; queuedAt: number; kind: "recovery" };
+  | { id: string; agentId: string; laneKey: string; queuedAt: number; kind: "recovery" };
 
 /** A narrowly injected Cloud sandbox allocation port so real Cloud API seams stay outside the worker. */
 export interface CloudSessionAllocationPort {
@@ -78,6 +87,7 @@ export interface ImDeliveryWorkerInput {
   operationTimeoutMs?: number;
   maxQueueAgeMs?: number;
   maxConcurrent?: number;
+  /** Per-lane queue bound: one lane per Local Agent or per Cloud Session. */
   maxQueuedPerAgent?: number;
   maxQueuedTotal?: number;
   onMetric?: (metric: RuntimeDeliveryWorkerMetric) => void;

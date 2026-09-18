@@ -326,3 +326,61 @@ requires operator cleanup using that receipt; no E7 background reaper is claimed
 
 A final acceptance requires both local gates and real cloud proof, followed by verified deletion
 of task-owned resources. Validation-only API calls prove request compatibility, not execution.
+
+## E6: concurrent Cloud Sessions
+
+One Cloud Agent can execute several **Agent Sessions** concurrently. Each Session still owns one
+Sandbox and one Instance; it does not share a writable workspace or Pi history with another
+Session. Cloud Computer remains the Account's logical identity, not an execution lock.
+
+The existing IM delivery worker uses a Session lane for Cloud and an Agent lane for Local. Durable
+custody follows the same boundary: a running or uncertain Cloud delivery fences its own Session;
+Local custody retains the Agent-wide fence. The short PostgreSQL advisory lock still serializes
+claim decisions for an Agent, ending before allocation, dispatch or execution. Committed custody
+then prevents a second Worker from admitting overlapping work in the same Session.
+
+Undispatched Cloud inputs also wait behind earlier pending inputs in the same Session, including
+inputs in retry backoff or locked by another Worker. Ordering uses the existing message-history
+order (`occurredAt`, provider revision, message ID). An existing claim or frozen dispatch keeps
+its recovery path when an earlier provider event arrives late; an expired claim must not wait on
+the same input it fences. Another Session can progress independently. Late provider events do not
+reorder work that has already been claimed.
+
+No new table, migration, execution state machine or shared workspace is introduced. The existing
+worker concurrency and queue limits bound dispatch work, not the number of Cloud Instances or
+active model turns. Account-level resource budgets remain separate work. Session stop and
+connection loss use the existing exact Session/Sandbox/generation authority; Agent suspension
+still blocks new admission across every Session.
+
+### Local evidence and live acceptance boundary
+
+```bash
+pnpm --filter @opentag/server exec vitest run src/__tests__/im-delivery-custody.test.ts src/__tests__/im-delivery-worker-cloud.test.ts
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/cloud-session-concurrency.test.ts --maxWorkers=1
+pnpm --filter @opentag/client exec vitest run src/__tests__/runner-workspace-wire.test.ts
+```
+
+The PostgreSQL integration suite uses actual migrations, competing Workers and loopback
+WebSockets into the production delivery owner. It checks overlapping Sessions, ordered retry,
+locked-head handling, cancellation and model-grant isolation, rejected cross-Session receipts and
+reports, report deduplication and Agent suspension. Runner peers start from an authenticated
+allocation; this fixture does not test bootstrap authentication or actual model execution.
+The client suite exercises production Runner HTTP/WebSocket orchestration with local native
+execution and storage doubles. These are complementary checks, not native Cloud Run acceptance.
+
+When cloud configuration is approved, perform one combined E4–E6 acceptance on staging:
+
+1. Record Server revision and Runner image digest. Bind two real IM conversations to the **same**
+   Cloud Agent and record their distinct Session, Sandbox and Instance IDs and storage URIs.
+2. Hold A in a bounded task, send a second input to A, and let B complete a short task. Record
+   overlapping execution timestamps; A's second input must wait, and B's reply must reach B only.
+3. Write distinct marker files and Pi conversation history. Cancel or disconnect A while B runs;
+   confirm B completes and its model authority remains valid. A's own outcome must remain truthful.
+4. Save and normally release each environment, then allocate replacements and continue each
+   Session. Verify its own files and Pi history are restored and the other Session's data is absent.
+5. Suspend the Agent and verify neither Session accepts new execution. Reconcile every outstanding
+   delivery, release the task-owned environments, and verify resource deletion by name and UID.
+
+Store timestamps, delivery/turn IDs, results and cleanup receipts without credentials. The E3
+`cloud-runner` harness alone does not implement this IM/persistence acceptance; a local pass or
+image publication must not be reported as its completion.

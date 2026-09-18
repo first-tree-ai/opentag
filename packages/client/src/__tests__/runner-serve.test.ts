@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect, createServer } from "node:net";
@@ -1116,6 +1117,19 @@ describe("Runner cancellation and connection lifetime", () => {
       },
     );
     await wss.waitFor("runner:ready");
+    // The initial reconnect reconcile owns the serialized control queue. A query frame queued
+    // behind it is answered only after that reconcile finished, so wait for the answer before
+    // injecting the fault; otherwise the corrupt directory would race reconciliation itself.
+    const queryRequestId = `storefail-query-${randomUUID()}`;
+    wss.send({
+      type: "delivery:query",
+      requestId: queryRequestId,
+      deliveryId: delivery.deliveryId,
+      turnId: randomUUID(),
+    });
+    const query = await wss.waitFor("delivery:query:result");
+    expect(query.requestId).toBe(queryRequestId);
+    expect(query.phase).toBe("none");
     // A directory squatting on the journal entry path makes the durable write fail for real.
     await mkdir(join(stateDir, "journal", `${delivery.deliveryId}.json`), { recursive: true });
     wss.send({ type: "delivery:run", requestId: delivery.requestId, delivery });

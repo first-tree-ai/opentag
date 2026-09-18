@@ -391,9 +391,9 @@ describe("runtime proxy network scope", () => {
         requests.push(request);
         return {
           status: 200,
-          headers: { "content-type": "text/plain" },
+          headers: { "content-type": "application/x-git-upload-pack-advertisement" },
           body: (async function* () {
-            yield bytesOf("001e# service=git-upload-pack\n0000");
+            yield bytesOf("001e# service=git-upload-pack\n00000000");
           })(),
         };
       },
@@ -426,10 +426,14 @@ describe("runtime proxy network scope", () => {
 
     // Real Git: the host-scoped config routes github.com to the adapter, the execution CA is
     // trusted, and the credential helper supplies the execution-local handle after the 401.
-    await execFileAsync("git", ["ls-remote", "https://github.com/acme/fixture.git"], {
+    const result = await execFileAsync("git", ["ls-remote", "https://github.com/acme/fixture.git"], {
+      // actions/checkout adds a repository-local Authorization extraheader. Run outside that
+      // checkout so the fixture tests only its own credential helper and never inherits CI auth.
+      cwd: root,
       env: childEnvironment(root, environment),
       timeout: 15_000,
-    }).catch(() => undefined);
+    });
+    expect(result.stdout).toBe("");
     expect(requests.length).toBeGreaterThan(0);
     expect(requests[0]).toMatchObject({
       path: "/acme/fixture.git/info/refs?service=git-upload-pack",

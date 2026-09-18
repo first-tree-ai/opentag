@@ -11,6 +11,10 @@
 # integration suites and `*.spec.ts` also matches the end-to-end suites, so a credential left in
 # those is not reported. Production code is the only part of the tree still fully scanned.
 #
+# These patterns reach file content and nothing else. A commit message carries no path, so a
+# credential shape written into one is filtered by scripts/secret-scan-gate.mjs instead, which
+# reports a metadata finding only when TruffleHog verified it.
+#
 # One pattern per line, as a regular expression matched against the path. The `__tests__` directory
 # and the `test`/`spec` filename conventions are the two forms this repository uses.
 ^\.github/trufflehog-exclude-paths\.txt$

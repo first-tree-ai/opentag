@@ -191,7 +191,7 @@ async function assertRealWorkspaceRoot(workspacePath: string): Promise<void> {
  * absolute, ambiguous, or escapes the root. Returns "" for the root pseudo-entry ("./", ".").
  */
 function normalizeMemberName(rawName: string | undefined): string {
-  if (typeof rawName !== "string" || rawName.length === 0 || rawName.length > MEMBER_NAME_MAX_BYTES) {
+  if (typeof rawName !== "string" || rawName.length === 0 || Buffer.byteLength(rawName) > MEMBER_NAME_MAX_BYTES) {
     fail("unsafe-member", "Archive member name is missing or oversized");
   }
   if (rawName.includes("\0")) {
@@ -216,7 +216,7 @@ function normalizeMemberName(rawName: string | undefined): string {
  * decided here — only full-graph resolution (assertLinksContained) can decide that.
  */
 function assertLinkTargetForm(target: string, code: "unsafe-entry" | "unsafe-member", memberName: string): void {
-  if (target.length === 0 || target.length > MEMBER_NAME_MAX_BYTES || target.includes("\0")) {
+  if (target.length === 0 || Buffer.byteLength(target) > MEMBER_NAME_MAX_BYTES || target.includes("\0")) {
     fail(code, `Link target is missing or oversized at ${bounded(memberName)}`);
   }
   if (target.startsWith("/") || /^[A-Za-z]:[\\/]?/.test(target) || target.includes("\\")) {
@@ -371,7 +371,7 @@ async function scanWorkspaceEntry(
   const rel = dirRel === "" ? name : `${dirRel}/${name}`;
   // Member names obey the same rules enforced on restore, so a workspace that archives
   // successfully always restores successfully (NUL is impossible from readdir).
-  if (name.includes("\\") || /^[A-Za-z]:/.test(rel) || rel.length > MEMBER_NAME_MAX_BYTES) {
+  if (name.includes("\\") || /^[A-Za-z]:/.test(rel) || Buffer.byteLength(rel) > MEMBER_NAME_MAX_BYTES) {
     fail("unsafe-entry", `Workspace entry name is not portable: ${bounded(rel)}`);
   }
   let stats: Stats;

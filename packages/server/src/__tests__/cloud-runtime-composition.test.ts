@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH } from "@opentag/shared";
+import { CLOUD_MODEL_CHAT_COMPLETIONS_PATH, RUNNER_WORKSPACE_PATH } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../app.js";
@@ -8,7 +8,9 @@ import {
   collectKnownSecrets,
   createCloudDeliveryComposition,
   createCloudIngressAllocationPort,
+  createSandboxRunnerRuntime,
 } from "../cloud-runtime-composition.js";
+import type { ServerConfig } from "../config.js";
 import { imBindings, sandboxes, users } from "../db/schema/index.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -24,6 +26,7 @@ import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
+import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /**
@@ -88,6 +91,59 @@ function runnerRuntime() {
 }
 
 describe("production Cloud runtime composition", () => {
+  it("wires workspace persistence through the exact production factory and app registration", async () => {
+    const config: Pick<ServerConfig, "environment" | "jwtSecret" | "cloudRunner" | "cloudIdentities"> = {
+      environment: "dev",
+      jwtSecret: "unit-test-jwt-secret-at-least-32-characters",
+      cloudIdentities,
+      cloudRunner: {
+        enabled: true,
+        image: `registry.example.test/runner@sha256:${"a".repeat(64)}`,
+        project: "unit-project",
+        region: FAKE_REGION,
+        serviceAccount: "runner@unit-project.iam.gserviceaccount.com",
+        backendOrigin: "https://server.example.test",
+        vpc: { network: "unit-network", subnetwork: "unit-subnet", executionTag: "unit-runner" },
+        staticAccessToken: "fixture-google-access-token",
+        apiTimeoutMs: 30_000,
+        createConvergeTimeoutMs: 120_000,
+        bootstrapTokenTtlSeconds: 600,
+        acceptanceTimeoutMs: 60_000,
+      },
+    };
+    const store = new FakeWorkspaceObjectStore();
+    let issuedToken: Promise<string> | undefined;
+    const runtime = createSandboxRunnerRuntime(unit.database, config, {
+      workspaceStoreFactory: ({ tokenProvider }) => {
+        issuedToken = tokenProvider();
+        return store;
+      },
+    });
+    expect(await issuedToken).toBe("fixture-google-access-token");
+    expect(runtime?.sandboxRunnerService.workspacePersistenceEnabled).toBe(true);
+    const options = cloudAppOptions({ runnerRuntime: runtime, composition: {}, cloudModel: { enabled: false } });
+    expect(options.runnerWorkspace).toBe(runtime?.runnerWorkspace);
+    expect(options.runnerWorkspace).toBeDefined();
+    const app = createApp(options);
+    try {
+      for (const [method, path] of [
+        ["POST", "claim"],
+        ["GET", "archive"],
+        ["PUT", "archive"],
+      ] as const) {
+        const response = await app.inject({ method, url: `${RUNNER_WORKSPACE_PATH}/${path}` });
+        expect(response.statusCode).toBe(401);
+      }
+    } finally {
+      await app.close();
+    }
+    // The default GCS adapter is constructed without acquiring credentials or issuing I/O.
+    const production = createSandboxRunnerRuntime(unit.database, config);
+    expect(production?.sandboxRunnerService.workspacePersistenceEnabled).toBe(true);
+    expect(production?.runnerWorkspace).toBeDefined();
+    expect(createSandboxRunnerRuntime(unit.database, { ...config, cloudRunner: { enabled: false } })).toBeUndefined();
+  });
+
   it("registers the same grant instance on the createApp model route and the delivery owner", async () => {
     const runtime = runnerRuntime();
     const composition = createCloudDeliveryComposition({

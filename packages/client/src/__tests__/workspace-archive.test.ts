@@ -17,6 +17,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { pack as tarPack } from "tar-stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createWorkspaceArchive,
@@ -128,6 +129,18 @@ function makeTarGz(members: readonly MemberSpec[]): Buffer {
   }
   blocks.push(new Uint8Array(1024));
   return gzipSync(Buffer.concat(blocks.map((block) => Buffer.from(block))));
+}
+
+/** PAX preserves long UTF-8 fields that cannot fit in the hand-built ustar headers. */
+async function makePaxTarGz(members: readonly MemberSpec[]): Promise<Buffer> {
+  const archive = tarPack();
+  for (const member of members) {
+    archive.entry({ name: member.name, type: member.type ?? "file", linkname: member.linkname }, member.content ?? "");
+  }
+  archive.finalize();
+  const chunks: Buffer[] = [];
+  for await (const chunk of archive) chunks.push(Buffer.from(chunk));
+  return gzipSync(Buffer.concat(chunks));
 }
 
 async function writeArchive(root: string, archive: Buffer): Promise<string> {
@@ -662,6 +675,12 @@ describe("restoreWorkspaceArchive member validation", () => {
       [{ name: "link", type: "symlink", linkname: "../../outside/secret" }],
       "unsafe-member",
     ],
+    ["oversized UTF-8 path", [{ name: `${"界".repeat(80)}/`.repeat(5) + "file", content: "x" }], "unsafe-member"],
+    [
+      "oversized UTF-8 link",
+      [{ name: "link", type: "symlink", linkname: `${"界".repeat(80)}/`.repeat(5) + "file" }],
+      "unsafe-member",
+    ],
     ["absolute symlink", [{ name: "link", type: "symlink", linkname: "/etc/passwd" }], "unsafe-member"],
     [
       "chained symlink escape through a root pivot",
@@ -727,7 +746,7 @@ describe("restoreWorkspaceArchive member validation", () => {
   for (const [label, members, code] of malicious) {
     it(`rejects ${label}`, async () => {
       const root = await makeRoot();
-      const archive = makeTarGz(members);
+      const archive = label.startsWith("oversized UTF-8") ? await makePaxTarGz(members) : makeTarGz(members);
       const archivePath = await writeArchive(root, archive);
       const workspace = join(root, "workspace");
       await expectArchiveError(() => restoreWorkspaceArchive(archivePath, workspace, infoOf(archive)), code);

@@ -73,6 +73,9 @@ paths, external symlinks, special files, and malformed archives are rejected by 
 Deploy the Server before its matching pinned Runner image. Persistence capability and restored
 readiness are explicitly negotiated. The Server identity needs GCS object read/create/delete/update
 permissions for the configured storage prefix; the Instance identity does not gain those permissions.
+Existing E3/E4 allocations are not automatically migrated: a previously allocated Sandbox without
+an archive fails restoration. Initial acceptance uses a new Session; retaining an existing live
+workspace requires a separate migration procedure before switching its Runner.
 Existing storage configuration and allocation identity are reused. The ingress/reverse proxy must
 allow the archive body size (128 MiB) and the transfer deadline (120 seconds); verify these values
 in staging before enabling E5. Workspace HTTP requests and the Runner WSS connection must

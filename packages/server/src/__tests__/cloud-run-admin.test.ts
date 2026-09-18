@@ -162,6 +162,37 @@ describe("CloudRunAdmin create", () => {
     expect(labels["managed-by"]).toBe("opentag");
   });
 
+  it("sets the workspace persistence env flag only for workspace-enabled allocations", async () => {
+    const { calls, fetchImpl } = fakeFetch((call) => {
+      if (call.method === "POST")
+        return { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } };
+      return { status: 200, body: instanceBody() };
+    });
+    // Legacy allocation: the Runner env stays exactly the E3/E4 shape (no persistence flag).
+    await admin(fetchImpl).createInstance(SPEC);
+    const legacyCreate = calls.find((call) => call.method === "POST");
+    if (!legacyCreate) throw new Error("Missing legacy create request");
+    const legacyEnv = Object.fromEntries(
+      (legacyCreate.body as { containers: { env: { name: string }[] }[] }).containers[0]?.env.map((entry) => [
+        entry.name,
+        true,
+      ]) ?? [],
+    );
+    expect(legacyEnv.OPENTAG_RUNNER_WORKSPACE_PERSISTENCE).toBeUndefined();
+
+    // Workspace-enabled allocation: the Runner restore/save path is armed explicitly.
+    await admin(fetchImpl).createInstance({ ...SPEC, workspacePersistence: true });
+    const workspaceCreate = calls.filter((call) => call.method === "POST")[1];
+    if (!workspaceCreate) throw new Error("Missing workspace create request");
+    const env = Object.fromEntries(
+      (workspaceCreate.body as { containers: { env: { name: string; value: string }[] }[] }).containers[0]?.env.map(
+        (entry) => [entry.name, entry.value],
+      ) ?? [],
+    );
+    expect(env.OPENTAG_RUNNER_WORKSPACE_PERSISTENCE).toBe("1");
+    expect(env.OPENTAG_RUNNER_BACKEND_URL).toBe(SPEC.backendUrl);
+  });
+
   it("adopts the existing owned resource on 409 instead of duplicating", async () => {
     const { calls, fetchImpl } = fakeFetch((call) =>
       call.method === "POST"

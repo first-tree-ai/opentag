@@ -50,6 +50,8 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
   writes: { bytes: number; sha256: string; md5: string; sealed: boolean }[] = [];
   /** When set, the next write waits on the gate before landing (concurrency simulation). */
   writeGate?: { promise: Promise<void>; open: () => void };
+  /** Called as the first body chunk is consumed (streaming proof). */
+  onWriteBody?: () => void;
   failNextWriteWith?: WorkspaceObjectStoreError;
   failNextClaimWith?: WorkspaceObjectStoreError;
 
@@ -84,7 +86,7 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     return this.#objects.get(storageUri)?.content;
   }
 
-  async claim(scope: WorkspaceObjectScope): Promise<WorkspaceObject> {
+  async claim(scope: WorkspaceObjectScope, options: { initialize?: boolean } = {}): Promise<WorkspaceObject> {
     this.claims += 1;
     if (this.failNextClaimWith) {
       const error = this.failNextClaimWith;
@@ -93,7 +95,7 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     }
     const current = this.#objects.get(scope.storageUri);
     if (!current) {
-      if (scope.environmentGeneration !== 1) {
+      if (!options.initialize || scope.environmentGeneration !== 1) {
         throw new WorkspaceObjectStoreError(
           "missing",
           "Workspace archive is absent for a non-first environment generation",
@@ -185,6 +187,7 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
         throw new WorkspaceObjectStoreError("invalid_input", "Workspace archive source exceeded its declared length");
       }
       chunks.push(Buffer.from(chunk));
+      this.onWriteBody?.();
     }
     if (bytes !== input.bytes) {
       throw new WorkspaceObjectStoreError("invalid_input", "Workspace archive source is shorter than declared");

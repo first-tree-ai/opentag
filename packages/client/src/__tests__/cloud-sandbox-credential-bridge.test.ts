@@ -14,6 +14,7 @@ import { CloudSandboxCredentialBridge } from "../index.js";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import type { RuntimeProxyDataConnectionLike } from "../runtime/runtime-credential-relay.js";
 import type { RuntimeProxyStreamResponse } from "../runtime/runtime-proxy-data-client.js";
+import { RUNTIME_PROXY_PROVIDER_CA_KEY, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 
 const CAPABILITY = "c".repeat(43);
 const TICKET = "t".repeat(43);
@@ -383,6 +384,13 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
     expect(environmentFile.executionId).toBe(EXECUTION_ID);
     expect(environmentFile.environment.GH_TOKEN).toMatch(/^otrh_/);
     expect(environmentFile.environment.SLACK_BOT_TOKEN).toMatch(/^otrh_/);
+    // The manifest publishes only the execution-scoped routing inputs; the Agent runtime
+    // environment never receives a global proxy or the execution CA.
+    expect(environmentFile.environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:18080");
+    expect(environmentFile.environment[RUNTIME_PROXY_PROVIDER_CA_KEY]).toBe("/run/opentag-execution/ca.pem");
+    for (const key of ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE", "GIT_SSL_CAINFO"]) {
+      expect(environmentFile.environment).not.toHaveProperty(key);
+    }
     const serialized = JSON.stringify(environmentFile);
     expect(serialized).not.toContain(CAPABILITY);
     expect(serialized).not.toContain(TICKET);
@@ -402,8 +410,22 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
     const entry = await readFile(join(publicDir, "entry.mjs"), "utf8");
     expect(entry).toContain("18080");
     expect(entry).toContain("18443");
-    expect(environmentFile.environment.HTTPS_PROXY).toBe("http://127.0.0.1:18080");
     expect(entry).toContain("/run/opentag-execution");
+
+    // Provider launchers scope routing/trust to their own process; Git reads the host-scoped
+    // configuration instead of any ambient proxy.
+    const gitConfig = await readFile(join(publicDir, "gitconfig"), "utf8");
+    expect(gitConfig).toContain('[http "https://github.com"]');
+    expect(gitConfig).toContain("proxy = http://127.0.0.1:18080");
+    expect(gitConfig).toContain("sslCAInfo = /run/opentag-execution/ca.pem");
+    const gh = await readFile(join(publicDir, "bin", "gh"), "utf8");
+    const slack = await readFile(join(publicDir, "bin", "slack"), "utf8");
+    expect(gh).toContain("opentag-runtime-proxy-launcher");
+    for (const launcher of [gh, slack]) {
+      expect(launcher).toContain("OPENTAG_PROVIDER_PROXY_URL");
+      expect(launcher).toContain("OPENTAG_PROVIDER_CA_PATH");
+    }
+    expect(slack).toContain("--apihost https://127.0.0.1:18443");
 
     // The generated entry prepares the Sandbox-owned CA copy from the read-only public mount.
     expect(entry).toContain("prepareSandboxCa");
@@ -436,6 +458,7 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
         GIT_SSL_CAINFO: source,
         LARKSUITE_CLI_CA_PATH: source,
         NODE_EXTRA_CA_CERTS: source,
+        OPENTAG_PROVIDER_CA_PATH: source,
         RETAINED: "/etc/ssl/certs/ca-certificates.crt",
         SSL_CERT_FILE: source,
         UNRELATED: "keep",
@@ -449,6 +472,7 @@ describe("CloudSandboxCredentialBridge trust boundary", () => {
       GIT_SSL_CAINFO: destination,
       LARKSUITE_CLI_CA_PATH: destination,
       NODE_EXTRA_CA_CERTS: destination,
+      OPENTAG_PROVIDER_CA_PATH: destination,
       RETAINED: "/etc/ssl/certs/ca-certificates.crt",
       SSL_CERT_FILE: destination,
       UNRELATED: "keep",

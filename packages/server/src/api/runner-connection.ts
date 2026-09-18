@@ -54,6 +54,8 @@ export interface RunnerWebSocketRouteOptions {
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
+// Signed renewal evidence requires a bounded Cloud API read (30s by default) before re-handshake.
+const RENEWAL_AUTH_TIMEOUT_MS = 45_000;
 /** Shared with the route's liveness sweeps. */
 export const RUNNER_WS_DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 export const RUNNER_WS_DEFAULT_HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -163,15 +165,20 @@ export class RunnerConnection {
     }
     // The authentication deadline stays armed across the asynchronous token and database checks;
     // it is cleared only when authentication actually completes.
+    this.#armAuthDeadline(this.#authTimeoutMs);
+    this.#socket.on("message", (raw: Buffer, isBinary: boolean) => this.#enqueueFrame(raw, isBinary));
+    this.#socket.on("close", () => this.#onTransportClosed());
+    this.#socket.on("error", () => this.#onTransportClosed());
+  }
+
+  #armAuthDeadline(timeoutMs: number): void {
+    clearTimeout(this.#authTimer);
     this.#authTimer = setTimeout(() => {
       if (this.#closed || this.#scope) return;
       this.#send({ type: "error", code: "RUNNER_AUTH_TIMEOUT", message: "Authentication timed out" });
       this.#closeWith(RUNNER_WS_CLOSE.authFailed, "authentication timed out");
-    }, this.#authTimeoutMs);
+    }, timeoutMs);
     this.#authTimer.unref?.();
-    this.#socket.on("message", (raw: Buffer, isBinary: boolean) => this.#enqueueFrame(raw, isBinary));
-    this.#socket.on("close", () => this.#onTransportClosed());
-    this.#socket.on("error", () => this.#onTransportClosed());
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -224,12 +231,13 @@ export class RunnerConnection {
     requestId: string | undefined,
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
+    renewExpired: boolean,
   ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
       return;
     }
-    const claims = await this.#verifyBootstrapToken(token, requestId);
+    const claims = await this.#verifyBootstrapToken(token, requestId, wantsWorkspace && renewExpired);
     if (!claims || this.#closed) return;
     const resolved = await this.#resolveAuthenticatedScope(claims, requestId, wantsCloudDelivery, wantsWorkspace);
     if (!resolved) return;
@@ -245,13 +253,34 @@ export class RunnerConnection {
   async #verifyBootstrapToken(
     token: string,
     requestId: string | undefined,
+    renewExpired: boolean,
   ): Promise<RunnerBootstrapClaims | undefined> {
     try {
       return await this.#options.tokens.verify(token);
     } catch {
+      if (renewExpired && (await this.#renewExpiredBootstrap(token))) return undefined;
       if (!this.#closed) this.#rejectAuth(requestId, "bootstrap token invalid or expired");
       return undefined;
     }
+  }
+
+  /** Renewal replies grant no channel, delivery, readiness, or workspace HTTP authority. */
+  async #renewExpiredBootstrap(token: string): Promise<boolean> {
+    const claims = await this.#options.tokens.expiredClaimsForRenewal(token);
+    if (!claims || this.#closed) return false;
+    this.#armAuthDeadline(RENEWAL_AUTH_TIMEOUT_MS);
+    try {
+      const renewed = await this.#options.service.renewExpiredBootstrap(claims);
+      if (!renewed) return false;
+      if (!this.#closed) {
+        this.#send({ type: "auth:renewed", token: renewed });
+        this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "reconnect with the renewed credential");
+      }
+    } catch {
+      // Provider/DB uncertainty is not revocation and never reveals credentials or cloud errors.
+      if (!this.#closed) this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "credential renewal unavailable");
+    }
+    return true;
   }
 
   /**
@@ -637,10 +666,15 @@ export class RunnerConnection {
       if (cloud) await cloud.owner.handleInactiveDeliveryReceived(cloud.connection, frame);
       return;
     }
-    if (!(await this.#activeHolds(current))) return;
+    // A stop can switch a live channel to releasing before this receipt arrives. Keep the exact
+    // allocation connected so pending receipts can be rejected and accepted work can settle.
+    const active = await this.#activeAllocationHolds(current);
+    if (active === undefined) return;
+    if (!(await this.#channelHolds(current))) return;
     const cloud = this.#requireCloudContext();
     if (!cloud) return;
-    await cloud.owner.handleDeliveryReceived(cloud.connection, frame);
+    if (active) await cloud.owner.handleDeliveryReceived(cloud.connection, frame);
+    else await cloud.owner.handleInactiveDeliveryReceived(cloud.connection, frame);
   }
 
   async #handleDeliveryReport(
@@ -810,6 +844,7 @@ export class RunnerConnection {
       data.requestId,
       data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
       data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
+      data.renewExpired === true,
     );
   }
 

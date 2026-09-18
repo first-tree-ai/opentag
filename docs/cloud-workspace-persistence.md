@@ -24,6 +24,24 @@ archive is validated in a sibling staging directory before installation; an inva
 expected archive never becomes a successful empty restore. Reconnecting the same live Runner does
 not replace its current local files with an older archive.
 
+Persistent Runners keep their local files and control listener alive after an authentication
+rejection, with execution admission closed and bounded reconnect backoff. An opted-in
+`renewExpired: true` handshake can exchange a correctly signed expired bootstrap token for a fresh
+short-lived token only after the Server verifies the current persisted allocation and its tracked
+Cloud Run UID/ownership. The renewal-only `auth:renewed` reply never attaches a control channel;
+the Runner must authenticate again normally. Workspace HTTP still rejects the expired token.
+The renewal ability lasts only while that allocation remains current, rather than sharing the
+access token's TTL: keep the bootstrap secret in the trusted parent and restrict Instance-read
+permissions accordingly. Invalid signatures, foreign audiences, released or replaced allocations
+cannot renew; a provider lookup failure is retried without discarding the only local copy.
+
+When no Runner is connected and the provider confirms a previously ready Instance's tracked UID
+is absent, start/ingress conditionally clears that exact binding and restores the same storage URI
+in the next generation. This loss repair skips the normal `releasing` phase because there is no
+local resource left to seal or delete; it cannot be mistaken for an explicit stop by concurrent
+ingress. Present or unknown provider results never authorize replacement. Old accepted work still
+settles through the existing custody recovery as unknown, never automatic task replay.
+
 At a Turn boundary, the Runner keeps the Session execution slot occupied, stops native Sandbox
 writers, saves the workspace, and then reopens execution. Native deletion also removes orphaned
 background processes. The workspace survives that namespace reset. A completed external action
@@ -37,7 +55,12 @@ unknown execution effects and never automatically replayed.
 
 Normal release first closes admission through `releasing`, then asks the Runner to quiesce,
 receive durable Server acknowledgments for terminal reports, and save a sealed archive. The
-Server verifies that archive for the exact current environment before deleting the Instance. Failed saving retains the resource binding and local copy for retry.
+Server verifies that archive for the exact current environment before deleting the Instance.
+During drain, a journaled `received` entry re-announces its original receipt. The Server rejects
+and retires an input it never accepted; accepted custody receives cancellation and a durable
+`not_started` report. A late verified reply after admission closes also cancels without execution.
+Unanswered drain receipts/reports retry every five seconds within the original release deadline.
+This reuses the existing receipt/report protocol; reports for unaccepted dispatches remain invalid. Failed saving retains the resource binding and local copy for retry.
 A confirmed missing Instance has no local copy to save; recovery uses the last successful archive.
 For a permanently unsaveable or unavailable Runner, the Account stop endpoint supports an explicit
 `{ "discardUnsavedChanges": true, "environmentGeneration": <current generation> }` body. It records

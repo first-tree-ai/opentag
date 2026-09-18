@@ -534,7 +534,94 @@ describe("CloudDeliveryOwner", () => {
     grants.close();
   });
 
-  it("settles a received entry whose frozen window expired through the not_started cancellation flow", async () => {
+  it("refuses a receipt whose frozen window expired before custody and leaves the dispatch redispatchable", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, custody, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const { deliveryId, messageId, placementGeneration } = await pendingDelivery({ sessionId: scope.sessionId });
+    const request = deliveryRequest({
+      deliveryId,
+      messageId,
+      sessionId: scope.sessionId,
+      agentId: agent.id,
+      placementGeneration,
+    });
+    const expiredRequest = { ...request, deadlineAt: new Date(Date.now() - 60_000).toISOString() };
+    const expiredHash = computeDirectInputHash(expiredRequest);
+    await owner.dispatchDelivery({
+      computerId: cloud.computerId,
+      inputHash: expiredHash,
+      installationId: connection.installationId,
+      request: expiredRequest,
+    });
+
+    await owner.handleDeliveryReceived(connection, {
+      deliveryId,
+      requestId: expiredRequest.requestId,
+      turnId: randomUUID(),
+    });
+
+    // The input was never taken over and no permission can cover the passed window: the receipt is
+    // refused so the Runner retires its received evidence, and the row keeps its frozen dispatch
+    // instead of being faked forward into a permanent cancellation.
+    expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(0);
+    expect(sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified")).toHaveLength(0);
+    expect(sent.filter((frame) => frame.type === "delivery:verified")).toEqual([
+      expect.objectContaining({ code: "dispatch_expired", status: "rejected" }),
+    ]);
+    const untouched = await deliveryRow(deliveryId);
+    expect(untouched).toMatchObject({
+      state: "pending",
+      dispatchRequestId: expiredRequest.requestId,
+      inputHash: null,
+      reportOwnerInstanceId: null,
+      reportedAt: null,
+      turnId: null,
+    });
+    expect(untouched.dispatchPayload).not.toBeNull();
+
+    // The worker's existing stale-window release then freezes a fresh attempt, and the same
+    // receipt path verifies it normally. The unified semantics never strand the message.
+    expect(await custody.releaseDeliveryDispatch(expiredRequest, expiredHash, "retry")).toBe("released");
+    const freshRequest = {
+      ...request,
+      requestId: randomUUID(),
+      deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+    };
+    const freshHash = computeDirectInputHash(freshRequest);
+    expect(
+      await custody.beginDeliveryDispatch(freshRequest, freshHash, {
+        computerId: cloud.computerId,
+        instanceId: connection.instanceId,
+      }),
+    ).toBe("dispatched");
+    await owner.handleDeliveryReceived(connection, {
+      deliveryId,
+      requestId: expiredRequest.requestId,
+      turnId: randomUUID(),
+    });
+    expect(await deliveryRow(deliveryId)).toMatchObject({
+      state: "pending",
+      dispatchRequestId: freshRequest.requestId,
+      turnId: null,
+    });
+    expect(sent.filter((frame) => frame.type === "delivery:verified").at(-1)).toMatchObject({
+      status: "rejected",
+      code: "dispatch_unknown",
+    });
+    const retriedTurnId = randomUUID();
+    await owner.handleDeliveryReceived(connection, {
+      deliveryId,
+      requestId: freshRequest.requestId,
+      turnId: retriedTurnId,
+    });
+    expect(sent.filter((frame) => frame.type === "delivery:verified" && frame.status === "verified")).toHaveLength(1);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", turnId: retriedTurnId });
+    grants.close();
+  });
+
+  it("settles an accepted turn whose frozen window expired through the not_started cancellation flow", async () => {
     const { scope, agent, cloud } = await cloudScope();
     const { hub, fence, owner, grants } = makeOwner();
     const sent: RunnerServerFrame[] = [];
@@ -547,14 +634,24 @@ describe("CloudDeliveryOwner", () => {
       agentId: agent.id,
       placementGeneration,
     });
-    const expiredRequest = { ...request, deadlineAt: new Date(Date.now() - 60_000).toISOString() };
     await owner.dispatchDelivery({
       computerId: cloud.computerId,
-      inputHash: computeDirectInputHash(expiredRequest),
+      inputHash: computeDirectInputHash(request),
       installationId: connection.installationId,
-      request: expiredRequest,
+      request,
     });
     const turnId = randomUUID();
+    await owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
+    expect((await deliveryRow(deliveryId)).state).toBe("accepted");
+
+    // Custody is already accepted; only the frozen window lapses (rewound deterministically here).
+    const expiredRequest = { ...request, deadlineAt: new Date(Date.now() - 60_000).toISOString() };
+    const expiredHash = computeDirectInputHash(expiredRequest);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: expiredRequest, dispatchInputHash: expiredHash, inputHash: expiredHash })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    sent.length = 0;
     let reportLanded!: () => void;
     const reportRecorded = new Promise<void>((resolve) => {
       reportLanded = resolve;
@@ -567,21 +664,19 @@ describe("CloudDeliveryOwner", () => {
           void owner
             .handleDeliveryReport(connection, {
               requestId: randomUUID(),
-              report: cancelledBeforeStartReport(expiredRequest, turnId),
+              report: cancelledBeforeStartReport(request, turnId),
             })
             .finally(reportLanded);
         });
       }
     };
 
-    await owner.handleDeliveryReceived(connection, { deliveryId, requestId: expiredRequest.requestId, turnId });
+    await owner.handleDeliveryReceived(connection, { deliveryId, requestId: request.requestId, turnId });
 
-    // No permission can be minted for an expired window: the received entry settles truthfully as
-    // not_started through the same cancellation/report flow an explicit stop uses.
+    // Accepted work still settles truthfully as not_started through the explicit cancellation flow.
     expect(sent.filter((frame) => frame.type === "delivery:verified")).toHaveLength(0);
-    expect(sent.some((frame) => frame.type === "delivery:cancel")).toBe(true);
-    const accepted = await deliveryRow(deliveryId);
-    expect(accepted).toMatchObject({ state: "accepted", turnId, reportedAt: null });
+    expect(sent.filter((frame) => frame.type === "delivery:cancel")).toHaveLength(1);
+    expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", turnId, reportedAt: null });
     await reportRecorded;
     const settled = await deliveryRow(deliveryId);
     expect(settled.turnReport).toMatchObject({ outcome: "cancelled", executionEffects: "not_started" });

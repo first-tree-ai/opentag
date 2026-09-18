@@ -37,6 +37,8 @@ interface ProtocolPeerOptions {
   readonly sessionId?: string;
   /** Deterministic save failure: reject the Nth and every later archive upload without storing it. */
   readonly rejectUploadsFrom?: number;
+  readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | undefined;
+  readonly httpToken?: () => string;
 }
 
 /** A storage/control protocol peer over real loopback HTTP + WS; not a GCP/native substitute. */
@@ -46,6 +48,7 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
   const peerSessionId = options.sessionId ?? sessionId;
   let generation = 1;
   let uploads = 0;
+  let authAttempts = 0;
   let bytes = Buffer.alloc(0);
   let object: RunnerWorkspaceObject = {
     generation: "1",
@@ -89,7 +92,7 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     response.end(JSON.stringify(object));
   };
   const serve = async (request: IncomingMessage, response: ServerResponse) => {
-    if (request.headers.authorization !== `Bearer fixture-${generation}`) {
+    if (request.headers.authorization !== `Bearer ${options.httpToken?.() ?? `fixture-${generation}`}`) {
       response.writeHead(403).end();
       return;
     }
@@ -115,30 +118,36 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     void serve(request, response).catch(() => response.destroy());
   });
   const wss = new WebSocketServer({ server: http });
+  const authenticate = (socket: WebSocket, frame: Record<string, unknown>) => {
+    expect(frame.workspaceVersion).toBe(1);
+    const reply = options.authReply?.(frame, ++authAttempts);
+    if (reply) {
+      socket.send(JSON.stringify(reply));
+      return;
+    }
+    socket.send(JSON.stringify({ type: "auth:result", ok: true }));
+    socket.send(
+      JSON.stringify({
+        type: "server:welcome",
+        protocolVersion: 1,
+        sandboxId: peerSandboxId,
+        sessionId: peerSessionId,
+        environmentGeneration: generation,
+        resourceName: `projects/p/locations/r/instances/${instancePrefix}-${generation}`,
+        resourceUid: `uid-${generation}`,
+        cloudDeliveryVersion: 1,
+        workspaceVersion: 1,
+        heartbeatIntervalMs: 50,
+        heartbeatTimeoutMs: 10_000,
+      }),
+    );
+  };
   wss.on("connection", (socket) => {
     current = socket;
     socket.on("message", (raw) => {
       const frame = JSON.parse(String(raw)) as Record<string, unknown>;
       frames.push(frame);
-      if (frame.type === "auth") {
-        expect(frame.workspaceVersion).toBe(1);
-        socket.send(JSON.stringify({ type: "auth:result", ok: true }));
-        socket.send(
-          JSON.stringify({
-            type: "server:welcome",
-            protocolVersion: 1,
-            sandboxId: peerSandboxId,
-            sessionId: peerSessionId,
-            environmentGeneration: generation,
-            resourceName: `projects/p/locations/r/instances/${instancePrefix}-${generation}`,
-            resourceUid: `uid-${generation}`,
-            cloudDeliveryVersion: 1,
-            workspaceVersion: 1,
-            heartbeatIntervalMs: 50,
-            heartbeatTimeoutMs: 10_000,
-          }),
-        );
-      }
+      if (frame.type === "auth") authenticate(socket, frame);
       if (frame.type === "heartbeat") socket.send(JSON.stringify({ type: "server:heartbeat" }));
       if (frame.type === "runner:ready") readyObjects.push({ ...object });
       for (const waiter of waiters) waiter();
@@ -192,6 +201,88 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     },
   };
 }
+
+it("retains unsaved files through rejected auth and renews before saving on a fresh connection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-auth-recovery-"));
+  let currentToken = "fixture-1";
+  let rejected = false;
+  const retryBlocked = deferred();
+  const allowRetry = deferred();
+  const peer = await protocolPeer({
+    httpToken: () => currentToken,
+    authReply: (frame, attempt) => {
+      expect(frame.renewExpired).toBe(true);
+      if (attempt === 2) {
+        rejected = true;
+        return { type: "auth:result", ok: false };
+      }
+      if (attempt === 3) {
+        currentToken = "fixture-renewed";
+        return { type: "auth:renewed", token: currentToken };
+      }
+      expect(frame.token).toBe(currentToken);
+      return undefined;
+    },
+  });
+  const workspace = join(root, "workspace");
+  const native = {
+    launch: vi.fn(async () => mkdir(workspace, { recursive: true })),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const stop = new AbortController();
+  let exited = false;
+  const running = runRunnerServe(
+    {
+      backendUrl: peer.url,
+      bootstrapToken: currentToken,
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(root, "private"),
+      workspacePersistence: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      sleep: async () => {
+        if (rejected) {
+          retryBlocked.resolve();
+          await allowRetry.promise;
+        }
+      },
+    },
+  ).finally(() => {
+    exited = true;
+  });
+  try {
+    await peer.wait("runner:ready");
+    const saved = peer.object().generation;
+    const destroys = native.destroy.mock.calls.length;
+    await writeFile(join(workspace, "unsaved.txt"), "work after the last save");
+    peer.disconnect();
+    await retryBlocked.promise;
+    expect(exited).toBe(false);
+    expect(native.destroy).toHaveBeenCalledTimes(destroys);
+    expect(peer.object().generation).toBe(saved);
+    expect(await readFile(join(workspace, "unsaved.txt"), "utf8")).toBe("work after the last save");
+    allowRetry.resolve();
+    await peer.wait("auth", 3);
+    await peer.wait("runner:ready", 1);
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    expect(peer.object().sealed).toBe(true);
+    expect(Number(peer.object().generation)).toBeGreaterThan(Number(saved));
+  } finally {
+    allowRetry.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 it.each([false, true])(
   "handles checkpoint, report replay and seal over real sockets (unsaveable=%s)",
@@ -532,6 +623,67 @@ function startWireRunner(input: {
   );
   return { sandboxName, workspace: input.workspace, native, webExecutions, stop, running };
 }
+
+it.each(["pending", "accepted"] as const)(
+  "seals a received %s input over the live control channel",
+  async (custody) => {
+    const root = await mkdtemp(join(tmpdir(), "opentag-receipt-seal-"));
+    const peer = await protocolPeer();
+    const runWorker = vi.fn(async () => {
+      throw new Error("Received input must not execute while sealing");
+    });
+    const runner = startWireRunner({
+      root,
+      peer,
+      label: "a",
+      generation: 1,
+      workspace: join(root, "workspace"),
+      seams: {
+        openExecution: async () => {
+          throw new Error("No execution bridge before verification");
+        },
+        runWorker,
+      },
+    });
+    try {
+      await peer.wait("runner:ready");
+      const delivery = cloudDeliveryFixture({ sessionId });
+      peer.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+      await peer.wait("delivery:received");
+      const requestId = randomUUID();
+      peer.send({ type: "workspace:seal", requestId });
+      expect(await peer.wait("delivery:received", 1)).toMatchObject({ requestId: delivery.requestId });
+      expect(peer.count("delivery:report")).toBe(0);
+      if (custody === "pending") {
+        peer.send({
+          type: "delivery:verified",
+          requestId: delivery.requestId,
+          status: "rejected",
+          code: "scope_inactive",
+        });
+      } else {
+        peer.send({ type: "delivery:cancel", requestId: randomUUID(), deliveryId: delivery.deliveryId });
+        const report = (await peer.wait("delivery:report")).report as WireTurnReport;
+        expect(report).toMatchObject({ outcome: "cancelled", executionEffects: "not_started" });
+        peer.send({
+          type: "delivery:report:ack",
+          requestId: randomUUID(),
+          turnId: report.turnId,
+          resultHash: report.resultHash,
+          status: "recorded",
+        });
+      }
+      expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+      expect(peer.object().sealed).toBe(true);
+      expect(runWorker).not.toHaveBeenCalled();
+    } finally {
+      runner.stop.abort();
+      await runner.running;
+      await peer.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 it("runs two Sessions of one Agent concurrently and restores each Session independently", async () => {
   const root = await mkdtemp(join(tmpdir(), "opentag-e6-wire-"));

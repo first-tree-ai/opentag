@@ -350,12 +350,95 @@ describe("CloudTurnRunner", () => {
     expect(await h.journal.list()).toEqual([]);
   });
 
-  it("keeps an unacknowledged report durable when release times out", async () => {
+  it("keeps an unverified receipt durable when release times out", async () => {
     const h = harness();
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
     await expect(h.runner.drainForRelease(5)).rejects.toThrow("not acknowledged");
-    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("reported");
+    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("received");
+    expect(reportsOf(h.sent)).toHaveLength(0);
     expect(h.workerInputs).toHaveLength(0);
+  });
+
+  it("drains an unaccepted receipt through rejection without manufacturing a report", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    const draining = h.runner.drainForRelease(1_000);
+    await waitFor(() => h.sent.filter((frame) => frame.type === "delivery:received").length === 2, "receipt replay");
+    expect(reportsOf(h.sent)).toHaveLength(0);
+    await h.runner.handleVerified({
+      type: "delivery:verified",
+      requestId: h.delivery.requestId,
+      status: "rejected",
+      code: "scope_inactive",
+    });
+    await draining;
+    expect(await h.journal.list()).toEqual([]);
+    expect(h.workerInputs).toHaveLength(0);
+  });
+
+  it.each(["cancel", "late_verified"] as const)(
+    "drains accepted received custody through %s and a durable report ack",
+    async (reply) => {
+      const h = harness();
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      const draining = h.runner.drainForRelease(1_000);
+      await waitFor(() => h.sent.filter((frame) => frame.type === "delivery:received").length === 2, "receipt replay");
+      if (reply === "cancel") h.runner.handleCancel(h.delivery.deliveryId);
+      else await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await waitFor(() => reportsOf(h.sent).length > 0, "cancelled report");
+      const report = reportsOf(h.sent)[0]?.report;
+      if (!report) throw new Error("missing report");
+      expect(report).toMatchObject({ outcome: "cancelled", executionEffects: "not_started" });
+      await h.runner.handleReportAck({
+        type: "delivery:report:ack",
+        requestId: randomUUID(),
+        turnId: report.turnId,
+        resultHash: report.resultHash,
+        status: "recorded",
+      });
+      await draining;
+      expect(await h.journal.list()).toEqual([]);
+      expect(h.workerInputs).toHaveLength(0);
+    },
+  );
+
+  it("re-announces drain receipts after a dropped reply within the same release deadline", async () => {
+    const retried = deferred<void>();
+    const receipts: string[] = [];
+    const h = harness({
+      runnerOptions: {
+        send: (frame) => {
+          if (frame.type !== "delivery:received") return;
+          receipts.push(frame.requestId);
+          if (receipts.length === 3) retried.resolve();
+        },
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    const draining = h.runner.drainForRelease(10_000);
+    // The initial drain receipt is intentionally dropped; no journal mutation wakes the loop.
+    await retried.promise;
+    expect(new Set(receipts)).toEqual(new Set([h.delivery.requestId]));
+    await h.runner.handleVerified(rejectionFrame(h.delivery.requestId, "scope_inactive"));
+    await draining;
+    expect(await h.journal.list()).toEqual([]);
+    expect(h.workerInputs).toHaveLength(0);
+  }, 12_000);
+
+  it("reconciles an old received dispatch before admitting its replacement", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    const replacement = { ...h.delivery, requestId: randomUUID() };
+    await h.runner.handleDeliveryRun(runFrame(replacement));
+    const receipts = h.sent.filter((frame) => frame.type === "delivery:received");
+    expect(receipts).toHaveLength(2);
+    expect(receipts[1]).toMatchObject({ requestId: h.delivery.requestId });
+    expect((await h.journal.read(h.delivery.deliveryId))?.requestId).toBe(h.delivery.requestId);
+    await h.runner.handleVerified(rejectionFrame(h.delivery.requestId, "dispatch_unknown"));
+    await h.runner.handleDeliveryRun(runFrame(replacement));
+    expect((await h.journal.read(h.delivery.deliveryId))?.requestId).toBe(replacement.requestId);
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
   });
 
   it("journals the receipt before acknowledging and never executes without the verified boundary", async () => {

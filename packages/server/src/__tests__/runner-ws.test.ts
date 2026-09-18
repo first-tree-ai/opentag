@@ -1329,6 +1329,74 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     expect(client.frames.some((frame) => frame.type === "auth:result")).toBe(false);
   });
 
+  it.each([false, true])(
+    "keeps a releasing live channel open to settle received custody (accepted=%s)",
+    async (accepted) => {
+      const accountId = await account();
+      const sandbox = await ownedSandbox(accountId);
+      const stack = await cloudDeliveryStack(accountId);
+      await stack.service.startForAccount(accountId, sandbox.sandboxId);
+      const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+      const claims = {
+        sandboxId: sandbox.sandboxId,
+        sessionId: sandbox.sessionId,
+        environmentGeneration: 1,
+        resourceName: row?.currentResourceName as string,
+      };
+      const token = await stack.tokens.issue(claims);
+      const { client } = await authenticatedCloudRunner(stack.address, token);
+      await client.waitFor("server:welcome");
+      client.send(readyFrame(claims.resourceName));
+      await waitForLifecycle(stack.service, accountId, sandbox.sandboxId, "ready");
+
+      const [placement] = await unit.database
+        .select()
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, sandbox.sessionId))
+        .limit(1);
+      if (!placement) throw new Error("fixture placement missing");
+      const { deliveryId, messageId } = await pendingDelivery(sandbox.sessionId, placement.generation);
+      const [binding] = await unit.database.select().from(imBindings).limit(1);
+      if (!binding) throw new Error("fixture binding missing");
+      const request = e4DeliveryRequest({
+        deliveryId,
+        messageId,
+        sessionId: sandbox.sessionId,
+        placementGeneration: placement.generation,
+        agentId: binding.agentId,
+      });
+      await stack.owner.dispatchDelivery({
+        computerId: sandbox.computerId,
+        inputHash: computeDirectInputHash(request),
+        installationId: randomUUID(),
+        request,
+      });
+      const run = (await client.waitFor("delivery:run")) as { requestId: string };
+      const turnId = randomUUID();
+      if (accepted) {
+        client.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
+        await client.waitFor("delivery:verified");
+      }
+      await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+      client.send({ type: "delivery:received", requestId: run.requestId, deliveryId, turnId });
+      if (accepted) {
+        await client.waitFor("delivery:cancel");
+        const report = e4TurnReport(request, turnId, "cancelled");
+        client.send({ type: "delivery:report", requestId: randomUUID(), report });
+        expect((await client.waitFor("delivery:report:ack")).status).toBe("recorded");
+      } else {
+        expect(await client.waitFor("delivery:verified")).toMatchObject({ status: "rejected", code: "scope_inactive" });
+        const [pending] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryId));
+        expect(pending).toMatchObject({ state: "pending", turnId: null, reportedAt: null });
+      }
+      expect(client.socket.readyState).toBe(WebSocket.OPEN);
+      expect(stack.hub.describe(sandbox.sandboxId).connected).toBe(true);
+    },
+  );
+
   it("records an accepted report after an explicit Session end and closes when the allocation is released", async () => {
     const accountId = await account();
     const sandbox = await ownedSandbox(accountId);

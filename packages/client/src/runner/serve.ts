@@ -109,6 +109,7 @@ export interface RunnerServeOptions {
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
+const PERSISTENT_AUTH_TIMEOUT_MS = 45_000;
 const DEFAULT_MAX_RECONNECT_ATTEMPTS = 8;
 
 function logLine(io: { write(chunk: string): void }, message: string): void {
@@ -523,10 +524,10 @@ async function startServeWebGateway(
 }
 interface ConnectionOutcome {
   /**
-   * "auth_failed" is the ONLY permanent outcome: an explicit in-band `auth:result ok:false`.
-   * "auth_timeout" and "closed" are transport failures and take the backoff reconnect path.
+   * Persistent Runners retain their only unsaved copy even after explicit auth rejection.
+   * A renewal-only reply requires a fresh ordinary handshake before any work or storage I/O.
    */
-  kind: "closed" | "auth_failed" | "auth_timeout";
+  kind: "closed" | "auth_failed" | "auth_timeout" | "renewed";
   healthy: boolean;
 }
 async function serveOnce(
@@ -635,7 +636,10 @@ async function serveOnce(
     // The handshake deadline spans TCP+TLS+upgrade AND the Server's token/database checks, so a
     // slow connect (Server restart, cold ingress) is a transport failure, never a permanent
     // rejection: finish with "auth_timeout" and let the backoff path reconnect.
-    const authTimer = setTimeout(() => finish("auth_timeout"), options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS);
+    const authTimer = setTimeout(
+      () => finish("auth_timeout"),
+      options.authTimeoutMs ?? (config.workspacePersistence ? PERSISTENT_AUTH_TIMEOUT_MS : DEFAULT_AUTH_TIMEOUT_MS),
+    );
     const ready = () => {
       if (state.workspace && !state.workspace.ready) return;
       send({
@@ -651,7 +655,7 @@ async function serveOnce(
         requestId: randomUUID(),
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
-        ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
+        ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
       }),
     );
     const onWelcome = (data: RunnerWelcomeFrame) => {
@@ -733,6 +737,7 @@ async function serveOnce(
         closed,
         authenticated,
         welcomed: welcome !== undefined,
+        renewExpired: config.workspacePersistence === true,
         finish,
         armSilence,
         onWelcome,
@@ -760,7 +765,7 @@ async function serveOnce(
         bridge,
         enqueueCloudControl,
         authResult: (ok) => {
-          // Only an explicit in-band rejection is permanent; a duplicate grant is idempotent.
+          // Rejection never opens execution; persistent mode retains local state while retrying.
           if (!ok) finish("auth_failed");
           else authenticated = true;
         },
@@ -901,15 +906,8 @@ async function maintainConnections(
     // can dispatch work into a sandbox still owned by the prior connection.
     await state.active?.done;
     if (state.stopping || state.fatal) break;
-    if (outcome.kind === "auth_failed") {
-      // The Server explicitly rejected the credential in-band; retrying the same token is
-      // pointless, so the Runner exits for an operator or an Account stop/start to intervene.
-      logLine(options.stderr, "Runner authentication rejected");
-      break;
-    }
-    if (outcome.kind === "auth_timeout") {
-      logLine(options.stderr, "Runner authentication timed out; reconnecting");
-    }
+    // Renewal also uses bounded backoff: repeated unusable renewal replies must not hot-loop.
+    if (shouldExitRejectedRunner(config, options, outcome)) break;
     failures = outcome.healthy ? 0 : failures + 1;
     // Storage outages must not turn a bounded reconnect policy into destruction of the only
     // unsaved local workspace. Keep the parent and health listener alive at bounded backoff.
@@ -917,6 +915,19 @@ async function maintainConnections(
     const delay = Math.min(1_000 * 2 ** failures, 30_000) + (options.randomJitter ?? randomInt)(500);
     await waitReconnect(delay, state, options, stopListeners);
   }
+}
+
+function shouldExitRejectedRunner(
+  config: RunnerServeConfig,
+  options: RunnerServeOptions,
+  outcome: ConnectionOutcome,
+): boolean {
+  if (outcome.kind === "auth_timeout") logLine(options.stderr, "Runner authentication timed out; reconnecting");
+  if (outcome.kind !== "auth_failed") return false;
+  logLine(options.stderr, "Runner authentication rejected");
+  // Rejection never authorizes destruction of the only unsaved copy. The control plane owns
+  // permanent revocation and physical cleanup; persistent mode stays closed to work and retries.
+  return !config.workspacePersistence;
 }
 
 function reconnectLimitReached(config: RunnerServeConfig, options: RunnerServeOptions, failures: number): boolean {
@@ -1091,6 +1102,7 @@ interface FrameDispatch {
   closed: boolean;
   authenticated: boolean;
   welcomed: boolean;
+  renewExpired: boolean;
   finish: (kind?: ConnectionOutcome["kind"]) => void;
   armSilence: () => void;
   onWelcome: (frame: RunnerWelcomeFrame) => void;
@@ -1107,6 +1119,14 @@ interface FrameDispatch {
 }
 function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
   if (c.closed) return;
+  if (data.type === "auth:renewed") {
+    if (c.authenticated || !c.renewExpired) c.finish();
+    else {
+      c.credential(data.token);
+      c.finish("renewed");
+    }
+    return;
+  }
   if (data.type === "auth:result") {
     c.authResult(data.ok);
     return;

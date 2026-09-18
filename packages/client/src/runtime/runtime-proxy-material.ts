@@ -8,11 +8,21 @@ import type { RuntimeProxyCliMetadata, RuntimeProxyProvider } from "./runtime-cr
 
 export const RUNTIME_PROXY_SHIM_MARKER = "# opentag-runtime-proxy-shim: v1";
 export const RUNTIME_PROXY_GIT_HELPER_MARKER = "# opentag-runtime-proxy-git-helper: v1";
+export const RUNTIME_PROXY_LAUNCHER_MARKER = "# opentag-runtime-proxy-launcher: v1";
 const EXECUTION_MARKER_PREFIX = "# opentag-execution: ";
 const MANAGED_SESSION_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Environment assembled for one execution; `undefined` unsets the inherited variable. */
 export type RuntimeProxyEnvironment = Readonly<Record<string, string | undefined>>;
+
+/**
+ * Execution-scoped routing inputs published to the Agent. They are deliberately not standard
+ * tool variables: only the provider launchers translate them into the proxy/CA variables their
+ * own CLI process needs, so the Agent's ordinary subprocesses keep public routing and the system
+ * trust store. Neither value is a credential.
+ */
+export const RUNTIME_PROXY_PROVIDER_URL_KEY = "OPENTAG_PROVIDER_PROXY_URL";
+export const RUNTIME_PROXY_PROVIDER_CA_KEY = "OPENTAG_PROVIDER_CA_PATH";
 
 export interface RuntimeProxyExecutionLayout {
   readonly adapterCaCertPath: string;
@@ -78,13 +88,7 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
       GIT_CONFIG_VALUE_1: `!sh '${input.layout.gitCredentialHelperPath}'`,
       GIT_CONFIG_GLOBAL: input.layout.gitConfigPath,
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_SSL_CAINFO: input.adapterCaCertPath,
       GIT_TERMINAL_PROMPT: "0",
-      HTTPS_PROXY: input.connectProxyUrl,
-      NO_PROXY: LOCAL_PROXY_BYPASS,
-      https_proxy: input.connectProxyUrl,
-      no_proxy: LOCAL_PROXY_BYPASS,
-      SSL_CERT_FILE: input.adapterCaCertPath,
     } satisfies Record<string, string>);
   }
   const feishu = input.handles.get("feishu");
@@ -113,16 +117,60 @@ export function buildRuntimeProxyEnvironment(input: RuntimeProxyEnvironmentInput
       SLACK_BOT_TOKEN: slack,
       SLACK_CONFIG_DIR: input.layout.slackConfigDir,
       SLACK_USER_TOKEN: undefined,
-      SSL_CERT_FILE: input.adapterCaCertPath,
-      // Slack file handle URLs stay on the fixed slack.com origin and go through the
-      // loopback CONNECT proxy; the direct --apihost endpoint must never be proxied.
-      HTTPS_PROXY: input.connectProxyUrl,
-      NO_PROXY: LOCAL_PROXY_BYPASS,
-      https_proxy: input.connectProxyUrl,
-      no_proxy: LOCAL_PROXY_BYPASS,
     } satisfies Record<string, string | undefined>);
   }
+  if (github !== undefined || slack !== undefined) {
+    // GitHub Git/gh and the Slack CLI (including its fixed-origin file handles) reach the
+    // execution adapter through these two scoped inputs. Nothing else reads them.
+    Object.assign(environment, {
+      [RUNTIME_PROXY_PROVIDER_URL_KEY]: input.connectProxyUrl,
+      [RUNTIME_PROXY_PROVIDER_CA_KEY]: input.adapterCaCertPath,
+    } satisfies Record<string, string>);
+  }
   return environment;
+}
+
+/**
+ * Translate the scoped routing inputs into the standard variables provider CLIs and
+ * explicitly-sourced provider shells honor. Apply this only at a provider use site: the Agent
+ * runtime's own environment must never carry a global proxy or a private CA.
+ */
+export function providerRoutingEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+): Readonly<Record<string, string>> {
+  const proxyUrl = environment[RUNTIME_PROXY_PROVIDER_URL_KEY];
+  const caPath = environment[RUNTIME_PROXY_PROVIDER_CA_KEY];
+  if (!proxyUrl || !caPath) return {};
+  return {
+    CURL_CA_BUNDLE: caPath,
+    HTTPS_PROXY: proxyUrl,
+    NO_PROXY: LOCAL_PROXY_BYPASS,
+    SSL_CERT_FILE: caPath,
+    https_proxy: proxyUrl,
+    no_proxy: LOCAL_PROXY_BYPASS,
+  };
+}
+
+/**
+ * The execution Git configuration referenced through `GIT_CONFIG_GLOBAL`. The empty general
+ * `http.proxy` disables every ambient proxy variable for Git, so only the explicit github.com
+ * entry is routed through the credential proxy; other hosts (for example a public GitLab clone)
+ * connect directly and keep the system CA.
+ */
+export function renderRuntimeProxyGitConfig(input: {
+  readonly caCertPath: string;
+  readonly connectProxyUrl: string;
+}): string {
+  return `[http]
+\tproxy = ${quoteGitConfigValue("")}
+[http "https://github.com"]
+\tproxy = ${quoteGitConfigValue(input.connectProxyUrl)}
+\tsslCAInfo = ${quoteGitConfigValue(input.caCertPath)}
+`;
+}
+
+function quoteGitConfigValue(value: string): string {
+  return /[\s#"';]/.test(value) ? `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"` : value;
 }
 
 export function renderRuntimeProxyGitCredentialHelper(handle: string): string {
@@ -174,6 +222,54 @@ if [ ! -r '${environmentFilePath.replaceAll("'", "'\"'\"'")}' ]; then
   exit 1
 fi
 . '${environmentFilePath.replaceAll("'", "'\"'\"'")}'
+exec "$real_binary" "$@"
+`;
+}
+
+/**
+ * Shell lines that scope the credential proxy and its execution CA to the process that sources
+ * them. They never change the caller's environment and are a no-op without both scoped inputs.
+ */
+export function renderRuntimeProxyScopePreamble(): string {
+  return `if [ -n "$OPENTAG_PROVIDER_PROXY_URL" ] && [ -n "$OPENTAG_PROVIDER_CA_PATH" ]; then
+  HTTPS_PROXY=$OPENTAG_PROVIDER_PROXY_URL
+  https_proxy=$OPENTAG_PROVIDER_PROXY_URL
+  NO_PROXY=127.0.0.1,localhost
+  no_proxy=127.0.0.1,localhost
+  SSL_CERT_FILE=$OPENTAG_PROVIDER_CA_PATH
+  CURL_CA_BUNDLE=$OPENTAG_PROVIDER_CA_PATH
+  export HTTPS_PROXY https_proxy NO_PROXY no_proxy SSL_CERT_FILE CURL_CA_BUNDLE
+fi`;
+}
+
+/**
+ * Sandbox-facing provider launcher: it resolves the real binary on PATH and scopes the credential
+ * proxy plus its execution CA to exactly this CLI process. The Agent runtime environment itself
+ * keeps public routing and the system trust store; only CLI invocations that need a platform
+ * provider come through here (or through the pinned Slack launcher that also carries the scope).
+ */
+export function renderRuntimeProxyProviderLauncher(binary: string): string {
+  return `#!/bin/sh
+${RUNTIME_PROXY_LAUNCHER_MARKER} binary=${binary}
+# OpenTag execution-local provider launcher: scope the credential proxy and CA to this process,
+# then exec the real binary with unchanged argv, cwd, stdin, stdout, stderr, signals, and status.
+self_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+real_binary=""
+old_ifs=$IFS
+IFS=:
+for path_dir in $PATH; do
+  [ "$path_dir" = "$self_dir" ] && continue
+  if [ -x "$path_dir/${binary}" ]; then
+    real_binary="$path_dir/${binary}"
+    break
+  fi
+done
+IFS=$old_ifs
+if [ -z "$real_binary" ]; then
+  echo "opentag: ${binary} is unavailable on PATH" >&2
+  exit 127
+fi
+${renderRuntimeProxyScopePreamble()}
 exec "$real_binary" "$@"
 `;
 }
@@ -243,12 +339,26 @@ export class RuntimeProxyMaterialStore {
     await mkdir(layout.larkConfigDir, { mode: 0o700, recursive: true });
     await mkdir(layout.slackConfigDir, { mode: 0o700, recursive: true });
     const github = input.handles.get("github");
+    // Provider CLIs opened from the stable env file get the standard routing variables there; the
+    // manifest stays scoped so the Agent runtime environment never turns them global.
+    const routing = providerRoutingEnvironment(input.environment);
     if (github !== undefined) {
-      await writeDurableFile(layout.gitConfigPath, "", 0o600);
+      if (routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined) {
+        await writeDurableFile(
+          layout.gitConfigPath,
+          renderRuntimeProxyGitConfig({
+            caCertPath: routing.SSL_CERT_FILE,
+            connectProxyUrl: routing.HTTPS_PROXY,
+          }),
+          0o600,
+        );
+      } else {
+        await writeDurableFile(layout.gitConfigPath, "", 0o600);
+      }
       await writeDurableFile(layout.gitCredentialHelperPath, renderRuntimeProxyGitCredentialHelper(github), 0o700);
       await chmod(layout.gitCredentialHelperPath, 0o700);
     }
-    const serialized = serializeEnvironment(input.environment, input.platform);
+    const serialized = serializeEnvironment({ ...input.environment, ...routing }, input.platform);
     const marked = `${EXECUTION_MARKER_PREFIX}${input.executionId}\n${serialized}`;
     await writeDurableFile(this.environmentFilePath(input.sessionId), marked, 0o600);
     // JSON has no `undefined`: unset markers serialize as null and the launcher deletes them.

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RunnerCloudTurnWorkerRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentPromptRequest } from "../agent-runtime/types.js";
@@ -16,6 +16,7 @@ import {
   renderCloudSystemPrompt,
   runCloudTurnWorker,
 } from "../runner/cloud-turn-worker.js";
+import { RUNTIME_PROXY_PROVIDER_CA_KEY, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const MODEL = {
@@ -50,7 +51,10 @@ async function fixtureExecution(root: string, name: string): Promise<string> {
     join(directory, "environment.json"),
     JSON.stringify({
       executionId: randomUUID(),
-      environment: { HTTPS_PROXY: "http://127.0.0.1:18080", https_proxy: "http://127.0.0.1:18080" },
+      environment: {
+        [RUNTIME_PROXY_PROVIDER_URL_KEY]: "http://127.0.0.1:18080",
+        [RUNTIME_PROXY_PROVIDER_CA_KEY]: join(directory, "ca.pem"),
+      },
     }),
     "utf8",
   );
@@ -243,8 +247,13 @@ describe("cloud-turn-worker", () => {
       expect(entry.environment.GH_TOKEN).toBeUndefined();
       expect(entry.environment.SLACK_BOT_TOKEN).toBeUndefined();
       expect(entry.environment.LARKSUITE_CLI_APP_SECRET).toBeUndefined();
-      // The published manifest loopback seam is applied, not the parent's ambient proxy.
-      expect(entry.environment.HTTPS_PROXY).toBe("http://127.0.0.1:18080");
+      // The published manifest loopback seam is applied, not the parent's ambient proxy. The
+      // standard routing variables stay out of the Agent runtime environment entirely.
+      expect(entry.environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:18080");
+      expect(entry.environment.HTTPS_PROXY).toBeUndefined();
+      expect(entry.environment.https_proxy).toBeUndefined();
+      expect(entry.environment.SSL_CERT_FILE).toBeUndefined();
+      expect(entry.environment.GIT_SSL_CAINFO).toBeUndefined();
     }
   });
 
@@ -305,7 +314,13 @@ describe("cloud-turn-worker", () => {
     // Even with the seam enabled, a manifest that names another endpoint is rejected.
     await writeFile(
       join(executionDir, "environment.json"),
-      JSON.stringify({ environment: { HTTPS_PROXY: "http://127.0.0.1:9999" }, executionId: "fixture" }),
+      JSON.stringify({
+        environment: {
+          [RUNTIME_PROXY_PROVIDER_URL_KEY]: "http://127.0.0.1:9999",
+          [RUNTIME_PROXY_PROVIDER_CA_KEY]: join(executionDir, "ca.pem"),
+        },
+        executionId: "fixture",
+      }),
       "utf8",
     );
     await expect(
@@ -410,6 +425,10 @@ describe("cloud-turn-worker", () => {
     expect(observed.environmentFile).toBeDefined();
     expect(observed.fileMode).toBe(0o600);
     expect(observed.fileContent).toContain("export HTTPS_PROXY='http://127.0.0.1:18080'");
+    // The sourced provider shell trusts the Sandbox-owned CA copy, never the root-owned mount.
+    const sandboxCa = join(dirname(observed.environmentFile as string), "home", ".opentag", "ca.pem");
+    expect(observed.fileContent).toContain(`export SSL_CERT_FILE='${sandboxCa}'`);
+    expect(observed.fileContent).not.toContain(`export SSL_CERT_FILE='${join(executionDir, "ca.pem")}'`);
     expect(observed.fileContent).not.toContain("MASTER");
     // The per-turn secret file is scratch-only: never part of the persistent Pi continuity dir.
     expect(observed.environmentFile?.startsWith(continuity)).toBe(false);

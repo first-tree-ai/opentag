@@ -214,6 +214,7 @@ export class SandboxRunnerService {
    * ---------------------------------------------------------------------------------------- */
 
   async startForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
+    await this.#releaseMissingReadyAllocation(accountId, sandboxId);
     await this.#prepareWorkspaceAllocation(accountId, sandboxId);
     const reservation = await this.#database.transaction(async (transaction) => {
       // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
@@ -246,6 +247,31 @@ export class SandboxRunnerService {
     }
     await this.#promoteReadyIfReported(sandboxId);
     return this.statusForAccount(accountId, sandboxId);
+  }
+
+  /**
+   * A lost used Instance needs no seal/delete, but its binding must stop claiming ready. Only
+   * provider-confirmed absence of the exact UID permits this CAS; a disconnected Runner or a
+   * failed GET never does. Clearing directly avoids exposing an automatic repair as an explicit
+   * stop (`releasing`) to concurrent ingress. The normal start path restores the SAME storage URI.
+   */
+  async #releaseMissingReadyAllocation(accountId: string, sandboxId: string): Promise<void> {
+    if (!this.#workspace || this.#hub.describe(sandboxId).connected) return;
+    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
+    if (!owned) throw sandboxNotFound();
+    const row = owned.sandbox;
+    if (row.lifecycle !== "ready" || !row.currentResourceName || !row.currentResourceUid) return;
+    let view: Awaited<ReturnType<CloudRunAdmin["getInstance"]>>;
+    try {
+      view = await this.#cloud.getInstance(row.currentResourceName);
+    } catch (error) {
+      throw mapCloudError(error, "verify the Sandbox environment");
+    }
+    if (view?.uid === row.currentResourceUid || this.#hub.describe(sandboxId).connected) return;
+    // Generation/name/UID/lifecycle CAS cannot undo a concurrent stop or clear a new allocation.
+    if (!(await this.#clearReleased(row, row.currentResourceName, row.currentResourceUid, "ready"))) {
+      throw runnerConflict("The Sandbox environment changed while recovery was being verified");
+    }
   }
 
   /** Validate storage before reservation, without holding a transaction through storage I/O. */
@@ -354,7 +380,7 @@ export class SandboxRunnerService {
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { lock: true, authority: "manage" });
     if (!owned) throw sandboxNotFound();
     const row = owned.sandbox;
-    if (row.lifecycle === "ready") return "ready";
+    if (row.lifecycle === "ready" && (!this.#workspace || this.#hub.describe(sandboxId).connected)) return "ready";
     if (row.lifecycle === "releasing") return "stopped";
     if (row.lifecycle === "unallocated" && row.environmentGeneration > 0 && !this.#workspace) return "restore_required";
     try {
@@ -557,6 +583,21 @@ export class SandboxRunnerService {
       environmentGeneration: row.environmentGeneration,
       resourceName: row.currentResourceName,
     };
+  }
+
+  /** Expired tokens may renew only against the still-current, physically present allocation. */
+  async renewExpiredBootstrap(claims: RunnerBootstrapClaims): Promise<string | undefined> {
+    if (!this.#workspace || !(await this.validateRunnerChannelScope(claims))) return undefined;
+    const row = await loadSandboxRecordById(this.#database, claims.sandboxId);
+    if (!row?.currentResourceUid || row.currentResourceName !== claims.resourceName) return undefined;
+    const view = await this.#cloud.getInstance(claims.resourceName);
+    if (!view || view.uid !== row.currentResourceUid) return undefined;
+    this.#cloud.verifyOwnership(view, this.#identityFor(row, row.environmentGeneration));
+    const token = await this.#tokens.issue(claims);
+    // Recheck after provider/signing awaits. A concurrent release/replacement revokes renewal.
+    const current = await loadSandboxRecordById(this.#database, claims.sandboxId);
+    if (!current || current.currentResourceUid !== row.currentResourceUid) return undefined;
+    return (await this.validateRunnerChannelScope(claims)) ? token : undefined;
   }
 
   /**
@@ -1225,6 +1266,7 @@ export class SandboxRunnerService {
     row: { id: string; environmentGeneration: number; sessionId: string },
     resourceName: string | null,
     resourceUid: string | null,
+    expectedLifecycle: "releasing" | "ready" = "releasing",
   ): Promise<boolean> {
     const now = this.#now();
     const [cleared] = await this.#database
@@ -1243,7 +1285,7 @@ export class SandboxRunnerService {
         and(
           eq(sandboxes.id, row.id),
           eq(sandboxes.environmentGeneration, row.environmentGeneration),
-          eq(sandboxes.lifecycle, "releasing"),
+          eq(sandboxes.lifecycle, expectedLifecycle),
           resourceName === null
             ? isNull(sandboxes.currentResourceName)
             : eq(sandboxes.currentResourceName, resourceName),

@@ -287,7 +287,9 @@ export class CloudDeliveryOwner {
     const sandbox = await this.#loadCurrentAllocation(connection);
     if (!this.#isExactConnection(connection)) return;
     if (!sandbox) {
-      this.#sendVerified(connection, frame.requestId, "rejected", "stale_generation");
+      // A stop may race the connection's active-scope read. Re-check inactive custody before
+      // rejecting: accepted received evidence must settle through cancellation, never disappear.
+      await this.handleInactiveDeliveryReceived(connection, frame);
       return;
     }
     const { request } = scopeCheck;
@@ -302,9 +304,19 @@ export class CloudDeliveryOwner {
       return;
     }
     if (receipt.kind === "expired") {
-      // No permission can cover a window that already passed: settle the received entry through
-      // the existing cancellation/report flow (truthful not_started) instead of a silent retry.
-      await this.#cancelExpiredReceipt(connection, frame, custodyRef, request);
+      // Already-accepted custody whose window lapsed: no permission can cover the passed window,
+      // so settle it through the existing cancellation/report flow (truthful not_started) instead
+      // of a silent retry. The input was genuinely taken over by this allocation.
+      await this.#cancelExpiredReceipt(connection, custodyRef);
+      return;
+    }
+    if (receipt.kind === "expired_unaccepted") {
+      // An input this Server dispatched but never took custody for whose frozen window already
+      // passed can never execute. Refuse the receipt so the Runner retires its `received`
+      // evidence; the pending row keeps its frozen dispatch, and the worker's existing stale-window
+      // release then freezes a fresh attempt while the message's own TTL still allows it. Never
+      // fake custody that would permanently suppress that retry.
+      this.#sendVerified(connection, frame.requestId, "rejected", "dispatch_expired");
       return;
     }
     await this.#acceptAndVerifyReceipt(connection, frame, custodyRef, request, receipt.kind === "already_accepted");
@@ -426,38 +438,38 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     custodyRef: { deliveryId: string; turnId: string },
     request: DirectImMessageDeliveryRequest,
-  ): Promise<{ kind: "gone" | "completed" | "expired" | "already_accepted" | "fresh" }> {
+  ): Promise<{
+    kind: "gone" | "completed" | "expired" | "expired_unaccepted" | "already_accepted" | "fresh";
+  }> {
     const alreadyAccepted = await this.#isAcceptedUnfinished(connection, custodyRef);
     if (!this.#isExactConnection(connection)) return { kind: "gone" };
     if (await this.#isAcceptedReported(connection, custodyRef)) return { kind: "completed" };
-    if (requestWindowExpired(request)) return { kind: "expired" };
+    // An expired window splits by custody: accepted work settles through cancellation, while an
+    // input that was never taken over is refused so the existing retry path stays available.
+    if (requestWindowExpired(request)) return { kind: alreadyAccepted ? "expired" : "expired_unaccepted" };
     return alreadyAccepted ? { kind: "already_accepted" } : { kind: "fresh" };
   }
 
   /**
-   * A receipt whose frozen execution window already passed can never receive a permission. Record
-   * durable custody (so the Runner's terminal report is recordable), then settle the received
-   * journal entry through the same cancellation flow an explicit stop uses: the Runner reports
-   * `not_started`/`cancelled` and the durable report path records it truthfully, instead of a
-   * silent pending row or an `unknown` settlement.
+   * A receipt whose frozen execution window passed AFTER its custody was accepted can never be
+   * granted a fresh permission. Settle it through the same cancellation flow an explicit stop
+   * uses: the Runner reports `not_started`/`cancelled` and the durable report path records it
+   * truthfully, instead of a silent pending row or an `unknown` settlement. Unaccepted input never
+   * reaches this path; it is refused so the worker can freeze a fresh attempt.
    */
   async #cancelExpiredReceipt(
     connection: CloudConnectionRecord,
-    frame: { deliveryId: string; requestId: string; turnId: string },
     custodyRef: { deliveryId: string; turnId: string },
-    request: DirectImMessageDeliveryRequest,
   ): Promise<void> {
-    const inputHash = computeDirectInputHash(request);
-    const custody = await this.#custody.acceptDelivery(request, inputHash, frame.turnId, this.#context(connection));
-    if (custody !== "accepted" && custody !== "already_accepted") {
-      this.#sendVerified(connection, frame.requestId, "rejected", custody);
-      return;
-    }
     // Exact connection/allocation/unfinished custody, without requiring the active chain: an
     // explicit stop or a stopped authority still settles its already accepted turn truthfully.
-    if (!this.#isExactConnection(connection) || !(await this.#isExactAllocation(connection))) return;
+    if (
+      !this.#isExactConnection(connection) ||
+      !(await this.#loadCurrentAllocation(connection, { allowReleasing: true }))
+    )
+      return;
     if (!(await this.#isAcceptedUnfinished(connection, custodyRef))) return;
-    this.#sendCancellation(connection, frame.deliveryId);
+    this.#sendCancellation(connection, custodyRef.deliveryId);
   }
 
   /** The explicit-stop cancellation frame for one delivery on the exact owning connection. */

@@ -6,8 +6,12 @@ import type { RuntimeCredentialRelay } from "../runtime/runtime-credential-relay
 import type { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
 import {
   buildRuntimeProxyEnvironment,
+  providerRoutingEnvironment,
   type RuntimeProxyExecutionLayout,
+  renderRuntimeProxyGitConfig,
   renderRuntimeProxyGitCredentialHelper,
+  renderRuntimeProxyProviderLauncher,
+  renderRuntimeProxyScopePreamble,
 } from "../runtime/runtime-proxy-material.js";
 import {
   CLOUD_CONNECT_PROXY_PORT,
@@ -102,6 +106,7 @@ export async function publishExecutionMaterial(
     layout,
     slackApiHost: `https://127.0.0.1:${CLOUD_SLACK_API_PORT}`,
   });
+  const routing = providerRoutingEnvironment(environment);
   await writePublicFile(
     join(published, "environment.json"),
     JSON.stringify({ executionId: relay.executionId, environment }),
@@ -110,18 +115,28 @@ export async function publishExecutionMaterial(
     await writePublicFile(join(published, "entry.mjs"), CLOUD_SANDBOX_ENTRY_PROGRAM);
     await writePublicFile(join(published, "sandbox-ca.mjs"), CLOUD_SANDBOX_CA_PROGRAM);
   }
-  await writePublicFile(join(published, "gitconfig"), "");
+  // The Sandbox Git configuration disables every ambient proxy variable and routes only
+  // github.com through the execution proxy and CA; other hosts stay direct with the system CA.
+  await writePublicFile(
+    join(published, "gitconfig"),
+    routing.HTTPS_PROXY !== undefined && routing.SSL_CERT_FILE !== undefined
+      ? renderRuntimeProxyGitConfig({ caCertPath: routing.SSL_CERT_FILE, connectProxyUrl: routing.HTTPS_PROXY })
+      : "",
+  );
   await writePublicFile(
     join(published, "git-credential-helper"),
     renderRuntimeProxyGitCredentialHelper(handles.get("github") ?? "unavailable"),
     0o555,
   );
   await mkdir(join(published, "bin"), { mode: 0o755 });
+  // The Slack launcher pins the catalog location; both launchers scope routing/trust to their
+  // own process so the Agent environment keeps public routing and the system trust store.
   await writePublicFile(
     join(published, "bin", "slack"),
-    `#!/bin/sh\nexec /opt/opentag/tools/bin/slack --apihost https://127.0.0.1:${CLOUD_SLACK_API_PORT} "$@"\n`,
+    `#!/bin/sh\n# OpenTag execution-local Slack launcher; do not edit.\n${renderRuntimeProxyScopePreamble()}\nexec /opt/opentag/tools/bin/slack --apihost https://127.0.0.1:${CLOUD_SLACK_API_PORT} "$@"\n`,
     0o555,
   );
+  await writePublicFile(join(published, "bin", "gh"), renderRuntimeProxyProviderLauncher("gh"), 0o555);
   return published;
 }
 

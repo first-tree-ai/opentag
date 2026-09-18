@@ -177,7 +177,9 @@ a Cloud Turn or a pending reset owns the Sandbox. A nonzero worker exit is never
 completed Turn, even if its stdout claims one.
 Every Runner exit marks the controller as stopping before settling its active worker. During
 shutdown, the verified cleanup deletes the namespace without relaunching it, including an
-authentication rejection or exhausted reconnects that did not involve a process signal.
+authentication rejection or exhausted reconnects in legacy non-persistent mode. Persistent Runners
+retain their unsaved workspace on auth rejection; allocation-scoped renewal and loss repair are
+described in [workspace persistence](cloud-workspace-persistence.md).
 
 Recovery also checks whether the Session, Agent, binding or Account has stopped authorizing work.
 If a stop frame was lost during disconnection, a live Runner reporting `received` or `started`
@@ -384,3 +386,21 @@ When cloud configuration is approved, perform one combined E4–E6 acceptance on
 Store timestamps, delivery/turn IDs, results and cleanup receipts without credentials. The E3
 `cloud-runner` harness alone does not implement this IM/persistence acceptance; a local pass or
 image publication must not be reported as its completion.
+
+### Receipt expiry and provider routing
+
+An expired frozen dispatch that was never accepted is rejected with `dispatch_expired`; the
+existing worker releases that attempt and may retry within the original message TTL. Accepted
+custody instead settles through cancellation and reporting, never automatic replay. A live
+connection whose allocation becomes `releasing` continues to settle receipts and reports.
+
+The Agent environment carries scoped provider routing inputs, not global proxy/CA overrides.
+Git uses host-specific proxy and CA configuration for `github.com`; ordinary HTTPS and public
+GitLab access retain direct public routing and system trust. The `gh` and Slack launchers apply
+the private proxy/CA only to their own processes; Feishu uses its CLI-specific settings. Raw
+provider HTTP requests use a subshell that sources `$OPENTAG_PROVIDER_ENV_FILE`. The credential
+proxy host allowlist remains unchanged.
+
+Deploy this Server before the updated Runner image: workspace Runners now opt into
+`renewExpired` in the strict auth frame. Renewal-only replies require a fresh handshake and use
+bounded reconnect backoff; renewal authentication allows 45 seconds for the Cloud API read.

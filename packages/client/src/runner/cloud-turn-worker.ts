@@ -28,6 +28,7 @@ import {
   turnTimeoutMs,
 } from "../runtime/agent-turn-runner.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
+import { providerRoutingEnvironment, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { skillArgsOf } from "./acceptance.js";
 import { registerRunnerSignalCleanup } from "./signals.js";
 import { assembleRunnerToolSkills } from "./skills.js";
@@ -50,7 +51,10 @@ import { assembleRunnerToolSkills } from "./skills.js";
  *
  * The proxy environment manifest the trusted Runner published is applied to the Pi process so IM
  * and Git CLIs reach providers through the trusted Relay/adapter; the platform master key and raw
- * IM tokens never enter the Sandbox.
+ * IM tokens never enter the Sandbox. Only the execution-scoped routing inputs reach the Pi
+ * process; the standard proxy/CA variables are derived inside provider launchers and in the
+ * scratch provider env file the model sources explicitly, so the Agent's ordinary subprocesses
+ * keep public routing and the system trust store.
  *
  * NATIVE UDS BOUNDARY: production always requires BOTH real mounted `connect.sock`/`slack.sock`
  * endpoints. The loopback fallback exists ONLY for the explicit local test seam
@@ -327,11 +331,16 @@ export async function runCloudTurnWorker(
     // The managed outbox instructions tell the model to load provider credentials from
     // `$OPENTAG_PROVIDER_ENV_FILE`. Publish that per-turn file inside the disposable scratch so
     // the same instruction works inside the Sandbox; it dies with the scratch and is never part
-    // of the persistent Pi conversation directory.
+    // of the persistent Pi conversation directory. The file additionally exposes the scoped
+    // routing inputs as standard proxy/CA variables for exactly the shell that sources it, which
+    // is what the Slack raw file upload/download flow needs; the Pi process itself never gets
+    // them. CA paths follow the Sandbox-owned copy prepared above.
     const providerEnvironmentPath = join(scratch, "provider-environment.sh");
-    await writeFile(providerEnvironmentPath, serializeEnvironment(manifest.environment, process.platform), {
-      mode: 0o600,
-    });
+    await writeFile(
+      providerEnvironmentPath,
+      serializeEnvironment({ ...environment, ...providerRoutingEnvironment(environment) }, process.platform),
+      { mode: 0o600 },
+    );
     runtimeEnvironment.OPENTAG_PROVIDER_ENV_FILE = providerEnvironmentPath;
 
     // Reuse the E3 Runner tool skills (`git`/`gh`/`lark-cli`/`slack`) through the same assembly and
@@ -442,7 +451,7 @@ async function openProxyBridge(
     );
   }
   // Explicit local test seam only: the manifest must still name the fixed loopback endpoint.
-  const loopback = environment.HTTPS_PROXY ?? environment.https_proxy;
+  const loopback = environment[RUNTIME_PROXY_PROVIDER_URL_KEY];
   if (loopback !== `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`) {
     throw new Error("The proxy manifest names no mounted Unix socket and no fixed loopback endpoint");
   }

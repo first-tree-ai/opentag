@@ -18,6 +18,9 @@ import {
 import type { RuntimeProxyStreamResponse } from "../runtime/runtime-proxy-data-client.js";
 import {
   buildRuntimeProxyEnvironment,
+  providerRoutingEnvironment,
+  RUNTIME_PROXY_PROVIDER_CA_KEY,
+  RUNTIME_PROXY_PROVIDER_URL_KEY,
   RuntimeProxyMaterialStore,
   renderRuntimeProxyGitCredentialHelper,
   renderRuntimeProxyShim,
@@ -660,8 +663,15 @@ describe("RuntimeCredentialEnvironmentManager", () => {
       expect(envFile).not.toContain(CAPABILITY_1);
       expect(envFile).not.toContain("export GITHUB_TOKEN=");
       expect(environment).not.toHaveProperty("GH_REPO");
-      expect(environment.HTTPS_PROXY).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-      expect(environment.GIT_SSL_CAINFO).toContain("loopback-ca.pem");
+      // The Agent runtime env stays scoped: only the standard provider CLI variables may turn
+      // these routing inputs into a proxy/CA, and the sourced env file does exactly that.
+      expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(environment[RUNTIME_PROXY_PROVIDER_CA_KEY]).toContain("loopback-ca.pem");
+      for (const key of ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "SSL_CERT_FILE"]) {
+        expect(environment).not.toHaveProperty(key);
+      }
+      expect(envFile).toContain(`export HTTPS_PROXY='${environment[RUNTIME_PROXY_PROVIDER_URL_KEY]}'`);
+      expect(envFile).toContain(`export SSL_CERT_FILE='${environment[RUNTIME_PROXY_PROVIDER_CA_KEY]}'`);
       expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toMatch(/^otrh_/);
       expect(manager.shimDirForSession("session-1")).toContain("bin");
       expect(manager.executionIdForSession("session-1")).toBe(EXECUTION_ID);
@@ -827,9 +837,22 @@ describe("runtime proxy material", () => {
     ]);
     expect(environment.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("otrh_feishu");
     expect(environment.SLACK_BOT_TOKEN).toBe("otrh_slack");
-    expect(environment.HTTPS_PROXY).toBe("http://127.0.0.1:1234");
-    expect(environment.NO_PROXY).toContain("127.0.0.1");
-    expect(environment.GIT_SSL_CAINFO).toBe("/exec/loopback-ca.pem");
+    expect(environment[RUNTIME_PROXY_PROVIDER_URL_KEY]).toBe("http://127.0.0.1:1234");
+    expect(environment[RUNTIME_PROXY_PROVIDER_CA_KEY]).toBe("/exec/loopback-ca.pem");
+    // Ordinary Agent subprocesses must not inherit a global proxy or the execution CA.
+    expect(environment).not.toHaveProperty("HTTPS_PROXY");
+    expect(environment).not.toHaveProperty("NO_PROXY");
+    expect(environment).not.toHaveProperty("SSL_CERT_FILE");
+    expect(environment).not.toHaveProperty("GIT_SSL_CAINFO");
+    expect(providerRoutingEnvironment(environment)).toEqual({
+      CURL_CA_BUNDLE: "/exec/loopback-ca.pem",
+      HTTPS_PROXY: "http://127.0.0.1:1234",
+      NO_PROXY: "127.0.0.1,localhost",
+      SSL_CERT_FILE: "/exec/loopback-ca.pem",
+      https_proxy: "http://127.0.0.1:1234",
+      no_proxy: "127.0.0.1,localhost",
+    });
+    expect(providerRoutingEnvironment({ GH_TOKEN: "otrh_only" })).toEqual({});
     expect(environment.GITHUB_TOKEN).toBeUndefined();
     expect(environment.LARKSUITE_CLI_APP_SECRET).toBeUndefined();
     expect(environment.SSH_AUTH_SOCK).toBeUndefined();

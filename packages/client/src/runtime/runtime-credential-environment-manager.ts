@@ -32,6 +32,7 @@ import {
 import { RuntimeProxyLoopbackAdapter, type RuntimeProxyLoopbackCaMaterial } from "./runtime-proxy-loopback-adapter.js";
 import {
   buildRuntimeProxyEnvironment,
+  providerRoutingEnvironment,
   type RuntimeProxyEnvironment,
   RuntimeProxyMaterialStore,
   runtimeProxyOutboxContext,
@@ -210,7 +211,11 @@ export class RuntimeCredentialEnvironmentManager {
     return this.#requireStore().shimDir(sessionId);
   }
 
-  /** Current CLI env map (defined values) for automatic injection before provider spawn. */
+  /**
+   * Current execution CLI env map (defined values) for the Agent runtime: execution-scoped
+   * handles and routing inputs only, never the standard proxy/CA variables. Provider CLI
+   * children derive those from the same execution through `providerRoutingEnvironment`.
+   */
   environmentForSession(sessionId: string): Readonly<Record<string, string>> | undefined {
     const active = this.#proxyExecutions.get(sessionId);
     if (!active) return undefined;
@@ -220,14 +225,17 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   /**
-   * Raw execution environment for trusted host-side CLI children. Unlike
+   * Raw execution environment for trusted host-side CLI children (for example Context Tree Git).
+   * The standard proxy/CA variables are derived here because these consumers are allowed to use
+   * the credential proxy; the Agent runtime environment intentionally never receives them. Unlike
    * `environmentForSession`, `undefined` entries are preserved so a caller can unset inherited
    * ambient credentials (for example a daemon-level `GITHUB_TOKEN`). Legacy mode returns
-   * `undefined`; the returned map is the live execution environment and remains valid only for
-   * the current execution.
+   * `undefined`; the returned map is valid only for the current execution.
    */
   executionEnvironmentForSession(sessionId: string): Readonly<Record<string, string | undefined>> | undefined {
-    return this.#proxyExecutions.get(sessionId)?.environment;
+    const environment = this.#proxyExecutions.get(sessionId)?.environment;
+    if (!environment) return undefined;
+    return { ...environment, ...providerRoutingEnvironment(environment) };
   }
 
   /** Current execution id for a Session, when a proxy execution is active. */
@@ -279,7 +287,10 @@ export class RuntimeCredentialEnvironmentManager {
     const executionId = prepared.executionId;
     if (!executionId) throw new ImCredentialEnvironmentError("proxy_unavailable");
     const active = this.#proxyExecutions.get(sessionId);
-    const environment = this.environmentForSession(sessionId) ?? {};
+    const environment = {
+      ...(this.environmentForSession(sessionId) ?? {}),
+      ...providerRoutingEnvironment(active?.environment ?? {}),
+    };
     const argumentsForProvider =
       active?.slackApiHost !== undefined ? (["--apihost", active.slackApiHost] as const) : ([] as const);
     return {

@@ -1,4 +1,4 @@
-import { jwtVerify, SignJWT } from "jose";
+import { errors, type JWTPayload, jwtVerify, SignJWT } from "jose";
 import { z } from "zod";
 
 /**
@@ -69,26 +69,58 @@ export class RunnerBootstrapTokenService {
 
   async verify(token: string): Promise<RunnerBootstrapClaims> {
     try {
-      const verified = await jwtVerify(token, this.#key, {
-        algorithms: ["HS256"],
-        audience: BOOTSTRAP_AUDIENCE,
-        currentDate: this.#now(),
-        issuer: BOOTSTRAP_ISSUER,
-      });
-      // JOSE verifies exp when present but does not require it, so an issuer that omitted the
-      // expiry would otherwise mint an eternal bootstrap credential. Require both registered
-      // time claims explicitly, then select only the custom allocation claims.
-      if (typeof verified.payload.exp !== "number" || typeof verified.payload.iat !== "number") {
-        throw new RunnerBootstrapTokenError();
-      }
-      return RunnerBootstrapClaimsSchema.parse({
-        sandboxId: verified.payload.sandboxId,
-        sessionId: verified.payload.sessionId,
-        environmentGeneration: verified.payload.environmentGeneration,
-        resourceName: verified.payload.resourceName,
-      });
+      return this.#claims((await this.#verifyJwt(token)).payload);
     } catch {
       throw new RunnerBootstrapTokenError();
     }
+  }
+
+  /**
+   * Renewal-only evidence, NEVER an authenticated channel or HTTP authority. JOSE checks the
+   * signature, algorithm, issuer, audience and nbf before throwing JWTExpired. The caller must
+   * additionally prove the exact allocation is still current and its tracked Cloud UID exists,
+   * then issue a fresh token and require a new ordinary handshake. Allocation removal revokes
+   * this renewal ability, including across Server restarts; no separate refresh-token store.
+   */
+  async expiredClaimsForRenewal(token: string): Promise<RunnerBootstrapClaims | undefined> {
+    try {
+      await this.#verifyJwt(token);
+    } catch (error) {
+      if (error instanceof errors.JWTExpired && error.claim === "exp") {
+        try {
+          return this.#claims(error.payload);
+        } catch {
+          return undefined;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  #verifyJwt(token: string) {
+    return jwtVerify(token, this.#key, {
+      algorithms: ["HS256"],
+      audience: BOOTSTRAP_AUDIENCE,
+      currentDate: this.#now(),
+      issuer: BOOTSTRAP_ISSUER,
+      requiredClaims: ["exp", "iat"],
+    });
+  }
+
+  #claims(payload: JWTPayload): RunnerBootstrapClaims {
+    if (
+      typeof payload.exp !== "number" ||
+      !Number.isFinite(payload.exp) ||
+      typeof payload.iat !== "number" ||
+      !Number.isFinite(payload.iat) ||
+      payload.exp <= payload.iat
+    )
+      throw new RunnerBootstrapTokenError();
+    return RunnerBootstrapClaimsSchema.parse({
+      sandboxId: payload.sandboxId,
+      sessionId: payload.sessionId,
+      environmentGeneration: payload.environmentGeneration,
+      resourceName: payload.resourceName,
+    });
   }
 }

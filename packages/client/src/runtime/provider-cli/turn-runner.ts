@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createLogger } from "../../observability/logger.js";
 import { readSecureFile, validatePrivateDirectory } from "../../storage/durable-file.js";
+import { providerRoutingEnvironment } from "../runtime-proxy-material.js";
 import { resolveAccountHome, resolveProviderCliAccountLayout } from "./account-layout.js";
 import { PROVIDER_CLI_CATALOG, type ProviderCliCatalogEntry, requireProviderCliCatalogEntry } from "./catalog.js";
 import { computeFileIdentity, computeTargetFingerprint, ProviderCliFileError } from "./fingerprint.js";
@@ -316,6 +317,9 @@ export async function mergeEnvironmentManifest(
     if (value === null) delete env[key];
     else env[key] = value;
   }
+  // The provider CLI process is exactly the scope that may use the credential proxy and its CA;
+  // derive the standard tool variables here so the daemon/Agent ambient environment stays public.
+  Object.assign(env, providerRoutingEnvironment(env));
   return manifest;
 }
 

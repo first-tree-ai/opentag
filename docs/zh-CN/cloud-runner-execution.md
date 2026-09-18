@@ -130,7 +130,8 @@ Turn（取消、超时、失败或未知）结束时会立即执行与 E3 相同
 重置占用 Sandbox 时，E3 acceptance 不能启动。worker 非零退出即使 stdout 声称 completed，也绝不
 报告为 completed Turn。
 所有 Runner 退出路径都会先标记 stopping 再等待活动 worker 收尾。关闭时只验证删除命名空间，
-不重新创建；认证拒绝或重连次数耗尽等非进程信号退出也遵循此顺序。
+不重新创建；旧版非持久化模式因认证拒绝或重连次数耗尽而退出时也遵循此顺序。持久化 Runner
+认证失败后保留未保存文件，分配范围续期和资源丢失恢复见 [Workspace 持久化](cloud-workspace-persistence.md)。
 
 恢复时还会检查 Session、Agent、binding 或 Account 是否已停止授权。断线期间丢失 stop 帧时，
 若仍在线的 Runner 报告 received 或 started，Server 会重新发送取消。releasing 本身不代表结果
@@ -295,3 +296,17 @@ Client 测试运行生产 Runner HTTP／WebSocket 编排，原生执行和存储
 
 保存时间戳、delivery／turn ID、结果和清理记录，不保存凭证。E3 cloud-runner 脚本本身尚未实现上述
 IM／持久化组合验收；本地通过或发布镜像不能作为这项验收的完成证据。
+
+### 收件过期与凭证代理范围
+
+尚未被 Server 接收的派发窗口过期时，回执返回 `dispatch_expired`，由现有 Worker 释放该次派发，
+在原始消息 TTL 内重试。已接收输入通过取消和回报结算，不自动重放。分配进入 `releasing` 后，
+已有连接仍可完成收件确认和回报。
+
+Agent 环境只携带专用的代理参数，不设置全局代理和私有 CA。Git 仅为 `github.com` 配置代理和
+CA；普通 HTTPS、公网 GitLab 保留直接出站与系统信任。`gh`、Slack 启动器仅向自身进程注入
+代理和 CA，飞书沿用 CLI 专用配置。原始 provider HTTP 请求应在子 shell 中加载
+`$OPENTAG_PROVIDER_ENV_FILE`。凭证代理的目标域名白名单不变。
+
+先部署本次 Server，再更新 Runner 镜像：持久化 Runner 会在严格认证帧中发送 `renewExpired`。
+续发凭证后仍需重新握手，并使用有界重连退避；续发认证允许 45 秒完成 Cloud API 查询。

@@ -270,6 +270,7 @@ export class CloudTurnRunner {
           existing.inputHash !== computeCloudDeliveryInputHash(delivery)
         ) {
           this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled dispatch identity or input differs`);
+          this.#reconcileSupersededReceipt(existing, delivery.requestId);
           return;
         }
         entry = existing;
@@ -291,6 +292,12 @@ export class CloudTurnRunner {
     });
   }
 
+  /** Ask the Server to retire an expired old receipt before its replacement can be admitted. */
+  #reconcileSupersededReceipt(entry: CloudJournalEntry, requestId: string): void {
+    // Never erase durable state locally; a changed payload under the SAME request remains a conflict.
+    if (entry.phase === "received" && entry.requestId !== requestId) this.#sendReceipt(entry);
+  }
+
   /** Server persisted durable custody: execution may start (the model grant rides along). */
   async handleVerified(frame: RunnerCloudDeliveryVerifiedFrame): Promise<void> {
     // Capture BEFORE waiting for the serial queue: a close may happen while this frame is queued
@@ -306,12 +313,14 @@ export class CloudTurnRunner {
       if (frame.status === "rejected") {
         // The Server refused custody before any start. A started/reported entry is real durable
         // state that a late rejection must never erase.
-        if (entry.phase === "received") await this.#options.journal.clearRejected(entry.deliveryId, entry.scope);
-        else this.#log(`ignoring rejected receipt for ${entry.deliveryId} in phase ${entry.phase}`);
+        if (entry.phase === "received") {
+          await this.#options.journal.clearRejected(entry.deliveryId, entry.scope);
+          this.#notifyJournalChanged();
+        } else this.#log(`ignoring rejected receipt for ${entry.deliveryId} in phase ${entry.phase}`);
         return;
       }
       if (entry.phase !== "received") return;
-      if (this.#cancelRequested.delete(entry.deliveryId)) {
+      if (this.#closed || this.#cancelRequested.delete(entry.deliveryId)) {
         await this.#reportTerminal(entry, cancelledBeforeStart());
         return;
       }
@@ -515,11 +524,13 @@ export class CloudTurnRunner {
             this.#assertCurrentScope(entry);
             if (entry.phase === "reported" && entry.report) {
               this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
+            } else if (entry.phase === "received") {
+              // The Server may not have accepted this receipt. Re-announce it: an unaccepted
+              // input is rejected and retired; accepted custody is cancelled and reported.
+              // Manufacturing a report before custody would strand the release on a conflict.
+              this.#sendReceipt(entry);
             } else {
-              await this.#reportTerminal(
-                entry,
-                entry.phase === "received" ? cancelledBeforeStart() : UNKNOWN_COMPLETION,
-              );
+              await this.#reportTerminal(entry, UNKNOWN_COMPLETION);
             }
           }
           return entries.length;
@@ -529,11 +540,10 @@ export class CloudTurnRunner {
         if (waitMs <= 0) throw new CloudJournalError("store_failed", "Release reports were not acknowledged");
         await Promise.race([
           changed,
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => reject(new CloudJournalError("store_failed", "Release reports were not acknowledged")),
-              waitMs,
-            );
+          new Promise<void>((resolveRetry) => {
+            // A transient Server read failure may leave the channel open without a reply.
+            // Reuse the idempotent receipt/report protocol within the original release deadline.
+            timer = setTimeout(resolveRetry, Math.min(waitMs, 5_000));
           }),
         ]);
       } finally {

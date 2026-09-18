@@ -296,6 +296,8 @@ export const RunnerAuthFrameSchema = z
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
+    /** Opt in to renewal-only replies for an expired token of a still-live allocation. */
+    renewExpired: z.literal(true).optional(),
   })
   .strict();
 
@@ -610,6 +612,8 @@ export const RunnerServerCredentialFrameSchema = z
 export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerWelcomeFrameSchema,
   RunnerAuthResultFrameSchema,
+  // This is not authentication success: reconnect with the fresh token before any other frame.
+  z.object({ type: z.literal("auth:renewed"), token: z.string().min(1).max(8192) }).strict(),
   RunnerAcceptanceRunFrameSchema,
   RunnerAcceptanceCancelFrameSchema,
   RunnerServerHeartbeatFrameSchema,

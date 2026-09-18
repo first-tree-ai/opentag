@@ -1169,3 +1169,159 @@ describe("workspace release and restore", () => {
     await reconnected.closed;
   });
 });
+
+describe("persistent Runner recovery", () => {
+  async function expiredToken(stack: WorkspaceStack, accountId: string) {
+    const started = await startedSandbox(stack, accountId);
+    const issuer = new RunnerBootstrapTokenService(JWT_SECRET, {
+      ttlSeconds: 600,
+      now: () => new Date(Date.now() - 3_600_000),
+    });
+    return { ...started, expired: await issuer.issue(started.claims) };
+  }
+
+  it("renews an expired token only for a fresh handshake; old HTTP authority stays expired", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const { expired, claims, sandbox } = await expiredToken(stack, accountId);
+    expect((await claimRequest(stack, expired)).status).toBe(401);
+    const renewal = await connectRunner(stack.address);
+    renewal.send({ type: "auth", token: expired, workspaceVersion: 1, renewExpired: true });
+    const frame = await renewal.waitFor("auth:renewed");
+    expect((await renewal.closed).code).toBe(1013);
+    expect(renewal.frames.some((entry) => entry.type === "server:welcome" || entry.type === "auth:result")).toBe(false);
+    expect(stack.hub.describe(sandbox.sandboxId).connected).toBe(false);
+    const token = frame.token as string;
+    expect(await stack.tokens.verify(token)).toEqual(claims);
+    expect((await claimRequest(stack, token)).status).toBe(409);
+    const client = await authenticatedWorkspaceRunner(stack, token);
+    expect((await claimRequest(stack, expired)).status).toBe(401);
+    expect((await claimRequest(stack, token)).status).toBe(200);
+    client.socket.close();
+    await client.closed;
+  });
+
+  it.each(["released", "absent", "different_uid", "wrong_signature"] as const)(
+    "refuses expired renewal for %s",
+    async (reason) => {
+      const accountId = await account();
+      const stack = await createWorkspaceApp(accountId);
+      const { expired, claims, sandbox } = await expiredToken(stack, accountId);
+      const instance = stack.fake.instances.get(claims.resourceName);
+      if (!instance) throw new Error("missing instance");
+      if (reason === "released") await stack.service.stopForAccount(accountId, sandbox.sandboxId);
+      if (reason === "absent") instance.gone = true;
+      if (reason === "different_uid") instance.uid = "foreign-uid";
+      const token =
+        reason === "wrong_signature"
+          ? await new RunnerBootstrapTokenService("a-different-test-secret-at-least-32-bytes", {
+              now: () => new Date(Date.now() - 3_600_000),
+            }).issue(claims)
+          : expired;
+      const client = await connectRunner(stack.address);
+      client.send({ type: "auth", token, workspaceVersion: 1, renewExpired: true });
+      expect((await client.waitFor("auth:result")).ok).toBe(false);
+      await client.closed;
+      expect(client.frames.some((entry) => entry.type === "auth:renewed")).toBe(false);
+    },
+  );
+
+  it("treats a renewal provider error as transient, then renews when it recovers", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const { expired } = await expiredToken(stack, accountId);
+    stack.fake.getInstanceFailures = 1;
+    const first = await connectRunner(stack.address);
+    first.send({ type: "auth", token: expired, workspaceVersion: 1, renewExpired: true });
+    expect((await first.closed).code).toBe(1013);
+    expect(first.frames).toEqual([]);
+    const second = await connectRunner(stack.address);
+    second.send({ type: "auth", token: expired, workspaceVersion: 1, renewExpired: true });
+    expect((await second.waitFor("auth:renewed")).token).toBeTypeOf("string");
+    await second.closed;
+  });
+
+  it("recreates a confirmed missing ready Instance once and preserves the storage URI", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const { sandbox, claims } = await startedSandbox(stack, accountId);
+    const row = await sandboxRow(sandbox.sandboxId);
+    stack.store.plant({
+      storageUri: row.storageUri,
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: 1,
+    });
+    await unit.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, row.id));
+    const instance = stack.fake.instances.get(claims.resourceName);
+    if (!instance) throw new Error("missing instance");
+    instance.gone = true;
+    const results = await Promise.allSettled([
+      stack.service.ensureIngressAllocation(accountId, row.id),
+      stack.service.startForAccount(accountId, row.id),
+    ]);
+    expect(results.some((entry) => entry.status === "fulfilled")).toBe(true);
+    const restored = await sandboxRow(row.id);
+    expect(restored).toMatchObject({ lifecycle: "preparing", environmentGeneration: 2, storageUri: row.storageUri });
+    expect(stack.fake.createCalls).toHaveLength(2);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+    expect(await stack.service.ensureIngressAllocation(accountId, row.id)).toBe("pending");
+    expect(stack.fake.createCalls).toHaveLength(2);
+  });
+
+  it("keeps an offline ready allocation on present or unknown provider evidence", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const { sandbox } = await startedSandbox(stack, accountId);
+    await unit.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    const before = await sandboxRow(sandbox.sandboxId);
+    expect(await stack.service.ensureIngressAllocation(accountId, before.id)).toBe("ready");
+    stack.fake.getInstanceFailures = 1;
+    await expect(stack.service.startForAccount(accountId, before.id)).rejects.toThrow();
+    expect(await sandboxRow(before.id)).toEqual(before);
+    expect(stack.fake.createCalls).toHaveLength(1);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+  it("a delayed missing-resource check cannot clear a newer allocation", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const { sandbox, claims } = await startedSandbox(stack, accountId);
+    await unit.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    let readStarted!: () => void;
+    let releaseRead!: () => void;
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    vi.spyOn(stack.fake, "getInstance").mockImplementationOnce(async () => {
+      readStarted();
+      await release;
+      return undefined;
+    });
+    const late = stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const rejected = expect(late).rejects.toThrow("changed while recovery");
+    await started;
+    const replacement = `${claims.resourceName}-replacement`;
+    await unit.database
+      .update(sandboxes)
+      .set({
+        environmentGeneration: 2,
+        lifecycle: "preparing",
+        currentResourceName: replacement,
+        currentResourceUid: "replacement-uid",
+      })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    releaseRead();
+    await rejected;
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({
+      environmentGeneration: 2,
+      lifecycle: "preparing",
+      currentResourceName: replacement,
+      currentResourceUid: "replacement-uid",
+    });
+    expect(stack.fake.createCalls).toHaveLength(1);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+});

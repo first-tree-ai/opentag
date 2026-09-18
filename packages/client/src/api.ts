@@ -9,6 +9,7 @@ import {
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
+  type AttachMCPServerRequest,
   accountComputerConnectCodePath,
   agentByIdPath,
   agentComputerRebindPath,
@@ -16,6 +17,11 @@ import {
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingPath,
+  agentMcpAuthorizationOAuthPath,
+  agentMcpAuthorizationPath,
+  agentMcpProbePath,
+  agentMcpServerPath,
+  agentMcpServersPath,
   agentReactivatePath,
   agentRuntimeTestPath,
   agentSlackOAuthStartPath,
@@ -31,6 +37,7 @@ import {
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
+  type CreateMCPServerRequest,
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
@@ -48,10 +55,26 @@ import {
   imBindingDisablePath,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
+  type ListAgentMCPServersResponse,
+  ListAgentMCPServersResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListAvailableMCPServersResponse,
+  ListAvailableMCPServersResponseSchema,
+  type ListMCPServersResponse,
+  ListMCPServersResponseSchema,
+  type MCPAgentServer,
+  MCPAgentServerSchema,
+  type MCPProbeResponse,
+  MCPProbeResponseSchema,
+  type MCPServer,
+  type MCPServerDetail,
+  MCPServerDetailSchema,
+  MCPServerSchema,
   type MeResponse,
   MeResponseSchema,
+  mcpServerPath,
+  mcpServersPath,
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
@@ -71,12 +94,18 @@ import {
   type SessionCliListResponse,
   SessionCliListResponseSchema,
   type SessionCliSendRequest,
+  type SetMCPAuthorizationRequest,
+  type StartMCPOAuthRequest,
+  type StartMCPOAuthResponse,
+  StartMCPOAuthResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
   type StructuredError,
   StructuredErrorSchema,
   type UpdateAgentRequest,
+  type UpdateMCPBindingRequest,
+  type UpdateMCPServerRequest,
   type ValidationIssue,
 } from "@opentag/shared";
 import {
@@ -531,6 +560,202 @@ export class OpenTagApi {
         method: "POST",
         headers: { authorization: `Bearer ${accessToken}` },
       },
+      options,
+    );
+  }
+
+  // ------------------------------------------------------------------ MCP management
+
+  listMcpServers(accessToken: string, options?: RequestOptions): Promise<ListMCPServersResponse> {
+    return this.#request(
+      mcpServersPath(),
+      ListMCPServersResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  createMcpServer(accessToken: string, input: CreateMCPServerRequest, options?: RequestOptions): Promise<MCPServer> {
+    return this.#request(
+      mcpServersPath(),
+      MCPServerSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  getMcpServer(accessToken: string, mcpServerId: string, options?: RequestOptions): Promise<MCPServerDetail> {
+    return this.#request(
+      mcpServerPath(mcpServerId),
+      MCPServerDetailSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  updateMcpServer(
+    accessToken: string,
+    mcpServerId: string,
+    input: UpdateMCPServerRequest,
+    options?: RequestOptions,
+  ): Promise<MCPServer> {
+    return this.#request(
+      mcpServerPath(mcpServerId),
+      MCPServerSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  removeMcpServer(accessToken: string, mcpServerId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      mcpServerPath(mcpServerId),
+      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  listAgentMcpServers(
+    accessToken: string,
+    agentId: string,
+    options?: RequestOptions,
+  ): Promise<ListAgentMCPServersResponse> {
+    return this.#request(
+      agentMcpServersPath(agentId),
+      ListAgentMCPServersResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  listAvailableMcpServers(
+    accessToken: string,
+    agentId: string,
+    options?: RequestOptions,
+  ): Promise<ListAvailableMCPServersResponse> {
+    return this.#request(
+      `${agentMcpServersPath(agentId)}/available`,
+      ListAvailableMCPServersResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  attachMcpServer(
+    accessToken: string,
+    agentId: string,
+    input: AttachMCPServerRequest,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      agentMcpServersPath(agentId),
+      MCPAgentServerSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  updateAgentMcpServer(
+    accessToken: string,
+    agentId: string,
+    mcpServerId: string,
+    input: UpdateMCPBindingRequest,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      agentMcpServerPath(agentId, mcpServerId),
+      MCPAgentServerSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  detachMcpServer(accessToken: string, agentId: string, mcpServerId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      agentMcpServerPath(agentId, mcpServerId),
+      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  setMcpAuthorization(
+    accessToken: string,
+    agentId: string,
+    mcpServerId: string,
+    input: SetMCPAuthorizationRequest,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      agentMcpAuthorizationPath(agentId, mcpServerId),
+      MCPAgentServerSchema,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  revokeMcpAuthorization(
+    accessToken: string,
+    agentId: string,
+    mcpServerId: string,
+    options?: RequestOptions,
+  ): Promise<MCPAgentServer> {
+    return this.#request(
+      agentMcpAuthorizationPath(agentId, mcpServerId),
+      MCPAgentServerSchema,
+      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  startMcpOAuth(
+    accessToken: string,
+    agentId: string,
+    mcpServerId: string,
+    input: StartMCPOAuthRequest = {},
+    options?: RequestOptions,
+  ): Promise<StartMCPOAuthResponse> {
+    return this.#request(
+      agentMcpAuthorizationOAuthPath(agentId, mcpServerId),
+      StartMCPOAuthResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  probeMcpServer(
+    accessToken: string,
+    agentId: string,
+    mcpServerId: string,
+    options?: RequestOptions,
+  ): Promise<MCPProbeResponse> {
+    return this.#request(
+      agentMcpProbePath(agentId, mcpServerId),
+      MCPProbeResponseSchema,
+      { method: "POST", headers: { authorization: `Bearer ${accessToken}` } },
       options,
     );
   }

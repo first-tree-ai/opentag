@@ -24,11 +24,13 @@ import { and, asc, desc, eq, gte, inArray, isNull, lt, lte, ne, sql } from "driz
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
+  agentMcpServers,
   agentRuntimeConfigs,
   agents,
   computers,
   imBindings,
   imMessageDeliveries,
+  mcpServerAuthorizations,
   sessionPlacements,
   sessions,
   users,
@@ -1132,6 +1134,16 @@ export class AgentService {
         .for("update");
       if (imBinding) await disableImBindingInTransaction(transaction, imBinding.id, now);
       await transaction.delete(agentRuntimeConfigs).where(eq(agentRuntimeConfigs.agentId, agentId));
+      /*
+       * The Agent's MCP mounts and credentials go with it.
+       *
+       * Deleting an Agent is a soft delete, so the `on delete cascade` on those tables never fires on
+       * this path — without this the rows survived forever, holding a credential the Account can no
+       * longer see, reach, or revoke through any route. Onboarding reset already cleaned them up
+       * explicitly for the same reason; this is the other deletion path.
+       */
+      await transaction.delete(mcpServerAuthorizations).where(eq(mcpServerAuthorizations.agentId, agentId));
+      await transaction.delete(agentMcpServers).where(eq(agentMcpServers.agentId, agentId));
       const [deleted] = await transaction
         .update(agents)
         .set({ status: "deleted", updatedAt: now, revision: sql`${agents.revision} + 1` })

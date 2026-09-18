@@ -130,6 +130,7 @@ const SENSITIVE_KEY_PARTS = [
   "passwd",
   "api_key",
   "apikey",
+  "bearer_key",
   "access_key",
   "refresh_key",
   "private_key",
@@ -142,13 +143,103 @@ const SENSITIVE_KEY_PARTS = [
   "tool_output",
 ];
 
-function normalizedKey(key: string): string {
+/**
+ * Keys that read as sensitive but are known-safe *structural* names.
+ *
+ * Redaction runs over whatever a command returns, and a substring match on "authorization" or
+ * "credential" would blank a whole subtree whose *name* merely resembles a secret. MCP's
+ * authorization summary is exactly that: a field called `authorization` carrying `hasCredential`,
+ * `status`, and an expiry — no secret anywhere in it. Left unlisted, the CLI printed `authKind none`
+ * for a stored Bearer key, because the object it formatted had been replaced by `[REDACTED]`.
+ *
+ * These are exact key names, not substrings: the exemption must not reopen the door for
+ * `authorizationHeader`, `credentialCiphertext`, or anything else that could actually hold a value.
+ */
+const SAFE_STRUCTURAL_KEYS = new Set([
+  // The MCP authorization *summary*: kind, status, hasCredential, expiry, probe state.
+  "authorization",
+  // The issuer URL the authorization targets. Public by definition, and the UI shows it.
+  "authorization_server",
+  // An expiry timestamp, required by the UI and CLI to render "expires at …".
+  "access_token_expires_at",
+  // A boolean-ish presence flag rather than a value.
+  "has_credential",
+]);
+
+/**
+ * The one exempted name that also spells a real credential carrier.
+ *
+ * `authorization_server`, `access_token_expires_at`, and `has_credential` are OpenTag's own field
+ * names — a URL, a timestamp, and a flag — so they are safe however they are spelled. `authorization`
+ * is not: the very same key is an HTTP header in every log line and error object containing one, and
+ * this feature can send a key verbatim (`authScheme: ""`), which is exactly the shape that leaks.
+ */
+const SAFE_STRUCTURAL_OBJECT_ONLY_KEYS = new Set(["authorization"]);
+
+/**
+ * The MCP authorization summary's own field names.
+ *
+ * An exemption for `authorization` cannot rest on the value merely being a container: a secret rides
+ * along just as easily one level down (`{ authorization: { value: "sk-live" } }`, or an array, both
+ * of which undici's raw headers can produce). Requiring the object to carry the summary's own fields
+ * is what distinguishes the DTO from a wrapper, and it is checked before the value is descended into
+ * so a summary's scalar fields keep their ordinary treatment.
+ */
+const AUTHORIZATION_SUMMARY_FIELDS = ["kind", "status", "has_credential"];
+
+/**
+ * Whether an exempted key's value is the structural summary the exemption exists for.
+ *
+ * Every field, not any one of them. `.some()` accepted an object carrying a single summary field, and
+ * nested redaction is key-name-only, so `{authorization: {kind: "bearer", value: "sk-live"}}` kept its
+ * secret — an object that merely mentions `kind` is not the DTO.
+ */
+function isAuthorizationSummary(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value).map((key) => normalizedKey(key));
+  return AUTHORIZATION_SUMMARY_FIELDS.every((field) => keys.includes(field));
+}
+
+/**
+ * Whether a key carries a secret, given the value it carries.
+ *
+ * The value participates because a name alone cannot decide: `authorization` is a structural summary
+ * in the MCP DTO and a raw credential in a header dump.
+ */
+function isSensitiveKey(key: string, value: unknown): boolean {
+  const normalized = normalizedKey(key);
+  if (SAFE_STRUCTURAL_KEYS.has(normalized)) {
+    if (!SAFE_STRUCTURAL_OBJECT_ONLY_KEYS.has(normalized) || isAuthorizationSummary(value)) return false;
+  }
+  /*
+   * Both spellings are tested, because the camelCase split is lossy in one direction: `PassWord`
+   * normalizes to `pass_word`, which no longer contains `password`, and `payLoad` to `pay_load`,
+   * which no longer contains `payload`. Testing the plain lowercase form as well catches those
+   * without giving up the joined form that `bearerKey` -> `bearer_key` depends on.
+   */
+  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part) || plainLowercaseKey(key).includes(part));
+}
+
+function plainLowercaseKey(key: string): string {
   return key.toLowerCase().replaceAll("-", "_");
 }
 
-function isSensitiveKey(key: string): boolean {
-  const normalized = normalizedKey(key);
-  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
+function normalizedKey(key: string): string {
+  /*
+   * Fold every separator convention onto underscores, including camelCase.
+   *
+   * Without the camelCase split, `bearerKey`, `privateKey`, and `refreshKey` never matched their
+   * underscore-form entries and were emitted verbatim — the redactor silently leaked exactly the
+   * names a credential-carrying DTO is most likely to use.
+   *
+   * The split runs on the original spelling, before lowercasing: after lowercasing there is no case
+   * boundary left to find, so `authorizationServer` would normalize to `authorizationserver` and
+   * match no entry at all.
+   */
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replaceAll("-", "_");
 }
 
 const CREDENTIAL_HEADER_PATTERN =
@@ -618,16 +709,40 @@ function redactErrorValue(value: Error, seen: WeakSet<object>, depth: number): R
   return output;
 }
 
+/*
+ * Redaction and display bounds are separate concerns, and conflating them silently truncated a
+ * command's real output: the CLI presents `--json` results through `redactSensitive`, so the log
+ * serializer's array cap of 32 and depth cap of 8 applied to a user's data. `agent mcp list --json`
+ * dropped every tool past the 32nd and rendered nested `inputSchema` as `[TRUNCATED]`, with nothing
+ * reporting that it had. Redaction is a security property and applies everywhere; the caps are log
+ * hygiene and belong to `redactForLog`, which is where the budget they protect is.
+ */
 function redactArray(value: unknown[], seen: WeakSet<object>, depth: number): unknown[] {
-  return value
-    .slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS)
-    .map((item) => redactValue(item, seen, depth + 1));
+  return value.map((item) => redactValue(item, seen, depth + 1));
 }
 
 function redactObject(value: object, seen: WeakSet<object>, depth: number): Record<string, unknown> {
   const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    output[key] = isSensitiveKey(key, child) ? REDACTED : redactValue(child, seen, depth + 1);
+  }
+  return output;
+}
+
+/** The log serializer's caps, applied on top of redaction rather than inside it. */
+function capDepth(value: unknown, seen: WeakSet<object>, depth: number): unknown {
+  if (value === null || value === undefined || typeof value !== "object") return value;
+  if (depth >= STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH) return TRUNCATED;
+  if (seen.has(value)) return CIRCULAR;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_ARRAY_ITEMS)
+      .map((item) => capDepth(item, seen, depth + 1));
+  }
+  const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value).slice(0, STRUCTURED_ERROR_SERIALIZATION_MAX_KEYS)) {
-    output[key] = isSensitiveKey(key) ? REDACTED : redactValue(child, seen, depth + 1);
+    output[key] = capDepth(child, seen, depth + 1);
   }
   return output;
 }
@@ -639,7 +754,11 @@ function redactValue(value: unknown, seen: WeakSet<object>, depth: number): unkn
   if (typeof value === "string") return scrubString(value);
   if (typeof value === "bigint") return String(value);
   if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
-  if (depth >= STRUCTURED_ERROR_SERIALIZATION_MAX_DEPTH) return TRUNCATED;
+  /*
+   * The cycle guard stays: a redactor that recursed forever on a self-referencing object would hang
+   * rather than redact. Depth is unbounded otherwise, because truncating a caller's data is not
+   * redaction's job.
+   */
   if (seen.has(value)) return CIRCULAR;
   seen.add(value);
   if (value instanceof Error) return redactErrorValue(value, seen, depth);
@@ -688,9 +807,12 @@ function capLogStringValues(value: unknown, seen: WeakSet<object>): unknown {
   return output;
 }
 
-/** Return a detached, recursively redacted copy with a UTF-8 cap on every string value. */
+/**
+ * Return a detached, recursively redacted copy with the log serializer's caps: a UTF-8 bound on every
+ * string, and a depth and breadth limit on the structure itself.
+ */
 export function redactForLog<T>(value: T): T {
-  return capLogStringValues(redactSensitive(value), new WeakSet<object>()) as T;
+  return capLogStringValues(capDepth(redactSensitive(value), new WeakSet<object>(), 0), new WeakSet<object>()) as T;
 }
 
 /**

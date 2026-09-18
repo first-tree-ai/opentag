@@ -225,6 +225,11 @@
       "idx": 44,
       "tag": "0044_wet_xorn",
       "sha256": "c9a72fc1ac64d504466bf2994af4e9323e0f2f101589c01c65e4b8f0ce268fe6"
+    },
+    {
+      "idx": 45,
+      "tag": "0045_abandoned_rocket_raccoon",
+      "sha256": "454cdf4714d670ba8e87799a3db8fecddcfa13b23484cea0d47cf256b0644885"
     }
   ]
 }

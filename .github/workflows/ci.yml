@@ -630,6 +630,15 @@ jobs:
         uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
         with:
           version: "3.97.1"
+          #
+          # The scan runs over the commit range, not the tree, so a literal that a
+          # later commit removed still counts — and a negative test for a
+          # credential-handling path has to contain something that looks like a
+          # credential. The exclusion covers test fixtures only; see the file for
+          # why production code and the integration suites are deliberately still
+          # scanned.
+          #
+          extra_args: --exclude-paths=.github/trufflehog-exclude-paths.txt
 
   ci:
     name: CI

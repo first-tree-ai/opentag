@@ -8,6 +8,7 @@ export * from "./feishu-inbound-receipts.js";
 export * from "./github-connections.js";
 export * from "./im-bindings.js";
 export * from "./im-messages.js";
+export * from "./mcp.js";
 export * from "./runtime-durable-work.js";
 export * from "./sandboxes.js";
 export * from "./session-cli-proofs.js";

@@ -81,6 +81,16 @@ import {
   SlackOAuthStateService,
 } from "./services/im-bindings/slack/index.js";
 import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
+import {
+  McpAuthorizationService,
+  McpCredentialCipher,
+  McpOAuthClient,
+  McpOAuthFlowService,
+  McpOutboundFetcher,
+  McpProbe,
+  McpRefreshWorker,
+  McpServerService,
+} from "./services/mcp/index.js";
 import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
@@ -652,6 +662,30 @@ export async function startServer(): Promise<void> {
     const cloudDeliveryOwner = cloudDelivery.cloudDeliveryOwner;
     cloudDeliveryOwnerRef = cloudDeliveryOwner;
     const imDeliveryLogger = serviceLogger("im-delivery");
+    /*
+     * The MCP management plane. Every outbound request goes through one fetcher that enforces the
+     * URL policy, so the discovery chain cannot be used to reach an internal address; loopback plain
+     * HTTP is permitted only on a development deployment that explicitly opted in.
+     */
+    const mcpFetcher = new McpOutboundFetcher({ allowLoopback: config.mcpAllowLoopback });
+    const mcpServers = new McpServerService({ database });
+    const mcpCipher = new McpCredentialCipher(applicationCipher);
+    const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
+    const mcpProbe = new McpProbe({ fetcher: mcpFetcher });
+    const mcpAuthorization = new McpAuthorizationService({
+      database,
+      cipher: mcpCipher,
+      probe: mcpProbe,
+      servers: mcpServers,
+    });
+    const mcpFlows = new McpOAuthFlowService({ database, cipher: mcpCipher, oauth: mcpOAuth, servers: mcpServers });
+    const mcpRefreshWorker = new McpRefreshWorker({
+      authorization: mcpAuthorization,
+      database,
+      flows: mcpFlows,
+      servers: mcpServers,
+      onError: (error) => app?.log.error({ error }, "MCP refresh pass failed"),
+    });
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,
@@ -722,6 +756,13 @@ export async function startServer(): Promise<void> {
           }
         : {}),
       imResourceService,
+      mcp: {
+        authorization: mcpAuthorization,
+        flows: mcpFlows,
+        servers: mcpServers,
+        publicOrigin: config.publicUrl,
+        secureCookies: isHostedEnvironment(config.environment),
+      },
       readiness,
       runtimeAuthService: platformRuntime.auth,
       runtimeProviderProxy: { transport: platformRuntime.credentials.transport },
@@ -773,6 +814,7 @@ export async function startServer(): Promise<void> {
     feishuConnections.start();
     imDeliveryWorker.start();
     github?.worker.start();
+    mcpRefreshWorker.start();
     channelTargetPoller.start();
     const closeForSignal = () => {
       void app?.close();
@@ -784,6 +826,7 @@ export async function startServer(): Promise<void> {
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
       imDeliveryWorker.stop();
+      mcpRefreshWorker.stop();
       if (github) await github.worker.stop();
       await platformRuntime.close();
       await feishuSetupService.stop();

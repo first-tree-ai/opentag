@@ -106,6 +106,107 @@ describe("structured error redaction", () => {
     expect(() => redactSensitive(cyclic)).not.toThrow();
   });
 
+  /*
+   * Two failure modes found by running the CLI against a live Server, both of which made the
+   * redactor lie about what it was given:
+   *
+   * 1. Substring matching on "authorization" blanked MCP's whole authorization *summary*, so the CLI
+   *    printed `authKind none` for a stored Bearer key.
+   * 2. `normalizedKey` only folded `-` to `_`, never camelCase, so `bearerKey`, `privateKey`, and
+   *    `refreshKey` were emitted verbatim — the names a credential DTO is most likely to use.
+   */
+  it("keeps a credential-free structural field whose name only resembles a secret", () => {
+    // The real MCP authorization summary: no secret anywhere, and the CLI cannot render a row
+    // without it.
+    const summary = {
+      authorization: {
+        kind: "bearer",
+        status: "active",
+        hasCredential: true,
+        authorizationServer: "https://auth.example.com",
+        accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    expect(redactSensitive(summary)).toEqual(summary);
+  });
+
+  it("redacts camelCase credential names as well as the separated spellings", () => {
+    const redacted = redactSensitive({
+      bearerKey: "b",
+      privateKey: "p",
+      refreshKey: "r",
+      apiKey: "a",
+      accessKey: "ac",
+      clientSecret: "cs",
+      password: "pw",
+      "refresh-token": "rt",
+      credential_ciphertext: "cc",
+    }) as Record<string, unknown>;
+    for (const value of Object.values(redacted)) expect(value).toBe("[REDACTED]");
+  });
+
+  it("does not exempt a name that could actually carry a secret", () => {
+    // The exemption is exact-name, so a real header or ciphertext under a similar name is still cut.
+    expect(redactSensitive({ authorizationHeader: "Bearer x", credentialCiphertext: "v2.a.b" })).toEqual({
+      authorizationHeader: "[REDACTED]",
+      credentialCiphertext: "[REDACTED]",
+    });
+  });
+
+  it("redacts a credential carried as a string under an exempted structural name", () => {
+    /*
+     * `authorization` is exempted because MCP's summary is an object. A string under the same name
+     * is an HTTP header value or a raw key — and with `authScheme: ""` this feature sends a key
+     * verbatim, so this is a shape it really produces, not a hypothetical one.
+     */
+    expect(redactSensitive({ authorization: "token ghp_abc" })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ headers: { authorization: "sk-live-raw" } })).toEqual({
+      headers: { authorization: "[REDACTED]" },
+    });
+    expect(redactSensitive({ Authorization: "sk-live-raw" })).toEqual({ Authorization: "[REDACTED]" });
+  });
+
+  it("redacts a credential wrapped in an array or object under an exempted name", () => {
+    /*
+     * The exemption cannot rest on the value merely being a container: a secret rides along just as
+     * easily one level down, and undici's raw headers can present an array. Only a value carrying the
+     * summary's own fields is the DTO the exemption exists for.
+     */
+    expect(redactSensitive({ authorization: ["sk-live"] })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ authorization: { value: "sk-live" } })).toEqual({ authorization: "[REDACTED]" });
+    expect(redactSensitive({ authorization: { a: { b: "sk-live" } } })).toEqual({
+      authorization: "[REDACTED]",
+    });
+    expect(redactSensitive({ authorization: [] })).toEqual({ authorization: "[REDACTED]" });
+  });
+
+  it("keeps exempting the structural names that are safe in any spelling", () => {
+    // A URL, a timestamp, and a flag: none of the three can be a credential however it is spelled.
+    expect(
+      redactSensitive({
+        authorizationServer: "https://auth.example.com",
+        accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+        hasCredential: true,
+      }),
+    ).toEqual({
+      authorizationServer: "https://auth.example.com",
+      accessTokenExpiresAt: "2026-01-01T00:00:00.000Z",
+      hasCredential: true,
+    });
+  });
+
+  it("redacts unusual casing that the camelCase split would otherwise lose", () => {
+    /*
+     * Splitting camelCase is lossy: `PassWord` becomes `pass_word` and `payLoad` becomes `pay_load`,
+     * neither of which contains the entry it should match. Both spellings are checked for this.
+     */
+    expect(redactSensitive({ PassWord: "pw", payLoad: "body", Authorization: "raw" })).toEqual({
+      PassWord: "[REDACTED]",
+      payLoad: "[REDACTED]",
+      Authorization: "[REDACTED]",
+    });
+  });
+
   it("redacts Error causes and preserves safe primitive representations", () => {
     const nested = new Error("nested password=nested-secret");
     Object.assign(nested, { code: "NESTED_FAILURE" });
@@ -146,13 +247,33 @@ describe("structured error redaction", () => {
     expect(JSON.stringify(redacted)).not.toContain("nested-secret");
   });
 
-  it("bounds nested arrays and objects and truncates deep values", () => {
+  it("redacts a command's whole output rather than a log-sized slice of it", () => {
+    /*
+     * `redactSensitive` is what the CLI presents `--json` results through, so the log serializer's
+     * caps must not apply here: `agent mcp list --json` was dropping every tool past the 32nd and
+     * rendering nested `inputSchema` as `[TRUNCATED]`, silently, because the array and depth caps
+     * lived in the redactor instead of the log path.
+     */
+    const values = Array.from({ length: 40 }, (_, index) => index);
+    const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
+    let nested: Record<string, unknown> = { value: "deep" };
+    for (let depth = 0; depth < 12; depth += 1) nested = { nested };
+
+    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    expect(redacted.values).toHaveLength(40);
+    expect(Object.keys(redacted.entries as object)).toHaveLength(70);
+    expect(JSON.stringify(redacted)).not.toContain("[TRUNCATED]");
+    // Redaction still happens: that is the security property, and it is not negotiable.
+    expect(redactSensitive({ authorization: "sk-live" })).toEqual({ authorization: "[REDACTED]" });
+  });
+
+  it("bounds nested arrays and objects and truncates deep values for the log", () => {
     const values = Array.from({ length: 40 }, (_, index) => index);
     const entries = Object.fromEntries(Array.from({ length: 70 }, (_, index) => [`safe${index}`, index]));
     let nested: Record<string, unknown> = { value: "deep" };
     for (let depth = 0; depth < 10; depth += 1) nested = { nested };
 
-    const redacted = redactSensitive({ values, entries, nested }) as Record<string, unknown>;
+    const redacted = redactForLog({ values, entries, nested }) as Record<string, unknown>;
     expect(redacted.values).toHaveLength(32);
     expect(Object.keys(redacted.entries as object)).toHaveLength(64);
     expect(JSON.stringify(redacted)).toContain("[TRUNCATED]");

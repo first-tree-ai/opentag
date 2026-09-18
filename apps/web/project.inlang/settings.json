@@ -22,7 +22,8 @@
       "./messages/integrations/{locale}.json",
       "./messages/agent-setup/{locale}.json",
       "./messages/onboarding-v2/{locale}.json",
-      "./messages/im/{locale}.json"
+      "./messages/im/{locale}.json",
+      "./messages/mcp/{locale}.json"
     ]
   }
 }

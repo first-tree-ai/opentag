@@ -22,6 +22,8 @@ import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js"
 import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
+import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
+import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import type { RuntimeRoutesOptions } from "./api/runtime.js";
@@ -55,6 +57,8 @@ import {
   ImBindingUnbindRequiredError,
 } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "./services/mcp/index.js";
+import { McpServiceError } from "./services/mcp/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
@@ -103,6 +107,27 @@ export interface CreateAppOptions {
   browserAuth?: BrowserAuthRoutesOptions;
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
+  /** MCP management plane: definitions, per-Agent mounts/overrides, authorization, probing. */
+  mcp?: {
+    authorization: McpAuthorizationService;
+    flows: McpOAuthFlowService;
+    servers: McpServerService;
+    /**
+     * The origin the OAuth callback and the client-metadata document are published on.
+     *
+     * Carried here rather than read from `browserAuth`: those two routes are the public half of the
+     * MCP OAuth flow and need an origin, not a browser session. Deriving them from `browserAuth`
+     * would silently drop the callback — and so break every OAuth authorization — on any deployment
+     * that wires MCP without the browser sign-in surface.
+     */
+    publicOrigin: string;
+    /**
+     * Whether the flow-binding cookie is marked Secure. Explicit for the same reason `publicOrigin`
+     * is: the callback is reachable without a browser session, so it cannot read this off the
+     * browser sign-in surface it deliberately does not depend on.
+     */
+    secureCookies: boolean;
+  };
   feishuSetupService?: FeishuSetupService;
   slackOAuth?: SlackOAuthRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
@@ -141,6 +166,7 @@ type AccountFacingError =
   | SlackConfigurationServiceError
   | AccountSetupServiceError
   | SandboxServiceError
+  | McpServiceError
   | GitHubConnectionServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
@@ -153,6 +179,7 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof SlackConfigurationServiceError ||
     error instanceof AccountSetupServiceError ||
     error instanceof SandboxServiceError ||
+    error instanceof McpServiceError ||
     error instanceof GitHubConnectionServiceError
   );
 }
@@ -527,6 +554,22 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
     if (options.githubIntegrations) {
       registerGitHubIntegrationsRoutes(app, { ...options.githubIntegrations, authService, authOptions });
+    }
+    if (options.mcp) {
+      registerMcpServerRoutes(app, authService, { ...options.mcp, authOptions });
+      registerMcpOAuthRoutes(app, {
+        flows: options.mcp.flows,
+        /*
+         * The callback cannot probe cheaply itself, so the probe is fired here and not awaited. The
+         * route has no Account context of its own to pass — the flow already proved which pair it
+         * belongs to — so the id pair travels straight through from the callback.
+         */
+        onCredentialStored: (accountId, agentId, mcpServerId) => {
+          void options.mcp?.authorization.probe(accountId, agentId, mcpServerId).catch(() => undefined);
+        },
+        publicOrigin: options.mcp.publicOrigin,
+        secureCookies: options.mcp.secureCookies,
+      });
     }
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);

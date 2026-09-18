@@ -318,6 +318,13 @@ const ServerEnvironmentSchema = z
      * has to be a decision rather than an inheritance.
      */
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: booleanString("false"),
+    /*
+     * Permits plain-HTTP MCP endpoints on a loopback host, for a local development fixture. It is
+     * consulted only when `OPENTAG_ENV=dev`; a hosted deployment ignores it entirely, because there
+     * `127.0.0.1` is the server's own loopback and allowing it would give every Account an internal
+     * port scanner.
+     */
+    OPENTAG_MCP_ALLOW_LOOPBACK: booleanString("false"),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
@@ -653,6 +660,11 @@ export interface ServerConfig {
     };
   };
   logLevel: ServerLogLevel;
+  /**
+   * Whether MCP endpoints on a loopback host may be reached over plain HTTP. Always false outside a
+   * development environment, regardless of the configured value.
+   */
+  mcpAllowLoopback: boolean;
   port: number;
   publicUrl: string;
   /** Lifetime of an Account session, browser and CLI alike. */
@@ -745,6 +757,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
+    OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
@@ -842,6 +855,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
     logLevel: parsed.OPENTAG_LOG_LEVEL,
+    mcpAllowLoopback: !isHostedEnvironment(parsed.OPENTAG_ENV) && parsed.OPENTAG_MCP_ALLOW_LOOPBACK,
     observability: {
       tracing: {
         endpoint: parsed.OPENTAG_OTEL_ENDPOINT,

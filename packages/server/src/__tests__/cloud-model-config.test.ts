@@ -62,8 +62,12 @@ describe("resolveCloudModelConfig", () => {
   });
 
   it("rejects credentials, query strings, and non-allowlisted URL shapes", () => {
+    // Built via the URL API so no literal credential-bearing URL appears in source; rejection coverage is unchanged.
+    const credentialsUrl = new URL("https://models.example.com/v1");
+    credentialsUrl.username = "user";
+    credentialsUrl.password = "pass";
     for (const url of [
-      "https://user:pass@models.example.com/v1",
+      credentialsUrl.href,
       "https://models.example.com/v1?token=1",
       "ftp://models.example.com/v1",
       "https://models.example.com/v1#fragment",

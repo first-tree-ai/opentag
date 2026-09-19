@@ -14,6 +14,7 @@ import type { ClientLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory } from "../storage/durable-file.js";
 import { extractSkillArchive, SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
 import { verifySkillBundle } from "./skill-bundle.js";
+import { readBundleBody } from "./skill-bundle-body.js";
 
 /**
  * Materializes the Agent's enabled Skills into the Provider's skill directory at runtime start.
@@ -243,7 +244,7 @@ async function downloadedBundle(
   signal: AbortSignal,
 ): Promise<Uint8Array> {
   const response = await api.openComputerSkillBundle(token, agentId, entry.id, { signal });
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  const bytes = await readBundleBody(response, { signal, maxBytes: entry.archiveBytes });
   return verifySkillBundle(bytes, entry);
 }
 

@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeSkillManifest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { OpenTagApi } from "../index.js";
 import type { ClientLogger } from "../observability/logger.js";
 import type { PackedSkillDirectory } from "../skills/skill-archive.js";
 import { packSkillDirectory } from "../skills/skill-archive.js";
@@ -16,6 +19,7 @@ import {
 } from "../skills/skill-sync.js";
 
 const roots: string[] = [];
+const servers: Array<ReturnType<typeof createServer>> = [];
 
 async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "opentag-skill-sync-"));
@@ -24,6 +28,15 @@ async function temporaryRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolveClose) => {
+          server.closeAllConnections?.();
+          server.close(() => resolveClose());
+        }),
+    ),
+  );
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -267,6 +280,47 @@ describe("SkillSyncManager", () => {
       expect(result.skillPaths).toEqual([join(cwd, ".claude", "skills", "my-skill")]);
       expect(records.some((record) => record.fields.code === "skill_sync_unavailable")).toBe(true);
     }
+  });
+
+  it("abandons a stalled bundle body once the sync budget elapses", async () => {
+    const root = await temporaryRoot();
+    const cwd = join(root, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const entry = { id: randomUUID(), name: "my-skill", archiveSha256: "a".repeat(64), archiveBytes: 1 };
+    let bundleClosed = false;
+    const server = createServer((request, response) => {
+      if (request.url?.endsWith("/bundle")) {
+        response.writeHead(200, { "content-type": "application/octet-stream" });
+        response.write("x");
+        response.on("close", () => {
+          bundleClosed = true;
+        });
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ skills: [entry] }));
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    servers.push(server);
+    const address = server.address() as AddressInfo;
+    const api = new OpenTagApi(`http://127.0.0.1:${address.port}`);
+    const records: LogRecord[] = [];
+    const manager = new SkillSyncManager({
+      api: api as never,
+      machineToken: async () => "machine-token",
+      logger: recordingLogger(records),
+      budgetMs: 150,
+      now: () => Date.now(),
+    });
+
+    const started = Date.now();
+    const result = await manager.ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+    const elapsed = Date.now() - started;
+
+    expect(result.status).toBe("unavailable");
+    expect(elapsed).toBeLessThan(1_000);
+    expect(records.some((record) => record.fields.code === "skill_sync_unavailable")).toBe(true);
+    await vi.waitFor(() => expect(bundleClosed).toBe(true));
   });
 
   it("stages outside the discovered skill root and sweeps stale staging only", async () => {

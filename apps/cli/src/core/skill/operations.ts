@@ -7,6 +7,8 @@ import {
   markSkillDirectoryManaged,
   OpenTagApiError,
   packSkillDirectory,
+  readBundleBody,
+  SKILL_PULL_BUNDLE_TIMEOUT_MS,
   SkillArchiveError,
   verifySkillBundle,
 } from "@opentag/client";
@@ -170,19 +172,20 @@ export async function runSkillPull(
   const skill = await resolveSkill(nameOrId, authority);
   const directory = resolve(options.outDir ?? join(dependencies.cwd ?? process.cwd(), skill.name));
   await assertEmptyDestination(directory);
+  const signal = AbortSignal.timeout(SKILL_PULL_BUNDLE_TIMEOUT_MS);
   const response =
     authority.mode === "account"
-      ? await authority.api.openAgentSkillBundle(authority.accessToken, authority.agentId, skill.id)
-      : await authority.api.openRuntimeSkillBundle(authority.proof, skill.name);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  verifySkillBundle(new Uint8Array(bytes), {
+      ? await authority.api.openAgentSkillBundle(authority.accessToken, authority.agentId, skill.id, { signal })
+      : await authority.api.openRuntimeSkillBundle(authority.proof, skill.name, { signal });
+  const bytes = await readBundleBody(response, { signal, maxBytes: skill.archiveBytes });
+  verifySkillBundle(bytes, {
     archiveBytes: skill.archiveBytes,
     archiveSha256: skill.archiveSha256,
     name: skill.name,
   });
   await mkdir(resolve(directory, ".."), { recursive: true, mode: 0o700 });
   try {
-    await extractSkillArchive(Readable.from(bytes), directory);
+    await extractSkillArchive(Readable.from(Buffer.from(bytes)), directory);
   } catch (error) {
     if (error instanceof SkillArchiveError && error.code === "destination_not_empty") {
       throw new CommandError(

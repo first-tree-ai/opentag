@@ -626,6 +626,11 @@ export {
 } from "./skills/skill-archive.js";
 export { type ExpectedSkillBundle, verifySkillBundle } from "./skills/skill-bundle.js";
 export {
+  type ReadBundleBodyOptions,
+  readBundleBody,
+  SKILL_PULL_BUNDLE_TIMEOUT_MS,
+} from "./skills/skill-bundle-body.js";
+export {
   hashSkillDirectory,
   isSkillMaterializationTarget,
   markSkillDirectoryManaged,

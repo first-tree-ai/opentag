@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, rm } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { PassThrough, type Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
@@ -26,6 +26,9 @@ import { assertWithin, ensurePrivateDirectory } from "../storage/durable-file.js
  * deliberately paranoid: a Skill an Agent authors may contain anything, and a bundle from the
  * platform must never be able to write outside the directory the caller nominated.
  */
+
+/** The content-digest sidecar the Client writes next to `SKILL_MARKER_FILE` in managed directories. */
+export const SKILL_CONTENT_SIDECAR_FILE = ".opentag-skill.content";
 
 export type SkillArchiveErrorCode =
   | "not_a_directory"
@@ -81,7 +84,7 @@ interface WalkState {
   entries: number;
 }
 
-const EXCLUDED_NAMES = new Set([".git", "node_modules", ".DS_Store", SKILL_MARKER_FILE]);
+const EXCLUDED_NAMES = new Set([".git", "node_modules", ".DS_Store", SKILL_MARKER_FILE, SKILL_CONTENT_SIDECAR_FILE]);
 
 function fail(code: SkillArchiveErrorCode, message: string, cause?: unknown): never {
   throw new SkillArchiveError(code, message, cause === undefined ? undefined : { cause });
@@ -315,6 +318,12 @@ function destinationPath(root: string, member: string): string {
   return dest;
 }
 
+/** The Client's own marker and digest sidecar, which an archive must never install as content. */
+function isPlatformMetadataName(member: string): boolean {
+  const base = basename(member);
+  return base === SKILL_MARKER_FILE || base === SKILL_CONTENT_SIDECAR_FILE;
+}
+
 async function handleMember(root: string, header: TarHeaders, stream: Readable, state: WalkState): Promise<void> {
   const name = normalizeMemberName(header.name);
   state.entries += 1;
@@ -323,6 +332,10 @@ async function handleMember(root: string, header: TarHeaders, stream: Readable, 
   }
   if (name === "") {
     if (header.type !== "directory") fail("unsafe_member", "The archive root must be a directory");
+    for await (const chunk of stream) void chunk;
+    return;
+  }
+  if (isPlatformMetadataName(name)) {
     for await (const chunk of stream) void chunk;
     return;
   }

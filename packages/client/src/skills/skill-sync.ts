@@ -12,7 +12,7 @@ import {
 } from "@opentag/shared";
 import type { ClientLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory } from "../storage/durable-file.js";
-import { extractSkillArchive } from "./skill-archive.js";
+import { extractSkillArchive, SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
 
 /**
  * Materializes the Agent's enabled Skills into the Provider's skill directory at runtime start.
@@ -29,7 +29,7 @@ import { extractSkillArchive } from "./skill-archive.js";
  * Skills to its siblings.
  */
 
-export const SKILL_CONTENT_SIDECAR_FILE = ".opentag-skill.content";
+export { SKILL_CONTENT_SIDECAR_FILE };
 export const SKILL_SYNC_DEFAULT_BUDGET_MS = 15_000;
 
 export interface SkillSyncApi {

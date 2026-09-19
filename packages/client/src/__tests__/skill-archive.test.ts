@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -114,7 +114,21 @@ describe("packSkillDirectory", () => {
     expect(await readdir(join(target, "nested"))).toEqual([]);
   });
 
-  it("rejects a missing, invalid, or reserved manifest before uploading", async () => {
+  it("packs an adopted copy of a skill to the same sha256 as the clean copy", async () => {
+    const root = await temporaryRoot();
+    const clean = await writeSkill(root, { "notes.md": "same content\n" });
+    const adopted = join(root, "adopted");
+    await cp(clean, adopted, { recursive: true });
+    await writeFile(join(adopted, ".opentag-skill.json"), '{"skillId":"x","archiveSha256":"y"}');
+    await writeFile(join(adopted, ".opentag-skill.content"), "digest\n");
+
+    const cleanPacked = await packSkillDirectory(clean);
+    const adoptedPacked = await packSkillDirectory(adopted);
+    expect(adoptedPacked.sha256).toBe(cleanPacked.sha256);
+    expect(adoptedPacked.archive).toEqual(cleanPacked.archive);
+  });
+
+  it("refuses a missing, invalid, or reserved manifest before uploading", async () => {
     const root = await temporaryRoot();
     const empty = join(root, "empty");
     await mkdir(empty);
@@ -192,6 +206,19 @@ describe("extractSkillArchive", () => {
       await writeTar(tar, [{ name, content: "x" }]);
       await withArchiveError(() => extractSkillArchive(createReadStream(tar), join(root, "out")), "unsafe_member");
     }
+  });
+
+  it("ignores the platform marker and digest sidecar members during extraction", async () => {
+    const root = await temporaryRoot();
+    const tar = join(root, "archive.tar");
+    await writeTar(tar, [
+      { name: "SKILL.md", content: "x" },
+      { name: ".opentag-skill.json", content: '{"skillId":"x","archiveSha256":"y"}' },
+      { name: ".opentag-skill.content", content: "digest" },
+    ]);
+    const target = join(root, "out");
+    await extractSkillArchive(createReadStream(tar), target);
+    expect(await readdir(target)).toEqual(["SKILL.md"]);
   });
 
   it("rejects link and device members", async () => {

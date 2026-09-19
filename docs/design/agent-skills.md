@@ -165,8 +165,15 @@ have, verifies the sha256, and materializes it:
 | Provider | Target |
 | --- | --- |
 | Claude Code | `<workspace>/.claude/skills/<name>/` |
-| Codex | `<workspace>/.agents/skills/<name>/` (to be verified in the Client lane; fallback documented there) |
+| Codex | Agent-scoped only: `<workspace>/.agents/skills/<name>/`, or a per-Agent `CODEX_HOME`; otherwise out of v1 |
 | Pi | explicit `--skill <path>` arguments |
+
+**Codex materialization must be Agent-scoped.** The only acceptable targets are the workspace's
+`.agents/skills` or a per-Agent `CODEX_HOME`. The OS account home's `.agents/skills` is shared by
+every Agent on the Computer and is **never** a target or a fallback — writing there would expose one
+Agent's Skills to its siblings, which is exactly what per-Agent ownership exists to prevent. If
+neither Agent-scoped option works on the target Codex version, Codex is out of v1 rather than falling
+back to the shared account home.
 
 Every platform-managed directory carries a `.opentag-skill.json` marker containing the Skill id and
 the archive sha256. **Sync only ever touches directories carrying that marker**, so a Skill an Agent

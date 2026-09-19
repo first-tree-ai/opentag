@@ -132,22 +132,38 @@ describe("parseSkillManifest", () => {
   it("folds a `>` block scalar", () => {
     expectManifest("---\nname: demo\ndescription: >\n  Folded\n  text\n---\n", {
       name: "demo",
-      description: "Folded text\n",
+      description: "Folded text",
     });
   });
 
   it("keeps paragraph breaks in a folded block scalar", () => {
     expectManifest("---\nname: demo\ndescription: >\n  Para one\n\n  Para two\n---\n", {
       name: "demo",
-      description: "Para one\nPara two\n",
+      description: "Para one\nPara two",
     });
   });
 
   it("keeps newlines in a literal `|` block scalar", () => {
     expectManifest("---\nname: demo\ndescription: |\n  Line one\n  Line two\n---\n", {
       name: "demo",
-      description: "Line one\nLine two\n",
+      description: "Line one\nLine two",
     });
+  });
+
+  it("trims folded, literal, and keep-chomped block descriptions", () => {
+    const markdowns = [
+      "---\nname: demo\ndescription: >\n  Folded\n  text\n---\n",
+      "---\nname: demo\ndescription: |\n  Line one\n  Line two\n---\n",
+      "---\nname: demo\ndescription: >+\n  Folded\n  text\n\n---\n",
+    ];
+    for (const markdown of markdowns) {
+      const result = parseSkillManifest(markdown);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.manifest.description).toBe(result.manifest.description.trim());
+        expect(result.manifest.description.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("honors the strip and keep chomping indicators", () => {
@@ -155,9 +171,13 @@ describe("parseSkillManifest", () => {
       name: "demo",
       description: "Folded text",
     });
+    expectManifest("---\nname: demo\ndescription: >+\n  Folded\n  text\n\n---\n", {
+      name: "demo",
+      description: "Folded text",
+    });
     expectManifest("---\nname: demo\ndescription: |+\n  Line one\n\n---\n", {
       name: "demo",
-      description: "Line one\n\n",
+      description: "Line one",
     });
   });
 
@@ -195,6 +215,11 @@ describe("parseSkillManifest", () => {
   it("rejects an over-long or empty description", () => {
     expectReason(`---\nname: demo\ndescription: ${"x".repeat(SKILL_DESCRIPTION_MAX_LENGTH + 1)}\n---\n`, "Too big");
     expectReason("---\nname: demo\ndescription: ''\n---\n", "Too small");
+  });
+
+  it("rejects a whitespace-only description", () => {
+    expectReason("---\nname: demo\ndescription: '   '\n---\n", "Too small");
+    expectReason("---\nname: demo\ndescription: >\n   \n---\n", "Too small");
   });
 
   it("rejects input larger than the manifest limit before parsing", () => {

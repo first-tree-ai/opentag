@@ -74,10 +74,13 @@ export function isReservedSkillName(name: string): boolean {
  * The two fields the platform understands in a `SKILL.md` frontmatter block. Unknown top-level keys
  * are ignored because real Skills carry advisory metadata (`license`, `allowed-tools`, …) that the
  * platform neither stores nor validates.
+ *
+ * The description is trimmed, because a `>`/`|` block scalar carries its chomping-derived trailing
+ * newline into the parsed value and the description is stored and shown as one line.
  */
 export const SkillManifestSchema = z.object({
   name: SkillNameSchema,
-  description: z.string().min(1).max(SKILL_DESCRIPTION_MAX_LENGTH),
+  description: z.string().trim().min(1).max(SKILL_DESCRIPTION_MAX_LENGTH),
 });
 export type SkillManifest = z.infer<typeof SkillManifestSchema>;
 

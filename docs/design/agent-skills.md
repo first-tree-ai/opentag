@@ -67,7 +67,9 @@ The Server validates every upload before it stores anything:
 
 The parser is the same bounded, dependency-free function the contract layer exports; it understands
 plain and quoted scalars and `>`/`|` block scalars, and refuses anything it cannot represent
-faithfully rather than guessing.
+faithfully rather than guessing. The manifest description is trimmed of leading and trailing
+whitespace, because a block scalar's chomping indicator otherwise leaves a trailing newline in a
+value that is stored and shown as a single line.
 
 Because the Server re-packs deterministically, **the stored `sha256` is the Server's, not the
 uploader's.** The `x-opentag-skill-sha256` header is an integrity check on the transfer, not a claim
@@ -233,8 +235,8 @@ Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no data
 | Area | What is asserted |
 | --- | --- |
 | Name rules | Valid lowercase names; uppercase, leading hyphen, 65-character, empty, and underscore/space names rejected; every reserved name rejected and an ordinary name accepted |
-| Manifest parser | Plain, single-quoted (including doubled quotes) and double-quoted (including escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored |
-| Manifest rejection | Missing frontmatter, unterminated frontmatter, missing `name` or `description`, invalid name, over-long or empty description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
+| Manifest parser | Plain, single-quoted (including doubled quotes) and double-quoted (including escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored; block-scalar descriptions trimmed of leading and trailing whitespace |
+| Manifest rejection | Missing frontmatter, unterminated frontmatter, missing `name` or `description`, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
 | Resource schemas | Round trips for `SkillSchema`, `SkillDetailSchema`, `ListAgentSkillsResponseSchema`, `RuntimeSkillManifestSchema` and `SkillInstallMarkerSchema`; rejection of a bad sha, `revision: 0`, an over-limit archive, an over-limit runtime list, and unknown keys |
 | Error codes | Every code has metadata, every metadata key is a known code, and each status/category matches the table |
 | HTTP paths | Each builder produces the expected string and percent-encodes arguments containing spaces and slashes |

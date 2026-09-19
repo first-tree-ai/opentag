@@ -124,48 +124,82 @@ export function tarGzWithDeclaredSize(name: string, size: number): Uint8Array {
   return gzipSync(new Uint8Array(Buffer.concat([header, trailer])), { level: 9, mtime: 0 });
 }
 
-/**
- * A zip whose central-directory record declares a huge uncompressed size for a tiny stored entry.
- * `fflate`'s filter sees the declared size before it allocates the output buffer, which is the
- * contract the guard relies on.
- */
-export function zipWithDeclaredSize(name: string, uncompressedSize: number): Uint8Array {
+/** A local file header plus its name; the caller appends the entry's data. */
+export function zipLocalHeader(name: string, compression: number, size: number, originalSize: number): Buffer {
   const nameBytes = Buffer.from(name, "utf8");
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(20, 4);
-  local.writeUInt16LE(0, 6);
-  local.writeUInt16LE(0, 8);
-  local.writeUInt32LE(0, 14);
-  local.writeUInt32LE(0, 18);
-  local.writeUInt32LE(uncompressedSize >>> 0, 22);
-  local.writeUInt16LE(nameBytes.byteLength, 26);
-  local.writeUInt16LE(0, 28);
-  const localRecord = Buffer.concat([local, nameBytes]);
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(0, 6);
+  header.writeUInt16LE(compression, 8);
+  header.writeUInt32LE(0, 14);
+  header.writeUInt32LE(size >>> 0, 18);
+  header.writeUInt32LE(originalSize >>> 0, 22);
+  header.writeUInt16LE(nameBytes.byteLength, 26);
+  header.writeUInt16LE(0, 28);
+  return Buffer.concat([header, nameBytes]);
+}
 
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(20, 4);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt16LE(0, 8);
-  central.writeUInt16LE(0, 10);
-  central.writeUInt32LE(0, 16);
-  central.writeUInt32LE(0, 20);
-  central.writeUInt32LE(uncompressedSize >>> 0, 24);
-  central.writeUInt16LE(nameBytes.byteLength, 28);
-  central.writeUInt16LE(0, 30);
-  central.writeUInt16LE(0, 32);
-  central.writeUInt16LE(0, 34);
-  central.writeUInt16LE(0, 36);
-  central.writeUInt32LE(0, 38);
-  central.writeUInt32LE(0, 42);
-  const centralRecord = Buffer.concat([central, nameBytes]);
+export interface RawZipEntry {
+  name: string;
+  compression: number;
+  /** Compressed size recorded in both the local and central records. */
+  size: number;
+  originalSize: number;
+  /** Byte offset of this entry's local header within the local section. */
+  offset: number;
+}
 
+function zipCentralEntry(entry: RawZipEntry): Buffer {
+  const nameBytes = Buffer.from(entry.name, "utf8");
+  const record = Buffer.alloc(46);
+  record.writeUInt32LE(0x02014b50, 0);
+  record.writeUInt16LE(20, 4);
+  record.writeUInt16LE(20, 6);
+  record.writeUInt16LE(0, 8);
+  record.writeUInt16LE(entry.compression, 10);
+  record.writeUInt32LE(0, 16);
+  record.writeUInt32LE(entry.size >>> 0, 20);
+  record.writeUInt32LE(entry.originalSize >>> 0, 24);
+  record.writeUInt16LE(nameBytes.byteLength, 28);
+  record.writeUInt16LE(0, 30);
+  record.writeUInt16LE(0, 32);
+  record.writeUInt16LE(0, 34);
+  record.writeUInt16LE(0, 36);
+  record.writeUInt32LE(0, 38);
+  record.writeUInt32LE(entry.offset, 42);
+  return Buffer.concat([record, nameBytes]);
+}
+
+/**
+ * A zip assembled by hand: a caller-supplied local section plus arbitrary central-directory records
+ * that may disagree with it. `zipSync` will not emit these shapes, which is the point — they model
+ * a hostile archive that declares one thing in its central directory and carries another.
+ */
+export function buildRawZip(local: Uint8Array, entries: RawZipEntry[]): Uint8Array {
+  const localBytes = Buffer.from(local);
+  const central = Buffer.concat(entries.map(zipCentralEntry));
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(1, 8);
-  end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(centralRecord.byteLength, 12);
-  end.writeUInt32LE(localRecord.byteLength, 16);
-  return new Uint8Array(Buffer.concat([localRecord, centralRecord, end]));
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(central.byteLength, 12);
+  end.writeUInt32LE(localBytes.byteLength, 16);
+  return new Uint8Array(Buffer.concat([localBytes, central, end]));
+}
+
+/**
+ * A zip whose deflate record declares a huge uncompressed size for zero compressed bytes. `fflate`'s
+ * filter sees the declared size before it allocates the output buffer, which is the contract the
+ * guard relies on.
+ */
+export function zipWithDeclaredSize(name: string, uncompressedSize: number): Uint8Array {
+  return buildRawZip(zipLocalHeader(name, 8, 0, uncompressedSize), [
+    { name, compression: 8, size: 0, originalSize: uncompressedSize, offset: 0 },
+  ]);
+}
+
+/** A gzip stream that inflates to `size` zero bytes — a compression bomb. */
+export function gzipOfZeros(size: number): Uint8Array {
+  return gzipSync(new Uint8Array(size), { level: 9, mtime: 0 });
 }

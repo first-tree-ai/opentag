@@ -1,4 +1,4 @@
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
@@ -7,7 +7,7 @@ import {
   SKILL_UNPACKED_MAX_BYTES,
   type SkillArchiveFormat,
 } from "@opentag/shared";
-import { type Unzipped, unzipSync } from "fflate";
+import { type UnzipFileInfo, type Unzipped, unzipSync } from "fflate";
 import { type Entry as TarEntry, type Headers as TarHeaders, extract as tarExtract } from "tar-stream";
 import { SkillServiceError, skillArchiveInvalid, skillArchiveTooLarge } from "./errors.js";
 
@@ -79,6 +79,25 @@ function mapArchiveReadError(error: unknown): SkillServiceError {
   return skillArchiveInvalid("Skill archive could not be read");
 }
 
+/**
+ * Backstop over the decompressed tar stream: the payload ceiling plus enough framing for the maximum
+ * member count (two 512-byte blocks per member, headers and padding). A gzip that inflates beyond
+ * this without yielding members is aborted before it can burn unbounded CPU or memory.
+ */
+const MAX_TAR_STREAM_BYTES = SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
+
+/** Counts decompressed bytes as they pass and fails the stream once the ceiling is exceeded. */
+function createTarStreamMeter(limit: number): Transform {
+  let seen = 0;
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      seen += chunk.length;
+      if (seen > limit) callback(skillArchiveTooLarge());
+      else callback(null, chunk);
+    },
+  });
+}
+
 /** Reads one tar entry body, refusing to read past its declared size or the global unpacked cap. */
 async function readTarEntryBody(entry: AsyncIterable<Uint8Array>, size: number): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
@@ -126,8 +145,9 @@ async function collectTarEntry(
 async function readTarGzEntries(bytes: Uint8Array): Promise<RawSkillEntry[]> {
   const source = Readable.from([bytes]);
   const gunzip = createGunzip();
+  const meter = createTarStreamMeter(MAX_TAR_STREAM_BYTES);
   const extract = tarExtract();
-  const streamed = pipeline(source, gunzip, extract);
+  const streamed = pipeline(source, gunzip, meter, extract);
   const entries: RawSkillEntry[] = [];
   const state = { seen: new Set<string>(), declaredBytes: 0 };
   let count = 0;
@@ -143,31 +163,66 @@ async function readTarGzEntries(bytes: Uint8Array): Promise<RawSkillEntry[]> {
   } catch (error) {
     source.destroy();
     gunzip.destroy();
+    meter.destroy();
     extract.destroy();
     await streamed.catch(() => undefined);
     throw mapArchiveReadError(error);
   }
 }
 
+interface ZipBoundsState {
+  seen: Set<string>;
+  declaredBytes: number;
+  compressedBytes: number;
+  count: number;
+}
+
+/**
+ * Bounds one zip central-directory entry before `unzipSync` produces its bytes.
+ *
+ * The declared `originalSize` alone is not trustworthy: a STORED entry is copied as its compressed
+ * `size` bytes, and every central-directory entry may point at the SAME local data. The compressed
+ * sizes are therefore summed against the input length — overlapping members cannot all fit inside
+ * the archive — and a stored entry whose two sizes disagree is rejected outright.
+ */
+function assertZipEntryWithinBounds(info: UnzipFileInfo, state: ZipBoundsState, inputBytes: number): void {
+  state.count += 1;
+  if (state.count > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
+  if (
+    !Number.isSafeInteger(info.size) ||
+    info.size < 0 ||
+    !Number.isSafeInteger(info.originalSize) ||
+    info.originalSize < 0
+  ) {
+    throw skillArchiveInvalid("Skill archive member declares an invalid size");
+  }
+  if (info.compression === 0 && info.size !== info.originalSize) {
+    throw skillArchiveInvalid("Skill archive member declares inconsistent stored sizes");
+  }
+  state.compressedBytes += info.size;
+  if (state.compressedBytes > inputBytes) throw skillArchiveInvalid("Skill archive members overlap");
+  if (info.originalSize > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
+  state.declaredBytes += info.originalSize;
+  if (state.declaredBytes > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
+}
+
 function readZipEntries(bytes: Uint8Array): RawSkillEntry[] {
-  const state = { seen: new Set<string>(), declaredBytes: 0, count: 0 };
+  const state: ZipBoundsState = { seen: new Set<string>(), declaredBytes: 0, compressedBytes: 0, count: 0 };
   let unzipped: Unzipped;
   try {
     unzipped = unzipSync(bytes, {
       filter: (info) => {
-        state.count += 1;
-        if (state.count > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
-        if (!Number.isSafeInteger(info.originalSize) || info.originalSize < 0) {
-          throw skillArchiveInvalid("Skill archive member declares an invalid size");
-        }
-        state.declaredBytes += info.originalSize;
-        if (state.declaredBytes > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
+        assertZipEntryWithinBounds(info, state, bytes.byteLength);
         return true;
       },
     });
   } catch (error) {
     throw mapArchiveReadError(error);
   }
+  // Backstop on the bytes that actually exist, independent of any declared size.
+  let actualBytes = 0;
+  for (const body of Object.values(unzipped)) actualBytes += body?.byteLength ?? 0;
+  if (actualBytes > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
   const entries: RawSkillEntry[] = [];
   for (const [rawName, body] of Object.entries(unzipped)) {
     if (rawName.endsWith("/") || body === undefined) continue;

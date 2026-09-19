@@ -4,9 +4,10 @@ import { AgentDisplayNameSchema } from "./agent.js";
 /**
  * MCP (Model Context Protocol) management contract.
  *
- * This release delivers the management plane only: Server definitions, per-Agent bindings, and
- * per-Agent authorization (Bearer key or OAuth). Runtime delivery of MCP credentials to Providers
- * is not implemented, so an Agent does not yet call MCP tools. See
+ * This module is the management plane: Server definitions, per-Agent bindings, and per-Agent
+ * authorization (Bearer key or OAuth). The runtime half — how a running Agent actually reaches those
+ * Servers — is `./mcp-gateway.ts`, and no credential defined here is ever delivered to a Provider:
+ * the gateway resolves an Agent's authorization on the Server and calls upstream itself. See
  * `docs/design/mcp-server-integration.md`.
  *
  * Every schema here is strict and browser-compatible. None of them ever carries secrets: no

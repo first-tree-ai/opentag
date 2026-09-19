@@ -22,7 +22,7 @@ import { RuntimeMcpGatewayTokenStore } from "./mcp-gateway-token-store.js";
 import { LiveMcpServicePolicy, type McpUsableMountReader } from "./mcp-policy.js";
 import { ProviderOperationRegistry } from "./operation-registry.js";
 import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-proxy-adapter.js";
-import { RuntimeCredentialOwner } from "./runtime-credential-owner.js";
+import { RuntimeCredentialOwner, type RuntimeCredentialOwnerOptions } from "./runtime-credential-owner.js";
 import { RuntimeScopeResolver, type RuntimeScopeResolverPort } from "./scope-resolver.js";
 import { SLACK_OPERATIONS } from "./slack-operations.js";
 import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "./task-policy.js";
@@ -126,6 +126,12 @@ export interface RuntimeCredentialServicesOptions {
   sweepIntervalMs?: number;
 }
 
+/** The two handles the gateway route needs; neither is useful without the other. */
+export interface McpGatewayServices {
+  tokens: RuntimeMcpGatewayTokenStore;
+  authorizer: McpGatewayExecutionAuthorizer;
+}
+
 export interface RuntimeCredentialServices {
   owner: RuntimeCredentialOwner;
   transport: RuntimeProviderProxyTransport;
@@ -138,7 +144,7 @@ export interface RuntimeCredentialServices {
   /** Present only when the deployment configured the web service. */
   web?: RuntimeWebService;
   /** Present only when the MCP gateway is wired; the route needs both to serve a request. */
-  mcp?: { tokens: RuntimeMcpGatewayTokenStore; authorizer: McpGatewayExecutionAuthorizer };
+  mcp?: McpGatewayServices;
   close(): void;
 }
 
@@ -183,7 +189,7 @@ function createMcpGatewayServices(
     authority: RuntimeExecutionAuthority;
     connectionFence: RuntimeConnectionFence;
   },
-): { tokens: RuntimeMcpGatewayTokenStore; authorizer: McpGatewayExecutionAuthorizer } | undefined {
+): McpGatewayServices | undefined {
   if (!options.mcp) return undefined;
   return {
     tokens: new RuntimeMcpGatewayTokenStore(),
@@ -195,6 +201,26 @@ function createMcpGatewayServices(
       ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
     }),
   };
+}
+
+/** The composed MCP handles, as the optional field of the services result. */
+function mcpServicesResult(mcp: McpGatewayServices | undefined): { mcp?: McpGatewayServices } {
+  return mcp ? { mcp } : {};
+}
+
+/**
+ * The MCP fields the credential owner needs, as one object.
+ *
+ * Grouped rather than spread inline so the composition function stays under the complexity ratchet,
+ * and because the policy and the token store are two halves of one decision: the gateway is either
+ * wired or it is not.
+ */
+function mcpOwnerOptions(
+  options: RuntimeCredentialServicesOptions,
+  mcp: McpGatewayServices | undefined,
+): Partial<RuntimeCredentialOwnerOptions> {
+  if (!options.mcp || !mcp) return {};
+  return { mcpPolicy: new LiveMcpServicePolicy(options.mcp.mounts), mcpGatewayTokens: mcp.tokens };
 }
 
 /**
@@ -265,8 +291,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     gitHubAdmission,
     ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
     ...(options.web ? { webPolicy: options.web.policy } : {}),
-    ...(options.mcp ? { mcpPolicy: new LiveMcpServicePolicy(options.mcp.mounts) } : {}),
-    ...(mcp ? { mcpGatewayTokens: mcp.tokens } : {}),
+    ...mcpOwnerOptions(options, mcp),
     ...(options.logger ? { logger: options.logger } : {}),
     ...(options.sweepIntervalMs !== undefined ? { sweepIntervalMs: options.sweepIntervalMs } : {}),
   });
@@ -292,7 +317,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     urlHandles,
     broker,
     ...(web ? { web } : {}),
-    ...(mcp ? { mcp } : {}),
+    ...mcpServicesResult(mcp),
     close: () => {
       unsubscribeHandles();
       owner.close();

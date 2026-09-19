@@ -39,6 +39,11 @@ import { VerifiedTreeHead } from "./services/github-proxy/verified-tree-head.js"
  * fence. It is composed with the Local registry for credential opens/sweeps/revocation routing,
  * while the optional injected `cloudControl` verifier keeps its own Computer-level authority.
  */
+/** The MCP gateway wiring, if this deployment supplied a mount reader. */
+function mcpCredentialOptions(mounts: McpUsableMountReader | undefined): { mcp?: { mounts: McpUsableMountReader } } {
+  return mounts ? { mcp: { mounts } } : {};
+}
+
 export async function createPlatformRuntime(options: {
   config: ServerConfig;
   database: DatabaseClient;
@@ -128,7 +133,7 @@ export async function createPlatformRuntime(options: {
           },
         }
       : {}),
-    ...(options.mcpMounts ? { mcp: { mounts: options.mcpMounts } } : {}),
+    ...mcpCredentialOptions(options.mcpMounts),
     ...(options.logger ? { logger: options.logger } : {}),
   });
   const unsubscribe = executions.onClose(({ executionId }) => {

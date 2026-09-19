@@ -1,21 +1,27 @@
 # MCP Server integration
 
-> **Status: the management plane is delivered; runtime delivery is not implemented.**
+> **Status: the management plane is delivered; runtime delivery is delivered for Claude Code on a
+> local Computer.**
 >
-> This release adds MCP (Model Context Protocol) Server definitions, per-Agent bindings with
-> per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing, and
-> background token maintenance, in the Server API, the Web UI, and the CLI.
+> The management plane provides MCP (Model Context Protocol) Server definitions, per-Agent bindings
+> with per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing,
+> and background token maintenance, in the Server API, the Web UI, and the CLI.
 >
-> **An Agent does not yet call MCP tools.** No credential is ever delivered to a Provider and no
-> Client-side loopback proxy exists, so a running Agent's tool list is unchanged by anything on this
-> page. The tool list shown in the UI is a snapshot discovered with a specific Agent's credential —
-> evidence that the credential and the Server agree, not a statement that a turn will invoke them.
+> Runtime delivery is [the MCP gateway](#the-mcp-gateway): one inbound Streamable HTTP endpoint on
+> the OpenTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
+> upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
+> authorization row and calls upstream itself.
 >
-> The upgrade path, when runtime delivery is built: add a non-secret MCP descriptor to the runtime
-> snapshot → have the Client fetch execution-time credentials with its machine token (the pattern
-> `runtime/im-resource-fetcher.ts` already establishes) → inject the real authorization header
-> through a local `127.0.0.1` loopback proxy → merge the result into Claude Code's `mcp.json` in
-> `hosted-tool-bridge.ts`, and replace Codex's `-c mcp_servers={}`.
+> Not yet covered: **Codex** (its app-server is spawned once per Session runtime from a frozen
+> argument vector, so a per-execution bearer cannot be injected into it) and the **Cloud sandbox**
+> (its Turn worker runs Pi only; neither Claude Code nor Codex runs there at all). **Pi** has no MCP
+> configuration surface and is out of scope.
+>
+> An earlier revision of this page proposed a different path — push credentials down to the Client
+> and inject the real authorization header through a local `127.0.0.1` loopback proxy. The gateway
+> replaces it, and inverts the trust: the Client holds only a token that is worthless outside one
+> live execution, and every upstream secret stays behind the outbound URL policy, the per-Account
+> concurrency budget, and the response bounds already described below.
 
 ## What this feature is for
 
@@ -592,6 +598,95 @@ Background work — a failed probe or refresh — also emits a `StructuredError`
 string, since both vocabularies are uppercase underscore. Its `retryability` follows from the
 category (`unavailable` / `transient` → `backoff`, `credential` → `after_auth`, otherwise `never`)
 and its `phase` is `provider` for probe and refresh work.
+
+## The MCP gateway
+
+The management plane says which Servers an Agent may reach and with whose credential. The gateway is
+how it actually reaches them.
+
+```
+Claude Code (spawned per run, local Computer)
+   │  MCP Streamable HTTP, Authorization: Bearer <execution token>
+   ▼
+POST /api/v1/mcp                                    the inbound MCP server
+   │  1. the bearer resolves to one executionId (hash-only in-memory store)
+   │  2. the execution fence re-checks everything, and yields accountId + agentId
+   ▼
+resolveActiveCredential → buildHeadersFor → McpTransport → McpOutboundFetcher
+   ▼
+the Agent's bound MCP Servers
+```
+
+**The bearer proves which execution is calling, and nothing else.** The token record holds an
+execution id and no identity, so Account and Agent are read from the live execution record on every
+request. A token cannot assert whose tools it wants, and a stale token cannot name an Agent whose
+execution has since been replaced.
+
+**It is execution-scoped by construction.** A 256-bit random value prefixed `otmg_`, retained only as
+its SHA-256 digest, one live token per execution, revoked from the single point every execution ends
+at — explicit close, connection replacement, owner loss, and the stale sweep alike. That is what
+makes writing a bearer into a provider config file acceptable: a token a prompt-injected Agent reads
+out of `mcp.json` buys no access after the turn.
+
+The token is fetched through its own `runtime:mcp:gateway` frame rather than returned with the
+execution-open result, because that result has never carried a secret and both existing secrets in
+the protocol — capability tokens and proxy tickets — are fetched the same way. The Client composes
+the endpoint URL against the Server origin it already pinned; only the fixed path crosses the wire.
+
+### What the gateway speaks
+
+Both protocol eras, not one. This deployment speaks `2026-07-28` upstream, but the clients that mount
+this endpoint are the provider CLIs, and Claude Code's own in-process bridge still speaks
+`2025-03-26`. A modern-only gateway would be unusable by the client it exists for.
+
+| Method | Answer |
+| --- | --- |
+| `initialize` + `notifications/initialized` | The legacy handshake. An unsupported requested version is answered with one this deployment does speak, never echoed — echoing would strand the session |
+| `server/discover` | The modern path: the whole supported set, so the client chooses |
+| `ping` | `{}` |
+| `tools/list` | The aggregated catalogue, served whole; no cursor, because there is never a further page |
+| `tools/call` | Routed upstream |
+
+Replies are always a single JSON object; the request-scoped SSE form is permitted but nothing here is
+incremental. `resources/*`, `prompts/*`, elicitation, and sampling are not implemented, and the
+advertised capabilities say so.
+
+### The catalogue
+
+Tools are aggregated **transparently**: the model sees `linear__create_issue`, not a `call_mcp_tool`
+meta tool, because a model calls a tool whose schema it can read far more reliably than one it must
+discover through another call first.
+
+- A mount contributes only when it is `enabled`, its authorization is `active`, and its probe
+  `succeeded`. A disabled mount is silent (disabling is deliberate); the other two are reported in
+  `instructions`, because "my tool vanished" is otherwise indistinguishable between a revoked
+  credential and a Server that stopped answering.
+- Names are `<serverName>__<toolName>`. Past 128 bytes the tool half is shortened and a digest of the
+  whole pair is appended, so two long names sharing a prefix stay distinct.
+- Composition is a pure function, so the gateway stores no name map: it resolves a call by
+  recomputing composed names over that Agent's own snapshots. Splitting on the separator would be
+  wrong twice — an upstream name may contain it, and a shortened name does not contain its tool half
+  — and recomputation also makes the resolution set exactly what this Agent may call.
+- A name two mounts both produce is published by neither, and the collision is stated. A missing tool
+  with a reason beats a tool that silently calls the wrong Server.
+- The catalogue is served from the stored probe snapshots rather than fanned out live. `tools/list`
+  runs at the start of every turn; a live fan-out would add a round trip per Server to each one and
+  contend for the same four outbound slots a real tool call needs.
+
+### Failures
+
+An upstream failure — unreachable, unauthorized, or a tool that errored — comes back as a `tools/call`
+result carrying `isError`, not as a JSON-RPC error. A model reads and recovers from the first; the
+second ends its turn. Only gateway-level failures (a bad token, a dead execution, malformed JSON-RPC)
+are transport errors.
+
+### What the gateway does not add
+
+No new database table, and therefore no migration: the token store is in memory. No user-visible API
+key and no management surface — the credential is issued automatically per execution and never shown.
+Every outbound request goes through the same `McpOutboundFetcher` a probe uses, so the SSRF gate, the
+four-per-Account concurrency limit, the redirect refusal, and the response bound all apply unchanged
+to a runtime call.
 
 ## HTTP API
 

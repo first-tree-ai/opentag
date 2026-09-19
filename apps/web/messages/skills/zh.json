@@ -1,35 +1,45 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "skills_agent_count": [
+  "skills_delete": "删除",
+  "skills_delete_confirm": "删除技能",
+  "skills_delete_description": "这将从此 Agent 移除该技能及其存储的归档文件。此操作无法撤销。",
+  "skills_delete_title": "删除 {name}？",
+  "skills_download": "下载",
+  "skills_empty": "还没有技能。上传 .zip、.skill、.tar.gz 或 .tgz 归档，让此 Agent 获得可复用的工作方法。",
+  "skills_error_archive_invalid": "无法读取该归档文件。请上传有效的 .zip、.skill、.tar.gz 或 .tgz 归档。",
+  "skills_error_archive_too_large": "该归档文件大于 16 MiB。",
+  "skills_error_client_too_large": "该归档文件大于 16 MiB。",
+  "skills_error_client_unsupported": "请选择 .zip、.skill、.tar.gz 或 .tgz 归档。",
+  "skills_error_generic": "技能请求失败，请重试。",
+  "skills_error_hash_mismatch": "上传内容在传输中损坏，请重试。",
+  "skills_error_limit_reached": "此 Agent 的技能数量已达上限。请先删除一个再上传。",
+  "skills_error_manifest_invalid": "归档中的 SKILL.md 缺失或无效。",
+  "skills_error_name_conflict": "已存在同名技能。",
+  "skills_error_name_reserved": "该技能名称已被平台保留。请在 SKILL.md 中改名后重试。",
+  "skills_error_not_found": "该技能已不存在。请刷新后重试。",
+  "skills_error_storage_unavailable": "此部署未提供技能存储。",
+  "skills_file_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
       "selectors": ["countPlural"],
       "match": {
-        "countPlural=one": "{count} 个 Agent",
-        "countPlural=other": "{count} 个 Agent"
+        "countPlural=one": "{count} 个文件",
+        "countPlural=other": "{count} 个文件"
       }
     }
   ],
-  "skills_all_skills": "全部 Skill",
-  "skills_available": "可用 Skill",
-  "skills_built_by_opentag": "由 OpenTag 构建",
-  "skills_count": [
-    {
-      "declarations": ["input count", "local countPlural = count: plural"],
-      "selectors": ["countPlural"],
-      "match": {
-        "countPlural=one": "{count} 个 Skill",
-        "countPlural=other": "{count} 个 Skill"
-      }
-    }
-  ],
-  "skills_demo_data": "演示数据",
-  "skills_instructions_preview": "指令预览",
+  "skills_list_aria": "此 Agent 的技能",
   "skills_page_description": "可复用的工作手册，为 Agent 提供完成专业工作所需的上下文和方法。",
-  "skills_page_title": "Skill",
-  "skills_preview": "预览",
-  "skills_shared": "共享",
-  "skills_upload": "上传 Skill",
-  "skills_upload_unavailable": "当前页面使用演示数据，暂不支持上传。",
-  "skills_used_by": "使用者"
+  "skills_page_title": "技能",
+  "skills_replace_confirm": "替换技能",
+  "skills_replace_description": "已存在同名技能。替换会覆盖其归档并提升修订号；原归档将被删除。",
+  "skills_replace_title": "用 {name} 替换现有技能？",
+  "skills_source_agent_upload": "由 Agent 编写",
+  "skills_source_cli_upload": "从 CLI 上传",
+  "skills_source_web_upload": "在此上传",
+  "skills_storage_unavailable": "此部署未配置技能存储，因此无法上传和下载。已有技能仍会列出。",
+  "skills_toggle_label": "启用 {name}",
+  "skills_updated": "更新于 {time}",
+  "skills_upload": "上传技能",
+  "skills_upload_in_progress": "正在上传 {name}…"
 }

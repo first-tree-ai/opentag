@@ -53,4 +53,14 @@ export const queryKeys = {
     agentServers: (agentId: string) => ["mcp", "agents", agentId] as const,
     availableServers: (agentId: string) => ["mcp", "agents", agentId, "available"] as const,
   },
+
+  /**
+   * Agent Skills. A Skill belongs to exactly one Agent, so the Agent-scoped list is the root and each
+   * Skill detail hangs off it; invalidating the list therefore also retires every detail for that
+   * Agent, which is what a write needs.
+   */
+  skills: {
+    agentSkills: (agentId: string) => ["skills", "agents", agentId] as const,
+    skill: (agentId: string, skillId: string) => ["skills", "agents", agentId, "skill", skillId] as const,
+  },
 } as const;

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY, type RuntimeCredentialClientFrame } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
@@ -9,6 +10,7 @@ import { RuntimeCredentialBroker } from "../runtime-credentials/credential-broke
 import type { RuntimeExecutionAuthority } from "../runtime-credentials/execution-authority.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
+import { LiveMcpServicePolicy, type RuntimeMcpServicePolicy } from "../runtime-credentials/mcp-policy.js";
 import { RuntimeCredentialOwner } from "../runtime-credentials/runtime-credential-owner.js";
 import type { RuntimeScopeResolverPort, RuntimeScopeSnapshot } from "../runtime-credentials/scope-resolver.js";
 import { DefaultRuntimeTaskPolicy } from "../runtime-credentials/task-policy.js";
@@ -88,6 +90,9 @@ async function fixture(options: {
   webPolicy?: ConfigRuntimeWebPolicy;
   negotiateWebTools?: boolean;
   bindingActive?: boolean;
+  negotiateMcpGateway?: boolean;
+  mcpPolicy?: RuntimeMcpServicePolicy;
+  logger?: ServiceLogger;
 }) {
   const registry = new ConnectionRegistry();
   const instanceId = randomUUID();
@@ -102,6 +107,7 @@ async function fixture(options: {
     [RUNTIME_CAPABILITY.providerProxy]: 1,
   };
   if (options.negotiateWebTools) negotiatedCapabilities[RUNTIME_CAPABILITY.webTools] = 1;
+  if (options.negotiateMcpGateway) negotiatedCapabilities[RUNTIME_CAPABILITY.mcpGateway] = 1;
   await registry.register(
     {
       active: true,
@@ -151,6 +157,8 @@ async function fixture(options: {
     policy: new DefaultRuntimeTaskPolicy(),
     gitHubAdmission: new UnavailableRuntimeGitHubAdmission(),
     ...(options.webPolicy ? { webPolicy: options.webPolicy } : {}),
+    ...(options.mcpPolicy ? { mcpPolicy: options.mcpPolicy } : {}),
+    ...(options.logger ? { logger: options.logger } : {}),
     sweepIntervalMs: 60_000,
   });
   cleanup.push(() => owner.close());
@@ -236,5 +244,72 @@ describe("execution open web services", () => {
     const off = await fixture({ negotiateWebTools: true });
     const offResult = await off.owner.handle(openFrame({ services: ["web"] }), off.context);
     expect(offResult).not.toHaveProperty("services");
+  });
+});
+
+/** Captures the structured reason the gateway records when it withholds the service. */
+function recordingLogger(): { logger: ServiceLogger; reasons: string[] } {
+  const reasons: string[] = [];
+  const capture = (bindings: Record<string, unknown>) => {
+    if (bindings.code === "MCP_GATEWAY_NOT_GRANTED") reasons.push(String(bindings.reason));
+  };
+  return {
+    reasons,
+    logger: { debug: capture, info: capture, warn: capture, error: capture },
+  };
+}
+
+const grantingPolicy = new LiveMcpServicePolicy({ hasUsableMount: async () => true });
+const emptyPolicy = new LiveMcpServicePolicy({ hasUsableMount: async () => false });
+
+describe("execution open MCP gateway service", () => {
+  it("attaches the mcp scope when requested, negotiated, and the Agent has a usable mount", async () => {
+    const state = await fixture({ negotiateMcpGateway: true, mcpPolicy: grantingPolicy });
+    const result = executionFrame(await state.owner.handle(openFrame({ services: ["mcp"] }), state.context));
+    expect(result).toMatchObject({ status: "succeeded", services: [{ service: "mcp", scopes: ["mcp:tools"] }] });
+  });
+
+  /*
+   * The silence this diagnostic exists for. Each reason is a different thing to go fix, and none of
+   * them is visible anywhere else: the Agent simply has no MCP tools and nothing says why.
+   */
+  it.each([
+    {
+      name: "the Client never negotiated the capability",
+      options: { mcpPolicy: grantingPolicy },
+      services: ["mcp"],
+      reason: "capability_not_negotiated",
+    },
+    {
+      /* The commonest cause in practice: a Client on the default legacy credential mode. */
+      name: "the Client did not ask for the service",
+      options: { negotiateMcpGateway: true, mcpPolicy: grantingPolicy },
+      services: [],
+      reason: "not_requested",
+    },
+    {
+      name: "the deployment wired no policy",
+      options: { negotiateMcpGateway: true },
+      services: ["mcp"],
+      reason: "policy_unavailable",
+    },
+    {
+      name: "the Agent has nothing usable bound",
+      options: { negotiateMcpGateway: true, mcpPolicy: emptyPolicy },
+      services: ["mcp"],
+      reason: "no_usable_mount",
+    },
+  ])("records $reason when $name", async ({ options, services, reason }) => {
+    const recorder = recordingLogger();
+    const state = await fixture({ ...options, logger: recorder.logger, negotiateWebTools: true });
+    await state.owner.handle(openFrame({ services }), state.context);
+    expect(recorder.reasons).toContain(reason);
+  });
+
+  it("records nothing when the service was granted", async () => {
+    const recorder = recordingLogger();
+    const state = await fixture({ negotiateMcpGateway: true, mcpPolicy: grantingPolicy, logger: recorder.logger });
+    await state.owner.handle(openFrame({ services: ["mcp"] }), state.context);
+    expect(recorder.reasons).toEqual([]);
   });
 });

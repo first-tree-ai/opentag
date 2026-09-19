@@ -7,6 +7,7 @@ import type {
   RuntimeExecutionSource,
 } from "@opentag/shared";
 import { RUNTIME_CAPABILITY } from "@opentag/shared";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 import {
@@ -51,6 +52,7 @@ export interface RuntimeSessionExecutionDeps {
    * gateway fully unreachable regardless of what a Client requests.
    */
   mcpPolicy?: RuntimeMcpServicePolicy;
+  logger?: ServiceLogger;
 }
 
 /**
@@ -233,14 +235,48 @@ async function describeSessionServices(
     const scopes = deps.webPolicy.authorizeWeb({ accountId: snapshot.computer.ownerAccountId });
     if (scopes && scopes.length > 0) services.push({ service: "web", scopes: [...scopes] });
   }
-  if (negotiated(context, "mcp") && frame.services?.includes("mcp") && deps.mcpPolicy) {
-    const scopes = await deps.mcpPolicy.authorizeMcp({
-      accountId: snapshot.computer.ownerAccountId,
-      agentId: snapshot.agent.id,
-    });
-    if (scopes && scopes.length > 0) services.push({ service: "mcp", scopes: [...scopes] });
-  }
+  const mcp = await describeMcpService(deps, frame, context, snapshot);
+  if (mcp) services.push(mcp);
   return services;
+}
+
+/**
+ * The MCP gateway grant, and a record of why it was withheld when it was.
+ *
+ * Withholding is silent everywhere else, which is the problem: a user binds an MCP Server on the
+ * web, watches its probe succeed, and then the Agent has no tools and nothing anywhere says why.
+ * The commonest cause is not a mistake in the MCP configuration at all — the credential relay only
+ * runs in proxy mode, so a Client on the default `legacy` mode never asks for the service and this
+ * function is never even reached with a request.
+ *
+ * Logged at debug because it is per execution open and most deployments bind no MCP Server at all;
+ * the reason code is what makes the silence explicable when someone does go looking.
+ */
+async function describeMcpService(
+  deps: RuntimeSessionExecutionDeps,
+  frame: ExecutionOpenFrame,
+  context: RuntimeBusinessContext,
+  snapshot: RuntimeScopeSnapshot,
+): Promise<RuntimeExecutionService | undefined> {
+  const withheld = (reason: string): undefined => {
+    deps.logger?.debug(
+      { code: "MCP_GATEWAY_NOT_GRANTED", reason, agentId: snapshot.agent.id },
+      "The execution did not receive the MCP gateway service",
+    );
+    return undefined;
+  };
+  if (!negotiated(context, "mcp")) return withheld("capability_not_negotiated");
+  // A Client in legacy credential mode opens no execution through the relay at all; one that does
+  // open an execution without naming the service has the capability but did not opt in.
+  if (!frame.services?.includes("mcp")) return withheld("not_requested");
+  if (!deps.mcpPolicy) return withheld("policy_unavailable");
+  const scopes = await deps.mcpPolicy.authorizeMcp({
+    accountId: snapshot.computer.ownerAccountId,
+    agentId: snapshot.agent.id,
+  });
+  // The ordinary case: this Agent has no enabled mount with an active authorization.
+  if (!scopes || scopes.length === 0) return withheld("no_usable_mount");
+  return { service: "mcp", scopes: [...scopes] };
 }
 
 async function describeSessionCandidates(

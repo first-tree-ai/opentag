@@ -9,9 +9,23 @@ import { randomUUID } from "node:crypto";
 import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { imBindings, imMessageDeliveries, imMessages, sandboxes, users } from "../db/schema/index.js";
+import {
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  runtimeDurableWork,
+  sandboxes,
+  users,
+} from "../db/schema/index.js";
+import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
 import { AgentService } from "../services/agents/index.js";
 import { ComputerService } from "../services/computers/index.js";
+import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
+import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
+import {
+  CloudSessionCollaborationOwner,
+  CloudSessionWorkTracker,
+} from "../services/sandboxes/cloud-session-collaboration-owner.js";
 import { SandboxService } from "../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
@@ -94,7 +108,12 @@ interface Stack {
   advance: (ms: number) => void;
 }
 
-function makeStack(options: { workspace?: boolean } = {}): Stack {
+function makeStack(
+  options: {
+    workspace?: boolean;
+    sessionWorkBarrier?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBarrier"];
+  } = {},
+): Stack {
   const fake = new FakeCloudRunAdmin();
   const store = new FakeWorkspaceObjectStore();
   const tokens = new RunnerBootstrapTokenService(JWT_SECRET, { ttlSeconds: 600 });
@@ -113,6 +132,7 @@ function makeStack(options: { workspace?: boolean } = {}): Stack {
     sleep: () => Promise.resolve(),
     now: () => current,
     ...(options.workspace === false ? {} : { workspace: { store } }),
+    ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
   });
   return {
     fake,
@@ -589,6 +609,49 @@ describe("E7 automatic idle reclamation", () => {
       .update(sandboxes)
       .set({ lastActivityAt: new Date(stack.now().getTime() - IDLE_TIMEOUT_MS - 1_000) })
       .where(eq(sandboxes.id, ready.row.id));
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+  });
+
+  it("blocks an automatic idle claim while accepted Session-message work is durably unfinished", async () => {
+    const accountId = await account();
+    const owner = new CloudSessionCollaborationOwner({
+      assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+      database: unit.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(unit.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      work: new CloudSessionWorkTracker(),
+    });
+    const stack = makeStack({ sessionWorkBarrier: (input) => owner.hasUnsettledSessionWork(input) });
+    const ready = await readySandbox(stack, accountId, "room-session-work");
+    // Age the row past the idle budget: only the durable collaboration barrier can refuse it.
+    const now = stack.now();
+    await unit.database
+      .update(sandboxes)
+      .set({ lastActivityAt: new Date(now.getTime() - IDLE_TIMEOUT_MS - 1_000) })
+      .where(eq(sandboxes.id, ready.row.id));
+    const recordKey = `${ready.row.sessionId}:${randomUUID()}`;
+    await unit.database.insert(runtimeDurableWork).values({
+      acceptedAt: now.getTime(),
+      attempts: 0,
+      computerId: ready.owned.cloud.computerId,
+      kind: "session-message",
+      payload: { messageId: recordKey.split(":")[1] },
+      recordKey,
+      status: "accepted",
+      updatedAt: now.getTime(),
+    });
+
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).idleReclaimAt).toBeNull();
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+
+    // A verified terminal outcome clears the barrier and the same sweep reclaims normally.
+    await unit.database
+      .update(runtimeDurableWork)
+      .set({ status: "succeeded", updatedAt: now.getTime() + 1 })
+      .where(eq(runtimeDurableWork.recordKey, recordKey));
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
   });

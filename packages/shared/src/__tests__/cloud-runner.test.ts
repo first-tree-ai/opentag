@@ -3,11 +3,15 @@ import {
   AccountSandboxRunnerAcceptanceRequestSchema,
   RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
   RUNNER_PI_CONFIG_DOCUMENT_MAX_BYTES,
+  RUNNER_SESSION_COLLABORATION_VERSION,
   RunnerAcceptanceRunFrameSchema,
   RunnerAuthFrameSchema,
   RunnerClientFrameSchema,
   RunnerCloudModelGrantSchema,
+  RunnerCloudSessionMessageRunFrameSchema,
+  RunnerCloudSessionWorkerRequestSchema,
   RunnerCloudTurnWorkerRequestSchema,
+  RunnerCloudWorkerRequestSchema,
   RunnerPiConfigInputSchema,
   RunnerServerFrameSchema,
   serializeRunnerAcceptanceWorkerStdin,
@@ -209,5 +213,207 @@ describe("E4 Cloud delivery protocol", () => {
     expect(RunnerCloudTurnWorkerRequestSchema.safeParse(request).success).toBe(true);
     const { piSessionDirectory: _continuity, ...withoutContinuity } = request;
     expect(RunnerCloudTurnWorkerRequestSchema.safeParse(withoutContinuity).success).toBe(true);
+  });
+});
+
+describe("E8 Session collaboration protocol", () => {
+  const uuid = "0b12b3c0-0000-4000-8000-000000000001";
+  const sessionMessage = {
+    type: "session:message:deliver",
+    requestId: uuid,
+    messageId: uuid,
+    sourceSessionId: "0b12b3c0-0000-4000-8000-000000000002",
+    targetSessionId: "0b12b3c0-0000-4000-8000-000000000003",
+    agentId: "0b12b3c0-0000-4000-8000-000000000004",
+    placementGeneration: 1,
+    content: { kind: "text", text: "continue the task" },
+    runtime: {
+      agentId: "0b12b3c0-0000-4000-8000-000000000004",
+      contextTreeRepository: null,
+      execution: { approvalPolicy: "never", networkAccess: true },
+      instructions: { agent: "Agent.", platform: "Platform." },
+      model: "deepseek-v4.1-flash-expires-on-0910",
+      provider: "pi",
+      revision: {
+        agent: { id: "0b12b3c0-0000-4000-8000-000000000005", sequence: 1 },
+        session: { id: "0b12b3c0-0000-4000-8000-000000000006", sequence: 1 },
+      },
+      workspace: { mode: "empty_on_create", sharing: "agent", workspaceId: "0b12b3c0-0000-4000-8000-000000000007" },
+    },
+  };
+  const runFrame = {
+    type: "session:message:run" as const,
+    requestId: sessionMessage.requestId,
+    message: sessionMessage,
+  };
+  const feishuOutbox = {
+    provider: "feishu" as const,
+    sessionKind: "channel" as const,
+    chatId: "oc_channel",
+  };
+
+  it("negotiates Session collaboration as an optional additive auth/welcome field", () => {
+    const auth = {
+      cloudDeliveryVersion: 1,
+      requestId: uuid,
+      sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_VERSION,
+      token: "bootstrap-token",
+      type: "auth" as const,
+    };
+    expect(RunnerAuthFrameSchema.safeParse(auth).success).toBe(true);
+    expect(RunnerClientFrameSchema.safeParse(auth).success).toBe(true);
+    // Legacy E7 auth (no E8 field) keeps parsing unchanged, and a bogus version is rejected.
+    const { sessionCollaborationVersion: _capability, ...legacy } = auth;
+    expect(RunnerAuthFrameSchema.safeParse(legacy).success).toBe(true);
+    expect(RunnerAuthFrameSchema.safeParse({ ...auth, sessionCollaborationVersion: 2 }).success).toBe(false);
+    const welcome = {
+      cloudDeliveryVersion: 1,
+      environmentGeneration: 1,
+      heartbeatIntervalMs: 15_000,
+      heartbeatTimeoutMs: 45_000,
+      protocolVersion: 1,
+      resourceName: "projects/p/locations/r/instances/ots-s-x",
+      resourceUid: "uid-1",
+      sandboxId: "0b12b3c0-0000-4000-8000-000000000008",
+      sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_VERSION,
+      sessionId: "0b12b3c0-0000-4000-8000-000000000009",
+      type: "server:welcome" as const,
+    };
+    expect(RunnerServerFrameSchema.safeParse(welcome).success).toBe(true);
+    // The E7 welcome shape (no E8 echo) stays parseable; the field is not required.
+    const { sessionCollaborationVersion: _echo, ...e7Welcome } = welcome;
+    expect(RunnerServerFrameSchema.safeParse(e7Welcome).success).toBe(true);
+  });
+
+  it("carries the target role and strictly requires outbox context only for visible Sessions", () => {
+    expect(RunnerCloudSessionMessageRunFrameSchema.safeParse({ ...runFrame, sessionKind: "internal" }).success).toBe(
+      true,
+    );
+    // Internal children never receive IM material...
+    expect(
+      RunnerCloudSessionMessageRunFrameSchema.safeParse({
+        ...runFrame,
+        outboxContext: feishuOutbox,
+        sessionKind: "internal",
+      }).success,
+    ).toBe(false);
+    // ...and a visible target is never dispatched without it.
+    expect(RunnerCloudSessionMessageRunFrameSchema.safeParse({ ...runFrame, sessionKind: "visible" }).success).toBe(
+      false,
+    );
+    const visible = { ...runFrame, outboxContext: feishuOutbox, sessionKind: "visible" as const };
+    expect(RunnerCloudSessionMessageRunFrameSchema.safeParse(visible).success).toBe(true);
+    expect(RunnerServerFrameSchema.safeParse(visible).success).toBe(true);
+    // A thread outbox context without a thread reference fails the shared outbox schema.
+    expect(
+      RunnerCloudSessionMessageRunFrameSchema.safeParse({
+        ...visible,
+        outboxContext: { ...feishuOutbox, sessionKind: "thread" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps the worker document union backward compatible and role-accurate", () => {
+    const grant = {
+      baseUrl: "https://server.example.com/api/v1/cloud-model",
+      expiresAt: new Date(1_900_000_000_000).toISOString(),
+      model: "deepseek-v4.1-flash-expires-on-0910",
+      token: "unit-execution-token-0123456789abcdef",
+    };
+    const sessionWorker = {
+      kind: "session-message" as const,
+      message: sessionMessage,
+      model: grant,
+      executionDir: "/run/opentag-execution/turn-1",
+      outboxContext: feishuOutbox,
+      sessionKind: "visible" as const,
+    };
+    expect(RunnerCloudSessionWorkerRequestSchema.safeParse(sessionWorker).success).toBe(true);
+    expect(RunnerCloudWorkerRequestSchema.safeParse(sessionWorker).success).toBe(true);
+    expect(
+      RunnerCloudWorkerRequestSchema.safeParse({ ...sessionWorker, outboxContext: undefined, sessionKind: "internal" })
+        .success,
+    ).toBe(true);
+    expect(
+      RunnerCloudWorkerRequestSchema.safeParse({ ...sessionWorker, sessionKind: "visible", outboxContext: undefined })
+        .success,
+    ).toBe(false);
+    // The exact E4 Turn worker document stays valid in the union.
+    const turnWorker = {
+      delivery: {
+        agentId: sessionMessage.agentId,
+        attention: "direct" as const,
+        content: {
+          kind: "text" as const,
+          providerRef: {
+            appId: "app",
+            botOpenId: "bot",
+            chatId: "chat",
+            messageId: "msg",
+            provider: "feishu" as const,
+            teamBrand: "feishu" as const,
+          },
+          text: "hello",
+        },
+        deliveryId: uuid,
+        imMessageId: uuid,
+        placementGeneration: 1,
+        requestId: uuid,
+        runtime: sessionMessage.runtime,
+        sessionId: sessionMessage.targetSessionId,
+        type: "im:deliver" as const,
+      },
+      executionDir: "/run/opentag-execution/turn-2",
+      kind: "turn" as const,
+      model: grant,
+    };
+    expect(RunnerCloudWorkerRequestSchema.safeParse(turnWorker).success).toBe(true);
+  });
+
+  it("carries cancellation of journaled Session work as its own frame", () => {
+    const cancel = {
+      type: "session:message:cancel" as const,
+      requestId: uuid,
+      messageId: "0b12b3c0-0000-4000-8000-000000000003",
+    };
+    expect(RunnerServerFrameSchema.safeParse(cancel).success).toBe(true);
+  });
+
+  it("acknowledges only an exact terminal settlement and keeps proof fields off verified frames", () => {
+    const ack = {
+      type: "session:message:settled:ack" as const,
+      requestId: uuid,
+      messageId: "0b12b3c0-0000-4000-8000-000000000003",
+      turnId: "turn-1",
+      status: "recorded" as const,
+    };
+    expect(RunnerServerFrameSchema.safeParse(ack).success).toBe(true);
+    expect(RunnerServerFrameSchema.safeParse({ ...ack, status: "accepted" }).success).toBe(false);
+    expect(
+      RunnerServerFrameSchema.safeParse({
+        ...ack,
+        requestId: undefined,
+      }).success,
+    ).toBe(false);
+
+    // Proofs are delivered on the execution open, never on a verified frame: the strict schemas
+    // reject any reintroduced field so a legacy Runner can never be sent one unknowingly.
+    const proof = { proofId: uuid, token: "unit-session-proof-token-0123456789abcdef" };
+    expect(
+      RunnerServerFrameSchema.safeParse({
+        type: "delivery:verified",
+        requestId: uuid,
+        status: "verified",
+        sessionCliProof: proof,
+      }).success,
+    ).toBe(false);
+    expect(
+      RunnerServerFrameSchema.safeParse({
+        type: "session:message:verified",
+        requestId: uuid,
+        status: "verified",
+        sessionCliProof: proof,
+      }).success,
+    ).toBe(false);
   });
 });

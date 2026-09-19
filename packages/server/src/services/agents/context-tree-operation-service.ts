@@ -1,16 +1,20 @@
 import {
+  type AgentAdminConfig,
   type ContextTreeOperationRequest,
   ContextTreeOperationRequestSchema,
   type ContextTreeOperationResponse,
 } from "@opentag/shared";
 import type { ContextTreeOperationOwner } from "../../runtime/context-tree-operation-owner.js";
 import type { AgentService } from "./agent-service.js";
+import type { CloudContextTreeOperationRunner } from "./cloud-context-tree-operations.js";
 
 /** Validate remotely first, then compare revisions again inside the Agent update transaction. */
 export class ContextTreeOperationService {
   constructor(
     readonly agents: Pick<AgentService, "getConfigById" | "updateContextTreeSelection">,
     readonly owner: ContextTreeOperationOwner,
+    /** Server-side Cloud connect for Cloud Computers, which have no Runtime owner WebSocket. */
+    readonly cloud?: CloudContextTreeOperationRunner,
   ) {}
   async run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
     const input = ContextTreeOperationRequestSchema.parse(raw);
@@ -25,14 +29,7 @@ export class ContextTreeOperationService {
     const result: ContextTreeOperationResponse =
       input.action === "disconnect"
         ? { status: "completed", repository: null }
-        : config.computerId
-          ? await this.owner.start({
-              agentId,
-              computerId: config.computerId,
-              requireStopped: config.runtimeConfig.contextTreeRepository !== null,
-              input,
-            })
-          : { status: "failed", code: "computer_unavailable" };
+        : await this.#dispatch(userId, agentId, config, input.action, input);
     if (result.status !== "completed") return result;
     if (result.repository?.toLowerCase() !== input.repository?.toLowerCase())
       return { status: "failed", code: "failed" };
@@ -54,5 +51,33 @@ export class ContextTreeOperationService {
       throw error;
     }
     return result;
+  }
+
+  /**
+   * Both paths share the revision/pause gates and the CAS commit above; only the execution venue
+   * differs. Disconnect needs neither. The schema refinement guarantees a repository here.
+   */
+  async #dispatch(
+    userId: string,
+    agentId: string,
+    config: AgentAdminConfig,
+    action: "connect" | "create",
+    input: ContextTreeOperationRequest,
+  ): Promise<ContextTreeOperationResponse> {
+    if (config.computerId === null) return { status: "failed", code: "computer_unavailable" };
+    if (this.cloud && (await this.cloud.computerKind(config.computerId)) === "cloud") {
+      return this.cloud.run({
+        accountId: userId,
+        agentId,
+        action,
+        repository: input.repository ?? "",
+      });
+    }
+    return this.owner.start({
+      agentId,
+      computerId: config.computerId,
+      requireStopped: config.runtimeConfig.contextTreeRepository !== null,
+      input,
+    });
   }
 }

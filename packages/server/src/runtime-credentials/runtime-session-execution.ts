@@ -6,7 +6,7 @@ import type {
   RuntimeExecutionService,
   RuntimeExecutionSource,
 } from "@opentag/shared";
-import { RUNTIME_CAPABILITY } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, RUNTIME_SERVER_CAPABILITY_OFFERS } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
@@ -75,6 +75,7 @@ export async function openRuntimeSessionExecution(
   const checked = checkSessionOpen(frame, context, await deps.scopeResolver.load(frame.sessionId));
   if (!checked.ok) return rejected(checked.code);
   const snapshot = checked.snapshot;
+  const internal = checked.internal;
   const sandboxMismatch = sessionSandboxMismatch(frame, snapshot);
   if (sandboxMismatch) return rejected(sandboxMismatch);
   if (snapshot.computer.kind === "cloud" && !(await cloudControlActive(deps, context.computerId))) {
@@ -90,13 +91,21 @@ export async function openRuntimeSessionExecution(
   if (decision.status === "not_ready") return rejected("execution_not_ready");
   if (decision.status === "invalid") return rejected("execution_source_invalid");
   const purpose: RuntimeExecutionPurpose = decision.validation ? "validation" : "execution";
-  const candidates = await candidateProviders(deps, snapshot, decision.validation, frame.source);
+  const candidates = await candidateProviders(deps, snapshot, decision.validation, frame.source, internal);
   const services = await describeSessionServices(deps, frame, context, snapshot);
-  if (candidates.length === 0 && services.length === 0) return rejected("execution_authority_denied");
-  const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId, services);
+  /*
+   * An internal Cloud collaboration child can legitimately run with no provider and no platform
+   * service: its authority is the explicit collaboration negotiation plus the accepted Session
+   * message, and its Session CLI proof is the actual capability it needs. It still never receives
+   * a provider binding — an internal child must not inherit the parent/visible IM credential.
+   */
+  if (candidates.length === 0 && services.length === 0 && !internal) {
+    return rejected("execution_authority_denied");
+  }
+  const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId, services, internal);
   if (!record) return rejected("owner_unavailable");
   const providers = await describeSessionCandidates(deps, record, candidates);
-  if (providers.size === 0 && services.length === 0) {
+  if (providers.size === 0 && services.length === 0 && !internal) {
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
   }
@@ -124,9 +133,17 @@ function checkSessionOpen(
   frame: ExecutionOpenFrame,
   context: RuntimeBusinessContext,
   snapshot: RuntimeScopeSnapshot | undefined,
-): { ok: true; snapshot: RuntimeScopeSnapshot } | { ok: false; code: RuntimeExecutionOpenRejectCode } {
+):
+  | { ok: true; snapshot: RuntimeScopeSnapshot; internal: boolean }
+  | { ok: false; code: RuntimeExecutionOpenRejectCode } {
   if (!snapshot) return { ok: false, code: "agent_mismatch" };
-  if (snapshot.sessionKind === "internal") return { ok: false, code: "execution_authority_denied" };
+  // An internal Session is denied unless the exact open is an explicitly negotiated Cloud
+  // collaboration child of an accepted Session message. Local internal Sessions keep the existing
+  // denial, and a Cloud frame without the negotiated capability stays denied as well.
+  const internal = internalCollaborationAuthorized(frame, context, snapshot);
+  if (snapshot.sessionKind === "internal" && !internal) {
+    return { ok: false, code: "execution_authority_denied" };
+  }
   if (snapshot.sessionEnded) return { ok: false, code: "placement_stale" };
   if (snapshot.agent.id !== frame.agentId || snapshot.agent.computerId !== context.computerId) {
     return { ok: false, code: "agent_mismatch" };
@@ -141,7 +158,28 @@ function checkSessionOpen(
   ) {
     return { ok: false, code: "placement_stale" };
   }
-  return { ok: true, snapshot };
+  return { ok: true, snapshot, internal };
+}
+
+/**
+ * The narrow internal-authority predicate: an internal Cloud Session whose accepted Session
+ * message opens over a connection that explicitly negotiated Session collaboration. The exact
+ * connection, current Sandbox allocation, current Runner, and accepted source are all fenced
+ * separately, so this predicate only establishes that an internal child is the intended subject
+ * at all. It is never true for Local internal Sessions.
+ */
+function internalCollaborationAuthorized(
+  frame: ExecutionOpenFrame,
+  context: RuntimeBusinessContext,
+  snapshot: RuntimeScopeSnapshot,
+): boolean {
+  return (
+    snapshot.sessionKind === "internal" &&
+    snapshot.computer.kind === "cloud" &&
+    frame.source.kind === "session-message" &&
+    context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] ===
+      RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration].max
+  );
 }
 
 /** Cloud executions must match the exact Session Sandbox row; Local forbids one. */
@@ -177,6 +215,7 @@ function openSessionRecord(
   purpose: RuntimeExecutionPurpose,
   connectionId: string,
   services: readonly RuntimeExecutionService[],
+  internal: boolean,
 ): RuntimeExecutionRecord | undefined {
   try {
     return deps.executions.open({
@@ -192,6 +231,7 @@ function openSessionRecord(
       source: frame.source,
       purpose,
       computerKind: snapshot.computer.kind,
+      ...(internal ? { internalAuthority: "cloud-session-collaboration" as const } : {}),
       ...(frame.sandbox ? { sandbox: frame.sandbox } : {}),
       providers: new Map(),
       ...(services.length > 0 ? { services } : {}),
@@ -298,18 +338,22 @@ async function describeSessionCandidates(
 
 /**
  * The Session's own IM binding plus, only with a fresh source-checked GitHub admission, the
- * GitHub connection. An admission denied for the exact accepted source simply drops the provider.
+ * GitHub connection. An internal collaboration child never gets the inherited IM binding: it
+ * must not carry the parent/visible credential or outbox into its own execution, and its
+ * authority is the accepted Session message plus the explicit collaboration negotiation.
  */
 async function candidateProviders(
   deps: RuntimeSessionExecutionDeps,
   snapshot: RuntimeScopeSnapshot,
   validation: { provider: CandidateProvider; bindingId: string } | undefined,
   source: RuntimeExecutionSource,
+  internal: boolean,
 ): Promise<{ provider: CandidateProvider; bindingId: string }[]> {
   if (validation) return [{ provider: validation.provider, bindingId: validation.bindingId }];
-  const candidates: { provider: CandidateProvider; bindingId: string }[] = [
-    { provider: snapshot.binding.provider, bindingId: snapshot.binding.id },
-  ];
+  const candidates: { provider: CandidateProvider; bindingId: string }[] = [];
+  if (!internal) {
+    candidates.push({ provider: snapshot.binding.provider, bindingId: snapshot.binding.id });
+  }
   const admission = await deps.gitHubAdmission
     .admit({
       accountId: snapshot.computer.ownerAccountId,

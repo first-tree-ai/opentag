@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { AccountSandboxEnsureRequest, AccountSandboxResponse } from "@opentag/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, imBindings, sandboxes } from "../../db/schema/index.js";
+import { agents, computers, imBindings, sandboxes, sessionPlacements, sessions } from "../../db/schema/index.js";
 import { type SessionService, SessionServiceError } from "../sessions/index.js";
 import { sandboxNotFound, sandboxScopeInvalid } from "./errors.js";
 import { loadOwnedSandbox, type OwnedSandboxRow } from "./owned-sandbox.js";
@@ -44,6 +44,37 @@ export class SandboxService {
       const existing = await this.#sandboxBySession(transaction, ensured.session.id);
       if (existing) return toAccountSandbox(existing, owned.computerId);
       return this.#insertSandbox(transaction, ensured.session.id, owned.computerId, storageBase);
+    });
+  }
+
+  /**
+   * E8 collaboration ingress: the Sandbox row for an EXISTING internal Session (created through
+   * SessionService.createInternalSessionWithMessage, never through the account-facing ensure).
+   * The same ownership/authority chain as `ensureForAccount` applies; the Session must be an
+   * active internal child of the Account's own Cloud Agent.
+   */
+  async ensureForInternalSession(accountId: string, sessionId: string): Promise<AccountSandboxResponse> {
+    if (!this.#cloudIdentities.enabled) throw sandboxNotFound();
+    const storageBase = this.#cloudIdentities.storageBase;
+    if (!storageBase) throw new Error("Cloud identities are enabled without a storage base");
+    return this.#database.transaction(async (transaction) => {
+      const [session] = await transaction
+        .select({ id: sessions.id, imBindingId: sessions.imBindingId, kind: sessions.kind })
+        .from(sessions)
+        .where(and(eq(sessions.id, sessionId), isNull(sessions.endedAt)))
+        .limit(1);
+      if (!session || session.kind !== "internal") throw sandboxNotFound();
+      const owned = await this.#lockOwnedCloudBinding(transaction, accountId, session.imBindingId);
+      const [placement] = await transaction
+        .select({ computerId: sessionPlacements.computerId })
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, session.id))
+        .limit(1);
+      if (placement?.computerId !== owned.computerId) throw sandboxNotFound();
+      await this.#afterSessionEnsured?.();
+      const existing = await this.#sandboxBySession(transaction, session.id);
+      if (existing) return toAccountSandbox(existing, owned.computerId);
+      return this.#insertSandbox(transaction, session.id, owned.computerId, storageBase);
     });
   }
 

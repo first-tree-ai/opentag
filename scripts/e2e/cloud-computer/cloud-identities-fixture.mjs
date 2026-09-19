@@ -31,6 +31,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_HELPER = join(HERE, "cloud-identities-migrations.ts");
 const EXTRA_ENV_KEYS = new Set([
   "OPENTAG_DEV_AUTH_EMAIL",
+  "OPENTAG_DEV_AUTH_BYPASS_ENABLED",
   "OPENTAG_PORTABLE_DOWNLOAD_BASE_URL",
   "OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED",
   "OPENTAG_DEV_INTERNAL_TOOLS_ENABLED",
@@ -48,6 +49,11 @@ const EXTRA_ENV_KEYS = new Set([
   "OPENTAG_CLOUD_RUNNER_VPC_SUBNET",
   "OPENTAG_CLOUD_RUNNER_EXECUTION_TAG",
   "OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN",
+  "OPENTAG_PUBLIC_URL",
+  "OPENTAG_CLOUD_MODEL_ENABLED",
+  "OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL",
+  "OPENTAG_CLOUD_MODEL_MASTER_KEY",
+  "OPENTAG_CLOUD_MODEL_ALLOWED_MODELS",
 ]);
 const BASIC_ENV_KEYS = [
   "PATH",
@@ -75,7 +81,7 @@ function copyEnvWithoutSecrets(source) {
 function pickAllowedEnv(extraEnv = {}) {
   const unknown = Object.keys(extraEnv).filter((key) => !EXTRA_ENV_KEYS.has(key));
   if (unknown.length > 0) {
-    throw new Error(`Refused extra env keys ${unknown.join(", ")}; only email, acceptance, download URL`);
+    throw new Error(`Refused extra env keys ${unknown.join(", ")}; use the explicit acceptance allowlist`);
   }
   return Object.fromEntries(Object.entries(extraEnv).filter(([, value]) => value !== undefined && value !== ""));
 }
@@ -212,11 +218,14 @@ function buildServerEnv(o) {
     BETTER_AUTH_SECRET: o.betterAuthSecret,
     OPENTAG_ENCRYPTION_KEY: o.encryptionKey.toString("base64"),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
-    OPENTAG_DEV_AUTH_EMAIL: o.email,
     OPENTAG_LOG_LEVEL: "info",
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: o.downloadBaseUrl,
     OPENTAG_OTEL_ENDPOINT: "",
     ...o.extraEnv,
+    OPENTAG_DEV_AUTH_EMAIL:
+      o.extraEnv.OPENTAG_DEV_AUTH_BYPASS_ENABLED === "false"
+        ? undefined
+        : (o.extraEnv.OPENTAG_DEV_AUTH_EMAIL ?? o.email),
   };
 }
 
@@ -451,6 +460,8 @@ async function assembleFixture(input) {
   rememberSecret(secrets, jwtSecret);
   rememberSecret(secrets, betterAuthSecret);
   rememberSecret(secrets, encryptionKey.toString("base64"));
+  rememberSecret(secrets, extraEnvState.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN);
+  rememberSecret(secrets, extraEnvState.OPENTAG_CLOUD_MODEL_MASTER_KEY);
 
   let e1;
   if (upgradeFromE1) {

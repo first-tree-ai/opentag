@@ -4,8 +4,9 @@ import { join } from "node:path";
 import {
   RUNNER_ACCEPTANCE_WORKER_STDIN_MAX_BYTES,
   RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES,
-  type RunnerCloudTurnWorkerRequest,
+  RunnerCloudSessionWorkerRequestSchema,
   RunnerCloudTurnWorkerRequestSchema,
+  type RunnerCloudWorkerRequest,
   RunnerPiConfigInputSchema,
 } from "@opentag/shared";
 import { z } from "zod";
@@ -21,8 +22,9 @@ import { registerRunnerSignalCleanup } from "./signals.js";
  * argv, env, logs, or any parent-visible storage. stdout carries exactly one JSON result line;
  * the report is already redacted by the acceptance runner.
  *
- * E4 adds the "turn" kind: one Cloud IM delivery Turn through the same disposable-home discipline,
- * with the model grant and the #633 proxy manifest instead of a raw account-supplied Pi config.
+ * E8 adds the Cloud kinds: one IM Turn or Session-collaboration message through the same
+ * disposable-home discipline, with the execution-scoped model grant and proxy manifest instead
+ * of a raw account-supplied Pi config, plus an optional Session proof in per-message scratch.
  */
 
 export const WORKER_STDIN_MAX_BYTES = Math.max(
@@ -48,6 +50,7 @@ const WorkerRequestSchema = z.discriminatedUnion("kind", [
       }
     }),
   RunnerCloudTurnWorkerRequestSchema,
+  RunnerCloudSessionWorkerRequestSchema,
 ]);
 
 export type WorkerRequest = z.infer<typeof WorkerRequestSchema>;
@@ -111,7 +114,7 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
       emit({ kind: "error", code: "worker_request_invalid", message: "The worker stdin payload is invalid" });
       return 2;
     }
-    if (parsed.kind === "turn") {
+    if (parsed.kind === "turn" || parsed.kind === "session-message") {
       return await runCloudTurn(parsed, emit, options);
     }
     // Everything disposable lives under one owned scratch root inside the sandbox filesystem.
@@ -159,9 +162,9 @@ export async function runRunnerWorker(io: WorkerIo, options: WorkerOptions = {})
   }
 }
 
-/** E4 Cloud Turn: one delivery inside the disposable sandbox filesystem; emits the completion. */
+/** One Cloud delivery (IM Turn or Session message): emits the completion and maps it to an exit code. */
 async function runCloudTurn(
-  request: RunnerCloudTurnWorkerRequest,
+  request: RunnerCloudWorkerRequest,
   emit: (value: unknown) => void,
   options: WorkerOptions,
 ): Promise<number> {

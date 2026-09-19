@@ -8,11 +8,14 @@ import { runtimeUtf8Length } from "./runtime-config.js";
 import { RuntimeCredentialClientFrameSchema, RuntimeCredentialServerFrameSchema } from "./runtime-credentials.js";
 import {
   DirectImMessageDeliveryRequestSchema,
+  RuntimeImOutboxContextSchema,
   RuntimeModelSchema,
   RuntimeOpaqueIdSchema,
+  SessionMessageDeliveryRequestSchema,
   TurnReportRequestSchema,
 } from "./runtime-domain.js";
 import { SandboxLifecycleSchema } from "./sandbox.js";
+import { SessionCliProofGrantSchema } from "./session-cli.js";
 
 /**
  * E3 Cloud Runner contract: the Session-owned Sandbox is materialized as exactly one Cloud Run
@@ -40,6 +43,25 @@ export const RUNNER_CLOUD_DELIVERY_VERSION = 1 as const;
  * asked to follow a Session-to-Session hand-off (idle deletion still saves them through E5).
  */
 export const RUNNER_REUSE_VERSION = 1 as const;
+/**
+ * E8 Session-collaboration capability negotiated in the same auth/welcome exchange. The E8
+ * Runner asks for it explicitly, and the Server echoes it ONLY for a requesting connection whose
+ * Cloud allocation was fenced. Every `session:message:*` frame and the open-result
+ * `sessionCliProof` field are gated on this echo, so an E7 Runner (same `runnerVersion` string,
+ * strict frame schemas) never receives a field or frame it does not understand. A Runner that
+ * does not request the capability keeps existing IM delivery unchanged. Deployment order is
+ * Server-first with a pinned E8 Runner image: an E8 Runner against an old Server fails its auth
+ * handshake (the strict E7 auth schema rejects the extra request field) instead of executing
+ * without collaboration authority.
+ */
+export const RUNNER_SESSION_COLLABORATION_VERSION = 1 as const;
+
+/** The Cloud Session-collaboration frame budget; mirrors the delivery run frame bound. */
+const RUNNER_SESSION_MESSAGE_CONTEXT_REFINE = (value: {
+  sessionKind: "internal" | "visible";
+  outboxContext?: unknown;
+}): boolean =>
+  value.sessionKind === "visible" ? value.outboxContext !== undefined : value.outboxContext === undefined;
 /** Server-mediated model proxy base path; the only paths below it are the source-owned allowlist. */
 export const CLOUD_MODEL_PROXY_PATH = "/api/v1/cloud-model" as const;
 /** The single OpenAI-compatible operation E4 admits. */
@@ -303,6 +325,12 @@ export const RunnerAuthFrameSchema = z
      */
     cloudDeliveryVersion: z.literal(RUNNER_CLOUD_DELIVERY_VERSION).optional(),
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
+    /**
+     * E8: opt in to Cloud Session collaboration. Only sent by a Runner build that can journal and
+     * execute `session:message:*` frames; the Server echoes it in the welcome before any session
+     * frame, proof-bearing open result, or Session-collaboration capability is used.
+     */
+    sessionCollaborationVersion: z.literal(RUNNER_SESSION_COLLABORATION_VERSION).optional(),
     /** Opt in to renewal-only replies for an expired token of a still-live allocation. */
     renewExpired: z.literal(true).optional(),
     /**
@@ -475,6 +503,156 @@ export const RunnerCloudDeliveryReceivedFrameSchema = z
   .strict();
 export type RunnerCloudDeliveryReceivedFrame = z.infer<typeof RunnerCloudDeliveryReceivedFrameSchema>;
 
+/* ----------------------------------------------------------------------------------------------
+ * E8 Cloud Session collaboration frames (additive; the pinned Runner build gates readiness, so a
+ * Runner that predates these frames never becomes ready on a Server that sends them)
+ *
+ * A SessionMessage delivery mirrors the IM custody boundary without any IM-specific row:
+ * `session:message:run` (Server dispatch) -> the Runner journals the message in trusted parent
+ * storage with fsync -> `session:message:received` (accepted = durable custody taken) -> the
+ * Server records the accepted outcome, mints the execution-scoped grant, and answers
+ * `session:message:verified` -> the Runner runs the Turn in the SAME single-slot Session queue as
+ * IM deliveries -> on terminal settlement the Runner retires the journal entry locally and sends
+ * `session:message:settled` (best-effort activity signal; there is deliberately no Server-side
+ * Turn row for Session messages). A receipt retransmitted after reconnect re-verifies entries the
+ * Server already accepted and retires everything else; execution is at-most-once per messageId.
+ * ------------------------------------------------------------------------------------------- */
+
+/** Server -> Runner dispatch of one authorized SessionMessage. `requestId` mirrors `message.requestId`. */
+export const RunnerCloudSessionMessageRunFrameSchema = z
+  .object({
+    type: z.literal("session:message:run"),
+    requestId: RequestIdSchema,
+    message: SessionMessageDeliveryRequestSchema,
+    /**
+     * The target Session's actual role. The Server derives it from the target Session row, never
+     * from instruction prose or from missing credentials.
+     */
+    sessionKind: z.enum(["internal", "visible"]),
+    /**
+     * The nonsecret bridge-derived IM outbox context. Present exactly for a visible target (the
+     * Server requires an active binding), absent for an internal child so no IM material can ever
+     * be fabricated for it.
+     */
+    outboxContext: RuntimeImOutboxContextSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.message.requestId !== value.requestId) {
+      context.addIssue({ code: "custom", path: ["requestId"], message: "Session message request id mismatch" });
+    }
+    if (!RUNNER_SESSION_MESSAGE_CONTEXT_REFINE(value)) {
+      context.addIssue({
+        code: "custom",
+        path: ["outboxContext"],
+        message: "A visible Session message requires outbox context and an internal one forbids it",
+      });
+    }
+    if (runtimeUtf8Length(JSON.stringify(value)) > RUNNER_WS_MAX_FRAME_BYTES) {
+      context.addIssue({
+        code: "custom",
+        path: ["message"],
+        message: "The Session message frame exceeds the channel budget",
+      });
+    }
+  });
+export type RunnerCloudSessionMessageRunFrame = z.infer<typeof RunnerCloudSessionMessageRunFrameSchema>;
+
+/**
+ * Runner -> Server receipt for one Session message dispatch. `accepted` means the message is
+ * durably journaled (fsynced) under the exact allocation scope — the custody boundary the
+ * Server's `accepted` outcome requires. `phase` is the Runner's journal phase for the entry: a
+ * reconnect re-announcement of an already-started Turn says `started` so the Server refreshes its
+ * liveness picture without minting a second permission. Rejected receipts carry no custody.
+ */
+export const RunnerCloudSessionMessageReceivedFrameSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      type: z.literal("session:message:received"),
+      requestId: RequestIdSchema,
+      messageId: z.string().uuid(),
+      /** Runner-allocated Turn id; stable across receipt retransmissions of the same message. */
+      turnId: RuntimeOpaqueIdSchema,
+      status: z.literal("accepted"),
+      phase: z.enum(["received", "started"]),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("session:message:received"),
+      requestId: RequestIdSchema,
+      messageId: z.string().uuid(),
+      status: z.literal("rejected"),
+      reason: z.enum(["client_busy", "input_conflict", "target_mismatch"]),
+    })
+    .strict(),
+]);
+export type RunnerCloudSessionMessageReceivedFrame = z.infer<typeof RunnerCloudSessionMessageReceivedFrameSchema>;
+
+/**
+ * Server -> Runner execution permission for one accepted Session message. Same semantics as
+ * `delivery:verified`, keyed by the dispatch/journal request id: `verified` carries the
+ * execution-scoped model grant; `rejected` retires a `received` journal entry that never started.
+ */
+export const RunnerCloudSessionMessageVerifiedFrameSchema = z
+  .object({
+    type: z.literal("session:message:verified"),
+    requestId: RequestIdSchema,
+    status: z.enum(["verified", "rejected"]),
+    code: z.string().min(1).max(128).optional(),
+    model: RunnerCloudModelGrantSchema.optional(),
+  })
+  .strict();
+export type RunnerCloudSessionMessageVerifiedFrame = z.infer<typeof RunnerCloudSessionMessageVerifiedFrameSchema>;
+
+/**
+ * Server -> Runner cancellation of one journaled Session message (explicit stop). Best-effort
+ * like the IM cancel frame: the durable journal entry stays authoritative until the Runner
+ * retires it, and the Server never re-dispatches a cancelled message.
+ */
+export const RunnerCloudSessionMessageCancelFrameSchema = z
+  .object({
+    type: z.literal("session:message:cancel"),
+    requestId: RequestIdSchema,
+    messageId: z.string().uuid(),
+  })
+  .strict();
+export type RunnerCloudSessionMessageCancelFrame = z.infer<typeof RunnerCloudSessionMessageCancelFrameSchema>;
+
+/**
+ * Runner -> Server terminal settlement signal for one journaled Session message. Best-effort
+ * execution evidence (drives the Server's idle-reclaim busy picture and activity clock); it is
+ * NOT a durable Turn Report — Session messages have no Server-side Turn columns by design.
+ */
+export const RunnerCloudSessionMessageSettledFrameSchema = z
+  .object({
+    type: z.literal("session:message:settled"),
+    /** The dispatch/journal request id, for correlation and logs. */
+    requestId: RequestIdSchema,
+    messageId: z.string().uuid(),
+    turnId: RuntimeOpaqueIdSchema,
+    outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
+  })
+  .strict();
+export type RunnerCloudSessionMessageSettledFrame = z.infer<typeof RunnerCloudSessionMessageSettledFrameSchema>;
+
+/**
+ * Server -> Runner terminal acknowledgement. `recorded` means the exact outcome was durably
+ * committed now; `already_recorded` means an identical terminal result was already committed.
+ * The Runner holds its immutable terminal result until this ack and replays it on reconnect; a
+ * missing or uncommittable record never receives a success ack.
+ */
+export const RunnerCloudSessionMessageSettledAckFrameSchema = z
+  .object({
+    type: z.literal("session:message:settled:ack"),
+    requestId: RequestIdSchema,
+    messageId: z.string().uuid(),
+    turnId: RuntimeOpaqueIdSchema,
+    status: z.enum(["recorded", "already_recorded"]),
+  })
+  .strict();
+export type RunnerCloudSessionMessageSettledAckFrame = z.infer<typeof RunnerCloudSessionMessageSettledAckFrameSchema>;
+
 export const RunnerCloudDeliveryReportFrameSchema = z
   .object({
     type: z.literal("delivery:report"),
@@ -518,6 +696,18 @@ export const RunnerCloudTurnWorkerRequestSchema = z
      * disposable Sandbox. The trusted Runner only ever supplies an in-sandbox path.
      */
     piSessionDirectory: z.string().min(1).max(512).optional(),
+    /**
+     * E8 Session collaboration material for the Session's own CLI: the current Session-CLI proof
+     * plus the Server URL the in-sandbox CLI must call. Present exactly when the Server minted a
+     * proof at the verified boundary; stdin-only, never journaled or logged by the Runner.
+     */
+    sessionCollaboration: z
+      .object({
+        proof: SessionCliProofGrantSchema,
+        serverUrl: z.string().url().max(1024),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((value, context) => {
@@ -527,11 +717,75 @@ export const RunnerCloudTurnWorkerRequestSchema = z
   });
 export type RunnerCloudTurnWorkerRequest = z.infer<typeof RunnerCloudTurnWorkerRequestSchema>;
 
+/**
+ * E8: the in-sandbox worker document for one accepted Session collaboration message. Same
+ * boundary as the IM Turn document — the exact dispatched message, the execution-scoped grant,
+ * and the per-execution public material directory — but carries the genuine SessionMessage
+ * contract instead of any IM-shaped input.
+ */
+export const RunnerCloudSessionWorkerRequestSchema = z
+  .object({
+    kind: z.literal("session-message"),
+    /** The exact Session message the Server dispatched and the Runner journaled. */
+    message: SessionMessageDeliveryRequestSchema,
+    /** Execution-scoped model grant minted at the verified boundary. */
+    model: RunnerCloudModelGrantSchema,
+    /** In-sandbox absolute path of the per-turn public material directory (proxy manifest). */
+    executionDir: z.string().min(1).max(512),
+    /** Allocation-stable in-sandbox directory for Pi conversation continuity. */
+    piSessionDirectory: z.string().min(1).max(512).optional(),
+    /**
+     * The target Session's actual role, carried from the journaled run frame. `buildSessionMessageInput`
+     * selects its visible/internal instruction mode from this value alone.
+     */
+    sessionKind: z.enum(["internal", "visible"]),
+    /** Nonsecret outbox context, present exactly for a visible target. */
+    outboxContext: RuntimeImOutboxContextSchema.optional(),
+    /** E8 Session-CLI material for the target Session; stdin-only, never journaled or logged. */
+    sessionCollaboration: z
+      .object({
+        proof: SessionCliProofGrantSchema,
+        serverUrl: z.string().url().max(1024),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!RUNNER_SESSION_MESSAGE_CONTEXT_REFINE(value)) {
+      context.addIssue({
+        code: "custom",
+        path: ["outboxContext"],
+        message: "A visible Session worker document requires outbox context and an internal one forbids it",
+      });
+    }
+    if (runtimeUtf8Length(JSON.stringify(value)) > RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES) {
+      context.addIssue({ code: "custom", message: "The Session worker document exceeds its stdin budget" });
+    }
+  });
+export type RunnerCloudSessionWorkerRequest = z.infer<typeof RunnerCloudSessionWorkerRequestSchema>;
+
+/** The backward-compatible in-sandbox worker document union: existing `turn` documents are unchanged. */
+export const RunnerCloudWorkerRequestSchema = z.discriminatedUnion("kind", [
+  RunnerCloudTurnWorkerRequestSchema,
+  RunnerCloudSessionWorkerRequestSchema,
+]);
+export type RunnerCloudWorkerRequest = z.infer<typeof RunnerCloudWorkerRequestSchema>;
+
 /** Serialize a Turn worker document, enforcing the stdin budget before any write. */
 export function serializeRunnerCloudTurnWorkerStdin(input: Omit<RunnerCloudTurnWorkerRequest, "kind">): string {
   const serialized = JSON.stringify({ kind: "turn", ...input });
   if (runtimeUtf8Length(serialized) > RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES) {
     throw new Error("The Turn worker document exceeds its stdin budget");
+  }
+  return serialized;
+}
+
+/** Serialize a Session-message worker document, enforcing the stdin budget before any write. */
+export function serializeRunnerCloudSessionWorkerStdin(input: Omit<RunnerCloudSessionWorkerRequest, "kind">): string {
+  const serialized = JSON.stringify({ kind: "session-message", ...input });
+  if (runtimeUtf8Length(serialized) > RUNNER_CLOUD_TURN_WORKER_STDIN_MAX_BYTES) {
+    throw new Error("The Session worker document exceeds its stdin budget");
   }
   return serialized;
 }
@@ -544,6 +798,8 @@ export const RunnerClientFrameSchema = z.discriminatedUnion("type", [
   RunnerCloudDeliveryReceivedFrameSchema,
   RunnerCloudDeliveryReportFrameSchema,
   RunnerCloudDeliveryQueryResultFrameSchema,
+  RunnerCloudSessionMessageReceivedFrameSchema,
+  RunnerCloudSessionMessageSettledFrameSchema,
   RunnerCredentialTunnelFrameSchema,
   RunnerWorkspaceSealResultFrameSchema,
 ]);
@@ -573,6 +829,8 @@ export const RunnerWelcomeFrameSchema = z
     workspaceVersion: z.literal(RUNNER_WORKSPACE_VERSION).optional(),
     /** E7: echo of the physical-reuse capability for a control-authenticated Runner. */
     reuseVersion: z.literal(RUNNER_REUSE_VERSION).optional(),
+    /** E8: echo of the Session-collaboration capability for a requesting, fenced connection. */
+    sessionCollaborationVersion: z.literal(RUNNER_SESSION_COLLABORATION_VERSION).optional(),
     heartbeatIntervalMs: z.number().int().positive(),
     heartbeatTimeoutMs: z.number().int().positive(),
   })
@@ -656,6 +914,10 @@ export const RunnerServerFrameSchema = z.discriminatedUnion("type", [
   RunnerCloudDeliveryCancelFrameSchema,
   RunnerCloudDeliveryQueryFrameSchema,
   RunnerCloudDeliveryReportAckFrameSchema,
+  RunnerCloudSessionMessageRunFrameSchema,
+  RunnerCloudSessionMessageVerifiedFrameSchema,
+  RunnerCloudSessionMessageCancelFrameSchema,
+  RunnerCloudSessionMessageSettledAckFrameSchema,
   RunnerCredentialTunnelResultFrameSchema,
   RunnerWorkspaceSealFrameSchema,
 ]);

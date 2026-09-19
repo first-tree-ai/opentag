@@ -1059,7 +1059,11 @@ describe("account runner HTTP endpoints", () => {
 describe("E4 Cloud IM delivery over the runner channel", () => {
   async function cloudDeliveryStack(
     _accountId: string,
-    options: { credentialRenewalIntervalMs?: number; heartbeatIntervalMs?: number } = {},
+    options: {
+      credentialRenewalIntervalMs?: number;
+      heartbeatIntervalMs?: number;
+      cloudSession?: Parameters<typeof registerRunnerWebSocketRoute>[1]["cloudSession"];
+    } = {},
   ) {
     const context = makeRunnerContext();
     const fence = new CloudRuntimeFence();
@@ -1083,6 +1087,7 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
       hub: context.hub,
       service: context.service,
       cloudDelivery: owner,
+      ...(options.cloudSession ? { cloudSession: options.cloudSession } : {}),
       ...(options.credentialRenewalIntervalMs !== undefined
         ? { credentialRenewalIntervalMs: options.credentialRenewalIntervalMs }
         : {}),
@@ -1149,6 +1154,92 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
       turnId: randomUUID(),
     });
     expect((await client.closed).code).toBe(RUNNER_WS_CLOSE.protocolError);
+  });
+
+  it("negotiates and routes E8 Session collaboration only when an owner is composed", async () => {
+    const accountId = await account();
+    const sandbox = await ownedSandbox(accountId);
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: "",
+    };
+
+    // Without a collaboration owner, an E8 request is never echoed and a session frame is a
+    // protocol error, exactly like any other unnegotiated frame.
+    const bareStack = await cloudDeliveryStack(accountId);
+    await bareStack.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    claims.resourceName = row?.currentResourceName as string;
+    const bare = await connectRunner(bareStack.address);
+    bare.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: await bareStack.tokens.issue(claims),
+      cloudDeliveryVersion: 1,
+      sessionCollaborationVersion: 1,
+    });
+    expect((await bare.waitFor("auth:result")).ok).toBe(true);
+    expect((await bare.waitFor("server:welcome")).sessionCollaborationVersion).toBeUndefined();
+    expect(bareStack.fence.connectionForSandbox(sandbox.sandboxId)?.sessionCollaborationEligible).toBe(false);
+    const messageId = randomUUID();
+    bare.send({
+      type: "session:message:received",
+      messageId,
+      phase: "received",
+      requestId: messageId,
+      status: "accepted",
+      turnId: "turn-1",
+    });
+    expect((await bare.closed).code).toBe(RUNNER_WS_CLOSE.protocolError);
+
+    // With the owner composed, the echo, the fence eligibility, inbound routing and teardown all
+    // go through the actual RunnerConnection path.
+    const received = vi.fn(async (_connection: unknown, _frame: unknown) => undefined);
+    const settled = vi.fn(async (_connection: unknown, _frame: unknown) => undefined);
+    const detachConnection = vi.fn();
+    const stack = await cloudDeliveryStack(accountId, {
+      cloudSession: { detachConnection, handleReceived: received, handleSettled: settled },
+    });
+    await stack.service.startForAccount(accountId, sandbox.sandboxId);
+    const client = await connectRunner(stack.address);
+    client.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: await stack.tokens.issue(claims),
+      cloudDeliveryVersion: 1,
+      sessionCollaborationVersion: 1,
+    });
+    expect((await client.waitFor("auth:result")).ok).toBe(true);
+    expect((await client.waitFor("server:welcome")).sessionCollaborationVersion).toBe(1);
+    const connection = stack.fence.connectionForSandbox(sandbox.sandboxId);
+    expect(connection?.sessionCollaborationEligible).toBe(true);
+
+    client.send({
+      type: "session:message:received",
+      messageId,
+      phase: "received",
+      requestId: messageId,
+      status: "accepted",
+      turnId: "turn-1",
+    });
+    client.send({
+      type: "session:message:settled",
+      messageId,
+      outcome: "completed",
+      requestId: messageId,
+      turnId: "turn-1",
+    });
+    await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(1));
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(received.mock.calls[0]?.[0]).toMatchObject({ connectionId: connection?.connectionId });
+    expect(received.mock.calls[0]?.[1]).toMatchObject({ messageId, phase: "received", turnId: "turn-1" });
+    expect(settled.mock.calls[0]?.[1]).toMatchObject({ messageId, outcome: "completed" });
+
+    client.socket.close();
+    await client.closed;
+    await vi.waitFor(() => expect(detachConnection).toHaveBeenCalledWith(connection?.connectionId));
   });
 
   it("never lets a server heartbeat reach an E4 Runner ahead of its auth:result", async () => {

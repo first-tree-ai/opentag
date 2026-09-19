@@ -197,7 +197,12 @@ export class RuntimeScopeResolver {
   ): RuntimeFenceViolation | undefined {
     if (snapshot.sessionId !== record.sessionId) return "session_unknown";
     if (snapshot.sessionEnded) return "session_ended";
-    if (snapshot.sessionKind === "internal") return "session_internal";
+    // A Local internal Session (or any internal Session without the explicit Cloud collaboration
+    // authority) stays closed here. The exact open-time decision is carried on the record, so the
+    // per-request fence never has to re-derive authorization from the frame or the connection.
+    if (snapshot.sessionKind === "internal" && record.internalAuthority !== "cloud-session-collaboration") {
+      return "session_internal";
+    }
     if (snapshot.agent.id !== record.agentId || snapshot.agent.computerId !== record.computerId) {
       return "agent_mismatch";
     }
@@ -213,16 +218,8 @@ export class RuntimeScopeResolver {
     if (snapshot.computer.ownerAccountId !== record.accountId) return "ownership_mismatch";
     if (snapshot.binding.status !== "active") return "binding_inactive";
     if (record.computerKind === "cloud") {
-      if (
-        !record.sandbox ||
-        !snapshot.sandbox ||
-        snapshot.sandbox.id !== record.sandbox.sandboxId ||
-        snapshot.sandbox.resourceUid !== record.sandbox.resourceUid ||
-        snapshot.sandbox.environmentGeneration !== record.sandbox.environmentGeneration ||
-        snapshot.sandbox.lifecycle !== "ready"
-      ) {
-        return "sandbox_mismatch";
-      }
+      const sandboxViolation = cloudSandboxFenceViolation(record, snapshot);
+      if (sandboxViolation) return sandboxViolation;
     }
     return undefined;
   }
@@ -291,6 +288,24 @@ export class RuntimeScopeResolver {
       },
     };
   }
+}
+
+/** Exact Cloud allocation fence for per-request scope checks. */
+function cloudSandboxFenceViolation(
+  record: RuntimeExecutionRecord,
+  snapshot: RuntimeScopeSnapshot,
+): RuntimeFenceViolation | undefined {
+  if (
+    !record.sandbox ||
+    !snapshot.sandbox ||
+    snapshot.sandbox.id !== record.sandbox.sandboxId ||
+    snapshot.sandbox.resourceUid !== record.sandbox.resourceUid ||
+    snapshot.sandbox.environmentGeneration !== record.sandbox.environmentGeneration ||
+    snapshot.sandbox.lifecycle !== "ready"
+  ) {
+    return "sandbox_mismatch";
+  }
+  return undefined;
 }
 
 /** Compares a validation execution against its fresh binding/agent/computer snapshot. */

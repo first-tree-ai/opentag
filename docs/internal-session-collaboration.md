@@ -16,7 +16,7 @@ the current Session, placement generation, Computer connection, and Client conne
 reuse the same proof, including retries after a timeout or lost response. Placement, connection, Agent, or IM-binding
 changes invalidate the old proof.
 
-All Provider processes launched by one daemon OS user currently form one trust domain. File permissions protect proof
+For Local Computers, all Provider processes launched by one daemon OS user currently form one trust domain. File permissions protect proof
 files from other OS users and accidental exposure, but do not isolate sibling Sessions running as that same user. Until
 OpenTag introduces per-Session OS or container isolation, the proof lets the Server validate a live Runtime binding and
 removes caller-selected source flags; it is not a security boundary against a compromised sibling Session that can read
@@ -31,7 +31,9 @@ message into its bounded FIFO, not that the task completed.
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
 and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode.
 
-Internal Sessions share their Agent's tools, MCPs, workspace, and default Runtime configuration. A creation command may
+Internal Sessions inherit their Agent's available tools and default Runtime configuration. Local Sessions also share the
+Agent workspace. Cloud Sessions have independent Sandbox workspaces and Pi histories; see
+[Cloud Context Tree and Session collaboration](./cloud-context.md) for the Cloud boundaries. A creation command may
 override the model, reasoning effort, or maximum Run duration. Internal Sessions do not receive IM delivery or the
 temporary `OPENTAG_PROVIDER_ENV_FILE`; they report through `opentag session send`. Both visible and internal Sessions
 receive role-aware managed instructions and may create further internal Sessions.
@@ -48,17 +50,18 @@ publishes any user-facing result through the official provider CLI during that c
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
-Session collaboration is real-time and best-effort, not a persistent job queue. The Server stores authorized logical
-messages and their latest observed outcome for idempotency and conflict detection, while target delivery remains an
-in-memory bounded FIFO with no automatic replay. Agent-facing Session operations intentionally provide no `end`;
-administrative lifecycle invalidation may still set the existing `sessions.ended_at` field. Retention is out of scope.
+The Server stores authorized logical messages and their latest observed delivery outcome for idempotency and conflict
+detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and
+retry policy; acceptance does not mean completion or exactly-once external side effects. Cloud uses the allocation and
+execution boundaries described in [Cloud Context](./cloud-context.md). Agent-facing Session operations intentionally
+provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field.
 
-This CLI surface requires `runtime.sessionCollaboration` capability version 2. Visible callback delivery also requires
+The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Visible callback delivery also requires
 `runtime.imCredentialGrant` version 2. A new Server reports `outbox_unavailable` before delivery when the target Client is
 older; a new Client connected to an older Server rejects the delivery before acknowledging it so the same logical message
 remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.
 
 OpenTag currently supports this path only with a single Server replica. Proof-authenticated Session CLI HTTP and
-source/target SessionMessage Runtime delivery both use that replica's local WebSocket owner. Ordinary multi-replica
+source/target SessionMessage Runtime delivery use that replica's transport owner (Local Computer or Cloud Runner). Ordinary multi-replica
 load balancing, sticky routing, and cross-replica owner discovery, forwarding, or delivery relay are not supported;
 horizontal replicas require an explicit cross-instance owner-routing design before they can be enabled.

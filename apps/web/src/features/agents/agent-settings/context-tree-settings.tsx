@@ -17,11 +17,13 @@ export function ContextTreeSettings(props: Parameters<typeof ContextTreeSettings
 function ContextTreeSettingsForm({
   config,
   computerName,
+  computerKind = "local",
   online,
   onChanged,
 }: {
   config: AgentAdminConfig;
   computerName: string;
+  computerKind?: "local" | "cloud";
   online: boolean;
   onChanged: () => void;
 }) {
@@ -40,6 +42,7 @@ function ContextTreeSettingsForm({
     };
   }, []);
   const selected = config.runtimeConfig.contextTreeRepository;
+  const cloud = computerKind === "cloud";
   const pauseRequired = selected !== null && config.status !== "suspended";
   const valid = ContextTreeRepositorySchema.safeParse(repository);
   const disabled = pending || !online || pauseRequired;
@@ -88,13 +91,16 @@ function ContextTreeSettingsForm({
         </SettingsRow>
       </SettingsList>
       {statusMessage ? <p role="status">{statusMessage}</p> : null}
+      {cloud ? <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_cloud_guidance()}</p> : null}
       <div className="flex flex-wrap gap-2">
         <Button disabled={disabled || !valid.success} onClick={() => void run("connect")}>
           {m.agent_settings_context_tree_connect()}
         </Button>
-        <Button variant="secondary" disabled={disabled || !valid.success} onClick={() => void run("create")}>
-          {m.agent_settings_context_tree_create()}
-        </Button>
+        {cloud ? null : (
+          <Button variant="secondary" disabled={disabled || !valid.success} onClick={() => void run("create")}>
+            {m.agent_settings_context_tree_create()}
+          </Button>
+        )}
         <Button
           variant="ghost"
           disabled={pending || pauseRequired || selected === null}
@@ -104,15 +110,22 @@ function ContextTreeSettingsForm({
         </Button>
       </div>
       {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
-      {result ? (
-        <p role={result.status === "failed" ? "alert" : "status"}>
-          {result.status === "completed"
-            ? m.agent_settings_context_tree_completed()
-            : failureMessage(result.code, computerName)}
-        </p>
-      ) : null}
+      {result ? <ContextTreeResult result={result} computerName={computerName} cloud={cloud} /> : null}
     </div>
   );
+}
+
+function ContextTreeResult({
+  result,
+  computerName,
+  cloud,
+}: {
+  result: ContextTreeOperationResponse;
+  computerName: string;
+  cloud: boolean;
+}) {
+  if (result.status === "completed") return <p role="status">{m.agent_settings_context_tree_completed()}</p>;
+  return <p role="alert">{failureMessage(result.code, computerName, cloud)}</p>;
 }
 
 function contextTreeStatusMessage(online: boolean, pauseRequired: boolean): string | undefined {
@@ -123,10 +136,13 @@ function contextTreeStatusMessage(online: boolean, pauseRequired: boolean): stri
 function failureMessage(
   code: Extract<ContextTreeOperationResponse, { status: "failed" }>["code"],
   computerName: string,
+  cloud: boolean,
 ): string {
   switch (code) {
     case "authentication_required":
-      return m.agent_settings_context_tree_authentication_required({ computerName });
+      return cloud
+        ? m.agent_settings_context_tree_cloud_authentication_required()
+        : m.agent_settings_context_tree_authentication_required({ computerName });
     case "permission_denied":
       return m.agent_settings_context_tree_permission_denied();
     case "repository_exists":
@@ -138,7 +154,9 @@ function failureMessage(
     case "stale_configuration":
       return m.agent_settings_context_tree_stale_configuration();
     case "capability_missing":
-      return m.agent_settings_context_tree_capability_missing();
+      return cloud
+        ? m.agent_settings_context_tree_cloud_capability_missing()
+        : m.agent_settings_context_tree_capability_missing();
     case "computer_unavailable":
       return m.agent_settings_context_tree_computer_unavailable();
     case "busy":

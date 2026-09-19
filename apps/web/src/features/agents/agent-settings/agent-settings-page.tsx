@@ -101,6 +101,7 @@ export function AgentConfigSettingsContent({
             <ContextTreeSettings
               config={config}
               computerName={agent.computer?.displayName ?? ""}
+              computerKind={agent.computerKind}
               online={agent.availability.dependencies.computer.state === "ready"}
               onChanged={onAgentChanged}
             />

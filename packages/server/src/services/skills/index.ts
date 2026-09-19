@@ -28,10 +28,14 @@ export {
 } from "./s3-skill-object-store.js";
 export { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
 export {
+  DEFAULT_MAX_TAR_STREAM_BYTES,
   isIgnoredSkillPath,
   normalizeMemberPath,
   type RawSkillEntry,
+  type ResolvedSkillReadLimits,
   readSkillEntries,
+  resolveSkillReadLimits,
+  type SkillReadLimits,
 } from "./skill-archive-reader.js";
 export {
   type SkillObjectKeyInput,
@@ -46,3 +50,4 @@ export {
   type SkillServiceOptions,
   type SkillUploadInput,
 } from "./skill-service.js";
+export { readZipDirectory, type ZipDirectoryEntry } from "./skill-zip-directory.js";

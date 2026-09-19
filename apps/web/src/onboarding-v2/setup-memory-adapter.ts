@@ -30,6 +30,7 @@ import {
   type AgentSetupStage,
   type AgentSummary,
   type ComputerConnectCodeStatus,
+  type FeishuSetupActivation,
   type FeishuSetupIntent,
   type ImBindingMessagingExpectation,
   type ImCliReadinessStatus,
@@ -94,6 +95,8 @@ export interface MemorySetupSeed {
 export interface MemorySetupControls {
   /** The phone scan happened: the open Feishu attempt succeeds against its intent. */
   readonly scanFeishuCode: () => void;
+  /** The authorization was saved, but a prerequisite still prevents activation. */
+  readonly awaitFeishuActivation: (reason?: FeishuSetupActivation["reason"]) => void;
   /** The open Feishu attempt expired or was refused. */
   readonly failFeishuAttempt: () => void;
   /** The open Slack install expired or was refused before its callback returned. */
@@ -138,6 +141,8 @@ type MemoryMessagingState =
       bindingId: string;
       intent: FeishuSetupIntent;
       prior: MemoryBoundMessaging;
+      activation?: FeishuSetupActivation;
+      activationExpiresAt?: string;
     }
   | { kind: "slack-install"; intent: SlackConfigurationIntent; prior: MemoryBoundMessaging }
   | {
@@ -187,8 +192,9 @@ function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState 
         kind: "authorizing",
         provider: "feishu",
         attemptId: state.attemptId,
-        qrUrl: MEMORY_QR_URL,
-        expiresAt: attemptExpiresAt(),
+        qrUrl: state.activation ? null : MEMORY_QR_URL,
+        expiresAt: state.activationExpiresAt ?? attemptExpiresAt(),
+        ...(state.activation ? { activation: state.activation } : {}),
       };
     // Review Lab only: production leaves the application for this interval and therefore never
     // returns this authorizing state from the setup endpoint.
@@ -312,7 +318,10 @@ function messagingBlocker(
 
 function deriveBoundActions(messaging: MemoryBound): AgentSetupAction[] {
   if (messaging.attention === "authorization-failed") {
-    return [{ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId }];
+    return [
+      ...(isRetryableFeishu(messaging) ? [{ kind: "start-messaging", provider: "feishu" } as const] : []),
+      { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
+    ];
   }
   if (!messaging.reachable && !messaging.attention) {
     return [
@@ -348,7 +357,10 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
         { kind: "start-messaging", provider: "feishu" },
       ];
     case "feishu-attempt":
-      return [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId }];
+      return [
+        ...(messaging.activation ? [{ kind: "refresh" } as const] : []),
+        { kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId },
+      ];
     case "slack-install":
       return [{ kind: "refresh" }];
     case "bound":
@@ -376,7 +388,11 @@ function deriveActions(state: MemoryState, components: AgentSetupComponent[]): A
   ) {
     return [{ kind: "refresh" }];
   }
-  return deriveMessagingActions(messaging);
+  return deriveMessagingActions(messaging).filter(
+    (action) =>
+      action.kind !== "start-messaging" ||
+      AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS.every((provider) => state.imCliReadiness[provider] === "ready"),
+  );
 }
 
 function deriveComputerState(state: MemoryState): AgentSetupComputerState {
@@ -473,7 +489,7 @@ function readBoundMessaging(state: MemoryState, operation: string): MemoryBound 
 }
 
 function assertExpectedMessaging(state: MemoryState, expected: ImBindingMessagingExpectation, operation: string): void {
-  const current = state.messaging.kind === "bound" ? state.messaging : undefined;
+  const current = state.messaging.kind === "bound" && !isRetryableFeishu(state.messaging) ? state.messaging : undefined;
   if (expected.kind === "unbound") {
     if (current) throw new Error(`${operation} was decided from a stale unbound state`);
     return;
@@ -486,6 +502,15 @@ function assertExpectedMessaging(state: MemoryState, expected: ImBindingMessagin
   ) {
     throw new Error(`${operation} does not name the current Messaging binding generation`);
   }
+}
+
+function isRetryableFeishu(messaging: MemoryMessagingState): boolean {
+  return (
+    messaging.kind === "bound" &&
+    messaging.provider === "feishu" &&
+    messaging.credentialGeneration === 0 &&
+    messaging.attention === "authorization-failed"
+  );
 }
 
 const MEMORY_CONNECT_TTL_SECONDS = 15 * 60;
@@ -586,8 +611,10 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("feishu")}`);
-      const prior = state.messaging.kind === "bound" ? state.messaging : undefined;
-      if (intent === "create" && state.messaging.kind !== "not-configured") {
+      const current = state.messaging.kind === "bound" ? state.messaging : undefined;
+      const retry = isRetryableFeishu(state.messaging);
+      const prior = retry ? undefined : current;
+      if (intent === "create" && state.messaging.kind !== "not-configured" && !retry) {
         throw new Error("A Messaging Provider can be started only from not-configured");
       }
       if (intent !== "create" && prior?.provider !== "feishu") {
@@ -596,7 +623,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       state.messaging = {
         kind: "feishu-attempt",
         attemptId: crypto.randomUUID(),
-        bindingId: prior?.bindingId ?? crypto.randomUUID(),
+        bindingId: current?.bindingId ?? crypto.randomUUID(),
         intent,
         prior,
       };
@@ -618,6 +645,15 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
           attention: "authorization-failed",
         } satisfies MemoryBound);
       changed();
+    },
+    checkFeishuAttempt: async (attemptId) => {
+      if (
+        state.messaging.kind !== "feishu-attempt" ||
+        state.messaging.attemptId !== attemptId ||
+        !state.messaging.activation
+      ) {
+        throw new Error(`No saved authorization: ${attemptId}`);
+      }
     },
     startSlackInstall: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
@@ -700,6 +736,18 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
   };
 
   const controls: MemorySetupControls = {
+    awaitFeishuActivation: (reason = "permissions_pending") => {
+      if (state.messaging.kind !== "feishu-attempt") throw new Error("No authorization attempt is open");
+      state.messaging.activation = {
+        appId: "cli_saved_authorization",
+        reason,
+        missingScopes: reason === "permissions_pending" ? ["im:message"] : [],
+        lastCheckedAt: now(),
+        nextCheckAt: new Date(Date.now() + 60_000).toISOString(),
+      };
+      state.messaging.activationExpiresAt = new Date(Date.now() + 30 * 86_400_000).toISOString();
+      changed();
+    },
     scanFeishuCode: () => {
       if (state.messaging.kind !== "feishu-attempt") {
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is waiting for a scan`);

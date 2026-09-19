@@ -91,6 +91,27 @@ export function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
 }
 
+function feishuSetupAttemptResponse(init: RequestInit | undefined, failureCode: string | undefined): Response {
+  const method = init?.method ?? "GET";
+  if (method === "GET") return new Response(null, { status: 204 });
+  if (method !== "POST") throw new Error(`Unexpected Feishu setup request: ${method}`);
+  const body = JSON.parse(String(init?.body)) as { intent: "create" | "reauthorize" | "replace" };
+  return json(
+    {
+      id: crypto.randomUUID(),
+      agentId,
+      intent: body.intent,
+      state: failureCode ? "failed" : "awaiting_user",
+      qrUrl: failureCode ? null : "https://open.feishu.cn/setup",
+      expiresAt: "2026-08-20T00:15:00.000Z",
+      errorCode: failureCode ?? null,
+      completedAt: failureCode ? "2026-08-20T00:01:00.000Z" : null,
+      createdAt: "2026-08-20T00:00:00.000Z",
+    },
+    201,
+  );
+}
+
 const setupBindingId = "9d4e1378-8ff2-4e41-a6dd-e8bf59ed775b";
 const setupCredentialGeneration = 1;
 
@@ -823,22 +844,8 @@ export function installApi(
         lastRuntimeObservationAt: null,
       });
     }
-    if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
-      return json(
-        {
-          id: crypto.randomUUID(),
-          agentId,
-          intent: body.intent,
-          state: options.setupFailureCode ? "failed" : "awaiting_user",
-          qrUrl: options.setupFailureCode ? null : "https://open.feishu.cn/setup",
-          expiresAt: "2026-08-20T00:15:00.000Z",
-          errorCode: options.setupFailureCode ?? null,
-          completedAt: options.setupFailureCode ? "2026-08-20T00:01:00.000Z" : null,
-          createdAt: "2026-08-20T00:00:00.000Z",
-        },
-        201,
-      );
+    if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`) {
+      return feishuSetupAttemptResponse(init, options.setupFailureCode);
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/slack/oauth/start` && init?.method === "POST") {
       return json({

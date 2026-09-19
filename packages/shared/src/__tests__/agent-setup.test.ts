@@ -313,11 +313,67 @@ describe("Agent setup contracts", () => {
           observedAt,
         }),
       },
+      {
+        name: "Feishu durable candidate waiting for activation",
+        snapshot: canonical({
+          agent: agent(computerIdentity),
+          stage: "needs-messaging",
+          computer: boundComputer(),
+          runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+          messaging: {
+            kind: "authorizing",
+            provider: "feishu",
+            attemptId,
+            qrUrl: null,
+            expiresAt: "2026-10-01T09:00:00.000Z",
+            activation: {
+              appId: "cli_durable",
+              reason: "permissions_pending",
+              missingScopes: ["im:message"],
+              lastCheckedAt: observedAt,
+              nextCheckAt: "2026-09-01T09:01:00.000Z",
+            },
+          },
+          blockers: [{ code: "messaging-not-ready", provider: "feishu", state: "authorizing" }],
+          actions: [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId }],
+          observedAt,
+        }),
+      },
     ] as const;
 
     for (const scenario of scenarios) {
       expect(AgentSetupSnapshotSchema.parse(scenario.snapshot), scenario.name).toEqual(scenario.snapshot);
     }
+  });
+
+  it("allows only the same unactivated channel to retry initial authorization", () => {
+    const snapshot = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-messaging",
+      computer: boundComputer(),
+      runtime: { kind: "observed", provider: "codex", status: "ready", observedAt },
+      messaging: {
+        kind: "blocked",
+        provider: "feishu",
+        bindingId,
+        credentialGeneration: 0,
+        code: "authorization-failed",
+        errorCode: "FEISHU_SETUP_CANDIDATE_EXPIRED",
+      },
+      blockers: [{ code: "messaging-not-ready", provider: "feishu", bindingId, state: "blocked" }],
+      actions: [{ kind: "start-messaging", provider: "feishu" }],
+      observedAt,
+    });
+    expect(AgentSetupSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({ ...snapshot, actions: [{ kind: "start-messaging", provider: "slack" }] }),
+    ).toThrow();
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({ ...snapshot, messaging: { ...snapshot.messaging, credentialGeneration: 1 } }),
+    ).toThrow();
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({ ...snapshot, messaging: { ...snapshot.messaging, code: "provider-error" } }),
+    ).toThrow();
   });
 
   it("rejects a direct cross-Provider start while a binding is current", () => {
@@ -332,7 +388,7 @@ describe("Agent setup contracts", () => {
       observedAt,
     });
     expect(() => AgentSetupSnapshotSchema.parse(snapshot)).toThrow(
-      "A Provider can be started only after canonical state is not-configured",
+      "Start requires not-configured state or an unactivated same-Provider authorization retry",
     );
   });
 

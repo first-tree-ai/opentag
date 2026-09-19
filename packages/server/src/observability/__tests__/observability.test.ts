@@ -659,6 +659,7 @@ describe("background and WebSocket tracing", () => {
       })
       .mockReturnValue([normalizedInboundEvent()]);
     const database = {
+      select: vi.fn(() => resolvedQuery([{ intent: "create", appId: null }])),
       transaction: vi.fn().mockResolvedValue({
         imBindingId: bindingId,
         epoch: 1,

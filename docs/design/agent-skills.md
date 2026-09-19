@@ -190,6 +190,20 @@ file (`OPENTAG_SESSION_PROOF_FILE`), the same mechanism `opentag session create`
 comes from the proof; the command cannot target another Agent. A pushed Skill lands under the
 `agent_upload` source and the same validation as any other upload.
 
+**Push then sync.** When the pushed directory is the Skill's own materialization target — for example
+a Skill the Agent authored in `<workspace>/.claude/skills/<name>` — the CLI writes the
+`.opentag-skill.json` marker into that directory after the upload succeeds, so the directory becomes
+platform-managed. From then on a Web replace, disable, or delete reaches that Agent on the next sync
+like any other Skill, instead of the local copy looking unmanaged and being left alone.
+
+Push also reports name collisions: if the manifest name matches a directory that does not carry the
+marker, that directory is skipped and the collision is reported rather than overwritten, because an
+unmarked directory may be something the Agent is still authoring.
+
+Sync completes the loop by removing marked directories that are absent from the runtime manifest — a
+Skill that was disabled or deleted. Ownership stays one-way: the platform is the source of truth for
+every directory it manages.
+
 ## Cloud sandboxes
 
 **v1 covers Local Computers only.** Cloud sandboxes run Pi through a separate runner composition and

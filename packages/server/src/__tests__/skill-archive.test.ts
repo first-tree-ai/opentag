@@ -1,0 +1,174 @@
+import { SKILL_ERROR_CODES, SKILL_MAX_ENTRIES } from "@opentag/shared";
+import { describe, expect, it } from "vitest";
+import { normalizeSkillArchive } from "../services/skills/index.js";
+import {
+  skillManifest,
+  tarGz,
+  tarGzWithDeclaredSize,
+  zipFiles,
+  zipWithDeclaredSize,
+} from "./support/skill-archive-fixtures.js";
+
+const entry = (name: string, body: string, extra: Record<string, unknown> = {}) => ({ name, body, ...extra });
+
+async function failure(promise: Promise<unknown>, code: string): Promise<void> {
+  await expect(promise).rejects.toMatchObject({ code });
+}
+
+describe("normalizeSkillArchive", () => {
+  it("accepts tar.gz and zip happy paths with a root SKILL.md", async () => {
+    const tar = await tarGz([
+      entry("SKILL.md", skillManifest("my-skill")),
+      entry("scripts/run.sh", "#!/bin/sh\n", { mode: 0o755 }),
+    ]);
+    const fromTar = await normalizeSkillArchive(tar, "tar.gz");
+    expect(fromTar.manifest).toEqual({ name: "my-skill", description: "A test Skill" });
+    expect(fromTar.files).toEqual([
+      { path: "SKILL.md", bytes: expect.any(Number) },
+      { path: "scripts/run.sh", bytes: 10 },
+    ]);
+    expect(fromTar.fileCount).toBe(2);
+    expect(fromTar.filesTruncated).toBe(false);
+    expect(fromTar.archive[0]).toBe(0x1f);
+    expect(fromTar.sha256).toMatch(/^[0-9a-f]{64}$/);
+
+    const zip = zipFiles({ "SKILL.md": skillManifest("zip-skill"), "lib/x.txt": "hello" });
+    const fromZip = await normalizeSkillArchive(zip, "zip");
+    expect(fromZip.manifest.name).toBe("zip-skill");
+    expect(fromZip.files.map((file) => file.path)).toEqual(["SKILL.md", "lib/x.txt"]);
+  });
+
+  it("strips a single shared top-level directory", async () => {
+    const tar = await tarGz([entry("wrap/SKILL.md", skillManifest("wrapped")), entry("wrap/lib/x.txt", "x")]);
+    const normalized = await normalizeSkillArchive(tar, "tar.gz");
+    expect(normalized.files.map((file) => file.path)).toEqual(["SKILL.md", "lib/x.txt"]);
+  });
+
+  it("ignores __MACOSX and .DS_Store members", async () => {
+    const tar = await tarGz([
+      entry("__MACOSX/._SKILL.md", "junk"),
+      entry(".DS_Store", "junk"),
+      entry("SKILL.md", skillManifest("clean")),
+      entry("docs/.DS_Store", "junk"),
+    ]);
+    const normalized = await normalizeSkillArchive(tar, "tar.gz");
+    expect(normalized.files.map((file) => file.path)).toEqual(["SKILL.md"]);
+  });
+
+  it("is deterministic across member order and mtimes", async () => {
+    const first = await tarGz([
+      entry("SKILL.md", skillManifest("stable"), { mtime: 1_000 }),
+      entry("a.txt", "a", { mtime: 2_000 }),
+      entry("b.txt", "b", { mtime: 3_000 }),
+    ]);
+    const second = await tarGz([
+      entry("b.txt", "b", { mtime: 999_999 }),
+      entry("SKILL.md", skillManifest("stable"), { mtime: 50 }),
+      entry("a.txt", "a", { mtime: 7 }),
+    ]);
+    const a = await normalizeSkillArchive(first, "tar.gz");
+    const b = await normalizeSkillArchive(second, "tar.gz");
+    expect(a.sha256).toBe(b.sha256);
+    expect(Buffer.from(a.archive).equals(Buffer.from(b.archive))).toBe(true);
+  });
+
+  it("rejects traversal, absolute, and backslash paths", async () => {
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("../evil", "x"), entry("SKILL.md", skillManifest("t"))]), "tar.gz"),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("/etc/passwd", "x"), entry("SKILL.md", skillManifest("t"))]), "tar.gz"),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("a\\b.txt", "x"), entry("SKILL.md", skillManifest("t"))]), "tar.gz"),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+  });
+
+  it("rejects symlinks, hard links, and device members", async () => {
+    await failure(
+      normalizeSkillArchive(
+        await tarGz([
+          entry("link", "", { type: "symlink", linkname: "SKILL.md" }),
+          entry("SKILL.md", skillManifest("t")),
+        ]),
+        "tar.gz",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(
+        await tarGz([entry("hard", "", { type: "link", linkname: "SKILL.md" }), entry("SKILL.md", skillManifest("t"))]),
+        "tar.gz",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(
+        await tarGz([
+          entry("dev", "", { type: "character-device", devmajor: 1, devminor: 3 }),
+          entry("SKILL.md", skillManifest("t")),
+        ]),
+        "tar.gz",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+  });
+
+  it("rejects setuid and setgid modes", async () => {
+    await failure(
+      normalizeSkillArchive(
+        await tarGz([entry("SKILL.md", skillManifest("t")), entry("evil.sh", "x", { mode: 0o4755 })]),
+        "tar.gz",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+  });
+
+  it("rejects an archive with too many members", async () => {
+    const entries = [entry("SKILL.md", skillManifest("many"))];
+    for (let index = 0; index < SKILL_MAX_ENTRIES; index += 1) {
+      entries.push(entry(`f/${index}.txt`, "x"));
+    }
+    await failure(normalizeSkillArchive(await tarGz(entries), "tar.gz"), SKILL_ERROR_CODES.ARCHIVE_INVALID);
+  });
+
+  it("rejects unpacked-size bombs before inflating", async () => {
+    await failure(
+      normalizeSkillArchive(tarGzWithDeclaredSize("SKILL.md", 128 * 1024 * 1024), "tar.gz"),
+      SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE,
+    );
+    await failure(
+      normalizeSkillArchive(zipWithDeclaredSize("SKILL.md", 128 * 1024 * 1024), "zip"),
+      SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE,
+    );
+  });
+
+  it("requires a root SKILL.md", async () => {
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("readme.txt", "x")]), "tar.gz"),
+      SKILL_ERROR_CODES.MANIFEST_INVALID,
+    );
+  });
+
+  it("rejects an invalid manifest and a reserved name", async () => {
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("SKILL.md", "no frontmatter")]), "tar.gz"),
+      SKILL_ERROR_CODES.MANIFEST_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("SKILL.md", skillManifest("git"))]), "tar.gz"),
+      SKILL_ERROR_CODES.NAME_RESERVED,
+    );
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("SKILL.md", skillManifest("pdf-"))]), "tar.gz"),
+      SKILL_ERROR_CODES.MANIFEST_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(await tarGz([entry("SKILL.md", skillManifest("a--b"))]), "tar.gz"),
+      SKILL_ERROR_CODES.MANIFEST_INVALID,
+    );
+  });
+});

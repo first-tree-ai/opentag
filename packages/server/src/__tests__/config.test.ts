@@ -735,3 +735,67 @@ describe("database migration helpers", () => {
     );
   });
 });
+
+const skillStorageEnvironment = {
+  OPENTAG_SKILL_STORAGE_ENDPOINT: "http://127.0.0.1:9000",
+  OPENTAG_SKILL_STORAGE_REGION: "us-east-1",
+  OPENTAG_SKILL_STORAGE_BUCKET: "opentag-skills",
+  OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: "opentag",
+  OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: "opentag-minio-dev",
+};
+
+describe("Skill storage configuration", () => {
+  it("is disabled by default", () => {
+    expect(parseServerConfig(required).skillStorage).toEqual({ enabled: false });
+  });
+
+  it("resolves the full group with prefix and path-style defaults", () => {
+    expect(parseServerConfig({ ...required, ...skillStorageEnvironment }).skillStorage).toEqual({
+      enabled: true,
+      endpoint: "http://127.0.0.1:9000",
+      region: "us-east-1",
+      bucket: "opentag-skills",
+      accessKeyId: "opentag",
+      secretAccessKey: "opentag-minio-dev",
+      prefix: "skills",
+      forcePathStyle: true,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_PREFIX: "bundles",
+        OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: "false",
+      }).skillStorage,
+    ).toMatchObject({ prefix: "bundles", forcePathStyle: false });
+  });
+
+  it("allows a base path but rejects a partial group and a bad endpoint", () => {
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_ENDPOINT: "https://s3.example.test/gateway",
+      }).skillStorage,
+    ).toMatchObject({ enabled: true, endpoint: "https://s3.example.test/gateway" });
+
+    const partial = {
+      OPENTAG_SKILL_STORAGE_ENDPOINT: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_ENDPOINT,
+      OPENTAG_SKILL_STORAGE_REGION: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_REGION,
+      OPENTAG_SKILL_STORAGE_BUCKET: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_BUCKET,
+      OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: skillStorageEnvironment.OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID,
+    };
+    expect(() => parseServerConfig({ ...required, ...partial })).toThrow();
+
+    for (const endpoint of [
+      "ftp://minio.example.test",
+      "http://user:pass@minio.example.test",
+      "http://minio.example.test/?token=1",
+      "not-a-url",
+    ]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_ENDPOINT: endpoint }),
+      ).toThrow();
+    }
+  });
+});

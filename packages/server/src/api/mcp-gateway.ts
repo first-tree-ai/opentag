@@ -82,12 +82,17 @@ async function handleGatewayRequest(
   reply.header("Cache-Control", "no-store");
   /*
    * An abandoned request must not keep its upstream call — and its concurrency slot — alive for the
-   * full tool deadline. The socket closing is the only signal the gateway gets that the model's turn
-   * is gone, so it is wired straight through to the outbound fetch.
+   * full tool deadline, which is now two minutes.
+   *
+   * Listening on the *response*, not the request. `IncomingMessage` emits `close` once its body has
+   * been consumed, and Fastify has already parsed the body before this handler runs — a listener
+   * attached here would be registered after the event had fired and would never run. `reply.raw`
+   * emits `close` when the socket actually goes, and `writableEnded` distinguishes a client that
+   * disappeared from a response this route finished sending.
    */
   const aborted = new AbortController();
-  request.raw.once("close", () => {
-    if (!reply.sent) aborted.abort();
+  reply.raw.once("close", () => {
+    if (!reply.raw.writableEnded) aborted.abort();
   });
   const context = request.mcpGatewayContext;
   /* v8 ignore next -- the preHandler always sets the context or answers. */

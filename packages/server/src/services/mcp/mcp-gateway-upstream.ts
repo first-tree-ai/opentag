@@ -17,8 +17,13 @@ import type { McpOutboundFetcher } from "./mcp-url-policy.js";
  * tool call answers one request) and different failure semantics.
  *
  * What is *not* duplicated is anything that touches the network or the credential: every request
- * goes through the same {@link McpOutboundFetcher} the probe uses, so the SSRF gate, the
- * per-Account concurrency budget, the redirect refusal, and the response bound all apply unchanged.
+ * goes through an {@link McpOutboundFetcher}, so the SSRF gate, the redirect refusal, and the
+ * response bound apply exactly as they do to a probe — those are properties of the class.
+ *
+ * The *budget* is deliberately not shared. The gateway passes a second fetcher instance, which
+ * carries its own deadline and its own per-Account concurrency counter, because a probe is a bounded
+ * read on the Server's own schedule while a tool call runs as long as the tool does — and because a
+ * background probe must never be able to exhaust the slots a live turn needs.
  */
 
 export interface McpUpstreamCallInput {

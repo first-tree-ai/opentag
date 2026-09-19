@@ -1,3 +1,4 @@
+import type { AddressInfo } from "node:net";
 import { MCP_GATEWAY_PATH } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { registerMcpGatewayRoutes } from "../api/mcp-gateway.js";
@@ -282,11 +283,40 @@ describe("service failures", () => {
 
 describe("cancellation", () => {
   /*
-   * An abandoned request must not hold its upstream call — and its concurrency slot — for the full
-   * tool deadline, which is now two minutes. The socket closing is the only signal the gateway gets
-   * that the model's turn is gone.
+   * Driven over a real socket, not `inject`, because `inject` never disconnects and so cannot
+   * observe the thing under test. The first version of this listened on `request.raw`, whose `close`
+   * fires when the body is consumed — already past by the time the handler runs — so nothing ever
+   * aborted and a test like this was the only way to find out.
    */
-  it("passes a signal the caller can abort into the tool call", async () => {
+  it("aborts the upstream call when the caller disappears", async () => {
+    let seen: AbortSignal | undefined;
+    const { app, token } = harness({
+      callTool: (async (input: { signal?: AbortSignal }) => {
+        seen = input.signal;
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        return { result: { content: [] } };
+      }) as unknown as McpGatewayService["callTool"],
+    });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    try {
+      const address = app.server.address() as AddressInfo;
+      const caller = new AbortController();
+      const pending = fetch(`http://127.0.0.1:${address.port}${MCP_GATEWAY_PATH}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "linear__x" } }),
+        signal: caller.signal,
+      }).catch(() => undefined);
+      await vi.waitFor(() => expect(seen).toBeDefined());
+      caller.abort();
+      await pending;
+      await vi.waitFor(() => expect(seen?.aborted).toBe(true));
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
+
+  it("leaves the signal unaborted when the response completes normally", async () => {
     let seen: AbortSignal | undefined;
     const { app, token } = harness({
       callTool: (async (input: { signal?: AbortSignal }) => {
@@ -294,16 +324,23 @@ describe("cancellation", () => {
         return { result: { content: [] } };
       }) as unknown as McpGatewayService["callTool"],
     });
-    await post(app, token, {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "tools/call",
-      params: { name: "linear__x" },
-    });
-    expect(seen).toBeInstanceOf(AbortSignal);
-    expect(seen?.aborted).toBe(false);
-    await app.close();
-  });
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    try {
+      const address = app.server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}${MCP_GATEWAY_PATH}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "linear__x" } }),
+      });
+      expect(response.status).toBe(200);
+      await response.arrayBuffer();
+      // A finished response also closes the socket; `writableEnded` is what keeps that from aborting.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(seen?.aborted).toBe(false);
+    } finally {
+      await app.close();
+    }
+  }, 15_000);
 });
 
 describe("the service policy", () => {

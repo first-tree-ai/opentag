@@ -85,7 +85,13 @@ export function SkillsPage({ agentId }: { agentId: string }) {
   return (
     <section className="grid gap-6" aria-labelledby="skills-page-title" data-ui="skills-page">
       <PageHeader description={m.skills_page_description()} title={m.skills_page_title()} titleId="skills-page-title">
+        {/*
+         * A native file input is the only way to open the browser's file chooser; it stays hidden
+         * and is triggered by the button. `type` precedes the change handler so the Kumo contract's
+         * source scan sees the input's declared type before the arrow's `>`.
+         */}
         <input
+          type="file"
           accept=".zip,.skill,.tar.gz,.tgz"
           className="hidden"
           data-ui="skill-upload-input"
@@ -95,7 +101,6 @@ export function SkillsPage({ agentId }: { agentId: string }) {
             if (file) void onFileSelected(file);
           }}
           ref={fileInputRef}
-          type="file"
         />
         <Button
           disabled={!storageAvailable || upload.isPending}

@@ -1,35 +1,45 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "skills_agent_count": [
+  "skills_delete": "Delete",
+  "skills_delete_confirm": "Delete Skill",
+  "skills_delete_description": "This removes the Skill and its stored archive from this Agent. This cannot be undone.",
+  "skills_delete_title": "Delete {name}?",
+  "skills_download": "Download",
+  "skills_empty": "No Skills yet. Upload a .zip, .skill, .tar.gz, or .tgz archive to give this Agent reusable know-how.",
+  "skills_error_archive_invalid": "The archive could not be read. Upload a valid .zip, .skill, .tar.gz, or .tgz archive.",
+  "skills_error_archive_too_large": "The archive is larger than 16 MiB.",
+  "skills_error_client_too_large": "This archive is larger than 16 MiB.",
+  "skills_error_client_unsupported": "Choose a .zip, .skill, .tar.gz, or .tgz archive.",
+  "skills_error_generic": "The Skill request failed. Try again.",
+  "skills_error_hash_mismatch": "The upload was corrupted in transit. Try again.",
+  "skills_error_limit_reached": "This Agent already has the maximum number of Skills. Delete one before uploading another.",
+  "skills_error_manifest_invalid": "The archive's SKILL.md is missing or invalid.",
+  "skills_error_name_conflict": "A Skill with this name already exists.",
+  "skills_error_name_reserved": "That Skill name is reserved by the platform. Rename the Skill in its SKILL.md and try again.",
+  "skills_error_not_found": "That Skill no longer exists. Refresh and try again.",
+  "skills_error_storage_unavailable": "Skill storage is unavailable on this deployment.",
+  "skills_file_count": [
     {
       "declarations": ["input count", "local countPlural = count: plural"],
       "selectors": ["countPlural"],
       "match": {
-        "countPlural=one": "{count} Agent",
-        "countPlural=other": "{count} Agents"
+        "countPlural=one": "{count} file",
+        "countPlural=other": "{count} files"
       }
     }
   ],
-  "skills_all_skills": "All skills",
-  "skills_available": "Available skills",
-  "skills_built_by_opentag": "Built by OpenTag",
-  "skills_count": [
-    {
-      "declarations": ["input count", "local countPlural = count: plural"],
-      "selectors": ["countPlural"],
-      "match": {
-        "countPlural=one": "{count} skill",
-        "countPlural=other": "{count} skills"
-      }
-    }
-  ],
-  "skills_demo_data": "Demo data",
-  "skills_instructions_preview": "Instructions preview",
+  "skills_list_aria": "Skills for this Agent",
   "skills_page_description": "Reusable playbooks that give Agents the context and methods they need to do specialized work.",
   "skills_page_title": "Skills",
-  "skills_preview": "Preview",
-  "skills_shared": "Shared",
+  "skills_replace_confirm": "Replace Skill",
+  "skills_replace_description": "A Skill with the same name already exists. Replacing it overwrites its archive and bumps its revision; the previous archive is deleted.",
+  "skills_replace_title": "Replace the existing Skill with {name}?",
+  "skills_source_agent_upload": "Authored by the Agent",
+  "skills_source_cli_upload": "Uploaded from the CLI",
+  "skills_source_web_upload": "Uploaded here",
+  "skills_storage_unavailable": "Skill storage is not configured on this deployment, so uploads and downloads are unavailable. Existing Skills are still listed.",
+  "skills_toggle_label": "Enable {name}",
+  "skills_updated": "Updated {time}",
   "skills_upload": "Upload skill",
-  "skills_upload_unavailable": "Upload is unavailable while this page uses demo data.",
-  "skills_used_by": "Used by"
+  "skills_upload_in_progress": "Uploading {name}…"
 }

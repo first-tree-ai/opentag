@@ -134,7 +134,7 @@ async function readTarGzEntries(bytes: Uint8Array): Promise<RawSkillEntry[]> {
   try {
     for await (const entry of extract) {
       count += 1;
-      if (count > SKILL_MAX_ENTRIES) throw skillArchiveTooLarge();
+      if (count > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
       const collected = await collectTarEntry(entry, state);
       if (collected) entries.push(collected);
     }
@@ -156,7 +156,7 @@ function readZipEntries(bytes: Uint8Array): RawSkillEntry[] {
     unzipped = unzipSync(bytes, {
       filter: (info) => {
         state.count += 1;
-        if (state.count > SKILL_MAX_ENTRIES) throw skillArchiveTooLarge();
+        if (state.count > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
         if (!Number.isSafeInteger(info.originalSize) || info.originalSize < 0) {
           throw skillArchiveInvalid("Skill archive member declares an invalid size");
         }

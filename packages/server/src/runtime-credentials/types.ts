@@ -46,6 +46,8 @@ export interface RuntimeExecutionRecord {
   source: RuntimeExecutionSource;
   purpose: RuntimeExecutionPurpose;
   computerKind: "local" | "cloud";
+  /** Server-owned admission for a negotiated Cloud internal Session; never supplies an IM provider. */
+  internalAuthority?: "cloud-session-collaboration";
   sandbox?: RuntimeExecutionSandbox;
   /** Present only for a Server-issued validation execution; replaces the Session fence. */
   validation?: { provider: RuntimeCredentialProvider; bindingId: string };

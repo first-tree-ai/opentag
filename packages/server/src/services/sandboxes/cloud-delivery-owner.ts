@@ -6,6 +6,7 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
+  RUNTIME_SERVER_CAPABILITY_OFFERS,
   type RunnerCloudModelGrant,
   type RuntimeCredentialClientFrame,
   type RuntimeCredentialServerFrame,
@@ -1114,6 +1115,18 @@ export class CloudDeliveryOwner {
       negotiatedCapabilities: {
         [RUNTIME_CAPABILITY.providerProxy]: 1,
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+        /*
+         * Session collaboration is carried explicitly only on the exact connection that
+         * negotiated it and may receive execution permission. An internal collaboration child
+         * opens its scope-free execution against this fact; a report-only or legacy connection
+         * keeps the existing denial.
+         */
+        ...(connection.sessionCollaborationEligible && connection.executionEligible
+          ? {
+              [RUNTIME_CAPABILITY.sessionCollaboration]:
+                RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration].max,
+            }
+          : {}),
       },
       signal: (this.#signals.get(connection.connectionId) ?? new AbortController()).signal,
     };

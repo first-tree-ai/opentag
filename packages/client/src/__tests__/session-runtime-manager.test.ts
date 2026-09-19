@@ -466,6 +466,94 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
   });
 
+  it("passes synced Skill paths to the provider and survives a rejecting sync", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-skill-sync-runtime-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const skillPath = resolve(home, "skills", "my-skill");
+    const skills = {
+      ensureAgent: vi.fn(async () => ({ skillPaths: [skillPath], status: "synced" as const })),
+    };
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      skills,
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+    const cwd = await workspace.cwd(request.agentId);
+    expect(skills.ensureAgent).toHaveBeenCalledWith({ agentId: request.agentId, cwd, provider: "codex" });
+    expect(factory.created[0]?.skillPaths).toEqual([skillPath]);
+    await manager.close();
+  });
+
+  it("resolves an empty Skill result without a request field", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-skill-empty-runtime-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      skills: { ensureAgent: vi.fn(async () => ({ skillPaths: [], status: "unavailable" as const })) },
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+    expect(factory.created[0]?.skillPaths).toBeUndefined();
+    await manager.close();
+  });
+
+  it("keeps runtime start working when the Skill sync rejects", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-skill-reject-runtime-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const skills = { ensureAgent: vi.fn(async () => Promise.reject(new Error("sync exploded"))) };
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      home,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      skills,
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: manager,
+      localPolicy: manager,
+    });
+    const request = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await expect(manager.ensureRuntime(request.sessionId)).resolves.toBeDefined();
+    expect(factory.created[0]?.skillPaths).toBeUndefined();
+    await manager.close();
+  });
+
   it("does not repeat a managed tree already covered by the shared directory grant", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-nested-"));
     homes.push(home);

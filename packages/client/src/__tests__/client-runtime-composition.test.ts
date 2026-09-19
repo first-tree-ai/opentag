@@ -32,6 +32,7 @@ import {
   createLoginShellDiscovery,
   createProxyValidationOpener,
   createRuntimeProviderReadinessRefresher,
+  createSkillSyncManager,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
@@ -2757,6 +2758,33 @@ describe("credential environment composition", () => {
     );
     expect(proxy.mode).toBe("proxy");
     await proxy.close();
+  });
+});
+
+describe("createSkillSyncManager", () => {
+  const api = {
+    getComputerSkillManifest: vi.fn(async () => ({ skills: [] })),
+    openComputerSkillBundle: vi.fn(async () => new Response()),
+  };
+
+  it("returns undefined unless both the API and the machine token are present", () => {
+    const logger = createLogger("skills-composition-test");
+    expect(createSkillSyncManager({}, logger)).toBeUndefined();
+    expect(createSkillSyncManager({ machineToken: "machine-token" }, logger)).toBeUndefined();
+    expect(createSkillSyncManager({ api: api as never }, logger)).toBeUndefined();
+  });
+
+  it("builds a SkillSyncManager when the composition is fully configured", async () => {
+    const manager = createSkillSyncManager(
+      { api: api as never, machineToken: "machine-token" },
+      createLogger("skills-composition-test"),
+    );
+    expect(manager).toBeDefined();
+    await expect(manager?.ensureAgent({ agentId: randomUUID(), cwd: tmpdir(), provider: "pi" })).resolves.toEqual({
+      skillPaths: [],
+      status: "synced",
+    });
+    expect(api.getComputerSkillManifest).toHaveBeenCalledWith("machine-token", expect.any(String), expect.anything());
   });
 });
 

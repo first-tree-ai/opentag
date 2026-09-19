@@ -17,6 +17,7 @@ import {
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
+  RuntimeCredentialServerFrameSchema,
   RuntimeFrameEnvelopeSchema,
   type RuntimeImCliReadinessCollection,
   type RuntimeImCliReadinessObservation,
@@ -1028,9 +1029,23 @@ function withoutConnectionId(value: unknown): unknown {
   return frame;
 }
 
+/**
+ * Every frame the Server may send on the business channel.
+ *
+ * Two independent vocabularies share this channel. `ServerRuntimeBusinessFrameSchema` covers the
+ * domain frames — deliveries, reconciles, report results. The runtime-credential control plane
+ * (execution open/close, capability results, proxy tickets, the MCP gateway token) is its own union,
+ * which the relay parses again itself once a frame is delivered.
+ *
+ * Both attempts are needed. A credential result that fails to parse here is treated as an invalid
+ * frame and the connection is dropped, so the relay's request can never be answered. Nothing noticed
+ * because the relay only runs in proxy mode, which is opt-in and off by default.
+ */
 function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {
-  const parsed = ServerRuntimeBusinessFrameSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
+  const domain = ServerRuntimeBusinessFrameSchema.safeParse(value);
+  if (domain.success) return domain.data;
+  const credential = RuntimeCredentialServerFrameSchema.safeParse(value);
+  return credential.success ? (credential.data as unknown as RuntimeBusinessFrame) : undefined;
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

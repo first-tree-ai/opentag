@@ -109,6 +109,15 @@ function installLayout(input: SkillSyncAgentInput): SkillInstallLayout {
   };
 }
 
+/**
+ * Staging is deliberately outside the provider's skill root: a crash before the marker is written
+ * must never leave an unmarked directory that Claude Code or Codex then discover as a duplicate
+ * Skill. It stays under the same workspace so `rename` into the target remains atomic.
+ */
+function skillStagingRoot(cwd: string): string {
+  return join(cwd, ".opentag", "skill-staging");
+}
+
 async function readMarker(path: string): Promise<SkillInstallMarker | undefined> {
   let raw: string;
   try {
@@ -246,11 +255,13 @@ async function downloadedBundle(
 
 async function installBundle(
   layout: SkillInstallLayout,
+  stagingRoot: string,
   entry: RuntimeSkillManifest["skills"][number],
   bytes: Uint8Array,
 ): Promise<string> {
+  await ensurePrivateDirectory(dirname(stagingRoot), stagingRoot);
   await ensurePrivateDirectory(dirname(layout.root), layout.root);
-  const staging = await mkdtemp(join(layout.root, ".opentag-skill-"));
+  const staging = await mkdtemp(join(stagingRoot, "skill-"));
   try {
     await extractSkillArchive(Readable.from(Buffer.from(bytes)), staging);
     await writeFile(
@@ -268,6 +279,24 @@ async function installBundle(
   } catch (error) {
     await rm(staging, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/** A staging crash leaves an unmarked directory; anything older than the sync budget is garbage. */
+async function sweepStaleStaging(stagingRoot: string, budgetMs: number, now: () => number): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await readdir(stagingRoot);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const path = join(stagingRoot, entry);
+    try {
+      if (now() - (await stat(path)).mtimeMs > budgetMs) await rm(path, { recursive: true, force: true });
+    } catch {
+      // A concurrent sync may have renamed or removed it already.
+    }
   }
 }
 
@@ -304,6 +333,7 @@ export class SkillSyncManager {
   async ensureAgent(input: SkillSyncAgentInput): Promise<SkillSyncResult> {
     const layout = installLayout(input);
     const signal = AbortSignal.timeout(this.#budgetMs);
+    await sweepStaleStaging(skillStagingRoot(input.cwd), this.#budgetMs, this.#now);
     try {
       const token = await this.#machineToken();
       const manifest = await this.#api.getComputerSkillManifest(token, input.agentId, { signal });
@@ -355,7 +385,7 @@ export class SkillSyncManager {
       const bytes = await downloadedBundle(this.#api, token, input.agentId, entry, signal);
       if (current) await this.#retireManaged(input, entry.name, current);
       const started = this.#now();
-      await installBundle(layout, entry, bytes);
+      await installBundle(layout, skillStagingRoot(input.cwd), entry, bytes);
       this.#logger.debug(
         {
           code: current ? "skill_sync_update" : "skill_sync_install",

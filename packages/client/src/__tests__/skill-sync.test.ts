@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeSkillManifest } from "@opentag/shared";
@@ -93,12 +93,16 @@ function fakeApi(
   return { api, downloads };
 }
 
-function managerFor(api: ReturnType<typeof fakeApi>["api"], records: LogRecord[]): SkillSyncManager {
+function managerFor(
+  api: ReturnType<typeof fakeApi>["api"],
+  records: LogRecord[],
+  now: () => number = () => 1_700_000_000_000,
+): SkillSyncManager {
   return new SkillSyncManager({
     api: api as never,
     machineToken: async () => "machine-token",
     logger: recordingLogger(records),
-    now: () => 1_700_000_000_000,
+    now,
   });
 }
 
@@ -263,6 +267,30 @@ describe("SkillSyncManager", () => {
       expect(result.skillPaths).toEqual([join(cwd, ".claude", "skills", "my-skill")]);
       expect(records.some((record) => record.fields.code === "skill_sync_unavailable")).toBe(true);
     }
+  });
+
+  it("stages outside the discovered skill root and sweeps stale staging only", async () => {
+    const root = await temporaryRoot();
+    const cwd = join(root, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const stagingRoot = join(cwd, ".opentag", "skill-staging");
+    await mkdir(join(stagingRoot, "stale"), { recursive: true });
+    await mkdir(join(stagingRoot, "fresh"), { recursive: true });
+    const past = new Date(Date.now() - 60_000);
+    await utimes(join(stagingRoot, "stale"), past, past);
+
+    const packed = await buildSkill(root, "my-skill");
+    const entry = manifestEntry(packed, "my-skill");
+    const { api } = fakeApi([{ skills: [entry] }], new Map([[entry.id, packed.archive]]));
+    await managerFor(api, [], () => Date.now()).ensureAgent({
+      agentId: randomUUID(),
+      cwd,
+      provider: "claude-code",
+    });
+
+    const skills = await readdir(join(cwd, ".claude", "skills"));
+    expect(skills).toEqual(["my-skill"]);
+    expect(await readdir(stagingRoot)).toEqual(["fresh"]);
   });
 
   it("resolves agent-scoped roots per provider and returns Pi skill paths", async () => {

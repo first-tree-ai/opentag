@@ -1890,3 +1890,31 @@ it.each(["visible", "internal"])(
     expect(paths).toEqual([kind === "visible" ? `/session/tools${delimiter}${basePath}` : basePath]);
   },
 );
+
+it("isolates managed zsh initialization so public CLI paths cannot shadow the Turn launcher", async () => {
+  const home = await temporaryDirectory('opentag-shell-home-"quoted-');
+  const launches: Array<readonly string[]> = [];
+  const factory = new CodexAgentRuntimeFactory({
+    clientVersion: "0.0.1-test",
+    process: {
+      env: { PATH: process.env.PATH },
+      spawnProcess: (_command, args, options) => {
+        launches.push(args);
+        return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
+      },
+    },
+  });
+  for (const pathPrepend of ["/session/turn-tools", undefined]) {
+    const runtime = await factory.create({
+      ...createRequest(() => undefined),
+      workspace: { cwd: home, environment: { OPENTAG_HOME: home }, ...(pathPrepend ? { pathPrepend } : {}) },
+    });
+    await runtime.close();
+  }
+  expect(launches[0]).toContain(`shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`);
+  expect(launches[0]?.some((arg) => arg.includes('ZDOTDIR = "include"'))).toBe(true);
+  const snapshotFlag = launches[0]?.indexOf("shell_snapshot") ?? -1;
+  expect(snapshotFlag).toBeGreaterThan(0);
+  expect(launches[0]?.[snapshotFlag - 1]).toBe("--disable");
+  expect(launches[1]?.some((arg) => arg.startsWith("shell_environment_policy.set.ZDOTDIR="))).toBe(false);
+});

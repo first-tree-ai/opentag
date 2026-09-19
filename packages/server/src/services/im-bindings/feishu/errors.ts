@@ -15,9 +15,23 @@ export type FeishuSafeErrorCode =
   | "FEISHU_UPSTREAM_UNAVAILABLE";
 
 export class FeishuOperationError extends Error {
-  constructor(readonly code: FeishuSafeErrorCode) {
+  constructor(
+    readonly code: FeishuSafeErrorCode,
+    /** A bounded, canonical missing-scope summary when the failure is a scope shortfall. */
+    readonly missingScopes: readonly string[] = [],
+  ) {
     super(code);
     this.name = "FeishuOperationError";
+  }
+}
+
+/** Candidate retention is independent of the registration QR deadline. */
+export class FeishuCandidateExpiredError extends Error {
+  readonly code = "FEISHU_SETUP_CANDIDATE_EXPIRED";
+
+  constructor() {
+    super("FEISHU_SETUP_CANDIDATE_EXPIRED");
+    this.name = "FeishuCandidateExpiredError";
   }
 }
 
@@ -97,6 +111,7 @@ export function safeFeishuConnectionErrorCode(error: unknown): string {
 }
 
 function knownFeishuSetupErrorCode(error: unknown): string | undefined {
+  if (error instanceof FeishuCandidateExpiredError) return error.code;
   if (error instanceof FeishuOperationError) return error.code;
   if (error instanceof ImBindingServiceError && error.code === "FEISHU_APP_ALREADY_BOUND") return error.code;
   if (typeof error !== "object" || error === null || !("code" in error)) return undefined;

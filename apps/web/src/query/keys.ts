@@ -25,6 +25,7 @@ export const queryKeys = {
     detail: (agentId: string) => ["agents", agentId, "detail"] as const,
     config: (agentId: string) => ["agents", agentId, "config"] as const,
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
+    feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
     usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,
     /** Everything held for one Agent, for a write that invalidates the Agent as a whole. */

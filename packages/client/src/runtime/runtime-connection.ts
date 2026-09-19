@@ -15,9 +15,9 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeCapabilityOffers,
   type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
-  RuntimeCredentialServerFrameSchema,
   RuntimeFrameEnvelopeSchema,
   type RuntimeImCliReadinessCollection,
   type RuntimeImCliReadinessObservation,
@@ -28,7 +28,6 @@ import {
   runtimeFrameByteLength,
   runtimeNegotiatedCapabilitiesEqual,
   runtimeWebSocketUrl,
-  ServerRuntimeBusinessFrameSchema,
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
@@ -45,9 +44,17 @@ import {
   RuntimeProtocolFallbackError,
   RuntimeSendError,
 } from "./runtime-connection-errors.js";
-import { notifyTarget, protocolRejectionFields, rawDataBuffer, safeJson } from "./runtime-connection-helpers.js";
+import {
+  notifyTarget,
+  parseServerBusinessFrame,
+  protocolRejectionFields,
+  type RuntimeBusinessFrame,
+  rawDataBuffer,
+  safeJson,
+} from "./runtime-connection-helpers.js";
 
 export { RuntimeConnectionError, RuntimeSendError, type RuntimeSendErrorCode } from "./runtime-connection-errors.js";
+export type { RuntimeBusinessFrame } from "./runtime-connection-helpers.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
   "server:welcome",
@@ -68,7 +75,6 @@ export type RuntimeConnectionState =
   | "registered";
 
 export type RuntimeSendPriority = (typeof PRIORITIES)[number];
-export type RuntimeBusinessFrame = Readonly<Record<string, unknown>> & { readonly type: string };
 
 export interface RuntimeSendOptions {
   deadline?: number;
@@ -160,6 +166,7 @@ export class RuntimeConnection {
   #stopped = false;
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
   #negotiatedCapabilities: RuntimeNegotiatedCapabilities = {};
+  #supportedCapabilities: RuntimeCapabilityOffers = RUNTIME_CLIENT_CAPABILITY_OFFERS;
   #verifiedCapabilities: RuntimeClientCapabilities = { imCredentialGrant: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
   readonly #providerReadiness = new Map<
@@ -213,6 +220,16 @@ export class RuntimeConnection {
 
   capabilityVersion(capability: string): number | undefined {
     return this.#state === "registered" ? this.#negotiatedCapabilities[capability] : undefined;
+  }
+
+  /** Composition must advertise only the credential path it actually installed. */
+  setCredentialProxyEnabled(enabled: boolean): void {
+    if (this.#hasRun) throw new Error("Credential proxy mode must be configured before connecting");
+    this.#supportedCapabilities = { ...RUNTIME_CLIENT_CAPABILITY_OFFERS };
+    if (!enabled) {
+      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.runtimeCredential];
+      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.providerProxy];
+    }
   }
 
   setVerifiedCapabilities(
@@ -636,7 +653,7 @@ export class RuntimeConnection {
           }
           if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
             expectedNegotiatedCapabilities = negotiateRuntimeCapabilities(
-              RUNTIME_CLIENT_CAPABILITY_OFFERS,
+              this.#supportedCapabilities,
               frame.supportedCapabilities,
             );
             const missing = [
@@ -675,7 +692,7 @@ export class RuntimeConnection {
               ? {
                   ...registration,
                   protocolVersion: RUNTIME_PROTOCOL_V2,
-                  supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+                  supportedCapabilities: this.#supportedCapabilities,
                   requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
                 }
               : registration,
@@ -1027,25 +1044,6 @@ function withoutConnectionId(value: unknown): unknown {
   const frame = { ...(value as Record<string, unknown>) };
   delete frame.connectionId;
   return frame;
-}
-
-/**
- * Every frame the Server may send on the business channel.
- *
- * Two independent vocabularies share this channel. `ServerRuntimeBusinessFrameSchema` covers the
- * domain frames — deliveries, reconciles, report results. The runtime-credential control plane
- * (execution open/close, capability results, proxy tickets, the MCP gateway token) is its own union,
- * which the relay parses again itself once a frame is delivered.
- *
- * Both attempts are needed. A credential result that fails to parse here is treated as an invalid
- * frame and the connection is dropped, so the relay's request can never be answered. Nothing noticed
- * because the relay only runs in proxy mode, which is opt-in and off by default.
- */
-function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {
-  const domain = ServerRuntimeBusinessFrameSchema.safeParse(value);
-  if (domain.success) return domain.data;
-  const credential = RuntimeCredentialServerFrameSchema.safeParse(value);
-  return credential.success ? (credential.data as unknown as RuntimeBusinessFrame) : undefined;
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

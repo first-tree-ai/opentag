@@ -1,6 +1,6 @@
 {
-  "id": "c83054c1-8c98-45e2-8335-652437a820aa",
-  "prevId": "0ffd80df-ed05-4d66-978f-531e843470bd",
+  "id": "8e7f76b6-5c18-4802-b10f-e6be8227d684",
+  "prevId": "c83054c1-8c98-45e2-8335-652437a820aa",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5267,6 +5267,201 @@
       },
       "isRLSEnabled": false
     },
+    "public.agent_skills": {
+      "name": "agent_skills",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "source": {
+          "name": "source",
+          "type": "skill_source",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "object_key": {
+          "name": "object_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "archive_sha256": {
+          "name": "archive_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "archive_bytes": {
+          "name": "archive_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_count": {
+          "name": "file_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "files": {
+          "name": "files",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "files_truncated": {
+          "name": "files_truncated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "agent_skills_agent_name_unique": {
+          "name": "agent_skills_agent_name_unique",
+          "columns": [
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"name\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_skills_agent_id_idx": {
+          "name": "agent_skills_agent_id_idx",
+          "columns": [
+            {
+              "expression": "agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "agent_skills_agent_id_agents_id_fk": {
+          "name": "agent_skills_agent_id_agents_id_fk",
+          "tableFrom": "agent_skills",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "agent_skills_name_format": {
+          "name": "agent_skills_name_format",
+          "value": "\"agent_skills\".\"name\" ~ '^[a-z0-9]+(-[a-z0-9]+)*$'"
+        },
+        "agent_skills_name_length": {
+          "name": "agent_skills_name_length",
+          "value": "char_length(\"agent_skills\".\"name\") between 1 and 64"
+        },
+        "agent_skills_description_bounds": {
+          "name": "agent_skills_description_bounds",
+          "value": "char_length(\"agent_skills\".\"description\") between 1 and 1024"
+        },
+        "agent_skills_sha256_format": {
+          "name": "agent_skills_sha256_format",
+          "value": "\"agent_skills\".\"archive_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "agent_skills_archive_bytes_bounds": {
+          "name": "agent_skills_archive_bytes_bounds",
+          "value": "\"agent_skills\".\"archive_bytes\" between 1 and 16777216"
+        },
+        "agent_skills_file_count_bounds": {
+          "name": "agent_skills_file_count_bounds",
+          "value": "\"agent_skills\".\"file_count\" between 1 and 1000"
+        },
+        "agent_skills_revision_positive": {
+          "name": "agent_skills_revision_positive",
+          "value": "\"agent_skills\".\"revision\" >= 1"
+        },
+        "agent_skills_object_key_bounds": {
+          "name": "agent_skills_object_key_bounds",
+          "value": "char_length(\"agent_skills\".\"object_key\") between 1 and 1024"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.slack_installations": {
       "name": "slack_installations",
       "schema": "",
@@ -6160,6 +6355,15 @@
         "channel",
         "thread",
         "internal"
+      ]
+    },
+    "public.skill_source": {
+      "name": "skill_source",
+      "schema": "public",
+      "values": [
+        "web_upload",
+        "cli_upload",
+        "agent_upload"
       ]
     },
     "public.slack_installation_status": {

@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -40,6 +40,30 @@ async function harness() {
 }
 
 describe("bounded outgoing reply storage", () => {
+  it.skipIf(process.platform === "win32")(
+    "writes reply evidence without changing trusted ancestor permissions",
+    async () => {
+      const h = await harness();
+      await h.save("om_before");
+      await chmod(h.plansRoot, 0o500);
+      await chmod(h.sessionDir, 0o500);
+      try {
+        const inflight = await beginOutgoingReplyInflight(h);
+        await h.save("om_after");
+        await markOutgoingReplyCaptureStatus({ ...h, status: "incomplete" });
+        await inflight.release();
+        expect((await lstat(h.plansRoot)).mode & 0o777).toBe(0o500);
+        expect((await lstat(h.sessionDir)).mode & 0o777).toBe(0o500);
+        const collected = await collectOutgoingReplyReceipts(h);
+        expect(collected.status).toBe("incomplete");
+        expect(collected.receipts.map((receipt) => receipt.messageId).sort()).toEqual(["om_after", "om_before"]);
+      } finally {
+        await chmod(h.plansRoot, 0o700);
+        await chmod(h.sessionDir, 0o700);
+      }
+    },
+  );
+
   it("retains known receipts when another capture failed", async () => {
     const h = await harness();
     await h.save("om_valid");

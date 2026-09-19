@@ -97,6 +97,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
       <FeishuSetup
         agentId={agent.id}
         presentation="dialog"
+        restoreSavedAttempt
         returnFocusRef={activeFeishuTriggerRef}
         onSuccess={() => {
           setSuccessMessage(m.im_feishu_connected({ provider: messagingProviderLabel("feishu") }));
@@ -234,6 +235,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           </>
                         )}
                       </section>
+                      {feishuSetup.feedback}
 
                       {binding ? (
                         <section className="grid gap-4" aria-labelledby="trigger-rules-heading">
@@ -276,7 +278,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                         </section>
                       ) : null}
 
-                      {feishuSetup.feedback}
                       {slackConfiguration.feedback}
                       {successMessage ? (
                         <Banner variant="secondary" role="status" description={successMessage} />

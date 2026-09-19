@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SKILL_ERROR_CODES, SKILL_MAX_PER_AGENT, type SkillSource } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
 import { agentSkills, agents, computers, users } from "../db/schema/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
 import { SkillService, type SkillUploadInput } from "../services/skills/index.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
 import { skillManifest, tarGz } from "./support/skill-archive-fixtures.js";
@@ -83,6 +84,57 @@ function serviceWith(store?: FakeSkillObjectStore): SkillService {
   return new SkillService({ database: unit.database, ...(store ? { store } : {}), keyPrefix: "skills" });
 }
 
+/**
+ * Pauses the first terminal `returning()` of an update, delete, or insert so a test can land another
+ * writer while that write is in flight. The hook runs once, before the delayed statement executes.
+ */
+function databasePausingFirstReturning(database: DatabaseClient, beforeReturn: () => Promise<void>): DatabaseClient {
+  let armed = true;
+  const gate = async () => {
+    if (!armed) return;
+    armed = false;
+    await beforeReturn();
+  };
+  const wrap = (builder: unknown): unknown =>
+    new Proxy(builder as object, {
+      get(target, property, receiver) {
+        if (property === "returning") {
+          return async (...args: unknown[]) => {
+            await gate();
+            return (target as { returning: (...input: unknown[]) => unknown }).returning(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? (...args: unknown[]) => wrap(value.apply(target, args)) : value;
+      },
+    });
+  return new Proxy(database, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if ((property === "update" || property === "delete" || property === "insert") && typeof value === "function") {
+        return (...args: unknown[]) => wrap(value.apply(target, args));
+      }
+      return value;
+    },
+  }) as DatabaseClient;
+}
+
+async function objectKeyOf(skillId: string): Promise<string | undefined> {
+  const [row] = await unit.database
+    .select({ objectKey: agentSkills.objectKey })
+    .from(agentSkills)
+    .where(eq(agentSkills.id, skillId))
+    .limit(1);
+  return row?.objectKey;
+}
+
+async function bumpRevision(skillId: string): Promise<void> {
+  await unit.database
+    .update(agentSkills)
+    .set({ revision: sql`${agentSkills.revision} + 1` })
+    .where(eq(agentSkills.id, skillId));
+}
+
 /** Wraps the client so a Skill row insert fails, exercising the object-cleanup compensation path. */
 function failingInsertDatabase(database: DatabaseClient): DatabaseClient {
   return new Proxy(database, {
@@ -105,6 +157,45 @@ function failingInsertDatabase(database: DatabaseClient): DatabaseClient {
       return Reflect.get(target, property, receiver);
     },
   });
+}
+
+/** Wraps the client so a Skill row update fails, exercising the replace compensation path. */
+function failingUpdateDatabase(database: DatabaseClient): DatabaseClient {
+  return new Proxy(database, {
+    get(target, property, receiver) {
+      if (property === "update") {
+        return (table: unknown) => {
+          if (table === agentSkills) {
+            return {
+              set: () => ({
+                where: () => ({
+                  returning: async () => {
+                    throw new Error("forced Skill row update failure");
+                  },
+                }),
+              }),
+            };
+          }
+          const update = Reflect.get(target, "update", receiver) as (value: unknown) => unknown;
+          return update.call(target, table);
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+}
+
+function capturingLogger(): { logger: ServiceLogger; warns: Array<Record<string, unknown>> } {
+  const warns: Array<Record<string, unknown>> = [];
+  return {
+    warns,
+    logger: {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (bindings: Record<string, unknown>) => warns.push(bindings),
+      error: () => undefined,
+    },
+  };
 }
 
 describe("SkillService", () => {
@@ -233,6 +324,10 @@ describe("SkillService", () => {
 
     await service.setEnabled(accountId, agentId, detail.id, false);
     expect((await service.manifestForComputer(boundComputer, agentId)).skills).toEqual([]);
+    // A disabled Skill is a hard stop on the Computer surface, not just absent from the manifest.
+    await expect(service.openBundleForComputer(boundComputer, agentId, detail.id)).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NOT_FOUND,
+    });
     await service.setEnabled(accountId, agentId, detail.id, true);
     expect((await service.manifestForComputer(boundComputer, agentId)).skills[0]).toMatchObject({
       id: detail.id,
@@ -310,5 +405,178 @@ describe("SkillService", () => {
     expect((await service.setEnabled(accountId, agentId, skillId, false)).enabled).toBe(false);
     await service.remove(accountId, agentId, skillId);
     expect((await service.list(accountId, agentId)).skills).toEqual([]);
+  });
+
+  it("keeps the object when the replacement content is identical", async () => {
+    const accountId = await createUser();
+    const agentId = await createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    const service = serviceWith(store);
+
+    const first = await uploadInput(service, accountId, agentId, "same-bytes");
+    const replaced = await uploadInput(service, accountId, agentId, "same-bytes", { replace: true });
+    expect(replaced.revision).toBe(first.revision + 1);
+    expect(replaced.archiveSha256).toBe(first.archiveSha256);
+    expect(store.keys()).toHaveLength(1);
+    const bundle = await service.openBundle(accountId, agentId, replaced.id);
+    expect(bundle.sha256).toBe(replaced.archiveSha256);
+    expect(bundle.bytes).toBe(replaced.archiveBytes);
+  });
+
+  it("leaves the row's object intact when a replace races another writer", async () => {
+    const accountId = await createUser();
+    const agentId = await createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    const original = await uploadInput(serviceWith(store), accountId, agentId, "race");
+    const originalKey = (await objectKeyOf(original.id)) as string;
+
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let signalPause!: () => void;
+    const pauseReached = new Promise<void>((resolve) => {
+      signalPause = resolve;
+    });
+    const database = databasePausingFirstReturning(unit.database, async () => {
+      signalPause();
+      await paused;
+    });
+    const service = new SkillService({ database, store, keyPrefix: "skills" });
+
+    // A reads revision 1 and writes a new key, but its row update is held just before it executes.
+    const winner = uploadInput(service, accountId, agentId, "race", { replace: true, files: { "a.txt": "a" } });
+    await pauseReached;
+    // B re-uploads the ORIGINAL content while A is held; it lands on the original key.
+    const late = await uploadInput(service, accountId, agentId, "race", { replace: true });
+    release();
+    await expect(winner).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NAME_CONFLICT,
+      message: expect.stringContaining("concurrently"),
+    });
+
+    expect(late.archiveSha256).toBe(original.archiveSha256);
+    expect(await objectKeyOf(original.id)).toBe(originalKey);
+    expect(store.stored(originalKey)).toBeDefined();
+    expect(store.keys()).toEqual([originalKey]);
+  });
+
+  it("rejects a stale setEnabled and a stale remove", async () => {
+    for (const operation of ["setEnabled", "remove"] as const) {
+      const accountId = await createUser();
+      const agentId = await createAgent(accountId);
+      const store = new FakeSkillObjectStore();
+      const seeded = await uploadInput(
+        serviceWith(store),
+        accountId,
+        agentId,
+        operation === "setEnabled" ? "stale-enable" : "stale-remove",
+      );
+
+      let signalRevved!: () => void;
+      const revved = new Promise<void>((resolve) => {
+        signalRevved = resolve;
+      });
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const database = databasePausingFirstReturning(unit.database, async () => {
+        await bumpRevision(seeded.id);
+        signalRevved();
+        await held;
+      });
+      const service = new SkillService({ database, store, keyPrefix: "skills" });
+
+      const call =
+        operation === "setEnabled"
+          ? service.setEnabled(accountId, agentId, seeded.id, false)
+          : service.remove(accountId, agentId, seeded.id);
+      const outcome = expect(call).rejects.toMatchObject({
+        code: SKILL_ERROR_CODES.NAME_CONFLICT,
+        message: expect.stringContaining("concurrently"),
+      });
+      await revved;
+      release();
+      await outcome;
+      // The stale write changed nothing: the row and its object are untouched.
+      const key = (await objectKeyOf(seeded.id)) as string;
+      expect((await service.get(accountId, agentId, seeded.id)).revision).toBe(seeded.revision + 1);
+      expect(store.stored(key)).toBeDefined();
+    }
+  });
+
+  it("keeps the live object when a same-content replace fails its row write", async () => {
+    const accountId = await createUser();
+    const agentId = await createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    const seeded = await uploadInput(serviceWith(store), accountId, agentId, "failed-replace");
+    const objectKey = (await objectKeyOf(seeded.id)) as string;
+
+    const service = new SkillService({ database: failingUpdateDatabase(unit.database), store, keyPrefix: "skills" });
+    await expect(uploadInput(service, accountId, agentId, "failed-replace", { replace: true })).rejects.toThrow(
+      "forced Skill row update failure",
+    );
+    // The cleanup must not delete the key the unchanged row still references.
+    expect(store.deletes).toBe(0);
+    expect(store.stored(objectKey)).toBeDefined();
+    const bundle = await serviceWith(store).openBundle(accountId, agentId, seeded.id);
+    expect(bundle.sha256).toBe(seeded.archiveSha256);
+  });
+
+  it("restores the object a concurrent cleanup removed after the row write", async () => {
+    const accountId = await createUser();
+    const agentId = await createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    const { logger, warns } = capturingLogger();
+    const seeded = await uploadInput(serviceWith(store), accountId, agentId, "race-b");
+    const originalKey = (await objectKeyOf(seeded.id)) as string;
+
+    let releaseDelete!: () => void;
+    const deleteHeld = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    let signalDeletePaused!: () => void;
+    const deletePaused = new Promise<void>((resolve) => {
+      signalDeletePaused = resolve;
+    });
+    let signalDeleteDone!: () => void;
+    const deleteDone = new Promise<void>((resolve) => {
+      signalDeleteDone = resolve;
+    });
+    store.beforeDelete = {
+      promise: deleteHeld,
+      open: releaseDelete,
+      onPause: signalDeletePaused,
+      onDone: signalDeleteDone,
+    };
+    // B's existence check runs after A's cleanup has removed the object A's delete targeted.
+    store.onHead = async () => {
+      releaseDelete();
+      await deleteDone;
+    };
+    const service = new SkillService({ database: unit.database, store, keyPrefix: "skills", logger });
+
+    // A updates the row to the new content, then pauses in its cleanup before deleting the old key.
+    const winner = uploadInput(service, accountId, agentId, "race-b", { replace: true, files: { "a.txt": "a" } });
+    await deletePaused;
+    // B re-uploads the original content while A is held; A's delete lands before B's existence check.
+    const late = await uploadInput(service, accountId, agentId, "race-b", { replace: true });
+    await winner;
+
+    expect(late.archiveSha256).toBe(seeded.archiveSha256);
+    expect(store.stored(originalKey)).toBeDefined();
+    expect(warns.filter((entry) => entry.code === "skill_object_restored")).toHaveLength(1);
+    const bundle = await service.openBundle(accountId, agentId, seeded.id);
+    expect(bundle.sha256).toBe(seeded.archiveSha256);
+  });
+
+  it("does not re-put an object that is already present after the row write", async () => {
+    const accountId = await createUser();
+    const agentId = await createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    await uploadInput(serviceWith(store), accountId, agentId, "present");
+    expect(store.puts).toBe(1);
+    expect(store.heads).toBeGreaterThanOrEqual(1);
   });
 });

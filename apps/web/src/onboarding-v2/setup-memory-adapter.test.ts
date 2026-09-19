@@ -215,7 +215,7 @@ describe("createMemorySetupAdapter", () => {
     ]);
   });
 
-  it("matches production by requiring exact unbind after a first attempt is canceled", async () => {
+  it("retains same-channel retry and exact unbind after a first attempt is canceled", async () => {
     const agent = setupAgent();
     const { adapter } = createMemorySetupAdapter({ agent });
 
@@ -234,7 +234,10 @@ describe("createMemorySetupAdapter", () => {
       code: "authorization-failed",
     });
     const bindingId = blocked.messaging.kind === "blocked" ? blocked.messaging.bindingId : "missing";
-    expect(blocked.actions).toEqual([{ kind: "unbind-messaging", provider: "feishu", bindingId }]);
+    expect(blocked.actions).toEqual([
+      { kind: "start-messaging", provider: "feishu" },
+      { kind: "unbind-messaging", provider: "feishu", bindingId },
+    ]);
 
     await adapter.unbindMessaging(agent.id, "feishu", bindingId ?? "missing");
     const cleared = await adapter.readSnapshot(agent.id);

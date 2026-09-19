@@ -209,6 +209,16 @@ describe("production Cloud runtime composition", () => {
     expect(formatted).toContain("[REDACTED]");
   });
 
+  it("keeps the Skill object-store secret in the startup redaction set", () => {
+    const secrets = collectKnownSecrets({
+      OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: MASTER_KEY_SENTINEL,
+    } as NodeJS.ProcessEnv);
+    expect(secrets).toContain(MASTER_KEY_SENTINEL);
+    const formatted = formatStartupError(new Error(`storage rejected ${MASTER_KEY_SENTINEL}`), secrets);
+    expect(formatted).not.toContain(MASTER_KEY_SENTINEL);
+    expect(formatted).toContain("[REDACTED]");
+  });
+
   it("ensures the Session Sandbox and converges the first generation through the real services", async () => {
     const accountId = randomUUID();
     await unit.database.insert(users).values({ id: accountId, email: `${accountId}@example.test`, displayName: "E4" });

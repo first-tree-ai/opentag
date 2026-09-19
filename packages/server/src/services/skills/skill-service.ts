@@ -14,16 +14,21 @@ import { agentSkills, agents } from "../../db/schema/index.js";
 import { isUniqueViolation } from "../../db/unique-violation.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import {
-  SkillServiceError,
   skillHashMismatch,
   skillLimitReached,
   skillNameConflict,
   skillNotFound,
-  skillStorageFailure,
   skillStorageUnavailable,
 } from "./errors.js";
 import { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
-import { type SkillObjectStore, SkillObjectStoreError, skillObjectKey } from "./skill-object-store.js";
+import {
+  bestEffortDeleteSkillObject,
+  deleteReplacedObject,
+  discardUnreferencedObject,
+  ensureObjectPresent,
+  mapSkillStoreError,
+} from "./skill-object-lifecycle.js";
+import { type SkillObjectStore, skillObjectKey } from "./skill-object-store.js";
 
 /**
  * Agent Skills service: the single place Skills are created, replaced, enabled, removed, listed,
@@ -122,12 +127,13 @@ export class SkillService {
   async setEnabled(callerUserId: string, agentId: string, skillId: string, enabled: boolean): Promise<SkillDetail> {
     await this.#requireAgent(callerUserId, agentId);
     const existing = await this.#requireSkill(agentId, skillId);
+    // Optimistic concurrency: a write that raced a replace on this row changes nothing.
     const [row] = await this.#database
       .update(agentSkills)
       .set({ enabled, updatedAt: this.#now() })
-      .where(eq(agentSkills.id, existing.id))
+      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
       .returning();
-    if (!row) throw skillNotFound();
+    if (!row) throw skillNameConflict("The Skill changed concurrently; reload and retry");
     this.#logger?.info(
       { agentId, enabled, skillId: row.id, name: row.name },
       enabled ? "Skill enabled" : "Skill disabled",
@@ -138,16 +144,24 @@ export class SkillService {
   async remove(callerUserId: string, agentId: string, skillId: string): Promise<void> {
     await this.#requireAgent(callerUserId, agentId);
     const existing = await this.#requireSkill(agentId, skillId);
-    await this.#database.delete(agentSkills).where(eq(agentSkills.id, existing.id));
+    const deleted = await this.#database
+      .delete(agentSkills)
+      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
+      .returning();
+    if (deleted.length === 0) throw skillNameConflict("The Skill changed concurrently; reload and retry");
+    const row = deleted[0] as SkillRow;
     if (this.#store) {
-      await this.#bestEffortDelete(this.#store, existing.objectKey, "removed Skill", existing);
+      await bestEffortDeleteSkillObject(this.#store, row.objectKey, "removed Skill", this.#logger, {
+        agentId: row.agentId,
+        skillId: row.id,
+      });
     } else {
       this.#logger?.warn(
-        { agentId, skillId: existing.id, name: existing.name },
+        { agentId, skillId: row.id, name: row.name },
         "Skill storage is unavailable; the removed Skill's object cannot be cleaned up",
       );
     }
-    this.#logger?.info({ agentId, skillId: existing.id, name: existing.name }, "Skill removed");
+    this.#logger?.info({ agentId, skillId: row.id, name: row.name }, "Skill removed");
   }
 
   async openBundle(callerUserId: string, agentId: string, skillId: string): Promise<SkillBundle> {
@@ -176,7 +190,10 @@ export class SkillService {
 
   async openBundleForComputer(computerId: string, agentId: string, skillId: string): Promise<SkillBundle> {
     await this.#requireComputerAgent(computerId, agentId);
-    return this.#openBundle(await this.#requireSkill(agentId, skillId));
+    const row = await this.#requireSkill(agentId, skillId);
+    // The manifest lists enabled Skills only; a disabled Skill is not addressable on this surface.
+    if (!row.enabled) throw skillNotFound();
+    return this.#openBundle(row);
   }
 
   // -------------------------------------------------------------- agent (cli)
@@ -264,10 +281,12 @@ export class SkillService {
         })
         .returning();
       if (!row) throw new Error("The Skill insert returned no row");
+      await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);
       this.#logUpload("Skill uploaded", row, normalized.sha256);
       return toSkillDetail(row);
     } catch (error) {
-      await this.#bestEffortDelete(store, objectKey, "new Skill object after a failed row write");
+      // A brand-new Skill id is referenced by no other row, so this object can only be ours.
+      await bestEffortDeleteSkillObject(store, objectKey, "new Skill object after a failed row write", this.#logger);
       if (isUniqueViolation(error, "agent_skills_agent_name_unique")) throw skillNameConflict();
       throw error;
     }
@@ -304,19 +323,24 @@ export class SkillService {
           revision: sql`${agentSkills.revision} + 1`,
           updatedAt: this.#now(),
         })
-        .where(eq(agentSkills.id, existing.id))
+        // Optimistic concurrency: a replace built on a stale read changes nothing. If another writer
+        // moved the row since we read it, this matches zero rows and we must not touch its object.
+        .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
         .returning();
     } catch (error) {
-      await this.#bestEffortDelete(store, objectKey, "new Skill object after a failed replace write", existing);
+      // A same-content replace reuses the row's existing key, so this must never delete it: route
+      // the cleanup through the unreferenced-object guard instead of deleting blindly.
+      await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
       throw error;
     }
     if (!row) {
-      await this.#bestEffortDelete(store, objectKey, "new Skill object after a missing replace row", existing);
-      throw skillNotFound();
+      await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
+      throw skillNameConflict("The Skill changed concurrently; retry the upload");
     }
     if (existing.objectKey !== objectKey) {
-      await this.#bestEffortDelete(store, existing.objectKey, "replaced Skill object", existing);
+      await deleteReplacedObject(this.#database, store, existing, objectKey, this.#logger);
     }
+    await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);
     this.#logUpload("Skill replaced", row, normalized.sha256);
     return toSkillDetail(row);
   }
@@ -327,7 +351,7 @@ export class SkillService {
     try {
       stream = await store.get(row.objectKey);
     } catch (error) {
-      throw this.#mapStoreError(error);
+      throw mapSkillStoreError(error);
     }
     this.#logger?.info(
       { agentId: row.agentId, bytes: row.archiveBytes, skillId: row.id, name: row.name },
@@ -345,37 +369,8 @@ export class SkillService {
     try {
       await store.put(key, body, { sha256 });
     } catch (error) {
-      throw this.#mapStoreError(error);
+      throw mapSkillStoreError(error);
     }
-  }
-
-  /** Best-effort object cleanup: a failure is logged and never fails the request it belongs to. */
-  async #bestEffortDelete(
-    store: SkillObjectStore,
-    key: string,
-    context: string,
-    row?: { agentId: string; id: string },
-  ): Promise<void> {
-    try {
-      await store.delete(key);
-    } catch (error) {
-      this.#logger?.warn(
-        {
-          key,
-          ...(row ? { agentId: row.agentId, skillId: row.id } : {}),
-          code: error instanceof SkillObjectStoreError ? error.code : "unknown",
-        },
-        `Skill object cleanup failed: ${context}`,
-      );
-    }
-  }
-
-  #mapStoreError(error: unknown): SkillServiceError {
-    if (error instanceof SkillServiceError) return error;
-    if (error instanceof SkillObjectStoreError && error.code === "not_found") {
-      return skillNotFound("The Skill bundle is missing from storage");
-    }
-    return skillStorageFailure();
   }
 
   #logUpload(message: string, row: SkillRow, sha256: string): void {

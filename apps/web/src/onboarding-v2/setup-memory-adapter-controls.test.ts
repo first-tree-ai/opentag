@@ -290,7 +290,7 @@ describe("createMemorySetupAdapter authorization outcomes", () => {
     expect(() => controls.completeSlackInstall()).toThrow(/No Slack install is waiting/);
   });
 
-  it("turns a failed first Lark attempt into a binding that must be unbound", async () => {
+  it("retains a failed first Lark slot for same-channel retry", async () => {
     const { adapter, controls } = createMemorySetupAdapter({ agent: setupAgent() });
     await adapter.startFeishuAttempt(SETUP_AGENT_ID, "create", { kind: "unbound" });
 
@@ -308,7 +308,10 @@ describe("createMemorySetupAdapter authorization outcomes", () => {
     expect(blocked.blockers).toEqual([
       { code: "messaging-not-ready", provider: "feishu", bindingId, state: "blocked" },
     ]);
-    expect(blocked.actions).toEqual([{ kind: "unbind-messaging", provider: "feishu", bindingId }]);
+    expect(blocked.actions).toEqual([
+      { kind: "start-messaging", provider: "feishu" },
+      { kind: "unbind-messaging", provider: "feishu", bindingId },
+    ]);
     expect(() => AgentSetupSnapshotSchema.parse(blocked)).not.toThrow();
   });
 

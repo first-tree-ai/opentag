@@ -200,7 +200,7 @@ describe("agent setup lab controls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Simulate authorization failure" }));
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
-    expect(screen.getByText("Lark authorization didn't complete. Disconnect Lark, then reconnect it.")).toBeTruthy();
+    expect(screen.getByText("Couldn’t connect Lark. Try scanning a new QR code.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Simulate authorization failure" })).toBeNull();
     expect(screenState()).toBe("Needs recovery");
   });

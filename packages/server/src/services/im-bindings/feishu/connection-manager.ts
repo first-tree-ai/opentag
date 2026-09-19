@@ -1,5 +1,4 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { hasRequiredFeishuTenantScopes } from "@opentag/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings, imMessages } from "../../../db/schema/index.js";
@@ -16,9 +15,10 @@ import {
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../../im/index.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
-import { FeishuAdapter, feishuEnvelopeEventId, feishuSenderOpenId } from "./adapter.js";
-import { FeishuOperationError, safeFeishuConnectionErrorCode } from "./errors.js";
+import { FeishuAdapter, type FeishuChannel, feishuEnvelopeEventId, feishuSenderOpenId } from "./adapter.js";
+import { FeishuCandidateExpiredError, FeishuOperationError, safeFeishuConnectionErrorCode } from "./errors.js";
 import type { FeishuInboundReceiptStore } from "./inbound-receipt-store.js";
+import { classifyFeishuProbeFailure, type FeishuCandidateCheckOutcome, missingRequiredScopes } from "./setup-check.js";
 import type { FeishuBindingActivation } from "./setup-service.js";
 
 type FeishuActivationInput = Parameters<FeishuBindingActivation["activateAtomicAttempt"]>[0];
@@ -27,6 +27,15 @@ type FeishuInboundReceiptStoreLike = Pick<FeishuInboundReceiptStore, "claim" | "
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
 const CONNECTION_SCAN_PAGE_SIZE = 100;
+/** The channel-free Bot info probe is a bounded metadata read, not channel work. */
+const CANDIDATE_BOT_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * The documented `bot/v3/info` activate_status values that prove an App is not enabled: 0 install
+ * pending, 1 tenant-disabled, 3 installed-pending-enable, 4 upgrade-pending-enable, 5 license
+ * expired, 6 plan expired or downgraded. Only 2 is enabled; an omitted field carries no evidence.
+ */
+const KNOWN_NON_ENABLED_ACTIVATE_STATUS: ReadonlySet<number> = new Set([0, 1, 3, 4, 5, 6]);
 
 interface OwnedChannel {
   adapter: FeishuAdapter;
@@ -49,6 +58,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     appSecret: string;
     teamId: string | null;
     teamBrand?: "feishu" | "lark" | null;
+    /* type-only */ channel?: FeishuChannel | null;
     /* type-only */ policy?: ExternalCallPolicy;
   }) => FeishuAdapter;
   readonly #leaseMs: number;
@@ -69,6 +79,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   #maintaining = false;
   #timer: ReturnType<typeof setInterval> | undefined;
   #stopped = true;
+  #shutdownEpoch = 0;
 
   constructor(input: {
     database: DatabaseClient;
@@ -80,6 +91,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       appSecret: string;
       teamId: string | null;
       teamBrand?: "feishu" | "lark" | null;
+      /* type-only */ channel?: FeishuChannel | null;
       /* type-only */ policy?: ExternalCallPolicy;
     }) => FeishuAdapter;
     leaseMs?: number;
@@ -126,6 +138,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
 
   async stop(): Promise<void> {
     this.#stopped = true;
+    this.#shutdownEpoch += 1;
     for (const controller of this.#maintenanceControllers.values()) controller.abort();
     this.#maintenanceControllers.clear();
     if (this.#timer) clearInterval(this.#timer);
@@ -149,6 +162,77 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       .where(eq(imBindings.connectionOwnerInstanceId, this.#instanceId));
   }
 
+  /**
+   * A bounded, channel-free readiness probe for one durable candidate. It performs the same tenant
+   * scope query and runtime readiness observation activation would, plus the official Bot info read
+   * that distinguishes an installed-but-not-enabled App, and deliberately never opens the message
+   * channel: a candidate that is still waiting must not hold a socket.
+   */
+  async checkCandidate(input: {
+    agentId: string;
+    appId: string;
+    appSecret: string;
+    teamBrand?: "feishu" | "lark";
+    signal?: AbortSignal;
+  }): Promise<FeishuCandidateCheckOutcome> {
+    input.signal?.throwIfAborted();
+    const now = this.#now().getTime();
+    const probe = this.#createAdapter({
+      appId: input.appId,
+      appSecret: input.appSecret,
+      teamId: null,
+      teamBrand: input.teamBrand,
+      channel: null,
+    });
+    let grantedScopes: string[];
+    try {
+      grantedScopes = await this.#policy.run("feishu.binding.scopes", () => probe.listGrantedWorkspaceScopes(), {
+        signal: input.signal,
+        maxAttempts: 1,
+        circuitKey: `feishu:binding:${input.appId}`,
+      });
+    } catch (error) {
+      return classifyFeishuProbeFailure(error, now);
+    }
+    const missingScopes = missingRequiredScopes(grantedScopes);
+    if (missingScopes.length > 0) {
+      return { status: "waiting", reason: "permissions_pending", missingScopes };
+    }
+    if (
+      !(await this.#policy.run("feishu.binding.runtime", async () => this.#runtimeReady(input.agentId), {
+        signal: input.signal,
+        maxAttempts: 1,
+        timeoutMs: CANDIDATE_BOT_PROBE_TIMEOUT_MS,
+      }))
+    ) {
+      return { status: "waiting", reason: "runtime_unavailable", missingScopes: [] };
+    }
+    const probeBotIdentity = (probe as { probeBotIdentity?: () => Promise<{ activateStatus: number | null }> })
+      .probeBotIdentity;
+    if (probeBotIdentity) {
+      try {
+        const bot = await this.#policy.run("feishu.binding.bot", () => probeBotIdentity.call(probe), {
+          signal: input.signal,
+          maxAttempts: 1,
+          timeoutMs: CANDIDATE_BOT_PROBE_TIMEOUT_MS,
+          circuitKey: `feishu:binding:${input.appId}`,
+        });
+        // Only an explicit documented non-enabled status is evidence against the App: the endpoint
+        // may omit the optional field while still proving the Bot identity, and an undocumented
+        // value is decided by the mandatory atomic channel activation, never guessed here.
+        if (bot.activateStatus !== null && KNOWN_NON_ENABLED_ACTIVATE_STATUS.has(bot.activateStatus)) {
+          return { status: "waiting", reason: "app_unavailable", missingScopes: [] };
+        }
+      } catch (error) {
+        const classified = classifyFeishuProbeFailure(error, now);
+        if (classified.status === "terminal") return classified;
+        if (!isKnownBotUnavailable(error)) return classified;
+        return { status: "waiting", reason: "app_unavailable", missingScopes: [] };
+      }
+    }
+    return { status: "ready" };
+  }
+
   async activateAtomicAttempt(input: FeishuActivationInput): Promise<VerifiedFeishuBinding> {
     return withRootSpan(
       "feishu.connection.connect",
@@ -167,7 +251,70 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     );
   }
 
+  /** The channel-free admission checks every activation must pass before a socket is created. */
+  async #assertActivationPrerequisites(input: {
+    agentId: string;
+    appId: string;
+    appSecret: string;
+    teamBrand?: "feishu" | "lark";
+    signal?: AbortSignal;
+  }): Promise<void> {
+    input.signal?.throwIfAborted();
+    const probe = this.#createAdapter({
+      appId: input.appId,
+      appSecret: input.appSecret,
+      teamId: null,
+      teamBrand: input.teamBrand,
+      channel: null,
+    });
+    const grantedScopes = await this.#policy.run("feishu.binding.scopes", () => probe.listGrantedWorkspaceScopes(), {
+      signal: input.signal,
+      maxAttempts: 1,
+      circuitKey: `feishu:binding:${input.appId}`,
+    });
+    const missingScopes = missingRequiredScopes(grantedScopes);
+    if (missingScopes.length > 0) {
+      throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED", missingScopes);
+    }
+    if (
+      !(await this.#policy.run("feishu.binding.runtime", async () => this.#runtimeReady(input.agentId), {
+        signal: input.signal,
+        maxAttempts: 1,
+        timeoutMs: CANDIDATE_BOT_PROBE_TIMEOUT_MS,
+      }))
+    ) {
+      throw new FeishuOperationError("FEISHU_RUNTIME_TOOL_UNAVAILABLE");
+    }
+  }
+
+  /** Recheck the durable claim after prerequisite I/O and before opening a socket. */
+  async #assertActivationClaim(input: FeishuActivationInput): Promise<void> {
+    assertLiveCandidate(input, this.#now());
+    const [slot] = await this.#database
+      .select({ intent: imBindings.setupIntent, appId: imBindings.externalAppId })
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.agentId, input.agentId),
+          eq(imBindings.setupAttemptId, input.attemptId),
+          eq(imBindings.setupOwnerInstanceId, input.ownerInstanceId),
+          eq(imBindings.setupState, "validating"),
+        ),
+      )
+      .limit(1);
+    if (!slot) throw new FeishuOperationError("FEISHU_SETUP_FENCE_STALE");
+    assertCandidateIdentity(input, slot);
+    assertLiveCandidate(input, this.#now());
+  }
+
   async #activateAtomicAttempt(input: FeishuActivationInput): Promise<VerifiedFeishuBinding> {
+    const shutdownEpoch = this.#shutdownEpoch;
+    // Scopes and runtime readiness are admission conditions, not channel work: they are checked
+    // against a channel-free probe so an unapproved or environment-blocked candidate never opens a
+    // socket. Only after both pass is the message channel adapter created and identity-validated.
+    await this.#assertActivationPrerequisites(input);
+    await this.#assertActivationClaim(input);
+    this.#assertActivationRunning(input, shutdownEpoch);
     const candidate = this.#createAdapter({
       appId: input.appId,
       appSecret: input.appSecret,
@@ -175,12 +322,14 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       teamBrand: input.teamBrand,
     });
     let handoff: { imBindingId: string; epoch: number; generation: number; appId: string } | undefined;
+    let committedLease: { imBindingId: string; epoch: number } | undefined;
     const detachHandlers = this.#attachHandlers(candidate, () => handoff);
     try {
       const identity = await this.#policy.run(
         "feishu.binding.validate",
         (signal) => candidate.validateBinding(signal),
         {
+          signal: input.signal,
           maxAttempts: 1,
           circuitKey: `feishu:binding:${input.appId}`,
         },
@@ -190,15 +339,14 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         "feishu.binding.scopes",
         () => candidate.listGrantedWorkspaceScopes(),
         {
+          signal: input.signal,
           maxAttempts: 1,
           circuitKey: `feishu:binding:${input.appId}`,
         },
       );
-      if (!hasRequiredFeishuTenantScopes(grantedScopes)) {
-        throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED");
-      }
-      if (!(await this.#runtimeReady(input.agentId))) {
-        throw new FeishuOperationError("FEISHU_RUNTIME_TOOL_UNAVAILABLE");
+      const missingScopes = missingRequiredScopes(grantedScopes);
+      if (missingScopes.length > 0) {
+        throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED", missingScopes);
       }
       const verified: VerifiedFeishuBinding = {
         agentId: input.agentId,
@@ -210,6 +358,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         grantedScopes,
       };
       const committed = await this.#database.transaction(async (transaction) => {
+        input.signal?.throwIfAborted();
         const [agent] = await transaction
           .select({ id: agents.id })
           .from(agents)
@@ -219,7 +368,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         if (!agent) throw new FeishuOperationError("FEISHU_SETUP_FENCE_STALE");
         await this.#afterActivationAgentLocked?.();
         const [slot] = await transaction
-          .select({ id: imBindings.id })
+          .select({ id: imBindings.id, intent: imBindings.setupIntent, appId: imBindings.externalAppId })
           .from(imBindings)
           .where(
             and(
@@ -232,6 +381,13 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           .limit(1)
           .for("update");
         if (!slot) throw new FeishuOperationError("FEISHU_SETUP_FENCE_STALE");
+        assertCandidateIdentity(input, slot);
+        // The candidate retention deadline is re-checked inside the activation transaction: a
+        // candidate that lapsed while provider or channel work was in flight must not activate
+        // even though it was still pending on the read path. Legacy QR attempts carry no candidate
+        // deadline.
+        assertLiveCandidate(input, this.#now());
+        input.signal?.throwIfAborted();
         const imBindingId = await this.#imBindings.activateFeishu(verified, transaction);
         const now = new Date();
         const expiresAt = new Date(now.getTime() + this.#leaseMs);
@@ -271,13 +427,15 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
                   eq(imBindings.id, slot.id),
                   eq(imBindings.status, "disabled"),
                   eq(imBindings.setupAttemptId, input.attemptId),
-                  eq(imBindings.setupState, "validating"),
+                  eq(imBindings.setupState, "canceled"),
                 ),
           )
           .returning({ id: imBindings.id });
         if (!completed) throw new FeishuOperationError("FEISHU_SETUP_FENCE_STALE");
         const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId, transaction);
         if (!material) throw new FeishuOperationError("FEISHU_BINDING_NOT_ACTIVE");
+        this.#assertActivationRunning(input, shutdownEpoch);
+        assertLiveCandidate(input, this.#now());
         handoff = {
           imBindingId,
           epoch: lease.epoch,
@@ -286,6 +444,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         };
         return { imBindingId, epoch: lease.epoch, material };
       });
+      committedLease = committed;
+      this.#assertActivationRunning(input, shutdownEpoch);
       handoff = {
         imBindingId: committed.imBindingId,
         epoch: committed.epoch,
@@ -298,9 +458,10 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         generation: committed.material.generation,
         appId: committed.material.appId,
       };
-      await this.#imBindings.notifyProviderCliRequirementChanged(input.agentId).catch(() => undefined);
       setActiveSpanAttributes(imAttrs({ provider: "feishu", bindingId: committed.imBindingId }));
       const previous = this.#owned.get(committed.imBindingId);
+      // Transfer ownership synchronously after commit. Shutdown must see the channel even when
+      // the following runtime notification is slow, and a pre-shutdown commit cannot install late.
       this.#owned.set(committed.imBindingId, next);
       if (previous && previous.adapter !== candidate) {
         await previous.adapter.channel
@@ -308,12 +469,24 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           .catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
         this.#emitDisconnected(committed.imBindingId, "FEISHU_CONNECTION_REPLACED");
       }
+      await this.#imBindings.notifyProviderCliRequirementChanged(input.agentId).catch(() => undefined);
       return verified;
     } catch (error) {
       detachHandlers?.();
       await candidate.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
+      if (committedLease) {
+        if (this.#owned.get(committedLease.imBindingId)?.adapter === candidate) {
+          this.#owned.delete(committedLease.imBindingId);
+        }
+        await this.#release(committedLease.imBindingId, committedLease.epoch);
+      }
       throw error;
     }
+  }
+
+  #assertActivationRunning(input: FeishuActivationInput, shutdownEpoch: number): void {
+    input.signal?.throwIfAborted();
+    if (shutdownEpoch !== this.#shutdownEpoch) throw new FeishuOperationError("FEISHU_SETUP_FENCE_STALE");
   }
 
   async maintain(): Promise<void> {
@@ -782,6 +955,37 @@ function processingErrorCode(error: unknown): string {
     return error.code;
   }
   return "FEISHU_EVENT_PROCESSING_FAILED";
+}
+
+function assertCandidateIdentity(
+  input: FeishuActivationInput,
+  slot: { intent: string | null; appId: string | null },
+): void {
+  if (slot.intent === "reauthorize" && slot.appId !== input.appId) {
+    throw new FeishuOperationError("FEISHU_APP_IDENTITY_MISMATCH");
+  }
+}
+
+function assertLiveCandidate(input: FeishuActivationInput, now: Date): void {
+  input.signal?.throwIfAborted();
+  if (input.candidateExpiresAt !== undefined && input.candidateExpiresAt <= now) {
+    throw new FeishuCandidateExpiredError();
+  }
+}
+
+/** The adapter's own signal that the App has no usable Bot, distinct from a transport failure. */
+function isKnownBotUnavailable(error: unknown): boolean {
+  let current: unknown = error;
+  const visited = new Set<unknown>();
+  while (typeof current === "object" && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const candidate = current as { code?: unknown; message?: unknown };
+    if (candidate.code === "FEISHU_BOT_IDENTITY_MISSING") {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 function emitInboundDuplicate(bindingId: string, providerEventId: string, externalMessageId: string): void {

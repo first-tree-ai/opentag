@@ -2,14 +2,19 @@ import { SKILL_ERROR_CODES, SKILL_MAX_ENTRIES } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import { normalizeSkillArchive } from "../services/skills/index.js";
 import {
+  buildRawZip,
+  gzipOfZeros,
   skillManifest,
   tarGz,
   tarGzWithDeclaredSize,
   zipFiles,
+  zipLocalHeader,
   zipWithDeclaredSize,
 } from "./support/skill-archive-fixtures.js";
 
 const entry = (name: string, body: string, extra: Record<string, unknown> = {}) => ({ name, body, ...extra });
+
+const MIB = 1024 * 1024;
 
 async function failure(promise: Promise<unknown>, code: string): Promise<void> {
   await expect(promise).rejects.toMatchObject({ code });
@@ -170,5 +175,63 @@ describe("normalizeSkillArchive", () => {
       normalizeSkillArchive(await tarGz([entry("SKILL.md", skillManifest("a--b"))]), "tar.gz"),
       SKILL_ERROR_CODES.MANIFEST_INVALID,
     );
+  });
+
+  it("rejects a stored zip whose declared sizes disagree before any body is produced", async () => {
+    const blob = Buffer.alloc(MIB, 0x41);
+    const local = Buffer.concat([zipLocalHeader("blob", 0, MIB, 0), blob]);
+    const entries = Array.from({ length: 64 }, (_, index) => ({
+      name: `f${index}.txt`,
+      compression: 0,
+      size: MIB,
+      originalSize: 0,
+      offset: 0,
+    }));
+    const zip = buildRawZip(local, entries);
+    // The rejection comes from the central-directory filter — the message is the stored-size check,
+    // not the post-inflate backstop — so the 64 MiB `unzipSync` would have allocated never exists.
+    await expect(normalizeSkillArchive(zip, "zip")).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.ARCHIVE_INVALID,
+      message: expect.stringContaining("inconsistent stored sizes"),
+    });
+  });
+
+  it("rejects overlapping zip central entries that cannot all fit inside the input", async () => {
+    const blob = Buffer.alloc(MIB, 0x42);
+    const local = Buffer.concat([zipLocalHeader("blob", 0, MIB, MIB), blob]);
+    const entries = Array.from({ length: 64 }, (_, index) => ({
+      name: `f${index}.txt`,
+      compression: 0,
+      size: MIB,
+      originalSize: MIB,
+      offset: 0,
+    }));
+    await expect(normalizeSkillArchive(buildRawZip(local, entries), "zip")).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.ARCHIVE_INVALID,
+      message: expect.stringContaining("overlap"),
+    });
+  });
+
+  it("rejects a single stored zip entry whose declared sizes disagree", async () => {
+    const local = Buffer.concat([zipLocalHeader("evil.txt", 0, 5, 3), Buffer.from("abcde")]);
+    await failure(
+      normalizeSkillArchive(
+        buildRawZip(local, [{ name: "evil.txt", compression: 0, size: 5, originalSize: 3, offset: 0 }]),
+        "zip",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+  });
+
+  it("still accepts an honest stored zip", async () => {
+    const zip = zipFiles({ "SKILL.md": skillManifest("stored-ok"), "lib/x.txt": "x" }, 0);
+    const normalized = await normalizeSkillArchive(zip, "zip");
+    expect(normalized.manifest.name).toBe("stored-ok");
+    expect(normalized.files.map((file) => file.path)).toEqual(["SKILL.md", "lib/x.txt"]);
+  });
+
+  it("rejects a gzip that inflates past the decompressed-stream ceiling", () => {
+    // 65 MiB of zeros exceeds the payload ceiling plus the framing allowance.
+    return failure(normalizeSkillArchive(gzipOfZeros(65 * MIB), "tar.gz"), SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE);
   });
 });

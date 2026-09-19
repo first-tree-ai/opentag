@@ -274,6 +274,7 @@ describe("SessionRuntimeManager", () => {
       providers: await providerRegistry(factory),
       providerCliLaunchPath: (sessionId) =>
         `${resolve(home, "proxy", sessionId, "bin")}:${resolve(home, "plans", sessionId)}`,
+      providerCliReplyWritableRoot: async (sessionId) => resolve(home, "plans", sessionId, "runs"),
       providerEnvironment: (sessionId) =>
         sessionId === "session-1"
           ? { GH_TOKEN: "otrh_handle", HTTPS_PROXY: "http://127.0.0.1:3128", NO_PROXY: "127.0.0.1,localhost" }
@@ -297,6 +298,8 @@ describe("SessionRuntimeManager", () => {
     expect(factory.created[0]?.workspace.pathPrepend).toBe(
       `${resolve(home, "proxy", "session-1", "bin")}:${resolve(home, "plans", "session-1")}`,
     );
+    expect(factory.created[0]?.workspace.writableRoots).toContain(resolve(home, "plans", "session-1", "runs"));
+    expect(factory.created[0]?.workspace.writableRoots).not.toContain(resolve(home, "plans", "session-1"));
 
     const internalFactory = new FakeFactory();
     const internalManager = new SessionRuntimeManager({
@@ -304,6 +307,9 @@ describe("SessionRuntimeManager", () => {
       home,
       providers: await providerRegistry(internalFactory),
       providerCliLaunchPath: () => resolve(home, "proxy", "session-internal", "bin"),
+      providerCliReplyWritableRoot: async () => {
+        throw new Error("Internal Sessions must not prepare visible reply storage");
+      },
       providerEnvironment: () => ({ GH_TOKEN: "otrh_internal_leak" }),
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,

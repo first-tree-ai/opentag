@@ -24,6 +24,9 @@ import {
   agentMcpServersPath,
   agentReactivatePath,
   agentRuntimeTestPath,
+  agentSkillBundlePath,
+  agentSkillPath,
+  agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -38,6 +41,8 @@ import {
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
   type CreateMCPServerRequest,
+  computerAgentSkillBundlePath,
+  computerAgentSkillsPath,
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
@@ -57,6 +62,8 @@ import {
   ListAccountComputersResponseSchema,
   type ListAgentMCPServersResponse,
   ListAgentMCPServersResponseSchema,
+  type ListAgentSkillsResponse,
+  ListAgentSkillsResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListAvailableMCPServersResponse,
@@ -81,11 +88,15 @@ import {
   type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  RUNTIME_SKILLS_PATH,
   type RuntimeDurableWorkKind,
   RuntimeDurableWorkListResponseSchema,
   type RuntimeDurableWorkRecord,
+  type RuntimeSkillManifest,
+  RuntimeSkillManifestSchema,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
+  runtimeSkillBundlePath,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCommandResponse,
   SessionCliCommandResponseSchema,
@@ -95,6 +106,15 @@ import {
   SessionCliListResponseSchema,
   type SessionCliSendRequest,
   type SetMCPAuthorizationRequest,
+  SKILL_FORMAT_HEADER,
+  SKILL_REPLACE_HEADER,
+  SKILL_SHA256_HEADER,
+  SKILL_UPLOAD_CONTENT_TYPE,
+  type Skill,
+  type SkillArchiveFormat,
+  type SkillDetail,
+  SkillDetailSchema,
+  SkillSchema,
   type StartMCPOAuthRequest,
   type StartMCPOAuthResponse,
   StartMCPOAuthResponseSchema,
@@ -873,6 +893,156 @@ export class OpenTagApi {
     );
   }
 
+  // ------------------------------------------------------------------ Agent Skills
+
+  listAgentSkills(accessToken: string, agentId: string, options?: RequestOptions): Promise<ListAgentSkillsResponse> {
+    return this.#request(
+      agentSkillsPath(agentId),
+      ListAgentSkillsResponseSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  getAgentSkill(accessToken: string, agentId: string, skillId: string, options?: RequestOptions): Promise<SkillDetail> {
+    return this.#request(
+      agentSkillPath(agentId, skillId),
+      SkillDetailSchema,
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  uploadAgentSkill(
+    accessToken: string,
+    agentId: string,
+    input: SkillUploadInput,
+    options?: RequestOptions,
+  ): Promise<Skill> {
+    return this.#request(
+      agentSkillsPath(agentId),
+      SkillSchema,
+      {
+        method: "POST",
+        body: input.archive,
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          [SKILL_SHA256_HEADER]: input.sha256,
+          [SKILL_FORMAT_HEADER]: input.format,
+          ...(input.replace ? { [SKILL_REPLACE_HEADER]: "true" } : {}),
+          ...skillUploadHeaders(input.archive.byteLength),
+        },
+      },
+      options,
+    );
+  }
+
+  updateAgentSkill(
+    accessToken: string,
+    agentId: string,
+    skillId: string,
+    input: { enabled: boolean },
+    options?: RequestOptions,
+  ): Promise<Skill> {
+    return this.#request(
+      agentSkillPath(agentId, skillId),
+      SkillSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+      },
+      options,
+    );
+  }
+
+  removeAgentSkill(accessToken: string, agentId: string, skillId: string, options?: RequestOptions): Promise<void> {
+    return this.#requestNoContent(
+      agentSkillPath(agentId, skillId),
+      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  openAgentSkillBundle(accessToken: string, agentId: string, skillId: string, options?: RequestOptions) {
+    return this.#openBinaryResponse(
+      agentSkillBundlePath(agentId, skillId),
+      { headers: { authorization: `Bearer ${accessToken}` } },
+      options,
+    );
+  }
+
+  getComputerSkillManifest(
+    machineToken: string,
+    agentId: string,
+    options?: RequestOptions,
+  ): Promise<RuntimeSkillManifest> {
+    return this.#request(
+      computerAgentSkillsPath(agentId),
+      RuntimeSkillManifestSchema,
+      { headers: { authorization: `Bearer ${machineToken}` } },
+      options,
+    );
+  }
+
+  openComputerSkillBundle(
+    machineToken: string,
+    agentId: string,
+    skillId: string,
+    options?: RequestOptions,
+  ): Promise<Response> {
+    return this.#openBinaryResponse(
+      computerAgentSkillBundlePath(agentId, skillId),
+      { headers: { authorization: `Bearer ${machineToken}` } },
+      options,
+    );
+  }
+
+  listRuntimeSkills(proof: string, options?: RequestOptions): Promise<ListAgentSkillsResponse> {
+    return this.#request(
+      RUNTIME_SKILLS_PATH,
+      ListAgentSkillsResponseSchema,
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  pushRuntimeSkill(proof: string, input: SkillUploadInput, options?: RequestOptions): Promise<Skill> {
+    return this.#request(
+      RUNTIME_SKILLS_PATH,
+      SkillSchema,
+      {
+        method: "POST",
+        body: input.archive,
+        headers: {
+          [SESSION_CLI_PROOF_HEADER]: proof,
+          [SKILL_SHA256_HEADER]: input.sha256,
+          [SKILL_FORMAT_HEADER]: input.format,
+          ...(input.replace ? { [SKILL_REPLACE_HEADER]: "true" } : {}),
+          ...skillUploadHeaders(input.archive.byteLength),
+        },
+      },
+      options,
+    );
+  }
+
+  openRuntimeSkillBundle(proof: string, name: string, options?: RequestOptions): Promise<Response> {
+    return this.#openBinaryResponse(
+      runtimeSkillBundlePath(name),
+      { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  async #openBinaryResponse(path: string, init: RequestInit, options?: RequestOptions): Promise<Response> {
+    const response = await this.#fetchResponse(path, init, options);
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
+    }
+    return response;
+  }
+
   async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit, options?: RequestOptions): Promise<T> {
     const response = await this.#fetchResponse(path, init, options);
     const body = await response.json().catch(() => undefined);
@@ -1010,6 +1180,17 @@ export class OpenTagApi {
     const fallback = statusFallback(status);
     throw new OpenTagApiError(fallback.code, fallback.category, fallback.message, status, undefined, { requestId });
   }
+}
+
+export interface SkillUploadInput {
+  readonly archive: Uint8Array;
+  readonly sha256: string;
+  readonly format: SkillArchiveFormat;
+  readonly replace?: boolean;
+}
+
+function skillUploadHeaders(bytes: number): Record<string, string> {
+  return { "content-type": SKILL_UPLOAD_CONTENT_TYPE, "content-length": String(bytes) };
 }
 
 export function normalizeServerUrl(serverUrl: string): string {

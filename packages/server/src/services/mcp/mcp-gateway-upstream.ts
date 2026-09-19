@@ -1,7 +1,6 @@
 import { MCP_LEGACY_PROTOCOL_VERSIONS, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
 import {
-  detectEraFromRpcError,
-  invalidatesProtocolEra,
+  MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION,
   McpTransport,
   McpTransportError,
   negotiateProtocolVersion,
@@ -60,22 +59,23 @@ export class McpUpstreamCaller {
   }
 
   async call(input: McpUpstreamCallInput): Promise<McpUpstreamCallResult> {
-    if (input.cachedEra === "legacy") return this.#callLegacy(input, false);
-    try {
-      return await this.#callModern(input);
-    } catch (error) {
-      /*
-       * A cached `modern` that the peer just rejected on version grounds. The era cache is only a
-       * cache, so one re-detection is allowed — but exactly one, because a peer that keeps refusing
-       * would otherwise be retried forever.
-       */
-      if (input.cachedEra === "modern" && invalidatesProtocolEra(error)) {
-        return this.#callLegacy(input, true);
-      }
-      throw error;
-    }
+    if (input.cachedEra === "legacy") return this.#callLegacy(input);
+    return this.#callModern(input);
   }
 
+  /**
+   * The modern path, with exactly one replayable refusal.
+   *
+   * A tool call is **not idempotent**, which is the whole difference between this and the probe it
+   * was adapted from. The probe replays freely because `server/discover` and `tools/list` are reads;
+   * replaying a `tools/call` can file the issue twice, and the gateway would report only the second.
+   *
+   * So a retry happens only when the refusal *proves the call was never dispatched* — see
+   * {@link retryableVersionRefusal}. Every other failure, including a 5xx and a JSON-RPC error
+   * carrying a tool's own complaint, propagates untouched. A wrong cached era therefore surfaces as
+   * one failed call rather than a silent second execution; re-probing is what corrects it, and a
+   * callable tool always has an era on its row because only a succeeded probe publishes one.
+   */
   async #callModern(input: McpUpstreamCallInput): Promise<McpUpstreamCallResult> {
     const version = input.cachedVersion ?? MCP_MODERN_PROTOCOL_VERSION;
     const transport = new McpTransport({
@@ -87,17 +87,11 @@ export class McpUpstreamCaller {
       const result = await this.#dispatchModern(transport, input);
       return { result, era: "modern", protocolVersion: version, eraInvalidated: false };
     } catch (error) {
-      if (!(error instanceof McpTransportError) || error.status === undefined) throw error;
-      const detection = detectEraFromRpcError(error.status, error.rpcError);
-      /*
-       * The body decides, exactly as the probe's downgrade rule does: a recognizable modern JSON-RPC
-       * error means the peer *is* modern and merely wants another version — never downgrade to the
-       * handshake for one of those, because a modern Server would refuse `initialize` too.
-       */
-      if (detection.era === "legacy") return this.#callLegacy(input, input.cachedEra !== null);
-      const retryVersion = negotiateProtocolVersion(
-        detection.retryWithVersions.length > 0 ? detection.retryWithVersions : [MCP_MODERN_PROTOCOL_VERSION],
-      );
+      const advertised = retryableVersionRefusal(error);
+      if (!advertised) throw error;
+      const retryVersion = negotiateProtocolVersion(advertised.length > 0 ? advertised : [MCP_MODERN_PROTOCOL_VERSION]);
+      // One retry only: the refusal that authorized it cannot authorize a second, because the peer
+      // has now seen this exact call at a version it said it speaks.
       const retry = new McpTransport({
         clientInfo: this.#clientInfo,
         fetcher: this.#fetcher,
@@ -128,7 +122,7 @@ export class McpUpstreamCaller {
    * one extra round trip on the rarer era is the cheaper mistake. Both requests come out of the same
    * per-Account concurrency budget, so this cannot be used to double an Account's outbound spend.
    */
-  async #callLegacy(input: McpUpstreamCallInput, eraInvalidated: boolean): Promise<McpUpstreamCallResult> {
+  async #callLegacy(input: McpUpstreamCallInput): Promise<McpUpstreamCallResult> {
     const transport = new McpTransport({ clientInfo: this.#clientInfo, fetcher: this.#fetcher });
     const { sessionId, result: handshake } = await transport.initialize(input.accountId, input.url, input.authHeaders);
     if (sessionId) {
@@ -166,9 +160,35 @@ export class McpUpstreamCaller {
       result,
       era: "legacy",
       ...(negotiatedVersion ? { protocolVersion: negotiatedVersion } : { protocolVersion: "" }),
-      eraInvalidated,
+      eraInvalidated: false,
     };
   }
+}
+
+/**
+ * The versions to retry at when a refusal proves this call was never executed, or `undefined`.
+ *
+ * Exactly one refusal qualifies: JSON-RPC `-32022 UnsupportedProtocolVersion`, which a Server emits
+ * while rejecting the envelope, before it can have run anything. The `data.supported` list it
+ * carries is what the retry uses.
+ *
+ * Everything else is deliberately excluded, and each exclusion was a live replay path:
+ *
+ * - **Any non-400/404/405 status**, which `detectEraFromRpcError` reports as "modern, no versions
+ *   suggested". A 500 — or a 200 carrying `-32603` — meant the peer may well have executed the tool
+ *   and then failed while answering.
+ * - **A 400 or 404 whose body is not a recognized modern error**, previously read as "this peer
+ *   predates us" and answered by replaying the call over the legacy handshake. A modern Server that
+ *   404s for a tool-specific reason would have executed it twice.
+ * - **`-32601 MethodNotFound`**, which `invalidatesProtocolEra` treats as grounds to re-detect the
+ *   era. For a `tools/call` that code can come from inside the tool itself.
+ */
+function retryableVersionRefusal(error: unknown): readonly string[] | undefined {
+  if (!(error instanceof McpTransportError)) return undefined;
+  const rpcError = error.rpcError;
+  if (rpcError?.code !== MCP_RPC_UNSUPPORTED_PROTOCOL_VERSION) return undefined;
+  const supported = (rpcError.data as { supported?: unknown } | undefined)?.supported;
+  return Array.isArray(supported) ? supported.filter((value): value is string => typeof value === "string") : [];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

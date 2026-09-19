@@ -77,6 +77,8 @@ import {
 } from "./services/im-bindings/slack/index.js";
 import { SlackWebhookReceiptStore } from "./services/im-bindings/slack/webhook-receipt-store.js";
 import {
+  MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
+  MCP_RUNTIME_TIMEOUT_MS,
   McpAuthorizationService,
   McpCredentialCipher,
   McpGatewayService,
@@ -621,6 +623,17 @@ export async function startServer(): Promise<void> {
      * HTTP is permitted only on a development deployment that explicitly opted in.
      */
     const mcpFetcher = new McpOutboundFetcher({ allowLoopback: config.mcpAllowLoopback });
+    /*
+     * A second fetcher for runtime tool calls. It enforces the same URL policy — the gate, the
+     * redirect refusal, the response bound are all properties of the class — but carries its own
+     * deadline and its own per-Account concurrency counter, because a tool call is not a probe: it
+     * runs as long as the tool does, and a background probe must never be able to starve a live turn.
+     */
+    const mcpRuntimeFetcher = new McpOutboundFetcher({
+      allowLoopback: config.mcpAllowLoopback,
+      timeoutMs: MCP_RUNTIME_TIMEOUT_MS,
+      maxConcurrentPerAccount: MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT,
+    });
     const mcpCipher = new McpCredentialCipher(applicationCipher);
     const mcpOAuth = new McpOAuthClient({ fetcher: mcpFetcher, publicUrl: config.publicUrl });
     const mcpProbe = new McpProbe({ fetcher: mcpFetcher });
@@ -638,7 +651,7 @@ export async function startServer(): Promise<void> {
     const mcpGatewayService = new McpGatewayService({
       servers: mcpServers,
       authorizations: mcpAuthorization,
-      upstream: new McpUpstreamCaller({ fetcher: mcpFetcher }),
+      upstream: new McpUpstreamCaller({ fetcher: mcpRuntimeFetcher }),
     });
     const mcpFlows = new McpOAuthFlowService({ database, cipher: mcpCipher, oauth: mcpOAuth, servers: mcpServers });
     const mcpRefreshWorker = new McpRefreshWorker({

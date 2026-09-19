@@ -71,6 +71,20 @@ export interface McpFetchResponse {
 }
 
 export const MCP_DEFAULT_TIMEOUT_MS = 10_000;
+/**
+ * The deadline and budget for a *runtime tool call*, which is a different operation from a probe.
+ *
+ * A probe is a bounded read the Server issues on its own schedule, so ten seconds is generous. A
+ * tool call is whatever the upstream tool does — a search, a database query, code execution, a
+ * browser action — and routinely outlives that. Sharing the probe's deadline turned every such tool
+ * into a generic failure the model could not act on.
+ *
+ * The budget is separate for the same reason: a background probe or a token refresh must not be
+ * able to exhaust the slots a live turn needs, and Claude Code issues tool calls in parallel.
+ * Separation comes from using a second fetcher instance — `#inFlight` is per instance.
+ */
+export const MCP_RUNTIME_TIMEOUT_MS = 120_000;
+export const MCP_RUNTIME_MAX_CONCURRENT_PER_ACCOUNT = 8;
 export const MCP_DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 export const MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT = 4;
 

@@ -14,26 +14,26 @@ import { useUpdateSkill } from "./skills-queries.js";
  * removing a Skill deletes its stored archive and cannot be undone.
  */
 export function SkillRow({
-  agentId,
   downloadUrl,
   onDelete,
   onError,
   skill,
   storageAvailable,
 }: {
-  agentId: string;
   downloadUrl: string;
   onDelete: (skill: Skill) => void;
   onError: (message: string | undefined) => void;
   skill: Skill;
   storageAvailable: boolean;
 }) {
-  const update = useUpdateSkill(agentId);
+  // The write carries the row's own Agent id, not the page's current prop, so a row rendered for one
+  // Agent can never be written through a mutation that belongs to another.
+  const update = useUpdateSkill();
 
   const toggle = async (enabled: boolean) => {
     onError(undefined);
     try {
-      await update.mutateAsync({ skillId: skill.id, enabled });
+      await update.mutateAsync({ agentId: skill.agentId, skillId: skill.id, enabled });
     } catch (cause) {
       onError(skillErrorMessage(cause instanceof ApiError ? cause.code : undefined));
     }

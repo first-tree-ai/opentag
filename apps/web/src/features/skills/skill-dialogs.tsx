@@ -44,14 +44,16 @@ export function ReplaceSkillDialog({
 }
 
 /** Confirms removing one Skill and its stored archive; the failure is shown inside the dialog. */
-export function RemoveSkillDialog({ agentId, onClose, skill }: { agentId: string; onClose: () => void; skill: Skill }) {
-  const remove = useRemoveSkill(agentId);
+export function RemoveSkillDialog({ onClose, skill }: { onClose: () => void; skill: Skill }) {
+  // The delete carries the Skill's own Agent id, so the dialog can only ever delete the record it
+  // was opened for.
+  const remove = useRemoveSkill();
   const [error, setError] = useState<string | undefined>();
 
   const submit = async () => {
     setError(undefined);
     try {
-      await remove.mutateAsync(skill.id);
+      await remove.mutateAsync({ agentId: skill.agentId, skillId: skill.id });
       onClose();
     } catch (cause) {
       setError(skillErrorMessage(cause instanceof ApiError ? cause.code : undefined));

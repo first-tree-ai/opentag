@@ -226,11 +226,12 @@ no machine token the Computer surface accepts today) and `--skill` argument asse
 | `SKILL_MANIFEST_FILE` | `SKILL.md` | The required manifest filename |
 | `SKILL_MARKER_FILE` | `.opentag-skill.json` | The marker that identifies a platform-managed directory |
 
-Names are lowercase alphanumerics and hyphens, must start with a letter or number, and are at most 64
-characters (`SkillNameSchema`). Ten names are reserved because OpenTag already ships them and an
-upload must not shadow them: the six `context-tree-*` skills plus `git`, `gh`, `lark-cli`, and
-`slack`. The reserved list is copied from the Client's runner skill directories and the Client lane
-adds a parity test, because `@opentag/shared` may not depend on the Client package.
+Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
+end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved
+because OpenTag already ships them and an upload must not shadow them: the six `context-tree-*`
+skills plus `git`, `gh`, `lark-cli`, and `slack`. The reserved list is copied from the Client's runner
+skill directories and the Client lane adds a parity test, because `@opentag/shared` may not depend on
+the Client package.
 
 ## Error codes
 
@@ -255,7 +256,7 @@ Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no data
 
 | Area | What is asserted |
 | --- | --- |
-| Name rules | Valid lowercase names; uppercase, leading hyphen, 65-character, empty, and underscore/space names rejected; every reserved name rejected and an ordinary name accepted |
+| Name rules | 64-character names accepted; uppercase, leading/trailing hyphen, consecutive hyphens, 65-character, empty, underscore, and space names rejected; every reserved name rejected and an ordinary name accepted |
 | Manifest parser | Plain, single-quoted (including doubled quotes) and double-quoted (including escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored; block-scalar descriptions trimmed of leading and trailing whitespace |
 | Manifest rejection | Missing frontmatter, unterminated frontmatter, missing `name` or `description`, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
 | Resource schemas | Round trips for `SkillSchema`, `SkillDetailSchema`, `ListAgentSkillsResponseSchema`, `RuntimeSkillManifestSchema` and `SkillInstallMarkerSchema`; rejection of a bad sha, `revision: 0`, an over-limit archive, an over-limit runtime list, and unknown keys |

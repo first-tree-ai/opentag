@@ -59,14 +59,14 @@ function validSkill(overrides: Record<string, unknown> = {}) {
 }
 
 describe("skill name rules", () => {
-  it("accepts lowercase letters, numbers, and hyphens", () => {
+  it("accepts lowercase letters, numbers, and single hyphens", () => {
     for (const name of ["a", "demo", "my-skill", "a1-b2-c3", "a".repeat(64)]) {
       expect(SkillNameSchema.safeParse(name).success).toBe(true);
     }
   });
 
-  it("rejects uppercase, a leading hyphen, over-long, and empty names", () => {
-    for (const name of ["MySkill", "-skill", "a".repeat(65), "", "skill_name", "skill name"]) {
+  it("rejects uppercase, hyphen placement, over-long, and empty names", () => {
+    for (const name of ["MySkill", "-skill", "pdf-", "a--b", "a".repeat(65), "", "skill_name", "skill name"]) {
       expect(SkillNameSchema.safeParse(name).success).toBe(false);
     }
   });
@@ -264,7 +264,7 @@ describe("parseSkillManifest", () => {
   });
 
   it("rejects an invalid name", () => {
-    expectReason("---\nname: Demo\ndescription: A demo skill\n---\n", "Skill name must start");
+    expectReason("---\nname: Demo\ndescription: A demo skill\n---\n", "Skill name must be 1 to 64 characters");
   });
 
   it("rejects an over-long or empty description", () => {

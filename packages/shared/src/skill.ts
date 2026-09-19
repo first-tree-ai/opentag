@@ -34,12 +34,12 @@ export const SKILL_MARKER_FILE = ".opentag-skill.json";
 
 /* ----------------------------------- names --------------------------------- */
 
-/** A Skill name: lowercase, hyphens, 1–64 characters, and never a leading hyphen. */
+/** A Skill name: lowercase alphanumerics joined by single hyphens, 1–64 characters. */
 export const SkillNameSchema = z
   .string()
   .regex(
-    /^[a-z0-9][a-z0-9-]{0,63}$/,
-    "Skill name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    /^(?=.{1,64}$)[a-z0-9]+(-[a-z0-9]+)*$/,
+    "Skill name must be 1 to 64 characters of lowercase letters, numbers, and single hyphens, and may not start or end with a hyphen",
   );
 export type SkillName = z.infer<typeof SkillNameSchema>;
 

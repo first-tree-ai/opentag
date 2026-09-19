@@ -300,11 +300,7 @@ function createApplicationCipher(config: ServerConfig): ApplicationCipher {
  * Skills and manages their rows, and only bundle reads/writes fail with SKILL_STORAGE_UNAVAILABLE.
  * The S3 store is constructed only when the storage group is coherently configured.
  */
-export function createSkillRuntime(
-  config: ServerConfig,
-  database: DatabaseClient,
-  logger: ServiceLogger,
-): SkillService {
+function createSkillRuntime(config: ServerConfig, database: DatabaseClient, logger: ServiceLogger): SkillService {
   const storage = config.skillStorage;
   const store = storage.enabled
     ? new S3SkillObjectStore({

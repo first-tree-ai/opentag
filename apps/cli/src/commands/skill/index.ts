@@ -8,10 +8,10 @@ import {
   runSkillSetEnabled,
 } from "../../core/skill/operations.js";
 import {
-  formatSkill,
   formatSkillEnabled,
   formatSkillList,
   formatSkillPull,
+  formatSkillPush,
   formatSkillRemoval,
 } from "../../core/skill/shared.js";
 
@@ -38,7 +38,7 @@ export function registerSkillCommand(program: Command): void {
             ...(options.agent === undefined ? {} : { agentId: options.agent }),
             ...(options.replace === true ? { replace: true } : {}),
           }),
-        { json: options.json === true, formatValue: formatSkill, phase: "request" },
+        { json: options.json === true, formatValue: formatSkillPush, phase: "request" },
       );
     });
 

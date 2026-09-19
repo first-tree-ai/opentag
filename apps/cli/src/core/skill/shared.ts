@@ -1,5 +1,6 @@
 import type { OpenTagApi } from "@opentag/client";
 import type { ListAgentSkillsResponse, Skill } from "@opentag/shared";
+import type { SkillPushResult } from "./operations.js";
 
 /**
  * Shared plumbing for the `skill` commands.
@@ -43,6 +44,14 @@ export function formatSkill(skill: Skill): string {
     `files\t${skill.fileCount}`,
     `sha256\t${skill.archiveSha256}`,
     `updatedAt\t${skill.updatedAt}`,
+  ].join("\n");
+}
+
+export function formatSkillPush(result: SkillPushResult): string {
+  return [
+    formatSkill(result.skill),
+    `adopted\t${result.adopted}`,
+    ...(result.adoptionReason === undefined ? [] : [`adoptionReason\t${result.adoptionReason}`]),
   ].join("\n");
 }
 

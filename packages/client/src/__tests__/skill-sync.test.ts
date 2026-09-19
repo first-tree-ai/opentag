@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { RuntimeSkillManifest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClientLogger } from "../observability/logger.js";
@@ -10,6 +10,7 @@ import { packSkillDirectory } from "../skills/skill-archive.js";
 import {
   isSkillMaterializationTarget,
   markSkillDirectoryManaged,
+  resolveMaterializationWorkspace,
   SKILL_CONTENT_SIDECAR_FILE,
   SkillSyncManager,
 } from "../skills/skill-sync.js";
@@ -344,8 +345,8 @@ describe("SkillSyncManager", () => {
     await mkdir(target, { recursive: true });
     await writeFile(join(target, "SKILL.md"), "authored\n");
 
-    expect(isSkillMaterializationTarget(target, "my-skill", cwd)).toBe(true);
-    expect(isSkillMaterializationTarget(join(root, "elsewhere"), "my-skill", cwd)).toBe(false);
+    expect(isSkillMaterializationTarget(target, "my-skill")).toBe(true);
+    expect(isSkillMaterializationTarget(join(root, "elsewhere"), "my-skill")).toBe(false);
     await markSkillDirectoryManaged(target, { skillId: entry.id, archiveSha256: packed.sha256 });
     expect(await stat(join(target, SKILL_CONTENT_SIDECAR_FILE))).toBeDefined();
 
@@ -357,12 +358,14 @@ describe("SkillSyncManager", () => {
 });
 
 describe("skill materialization targets", () => {
-  it("matches only the provider roots for the given workspace", () => {
-    const cwd = "/workspace";
-    expect(isSkillMaterializationTarget(resolve("/workspace/.claude/skills/demo"), "demo", cwd)).toBe(true);
-    expect(isSkillMaterializationTarget(resolve("/workspace/.agents/skills/demo"), "demo", cwd)).toBe(true);
-    expect(isSkillMaterializationTarget(resolve("/workspace/.opentag/skills/demo"), "demo", cwd)).toBe(true);
-    expect(isSkillMaterializationTarget(resolve("/workspace/.claude/skills/other"), "demo", cwd)).toBe(false);
+  it("matches the provider roots by path shape, without an ambient cwd", () => {
+    expect(isSkillMaterializationTarget("/workspace/.claude/skills/demo", "demo")).toBe(true);
+    expect(isSkillMaterializationTarget("/workspace/.agents/skills/demo", "demo")).toBe(true);
+    expect(isSkillMaterializationTarget("/workspace/.opentag/skills/demo", "demo")).toBe(true);
+    expect(isSkillMaterializationTarget("/workspace/.claude/skills/other", "demo")).toBe(false);
+    expect(isSkillMaterializationTarget("/workspace/skills/demo", "demo")).toBe(false);
+    expect(resolveMaterializationWorkspace("/workspace/.agents/skills/demo", "demo")).toBe("/workspace");
+    expect(resolveMaterializationWorkspace("/workspace/.agents/skills/other", "demo")).toBeUndefined();
   });
 });
 

@@ -60,11 +60,48 @@ export interface SkillPushOptions {
   replace?: boolean;
 }
 
+export interface SkillPushResult {
+  readonly skill: Skill;
+  readonly adopted: boolean;
+  /** Present exactly when `adopted` is false, so the CLI can always explain the outcome. */
+  readonly adoptionReason?: string;
+}
+
+/**
+ * Adopt the uploaded directory as platform-managed, and say whether it happened.
+ *
+ * Adoption is Agent-only: a human pushing from their own checkout must never have a marker written
+ * into their repository. Inside a Session the workspace is derived from the directory's own path
+ * shape, so `cd`-ing into the skill directory does not change the outcome. A Skill the server
+ * reports as disabled is not adopted, because the next sync would remove the authored directory.
+ */
+async function adoptPushedDirectory(
+  directory: string,
+  name: string,
+  authority: SkillAuthority,
+  uploaded: Skill,
+): Promise<{ adopted: boolean; adoptionReason?: string }> {
+  if (authority.mode !== "agent") {
+    return { adopted: false, adoptionReason: "adoption applies only inside an Agent Session" };
+  }
+  if (!isSkillMaterializationTarget(directory, name)) {
+    return { adopted: false, adoptionReason: "the directory is not a Skill materialization target" };
+  }
+  if (uploaded.enabled === false) {
+    return { adopted: false, adoptionReason: "the Skill is disabled on the platform; the next sync would remove it" };
+  }
+  await markSkillDirectoryManaged(resolve(directory), {
+    skillId: uploaded.id,
+    archiveSha256: uploaded.archiveSha256,
+  });
+  return { adopted: true };
+}
+
 export async function runSkillPush(
   directory: string,
   options: SkillPushOptions,
   dependencies: SkillCommandDependencies = {},
-): Promise<Skill> {
+): Promise<SkillPushResult> {
   const packed = await packSkillDirectory(directory);
   const authority = await resolveSkillCommandContext("push", { ...dependencies, agentId: options.agentId });
   const input = {
@@ -83,14 +120,8 @@ export async function runSkillPush(
     if (isUploadConflict(error)) throw conflictError(packed.name, error);
     throw error;
   }
-  const cwd = dependencies.cwd ?? process.cwd();
-  if (isSkillMaterializationTarget(resolve(directory), packed.name, cwd)) {
-    await markSkillDirectoryManaged(resolve(directory), {
-      skillId: uploaded.id,
-      archiveSha256: uploaded.archiveSha256,
-    });
-  }
-  return uploaded;
+  const adoption = await adoptPushedDirectory(directory, packed.name, authority, uploaded);
+  return { skill: uploaded, ...adoption };
 }
 
 export async function runSkillList(

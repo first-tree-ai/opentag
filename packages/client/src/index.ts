@@ -628,6 +628,7 @@ export {
   hashSkillDirectory,
   isSkillMaterializationTarget,
   markSkillDirectoryManaged,
+  resolveMaterializationWorkspace,
   SKILL_CONTENT_SIDECAR_FILE,
   SKILL_SYNC_DEFAULT_BUDGET_MS,
   type SkillDirectoryMarkerInput,

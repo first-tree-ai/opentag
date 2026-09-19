@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createReadStream, type Dirent } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import {
   type AgentRuntimeProvider,
@@ -87,6 +87,8 @@ interface SkillInstallLayout {
 }
 
 const MARKER_MAX_BYTES = 4 * 1024;
+/** The three Agent-workspace directories that hold provider skill materializations. */
+const MATERIALIZATION_DOT_DIRECTORIES: ReadonlySet<string> = new Set([".claude", ".agents", ".opentag"]);
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -201,12 +203,26 @@ export async function markSkillDirectoryManaged(directory: string, input: SkillD
   });
 }
 
-/** True when `directory` is where the platform would materialize `name` for this workspace. */
-export function isSkillMaterializationTarget(directory: string, name: string, cwd: string): boolean {
-  const target = resolve(directory);
-  return (["claude-code", "codex", "pi"] as const).some(
-    (provider) => resolve(join(skillRootForProvider(cwd, provider), name)) === target,
-  );
+/** True when `directory` is where the platform would materialize `name`, regardless of provider. */
+export function isSkillMaterializationTarget(directory: string, name: string): boolean {
+  return resolveMaterializationWorkspace(directory, name) !== undefined;
+}
+
+/**
+ * The Agent workspace that contains `directory` as one of its Skill materialization targets.
+ *
+ * Matched purely on the path shape `<workspace>/<.claude|.agents|.opentag>/skills/<name>`, walking
+ * up from the directory itself, so adoption still works when the caller has `cd`-ed into the skill
+ * directory. No provider or ambient cwd is needed.
+ */
+export function resolveMaterializationWorkspace(directory: string, name: string): string | undefined {
+  const skillDirectory = resolve(directory);
+  if (basename(skillDirectory) !== name) return undefined;
+  const skillsRoot = dirname(skillDirectory);
+  if (basename(skillsRoot) !== "skills") return undefined;
+  const dotDirectory = dirname(skillsRoot);
+  if (!MATERIALIZATION_DOT_DIRECTORIES.has(basename(dotDirectory))) return undefined;
+  return dirname(dotDirectory);
 }
 
 async function downloadedBundle(

@@ -108,33 +108,59 @@ describe("skill command authority", () => {
 });
 
 describe("skill push", () => {
-  it("uploads the packed directory and adopts it when it is the Skill's materialization target", async () => {
+  it("adopts the pushed directory in Agent mode when it is the Skill's materialization target", async () => {
     const root = await temporaryRoot();
-    const cwd = join(root, "workspace");
-    const directory = await writeSkillDirectory(join(cwd, ".claude", "skills"), "my-skill");
+    const workspace = join(root, "workspace");
+    const directory = await writeSkillDirectory(join(workspace, ".claude", "skills"), "my-skill");
     const api = accountApi();
-    const dependencies = { accessToken: "fixture-account-access", api, cwd };
 
-    const uploaded = await runSkillPush(directory, { agentId: "agent-a" }, dependencies);
-    expect(uploaded.name).toBe("my-skill");
+    const result = await runSkillPush(directory, {}, { api, proof: "p".repeat(32) });
+    expect(result.skill.name).toBe("my-skill");
+    expect(result.adopted).toBe(true);
+    expect(result.adoptionReason).toBeUndefined();
+    const marker = JSON.parse(await readFile(join(directory, ".opentag-skill.json"), "utf8")) as {
+      skillId: string;
+      archiveSha256: string;
+    };
+    expect(marker).toEqual({ skillId: result.skill.id, archiveSha256: result.skill.archiveSha256 });
+  });
+
+  it("adopts even when the caller has cd-ed into the skill directory", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(join(root, "workspace", ".agents", "skills"), "my-skill");
+    const api = accountApi();
+    const result = await runSkillPush(directory, {}, { api, proof: "p".repeat(32) });
+    expect(result.adopted).toBe(true);
+  });
+
+  it("never adopts in Account mode, even for a materialization-shaped path", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    const directory = await writeSkillDirectory(join(workspace, ".claude", "skills"), "my-skill");
+    const api = accountApi();
+
+    const result = await runSkillPush(
+      directory,
+      { agentId: "agent-a" },
+      { accessToken: "fixture-account-access", api },
+    );
+    expect(result.adopted).toBe(false);
+    expect(result.adoptionReason).toContain("Agent Session");
+    await expect(stat(join(directory, ".opentag-skill.json"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(api.uploadAgentSkill).toHaveBeenCalledWith(
       "fixture-account-access",
       "agent-a",
       expect.objectContaining({ format: "tar.gz" }),
     );
-    const marker = JSON.parse(await readFile(join(directory, ".opentag-skill.json"), "utf8")) as {
-      skillId: string;
-      archiveSha256: string;
-    };
-    expect(marker).toEqual({ skillId: uploaded.id, archiveSha256: uploaded.archiveSha256 });
   });
 
-  it("leaves a directory pushed from elsewhere untouched", async () => {
+  it("does not adopt a directory pushed from outside a materialization target", async () => {
     const root = await temporaryRoot();
-    const cwd = join(root, "workspace");
     const elsewhere = await writeSkillDirectory(join(root, "authoring"), "my-skill");
     const api = accountApi();
-    await runSkillPush(elsewhere, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api, cwd });
+    const result = await runSkillPush(elsewhere, {}, { api, proof: "p".repeat(32) });
+    expect(result.adopted).toBe(false);
+    expect(result.adoptionReason).toContain("materialization target");
     await expect(stat(join(elsewhere, ".opentag-skill.json"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readdir(elsewhere)).toEqual(["SKILL.md"]);
   });
@@ -163,7 +189,8 @@ describe("skill push", () => {
       runSkillPush(directory, { agentId: "must-not-be-used" }, { api, proof: "p".repeat(32) }),
     ).rejects.toMatchObject({ code: "SKILL_AGENT_FLAG_FORBIDDEN" });
     await expect(runSkillPush(directory, {}, { api, proof: "p".repeat(32) })).resolves.toMatchObject({
-      name: "my-skill",
+      skill: { name: "my-skill" },
+      adopted: false,
     });
     expect(api.pushRuntimeSkill).toHaveBeenCalledWith("p".repeat(32), expect.objectContaining({ format: "tar.gz" }));
   });

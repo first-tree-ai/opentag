@@ -250,6 +250,7 @@
   "resolveComputerIdentity",
   "resolveContextTreeHome",
   "resolveContextTreePackage",
+  "resolveMaterializationWorkspace",
   "resolveOpenTagHome",
   "resolveOpenTagHomeLayout",
   "resolvePiHome",

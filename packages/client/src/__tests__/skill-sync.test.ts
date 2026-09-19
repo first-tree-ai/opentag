@@ -453,15 +453,18 @@ describe("SkillSyncManager", () => {
     expect(await readFile(installed, "utf8")).toContain("# One");
   });
 
-  it("stages outside the discovered skill root and sweeps stale staging only", async () => {
+  it("stages outside the discovered skill root and sweeps only long-abandoned staging", async () => {
     const root = await temporaryRoot();
     const cwd = join(root, "workspace");
     await mkdir(cwd, { recursive: true });
     const stagingRoot = join(cwd, ".opentag", "skill-staging");
-    await mkdir(join(stagingRoot, "stale"), { recursive: true });
+    await mkdir(join(stagingRoot, "abandoned"), { recursive: true });
+    await mkdir(join(stagingRoot, "slow-concurrent"), { recursive: true });
     await mkdir(join(stagingRoot, "fresh"), { recursive: true });
-    const past = new Date(Date.now() - 60_000);
-    await utimes(join(stagingRoot, "stale"), past, past);
+    const abandoned = new Date(Date.now() - 11 * 60_000);
+    await utimes(join(stagingRoot, "abandoned"), abandoned, abandoned);
+    const slow = new Date(Date.now() - 60_000);
+    await utimes(join(stagingRoot, "slow-concurrent"), slow, slow);
 
     const packed = await buildSkill(root, "my-skill");
     const entry = manifestEntry(packed, "my-skill");
@@ -474,7 +477,8 @@ describe("SkillSyncManager", () => {
 
     const skills = await readdir(join(cwd, ".claude", "skills"));
     expect(skills).toEqual(["my-skill"]);
-    expect(await readdir(stagingRoot)).toEqual(["fresh"]);
+    // A slow concurrent install outlives the sync budget; only abandoned staging is swept.
+    expect((await readdir(stagingRoot)).sort()).toEqual(["fresh", "slow-concurrent"]);
   });
 
   it("resolves agent-scoped roots per provider and returns Pi skill paths", async () => {

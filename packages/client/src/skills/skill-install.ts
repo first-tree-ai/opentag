@@ -14,8 +14,8 @@ import { extractSkillArchive, SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive
  * can replace anything, so a failed extraction never costs the Agent the Skill it already had.
  */
 
-/** A staging dir older than this is a crash leftover; extraction is not bounded by the sync budget. */
-const DEFAULT_STAGING_STALE_MS = 10 * 60 * 1000;
+/** A staging directory older than this is a crash leftover, not a slow concurrent install. */
+export const SKILL_STAGING_STALE_MS = 10 * 60 * 1000;
 
 /** Content digest of a directory, ignoring the platform marker and its sidecar. */
 export async function hashSkillDirectory(root: string): Promise<string> {
@@ -97,7 +97,7 @@ export async function moveAside(stagingRoot: string, source: string, tag: string
 /** A crash leaves an unmarked staging directory; anything older than `maxAgeMs` is garbage. */
 export async function sweepStaleStaging(
   stagingRoot: string,
-  maxAgeMs: number = DEFAULT_STAGING_STALE_MS,
+  maxAgeMs: number = SKILL_STAGING_STALE_MS,
   now: () => number = () => Date.now(),
 ): Promise<void> {
   let entries: string[];

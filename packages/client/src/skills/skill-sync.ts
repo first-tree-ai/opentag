@@ -13,7 +13,13 @@ import { ensurePrivateDirectory } from "../storage/durable-file.js";
 import { SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
 import { verifySkillBundle } from "./skill-bundle.js";
 import { readBundleBody } from "./skill-bundle-body.js";
-import { hashSkillDirectory, moveAside, stageBundle, sweepStaleStaging } from "./skill-install.js";
+import {
+  hashSkillDirectory,
+  moveAside,
+  SKILL_STAGING_STALE_MS,
+  stageBundle,
+  sweepStaleStaging,
+} from "./skill-install.js";
 import {
   isSyncedWorkspace,
   skillConflictsRoot,
@@ -264,7 +270,7 @@ export class SkillSyncManager {
       // The staging root doubles as the workspace sentinel that `skill push` checks before
       // adopting a directory, so it is created on every start, even with nothing to install.
       await ensurePrivateDirectory(dirname(stagingRoot), stagingRoot);
-      await sweepStaleStaging(stagingRoot, this.#budgetMs, this.#now);
+      await sweepStaleStaging(stagingRoot, SKILL_STAGING_STALE_MS, this.#now);
       const token = await this.#machineToken();
       const manifest = await this.#api.getComputerSkillManifest(token, input.agentId, { signal });
       const installed = await this.#reconcile(input, layout, manifest, token, signal);

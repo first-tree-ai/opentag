@@ -13,6 +13,7 @@ import {
 import type { ClientLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory } from "../storage/durable-file.js";
 import { extractSkillArchive, SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
+import { verifySkillBundle } from "./skill-bundle.js";
 
 /**
  * Materializes the Agent's enabled Skills into the Provider's skill directory at runtime start.
@@ -243,14 +244,7 @@ async function downloadedBundle(
 ): Promise<Uint8Array> {
   const response = await api.openComputerSkillBundle(token, agentId, entry.id, { signal });
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength !== entry.archiveBytes) {
-    throw new Error(`Skill bundle ${entry.name} has ${bytes.byteLength} bytes, expected ${entry.archiveBytes}`);
-  }
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
-  if (sha256 !== entry.archiveSha256) {
-    throw new Error(`Skill bundle ${entry.name} failed its sha256 check`);
-  }
-  return bytes;
+  return verifySkillBundle(bytes, entry);
 }
 
 async function installBundle(

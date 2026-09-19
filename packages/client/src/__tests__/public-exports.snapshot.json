@@ -274,6 +274,7 @@
   "storeBoundAccountComputer",
   "validatePrivateDirectory",
   "verifyProviderCliCandidateFingerprint",
+  "verifySkillBundle",
   "wellKnownAgentRuntimeBinDirs",
   "withProviderCliLock",
   "writeComputerIdentityAtomically",

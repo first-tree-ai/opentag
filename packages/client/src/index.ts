@@ -624,6 +624,7 @@ export {
   SkillArchiveError,
   type SkillArchiveErrorCode,
 } from "./skills/skill-archive.js";
+export { type ExpectedSkillBundle, verifySkillBundle } from "./skills/skill-bundle.js";
 export {
   hashSkillDirectory,
   isSkillMaterializationTarget,

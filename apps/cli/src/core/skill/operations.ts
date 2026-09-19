@@ -8,6 +8,7 @@ import {
   OpenTagApiError,
   packSkillDirectory,
   SkillArchiveError,
+  verifySkillBundle,
 } from "@opentag/client";
 import { type ListAgentSkillsResponse, SKILL_ERROR_CODES, type Skill } from "@opentag/shared";
 import { CommandError } from "../command/policy.js";
@@ -174,6 +175,11 @@ export async function runSkillPull(
       ? await authority.api.openAgentSkillBundle(authority.accessToken, authority.agentId, skill.id)
       : await authority.api.openRuntimeSkillBundle(authority.proof, skill.name);
   const bytes = Buffer.from(await response.arrayBuffer());
+  verifySkillBundle(new Uint8Array(bytes), {
+    archiveBytes: skill.archiveBytes,
+    archiveSha256: skill.archiveSha256,
+    name: skill.name,
+  });
   await mkdir(resolve(directory, ".."), { recursive: true, mode: 0o700 });
   try {
     await extractSkillArchive(Readable.from(bytes), directory);

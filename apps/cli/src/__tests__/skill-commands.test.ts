@@ -215,7 +215,10 @@ describe("skill pull", () => {
     const source = await writeSkillDirectory(join(root, "source"), "my-skill");
     const packed = await packSkillDirectory(source);
     const api = accountApi({
-      listAgentSkills: vi.fn(async () => ({ skills: [skillRecord("my-skill")], storage: "available" as const })),
+      listAgentSkills: vi.fn(async () => ({
+        skills: [skillRecord("my-skill", { archiveBytes: packed.archive.byteLength, archiveSha256: packed.sha256 })],
+        storage: "available" as const,
+      })),
       openAgentSkillBundle: vi.fn(async () => new Response(packed.archive)),
     });
     const dependencies = { accessToken: "fixture-account-access", api, cwd: root };
@@ -228,6 +231,23 @@ describe("skill pull", () => {
     await expect(runSkillPull("my-skill", { agentId: "agent-a", outDir: out }, dependencies)).rejects.toMatchObject({
       code: "SKILL_PULL_DESTINATION_NOT_EMPTY",
     });
+  });
+  it("verifies the bundle before extracting it", async () => {
+    const root = await temporaryRoot();
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({
+        skills: [skillRecord("my-skill", { archiveBytes: 3, archiveSha256: "b".repeat(64) })],
+        storage: "available" as const,
+      })),
+      openAgentSkillBundle: vi.fn(async () => new Response(new Uint8Array([1, 2, 3]))),
+    });
+    await expect(
+      runSkillPull(
+        "my-skill",
+        { agentId: "agent-a", outDir: join(root, "out") },
+        { accessToken: "fixture-account-access", api },
+      ),
+    ).rejects.toThrow("failed its sha256 check");
   });
 });
 

@@ -151,7 +151,7 @@ jobs:
 
       - name: Deploy the commit image to CapRover
         if: steps.gate.outputs.deploy == 'true'
-        uses: caprover/deploy-from-github@c221bd9d1c3a55de4c2b66c0dc4a3972d04c027c # v1.2.0
+        uses: caprover/deploy-from-github@058a3e0d8fb21bfc0ce207b79b1fc757d765a009 # v2.0.0
         with:
           server: ${{ secrets.CAPROVER_STAGING_SERVER }}
           app: ${{ secrets.CAPROVER_STAGING_APP }}

@@ -62,3 +62,7 @@ export function skillStorageUnavailable(): SkillServiceError {
     "Skill storage is not configured on this deployment",
   );
 }
+
+export function skillStorageFailure(): SkillServiceError {
+  return new SkillServiceError(SKILL_ERROR_CODES.STORAGE_UNAVAILABLE, "Skill storage is unavailable");
+}

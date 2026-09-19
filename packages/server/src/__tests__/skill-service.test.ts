@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { SKILL_ERROR_CODES, SKILL_MAX_PER_AGENT } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agentSkills, agents } from "../db/schema/index.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
+import { buildStoredZip, skillManifest } from "./support/skill-archive-fixtures.js";
 import { createSkillHarness, type SkillHarness } from "./support/skill-service-harness.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -95,6 +96,31 @@ describe("SkillService", () => {
     expect(store.keys()).toHaveLength(1);
     const bundle = await service.openBundle(accountId, agentId, replaced.id);
     expect(bundle.sha256).toBe(replaced.archiveSha256);
+  });
+
+  it("rejects a canonical archive that grows past the size limit before storing anything", async () => {
+    const accountId = await h.createUser();
+    const agentId = await h.createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    const service = h.serviceWith(store);
+    // A stored zip just under the input limit re-packs a few KB larger because tar framing and gzip
+    // overhead exceed zip's; the incompressible payload keeps gzip from shrinking it back.
+    const nearLimit = buildStoredZip([
+      { name: "SKILL.md", body: skillManifest("big-skill") },
+      { name: "data.bin", body: randomBytes(16_776_000) },
+    ]);
+    await expect(
+      service.upload(accountId, agentId, {
+        bytes: nearLimit,
+        format: "zip",
+        declaredSha256: h.sha256(nearLimit),
+        replace: false,
+        source: "web_upload",
+      }),
+    ).rejects.toMatchObject({ code: SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE, statusCode: 413 });
+    // The typed rejection lands before storage: no object was written and no row exists.
+    expect(store.puts).toBe(0);
+    expect((await service.list(accountId, agentId)).skills).toEqual([]);
   });
 
   it("enforces the per-Agent limit", async () => {

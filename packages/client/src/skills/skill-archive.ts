@@ -56,6 +56,8 @@ export class SkillArchiveError extends Error {
 
 export interface PackedSkillDirectory {
   readonly archive: Uint8Array;
+  /** The manifest name, already validated and non-reserved. */
+  readonly name: string;
   /** Lowercase hex SHA-256 over the compressed archive bytes. */
   readonly sha256: string;
   /** Number of files in the archive (directories are not counted). */
@@ -136,11 +138,12 @@ async function visitSkillEntry(
   if (!stats.isFile()) {
     fail("unsupported_entry", `Skill entries must be regular files or directories: ${rel}`);
   }
-  state.bytes += stats.size;
+  const size = Number(stats.size);
+  state.bytes += size;
   if (state.bytes > SKILL_UNPACKED_MAX_BYTES) {
     fail("unpacked_too_large", `Skill exceeds the ${SKILL_UNPACKED_MAX_BYTES} byte unpacked ceiling`);
   }
-  files.push({ abs, rel, bytes: stats.size, mode: stats.mode });
+  files.push({ abs, rel, bytes: size, mode: Number(stats.mode) });
 }
 
 async function walkSkillDirectory(
@@ -162,7 +165,7 @@ async function walkSkillDirectory(
   }
 }
 
-async function validateSkillManifest(root: string): Promise<void> {
+async function validateSkillManifest(root: string): Promise<string> {
   let markdown: string;
   try {
     markdown = await readFile(join(root, SKILL_MANIFEST_FILE), "utf8");
@@ -174,6 +177,7 @@ async function validateSkillManifest(root: string): Promise<void> {
   if (isReservedSkillName(parsed.manifest.name)) {
     fail("name_reserved", `Skill name "${parsed.manifest.name}" is reserved by the platform`);
   }
+  return parsed.manifest.name;
 }
 
 function addTarEntry(pack: ReturnType<typeof tarPack>, header: TarHeaders, sourcePath?: string): Promise<void> {
@@ -208,7 +212,7 @@ export async function packSkillDirectory(directory: string): Promise<PackedSkill
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     fail("not_a_directory", "Skill path must be a real directory");
   }
-  await validateSkillManifest(root);
+  const name = await validateSkillManifest(root);
 
   const files: FileRecord[] = [];
   const directories: DirectoryRecord[] = [];
@@ -270,6 +274,7 @@ export async function packSkillDirectory(directory: string): Promise<PackedSkill
   const archive = Buffer.concat(chunks);
   return {
     archive: new Uint8Array(archive),
+    name,
     sha256: createHash("sha256").update(archive).digest("hex"),
     fileCount: files.length,
   };

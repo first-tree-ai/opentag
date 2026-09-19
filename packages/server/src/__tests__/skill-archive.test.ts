@@ -259,6 +259,44 @@ describe("normalizeSkillArchive", () => {
     expect(modes.get("SKILL.md")).toBe(0o644);
   });
 
+  it("accepts permissions-only Unix zip entries and still applies the execute bit", async () => {
+    // Python's zipfile writes Unix entries with permission bits only (no S_IFREG/S_IFDIR); they must
+    // be treated as ordinary files rather than rejected as special.
+    const zip = buildStoredZip([
+      { name: "SKILL.md", body: skillManifest("perm-only"), unixMode: 0o600 },
+      { name: "scripts/run.sh", body: "#!/bin/sh\n", unixMode: 0o755 },
+    ]);
+    const normalized = await normalizeSkillArchive(zip, "zip");
+    const modes = await tarMemberModes(normalized.archive);
+    expect(modes.get("SKILL.md")).toBe(0o644);
+    expect(modes.get("scripts/run.sh")).toBe(0o755);
+  });
+
+  it("rejects permissions-only setuid and explicit special-file type bits", async () => {
+    await failure(
+      normalizeSkillArchive(
+        buildStoredZip([
+          { name: "SKILL.md", body: skillManifest("perm-setuid"), unixMode: 0o600 },
+          { name: "evil", body: "x", unixMode: 0o4755 },
+        ]),
+        "zip",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    for (const unixMode of [0o010644, 0o020644, 0o060644, 0o140644]) {
+      await failure(
+        normalizeSkillArchive(
+          buildStoredZip([
+            { name: "SKILL.md", body: skillManifest("special-kind"), unixMode: 0o644 },
+            { name: "special", body: "x", unixMode },
+          ]),
+          "zip",
+        ),
+        SKILL_ERROR_CODES.ARCHIVE_INVALID,
+      );
+    }
+  });
+
   it("rejects a Unix zip symlink and a setuid member", async () => {
     await failure(
       normalizeSkillArchive(

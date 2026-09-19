@@ -15,6 +15,7 @@ import { ensurePrivateDirectory } from "../storage/durable-file.js";
 import { extractSkillArchive, SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
 import { verifySkillBundle } from "./skill-bundle.js";
 import { readBundleBody } from "./skill-bundle-body.js";
+import { skillConflictsRoot, skillRootForProvider, skillStagingRoot, unsafeSkillRootReason } from "./skill-roots.js";
 
 /**
  * Materializes the Agent's enabled Skills into the Provider's skill directory at runtime start.
@@ -97,11 +98,7 @@ function describeError(error: unknown): string {
 }
 
 /** The roots, relative to an Agent workspace, that hold Agent-scoped Skills. */
-export function skillRootForProvider(cwd: string, provider: AgentRuntimeProvider): string {
-  if (provider === "codex") return join(cwd, ".agents", "skills");
-  if (provider === "pi") return join(cwd, ".opentag", "skills");
-  return join(cwd, ".claude", "skills");
-}
+export { skillRootForProvider };
 
 function installLayout(input: SkillSyncAgentInput): SkillInstallLayout {
   return {
@@ -109,15 +106,6 @@ function installLayout(input: SkillSyncAgentInput): SkillInstallLayout {
     directoryName: (name) => name,
     skillName: (dirName) => dirName,
   };
-}
-
-/**
- * Staging is deliberately outside the provider's skill root: a crash before the marker is written
- * must never leave an unmarked directory that Claude Code or Codex then discover as a duplicate
- * Skill. It stays under the same workspace so `rename` into the target remains atomic.
- */
-function skillStagingRoot(cwd: string): string {
-  return join(cwd, ".opentag", "skill-staging");
 }
 
 async function readMarker(path: string): Promise<SkillInstallMarker | undefined> {
@@ -303,7 +291,7 @@ async function quarantineConflict(
   logger: ClientLogger,
 ): Promise<void> {
   const stamp = new Date(nowMs).toISOString().replaceAll(/[:.]/gu, "-");
-  const target = join(cwd, ".opentag", "skill-conflicts", `${name}-${stamp}`);
+  const target = join(skillConflictsRoot(cwd), `${name}-${stamp}`);
   await mkdir(dirname(target), { recursive: true, mode: 0o700 });
   await rm(target, { recursive: true, force: true });
   await rename(source, target);
@@ -327,6 +315,18 @@ export class SkillSyncManager {
 
   async ensureAgent(input: SkillSyncAgentInput): Promise<SkillSyncResult> {
     const layout = installLayout(input);
+    const unsafe = await unsafeSkillRootReason(input.cwd, [
+      layout.root,
+      skillStagingRoot(input.cwd),
+      skillConflictsRoot(input.cwd),
+    ]);
+    if (unsafe) {
+      this.#logger.warn(
+        { code: "skill_root_unsafe", reason: unsafe },
+        "Agent Skill root is unsafe; leaving every directory untouched",
+      );
+      return { skillPaths: [], status: "unavailable" };
+    }
     const signal = AbortSignal.timeout(this.#budgetMs);
     await sweepStaleStaging(skillStagingRoot(input.cwd), this.#budgetMs, this.#now);
     try {

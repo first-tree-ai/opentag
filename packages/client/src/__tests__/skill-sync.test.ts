@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -321,6 +321,73 @@ describe("SkillSyncManager", () => {
     expect(elapsed).toBeLessThan(1_000);
     expect(records.some((record) => record.fields.code === "skill_sync_unavailable")).toBe(true);
     await vi.waitFor(() => expect(bundleClosed).toBe(true));
+  });
+
+  it("refuses a symlinked skills root without deleting another workspace's Skills", async () => {
+    const root = await temporaryRoot();
+    const workspaceB = join(root, "workspace-b");
+    await mkdir(workspaceB, { recursive: true });
+    const packed = await buildSkill(root, "my-skill");
+    const entry = manifestEntry(packed, "my-skill");
+    const { api: apiB } = fakeApi([{ skills: [entry] }], new Map([[entry.id, packed.archive]]));
+    await managerFor(apiB, []).ensureAgent({ agentId: randomUUID(), cwd: workspaceB, provider: "codex" });
+    const installed = join(workspaceB, ".agents", "skills", "my-skill");
+    expect(await stat(join(installed, "SKILL.md"))).toBeDefined();
+
+    const workspaceA = join(root, "workspace-a");
+    await mkdir(join(workspaceA, ".agents"), { recursive: true });
+    await symlink(join(workspaceB, ".agents", "skills"), join(workspaceA, ".agents", "skills"));
+
+    const { api: apiA } = fakeApi([{ skills: [] }], new Map());
+    const records: LogRecord[] = [];
+    const result = await managerFor(apiA, records).ensureAgent({
+      agentId: randomUUID(),
+      cwd: workspaceA,
+      provider: "codex",
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.skillPaths).toEqual([]);
+    expect(await stat(join(installed, "SKILL.md"))).toBeDefined();
+    expect(records.some((record) => record.fields.code === "skill_root_unsafe")).toBe(true);
+  });
+
+  it("refuses a symlinked provider parent directory", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const elsewhere = join(root, "elsewhere");
+    await mkdir(elsewhere, { recursive: true });
+    await symlink(elsewhere, join(workspace, ".agents"));
+
+    const { api } = fakeApi([{ skills: [] }], new Map());
+    const records: LogRecord[] = [];
+    const result = await managerFor(api, records).ensureAgent({
+      agentId: randomUUID(),
+      cwd: workspace,
+      provider: "codex",
+    });
+    expect(result.status).toBe("unavailable");
+    expect(records.some((record) => record.fields.code === "skill_root_unsafe")).toBe(true);
+  });
+
+  it("refuses a symlinked .opentag staging parent", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace, { recursive: true });
+    const elsewhere = join(root, "elsewhere");
+    await mkdir(elsewhere, { recursive: true });
+    await symlink(elsewhere, join(workspace, ".opentag"));
+
+    const { api } = fakeApi([{ skills: [] }], new Map());
+    const records: LogRecord[] = [];
+    const result = await managerFor(api, records).ensureAgent({
+      agentId: randomUUID(),
+      cwd: workspace,
+      provider: "claude-code",
+    });
+    expect(result.status).toBe("unavailable");
+    expect(records.some((record) => record.fields.code === "skill_root_unsafe")).toBe(true);
   });
 
   it("stages outside the discovered skill root and sweeps stale staging only", async () => {

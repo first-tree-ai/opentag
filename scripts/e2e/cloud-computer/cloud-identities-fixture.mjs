@@ -31,6 +31,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_HELPER = join(HERE, "cloud-identities-migrations.ts");
 const EXTRA_ENV_KEYS = new Set([
   "OPENTAG_DEV_AUTH_EMAIL",
+  "OPENTAG_DEV_AUTH_BYPASS_ENABLED",
   "OPENTAG_PORTABLE_DOWNLOAD_BASE_URL",
   "OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED",
   "OPENTAG_DEV_INTERNAL_TOOLS_ENABLED",
@@ -217,11 +218,14 @@ function buildServerEnv(o) {
     BETTER_AUTH_SECRET: o.betterAuthSecret,
     OPENTAG_ENCRYPTION_KEY: o.encryptionKey.toString("base64"),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
-    OPENTAG_DEV_AUTH_EMAIL: o.email,
     OPENTAG_LOG_LEVEL: "info",
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: o.downloadBaseUrl,
     OPENTAG_OTEL_ENDPOINT: "",
     ...o.extraEnv,
+    OPENTAG_DEV_AUTH_EMAIL:
+      o.extraEnv.OPENTAG_DEV_AUTH_BYPASS_ENABLED === "false"
+        ? undefined
+        : (o.extraEnv.OPENTAG_DEV_AUTH_EMAIL ?? o.email),
   };
 }
 

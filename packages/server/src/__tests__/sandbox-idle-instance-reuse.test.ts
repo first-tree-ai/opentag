@@ -6,6 +6,7 @@
  * here is the production one.
  */
 import { randomUUID } from "node:crypto";
+import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { imBindings, imMessageDeliveries, imMessages, sandboxes, users } from "../db/schema/index.js";
@@ -23,6 +24,7 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
 let unit: UnitDatabase;
 const RUNNER_VERSION = "0.0.5";
 const IDLE_TIMEOUT_MS = 120_000;
+const STARTUP_TIMEOUT_MS = 30_000 + 4 * RUNNER_WORKSPACE_TIMEOUT_MS;
 const JWT_SECRET = "unit-test-jwt-secret-at-least-32-characters";
 const cloudIdentities = { enabled: true, runnerVersion: RUNNER_VERSION, storageBase: "gs://unit-cloud/sandboxes" };
 const unusedAccountResolver = {
@@ -259,6 +261,25 @@ async function insertDelivery(
 }
 
 describe("E7 automatic idle reclamation", () => {
+  it("rotates a full batch of failed seals so another Session is reclaimed on the next sweep", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    for (let index = 0; index < 25; index += 1) {
+      await readySandbox(stack, accountId, `failed-${index}`, { reuseCapable: false, seal: "fail" });
+      stack.advance(1);
+    }
+    const healthy = await readySandbox(stack, accountId, "healthy", { reuseCapable: false });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    const first = await stack.service.reclaimIdleSandboxes();
+    expect(first.failed).toBe(25);
+    expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("ready");
+    stack.advance(15_000);
+    const second = await stack.service.reclaimIdleSandboxes();
+    expect(second.released).toBe(1);
+    expect((await sandboxRow(healthy.row.id)).lifecycle).toBe("unallocated");
+    expect(stack.fake.liveInstanceCount()).toBe(25);
+  });
+
   it("seals and deletes a ready environment after the single idle budget, clearing every binding", async () => {
     const accountId = await account();
     const stack = makeStack();
@@ -353,7 +374,7 @@ describe("E7 automatic idle reclamation", () => {
     expect(preparing.lifecycle).toBe("preparing");
     expect(stack.store.stored(preparing.storageUri)).toBeDefined();
 
-    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    stack.advance(STARTUP_TIMEOUT_MS + 1_000);
     const result = await stack.service.reclaimIdleSandboxes();
     expect(result.recovered).toBe(1);
     const recovered = await sandboxRow(owned.sandbox.sandboxId);
@@ -391,7 +412,7 @@ describe("E7 automatic idle reclamation", () => {
     );
     // Deliberately leave the row `preparing`: the sweep must promote a late readiness report
     // rather than recycle a live environment as disposable startup.
-    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    stack.advance(STARTUP_TIMEOUT_MS + 1_000);
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(row.id)).lifecycle).toBe("ready");
     expect(stack.fake.liveInstanceCount()).toBe(1);
@@ -446,11 +467,13 @@ describe("E7 automatic idle reclamation", () => {
     expect(await sandboxRow(ready.row.id)).toMatchObject({
       lifecycle: "ready",
       currentResourceUid: ready.row.currentResourceUid,
-      lastErrorCode: "workspace_save_failed",
+      idleReclaimAt: null,
     });
     expect(stack.fake.deleteCalls).toHaveLength(0);
     await stack.service.reclaimIdleSandboxes();
     expect(stack.fake.liveInstanceCount()).toBe(1);
+    expect(await stack.service.ensureIngressAllocation(accountId, ready.row.id)).toBe("ready");
+    expect(await stack.service.validateRunnerScope(ready.scope)).toMatchObject({ sandboxId: ready.row.id });
     // Explicit Account cleanup retains the established legacy behavior.
     await stack.service.stopForAccount(accountId, ready.row.id);
     expect(stack.fake.liveInstanceCount()).toBe(0);
@@ -523,9 +546,14 @@ describe("E7 automatic idle reclamation", () => {
       { send() {}, close() {} },
     );
     expect(stack.hub.describe(row.id).ready).toBe(false);
-    // Past createConvergeTimeoutMs (30s in this fixture) but well inside the idle budget: a
-    // restore that never completes is a startup failure, not disposable idle work.
+    // A connected Runner still has time to claim/download/checkpoint its restored workspace.
     stack.advance(31_000);
+    expect((await stack.service.reclaimIdleSandboxes()).recovered).toBe(0);
+    stack.advance(120_000);
+    expect((await stack.service.reclaimIdleSandboxes()).recovered).toBe(0);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+    // A restore that never finishes still converges after the complete startup budget.
+    stack.advance(STARTUP_TIMEOUT_MS);
     const result = await stack.service.reclaimIdleSandboxes();
     expect(result.recovered).toBe(1);
     expect((await sandboxRow(row.id)).lifecycle).toBe("unallocated");
@@ -581,6 +609,54 @@ describe("E7 automatic idle reclamation", () => {
 });
 
 describe("E7 same-account physical reuse", () => {
+  it.each(["persistence", "policy"] as const)(
+    "skips incompatible %s before claiming or sealing a usable sibling",
+    async (reason) => {
+      const accountId = await account();
+      const stack = makeStack();
+      const a = await readySandbox(stack, accountId, "old-policy");
+      const b = await ownedSandbox(accountId, "new-policy");
+      const instance = stack.fake.instances.get(a.row.currentResourceName as string);
+      if (!instance) throw new Error("Missing fixture Instance");
+      if (reason === "persistence") instance.spec.workspacePersistence = false;
+      else
+        vi.spyOn(stack.fake, "verifyTrackedInstance").mockImplementation(() => {
+          throw new Error("Deployment policy changed");
+        });
+      const seal = vi.spyOn(stack.hub, "requestWorkspaceSeal");
+      await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+      expect(seal).not.toHaveBeenCalled();
+      expect(await sandboxRow(a.row.id)).toMatchObject({
+        lifecycle: "ready",
+        idleReclaimAt: null,
+        currentResourceUid: a.row.currentResourceUid,
+      });
+      expect(await stack.service.ensureIngressAllocation(accountId, a.row.id)).toBe("ready");
+      expect(stack.fake.deleteCalls).toHaveLength(0);
+      expect(stack.fake.createCalls).toHaveLength(2);
+    },
+  );
+
+  it("releases the sealed sibling immediately when a concurrent start already allocated the borrower", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const a = await readySandbox(stack, accountId, "unused-seal");
+    const b = await ownedSandbox(accountId, "concurrent-start");
+    const seal = stack.hub.requestWorkspaceSeal.bind(stack.hub);
+    vi.spyOn(stack.hub, "requestWorkspaceSeal").mockImplementationOnce(async (...args) => {
+      const result = await seal(...args);
+      // A is claimed, so this independent starter cold-allocates B while the borrow awaits seal.
+      await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+      return result;
+    });
+    await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+    expect(await sandboxRow(a.row.id)).toMatchObject({ lifecycle: "unallocated", idleReclaimAt: null });
+    expect(stack.store.stored(a.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+    expect((await sandboxRow(b.sandbox.sandboxId)).currentResourceName).not.toBe(a.row.currentResourceName);
+    expect(stack.fake.deleteCalls).toHaveLength(1);
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+  });
+
   it("transfers the exact physical UID and generation fencing to a same-account sibling with zero create", async () => {
     const accountId = await account();
     const stack = makeStack();

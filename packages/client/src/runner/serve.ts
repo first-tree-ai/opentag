@@ -563,7 +563,14 @@ async function discardSealedAssignment(input: {
   await current.webExecution?.close();
   current.webExecution = undefined;
   if (current.present) {
-    await sandbox.destroy();
+    try {
+      await sandbox.destroy();
+    } catch (error) {
+      // Mirror ServeWorkspace.#quiesce: a native namespace whose deletion cannot be verified is
+      // fatal, and the reconnect loop must not restart another rebind over it.
+      current.fatal = true;
+      throw error;
+    }
     current.present = false;
   }
   await current.journal.resetScope({
@@ -639,7 +646,10 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       // receive the Server's credential for the holder before any workspace HTTP claim.
       current.assignmentRequired = true;
     }
-    current.assignment = {
+    // Persist BEFORE the in-memory assignment: a failed disk write must not let a reconnect
+    // short-circuit the durable marker and prepare the new Session while the old sealed marker
+    // still owns the local workspace.
+    const proposed: RunnerAssignment = {
       sandboxId: scope.sandboxId,
       sessionId: scope.sessionId,
       environmentGeneration: scope.environmentGeneration,
@@ -647,7 +657,8 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       resourceUid: scope.resourceUid ?? "",
       sealed: false,
     };
-    await writeRunnerAssignment(config.stateDir, current.assignment);
+    await writeRunnerAssignment(config.stateDir, proposed);
+    current.assignment = proposed;
     return true;
   };
 

@@ -15,7 +15,10 @@ export interface ProbeRunnerToolsOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly execFile?: typeof execFileAsync;
   readonly expected?: Readonly<Record<string, string>>;
+  /** Default timeout for every probe; defaults to 10 seconds. */
   readonly timeoutMs?: number;
+  /** Native Pi startup may need a longer budget than generic tools. */
+  readonly piTimeoutMs?: number;
 }
 
 const DEFAULT_TOOLS: ReadonlyArray<{ name: string; args: readonly string[] }> = [
@@ -139,8 +142,14 @@ export async function probeRunnerTools(options: ProbeRunnerToolsOptions = {}): P
   const results: RunnerToolProbe[] = [];
   for (const tool of DEFAULT_TOOLS) {
     results.push(
-      await probeCommand(run, tool.name, tool.name, tool.args, env, timeoutMs, (detail) =>
-        evaluateVersionProbe(tool.name, detail, options.expected),
+      await probeCommand(
+        run,
+        tool.name,
+        tool.name,
+        tool.args,
+        env,
+        (tool.name === "pi" ? options.piTimeoutMs : undefined) ?? timeoutMs,
+        (detail) => evaluateVersionProbe(tool.name, detail, options.expected),
       ),
     );
   }

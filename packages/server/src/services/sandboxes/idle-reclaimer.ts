@@ -25,7 +25,7 @@ export class SandboxIdleReclaimer {
   readonly #supervisor?: BackgroundFailureSupervisor;
   readonly #onDiagnostic: (code: string) => void;
   #timer?: ReturnType<typeof setInterval>;
-  #running = false;
+  #running?: Promise<unknown>;
 
   constructor(options: SandboxIdleReclaimerOptions) {
     const intervalMs = options.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
@@ -44,9 +44,11 @@ export class SandboxIdleReclaimer {
     this.#timer.unref();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    // The sweep's observer below reports failures. Drain before the Server closes its database.
+    await this.#running?.catch(() => undefined);
   }
 
   /** One serialized pass; exposed so startup/tests can run it deterministically. */
@@ -56,10 +58,10 @@ export class SandboxIdleReclaimer {
 
   sweep(): void {
     if (this.#running) return;
-    this.#running = true;
     const operation = this.runOnce().finally(() => {
-      this.#running = false;
+      this.#running = undefined;
     });
+    this.#running = operation;
     if (this.#supervisor) {
       this.#supervisor.track(operation, {
         code: "SANDBOX_IDLE_RECLAIM_FAILED",

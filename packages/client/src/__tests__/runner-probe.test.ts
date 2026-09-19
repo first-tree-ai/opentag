@@ -107,6 +107,29 @@ describe("runner tool probes", () => {
     expect(pi?.detail).not.toContain("Command failed");
   });
 
+  it("keeps generic probes at the 10s default and applies provider overrides only where named", async () => {
+    const seen = new Map<string, number[]>();
+    const execFile = (async (file: string, _args: readonly string[], options: { timeout?: number }) => {
+      const timeouts = seen.get(file) ?? [];
+      if (options.timeout !== undefined) timeouts.push(options.timeout);
+      seen.set(file, timeouts);
+      return { stdout: "", stderr: "" };
+    }) as unknown as ExecFile;
+    await probeRunnerTools({
+      execFile,
+      env: { HOME: "/tmp" },
+      piTimeoutMs: 30_000,
+    });
+    // Only the named native provider probe gets the startup allowance; everything generic keeps
+    // the default, including the provider CLI version/surface pairs.
+    expect(seen.get("pi")).toEqual([30_000]);
+    for (const generic of ["node", "git", "gh", "context-tree", "opentag"]) {
+      expect(seen.get(generic)).toEqual([10_000]);
+    }
+    expect(seen.get("lark-cli")).toEqual([10_000, 10_000]);
+    expect(seen.get("slack")).toEqual([10_000, 10_000]);
+  });
+
   it("passes exact versions and reviewed surface banners", async () => {
     const probes = await probeRunnerTools({
       execFile: router(GOOD_OUTPUTS),

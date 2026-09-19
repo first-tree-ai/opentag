@@ -791,7 +791,7 @@ export async function startServer(): Promise<void> {
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
       channelTargetPoller.stop();
-      sandboxIdleReclaimer?.stop();
+      await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
       mcpRefreshWorker.stop();
       if (github) await github.worker.stop();

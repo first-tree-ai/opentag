@@ -320,16 +320,22 @@ OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS（默认 120 秒），从最后一次**业�
 直接继续而无需保存／恢复。若无人继续，同一预算由现有 Server 进程内的有界扫描（约 15 秒固定
 周期，同一时刻只跑一轮）经 E5 路径封存工作目录后删除 Instance。只有在部署启用工作目录持久化
 时才会自动删除：启动时未启用持久化的旧分配可能持有唯一状态副本，即使后来 Server 启用了
-持久化，也只能由显式 Account stop 处理。没有额外
-保留时钟、预热池或新的调度服务。
+持久化，也只能由显式 Account stop 处理。这类实例在认领前跳过，原 Session 仍然可用。扫描按
+updated_at 轮转候选，空闲预算仍只使用 last_activity_at，失败或不支持持久化的行不会长期占满批次。
+没有额外保留时钟、预热池或新的调度服务。
+
+E7 当前要求单个 Server 进程：Runner 控制归属、占用和就绪状态都保存在进程内的 RunnerHub。
+仅有数据库 CAS 并不代表支持多 Server 同时工作。关闭数据库前会等待当前扫描结束。
 
 同账号的另一个 Session 可以按需借用该物理 Instance，而不是重新冷启动。借用方必须是同一
 逻辑 Cloud Computer 上的 unallocated Sandbox；候选必须是 ready、未被占用、连接着支持 E7 的
 Runner，且没有 pending 或 accepted／未上报的投递、没有进行中的 acceptance。每一步都持久
-可重试：原子认领候选（立即撤销执行权）、经 E5 封存并校验最新的 GCS saved + sealed +
+可重试：先校验 provider 持久化能力与部署策略，再原子认领候选（立即撤销执行权）、经 E5 封存并校验最新的 GCS saved + sealed +
 owner-generation 证明，然后在同一事务中锁定两行，先清空原行归属，再把借用行置为 preparing、
 generation + 1，资源名与 UID 完全不变。整个过程不会调用 Cloud Run create、PATCH 或修改配置。
-原 Session 保留自己的稳定 storage_uri 以便日后冷恢复；借用方恢复自己的归档。
+原 Session 保留自己的稳定 storage_uri 以便日后冷恢复；借用方恢复自己的归档。封存后若转移不能
+提交（包括并发启动已给借用方分配了资源），立即对已封存的原实例执行可验证删除，原 Session 随后
+可从归档冷恢复。只清除认领标记无法重新开放已封存的 Runner；保存结果未确认时仍保留资源重试。
 
 自动认领就是 sandboxes 上唯一的可空列 idle_reclaim_at（迁移 0046，不新增表）。该标记存在
 期间执行权被撤销，start 返回 pending，常规入口返回 pending 而**不会**返回终态
@@ -341,7 +347,8 @@ last_activity_at；idle_reclaim_at 只记录回收意图归属，因此被放弃
 保存标记。provider 确认 UID 不存在时清除绑定；读取失败绝不清除。显式 Account stop 在同一事务中
 清空该标记，先于 cloud DELETE，因此晚到的转移永远无法胜出。
 
-陈旧认领使用既有创建／启动收敛期限（不是第二个空闲窗口）：preparing 分配在该期限内没有产生
+陈旧认领使用创建收敛期限加四个工作目录传输预算（当前额外 480 秒，覆盖 claim、下载、恢复后的
+checkpoint 上传和原生初始化，不是空闲窗口）：preparing 分配在该期限内没有产生
 READY Runner（包括已连接但始终未就绪的恢复）时会重新读取 provider。确认 UID 不存在或被替换时
 清除绑定；仍然存在且通过归属校验的 tracked Instance 带自动意图标记走可验证删除路径，因此该
 Session 的入口持续返回 pending。借用方自己的归档不受影响，下次启动会把它恢复到新一代，而不是

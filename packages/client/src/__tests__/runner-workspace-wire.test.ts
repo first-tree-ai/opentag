@@ -951,6 +951,8 @@ async function runRebindScenario(input: {
   stop: AbortController;
   state: { destroyed: number; launched: number };
   web?: { close: () => Promise<void> };
+  /** Test seam: additional native delete behavior (for example a one-shot failure). */
+  destroy?: () => Promise<void>;
   /** Test seam replacing the reconnect backoff so reconnects are observable, not timed. */
   sleep?: (ms: number) => Promise<void>;
 }) {
@@ -963,6 +965,7 @@ async function runRebindScenario(input: {
     }),
     destroy: vi.fn(async () => {
       input.state.destroyed += 1;
+      await input.destroy?.();
     }),
     probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
   };
@@ -1265,6 +1268,141 @@ it("drains an in-flight rebind cleanup before the next connection can start", { 
     allowClose.resolve();
     stop.abort();
     await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("persists the durable marker before adopting the new assignment in memory", { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-marker-write-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const allowReconnect = deferred();
+  let reconnectCalls = 0;
+  const { workspace, running, stderr } = await runRebindScenario({
+    root,
+    peer,
+    stop,
+    state,
+    sleep: async () => {
+      reconnectCalls += 1;
+      if (reconnectCalls > 1) await allowReconnect.promise;
+    },
+  });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    peer.seedObject(await buildSeededArchive(root, "b-marker.txt", "B assignment state"));
+    peer.advance();
+
+    // Block the next durable marker write: the atomic rename cannot replace a directory.
+    await rm(join(root, "private", "assignment.json"), { force: true });
+    await mkdir(join(root, "private", "assignment.json"), { recursive: true });
+
+    peer.disconnect();
+    await vi.waitFor(
+      () => {
+        expect(stderr.join("")).toContain("The Runner assignment marker was not durable");
+      },
+      { timeout: 5_000, interval: 25 },
+    );
+    // The failed write is not adopted in memory: the runner parks before another reconnect and
+    // prepares nothing while the durable marker still proves the old sealed assignment.
+    expect(reconnectCalls).toBe(2);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+    expect(peer.count("runner:ready")).toBe(0);
+
+    // Unblock and let the retry persist the marker before it prepares the new assignment.
+    await rm(join(root, "private", "assignment.json"), { recursive: true, force: true });
+    allowReconnect.resolve();
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const persisted = JSON.parse(await readFile(join(root, "private", "assignment.json"), "utf8")) as {
+      sandboxId: string;
+    };
+    expect(persisted.sandboxId).toBe(REBIND_SANDBOX_B);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a", "Bearer fixture-b"]);
+    expect(await readFile(join(workspace, "b-marker.txt"), "utf8")).toBe("B assignment state");
+  } finally {
+    allowReconnect.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("fails fatally and stops reconnecting when rebind cleanup cannot delete the native sandbox", {
+  timeout: 20_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-destroy-fail-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const firstStop = new AbortController();
+  const first = await runRebindScenario({
+    root,
+    peer,
+    stop: firstStop,
+    state: { destroyed: 0, launched: 0 },
+  });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    firstStop.abort();
+    expect(await first.running).toBe(143);
+  } finally {
+    firstStop.abort();
+  }
+  peer.advance();
+
+  // The restarted parent launches the native sandbox before the welcome; its rebind cleanup now
+  // cannot delete that namespace. The Runner must terminate instead of reconnecting over it.
+  let destroyCalls = 0;
+  let reconnectCalls = 0;
+  const secondStop = new AbortController();
+  const secondState = { destroyed: 0, launched: 0 };
+  const second = await runRebindScenario({
+    root,
+    peer,
+    stop: secondStop,
+    state: secondState,
+    destroy: async () => {
+      destroyCalls += 1;
+      if (destroyCalls === 1) throw new Error("sandbox delete failed");
+    },
+    sleep: async () => {
+      reconnectCalls += 1;
+    },
+  });
+  try {
+    expect(await second.running).toBe(5);
+    expect(secondState.launched).toBe(1);
+    // The fatal cleanup failure plus the shutdown retry; no reconnect over the unverified namespace.
+    expect(destroyCalls).toBe(2);
+    expect(reconnectCalls).toBe(0);
+    expect(peer.count("runner:ready")).toBe(0);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+  } finally {
+    secondStop.abort();
     await peer.close();
     await rm(root, { recursive: true, force: true });
   }

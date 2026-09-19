@@ -338,6 +338,35 @@ async function idleReadySandbox(stack: RaceStack, accountId: string, channel: st
 }
 
 describe("E7 gated interleavings on PostgreSQL", () => {
+  it("cleans a sealed origin when a concurrent start wins the same borrower reservation", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const started = deferred();
+    const allow = deferred();
+    const a = await readySandbox(stack, accountId, "gate-same-origin", {
+      sealGate: { started: started.resolve, allow: allow.promise },
+    });
+    const b = await ownedSandbox(accountId, "gate-same-borrower");
+    const first = stack.service.startForAccount(accountId, b.sandboxId);
+    await started.promise;
+    await stack.service.startForAccount(accountId, b.sandboxId);
+    const winner = await rowFor(b.sandboxId);
+    allow.resolve();
+    await first;
+    expect(await rowFor(a.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "unallocated",
+      idleReclaimAt: null,
+      currentResourceName: null,
+    });
+    expect(await rowFor(b.sandboxId)).toMatchObject({
+      currentResourceName: winner.currentResourceName,
+      currentResourceUid: winner.currentResourceUid,
+    });
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    expect(stack.fake.deleteCalls).toEqual([{ name: a.row.currentResourceName, uid: a.row.currentResourceUid }]);
+    expect(stack.store.stored(a.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+  });
+
   it("gates two borrowers on one physical Instance: the first claimant transfers, the second cold-allocates", async () => {
     const accountId = await account();
     const stack = makeStack();

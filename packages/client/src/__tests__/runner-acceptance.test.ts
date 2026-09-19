@@ -386,7 +386,7 @@ describe("runner acceptance disposable Context Tree", () => {
     ).toBe(true);
   });
 
-  it("passes the native startup budget through the offline acceptance path", async () => {
+  it("applies the native startup budget only to the Pi offline probe", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-probe-"));
     directories.push(workspace);
     const probe = vi.spyOn(runnerProbes, "probeRunnerTools").mockResolvedValue([{ name: "pi", ok: true }]);
@@ -399,9 +399,11 @@ describe("runner acceptance disposable Context Tree", () => {
       path: "/runner/bin",
       assembleSkills: async () => fakeAssembledSkills(workspace),
     });
+    // Generic tools keep the 10s default; only the native Pi provider probe carries the 30s
+    // startup allowance, so a slow `pi --version` in a gVisor sandbox cannot be killed early.
     expect(probe).toHaveBeenCalledWith({
       env: { PATH: "/runner/bin", HOME: workspace },
-      timeoutMs: RUNNER_PI_PROBE_TIMEOUT_MS,
+      piTimeoutMs: RUNNER_PI_PROBE_TIMEOUT_MS,
     });
   });
 

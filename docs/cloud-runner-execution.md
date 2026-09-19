@@ -418,18 +418,29 @@ budget has one consequence when nobody continues: a bounded sweep (fixed ~15 s c
 existing Server process, one pass at a time) seals the workspace through the E5 path and then
 deletes the Instance. Automatic deletion runs only when the deployment persists workspaces: a
 legacy allocation started without persistence may hold the only copy of its state and is left to
-explicit Account stop, even after Server persistence is enabled. There is no retention clock, no preallocated pool and no new scheduler service.
+explicit Account stop, even after Server persistence is enabled. Such Instances are skipped before
+claiming, so their Session remains usable. Sweep selection rotates by `updated_at`; the idle
+budget still uses only `last_activity_at`, so failing or unsupported rows cannot monopolize a batch.
+There is no retention clock, no preallocated pool and no new scheduler service.
+
+E7 requires a single Server process while Runner control ownership, busy state and readiness live
+in the process-local `RunnerHub`. Database CAS alone does not make active-active Servers supported.
+Shutdown drains the current sweep before closing the database.
 
 A second, same-account Session may borrow the physical Instance on demand instead of cold
 allocating. The borrower must be an `unallocated` Sandbox on the same logical Cloud Computer, and
 the candidate must be `ready`, unclaimed, connected through an E7-capable Runner, with no pending
 or accepted-unreported delivery and no in-flight acceptance. The sequence is durable at every
-step: atomically claim the candidate (execution blocked), seal through E5 and verify a fresh
+step: verify provider persistence and deployment policy before claiming, atomically claim the
+candidate (execution blocked), seal through E5 and verify a fresh
 GCS `saved + sealed + owner-generation` proof, then one transaction that locks both rows, clears
 the origin binding first and assigns the borrower `preparing` with generation + 1 and the exact
 same resource name and UID. No Cloud Run create, PATCH or configuration change happens. The
 origin keeps its own stable `storage_uri` and later cold-restores from its archive; the borrower
-restores its own archive.
+restores its own archive. If the transfer cannot commit after sealing (including a concurrent
+start that already allocated the borrower), the sealed origin follows verified deletion immediately.
+It can then cold-restore from its archive; clearing a claim alone cannot reopen a sealed Runner.
+An unproven save keeps the allocation for retry.
 
 The automatic claim is the single nullable `sandboxes.idle_reclaim_at` column (migration 0046, no
 new table). While it is set, execution authority is revoked, a start reports pending, and normal
@@ -444,7 +455,8 @@ the resource binding, the claim and the existing workspace-save marker. A provid
 absent UID clears the binding; a failed read never does. An explicit Account stop clears the
 marker in the same transition that precedes cloud DELETE, so a late transfer can never win.
 
-Stale adoption uses the existing create/startup convergence deadline (not a second idle window):
+Stale adoption uses create convergence plus four workspace transfer budgets (currently an extra
+480 seconds for claim, download, checkpoint upload and native initialization; not an idle window):
 a `preparing` allocation whose tracked Instance has not produced a READY Runner within that
 deadline, including a connected-but-never-ready restore, is re-read from the provider. A
 confirmed absent or replaced UID clears the binding; a present, ownership-verified tracked

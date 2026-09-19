@@ -232,24 +232,72 @@ function renderBlockScalar(rawLines: string[], style: BlockScalarStyle, chomp: B
 }
 
 type FrontmatterEntry = { ok: true; key: string; value: string; nextIndex: number } | { ok: false; reason: string };
+type ManifestFieldValue = { ok: true; value: string; nextIndex: number } | { ok: false; reason: string };
 
-function readFrontmatterEntry(lines: string[], index: number): FrontmatterEntry {
-  const line = lines[index] ?? "";
-  if (/^[ \t]/.test(line)) return { ok: false, reason: "Skill manifest frontmatter has an indented line" };
-  const match = /^([A-Za-z0-9_.-]+)\s*:(.*)$/.exec(line);
-  if (!match) return { ok: false, reason: "Skill manifest frontmatter has a line that is not a top-level key" };
-  const key = match[1] ?? "";
-  const rawValue = (match[2] ?? "").trim();
+/** A YAML block-sequence item at any indentation, e.g. `- read` or `  - read`. */
+function isSequenceLine(line: string): boolean {
+  return /^[ \t]*-(\s|$)/.test(line);
+}
+
+/**
+ * Skip a value the platform does not read.
+ *
+ * Every following blank, indented, or list line belongs to the preceding key, whatever it contains.
+ * Nested maps (`metadata:`) and block sequences (`allowed-tools:`) under an unknown key are therefore
+ * ignored instead of being treated as malformed frontmatter — real `SKILL.md` files use both.
+ */
+function collectIgnoredValueLines(lines: string[], startIndex: number): number {
+  let index = startIndex;
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const belongsToKey = line.trim().length === 0 || /^[ \t]/.test(line) || isSequenceLine(line);
+    if (!belongsToKey) break;
+    index += 1;
+  }
+  return index;
+}
+
+/**
+ * A plain scalar, optionally continued on following indented lines. Continuations are folded the way
+ * `>` folds them, so a long description written over several lines keeps its paragraph breaks.
+ */
+function readPlainScalar(lines: string[], index: number, rawValue: string): ManifestFieldValue {
+  const collected = collectBlockLines(lines, index + 1);
+  const continuation = stripBlockIndent(collected.lines);
+  return { ok: true, value: foldLines([rawValue, ...continuation]), nextIndex: collected.nextIndex };
+}
+
+function readManifestFieldValue(lines: string[], index: number, key: string, rawValue: string): ManifestFieldValue {
   if (rawValue.startsWith("|") || rawValue.startsWith(">")) {
     const block = parseBlockIndicator(rawValue);
     if (!block) return { ok: false, reason: `Skill manifest has an unsupported block scalar for ${key}` };
     const collected = collectBlockLines(lines, index + 1);
     const value = renderBlockScalar(collected.lines, block.style, block.chomp);
-    return { ok: true, key, value, nextIndex: collected.nextIndex };
+    return { ok: true, value, nextIndex: collected.nextIndex };
   }
-  const scalar = parseScalarValue(rawValue);
-  if (scalar === null) return { ok: false, reason: `Skill manifest has an unsupported value for ${key}` };
-  return { ok: true, key, value: scalar, nextIndex: index + 1 };
+  if (rawValue.startsWith("'") || rawValue.startsWith('"')) {
+    const scalar = parseScalarValue(rawValue);
+    if (scalar === null) return { ok: false, reason: `Skill manifest has an unsupported value for ${key}` };
+    return { ok: true, value: scalar, nextIndex: index + 1 };
+  }
+  return readPlainScalar(lines, index, rawValue);
+}
+
+function readFrontmatterEntry(lines: string[], index: number): FrontmatterEntry {
+  const line = lines[index] ?? "";
+  if (/^[ \t]/.test(line)) {
+    return { ok: false, reason: "Skill manifest frontmatter has an indented line with no preceding key" };
+  }
+  const match = /^([A-Za-z0-9_.-]+)\s*:(.*)$/.exec(line);
+  if (!match) return { ok: false, reason: "Skill manifest frontmatter has a line that is not a top-level key" };
+  const key = match[1] ?? "";
+  const rawValue = (match[2] ?? "").trim();
+  if (key !== "name" && key !== "description") {
+    return { ok: true, key, value: "", nextIndex: collectIgnoredValueLines(lines, index + 1) };
+  }
+  const field = readManifestFieldValue(lines, index, key, rawValue);
+  if (!field.ok) return field;
+  return { ok: true, key, value: field.value, nextIndex: field.nextIndex };
 }
 
 function parseFrontmatterEntries(
@@ -265,8 +313,9 @@ function parseFrontmatterEntries(
     }
     const entry = readFrontmatterEntry(lines, index);
     if (!entry.ok) return entry;
-    entries.set(entry.key, entry.value);
     index = entry.nextIndex;
+    if (entry.key !== "name" && entry.key !== "description") continue;
+    entries.set(entry.key, entry.value);
   }
   return { ok: true, entries };
 }
@@ -274,11 +323,13 @@ function parseFrontmatterEntries(
 /**
  * Parse the `SKILL.md` frontmatter into a manifest, never throwing.
  *
- * The platform deliberately carries no YAML dependency: a manifest is a flat map of scalars, so a
- * bounded hand-written parser is smaller and has no transitive supply chain. It supports exactly
- * plain and quoted single-line scalars plus `>`/`|` block scalars with an optional `-`/`+` chomping
- * indicator. Anything it cannot represent faithfully is a typed rejection with a specific reason,
- * which the Server surfaces as `SKILL_MANIFEST_INVALID`.
+ * The platform deliberately carries no YAML dependency: the platform only reads `name` and
+ * `description`, so a bounded hand-written parser is smaller and has no transitive supply chain. It
+ * supports plain scalars (single- or multi-line, folded like `>`) and quoted scalars plus `>`/`|`
+ * block scalars with an optional `-`/`+` chomping indicator. Unknown top-level keys are ignored
+ * together with their value, including nested maps and block sequences, because real `SKILL.md`
+ * files carry `metadata` and `allowed-tools`. Anything it cannot represent faithfully is a typed
+ * rejection with a specific reason, which the Server surfaces as `SKILL_MANIFEST_INVALID`.
  */
 export function parseSkillManifest(markdown: string): ParseSkillManifestResult {
   if (utf8Length(markdown) > SKILL_MANIFEST_MAX_BYTES) {

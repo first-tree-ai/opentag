@@ -195,6 +195,61 @@ describe("parseSkillManifest", () => {
     });
   });
 
+  it("ignores nested maps and block sequences under unknown keys", () => {
+    const markdown = [
+      "---",
+      "name: demo",
+      "description: A demo skill",
+      "license: MIT",
+      "metadata:",
+      "  author: x",
+      "  requires:",
+      "    - y",
+      "allowed-tools:",
+      "  - read",
+      "  - write",
+      "---",
+    ].join("\n");
+    expectManifest(markdown, { name: "demo", description: "A demo skill" });
+  });
+
+  it("accepts OpenTag's own context-tree-read manifest shape", () => {
+    const markdown = [
+      "---",
+      "name: context-tree-read",
+      "description: Read a node, subtree, or search result from Context Tree.",
+      "metadata:",
+      "  author: x",
+      "  requires:",
+      "    - y",
+      "allowed-tools:",
+      "- read",
+      "---",
+    ].join("\n");
+    expectManifest(markdown, {
+      name: "context-tree-read",
+      description: "Read a node, subtree, or search result from Context Tree.",
+    });
+  });
+
+  it("folds a multi-line plain description", () => {
+    expectManifest("---\nname: demo\ndescription: This is\n  a long description\n  over lines\n---\n", {
+      name: "demo",
+      description: "This is a long description over lines",
+    });
+  });
+
+  it("keeps paragraph breaks in a multi-line plain description", () => {
+    expectManifest("---\nname: demo\ndescription:\n  Para one\n\n  Para two\n---\n", {
+      name: "demo",
+      description: "Para one\nPara two",
+    });
+  });
+
+  it("rejects an indented line with no preceding key", () => {
+    expectReason("---\n  orphan: x\n---\n", "indented line with no preceding key");
+  });
+
   it("rejects a missing frontmatter block", () => {
     expectReason("# Demo\nname: demo\n", "missing its frontmatter");
   });

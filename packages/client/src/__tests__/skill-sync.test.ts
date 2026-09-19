@@ -286,6 +286,54 @@ describe("SkillSyncManager", () => {
     expect(piResult.skillPaths).toEqual([join(cwd, ".opentag", "skills", "my-skill")]);
   });
 
+  it("quarantines local edits when a managed Skill is removed from the manifest", async () => {
+    const root = await temporaryRoot();
+    const cwd = join(root, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const packed = await buildSkill(root, "my-skill");
+    const entry = manifestEntry(packed, "my-skill");
+    const target = join(cwd, ".claude", "skills", "my-skill");
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "SKILL.md"), "authored\n");
+    await markSkillDirectoryManaged(target, { skillId: entry.id, archiveSha256: packed.sha256 });
+    await writeFile(join(target, "notes.md"), "unpushed work\n");
+
+    const { api } = fakeApi([{ skills: [] }], new Map());
+    const records: LogRecord[] = [];
+    const result = await managerFor(api, records).ensureAgent({
+      agentId: randomUUID(),
+      cwd,
+      provider: "claude-code",
+    });
+
+    expect(result.status).toBe("synced");
+    await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    const conflicts = await readdir(join(cwd, ".opentag", "skill-conflicts"));
+    expect(conflicts).toHaveLength(1);
+    expect(await readFile(join(cwd, ".opentag", "skill-conflicts", conflicts[0] as string, "notes.md"), "utf8")).toBe(
+      "unpushed work\n",
+    );
+    expect(records.some((record) => record.fields.code === "skill_conflict_quarantined")).toBe(true);
+  });
+
+  it("still removes an unedited managed Skill when it leaves the manifest", async () => {
+    const root = await temporaryRoot();
+    const cwd = join(root, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const packed = await buildSkill(root, "my-skill");
+    const entry = manifestEntry(packed, "my-skill");
+    const target = join(cwd, ".claude", "skills", "my-skill");
+    await mkdir(target, { recursive: true });
+    await writeFile(join(target, "SKILL.md"), "authored\n");
+    await markSkillDirectoryManaged(target, { skillId: entry.id, archiveSha256: packed.sha256 });
+
+    const { api } = fakeApi([{ skills: [] }], new Map());
+    await managerFor(api, []).ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+
+    await expect(stat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(cwd, ".opentag", "skill-conflicts"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("adopts a pushed authored directory so a later disable removes it", async () => {
     const root = await temporaryRoot();
     const cwd = join(root, "workspace");

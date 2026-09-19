@@ -337,7 +337,7 @@ export class SkillSyncManager {
       // Download and verify before touching the old copy: a corrupt or truncated bundle must
       // never cost the Agent the Skill it already had.
       const bytes = await downloadedBundle(this.#api, token, input.agentId, entry, signal);
-      if (current) await this.#prepareReplacement(input, entry.name, current);
+      if (current) await this.#retireManaged(input, entry.name, current);
       const started = this.#now();
       await installBundle(layout, entry, bytes);
       this.#logger.debug(
@@ -351,21 +351,42 @@ export class SkillSyncManager {
     }
     for (const [name, managed] of existing) {
       if (desired.has(name)) continue;
-      await rm(managed.path, { recursive: true, force: true });
-      this.#logger.debug({ code: "skill_sync_remove", skill: name }, "Skill is no longer enabled; removed");
+      await this.#removeDeparted(input, name, managed);
     }
     return this.#existingSkillPaths(layout);
   }
 
-  async #prepareReplacement(input: SkillSyncAgentInput, name: string, current: ManagedDirectory): Promise<void> {
+  async #removeDeparted(input: SkillSyncAgentInput, name: string, managed: ManagedDirectory): Promise<void> {
+    const outcome = await this.#retireManaged(input, name, managed);
+    this.#logger.debug(
+      { code: "skill_sync_remove", skill: name, outcome },
+      outcome === "quarantined"
+        ? "Skill is no longer enabled; locally edited copy quarantined"
+        : "Skill is no longer enabled; removed",
+    );
+  }
+
+  /**
+   * Retire a managed directory, whether it is being replaced or removed.
+   *
+   * The edited-check lives in one place so the update and removal paths cannot drift apart: a
+   * locally edited copy is always quarantined into `.opentag/skill-conflicts/`, never silently
+   * destroyed. An unedited copy is removed.
+   */
+  async #retireManaged(
+    input: SkillSyncAgentInput,
+    name: string,
+    current: ManagedDirectory,
+  ): Promise<"quarantined" | "removed"> {
     const recorded = await readContentDigest(current.path);
     const live = await hashSkillDirectory(current.path).catch(() => undefined);
     const edited = recorded !== undefined && live !== undefined && recorded !== live;
     if (edited) {
       await quarantineConflict(input.cwd, name, current.path, this.#now(), this.#logger);
-    } else {
-      await rm(current.path, { recursive: true, force: true });
+      return "quarantined";
     }
+    await rm(current.path, { recursive: true, force: true });
+    return "removed";
   }
 }
 

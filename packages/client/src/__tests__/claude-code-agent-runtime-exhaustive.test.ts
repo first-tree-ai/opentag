@@ -221,6 +221,33 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     });
     await vi.waitFor(() => expect(constructionRuntime.state.phase).toBe("closed"));
 
+    /*
+     * The gateway descriptor is read per run and handed to the bridge, which writes it into that
+     * run's `mcp.json`. Reading it per run rather than at construction is what keeps the bearer
+     * current: the token is scoped to the execution, and this process is spawned fresh each run.
+     */
+    const gatewayBridge = vi.fn(async () => ({
+      allowedTools: [] as readonly string[],
+      configPath: "/tmp/mcp.json",
+      close: async () => undefined,
+    }));
+    const gatewayRuntime = await new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: () => new ManualClaudeCodeProcess([]),
+      startHostedToolBridge: gatewayBridge as never,
+    }).create({
+      ...createRequest(() => undefined),
+      configuration: {
+        provider: { mcpGateway: { url: "https://server.example.test/api/v1/mcp", token: "otmg_secret" } },
+      },
+    });
+    await gatewayRuntime.prompt({ runId: "run-gateway", input: input("x") });
+    expect(gatewayBridge).toHaveBeenCalledWith(undefined, "run-gateway", expect.anything(), {
+      url: "https://server.example.test/api/v1/mcp",
+      token: "otmg_secret",
+    });
+    await gatewayRuntime.close();
+
     const bridgeRuntime = await new ClaudeCodeAgentRuntimeFactory({
       createSessionId: () => SESSION_ID,
       startHostedToolBridge: async () => {
@@ -375,6 +402,29 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       { request: withConfiguration({ provider: { maxBudgetUsd: 0 } }), message: "maxBudgetUsd" },
       { request: withConfiguration({ provider: { maxTurns: 1.5 } }), message: "maxTurns" },
       { request: withConfiguration({ provider: { maxTurns: 0 } }), message: "maxTurns" },
+      /*
+       * The MCP gateway descriptor is validated before it can reach `mcp.json`. This Client composes
+       * it itself, but the same parser runs over a caller-supplied configuration, and a relative or
+       * non-HTTP URL would otherwise be written out for the CLI to interpret.
+       */
+      { request: withConfiguration({ provider: { mcpGateway: [] } }), message: "mcpGateway must be an object" },
+      { request: withConfiguration({ provider: { mcpGateway: {} } }), message: "requires a url and a token" },
+      {
+        request: withConfiguration({ provider: { mcpGateway: { url: "https://s.example/mcp" } } }),
+        message: "requires a url and a token",
+      },
+      {
+        request: withConfiguration({ provider: { mcpGateway: { url: "https://s.example/mcp", token: "" } } }),
+        message: "requires a url and a token",
+      },
+      {
+        request: withConfiguration({ provider: { mcpGateway: { url: "/api/v1/mcp", token: "t" } } }),
+        message: "url must be absolute",
+      },
+      {
+        request: withConfiguration({ provider: { mcpGateway: { url: "file:///etc/passwd", token: "t" } } }),
+        message: "url must be http or https",
+      },
     ];
     for (const { request, message } of invalidRequests) {
       await expect(new ClaudeCodeAgentRuntimeFactory().create(request as CreateAgentRuntimeRequest)).rejects.toThrow(

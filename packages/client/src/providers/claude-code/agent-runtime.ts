@@ -54,9 +54,22 @@ export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.f
   bindingSchemaVersion: CLAUDE_CODE_BINDING_SCHEMA_VERSION,
 });
 
+/**
+ * The MCP gateway endpoint for one execution.
+ *
+ * Both fields are opaque to this provider: it writes them into the run's `mcp.json` and never
+ * inspects, logs, or stores them. The token is execution-scoped, which is what makes writing a
+ * bearer to a 0600 file in a temp directory acceptable at all.
+ */
+interface ClaudeCodeMcpGatewayConfiguration {
+  readonly url: string;
+  readonly token: string;
+}
+
 interface ClaudeCodeProviderConfiguration {
   readonly maxBudgetUsd?: number;
   readonly maxTurns?: number;
+  readonly mcpGateway?: ClaudeCodeMcpGatewayConfiguration;
 }
 
 interface ClaudeCodeRuntimeOptions {
@@ -183,7 +196,20 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     let hostedToolBridge: ClaudeCodeHostedToolBridge | undefined;
     try {
       try {
-        hostedToolBridge = await this.#startHostedToolBridge(this.#hostedTools, request.runId, context.signal);
+        /*
+         * The gateway descriptor is read per run rather than at construction: its token is scoped to
+         * the current execution, and this process is spawned fresh for every run, so the bridge
+         * always writes the bearer that is live right now.
+         */
+        const mcpGateway = parseProviderConfiguration(
+          mergeConfiguration(this.#configuration, request.configuration)?.provider,
+        ).mcpGateway;
+        hostedToolBridge = await this.#startHostedToolBridge(
+          this.#hostedTools,
+          request.runId,
+          context.signal,
+          mcpGateway,
+        );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
         logger.debug({ code: "provider_start_failed", error: String(error) }, "Claude Code provider startup failed");
@@ -914,7 +940,7 @@ function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodePro
   if (!object) {
     throw new AgentRuntimeError("configuration_invalid", "Claude Code provider configuration must be an object");
   }
-  const allowed = new Set(["maxBudgetUsd", "maxTurns"]);
+  const allowed = new Set(["maxBudgetUsd", "maxTurns", "mcpGateway"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key)) {
       throw new AgentRuntimeError("configuration_invalid", `unknown Claude Code configuration field: ${key}`);
@@ -931,10 +957,42 @@ function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodePro
   if (maxTurns !== undefined && (!Number.isSafeInteger(maxTurns) || (maxTurns as number) <= 0)) {
     throw new AgentRuntimeError("configuration_invalid", "Claude Code maxTurns must be a positive safe integer");
   }
+  const mcpGateway = parseMcpGatewayConfiguration(object.mcpGateway);
   return {
     ...(typeof maxBudgetUsd === "number" ? { maxBudgetUsd } : {}),
     ...(typeof maxTurns === "number" ? { maxTurns } : {}),
+    ...(mcpGateway ? { mcpGateway } : {}),
   };
+}
+
+/**
+ * Validate the MCP gateway descriptor before it reaches a config file.
+ *
+ * The URL is required to be absolute http(s) here even though this Client composed it itself: this
+ * function also runs over a configuration supplied by a caller, and a relative or `file:` URL would
+ * otherwise be written into `mcp.json` for the CLI to interpret.
+ */
+function parseMcpGatewayConfiguration(value: unknown): ClaudeCodeMcpGatewayConfiguration | undefined {
+  if (value === undefined) return undefined;
+  const object = record(value);
+  if (!object) {
+    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway must be an object");
+  }
+  const url = object.url;
+  const token = object.token;
+  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
+    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway requires a url and a token");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway url must be absolute");
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway url must be http or https");
+  }
+  return { url, token };
 }
 
 function mergeConfiguration(
@@ -949,10 +1007,11 @@ function mergeConfiguration(
   const merged: AgentRunConfiguration = {
     ...base,
     ...override,
+    // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
     provider: {
       ...parseProviderConfiguration(base.provider),
       ...parseProviderConfiguration(override.provider),
-    },
+    } as JsonValue,
   };
   validateConfiguration(merged);
   return merged;

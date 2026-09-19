@@ -19,6 +19,7 @@ import type {
   AgentRunResult,
   AgentRuntime,
   AgentRuntimeEvent,
+  JsonValue,
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
@@ -37,6 +38,7 @@ import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-m
 import { buildProviderOutboxInstructions, GITHUB_NATIVE_CLI_INSTRUCTIONS } from "./provider-outbox-instructions.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type {
+  PreparedMcpGatewayLaunch,
   PreparedRuntimeCredentialEnvironment,
   PreparedWebToolsLaunch,
   RuntimeCredentialEnvironmentManager,
@@ -281,10 +283,12 @@ export class AgentTurnRunner {
         runId: owner.turnId,
         input: buildAgentInput(owner.request, supplementalContext),
         signal: runSignal,
-        // Pi-specific launch facts are only resolved when this execution actually carries them,
-        // so a non-web runtime manager is never consulted at all.
-        ...(started.webTools
-          ? webToolsPromptConfiguration(started.webTools, this.#runtimeManager.providerId(owner.request.sessionId))
+        /*
+         * Provider-specific launch facts are resolved only when this execution actually carries
+         * one, so a runtime manager with nothing to inject is never consulted at all.
+         */
+        ...(started.webTools || started.mcpGateway
+          ? providerLaunchConfiguration(started, this.#runtimeManager.providerId(owner.request.sessionId))
           : {}),
       });
       turn.phase = "reporting";
@@ -374,6 +378,7 @@ export class AgentTurnRunner {
     runSignal: AbortSignal;
     turnPlanInput?: ProviderCliTurnPlanPrepareInput;
     webTools?: PreparedWebToolsLaunch;
+    mcpGateway?: PreparedMcpGatewayLaunch;
   }> {
     await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, owner.turnId, "starting");
     const credentials = await this.#credentialEnvironment.prepare(
@@ -395,6 +400,7 @@ export class AgentTurnRunner {
       runSignal,
       ...(turnPlanInput ? { turnPlanInput } : {}),
       ...(credentials.web ? { webTools: credentials.web } : {}),
+      ...(credentials.mcp ? { mcpGateway: credentials.mcp } : {}),
     };
   }
 
@@ -462,19 +468,31 @@ function outgoingReplyCapturePlan(
 }
 
 /**
- * Per-Turn web tools launch for the Pi provider only. The trusted facts come from the freshly
- * prepared execution (never from Server content); other providers never see Pi-specific fields.
+ * Per-Turn provider launch facts, assembled from the freshly prepared execution.
+ *
+ * Every fact here is trusted and execution-scoped: it comes from what this Client just prepared,
+ * never from Server content, and it is re-derived each Turn so a descriptor can never outlive the
+ * execution that owns it. Each provider sees only what it can act on — Pi's extension socket never
+ * reaches Claude Code, and the MCP gateway never reaches a provider with no MCP configuration.
  */
-function webToolsPromptConfiguration(
-  webTools: PreparedWebToolsLaunch | undefined,
+function providerLaunchConfiguration(
+  launch: { webTools?: PreparedWebToolsLaunch; mcpGateway?: PreparedMcpGatewayLaunch },
   providerId: string | undefined,
 ): { configuration?: AgentRunConfiguration } {
-  if (!webTools || providerId !== "pi") return {};
-  return {
-    configuration: {
-      provider: { webTools: { extensionPath: webTools.extensionPath, socketPath: webTools.socketPath } },
-    },
-  };
+  const provider: Record<string, JsonValue> = {};
+  if (launch.webTools && providerId === "pi") {
+    provider.webTools = { extensionPath: launch.webTools.extensionPath, socketPath: launch.webTools.socketPath };
+  }
+  /*
+   * Claude Code only, for now. Its process is spawned per run, so a per-execution bearer reaches it
+   * naturally; Codex spawns its app-server once per Session runtime from a frozen argument vector,
+   * which a short-lived token cannot be injected into without a separate mechanism.
+   */
+  if (launch.mcpGateway && providerId === "claude-code") {
+    provider.mcpGateway = { url: launch.mcpGateway.url, token: launch.mcpGateway.token };
+  }
+  if (Object.keys(provider).length === 0) return {};
+  return { configuration: { provider } };
 }
 
 export function buildAgentInput(

@@ -15,10 +15,13 @@ import {
 } from "./im-credential-environment-manager.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import {
+  MCP_GATEWAY_PATH,
   RUNTIME_CREDENTIAL_CAPABILITY,
+  RUNTIME_MCP_GATEWAY_CAPABILITY,
   RUNTIME_PROVIDER_PROXY_CAPABILITY,
   RUNTIME_WEB_TOOLS_CAPABILITY,
   type RuntimeExecutionSandbox,
+  type RuntimeExecutionServiceRequest,
   type RuntimeExecutionSource,
   type RuntimeProxyProvider,
   runtimeProxyErrorReason,
@@ -78,6 +81,18 @@ export interface PreparedWebToolsLaunch {
   readonly socketPath: string;
 }
 
+/**
+ * MCP gateway launch facts for one execution.
+ *
+ * The `url` is composed here against the Server origin this Client already pinned — the Server sends
+ * only the fixed path, so nothing it says can redirect the provider CLI somewhere else. The token is
+ * a secret, but an execution-scoped one: it stops working when this execution ends.
+ */
+export interface PreparedMcpGatewayLaunch {
+  readonly url: string;
+  readonly token: string;
+}
+
 export interface PreparedRuntimeCredentialEnvironment {
   /** Present in proxy mode; exact-execution cleanup token. */
   readonly executionId?: string;
@@ -96,6 +111,8 @@ export interface PreparedRuntimeCredentialEnvironment {
   readonly slackConfigDir?: string;
   /** Present only while this execution carries an authorized web service with a live gateway. */
   readonly web?: PreparedWebToolsLaunch;
+  /** Present only while this execution holds a live MCP gateway bearer. */
+  readonly mcp?: PreparedMcpGatewayLaunch;
 }
 
 export interface RuntimeCredentialEnvironmentManagerOptions {
@@ -144,6 +161,7 @@ interface ActiveProxyExecution {
   readonly slackApiHost?: string;
   readonly slackConfigDir?: string;
   readonly web?: PreparedWebToolsLaunch;
+  readonly mcp?: PreparedMcpGatewayLaunch;
   readonly webGateway?: WebToolsGatewayServer;
   /** Short private per-execution socket directory owned by this execution only. */
   readonly webSocketDirectory?: string;
@@ -366,13 +384,49 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   /**
-   * Web service opt-in: requested only when the deployment enabled web tools AND the Server
-   * negotiated the webTools capability; the Server still grants per its own Account policy.
+   * Platform service opt-in, one entry per service whose own capability the Server negotiated.
+   *
+   * Web additionally requires a deployment opt-in, because it spends a Router tenant key. MCP needs
+   * none: binding a Server in the web UI is the opt-in, and the Server still refuses the grant when
+   * the Agent has nothing mounted.
    */
-  #requestedProxyServices(): readonly "web"[] | undefined {
-    return this.#options.webTools && this.#options.connection.capabilityVersion(RUNTIME_WEB_TOOLS_CAPABILITY) === 1
-      ? (["web"] as const)
-      : undefined;
+  #requestedProxyServices(): readonly RuntimeExecutionServiceRequest[] | undefined {
+    const services: RuntimeExecutionServiceRequest[] = [];
+    if (this.#options.webTools && this.#options.connection.capabilityVersion(RUNTIME_WEB_TOOLS_CAPABILITY) === 1) {
+      services.push("web");
+    }
+    if (this.#options.connection.capabilityVersion(RUNTIME_MCP_GATEWAY_CAPABILITY) === 1) {
+      services.push("mcp");
+    }
+    return services.length > 0 ? services : undefined;
+  }
+
+  /**
+   * Fetch this execution's MCP gateway bearer, if the Server granted the service.
+   *
+   * Soft-fails for the same reason the web gateway does: losing MCP tools must never cost the Agent
+   * its turn. The URL is composed against the pinned Server origin, never taken from the Server.
+   */
+  async #prepareMcpGateway(relay: RuntimeCredentialRelay): Promise<PreparedMcpGatewayLaunch | undefined> {
+    const serverUrl = this.#options.serverUrl;
+    if (!serverUrl) return undefined;
+    try {
+      const granted = await relay.acquireMcpGatewayToken();
+      if (!granted) return undefined;
+      return { url: new URL(MCP_GATEWAY_PATH, serverUrl).toString(), token: granted.token };
+    } catch (error) {
+      /*
+       * Losing the gateway must never cost the Agent its turn, so every failure here degrades to
+       * "no MCP tools this execution" — including a peer that does not implement the request at all.
+       * The execution is already prepared by this point; throwing would discard working credentials
+       * over an optional service.
+       */
+      this.#logger.warn(
+        { code: "mcp_gateway_unavailable", reason: runtimeProxyErrorReason(error) },
+        "The MCP gateway could not be prepared for this execution",
+      );
+      return undefined;
+    }
   }
 
   async #openProxyRelay(
@@ -490,6 +544,7 @@ export class RuntimeCredentialEnvironmentManager {
     const imProvider = providers.includes("feishu") ? "feishu" : providers.includes("slack") ? "slack" : undefined;
     const outboxContext = imProvider ? runtimeProxyOutboxContext(relay.cliMetadataFor(imProvider)) : undefined;
     const webGateway = await this.#startWebGateway(relay);
+    const mcp = await this.#prepareMcpGateway(relay);
     const web = webGateway
       ? {
           extensionPath: this.#options.webTools?.extensionPath ?? "",
@@ -507,6 +562,7 @@ export class RuntimeCredentialEnvironmentManager {
       slackApiHost: adapter.slackApiHost,
       ...(imProvider === "slack" ? { slackConfigDir: layout.slackConfigDir } : {}),
       ...(web ? { web } : {}),
+      ...(mcp ? { mcp } : {}),
       ...(webGateway ? { webGateway: webGateway.gateway, webSocketDirectory: webGateway.socketDirectory } : {}),
     };
     this.#proxyExecutions.set(sessionId, active);
@@ -541,6 +597,7 @@ export class RuntimeCredentialEnvironmentManager {
       slackApiHost: active.slackApiHost,
       ...(active.slackConfigDir ? { slackConfigDir: active.slackConfigDir } : {}),
       ...(active.web ? { web: active.web } : {}),
+      ...(active.mcp ? { mcp: active.mcp } : {}),
     };
   }
 

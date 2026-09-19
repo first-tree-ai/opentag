@@ -39,6 +39,9 @@ export type {
   RuntimeExecutionService,
   RuntimeExecutionServiceRequest,
   RuntimeExecutionSource,
+  RuntimeMcpGatewayRejectCode,
+  RuntimeMcpGatewayRequest,
+  RuntimeMcpGatewayResult,
   RuntimeProviderProxyAuthFrame,
   RuntimeProviderProxyCancelFrame,
   RuntimeProviderProxyClientFrame,
@@ -57,6 +60,7 @@ export {
   decodeProviderProxyDataFrame,
   encodeProviderProxyDataFrame,
   FEISHU_TENANT_TOKEN_LOCAL_SENTINEL,
+  MCP_GATEWAY_PATH,
   PROVIDER_PROXY_AUTH_TIMEOUT_MS,
   PROVIDER_PROXY_CHUNK_MAX_BYTES,
   PROVIDER_PROXY_HEADER_MAX_BYTES,
@@ -97,6 +101,8 @@ export const RUNTIME_CREDENTIAL_CAPABILITY = RUNTIME_CAPABILITY.runtimeCredentia
 export const RUNTIME_PROVIDER_PROXY_CAPABILITY = RUNTIME_CAPABILITY.providerProxy;
 /** The `web_tools_v1` negotiation: both ends speak the fixed web tools protocol at version 1. */
 export const RUNTIME_WEB_TOOLS_CAPABILITY = RUNTIME_CAPABILITY.webTools;
+/** Both ends speak the inbound MCP gateway contract at version 1. */
+export const RUNTIME_MCP_GATEWAY_CAPABILITY = RUNTIME_CAPABILITY.mcpGateway;
 
 /** Short aliases used across the Client runtime modules. */
 export const RUNTIME_PROXY_DATA_HEADER_MAX_BYTES = PROVIDER_PROXY_HEADER_MAX_BYTES;

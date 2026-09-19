@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "./runtime-connection.js";
 import {
+  MCP_GATEWAY_PATH,
   parseRuntimeCredentialServerFrame,
   RUNTIME_PROVIDER_PROXY_PATH,
   type RuntimeCredentialGrant,
@@ -9,7 +10,9 @@ import {
   type RuntimeExecutionProvider,
   type RuntimeExecutionSandbox,
   type RuntimeExecutionService,
+  type RuntimeExecutionServiceRequest,
   type RuntimeExecutionSource,
+  type RuntimeMcpGatewayResult,
   type RuntimeProxyCliMetadata,
   type RuntimeProxyProvider,
   type RuntimeProxyTicketResult,
@@ -63,10 +66,10 @@ export interface RuntimeCredentialExecutionSubject {
   readonly sessionId: string;
   readonly source: RuntimeExecutionSource;
   /**
-   * Platform services the Client opts into for this execution (`web`). Sent only when the
-   * webTools capability was negotiated; the Server grants per its own deployment policy.
+   * Platform services the Client opts into for this execution. Each is sent only when that
+   * service's own capability was negotiated; the Server grants per its own policy.
    */
-  readonly services?: readonly "web"[];
+  readonly services?: readonly RuntimeExecutionServiceRequest[];
 }
 
 /** Structural data-connection surface so the parent harness can drive the real Relay. */
@@ -478,6 +481,48 @@ export class RuntimeCredentialRelay {
       return;
     }
     grant.dead = true;
+  }
+
+  /**
+   * Fetch this execution's MCP gateway bearer.
+   *
+   * Its own request rather than a field on the open result, matching the proxy ticket: the open
+   * result carries authorization statements, and every secret in this protocol is fetched. The URL
+   * is never taken from the Server — only the fixed path is checked against the constant, and the
+   * caller composes it against the origin it already pinned.
+   *
+   * Returns `undefined` rather than throwing when the Server refuses. A missing gateway costs the
+   * Agent its MCP tools; it must not cost it the turn.
+   */
+  async acquireMcpGatewayToken(signal?: AbortSignal): Promise<{ token: string; expiresAt: string } | undefined> {
+    const granted = this.#services.some((service) => service.service === "mcp" && service.scopes.includes("mcp:tools"));
+    if (!granted) return undefined;
+    let result: RuntimeMcpGatewayResult;
+    try {
+      result = (await this.#controlRequest(
+        { type: "runtime:mcp:gateway", executionId: this.#executionId },
+        "runtime:mcp:gateway:result",
+        signal,
+      )) as RuntimeMcpGatewayResult;
+    } catch (error) {
+      this.#logger.warn(
+        { code: "mcp_gateway_token_failed", reason: runtimeProxyErrorReason(error) },
+        "The MCP gateway token request failed",
+      );
+      return undefined;
+    }
+    if (result.status === "rejected") {
+      this.#logger.warn(
+        { code: "mcp_gateway_token_rejected", reason: result.code },
+        "The Server refused an MCP gateway token",
+      );
+      return undefined;
+    }
+    if (result.executionId !== this.#executionId || result.path !== MCP_GATEWAY_PATH) {
+      this.#logger.warn({ code: "mcp_gateway_token_fence_mismatch" }, "The MCP gateway token fence does not match");
+      return undefined;
+    }
+    return { token: result.token, expiresAt: result.expiresAt };
   }
 
   async #connectData(signal?: AbortSignal): Promise<void> {

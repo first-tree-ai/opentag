@@ -114,6 +114,31 @@ The GHCR package is public, so CapRover pulls the image anonymously. If the pack
 registry credential in **CapRover → Cluster → Docker Registries** using a GitHub token with `read:packages`, otherwise
 every deployment fails at the pull step.
 
+## Object storage for Agent Skills
+
+Agent Skills are stored as one `tar.gz` object per Skill in S3-compatible object storage. Storage is
+optional: without the group below, Skill listing and the enable, disable, and remove operations still
+work, but every bundle upload or download fails with `SKILL_STORAGE_UNAVAILABLE` and the UI disables
+those actions instead of offering a dead button. The five material values must be configured together
+or not at all; the server refuses to start on a partially configured group.
+
+| Variable | Value |
+| --- | --- |
+| `OPENTAG_SKILL_STORAGE_ENDPOINT` | HTTP(S) origin of the S3-compatible service, without credentials, query, or fragment |
+| `OPENTAG_SKILL_STORAGE_REGION` | Region the client signs for, for example `us-east-1` |
+| `OPENTAG_SKILL_STORAGE_BUCKET` | Bucket that holds Skill archives; it must stay private |
+| `OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID` | Access key with read and write access to that bucket |
+| `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | Secret for that access key; never logged |
+| `OPENTAG_SKILL_STORAGE_PREFIX` | Optional object-key prefix; defaults to `skills` |
+| `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | Optional; defaults to `true`, which MinIO and several other services require |
+
+Bundles stream through the server under the caller's own credential — the Account session, a Computer
+machine token, or a Session CLI proof — so the bucket never needs presigned or public URLs and can be
+fully private. Object keys are derived server-side from the Account, Agent, Skill, and content hash;
+a caller never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
+container that creates the `opentag-skills` bucket, and the commented block in `.env.example` points
+the server at it.
+
 ## Official website session indicator
 
 When `OPENTAG_PUBLIC_URL` is `https://app.opentag.build`, the Server exposes

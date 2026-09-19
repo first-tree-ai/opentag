@@ -44,7 +44,7 @@ async function withArchiveError(operation: () => Promise<unknown>, code: string)
 /** Builds a gzipped tar archive whose members are described by the entries. */
 async function writeTar(
   path: string,
-  entries: Array<{ name: string; type?: string; content?: string }>,
+  entries: Array<{ name: string; type?: "file" | "directory" | "symlink"; content?: string }>,
 ): Promise<void> {
   await new Promise<void>((resolveEntry, rejectEntry) => {
     const pack = tarPack();
@@ -58,7 +58,7 @@ async function writeTar(
         pack.finalize();
         return;
       }
-      const entry = entries[index] as { name: string; type?: string; content?: string };
+      const entry = entries[index] as { name: string; type?: "file" | "directory" | "symlink"; content?: string };
       index += 1;
       const sink = pack.entry(
         { name: entry.name, type: entry.type ?? "file", size: entry.content?.length ?? 0 },

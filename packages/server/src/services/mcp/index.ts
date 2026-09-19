@@ -4,8 +4,9 @@
  * Delivered here: Server definitions, per-Agent mounts with per-Agent overrides, per-Agent
  * authorization (anonymous / Bearer / OAuth), capability probing, and refresh maintenance.
  *
- * Not delivered here: runtime delivery of MCP credentials to Providers. An Agent does not yet call
- * MCP tools; see docs/design/mcp-server-integration.md for the Status and the upgrade path.
+ * Also delivered here: the runtime gateway. An Agent reaches its bound Servers through one inbound
+ * MCP endpoint on this Server, which resolves that Agent's own credentials and calls upstream, so no
+ * upstream credential is ever delivered to a Provider. See docs/design/mcp-server-integration.md.
  */
 
 export {
@@ -42,6 +43,29 @@ export {
   type McpRegistrationBinding,
   registrationAadContext,
 } from "./mcp-credential-cipher.js";
+export {
+  dispatchGatewayRequest,
+  jsonRpcError,
+  MCP_GATEWAY_INSTRUCTIONS_MAX_BYTES,
+  type McpGatewayHandlers,
+  type McpGatewayReply,
+  type McpGatewayRpcRequest,
+  parseGatewayRequest,
+  toolErrorResult,
+} from "./mcp-gateway-protocol.js";
+export {
+  type McpGatewayCatalog,
+  McpGatewayService,
+  type McpGatewayServiceOptions,
+  type McpGatewayTool,
+  type McpGatewayToolCallResult,
+} from "./mcp-gateway-service.js";
+export {
+  McpUpstreamCaller,
+  type McpUpstreamCallerOptions,
+  type McpUpstreamCallInput,
+  type McpUpstreamCallResult,
+} from "./mcp-gateway-upstream.js";
 export {
   authorizationServerMetadataUrls,
   MCP_OAUTH_STATE_TTL_MS,

@@ -242,6 +242,45 @@ export class McpServerService {
    * Ownership is proven the same way every other read in this service proves it: the Agent must
    * belong to the Account and not be deleted, and the definition must be the Account's.
    */
+  /**
+   * Whether this Agent has anything the runtime gateway could reach.
+   *
+   * Asked once per execution open, so it is a bounded existence check rather than a read of the
+   * mounts: the open path only needs to decide whether to grant the service, and a `LIMIT 1` answers
+   * that without loading tool snapshots that may run to hundreds of kilobytes.
+   *
+   * Ownership is proven inline here instead of through `#requireAgent`, because a caller that is not
+   * entitled to the Agent should get "nothing to grant" rather than a thrown not-found: this runs on
+   * the execution-open path, where a throw would fail the whole execution over a service the Client
+   * merely asked about.
+   */
+  async hasUsableMount(accountId: string, agentId: string): Promise<boolean> {
+    const rows = await this.#database
+      .select({ mcpServerId: agentMcpServers.mcpServerId })
+      .from(agentMcpServers)
+      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
+      .innerJoin(agents, eq(agents.id, agentMcpServers.agentId))
+      .innerJoin(
+        mcpServerAuthorizations,
+        and(
+          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
+          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
+        ),
+      )
+      .where(
+        and(
+          eq(agentMcpServers.agentId, agentId),
+          eq(agentMcpServers.enabled, true),
+          eq(mcpServers.accountId, accountId),
+          eq(agents.createdByUserId, accountId),
+          ne(agents.status, "deleted"),
+          eq(mcpServerAuthorizations.status, "active"),
+        ),
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async listAgentBindings(accountId: string, agentId: string): Promise<McpJoinedBinding[]> {
     await this.#requireAgent(accountId, agentId);
     const rows = await this.#database

@@ -22,6 +22,7 @@ import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js"
 import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
+import { type McpGatewayRoutesOptions, registerMcpGatewayRoutes } from "./api/mcp-gateway.js";
 import { registerMcpOAuthRoutes } from "./api/mcp-oauth.js";
 import { registerMcpServerRoutes } from "./api/mcp-servers.js";
 import { registerMeRoutes } from "./api/me.js";
@@ -150,6 +151,12 @@ export interface CreateAppOptions {
   runtimeDurableWork?: RuntimeDurableWorkRoutesOptions;
   /** Fixed runtime web routes; present only when the deployment enabled the web service. */
   runtimeWeb?: RuntimeWebRoutesOptions;
+  /**
+   * The inbound MCP gateway; present only when the gateway is wired. It sits with the runtime routes
+   * rather than the authenticated management block because its caller is a provider CLI holding an
+   * execution-scoped bearer, not a signed-in Account.
+   */
+  mcpGateway?: McpGatewayRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /**
    * Undoing setup so onboarding can be walked again. Any staging deployment supplies it, and every
@@ -440,6 +447,7 @@ export function createApp(options: CreateAppOptions = {}) {
   if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
   if (options.runtimeDurableWork) registerRuntimeDurableWorkRoutes(app, options.runtimeDurableWork);
   if (options.runtimeWeb) registerRuntimeWebRoutes(app, options.runtimeWeb);
+  if (options.mcpGateway) registerMcpGatewayRoutes(app, options.mcpGateway);
 
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,

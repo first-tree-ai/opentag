@@ -8,6 +8,7 @@ import {
   ConfigRuntimeWebPolicy,
   createRuntimeCredentialServices,
   KindAwareComputerAuthVerifier,
+  type McpUsableMountReader,
   RouterWebClient,
   type RuntimeConnectionFence,
   type RuntimeControlAuthority,
@@ -45,6 +46,11 @@ export async function createPlatformRuntime(options: {
   registry: ConnectionRegistry;
   custody: RuntimeCustodyStore;
   machineAuth: ComputerAuthVerifier;
+  /**
+   * Reader for "does this Agent have a usable MCP mount". Present enables the MCP gateway; absent
+   * keeps it fully off, with no grant, no token, and no route.
+   */
+  mcpMounts?: McpUsableMountReader;
   github?: GitHubIntegrationComposition;
   /**
    * Explicit trusted Cloud control verifier/activity port, owned by Computer/Cloud
@@ -122,6 +128,7 @@ export async function createPlatformRuntime(options: {
           },
         }
       : {}),
+    ...(options.mcpMounts ? { mcp: { mounts: options.mcpMounts } } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
   });
   const unsubscribe = executions.onClose(({ executionId }) => {

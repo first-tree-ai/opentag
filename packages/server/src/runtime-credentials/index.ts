@@ -17,6 +17,9 @@ import { FEISHU_OPERATIONS } from "./feishu-operations.js";
 import { exchangeFeishuTenantToken, FeishuTenantTokenCache } from "./feishu-tenant-token.js";
 import { type RuntimeGitHubAdmission, UnavailableRuntimeGitHubAdmission } from "./github-admission.js";
 import { ImProviderMaterialResolver } from "./im-material.js";
+import { McpGatewayExecutionAuthorizer } from "./mcp-gateway-execution.js";
+import { RuntimeMcpGatewayTokenStore } from "./mcp-gateway-token-store.js";
+import { LiveMcpServicePolicy, type McpUsableMountReader } from "./mcp-policy.js";
 import { ProviderOperationRegistry } from "./operation-registry.js";
 import { ImProviderProxyAdapter, type ProviderProxyAdapter } from "./provider-proxy-adapter.js";
 import { RuntimeCredentialOwner } from "./runtime-credential-owner.js";
@@ -40,6 +43,9 @@ export * from "./feishu-operations.js";
 export * from "./feishu-tenant-token.js";
 export * from "./github-admission.js";
 export * from "./im-material.js";
+export * from "./mcp-gateway-execution.js";
+export * from "./mcp-gateway-token-store.js";
+export * from "./mcp-policy.js";
 export * from "./operation-registry.js";
 export * from "./provider-material.js";
 export * from "./provider-proxy-adapter.js";
@@ -108,6 +114,15 @@ export interface RuntimeCredentialServicesOptions {
     readonly policy: RuntimeWebServicePolicy & RuntimeWebTenantResolver;
     readonly router: RouterWebClient;
   };
+  /**
+   * MCP gateway wiring. Absent keeps the gateway fully off: no execution carries MCP scopes, no
+   * token can be issued, and the route has nothing to authorize against.
+   *
+   * Only the mount reader is injected. Unlike the web service there is no deployment policy to
+   * configure — binding an MCP Server in the web UI *is* the opt-in — so the parent passes the
+   * service that can answer "does this Agent have a usable mount" and nothing else.
+   */
+  mcp?: { readonly mounts: McpUsableMountReader };
   sweepIntervalMs?: number;
 }
 
@@ -122,6 +137,8 @@ export interface RuntimeCredentialServices {
   broker: RuntimeCredentialBroker;
   /** Present only when the deployment configured the web service. */
   web?: RuntimeWebService;
+  /** Present only when the MCP gateway is wired; the route needs both to serve a request. */
+  mcp?: { tokens: RuntimeMcpGatewayTokenStore; authorizer: McpGatewayExecutionAuthorizer };
   close(): void;
 }
 
@@ -149,6 +166,35 @@ function createRuntimeWebService(
     router: web.router,
     executions: deps.executions,
   });
+}
+
+/**
+ * Builds the optional MCP gateway pieces exactly once per stack; absent config keeps it fully off.
+ *
+ * The token store and the fence are returned together because neither is useful alone: a token that
+ * nothing re-checks would be a bearer credential with no fence, and a fence with no store would have
+ * nothing to authenticate.
+ */
+function createMcpGatewayServices(
+  options: RuntimeCredentialServicesOptions,
+  deps: {
+    executions: RuntimeExecutionRegistry;
+    scopeResolver: RuntimeScopeResolverPort;
+    authority: RuntimeExecutionAuthority;
+    connectionFence: RuntimeConnectionFence;
+  },
+): { tokens: RuntimeMcpGatewayTokenStore; authorizer: McpGatewayExecutionAuthorizer } | undefined {
+  if (!options.mcp) return undefined;
+  return {
+    tokens: new RuntimeMcpGatewayTokenStore(),
+    authorizer: new McpGatewayExecutionAuthorizer({
+      executions: deps.executions,
+      scopeResolver: deps.scopeResolver,
+      authority: deps.authority,
+      connectionFence: deps.connectionFence,
+      ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
+    }),
+  };
 }
 
 /**
@@ -204,6 +250,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     },
   });
   const adapters = createImAdapters(options, urlHandles);
+  const mcp = createMcpGatewayServices(options, { executions, scopeResolver, authority, connectionFence });
   const owner = new RuntimeCredentialOwner({
     registry: options.registry,
     ...(options.controlAuthority ? { controlAuthority: options.controlAuthority } : {}),
@@ -218,6 +265,8 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     gitHubAdmission,
     ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
     ...(options.web ? { webPolicy: options.web.policy } : {}),
+    ...(options.mcp ? { mcpPolicy: new LiveMcpServicePolicy(options.mcp.mounts) } : {}),
+    ...(mcp ? { mcpGatewayTokens: mcp.tokens } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
     ...(options.sweepIntervalMs !== undefined ? { sweepIntervalMs: options.sweepIntervalMs } : {}),
   });
@@ -243,6 +292,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     urlHandles,
     broker,
     ...(web ? { web } : {}),
+    ...(mcp ? { mcp } : {}),
     close: () => {
       unsubscribeHandles();
       owner.close();

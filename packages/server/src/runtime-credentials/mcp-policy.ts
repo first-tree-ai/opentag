@@ -25,3 +25,31 @@ export interface RuntimeMcpServicePolicy {
 }
 
 export const RUNTIME_MCP_SERVICE_SCOPES: readonly RuntimeMcpServiceScope[] = ["mcp:tools"];
+
+export interface McpUsableMountReader {
+  /** True when this Agent has at least one enabled mount with an active authorization. */
+  hasUsableMount(accountId: string, agentId: string): Promise<boolean>;
+}
+
+/**
+ * The live policy: an Agent may open an MCP execution exactly when it has something to reach.
+ *
+ * A probe that has not yet succeeded is deliberately *not* disqualifying. A mount is often
+ * authorized moments before the first turn, and the snapshot arrives from a background pass; failing
+ * the grant on that race would leave the gateway absent for the one turn the user is watching, and
+ * the catalogue already reports an unprobed Server as a note rather than pretending it has tools.
+ */
+export class LiveMcpServicePolicy implements RuntimeMcpServicePolicy {
+  readonly #mounts: McpUsableMountReader;
+
+  constructor(mounts: McpUsableMountReader) {
+    this.#mounts = mounts;
+  }
+
+  async authorizeMcp(input: {
+    accountId: string;
+    agentId: string;
+  }): Promise<readonly RuntimeMcpServiceScope[] | undefined> {
+    return (await this.#mounts.hasUsableMount(input.accountId, input.agentId)) ? RUNTIME_MCP_SERVICE_SCOPES : undefined;
+  }
+}

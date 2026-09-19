@@ -568,7 +568,8 @@ test("the screenshot pass captures every primary page and writes a contact sheet
     },
     { file: "usage", route: `/agents/${agentId}/usage`, heading: "Usage" },
     { file: "skills", route: `/agents/${agentId}/skills`, heading: "Skills" },
-    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "Integrations" },
+    // The navigation calls the page "Integrations"; its own heading is the GitHub repositories block.
+    { file: "integrations", route: `/agents/${agentId}/integrations`, heading: "GitHub repositories" },
     { file: "account", route: "/account", heading: "Account" },
     {
       file: "internal-agent-setup",

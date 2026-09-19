@@ -14,6 +14,7 @@ export * from "./sandboxes.js";
 export * from "./session-cli-proofs.js";
 export * from "./session-messages.js";
 export * from "./sessions.js";
+export * from "./skills.js";
 export * from "./slack-installations.js";
 export * from "./slack-oauth.js";
 export * from "./slack-webhook-receipts.js";

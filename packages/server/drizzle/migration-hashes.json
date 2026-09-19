@@ -235,6 +235,11 @@
       "idx": 46,
       "tag": "0046_wild_skullbuster",
       "sha256": "b1c5af12dbb7d5b377bd9a3eba6de29e68781c1cb079c53e1c14ae55e7866506"
+    },
+    {
+      "idx": 47,
+      "tag": "0047_whole_onslaught",
+      "sha256": "fc760f16856332cf1216146a3ac45beb85d280cd7c4954f53fb3cf52b2c1c48e"
     }
   ]
 }

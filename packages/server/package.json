@@ -37,19 +37,23 @@
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.10.0",
     "@slack/web-api": "^8.1.1",
+    "aws4fetch": "^1.0.20",
     "better-auth": "^1.7.2",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.12.3",
+    "fflate": "^0.8.3",
     "graphql": "17.0.2",
     "jose": "^6.2.10",
     "logfire": "^0.22.5",
     "postgres": "^3.4.9",
+    "tar-stream": "3.2.0",
     "ws": "^8.21.3",
     "zod": "^4.5.1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@testcontainers/postgresql": "^12.1.0",
+    "@types/tar-stream": "^3.1.4",
     "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10",
     "vitest": "^4.1.11"

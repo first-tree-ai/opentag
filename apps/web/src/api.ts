@@ -37,6 +37,9 @@ import {
   agentRuntimeTestPath,
   agentSetupPath,
   agentSetupRefreshPath,
+  agentSkillBundlePath,
+  agentSkillPath,
+  agentSkillsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
@@ -86,6 +89,8 @@ import {
   ListAccountComputersResponseSchema,
   type ListAgentMCPServersResponse,
   ListAgentMCPServersResponseSchema,
+  type ListAgentSkillsResponse,
+  ListAgentSkillsResponseSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListAvailableMCPServersResponse,
@@ -111,6 +116,13 @@ import {
   PROVIDER_READINESS_V2_HEADER,
   type RebindAgentComputerRequest,
   type SetMCPAuthorizationRequest,
+  SKILL_FORMAT_HEADER,
+  SKILL_REPLACE_HEADER,
+  SKILL_SHA256_HEADER,
+  SKILL_UPLOAD_CONTENT_TYPE,
+  type SkillArchiveFormat,
+  type SkillDetail,
+  SkillDetailSchema,
   type StartGitHubAuthorizationRequest,
   type StartGitHubAuthorizationResponse,
   StartGitHubAuthorizationResponseSchema,
@@ -132,6 +144,7 @@ import {
   type UpdateGitHubConnectionBindingsRequest,
   type UpdateMCPBindingRequest,
   type UpdateMCPServerRequest,
+  type UpdateSkillRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
   UserProfileSchema,
@@ -648,6 +661,63 @@ export class BrowserApi {
       method: "POST",
       headers: this.csrfHeaders(),
     });
+  }
+
+  /*
+   * Agent Skills. A Skill belongs to exactly one Agent, so every read and write is addressed under
+   * that Agent; the list response is also the single source of the deployment's storage status, so
+   * the page never has to probe for it. The bundle download is a same-origin GET link, not a fetch:
+   * the browser's own navigation carries the session cookie and the Server's `Content-Disposition`.
+   */
+  agentSkills(agentId: string): Promise<ListAgentSkillsResponse> {
+    return this.request(agentSkillsPath(agentId), ListAgentSkillsResponseSchema);
+  }
+
+  agentSkill(agentId: string, skillId: string): Promise<SkillDetail> {
+    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema);
+  }
+
+  /**
+   * Uploads one archive. The Server re-packs and re-hashes what it stores, so the sha256 header is
+   * an integrity check on the transfer rather than a value copied into the row; the format header
+   * tells the Server how to unpack it. Replacing a name-identical Skill is explicit and only ever
+   * happens after the user confirms it, hence the header is set only when `replace` is true.
+   */
+  uploadAgentSkill(
+    agentId: string,
+    input: { file: Blob; sha256: string; format: SkillArchiveFormat; replace: boolean },
+  ): Promise<SkillDetail> {
+    return this.request(agentSkillsPath(agentId), SkillDetailSchema, {
+      method: "POST",
+      body: input.file,
+      headers: {
+        "content-type": SKILL_UPLOAD_CONTENT_TYPE,
+        [SKILL_SHA256_HEADER]: input.sha256,
+        [SKILL_FORMAT_HEADER]: input.format,
+        ...(input.replace ? { [SKILL_REPLACE_HEADER]: "true" } : {}),
+        ...this.csrfHeaders(),
+      },
+    });
+  }
+
+  updateAgentSkill(agentId: string, skillId: string, input: UpdateSkillRequest): Promise<SkillDetail> {
+    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  removeAgentSkill(agentId: string, skillId: string): Promise<void> {
+    return this.requestNoContent(agentSkillPath(agentId, skillId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  /** The same-origin bundle download path, built from the shared template rather than a string. */
+  agentSkillBundleUrl(agentId: string, skillId: string): string {
+    return agentSkillBundlePath(agentId, skillId);
   }
 
   /**

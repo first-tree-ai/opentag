@@ -363,10 +363,14 @@ export async function extractSkillArchive(stream: Readable, targetDirectory: str
   });
   const extractor = tarExtract();
   const state: WalkState = { bytes: 0, entries: 0 };
+  let failure: SkillArchiveError | undefined;
   extractor.on("entry", (header, entryStream, next) => {
     handleMember(target, header, entryStream, state).then(
       () => next(),
-      (error: unknown) => next(error),
+      (error: unknown) => {
+        if (error instanceof SkillArchiveError) failure = error;
+        next(error);
+      },
     );
   });
 
@@ -374,6 +378,7 @@ export async function extractSkillArchive(stream: Readable, targetDirectory: str
     await pipeline(stream, compressedMeter, createGunzip(), extractor);
   } catch (error) {
     await rm(target, { recursive: true, force: true });
+    if (failure) throw failure;
     if (error instanceof SkillArchiveError) throw error;
     fail("archive_invalid", "Skill archive cannot be unpacked", error);
   }

@@ -230,6 +230,11 @@
       "idx": 45,
       "tag": "0045_abandoned_rocket_raccoon",
       "sha256": "454cdf4714d670ba8e87799a3db8fecddcfa13b23484cea0d47cf256b0644885"
+    },
+    {
+      "idx": 46,
+      "tag": "0046_feishu_pending_activation",
+      "sha256": "72db458dfcc32cadd5c560faecf0fcf0b44d802fa2f890be84b92e12024b6a29"
     }
   ]
 }

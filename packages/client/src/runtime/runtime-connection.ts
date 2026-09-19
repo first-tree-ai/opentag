@@ -15,6 +15,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeCapabilityOffers,
   type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
   RuntimeCredentialServerFrameSchema,
@@ -160,6 +161,7 @@ export class RuntimeConnection {
   #stopped = false;
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
   #negotiatedCapabilities: RuntimeNegotiatedCapabilities = {};
+  #supportedCapabilities: RuntimeCapabilityOffers = RUNTIME_CLIENT_CAPABILITY_OFFERS;
   #verifiedCapabilities: RuntimeClientCapabilities = { imCredentialGrant: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
   readonly #providerReadiness = new Map<
@@ -213,6 +215,16 @@ export class RuntimeConnection {
 
   capabilityVersion(capability: string): number | undefined {
     return this.#state === "registered" ? this.#negotiatedCapabilities[capability] : undefined;
+  }
+
+  /** Composition must advertise only the credential path it actually installed. */
+  setCredentialProxyEnabled(enabled: boolean): void {
+    if (this.#hasRun) throw new Error("Credential proxy mode must be configured before connecting");
+    this.#supportedCapabilities = { ...RUNTIME_CLIENT_CAPABILITY_OFFERS };
+    if (!enabled) {
+      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.runtimeCredential];
+      delete this.#supportedCapabilities[RUNTIME_CAPABILITY.providerProxy];
+    }
   }
 
   setVerifiedCapabilities(
@@ -636,7 +648,7 @@ export class RuntimeConnection {
           }
           if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
             expectedNegotiatedCapabilities = negotiateRuntimeCapabilities(
-              RUNTIME_CLIENT_CAPABILITY_OFFERS,
+              this.#supportedCapabilities,
               frame.supportedCapabilities,
             );
             const missing = [
@@ -675,7 +687,7 @@ export class RuntimeConnection {
               ? {
                   ...registration,
                   protocolVersion: RUNTIME_PROTOCOL_V2,
-                  supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+                  supportedCapabilities: this.#supportedCapabilities,
                   requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
                 }
               : registration,

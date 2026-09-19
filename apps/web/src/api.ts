@@ -55,6 +55,7 @@ import {
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptCancelPath,
+  feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_BINDINGS_PATH,
@@ -422,6 +423,13 @@ export class BrowserApi {
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+  }
+
+  checkFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptCheckPath(attemptId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {

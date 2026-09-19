@@ -1054,6 +1054,138 @@ describe("FeishuConnectionManager", () => {
     expect(slot).toMatchObject({ status: "provisioning", setupState: "validating" });
   });
 
+  it("refuses a different App returned for same-App reauthorization", async () => {
+    const value = await connectionFixture();
+    const owner = crypto.randomUUID();
+    const attemptId = await validatingConnectionAttempt(value, owner);
+    await connectionDatabase.database
+      .update(imBindings)
+      .set({
+        setupIntent: "reauthorize",
+        externalAppId: "cli_original",
+      })
+      .where(eq(imBindings.setupAttemptId, attemptId));
+    const adapter = fakeConnectionAdapter({ appId: "cli_different" });
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId: owner,
+      imBindings: value.imBindings,
+      createAdapter: () => adapter.adapter,
+      runtimeReady: () => true,
+    });
+    await expect(
+      manager.activateAtomicAttempt({
+        attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_different",
+        appSecret: "secret",
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_APP_IDENTITY_MISMATCH" });
+    const [row] = await connectionDatabase.database
+      .select()
+      .from(imBindings)
+      .where(eq(imBindings.setupAttemptId, attemptId));
+    expect(row).toMatchObject({ externalAppId: "cli_original", credentialGeneration: 0 });
+  });
+
+  it.each(["abort", "expiry"] as const)("rolls back activation when %s wins before commit", async (kind) => {
+    const value = await connectionFixture();
+    const owner = crypto.randomUUID();
+    const attemptId = await validatingConnectionAttempt(value, owner);
+    const adapter = fakeConnectionAdapter({ appId: "cli_conn" });
+    const controller = new AbortController();
+    let now = new Date();
+    const expiresAt = new Date(now.getTime() + 1_000);
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId: owner,
+      imBindings: value.imBindings,
+      createAdapter: () => adapter.adapter,
+      runtimeReady: () => true,
+      now: () => now,
+      afterActivationAgentLocked: async () => {
+        if (kind === "abort") controller.abort(new Error("check canceled"));
+        else now = new Date(expiresAt.getTime() + 1);
+      },
+    });
+    await expect(
+      manager.activateAtomicAttempt({
+        attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_conn",
+        appSecret: "secret",
+        candidateExpiresAt: expiresAt,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(kind === "abort" ? "check canceled" : "FEISHU_SETUP_CANDIDATE_EXPIRED");
+    const [row] = await connectionDatabase.database
+      .select()
+      .from(imBindings)
+      .where(eq(imBindings.setupAttemptId, attemptId));
+    expect(row).toMatchObject({ status: "provisioning", credentialGeneration: 0, encryptedCredential: null });
+    expect(adapter.channel.disconnect).toHaveBeenCalled();
+  });
+
+  it("classifies durable candidate readiness without opening a message channel", async () => {
+    const value = await connectionFixture();
+    const probes: Array<{ channel: boolean; appId: string }> = [];
+    let scopes: string[] = [...FEISHU_REQUIRED_TENANT_SCOPES];
+    let activateStatus: number | null = 2;
+    let runtimeReady = true;
+    const createAdapter = (input: { appId: string; appSecret: string; teamId: string | null; channel?: unknown }) => {
+      const fake = fakeConnectionAdapter({ appId: input.appId, scopes });
+      const adapter = {
+        ...(fake.adapter as object),
+        probeBotIdentity: vi.fn(async () => ({ openId: `ou_${input.appId}`, activateStatus })),
+      } as unknown as FeishuAdapter;
+      probes.push({ channel: input.channel !== null, appId: input.appId });
+      return adapter;
+    };
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindings,
+      createAdapter,
+      runtimeReady: () => runtimeReady,
+    });
+    const base = { agentId: value.agent.id, appId: "cli_probe", appSecret: "secret" };
+
+    const partial = [...FEISHU_REQUIRED_TENANT_SCOPES].slice(0, 65);
+    scopes = partial;
+    expect(await manager.checkCandidate(base)).toEqual({
+      status: "waiting",
+      reason: "permissions_pending",
+      missingScopes: [...FEISHU_REQUIRED_TENANT_SCOPES].slice(65),
+    });
+    scopes = [...FEISHU_REQUIRED_TENANT_SCOPES];
+    runtimeReady = false;
+    expect(await manager.checkCandidate(base)).toEqual({
+      status: "waiting",
+      reason: "runtime_unavailable",
+      missingScopes: [],
+    });
+    runtimeReady = true;
+    // Official Bot info values: only 2 means enabled; unknown is not proof of readiness.
+    for (activateStatus of [0, 1, 3, 4, 5, 6, null, 99]) {
+      expect(await manager.checkCandidate(base)).toEqual({
+        status: "waiting",
+        reason: "app_unavailable",
+        missingScopes: [],
+      });
+    }
+    activateStatus = 2;
+    expect(await manager.checkCandidate(base)).toEqual({ status: "ready" });
+    // Every probe stayed channel-free: a candidate must never hold a socket while it waits.
+    expect(probes.length).toBeGreaterThan(0);
+    expect(probes.every((probe) => !probe.channel)).toBe(true);
+    await manager.stop();
+  });
+
   it("claims and renews leases during maintenance, then releases changed bindings", async () => {
     const value = await connectionFixture();
     const bindingId = await value.imBindings.activateFeishu({
@@ -1128,7 +1260,13 @@ describe("FeishuConnectionManager", () => {
     const attemptId = await validatingConnectionAttempt(value, owner);
     const first = fakeConnectionAdapter({ appId: "cli_replace" });
     const second = fakeConnectionAdapter({ appId: "cli_replace" });
-    const createAdapter = vi.fn().mockReturnValueOnce(first.adapter).mockReturnValueOnce(second.adapter);
+    // Activation now probes scopes without a channel first, so the channel adapters are selected by
+    // the presence of a channel input rather than by call order.
+    const probe = fakeConnectionAdapter({ appId: "cli_replace" });
+    const channelAdapters = [first.adapter, second.adapter];
+    const createAdapter = vi.fn((input: { channel?: unknown }) =>
+      input.channel === null ? probe.adapter : (channelAdapters.shift() ?? second.adapter),
+    );
     const manager = new FeishuConnectionManager({
       database: connectionDatabase.database,
       inbox: { ingest: vi.fn() } as never,

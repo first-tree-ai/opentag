@@ -6,6 +6,7 @@ import {
   agentImBindingUnbindPath,
   agentSlackOAuthStartPath,
   FEISHU_REQUIRED_TENANT_SCOPES,
+  feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
@@ -210,6 +211,19 @@ function services() {
     createOrReuse: vi.fn().mockResolvedValue(feishuAttempt),
     get: vi.fn().mockResolvedValue(feishuAttempt),
     cancel: vi.fn().mockResolvedValue({ ...feishuAttempt, state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" }),
+    check: vi.fn().mockResolvedValue({
+      ...feishuAttempt,
+      state: "pending_activation",
+      qrUrl: null,
+      expiresAt: "2026-09-10T01:00:00.000Z",
+      activation: {
+        appId: "cli_durable",
+        reason: "permissions_pending",
+        missingScopes: ["im:message"],
+        lastCheckedAt: "2026-09-10T00:00:00.000Z",
+        nextCheckAt: "2026-09-10T00:01:00.000Z",
+      },
+    }),
   };
   return { imBindings, feishu };
 }
@@ -257,6 +271,19 @@ describe("ImBinding HTTP API", () => {
     expect(canceled.statusCode).toBe(200);
     expect(canceled.json()).toMatchObject({ state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" });
     expect(service.feishu.cancel).toHaveBeenCalledWith(userId, attemptId);
+    const checked = await app.inject({
+      method: "POST",
+      url: feishuSetupAttemptCheckPath(attemptId),
+      headers: authorization,
+    });
+    expect(checked.statusCode).toBe(200);
+    expect(checked.json()).toMatchObject({
+      state: "pending_activation",
+      qrUrl: null,
+      activation: { appId: "cli_durable", reason: "permissions_pending", missingScopes: ["im:message"] },
+    });
+    expect(checked.json()).not.toHaveProperty("activation.appSecret");
+    expect(service.feishu.check).toHaveBeenCalledWith(userId, attemptId);
     expect(
       (await app.inject({ method: "GET", url: imBindingDiagnosticsPath(imBindingId), headers: authorization })).json(),
     ).toMatchObject({ provider: "feishu", ready: false, slackAppId: null });

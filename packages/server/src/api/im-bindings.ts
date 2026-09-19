@@ -5,6 +5,7 @@ import {
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_IM_BINDING_UNBIND_TEMPLATE,
   CreateFeishuSetupAttemptRequestSchema,
+  FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
   IM_BINDING_BY_ID_TEMPLATE,
@@ -98,6 +99,13 @@ export function registerImBindingRoutes(
       return reply
         .code(200)
         .send(FeishuSetupAttemptSchema.parse(await feishu.cancel(authenticatedUserId(request), attemptId)));
+    });
+
+    app.post(FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
+      return reply
+        .code(200)
+        .send(FeishuSetupAttemptSchema.parse(await feishu.check(authenticatedUserId(request), attemptId)));
     });
   }
 

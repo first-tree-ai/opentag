@@ -68,6 +68,7 @@
   "im_feishu_setup_interrupted": "{provider} setup was interrupted. Generate a new QR code and try again.",
   "im_feishu_setup_started": "{provider} setup started",
   "im_feishu_state_expires": "State: {state}. Expires {expires}.",
+  "im_feishu_status_unavailable": "Couldn’t load the connection status. Refresh this page to try again.",
   "im_feishu_unavailable": "{provider} is unavailable right now. Check the connection and try again.",
   "im_feishu_waiting_for_authorization": "Waiting for {provider} authorization",
   "im_group_chat_messages": "Group chat messages",

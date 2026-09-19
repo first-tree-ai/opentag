@@ -82,6 +82,15 @@ the decrypted shape; service-level schema and identity checks are required.
 The existing setup timer scans candidates in bounded keyset batches. It checks the saved
 next-check time, uses bounded concurrency and jitter, and respects provider `Retry-After`.
 Manual POST checks use the same admission. GET requests remain read-only.
+Settings reads the current open attempt with GET on the existing Agent setup-attempt collection.
+This uses the existing attempt DTO and Account ownership checks, independently of the active
+binding: a working old connection must not hide a saved replacement. No open attempt returns 204.
+
+An instance that cannot authenticate a saved context preserves its ciphertext and fixed deadline,
+reports a bounded diagnostic, and continues scanning other rows. A later instance with the correct
+key can recover it. Authenticated but malformed or identity-mismatched plaintext remains terminal;
+unauthenticated data is never activated. Authorized cancellation and expiry do not require decrypting
+the candidate. Key rotation must retain the old key for the candidate retention period.
 
 Admission compares the binding, attempt, state, original ciphertext and deadline. Each
 check writes a new random claim token into the existing owner field. Heartbeats, observations,

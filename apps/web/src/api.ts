@@ -425,6 +425,10 @@ export class BrowserApi {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
   }
 
+  currentFeishuSetupAttempt(agentId: string): Promise<FeishuSetupAttempt | undefined> {
+    return this.requestOptional(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema);
+  }
+
   checkFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptCheckPath(attemptId), FeishuSetupAttemptSchema, {
       method: "POST",

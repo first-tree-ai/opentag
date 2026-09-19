@@ -36,16 +36,20 @@ sources that file and calls the official `lark-cli` or `slack api` command direc
 finishes, retried during Session or Client shutdown if removal fails, and recovered by the next Client startup after a
 crash. Internal Sessions never receive the file.
 
-Codex shell snapshots are disabled, and managed Sessions set `ZDOTDIR` to the existing OpenTag state home, preserving
-their Turn launcher in `PATH`. Snapshots can otherwise restore an ambient login-shell path over the managed environment.
+The default OpenTag Codex runtime arguments disable shell snapshots for every Session created with those defaults.
+Managed Sessions additionally set `ZDOTDIR` to the existing OpenTag state home when the managed home and launcher
+path are present, preserving their Turn launcher in `PATH`. Snapshots can otherwise restore an ambient login-shell path over the managed environment.
 Disabling login shells alone is insufficient: a user's `~/.zshenv` also runs for non-login shells and can put a public
 provider CLI before the Session launcher, bypassing receipt capture and potentially selecting ambient credentials.
-This setting applies to managed executions only and does not modify the user's shell files or global CLI configuration.
+The `ZDOTDIR` override is limited to managed environments. Neither setting modifies the user's shell files or global
+CLI configuration.
 
 The daemon prepares the visible Session's `runs` directory as a separate writable root for reply evidence. The Agent
 does not receive write access to its parent plan directory, launcher, credential storage, or other Sessions. Receipt
 writers validate the private ancestors without changing their permissions and create files only within the granted
 subtree; a workspace-only sandbox otherwise prevents both receipts and their failure markers from being saved.
+If preparing this trusted directory fails, Session startup fails rather than granting an unsafe path or silently losing
+required reply evidence. This differs from optional Context Tree configuration preparation.
 
 An IM-delivery Turn receives the provider-native message reference from that event. A visible collaboration callback
 instead receives a non-secret default outbox context from credential grant v2. The Server derives that context from the

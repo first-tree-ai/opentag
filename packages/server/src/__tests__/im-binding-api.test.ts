@@ -210,6 +210,7 @@ function services() {
   const feishu = {
     createOrReuse: vi.fn().mockResolvedValue(feishuAttempt),
     get: vi.fn().mockResolvedValue(feishuAttempt),
+    getForAgent: vi.fn().mockResolvedValue(feishuAttempt),
     cancel: vi.fn().mockResolvedValue({ ...feishuAttempt, state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" }),
     check: vi.fn().mockResolvedValue({
       ...feishuAttempt,
@@ -252,6 +253,20 @@ describe("ImBinding HTTP API", () => {
     });
     expect(handoff.json()).toEqual({ bindingState: "active", handoffReady: false });
 
+    const current = await app.inject({
+      method: "GET",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+    });
+    expect(current.statusCode).toBe(200);
+    expect(current.json()).toEqual(feishuAttempt);
+    expect(service.feishu.getForAgent).toHaveBeenCalledWith(userId, agentId);
+    expect(service.feishu.createOrReuse).not.toHaveBeenCalled();
+    service.feishu.getForAgent.mockResolvedValueOnce(undefined);
+    expect(
+      (await app.inject({ method: "GET", url: agentFeishuSetupAttemptsPath(agentId), headers: authorization }))
+        .statusCode,
+    ).toBe(204);
     const createFeishu = await app.inject({
       method: "POST",
       url: agentFeishuSetupAttemptsPath(agentId),

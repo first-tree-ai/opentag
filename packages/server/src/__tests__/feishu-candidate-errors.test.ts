@@ -79,6 +79,26 @@ describe("official candidate error classification", () => {
     it.each([10003, 429, 500, undefined])("preserves a candidate on ambiguous error %s", (code) => {
       expect(classify({ code }, 0)).toEqual({ status: "waiting", reason: "temporary_failure", missingScopes: [] });
     });
+    it.each([10014, 11207, 11210, 20009, 99991662, 99991673])(
+      "keeps official app availability code %s recoverable",
+      (code) => {
+        expect(classify({ response: { status: 400, data: { code } } }, 0)).toEqual({
+          status: "waiting",
+          reason: "app_unavailable",
+          missingScopes: [],
+        });
+      },
+    );
+    it.each(["10014", "11207", "11210", "20009", "99991662", "99991673"])(
+      "keeps wrapped numeric string app availability code %s recoverable",
+      (code) => {
+        expect(classify({ cause: { data: { code } } }, 0)).toEqual({
+          status: "waiting",
+          reason: "app_unavailable",
+          missingScopes: [],
+        });
+      },
+    );
     it("keeps a disabled App recoverable and respects provider retry hints", () => {
       expect(classify({ response: { status: 400, data: { code: 10014 } } }, 0)).toEqual({
         status: "waiting",

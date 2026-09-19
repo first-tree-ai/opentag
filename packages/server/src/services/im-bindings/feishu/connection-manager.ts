@@ -30,6 +30,13 @@ const CONNECTION_SCAN_PAGE_SIZE = 100;
 /** The channel-free Bot info probe is a bounded metadata read, not channel work. */
 const CANDIDATE_BOT_PROBE_TIMEOUT_MS = 5_000;
 
+/**
+ * The documented `bot/v3/info` activate_status values that prove an App is not enabled: 0 install
+ * pending, 1 tenant-disabled, 3 installed-pending-enable, 4 upgrade-pending-enable, 5 license
+ * expired, 6 plan expired or downgraded. Only 2 is enabled; an omitted field carries no evidence.
+ */
+const KNOWN_NON_ENABLED_ACTIVATE_STATUS: ReadonlySet<number> = new Set([0, 1, 3, 4, 5, 6]);
+
 interface OwnedChannel {
   adapter: FeishuAdapter;
   epoch: number;
@@ -210,7 +217,10 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           timeoutMs: CANDIDATE_BOT_PROBE_TIMEOUT_MS,
           circuitKey: `feishu:binding:${input.appId}`,
         });
-        if (bot.activateStatus !== 2) {
+        // Only an explicit documented non-enabled status is evidence against the App: the endpoint
+        // may omit the optional field while still proving the Bot identity, and an undocumented
+        // value is decided by the mandatory atomic channel activation, never guessed here.
+        if (bot.activateStatus !== null && KNOWN_NON_ENABLED_ACTIVATE_STATUS.has(bot.activateStatus)) {
           return { status: "waiting", reason: "app_unavailable", missingScopes: [] };
         }
       } catch (error) {

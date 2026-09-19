@@ -68,6 +68,7 @@
   "im_feishu_setup_interrupted": "{provider}设置已中断。请生成新二维码后重试。",
   "im_feishu_setup_started": "{provider}设置已开始",
   "im_feishu_state_expires": "状态：{state}。过期时间：{expires}。",
+  "im_feishu_status_unavailable": "暂时无法获取连接状态，请刷新页面重试。",
   "im_feishu_unavailable": "{provider}当前不可用。请检查连接后重试。",
   "im_feishu_waiting_for_authorization": "等待{provider}授权",
   "im_group_chat_messages": "群聊消息",

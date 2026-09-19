@@ -19,6 +19,7 @@ import {
   FeishuSetupService,
   type FeishuSetupTiming,
   feishuRetryAfterMs,
+  readFeishuSetupContext,
 } from "../services/im-bindings/feishu/index.js";
 import type { FeishuRegistration, FeishuRegistrationGateway } from "../services/im-bindings/feishu/registration.js";
 import { ImBindingService, type VerifiedFeishuBinding } from "../services/im-bindings/index.js";
@@ -196,7 +197,11 @@ function createFakeActivation(
 function createService(
   value: FixtureValue,
   activation: FeishuBindingActivation,
-  options: { timing?: FeishuSetupTiming; gateway?: FeishuRegistrationGateway } = {},
+  options: {
+    timing?: FeishuSetupTiming;
+    gateway?: FeishuRegistrationGateway;
+    onDiagnostic?: (code: string) => void;
+  } = {},
 ): FeishuSetupService {
   return new FeishuSetupService({
     database: database.database,
@@ -245,9 +250,12 @@ async function rowForAgent(agentId: string) {
 }
 
 interface CandidateInput {
+  bindingId?: string;
   attemptId?: string;
   appId?: string;
   appSecret?: string;
+  /** Encrypt the context under a different ring, e.g. to model a key the reading instance lacks. */
+  cipher?: ApplicationCipher;
   state?: "pending_activation" | "validating" | "awaiting_user";
   owner?: string;
   heartbeatAt?: Date;
@@ -269,7 +277,7 @@ function buildCandidateContext(
 ): string {
   const savedAt = input.savedAt ?? clock.now;
   return encodeFeishuSetupCandidate(
-    value.cipher,
+    input.cipher ?? value.cipher,
     {
       version: 1,
       kind: "feishu_candidate",
@@ -299,7 +307,7 @@ async function insertCandidate(
   binding: { agentId: string; id?: string },
   input: CandidateInput = {},
 ) {
-  const bindingId = binding.id ?? randomUUID();
+  const bindingId = binding.id ?? input.bindingId ?? randomUUID();
   const attemptId = input.attemptId ?? randomUUID();
   const savedAt = input.savedAt ?? clock.now;
   const encryptedSetupContext = buildCandidateContext(value, bindingId, attemptId, input);
@@ -1119,7 +1127,7 @@ describe("Feishu durable connection lifecycle", () => {
     await service.stop();
   });
 
-  it("treats a cross-attempt ciphertext as terminal without activating the foreign candidate", async () => {
+  it("never activates unauthenticated cross-attempt ciphertext or mistakes it for a known-invalid plaintext", async () => {
     const value = await fixture();
     const other = await createAgent(value, "cross-other");
     const foreign = await insertCandidate(value, { agentId: other.id }, { appSecret: "foreign-secret" });
@@ -1134,12 +1142,14 @@ describe("Feishu durable connection lifecycle", () => {
     const service = createService(value, fake.activation);
     // Read-only projection fails closed on the authentication mismatch.
     await expect(service.get(value.bootstrap.userId, target.attemptId)).rejects.toThrow(/authenticated/);
-    // Maintenance fails the row instead of crashing, and clears the unreadable secret.
-    const projection = await service.check(value.bootstrap.userId, target.attemptId);
-    expect(projection.state).toBe("failed");
+    // The cipher deliberately makes key skew and tampering indistinguishable. Preserve until
+    // the fixed deadline, never authenticate or activate a foreign identity.
+    await expect(service.check(value.bootstrap.userId, target.attemptId)).rejects.toMatchObject({
+      code: "FEISHU_SETUP_CONTEXT_UNREADABLE",
+    });
     const row = await rowForAgent(value.agent.id);
-    expect(row?.lastErrorCode).toBe("FEISHU_SETUP_CONTEXT_INVALID");
-    expect(row?.encryptedSetupContext).toBeNull();
+    expect(row?.setupState).toBe("pending_activation");
+    expect(row?.encryptedSetupContext).toBe(foreignRow?.encryptedSetupContext);
     expect(fake.activations).toHaveLength(0);
     await service.stop();
   });
@@ -1351,5 +1361,327 @@ describe("Feishu setup context envelope", () => {
       kind: "qr",
       qrUrl,
     });
+  });
+
+  it("classifies a missing ring key as undecryptable, distinct from authenticated-invalid", async () => {
+    const value = await fixture();
+    const wrongRing = new ApplicationCipher({
+      legacyKey: new Uint8Array(32).fill(101),
+      keys: { "other-2026-09": new Uint8Array(32).fill(31) },
+      activeKeyId: "other-2026-09",
+      writeVersion: 2,
+    });
+    const bindingId = randomUUID();
+    const attemptId = randomUUID();
+    const candidate = {
+      version: 1 as const,
+      kind: "feishu_candidate" as const,
+      bindingId,
+      attemptId,
+      appId: "cli_ring",
+      appSecret: CANDIDATE_SECRET,
+      teamBrand: "feishu" as const,
+      savedAt: clock.now.toISOString(),
+      nextCheckAt: clock.now.toISOString(),
+      observation: null,
+    };
+    const encrypted = encodeFeishuSetupCandidate(value.cipher, candidate, bindingId, attemptId);
+    expect(readFeishuSetupContext(wrongRing, encrypted, bindingId, attemptId)).toMatchObject({
+      status: "undecryptable",
+    });
+    expect(readFeishuSetupContext(value.cipher, encrypted, bindingId, attemptId)).toMatchObject({
+      status: "decoded",
+      context: { kind: "candidate" },
+    });
+    // Authenticated plaintext that is malformed or bound to another identity keeps the terminal class.
+    const malformed = value.cipher.encryptCredential("not-json", feishuSetupAttemptContext(bindingId, attemptId));
+    expect(readFeishuSetupContext(value.cipher, malformed, bindingId, attemptId)).toEqual({ status: "invalid" });
+    const mismatched = value.cipher.encryptCredential(
+      JSON.stringify({ ...candidate, bindingId: randomUUID() }),
+      feishuSetupAttemptContext(bindingId, attemptId),
+    );
+    expect(readFeishuSetupContext(value.cipher, mismatched, bindingId, attemptId)).toEqual({ status: "invalid" });
+    // The legacy decode contract is unchanged: non-strict absorbs, strict surfaces the failure.
+    expect(decodeFeishuSetupContext(wrongRing, encrypted, bindingId, attemptId)).toBeUndefined();
+    expect(() => decodeFeishuSetupContext(wrongRing, encrypted, bindingId, attemptId, { strict: true })).toThrow(
+      /authenticated/,
+    );
+  });
+});
+
+/** A service whose key ring lacks the candidate's key: the v2 envelope cannot be authenticated. */
+function wrongRingService(
+  value: FixtureValue,
+  activation: FeishuBindingActivation,
+  options: {
+    timing?: FeishuSetupTiming;
+    gateway?: FeishuRegistrationGateway;
+    onDiagnostic?: (code: string) => void;
+  } = {},
+): FeishuSetupService {
+  return new FeishuSetupService({
+    database: database.database,
+    cipher: wrongRingCipher(),
+    onDiagnostic: options.onDiagnostic,
+    instanceId: randomUUID(),
+    imBindings: value.imBindings,
+    registrations: options.gateway ?? { start: vi.fn() },
+    activation,
+    timing: { checkIntervalMs: 1_000, checkJitterMs: 0, ownerStaleMs: 60, checkDeadlineMs: 5_000, ...options.timing },
+    now: () => clock.now,
+    random: () => 0,
+  });
+}
+
+function wrongRingCipher(): ApplicationCipher {
+  return new ApplicationCipher({
+    legacyKey: new Uint8Array(32).fill(101),
+    keys: { "other-2026-09": new Uint8Array(32).fill(31) },
+    activeKeyId: "other-2026-09",
+    writeVersion: 2,
+  });
+}
+
+describe("Agent-owned open authorization reads", () => {
+  it("finds a saved replacement while the old binding is active, without changing it", async () => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    const service = createService(value, fake.activation);
+    const bindingId = await value.imBindings.activateFeishu({
+      agentId: value.agent.id,
+      appId: "cli_active",
+      appSecret: "active-secret",
+      teamId: "tenant_active",
+      botOpenId: "ou_active",
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    });
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id, id: bindingId },
+      { appId: "cli_candidate" },
+    );
+    const before = await rowForAgent(value.agent.id);
+    const attempt = await service.getForAgent(value.bootstrap.userId, value.agent.id);
+    expect(attempt).toMatchObject({
+      id: candidate.attemptId,
+      state: "pending_activation",
+      activation: { appId: "cli_candidate" },
+    });
+    expect(await rowForAgent(value.agent.id)).toEqual(before);
+    await expect(service.getForAgent(randomUUID(), value.agent.id)).rejects.toThrow();
+    expect(fake.activations).toHaveLength(0);
+    await service.cancel(value.bootstrap.userId, candidate.attemptId);
+    expect(await service.getForAgent(value.bootstrap.userId, value.agent.id)).toBeUndefined();
+    expect((await rowForAgent(value.agent.id))?.encryptedCredential).toBe(before?.encryptedCredential);
+    await service.stop();
+  });
+});
+
+describe("Feishu durable candidate under a key ring missing its key", () => {
+  it("preserves an undecryptable candidate through the sweep without starving later rows, then recovers", async () => {
+    const value = await fixture();
+    const foreignCipher = wrongRingCipher();
+    const foreignValue = {
+      ...value,
+      cipher: foreignCipher,
+      imBindings: new ImBindingService(database.database, foreignCipher, { now: () => clock.now }),
+    };
+    const fake = createFakeActivation(foreignValue);
+    // The unreadable candidate sorts first, so a terminalized or throwing read would starve the second row.
+    const unreadable = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_ring_first", bindingId: "00000000-0000-4000-8000-000000000001" },
+    );
+    const secondAgent = await createAgent(value, "ring-second");
+    const readable = await insertCandidate(
+      value,
+      { agentId: secondAgent.id },
+      { appId: "cli_ring_second", cipher: wrongRingCipher(), bindingId: "00000000-0000-4000-8000-000000000002" },
+    );
+    const before = await rowForAgent(value.agent.id);
+
+    const foreign = wrongRingService(value, fake.activation, {
+      timing: { ownerHeartbeatMs: 10, checkIntervalMs: 0 },
+    });
+    foreign.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowForAgent(secondAgent.id))?.setupState).toBe("succeeded");
+      },
+      { timeout: 8_000 },
+    );
+    await foreign.stop();
+
+    // The later readable row was claimed and activated; the unreadable one is byte-for-byte intact.
+    expect(fake.activations).toHaveLength(1);
+    expect(fake.activations[0]?.appId).toBe("cli_ring_second");
+    expect(fake.activations[0]?.attemptId).toBe(readable.attemptId);
+    const preserved = await rowForAgent(value.agent.id);
+    expect(preserved).toMatchObject({
+      setupState: "pending_activation",
+      setupAttemptId: unreadable.attemptId,
+      setupOwnerInstanceId: null,
+      lastErrorCode: null,
+    });
+    expect(preserved?.encryptedSetupContext).toBe(before?.encryptedSetupContext);
+    expect(preserved?.setupExpiresAt).toEqual(before?.setupExpiresAt);
+
+    // Once the owning ring returns, the same candidate completes without re-registration.
+    const ownerFake = createFakeActivation(value);
+    const owner = createService(value, ownerFake.activation);
+    const recovered = await owner.check(value.bootstrap.userId, unreadable.attemptId);
+    expect(recovered.state).toBe("succeeded");
+    expect(ownerFake.activations).toHaveLength(1);
+    await owner.stop();
+  });
+
+  it("fails manual check and replacement create honestly without mutating the candidate", async () => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    const start = vi.fn();
+    const service = wrongRingService(value, fake.activation, { gateway: { start } });
+
+    const pending = await insertCandidate(value, { agentId: value.agent.id }, { appId: "cli_unreadable" });
+    const validatingAgent = await createAgent(value, "unreadable-validating");
+    await insertCandidate(
+      value,
+      { agentId: validatingAgent.id },
+      { appId: "cli_unreadable_validating", state: "validating", owner: randomUUID(), heartbeatAt: clock.now },
+    );
+    const before = await rowForAgent(value.agent.id);
+
+    await expect(service.check(value.bootstrap.userId, pending.attemptId)).rejects.toMatchObject({
+      code: "FEISHU_SETUP_CONTEXT_UNREADABLE",
+    });
+    await expect(service.createOrReuse(value.bootstrap.userId, value.agent.id, "create")).rejects.toMatchObject({
+      code: "FEISHU_SETUP_CONTEXT_UNREADABLE",
+    });
+    await expect(service.createOrReuse(value.bootstrap.userId, validatingAgent.id, "create")).rejects.toMatchObject({
+      code: "FEISHU_SETUP_CONTEXT_UNREADABLE",
+    });
+
+    expect(start).not.toHaveBeenCalled();
+    expect(fake.activations).toHaveLength(0);
+    const after = await rowForAgent(value.agent.id);
+    expect(after?.encryptedSetupContext).toBe(before?.encryptedSetupContext);
+    expect(after?.setupState).toBe("pending_activation");
+    const validatingRow = await rowForAgent(validatingAgent.id);
+    expect(validatingRow?.setupState).toBe("validating");
+    expect(validatingRow?.encryptedSetupContext).toBeTruthy();
+    await service.stop();
+  });
+
+  it.each(["pending_activation", "validating"] as const)(
+    "allows a new QR after an unreadable %s attempt expires",
+    async (state) => {
+      const value = await fixture();
+      const fake = createFakeActivation(value);
+      const pending = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
+      const gateway = { start: vi.fn(() => registration(pending.promise)) };
+      const service = wrongRingService(value, fake.activation, { gateway });
+      const old = await insertCandidate(
+        value,
+        { agentId: value.agent.id },
+        {
+          state,
+          expiresAt: new Date(clock.now.getTime() - 1_000),
+          ...(state === "validating" ? { owner: randomUUID(), heartbeatAt: clock.now } : {}),
+        },
+      );
+      const fresh = await service.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      expect(fresh.state).toBe("awaiting_user");
+      expect(fresh.id).not.toBe(old.attemptId);
+      expect(gateway.start).toHaveBeenCalledOnce();
+      expect(fake.activations).toHaveLength(0);
+      await service.stop();
+    },
+  );
+
+  it("cancels an undecryptable candidate and clears its ciphertext", async () => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    const service = wrongRingService(value, fake.activation);
+    const { attemptId } = await insertCandidate(value, { agentId: value.agent.id });
+
+    const canceled = await service.cancel(value.bootstrap.userId, attemptId);
+    expect(canceled).toMatchObject({ state: "canceled", errorCode: "FEISHU_SETUP_CANCELED", qrUrl: null });
+    const row = await rowForAgent(value.agent.id);
+    expect(row).toMatchObject({
+      setupState: "canceled",
+      lastErrorCode: "FEISHU_SETUP_CANCELED",
+      encryptedSetupContext: null,
+      setupExpiresAt: null,
+      setupOwnerInstanceId: null,
+    });
+    expect(fake.activations).toHaveLength(0);
+    await service.stop();
+  });
+
+  it("applies the fixed deadline to an undecryptable candidate on cancel and on sweep", async () => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    const service = wrongRingService(value, fake.activation, { timing: { ownerHeartbeatMs: 10 } });
+    const past = new Date(clock.now.getTime() - 1_000);
+
+    const viaCancel = await insertCandidate(value, { agentId: value.agent.id }, { expiresAt: past });
+    await expect(service.cancel(value.bootstrap.userId, viaCancel.attemptId)).resolves.toMatchObject({
+      state: "expired",
+      errorCode: "FEISHU_SETUP_CANDIDATE_EXPIRED",
+    });
+    expect((await rowForAgent(value.agent.id))?.encryptedSetupContext).toBeNull();
+
+    const sweepAgent = await createAgent(value, "ring-sweep-expiry");
+    await insertCandidate(value, { agentId: sweepAgent.id }, { expiresAt: past });
+    service.start();
+    await vi.waitFor(
+      async () => {
+        const row = await rowForAgent(sweepAgent.id);
+        expect(row?.setupState).toBe("expired");
+        expect(row?.lastErrorCode).toBe("FEISHU_SETUP_CANDIDATE_EXPIRED");
+        expect(row?.encryptedSetupContext).toBeNull();
+      },
+      { timeout: 8_000 },
+    );
+    await service.stop();
+    expect(fake.activations).toHaveLength(0);
+  });
+
+  it("leaves a stale-claimed undecryptable validating row to its owning key ring", async () => {
+    const value = await fixture();
+    const fake = createFakeActivation(value);
+    await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { state: "validating", owner: randomUUID(), heartbeatAt: new Date(clock.now.getTime() - 3_600_000) },
+    );
+    const diagnostic = vi.fn();
+    const foreign = wrongRingService(value, fake.activation, {
+      onDiagnostic: diagnostic,
+      timing: { ownerHeartbeatMs: 10, ownerStaleMs: 60 },
+    });
+    foreign.start();
+    await vi.waitFor(() => expect(diagnostic).toHaveBeenCalledWith("FEISHU_SETUP_CONTEXT_UNREADABLE"));
+    await foreign.stop();
+
+    // The foreign ring never terminalizes, releases, or rewrites what it cannot read.
+    const preserved = await rowForAgent(value.agent.id);
+    expect(preserved?.setupState).toBe("validating");
+    expect(preserved?.encryptedSetupContext).toBeTruthy();
+    expect(preserved?.lastErrorCode).toBeNull();
+
+    // The owning ring recovers the stale claim and completes the lifecycle.
+    const owner = createService(value, fake.activation, {
+      timing: { ownerHeartbeatMs: 10, ownerStaleMs: 60, checkIntervalMs: 0 },
+    });
+    owner.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowForAgent(value.agent.id))?.setupState).toBe("succeeded");
+      },
+      { timeout: 8_000 },
+    );
+    await owner.stop();
+    expect(fake.activations).toHaveLength(1);
   });
 });

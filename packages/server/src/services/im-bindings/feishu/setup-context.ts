@@ -71,6 +71,53 @@ export type DecodedFeishuSetupContext =
   | { kind: "qr"; qrUrl: string };
 
 /**
+ * The three-way read of one encrypted setup context. `undecryptable` means this instance's key ring
+ * could not authenticate the ciphertext at all. Key-ring skew and tampering are indistinguishable,
+ * so lifecycle code must preserve the row until its deadline. `invalid` means a missing or
+ * oversized envelope, or authenticated plaintext malformed or bound to another binding/attempt, which
+ * keeps the existing terminal behavior.
+ */
+export type FeishuSetupContextRead =
+  | { status: "decoded"; context: DecodedFeishuSetupContext }
+  | { status: "invalid" }
+  | { status: "undecryptable"; error: unknown };
+
+/**
+ * Classifies one setup context without collapsing distinct failure causes. Decryption is attempted
+ * exactly once; an authentication failure is reported as `undecryptable` rather than conflated with
+ * a well-formed but unusable plaintext.
+ */
+export function readFeishuSetupContext(
+  cipher: ApplicationCipher,
+  encrypted: string | null,
+  bindingId: string,
+  attemptId: string,
+): FeishuSetupContextRead {
+  if (!encrypted) return { status: "invalid" };
+  if (Buffer.byteLength(encrypted, "utf8") > MAX_CONTEXT_CIPHERTEXT_BYTES) return { status: "invalid" };
+  let plaintext: string;
+  try {
+    plaintext = cipher.decrypt(encrypted, feishuSetupAttemptContext(bindingId, attemptId));
+  } catch (error) {
+    return { status: "undecryptable", error };
+  }
+  if (Buffer.byteLength(plaintext, "utf8") > MAX_CONTEXT_PLAINTEXT_BYTES) return { status: "invalid" };
+  let payload: unknown;
+  try {
+    payload = JSON.parse(plaintext);
+  } catch {
+    return { status: "invalid" };
+  }
+  const candidate = FeishuSetupCandidateContextSchema.safeParse(payload);
+  if (candidate.success) {
+    if (candidate.data.bindingId !== bindingId || candidate.data.attemptId !== attemptId) return { status: "invalid" };
+    return { status: "decoded", context: { kind: "candidate", candidate: candidate.data } };
+  }
+  const qr = FeishuSetupQrContextSchema.safeParse(payload);
+  return qr.success ? { status: "decoded", context: { kind: "qr", qrUrl: qr.data.qrUrl } } : { status: "invalid" };
+}
+
+/**
  * Encrypts a durable candidate. The stable row identity is passed so the envelope and the
  * decrypted identity agree; under a v2 cipher it is also the AAD the ciphertext is bound to.
  */
@@ -111,29 +158,12 @@ export function decodeFeishuSetupContext(
   attemptId: string,
   options: { strict?: boolean } = {},
 ): DecodedFeishuSetupContext | undefined {
-  if (!encrypted) return undefined;
-  if (Buffer.byteLength(encrypted, "utf8") > MAX_CONTEXT_CIPHERTEXT_BYTES) return undefined;
-  let plaintext: string;
-  try {
-    plaintext = cipher.decrypt(encrypted, feishuSetupAttemptContext(bindingId, attemptId));
-  } catch (error) {
-    // Read-only projections surface the authentication failure; recovery paths treat an
-    // unreadable context as absent so a corrupt row cannot crash maintenance forever.
-    if (options.strict) throw error;
-    return undefined;
+  const read = readFeishuSetupContext(cipher, encrypted, bindingId, attemptId);
+  if (read.status === "decoded") return read.context;
+  if (read.status === "undecryptable" && options.strict) {
+    // Read-only projections retain the cipher's uniform authentication error. Lifecycle mutations
+    // use the three-way read above so key-ring skew cannot destroy a saved authorization.
+    throw read.error;
   }
-  if (Buffer.byteLength(plaintext, "utf8") > MAX_CONTEXT_PLAINTEXT_BYTES) return undefined;
-  let payload: unknown;
-  try {
-    payload = JSON.parse(plaintext);
-  } catch {
-    return undefined;
-  }
-  const candidate = FeishuSetupCandidateContextSchema.safeParse(payload);
-  if (candidate.success) {
-    if (candidate.data.bindingId !== bindingId || candidate.data.attemptId !== attemptId) return undefined;
-    return { kind: "candidate", candidate: candidate.data };
-  }
-  const qr = FeishuSetupQrContextSchema.safeParse(payload);
-  return qr.success ? { kind: "qr", qrUrl: qr.data.qrUrl } : undefined;
+  return undefined;
 }

@@ -1170,13 +1170,19 @@ describe("FeishuConnectionManager", () => {
       missingScopes: [],
     });
     runtimeReady = true;
-    // Official Bot info values: only 2 means enabled; unknown is not proof of readiness.
-    for (activateStatus of [0, 1, 3, 4, 5, 6, null, 99]) {
+    // Official Bot info values: only 2 means enabled; every other documented status is explicit
+    // evidence of an App that is not enabled.
+    for (activateStatus of [0, 1, 3, 4, 5, 6]) {
       expect(await manager.checkCandidate(base)).toEqual({
         status: "waiting",
         reason: "app_unavailable",
         missingScopes: [],
       });
+    }
+    // An omitted optional field carries no evidence, and an undocumented value is decided by the
+    // mandatory atomic channel activation, not guessed from this probe.
+    for (activateStatus of [null, 99]) {
+      expect(await manager.checkCandidate(base)).toEqual({ status: "ready" });
     }
     activateStatus = 2;
     expect(await manager.checkCandidate(base)).toEqual({ status: "ready" });

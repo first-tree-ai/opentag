@@ -46,6 +46,14 @@ const TERMINAL_SERVICE_CODES = new Set([
  */
 const TERMINAL_FEISHU_CREDENTIAL_CODES = new Set([10015, 20002]);
 
+/**
+ * Official Feishu/Lark codes meaning the app is disabled or not installed for the tenant
+ * (https://open.feishu.cn/document/server-docs/api-call-guide/generic-error-code.md). The candidate
+ * stays recoverable while the tenant enables or installs the app, so these read as a bounded wait
+ * instead of a dead credential or an opaque transient failure.
+ */
+const RECOVERABLE_APP_UNAVAILABLE_CODES = new Set([10014, 11207, 11210, 20009, 99991662, 99991673]);
+
 function objectProperty(value: unknown, key: string): unknown {
   if (typeof value !== "object" || value === null) return undefined;
   return (value as Record<string, unknown>)[key];
@@ -112,6 +120,10 @@ function isTerminalCredentialCode(code: number | undefined): boolean {
   return code !== undefined && TERMINAL_FEISHU_CREDENTIAL_CODES.has(code);
 }
 
+function isAppUnavailableCode(code: number | undefined): boolean {
+  return code !== undefined && RECOVERABLE_APP_UNAVAILABLE_CODES.has(code);
+}
+
 function waitingTemporary(error: unknown, now: number): FeishuCandidateCheckOutcome {
   const retryAfterMs = feishuRetryAfterMs(error, now);
   return {
@@ -162,7 +174,7 @@ export function classifyFeishuCandidateFailure(error: unknown, now: number): Fei
     const classified = classifyServiceFailure(error);
     if (classified) return classified;
   }
-  if (numericProviderCode(error) === 10014) {
+  if (isAppUnavailableCode(numericProviderCode(error))) {
     return { status: "waiting", reason: "app_unavailable", missingScopes: [] };
   }
   if (isTerminalCredentialCode(numericProviderCode(error))) {
@@ -176,7 +188,7 @@ export function classifyFeishuProbeFailure(error: unknown, now: number): FeishuC
   if (error instanceof FeishuOperationError && TERMINAL_OPERATION_CODES.has(error.code)) {
     return { status: "terminal", errorCode: error.code };
   }
-  if (numericProviderCode(error) === 10014) {
+  if (isAppUnavailableCode(numericProviderCode(error))) {
     return { status: "waiting", reason: "app_unavailable", missingScopes: [] };
   }
   if (isTerminalCredentialCode(numericProviderCode(error))) {

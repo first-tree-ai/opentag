@@ -1,5 +1,5 @@
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
@@ -33,6 +33,7 @@ interface FeishuSetupProps {
   onSuccess: () => void;
   presentation?: "dialog" | "inline";
   returnFocusRef?: RefObject<HTMLElement | null>;
+  restoreSavedAttempt?: boolean;
 }
 
 interface FeishuSetupError {
@@ -51,6 +52,7 @@ export function FeishuSetup({
   onSuccess,
   presentation = "inline",
   returnFocusRef,
+  restoreSavedAttempt,
 }: FeishuSetupProps) {
   return (
     <FeishuSetupLifecycle
@@ -59,6 +61,7 @@ export function FeishuSetup({
       onSuccess={onSuccess}
       presentation={presentation}
       returnFocusRef={returnFocusRef}
+      restoreSavedAttempt={restoreSavedAttempt}
     >
       {children}
     </FeishuSetupLifecycle>
@@ -71,6 +74,7 @@ function FeishuSetupLifecycle({
   onSuccess,
   presentation = "inline",
   returnFocusRef,
+  restoreSavedAttempt,
 }: FeishuSetupProps) {
   const queryClient = useQueryClient();
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
@@ -85,6 +89,7 @@ function FeishuSetupLifecycle({
   const [activeIntent, setActiveIntent] = useState<FeishuSetupIntent>("create");
   const attemptRef = useRef<FeishuSetupAttempt>(undefined);
   const creatingRef = useRef(false);
+  const userStartedRef = useRef(false);
   const cancelAfterStartRef = useRef(false);
   const lifecycleRef = useRef(0);
   const onSuccessRef = useRef(onSuccess);
@@ -123,6 +128,7 @@ function FeishuSetupLifecycle({
     async (intent: FeishuSetupIntent = "create") => {
       const current = attemptRef.current;
       if (creatingRef.current || checkingActivationRef.current || cancelingRef.current) return false;
+      userStartedRef.current = true;
       setActiveIntent(intent);
       if (presentation === "dialog") setDialogOpen(true);
       if (current?.intent === intent && ACTIVE_STATES.includes(current.state)) return false;
@@ -191,6 +197,27 @@ function FeishuSetupLifecycle({
   );
 
   const activeAttemptId = attempt && ACTIVE_STATES.includes(attempt.state) ? attempt.id : undefined;
+  useEffect(() => {
+    if (!restoreSavedAttempt) return;
+    let active = true;
+    const lifecycle = lifecycleRef.current;
+    const current = () =>
+      active && lifecycleRef.current === lifecycle && !userStartedRef.current && !attemptRef.current;
+    const restore = async () => {
+      try {
+        const saved = await readSavedAttempt(queryClient, agentId, current);
+        if (!saved) return;
+        setActiveIntent(saved.intent);
+        acceptObservation(saved);
+      } catch {
+        if (current()) setError({ source: "poll", message: m.im_feishu_status_unavailable() });
+      }
+    };
+    void restore();
+    return () => {
+      active = false;
+    };
+  }, [agentId, restoreSavedAttempt, queryClient, acceptObservation]);
   const pollTarget = useMemo(() => ({ id: activeAttemptId, revision: pollRevision }), [activeAttemptId, pollRevision]);
   useEffect(() => {
     const activeAttemptId = pollTarget.id;
@@ -360,6 +387,20 @@ function FeishuSetupLifecycle({
   });
 }
 
+/** Restore saved authorization independently of the active binding; retire late reads after a newer action. */
+async function readSavedAttempt(queryClient: QueryClient, agentId: string, current: () => boolean) {
+  const saved = await fetchSharedResource(queryClient, {
+    queryKey: queryKeys.agents.feishuSetupAttempt(agentId),
+    queryFn: async () => (await browserApi.currentFeishuSetupAttempt(agentId)) ?? null,
+    staleTime: 0,
+  });
+  return current() && saved?.agentId === agentId && isRestorableAttempt(saved) ? saved : undefined;
+}
+
+function isRestorableAttempt(attempt: FeishuSetupAttempt): boolean {
+  return attempt.state === "succeeded" || Boolean(attempt.activation && ACTIVE_STATES.includes(attempt.state));
+}
+
 function FeishuSetupDialog({
   checkingActivation,
   onCheckActivation,
@@ -389,27 +430,40 @@ function FeishuSetupDialog({
 }) {
   const title = feishuDialogTitle(intent);
   return (
-    <Dialog
-      busy={busy}
-      description={feishuDialogDescription(intent)}
-      open={open}
-      returnFocusRef={returnFocusRef}
-      title={title}
-      onClose={onClose}
-    >
-      <FeishuSetupDialogContent
-        disabled={busy}
-        checkingActivation={checkingActivation}
-        onCheckActivation={onCheckActivation}
-        onCancelActivation={onCancelActivation}
-        attempt={attempt}
-        error={error}
-        intent={intent}
-        loading={loading}
+    <>
+      {!open && attempt?.activation && ACTIVE_STATES.includes(attempt.state) ? (
+        <FeishuActivationWaiting
+          activation={attempt.activation}
+          expiresAt={attempt.expiresAt}
+          checking={checkingActivation}
+          disabled={busy}
+          onCheck={onCheckActivation}
+          onCancel={onCancelActivation}
+        />
+      ) : null}
+      {!open && error ? <Banner variant="error" role="alert" description={error} /> : null}
+      <Dialog
+        busy={busy}
+        description={feishuDialogDescription(intent)}
+        open={open}
+        returnFocusRef={returnFocusRef}
+        title={title}
         onClose={onClose}
-        onRetry={onRetry}
-      />
-    </Dialog>
+      >
+        <FeishuSetupDialogContent
+          disabled={busy}
+          checkingActivation={checkingActivation}
+          onCheckActivation={onCheckActivation}
+          onCancelActivation={onCancelActivation}
+          attempt={attempt}
+          error={error}
+          intent={intent}
+          loading={loading}
+          onClose={onClose}
+          onRetry={onRetry}
+        />
+      </Dialog>
+    </>
   );
 }
 

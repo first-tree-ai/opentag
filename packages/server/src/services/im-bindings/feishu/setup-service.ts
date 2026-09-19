@@ -38,6 +38,8 @@ import {
   FEISHU_SETUP_CANDIDATE_KIND,
   FEISHU_SETUP_CANDIDATE_VERSION,
   type FeishuSetupCandidateContext,
+  type FeishuSetupContextRead,
+  readFeishuSetupContext,
 } from "./setup-context.js";
 
 type SetupRow = typeof imBindings.$inferSelect;
@@ -367,16 +369,19 @@ export class FeishuSetupService {
    * another creator may persist a durable candidate while this one waits for its QR.
    */
   #openAttemptReuse(row: SetupRow | undefined): FeishuSetupAttempt | undefined {
-    if (!row?.setupAttemptId || !row.setupState) return undefined;
+    if (!row?.setupAttemptId) return undefined;
     const now = this.#now();
     if (row.setupState === "awaiting_user") {
       const expired = row.setupExpiresAt !== null && row.setupExpiresAt <= now;
       return !expired && !this.#qrOwnerLost(row, now) ? this.#projectAttempt(row) : undefined;
     }
     if (row.setupState === "pending_activation" || row.setupState === "validating") {
-      const context = this.#decodeContext(row);
-      if (context?.kind !== "candidate") return undefined;
-      return this.#candidateExpired(row, now) ? undefined : this.#projectAttempt(row);
+      if (this.#candidateExpired(row, now)) return undefined;
+      const read = this.#readContext(row);
+      // A candidate this instance cannot read is never replaced before its fixed expiry.
+      if (read.status === "undecryptable") throw unreadableContextError();
+      if (read.status !== "decoded" || read.context.kind !== "candidate") return undefined;
+      return this.#projectAttempt(row);
     }
     return undefined;
   }
@@ -404,8 +409,13 @@ export class FeishuSetupService {
     fenced: SetupRow,
     now: Date,
   ): Promise<SetupRow | undefined> {
-    const context = this.#decodeContext(fenced);
-    if (context?.kind === "candidate") {
+    const read = this.#readContext(fenced);
+    if (read.status === "undecryptable") {
+      if (!this.#candidateExpired(fenced, now)) throw unreadableContextError();
+      await this.#expireCandidate(fenced, now, transaction);
+      return undefined;
+    }
+    if (read.status === "decoded" && read.context.kind === "candidate") {
       if (!this.#candidateExpired(fenced, now)) return fenced;
       await this.#expireCandidate(fenced, now, transaction);
       return undefined;
@@ -420,13 +430,18 @@ export class FeishuSetupService {
     fenced: SetupRow,
     now: Date,
   ): Promise<SetupRow | undefined> {
-    const context = this.#decodeContext(fenced);
-    if (context?.kind === "candidate") {
+    const read = this.#readContext(fenced);
+    if (read.status === "decoded" && read.context.kind === "candidate") {
       if (!this.#candidateExpired(fenced, now)) return fenced;
       await this.#expireCandidate(fenced, now, transaction);
       return undefined;
     }
-    if (context === undefined) {
+    if (read.status === "undecryptable") {
+      if (!this.#candidateExpired(fenced, now)) throw unreadableContextError();
+      await this.#expireCandidate(fenced, now, transaction);
+      return undefined;
+    }
+    if (read.status !== "decoded") {
       await this.#failInvalidContextInTransaction(transaction, fenced, now);
       return undefined;
     }
@@ -539,6 +554,13 @@ export class FeishuSetupService {
     return this.#projectAttempt(row);
   }
 
+  /** Settings observes the open attempt independently of the currently active connection. */
+  async getForAgent(callerUserId: string, agentId: string): Promise<FeishuSetupAttempt | undefined> {
+    await this.#imBindings.assertCanManage(callerUserId, agentId);
+    const attempt = await this.observeForAgent(agentId);
+    return attempt && isOpenSetupState(attempt.state) ? attempt : undefined;
+  }
+
   /**
    * The Agent-owned setup attempt as it stands right now, including expiry and owner-liveness
    * projection, without taking on a caller. Readers that already established Account authority over
@@ -561,9 +583,18 @@ export class FeishuSetupService {
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanManage(callerUserId, row.agentId);
     if (row.setupState !== "pending_activation" || this.#stopped) return this.#projectAttempt(row);
-    const context = this.#decodeContext(row);
+    const read = this.#readContext(row);
     const now = this.#now();
-    if (context?.kind !== "candidate") {
+    if (read.status === "undecryptable") {
+      // The fixed deadline still clears an unreadable candidate; otherwise the explicit check
+      // fails honestly without mutating anything.
+      if (this.#candidateExpired(row, now)) {
+        await this.#expireCandidate(row, now);
+        return this.#reloadProjection(row);
+      }
+      throw unreadableContextError();
+    }
+    if (read.status !== "decoded" || read.context.kind !== "candidate") {
       await this.#failInvalidContext(row);
       return this.#reloadProjection(row);
     }
@@ -571,8 +602,8 @@ export class FeishuSetupService {
       await this.#expireCandidate(row, now);
       return this.#reloadProjection(row);
     }
-    if (!this.#isDue(context.candidate, now)) return this.#projectAttempt(row);
-    await this.#startClaimedCheck(row, context.candidate, now, "await");
+    if (!this.#isDue(read.context.candidate, now)) return this.#projectAttempt(row);
+    await this.#startClaimedCheck(row, read.context.candidate, now, "await");
     return this.#reloadProjection(row);
   }
 
@@ -580,21 +611,20 @@ export class FeishuSetupService {
     const row = await this.#load(attemptId);
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanManage(callerUserId, row.agentId);
-    const projected = this.#projectAttempt(row);
-    if (!["awaiting_user", "pending_activation", "validating"].includes(projected.state)) {
-      // A lapsed durable candidate already projects terminal; retire its secret under the deadline
-      // fence here instead of leaving the ciphertext for the next sweep.
-      const observedAt = this.#now();
-      if (
-        projected.state === "expired" &&
-        (row.setupState === "pending_activation" || row.setupState === "validating") &&
-        this.#candidateExpired(row, observedAt)
-      ) {
-        await this.#expireCandidate(row, observedAt);
-      }
-      return projected;
-    }
     const now = this.#now();
+    // Cancellation only needs the authorized row identity, state and deadline. Authentication
+    // failure must not prevent clearing a secret this instance cannot read.
+    const projected =
+      this.#readContext(row).status === "undecryptable" ? this.#toAttempt(row) : this.#projectAttempt(row);
+    if (
+      (row.setupState === "pending_activation" || row.setupState === "validating") &&
+      this.#candidateExpired(row, now)
+    ) {
+      await this.#expireCandidate(row, now);
+      // Activation can have committed while authorization awaited the Agent lock.
+      return this.#reloadProjection(row);
+    }
+    if (!isOpenSetupState(projected.state)) return projected;
     const canceled = await this.#database.transaction(async (transaction) => {
       await this.#imBindings.assertCanManageForMutation(callerUserId, row.agentId, transaction);
       const [updated] = await transaction
@@ -734,9 +764,11 @@ export class FeishuSetupService {
   /** The immediate post-save check; the long-running part is detached and supervised. */
   async #checkAttempt(row: SetupRow): Promise<void> {
     if (this.#stopped) return;
-    const context = this.#decodeContext(row);
+    const read = this.#readContext(row);
     const now = this.#now();
-    if (context?.kind !== "candidate") {
+    // A candidate this instance just saved always decrypts; if it suddenly does not, preserve it.
+    if (read.status === "undecryptable") return;
+    if (read.status !== "decoded" || read.context.kind !== "candidate") {
       await this.#failInvalidContext(row);
       return;
     }
@@ -744,8 +776,8 @@ export class FeishuSetupService {
       await this.#expireCandidate(row, now);
       return;
     }
-    if (row.setupState !== "pending_activation" || !this.#isDue(context.candidate, now)) return;
-    await this.#startClaimedCheck(row, context.candidate, now, "detach");
+    if (row.setupState !== "pending_activation" || !this.#isDue(read.context.candidate, now)) return;
+    await this.#startClaimedCheck(row, read.context.candidate, now, "detach");
   }
 
   /** Reserves one of the bounded check slots synchronously, before any asynchronous claim work. */
@@ -1098,19 +1130,26 @@ export class FeishuSetupService {
 
   async #considerRow(row: SetupRow): Promise<void> {
     const now = this.#now();
-    const context = this.#decodeContext(row);
+    const read = this.#readContext(row);
     if (row.setupState === "pending_activation") {
-      await this.#considerPendingRow(row, context, now);
+      await this.#considerPendingRow(row, read, now);
       return;
     }
-    if (context?.kind === "candidate") {
+    if (read.status === "decoded" && read.context.kind === "candidate") {
       await this.#considerValidatingCandidate(row, now);
       return;
     }
+    if (read.status === "undecryptable") {
+      // A key-ring skew is never evidence about the candidate: the fixed deadline still applies,
+      // but the ciphertext, attempt identity and any live claim are preserved untouched, and the
+      // sweep simply moves on to the next row.
+      if (this.#candidateExpired(row, now)) await this.#expireCandidate(row, now);
+      return;
+    }
     if (!this.#ownerStale(row, now)) return;
-    // An unreadable context is never a legacy QR: once its owner is gone the row is terminally
-    // invalid instead of remaining validating forever.
-    if (context === undefined) {
+    // An authenticated but malformed context is never a legacy QR: once its owner is gone the row
+    // is terminally invalid instead of remaining validating forever.
+    if (read.status !== "decoded") {
       await this.#failInvalidContext(row);
       return;
     }
@@ -1120,8 +1159,12 @@ export class FeishuSetupService {
     await this.#terminateOwnedAttempt(row, { state: "failed", code: "FEISHU_SETUP_OWNER_RESTARTED" }, now);
   }
 
-  async #considerPendingRow(row: SetupRow, context: DecodedFeishuSetupContext | undefined, now: Date): Promise<void> {
-    if (context?.kind !== "candidate") {
+  async #considerPendingRow(row: SetupRow, read: FeishuSetupContextRead, now: Date): Promise<void> {
+    if (read.status === "undecryptable") {
+      if (this.#candidateExpired(row, now)) await this.#expireCandidate(row, now);
+      return;
+    }
+    if (read.status !== "decoded" || read.context.kind !== "candidate") {
       await this.#failInvalidContext(row);
       return;
     }
@@ -1129,8 +1172,8 @@ export class FeishuSetupService {
       await this.#expireCandidate(row, now);
       return;
     }
-    if (!this.#isDue(context.candidate, now)) return;
-    await this.#startClaimedCheck(row, context.candidate, now, "detach");
+    if (!this.#isDue(read.context.candidate, now)) return;
+    await this.#startClaimedCheck(row, read.context.candidate, now, "detach");
   }
 
   async #considerValidatingCandidate(row: SetupRow, now: Date): Promise<void> {
@@ -1350,7 +1393,7 @@ export class FeishuSetupService {
       );
   }
 
-  /** An unreadable or non-candidate context on a stale row can never activate. */
+  /** An authenticated-invalid or non-candidate context on a stale row can never activate. */
   async #failInvalidContext(row: SetupRow): Promise<void> {
     await this.#database
       .update(imBindings)
@@ -1459,6 +1502,14 @@ export class FeishuSetupService {
   #decodeContext(row: SetupRow, options: { strict?: boolean } = {}): DecodedFeishuSetupContext | undefined {
     if (!row.encryptedSetupContext || !row.setupAttemptId) return undefined;
     return decodeFeishuSetupContext(this.#cipher, row.encryptedSetupContext, row.id, row.setupAttemptId, options);
+  }
+
+  /** Three-way read: an unauthenticatable context is preserved, never terminal evidence. */
+  #readContext(row: SetupRow): FeishuSetupContextRead {
+    if (!row.encryptedSetupContext || !row.setupAttemptId) return { status: "invalid" };
+    const read = readFeishuSetupContext(this.#cipher, row.encryptedSetupContext, row.id, row.setupAttemptId);
+    if (read.status === "undecryptable") this.#onDiagnostic("FEISHU_SETUP_CONTEXT_UNREADABLE");
+    return read;
   }
 
   #candidateExpired(row: SetupRow, now: Date): boolean {
@@ -1620,6 +1671,19 @@ function activationFrom(
 
 function boundedWait(): FeishuCandidateCheckOutcome {
   return { status: "waiting", reason: "temporary_failure", missingScopes: [] };
+}
+
+/**
+ * This instance's key ring cannot authenticate the stored context at all. The caller must not
+ * start a replacement registration, claim, activate, or mutate the candidate away: the skew
+ * resolves when key rings converge, so the honest answer is a deterministic conflict.
+ */
+function unreadableContextError(): ImBindingServiceError {
+  return new ImBindingServiceError(
+    "FEISHU_SETUP_CONTEXT_UNREADABLE",
+    409,
+    "The saved Feishu authorization is temporarily unavailable. It has been retained; please try again later.",
+  );
 }
 
 function definedTiming(

@@ -31,15 +31,18 @@ OpenTag-managed artifact，并在上报 ready 前用真实 binding 凭证验证�
 `lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
 文件由下次启动恢复清理。Internal Session 永远不会收到该文件。
 
-Codex 禁用 Shell 快照，受管 Session 将 `ZDOTDIR` 指向已有的 OpenTag 状态目录，保留 `PATH` 中优先的 Turn launcher。
+OpenTag Codex Runtime 的默认启动参数对所有使用该默认参数的 Session 禁用 Shell 快照。
+受管 Session 在具备受管状态目录和 launcher 路径时，额外将 `ZDOTDIR` 指向 OpenTag 状态目录，保留 `PATH` 中优先的 Turn launcher。
 否则快照可能把外部登录 Shell 的路径恢复到受管环境中。
 仅禁用登录 Shell 不足以保证这一点：用户的 `~/.zshenv` 也会在非登录 Shell 中执行，可能将公共 provider CLI
-排到 Session launcher 前面，绕过回执捕获，并可能选中环境中的其他凭据。这一设置仅作用于受管执行，
-不修改用户的 Shell 文件或全局 CLI 配置。
+排到 Session launcher 前面，绕过回执捕获，并可能选中环境中的其他凭据。`ZDOTDIR` 覆盖仅作用于受管环境；
+这两项设置均不修改用户的 Shell 文件或全局 CLI 配置。
 
 daemon 预先准备可见 Session 的 `runs` 目录，并单独授予回执证据写入权限。Agent 不会因此获得父级执行计划目录、
 launcher、凭据目录或其他 Session 的写权限。回执写入者只读校验私有祖先目录，不修改其权限，仅在获准子目录内创建文件；
 否则仅允许工作目录写入的沙箱会同时阻止回执和失败标记保存。
+若这个可信目录无法安全准备，Session 将启动失败，避免授予不安全的路径或无声丢失必需的回复证据；
+这与可选的 Context Tree 配置目录准备不同。
 
 IM delivery Turn 使用该事件携带的 provider 原生消息引用；可见 Session 的协作 callback 则使用 credential grant v2
 提供的非敏感默认 outbox context。Server 在授予凭证的同一次授权操作中，从目标 Session 既有 channel/thread scope

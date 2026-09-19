@@ -3,6 +3,7 @@ import { SKILL_ERROR_CODES, SKILL_MAX_PER_AGENT } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agentSkills, agents } from "../db/schema/index.js";
+import { normalizeSkillArchive, SkillService } from "../services/skills/index.js";
 import { FakeSkillObjectStore } from "./support/fake-skill-object-store.js";
 import { buildStoredZip, skillManifest } from "./support/skill-archive-fixtures.js";
 import { createSkillHarness, type SkillHarness } from "./support/skill-service-harness.js";
@@ -102,13 +103,22 @@ describe("SkillService", () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);
     const store = new FakeSkillObjectStore();
-    const service = h.serviceWith(store);
-    // A stored zip just under the input limit re-packs a few KB larger because tar framing and gzip
-    // overhead exceed zip's; the incompressible payload keeps gzip from shrinking it back.
+    // A stored zip re-packs larger because tar framing plus gzip overhead exceed zip's, and the
+    // incompressible payload keeps gzip from shrinking it back. Derive the ceiling from the actual
+    // repack so the test is exact rather than guessing the overhead, and keep it small so it is fast.
     const nearLimit = buildStoredZip([
       { name: "SKILL.md", body: skillManifest("big-skill") },
-      { name: "data.bin", body: randomBytes(16_776_000) },
+      { name: "data.bin", body: randomBytes(64_000) },
     ]);
+    const repacked = await normalizeSkillArchive(nearLimit, "zip");
+    const maxArchiveBytes = nearLimit.byteLength;
+    expect(repacked.archive.byteLength).toBeGreaterThan(maxArchiveBytes);
+    const service = new SkillService({
+      database: h.database,
+      store,
+      keyPrefix: "skills",
+      readLimits: { maxArchiveBytes },
+    });
     await expect(
       service.upload(accountId, agentId, {
         bytes: nearLimit,

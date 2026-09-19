@@ -1,6 +1,15 @@
-import { SKILL_ERROR_CODES, SKILL_MAX_ENTRIES } from "@opentag/shared";
+import {
+  SKILL_ARCHIVE_MAX_BYTES,
+  SKILL_ERROR_CODES,
+  SKILL_MAX_ENTRIES,
+  SKILL_UNPACKED_MAX_BYTES,
+} from "@opentag/shared";
 import { describe, expect, it } from "vitest";
-import { normalizeSkillArchive } from "../services/skills/index.js";
+import {
+  DEFAULT_MAX_TAR_STREAM_BYTES,
+  normalizeSkillArchive,
+  resolveSkillReadLimits,
+} from "../services/skills/index.js";
 import {
   buildRawZip,
   buildStoredZip,
@@ -295,8 +304,17 @@ describe("normalizeSkillArchive", () => {
     );
   });
 
-  it("rejects a gzip that inflates past the decompressed-stream ceiling", () => {
-    // 65 MiB of zeros exceeds the payload ceiling plus the framing allowance.
-    return failure(normalizeSkillArchive(gzipOfZeros(65 * MIB), "tar.gz"), SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE);
+  it("rejects a gzip that inflates past an injected decompressed-stream ceiling", () => {
+    // A 1 MiB ceiling with a few MiB of zeros exercises the meter in milliseconds; the real ceiling
+    // is the default checked in the next test.
+    return failure(
+      normalizeSkillArchive(gzipOfZeros(4 * MIB), "tar.gz", { maxTarStreamBytes: MIB }),
+      SKILL_ERROR_CODES.ARCHIVE_TOO_LARGE,
+    );
+  });
+
+  it("uses the documented default limits", () => {
+    expect(DEFAULT_MAX_TAR_STREAM_BYTES).toBe(SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2);
+    expect(resolveSkillReadLimits().maxArchiveBytes).toBe(SKILL_ARCHIVE_MAX_BYTES);
   });
 });

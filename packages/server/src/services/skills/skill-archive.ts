@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
   isReservedSkillName,
   parseSkillManifest,
-  SKILL_ARCHIVE_MAX_BYTES,
   SKILL_MANIFEST_FILE,
   SKILL_MANIFEST_MAX_BYTES,
   SKILL_MAX_LISTED_FILES,
@@ -13,7 +12,12 @@ import {
 import { gzipSync } from "fflate";
 import { type Pack, type Headers as TarHeaders, pack as tarPack } from "tar-stream";
 import { skillArchiveTooLarge, skillManifestInvalid, skillNameReserved } from "./errors.js";
-import { type RawSkillEntry, readSkillEntries, type SkillReadLimits } from "./skill-archive-reader.js";
+import {
+  type RawSkillEntry,
+  readSkillEntries,
+  resolveSkillReadLimits,
+  type SkillReadLimits,
+} from "./skill-archive-reader.js";
 
 /**
  * Validates an untrusted Skill upload and re-packs it deterministically.
@@ -125,8 +129,9 @@ export async function normalizeSkillArchive(
   format: SkillArchiveFormat,
   limits?: SkillReadLimits,
 ): Promise<NormalizedSkillArchive> {
-  if (bytes.byteLength === 0 || bytes.byteLength > SKILL_ARCHIVE_MAX_BYTES) throw skillArchiveTooLarge();
-  const entries = stripSingleRoot(await readSkillEntries(bytes, format, limits));
+  const resolved = resolveSkillReadLimits(limits);
+  if (bytes.byteLength === 0 || bytes.byteLength > resolved.maxArchiveBytes) throw skillArchiveTooLarge();
+  const entries = stripSingleRoot(await readSkillEntries(bytes, format, resolved));
   if (entries.length === 0) throw skillManifestInvalid("The Skill archive carries no files");
   const manifest = requireManifest(entries);
   const { files, filesTruncated } = toFileList(entries);
@@ -134,7 +139,7 @@ export async function normalizeSkillArchive(
   // The input guard bounds the upload, not the re-packed output: ZIP and tar framing/compression
   // overheads differ, so the canonical archive can grow past the limit the input respected. Reject
   // it here, with the typed error, before any storage or database write.
-  if (archive.byteLength > SKILL_ARCHIVE_MAX_BYTES) throw skillArchiveTooLarge();
+  if (archive.byteLength > resolved.maxArchiveBytes) throw skillArchiveTooLarge();
   return {
     manifest,
     files,

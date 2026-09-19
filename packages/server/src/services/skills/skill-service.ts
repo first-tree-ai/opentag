@@ -21,6 +21,7 @@ import {
   skillStorageUnavailable,
 } from "./errors.js";
 import { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
+import type { SkillReadLimits } from "./skill-archive-reader.js";
 import {
   bestEffortDeleteSkillObject,
   deleteReplacedObject,
@@ -51,6 +52,8 @@ export interface SkillServiceOptions {
   keyPrefix: string;
   logger?: ServiceLogger;
   now?: () => Date;
+  /** Overrides the archive read ceilings; production callers leave it unset for the real limits. */
+  readLimits?: SkillReadLimits;
 }
 
 export interface SkillUploadInput {
@@ -98,6 +101,7 @@ export class SkillService {
   readonly #keyPrefix: string;
   readonly #logger?: ServiceLogger;
   readonly #now: () => Date;
+  readonly #readLimits?: SkillReadLimits;
 
   constructor(options: SkillServiceOptions) {
     this.#database = options.database;
@@ -105,6 +109,7 @@ export class SkillService {
     this.#keyPrefix = options.keyPrefix;
     if (options.logger) this.#logger = options.logger;
     this.#now = options.now ?? (() => new Date());
+    if (options.readLimits) this.#readLimits = options.readLimits;
   }
 
   // ------------------------------------------------------------------ account
@@ -229,7 +234,7 @@ export class SkillService {
   async #upload(accountId: string, agentId: string, input: SkillUploadInput): Promise<SkillDetail> {
     const actual = createHash("sha256").update(input.bytes).digest("hex");
     if (actual !== input.declaredSha256) throw skillHashMismatch();
-    const normalized = await normalizeSkillArchive(input.bytes, input.format);
+    const normalized = await normalizeSkillArchive(input.bytes, input.format, this.#readLimits);
     this.#logger?.debug(
       { agentId, bytes: normalized.archive.byteLength, fileCount: normalized.fileCount, source: input.source },
       "Skill archive validated",

@@ -32,7 +32,9 @@ export {
   isIgnoredSkillPath,
   normalizeMemberPath,
   type RawSkillEntry,
+  type ResolvedSkillReadLimits,
   readSkillEntries,
+  resolveSkillReadLimits,
   type SkillReadLimits,
 } from "./skill-archive-reader.js";
 export {

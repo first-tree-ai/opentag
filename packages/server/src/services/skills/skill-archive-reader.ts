@@ -2,6 +2,7 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import {
+  SKILL_ARCHIVE_MAX_BYTES,
   SKILL_MAX_ENTRIES,
   SKILL_MAX_PATH_BYTES,
   SKILL_UNPACKED_MAX_BYTES,
@@ -37,22 +38,31 @@ export interface RawSkillEntry {
  * over the decompressed tar stream (payload plus bounded per-member framing).
  */
 export interface SkillReadLimits {
+  maxArchiveBytes?: number;
   maxUnpackedBytes?: number;
   maxTarStreamBytes?: number;
 }
 
+export interface ResolvedSkillReadLimits {
+  maxArchiveBytes: number;
+  maxUnpackedBytes: number;
+  maxTarStreamBytes: number;
+}
+
 export const DEFAULT_MAX_TAR_STREAM_BYTES = SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
 
-function resolveReadLimits(limits?: SkillReadLimits): { maxUnpackedBytes: number; maxTarStreamBytes: number } {
-  const maxUnpackedBytes = limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES;
-  const maxTarStreamBytes = limits?.maxTarStreamBytes ?? DEFAULT_MAX_TAR_STREAM_BYTES;
-  if (!Number.isInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0) {
-    throw skillArchiveInvalid("Skill read limit maxUnpackedBytes must be a positive integer");
+export function resolveSkillReadLimits(limits?: SkillReadLimits): ResolvedSkillReadLimits {
+  const resolved: ResolvedSkillReadLimits = {
+    maxArchiveBytes: limits?.maxArchiveBytes ?? SKILL_ARCHIVE_MAX_BYTES,
+    maxUnpackedBytes: limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES,
+    maxTarStreamBytes: limits?.maxTarStreamBytes ?? DEFAULT_MAX_TAR_STREAM_BYTES,
+  };
+  for (const [label, value] of Object.entries(resolved)) {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw skillArchiveInvalid(`Skill read limit ${label} must be a positive integer`);
+    }
   }
-  if (!Number.isInteger(maxTarStreamBytes) || maxTarStreamBytes <= 0) {
-    throw skillArchiveInvalid("Skill read limit maxTarStreamBytes must be a positive integer");
-  }
-  return { maxUnpackedBytes, maxTarStreamBytes };
+  return resolved;
 }
 
 /**
@@ -297,6 +307,6 @@ export async function readSkillEntries(
   format: SkillArchiveFormat,
   limits?: SkillReadLimits,
 ): Promise<RawSkillEntry[]> {
-  const resolved = resolveReadLimits(limits);
+  const resolved = resolveSkillReadLimits(limits);
   return format === "zip" ? readZipEntries(bytes, resolved.maxUnpackedBytes) : readTarGzEntries(bytes, resolved);
 }

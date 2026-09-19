@@ -165,6 +165,19 @@ describe("skill push", () => {
     expect(await readdir(elsewhere)).toEqual(["SKILL.md"]);
   });
 
+  it("does not adopt a Skill the server reports as disabled", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(join(root, "workspace", ".claude", "skills"), "my-skill");
+    const api = accountApi({
+      pushRuntimeSkill: vi.fn(async () => skillRecord("my-skill", { enabled: false })),
+    });
+    const result = await runSkillPush(directory, { replace: true }, { api, proof: "p".repeat(32) });
+    expect(result.skill.enabled).toBe(false);
+    expect(result.adopted).toBe(false);
+    expect(result.adoptionReason).toContain("disabled");
+    await expect(stat(join(directory, ".opentag-skill.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("hints at --replace when the name already exists", async () => {
     const root = await temporaryRoot();
     const directory = await writeSkillDirectory(root, "my-skill");

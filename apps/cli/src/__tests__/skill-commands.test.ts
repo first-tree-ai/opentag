@@ -112,6 +112,7 @@ describe("skill push", () => {
     const root = await temporaryRoot();
     const workspace = join(root, "workspace");
     const directory = await writeSkillDirectory(join(workspace, ".claude", "skills"), "my-skill");
+    await mkdir(join(workspace, ".opentag", "skill-staging"), { recursive: true });
     const api = accountApi();
 
     const result = await runSkillPush(directory, {}, { api, proof: "p".repeat(32) });
@@ -125,9 +126,34 @@ describe("skill push", () => {
     expect(marker).toEqual({ skillId: result.skill.id, archiveSha256: result.skill.archiveSha256 });
   });
 
+  it("does not adopt a nested checkout that sync never manages", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    const directory = await writeSkillDirectory(join(workspace, "checkout", ".claude", "skills"), "my-skill");
+    await mkdir(join(workspace, ".opentag", "skill-staging"), { recursive: true });
+    const api = accountApi();
+
+    const result = await runSkillPush(directory, {}, { api, proof: "p".repeat(32) });
+    expect(result.adopted).toBe(false);
+    expect(result.adoptionReason).toContain("synced workspace");
+    await expect(stat(join(directory, ".opentag-skill.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not adopt in a workspace with no sync sentinel", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    const directory = await writeSkillDirectory(join(workspace, ".claude", "skills"), "my-skill");
+    const api = accountApi();
+
+    const result = await runSkillPush(directory, {}, { api, proof: "p".repeat(32) });
+    expect(result.adopted).toBe(false);
+    expect(result.adoptionReason).toContain("synced workspace");
+  });
+
   it("adopts even when the caller has cd-ed into the skill directory", async () => {
     const root = await temporaryRoot();
     const directory = await writeSkillDirectory(join(root, "workspace", ".agents", "skills"), "my-skill");
+    await mkdir(join(root, "workspace", ".opentag", "skill-staging"), { recursive: true });
     const api = accountApi();
     const result = await runSkillPush(directory, {}, { api, proof: "p".repeat(32) });
     expect(result.adopted).toBe(true);
@@ -168,6 +194,7 @@ describe("skill push", () => {
   it("does not adopt a Skill the server reports as disabled", async () => {
     const root = await temporaryRoot();
     const directory = await writeSkillDirectory(join(root, "workspace", ".claude", "skills"), "my-skill");
+    await mkdir(join(root, "workspace", ".opentag", "skill-staging"), { recursive: true });
     const api = accountApi({
       pushRuntimeSkill: vi.fn(async () => skillRecord("my-skill", { enabled: false })),
     });

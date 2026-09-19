@@ -633,6 +633,7 @@ export {
 export {
   hashSkillDirectory,
   isSkillMaterializationTarget,
+  isSyncedWorkspace,
   markSkillDirectoryManaged,
   resolveMaterializationWorkspace,
   SKILL_CONTENT_SIDECAR_FILE,

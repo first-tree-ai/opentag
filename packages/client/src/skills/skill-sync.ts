@@ -14,7 +14,13 @@ import { SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
 import { verifySkillBundle } from "./skill-bundle.js";
 import { readBundleBody } from "./skill-bundle-body.js";
 import { hashSkillDirectory, moveAside, stageBundle, sweepStaleStaging } from "./skill-install.js";
-import { skillConflictsRoot, skillRootForProvider, skillStagingRoot, unsafeSkillRootReason } from "./skill-roots.js";
+import {
+  isSyncedWorkspace,
+  skillConflictsRoot,
+  skillRootForProvider,
+  skillStagingRoot,
+  unsafeSkillRootReason,
+} from "./skill-roots.js";
 
 /**
  * Materializes the Agent's enabled Skills into the Provider's skill directory at runtime start.
@@ -144,7 +150,7 @@ async function listManagedDirectories(layout: SkillInstallLayout): Promise<Map<s
   return managed;
 }
 
-export { hashSkillDirectory };
+export { hashSkillDirectory, isSyncedWorkspace };
 
 async function readContentDigest(directory: string): Promise<string | undefined> {
   try {
@@ -253,8 +259,12 @@ export class SkillSyncManager {
       return { skillPaths: [], status: "unavailable" };
     }
     const signal = AbortSignal.timeout(this.#budgetMs);
-    await sweepStaleStaging(skillStagingRoot(input.cwd), this.#budgetMs, this.#now);
+    const stagingRoot = skillStagingRoot(input.cwd);
     try {
+      // The staging root doubles as the workspace sentinel that `skill push` checks before
+      // adopting a directory, so it is created on every start, even with nothing to install.
+      await ensurePrivateDirectory(dirname(stagingRoot), stagingRoot);
+      await sweepStaleStaging(stagingRoot, this.#budgetMs, this.#now);
       const token = await this.#machineToken();
       const manifest = await this.#api.getComputerSkillManifest(token, input.agentId, { signal });
       const installed = await this.#reconcile(input, layout, manifest, token, signal);

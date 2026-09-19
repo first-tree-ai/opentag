@@ -74,3 +74,18 @@ export async function unsafeSkillRootReason(cwd: string, roots: readonly string[
   }
   return undefined;
 }
+
+/**
+ * Whether sync has ever started in this workspace.
+ *
+ * The staging root is the sentinel: sync creates it on every runtime start. Requiring it stops
+ * adoption from marking a directory nested inside a checkout that sync never manages.
+ */
+export async function isSyncedWorkspace(workspace: string): Promise<boolean> {
+  try {
+    const info = await lstat(skillStagingRoot(workspace));
+    return info.isDirectory() && !info.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}

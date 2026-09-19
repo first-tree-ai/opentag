@@ -196,6 +196,7 @@
   "inspectLocalComputerConfiguration",
   "inspectProviderCliLauncher",
   "isSkillMaterializationTarget",
+  "isSyncedWorkspace",
   "iterateAgentRuntimeExecutables",
   "linuxAmd64ProviderCliPlans",
   "machineCredentialsPath",

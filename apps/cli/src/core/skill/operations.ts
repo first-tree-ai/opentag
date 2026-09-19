@@ -4,10 +4,12 @@ import { Readable } from "node:stream";
 import {
   extractSkillArchive,
   isSkillMaterializationTarget,
+  isSyncedWorkspace,
   markSkillDirectoryManaged,
   OpenTagApiError,
   packSkillDirectory,
   readBundleBody,
+  resolveMaterializationWorkspace,
   SKILL_PULL_BUNDLE_TIMEOUT_MS,
   SkillArchiveError,
   verifySkillBundle,
@@ -89,6 +91,10 @@ async function adoptPushedDirectory(
   }
   if (!isSkillMaterializationTarget(directory, name)) {
     return { adopted: false, adoptionReason: "the directory is not a Skill materialization target" };
+  }
+  const workspace = resolveMaterializationWorkspace(directory, name);
+  if (workspace === undefined || !(await isSyncedWorkspace(workspace))) {
+    return { adopted: false, adoptionReason: "the directory is not inside this Agent's synced workspace" };
   }
   if (uploaded.enabled === false) {
     return { adopted: false, adoptionReason: "the Skill is disabled on the platform; the next sync would remove it" };

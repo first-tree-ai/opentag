@@ -215,16 +215,6 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
 }
 
 function accountFacingErrorEnvelope(error: AccountFacingError, requestId: string) {
-  /*
-   * CONTRACT GAP: `ErrorEnvelopeSchema`'s `ErrorCodeSchema` does not yet list `SKILL_ERROR_CODES`,
-   * so parsing a Skill failure envelope here would throw a ZodError and degrade it to a 500. Render
-   * the identical shape without the parse until the contract includes the Skill codes.
-   */
-  if (error instanceof SkillServiceError) {
-    return {
-      error: { code: error.code, category: error.category, message: error.message, requestId },
-    };
-  }
   return ErrorEnvelopeSchema.parse({
     error: {
       code: error.code,

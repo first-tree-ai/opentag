@@ -1,4 +1,5 @@
 import {
+  ErrorEnvelopeSchema,
   SKILL_ARCHIVE_MAX_BYTES,
   SKILL_FORMAT_HEADER,
   SKILL_REPLACE_HEADER,
@@ -130,12 +131,19 @@ export function registerSkillUploadRoute(app: FastifyInstance, options: SkillUpl
         return reply.code(200).send(response);
       } catch (error) {
         // The route lives in an encapsulated scope, so it renders the Skill error envelope itself
-        // instead of relying on the root Account-facing handler. It is built without
-        // `ErrorEnvelopeSchema` because that schema does not yet list the SKILL_* codes.
+        // instead of relying on the root Account-facing handler; it parses through the same shared
+        // schema so the wire shape can never drift from the other Account-facing errors.
         if (error instanceof SkillServiceError) {
-          return reply.code(error.statusCode).send({
-            error: { code: error.code, category: error.category, message: error.message, requestId: request.id },
-          });
+          return reply.code(error.statusCode).send(
+            ErrorEnvelopeSchema.parse({
+              error: {
+                code: error.code,
+                category: error.category,
+                message: error.message,
+                requestId: request.id,
+              },
+            }),
+          );
         }
         throw error;
       } finally {

@@ -3,6 +3,7 @@ import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
   COMPUTER_AGENT_SKILLS_TEMPLATE,
+  ErrorEnvelopeSchema,
   HTTP_PATHS,
   RuntimeSkillManifestSchema,
   SKILL_ERROR_CODES,
@@ -23,7 +24,12 @@ import { createApp } from "../app.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { ComputerAuthVerifier } from "../services/computers/index.js";
 import { SessionCliProofError, type SessionCliProofService } from "../services/sessions/index.js";
-import { type SkillService, type SkillServiceError, skillNameConflict } from "../services/skills/index.js";
+import {
+  type SkillService,
+  type SkillServiceError,
+  skillNameConflict,
+  skillStorageUnavailable,
+} from "../services/skills/index.js";
 
 const ACCOUNT = "account-1";
 const AGENT = randomUUID();
@@ -217,7 +223,35 @@ describe("Skill routes", () => {
       payload: Buffer.from("abc"),
     });
     expect(response.statusCode).toBe(409);
-    expect(response.json().error).toMatchObject({ code: SKILL_ERROR_CODES.NAME_CONFLICT, category: "deterministic" });
+    // The shared envelope schema must admit the Skill code; otherwise the transport would have
+    // degraded this into a 500 and this parse would throw.
+    const envelope = ErrorEnvelopeSchema.parse(response.json());
+    expect(envelope.error).toMatchObject({
+      code: SKILL_ERROR_CODES.NAME_CONFLICT,
+      category: "deterministic",
+      requestId: expect.any(String),
+    });
+    await app.close();
+  });
+
+  it("renders a transient Skill failure through the root handler as a parsed envelope", async () => {
+    const app = createApp({});
+    registerSkillRoutes(
+      app,
+      fakeService({ openBundle: vi.fn(async () => Promise.reject(skillStorageUnavailable())) }),
+      userAuth(),
+      {},
+    );
+    const response = await app.inject({
+      method: "GET",
+      url: AGENT_SKILL_BUNDLE_TEMPLATE.replace(":agentId", AGENT).replace(":skillId", SKILL),
+      headers: { authorization: "Bearer good-token" },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(ErrorEnvelopeSchema.parse(response.json()).error).toMatchObject({
+      code: SKILL_ERROR_CODES.STORAGE_UNAVAILABLE,
+      category: "transient",
+    });
     await app.close();
   });
 

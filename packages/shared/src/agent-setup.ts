@@ -10,7 +10,12 @@ import {
   ImCliProviderSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
-import { ImProviderSchema, ProviderCliHandoffProgressSchema, SlackConfigurationIntentSchema } from "./im-binding.js";
+import {
+  FeishuSetupActivationSchema,
+  ImProviderSchema,
+  ProviderCliHandoffProgressSchema,
+  SlackConfigurationIntentSchema,
+} from "./im-binding.js";
 
 export const AGENT_SETUP_STAGES = [
   "needs-computer",
@@ -260,8 +265,15 @@ export const AgentSetupMessagingStateSchema = z.union([
       attemptId: z.string().uuid(),
       qrUrl: z.string().url().nullable(),
       expiresAt: z.string().datetime(),
+      /**
+       * Present when the setup attempt holds a durable candidate and no longer needs the page to
+       * stay open: the same `authorizing` kind carries the bounded waiting observation. Legacy QR
+       * attempts omit it.
+       */
+      activation: FeishuSetupActivationSchema.optional(),
     })
-    .strict(),
+    .strict()
+    .refine((value) => !value.activation || value.qrUrl === null, { message: "A saved authorization has no QR" }),
   z
     .object({
       kind: z.literal("authorizing"),
@@ -636,14 +648,33 @@ function readCurrentBinding(
   return undefined;
 }
 
+function isInitialFeishuRetry(messaging: AgentSetupSnapshotCandidate["messaging"], action: AgentSetupAction): boolean {
+  return (
+    action.kind === "start-messaging" &&
+    action.provider === "feishu" &&
+    messaging.kind === "blocked" &&
+    messaging.provider === "feishu" &&
+    messaging.code === "authorization-failed" &&
+    messaging.bindingId !== undefined &&
+    messaging.credentialGeneration === 0
+  );
+}
+
 function validateSetupAction(
   snapshot: AgentSetupSnapshotCandidate,
   action: AgentSetupSnapshotCandidate["actions"][number],
   index: number,
   addIssue: AgentSetupIssue,
 ): void {
-  if (action.kind === "start-messaging" && snapshot.messaging.kind !== "not-configured") {
-    addIssue(["actions", index], "A Provider can be started only after canonical state is not-configured");
+  if (
+    action.kind === "start-messaging" &&
+    snapshot.messaging.kind !== "not-configured" &&
+    !isInitialFeishuRetry(snapshot.messaging, action)
+  ) {
+    addIssue(
+      ["actions", index],
+      "Start requires not-configured state or an unactivated same-Provider authorization retry",
+    );
   }
   if (
     action.kind === "start-messaging" &&

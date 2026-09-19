@@ -44,6 +44,8 @@ export interface AgentSetupAdapter {
   ) => Promise<void>;
   /** Cancels the exact open Feishu attempt. Attempts are keyed globally, so no Agent id is taken. */
   readonly cancelFeishuAttempt: (attemptId: string) => Promise<void>;
+  /** Requests a throttled check of the exact saved authorization; reads never trigger it. */
+  readonly checkFeishuAttempt: (attemptId: string) => Promise<void>;
   /** Starts Slack's install or reauthorization; resolves the URL the browser must be sent to. */
   readonly startSlackInstall: (
     agentId: string,
@@ -63,6 +65,7 @@ interface AgentSetupBrowserApi {
     expectedMessaging?: ImBindingMessagingExpectation,
   ) => Promise<FeishuSetupAttempt>;
   readonly cancelFeishuSetupAttempt: (attemptId: string) => Promise<FeishuSetupAttempt>;
+  readonly checkFeishuSetupAttempt: (attemptId: string) => Promise<FeishuSetupAttempt>;
   readonly startSlackOAuth: (agentId: string, input: StartSlackOAuthRequest) => Promise<StartSlackOAuthResponse>;
   readonly unbindAgentMessaging: (agentId: string, input: UnbindAgentMessagingRequest) => Promise<void>;
 }
@@ -115,6 +118,13 @@ export function createHttpSetupAdapter(
         await api.cancelFeishuSetupAttempt(attemptId);
       } finally {
         // Attempts are keyed globally, so this seam never names an Agent; retire any setup read.
+        await retireSnapshotReads();
+      }
+    },
+    checkFeishuAttempt: async (attemptId) => {
+      try {
+        await api.checkFeishuSetupAttempt(attemptId);
+      } finally {
         await retireSnapshotReads();
       }
     },

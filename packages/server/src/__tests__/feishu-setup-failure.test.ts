@@ -454,6 +454,30 @@ describe("FeishuSetupService persistence", () => {
     await service.stop();
   });
 
+  it("aborts registrations even when persisting the shutdown outcome fails", async () => {
+    const value = await setupFixture();
+    const pending = registration(new Promise(() => {}));
+    const service = new FeishuSetupService({
+      database: setupDatabase.database,
+      cipher: value.cipher,
+      instanceId: crypto.randomUUID(),
+      imBindings: value.imBindings,
+      registrations: { start: () => pending },
+      activation: { activateAtomicAttempt: vi.fn() },
+    });
+    await service.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+    const update = vi.spyOn(setupDatabase.database, "update").mockImplementationOnce(() => {
+      throw new Error("database unavailable during shutdown");
+    });
+    try {
+      await expect(service.stop()).rejects.toThrow("database unavailable during shutdown");
+      expect(pending.abort).toHaveBeenCalledTimes(1);
+    } finally {
+      update.mockRestore();
+      await service.stop();
+    }
+  });
+
   it("starts the setup heartbeat and stops active registrations", async () => {
     vi.useFakeTimers();
     try {

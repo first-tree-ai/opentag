@@ -311,6 +311,24 @@ describe("parseSkillManifest", () => {
     expectManifest("---\nname: v2\ndescription: 123 things\n---\n", { name: "v2", description: "123 things" });
   });
 
+  it("accepts a quoted scalar spanning lines on the key line", () => {
+    expectManifest('---\nname: demo\ndescription: "two\n  lines quoted"\n---\n', {
+      name: "demo",
+      description: "two lines quoted",
+    });
+    expectManifest("---\nname: demo\ndescription: 'two\n  lines ''quoted'''\n---\n", {
+      name: "demo",
+      description: "two lines 'quoted'",
+    });
+  });
+
+  it("accepts a quoted name on a continuation line", () => {
+    expectManifest('---\nname:\n  "abc"\ndescription: A demo skill\n---\n', {
+      name: "abc",
+      description: "A demo skill",
+    });
+  });
+
   it("rejects a missing frontmatter block", () => {
     expectReason("# Demo\nname: demo\n", "missing its frontmatter");
   });

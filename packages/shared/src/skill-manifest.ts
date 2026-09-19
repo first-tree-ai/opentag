@@ -125,21 +125,7 @@ function unescapeDoubleQuoted(value: string): string | null {
   return result;
 }
 
-/** A plain, single-quoted, or double-quoted scalar; `null` means "not faithfully representable". */
-function parseScalarValue(raw: string): string | null {
-  const value = raw.trim();
-  if (value.length === 0) return "";
-  const quote = value[0];
-  if (quote === '"') {
-    if (value.length < 2 || !value.endsWith('"')) return null;
-    return unescapeDoubleQuoted(value.slice(1, -1));
-  }
-  if (quote === "'") {
-    if (value.length < 2 || !value.endsWith("'")) return null;
-    return value.slice(1, -1).replaceAll("''", "'");
-  }
-  return value;
-}
+/* ---------------------- YAML non-string scalar resolution ------------------ */
 
 function nonStringRejection(key: string, type: YamlNonStringType): ManifestFieldValue {
   return { ok: false, reason: `Skill manifest ${key} must be a string, not a ${type}` };
@@ -348,7 +334,11 @@ function unquoteFoldedScalar(folded: string): string | null {
   return null;
 }
 
-/** Fold a quoted scalar that starts on a continuation line and require one complete scalar. */
+/**
+ * A quoted scalar, which may start on the key line or on the first continuation line and may span
+ * lines. Fold the lines like `>` and require exactly one complete quoted scalar; trailing text, a
+ * mapping key after the quote, and an unterminated quote are all rejected.
+ */
 function readQuotedScalar(valueLines: string[], key: string, nextIndex: number): ManifestFieldValue {
   const unquoted = unquoteFoldedScalar(foldLines(valueLines));
   if (unquoted !== null) return { ok: true, value: unquoted, nextIndex };
@@ -398,7 +388,8 @@ function checkPlainContinuationLines(
 /**
  * A plain scalar, optionally continued on following indented lines. The effective first value line is
  * the key-line value when there is one, otherwise the first non-blank continuation; YAML's
- * plain-scalar start rule applies to it, and every line must avoid `: ` and a trailing `:`.
+ * plain-scalar start rule applies to it, every line must avoid `: ` and a trailing `:`, and the whole
+ * folded value must not resolve to a non-string YAML type.
  */
 function readPlainScalar(lines: string[], index: number, key: string, rawValue: string): ManifestFieldValue {
   const collected = collectBlockLines(lines, index + 1);
@@ -406,7 +397,7 @@ function readPlainScalar(lines: string[], index: number, key: string, rawValue: 
   const valueLines = rawValue.length > 0 ? [rawValue, ...continuation] : continuation;
   const effective = firstNonBlankLine(valueLines, 0);
 
-  if (rawValue.length === 0 && effective !== undefined && isQuotedStart(effective)) {
+  if (effective !== undefined && isQuotedStart(effective)) {
     return readQuotedScalar(valueLines, key, collected.nextIndex);
   }
   const effectiveRejection = checkEffectivePlainLine(effective, key, rawValue.length > 0);
@@ -426,11 +417,6 @@ function readManifestFieldValue(lines: string[], index: number, key: string, raw
     const collected = collectBlockLines(lines, index + 1);
     const value = renderBlockScalar(collected.lines, block.style, block.chomp);
     return { ok: true, value, nextIndex: collected.nextIndex };
-  }
-  if (rawValue.startsWith("'") || rawValue.startsWith('"')) {
-    const scalar = parseScalarValue(rawValue);
-    if (scalar === null) return { ok: false, reason: `Skill manifest has an unsupported value for ${key}` };
-    return { ok: true, value: scalar, nextIndex: index + 1 };
   }
   return readPlainScalar(lines, index, key, rawValue);
 }

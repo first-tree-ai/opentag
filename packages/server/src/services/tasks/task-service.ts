@@ -154,7 +154,9 @@ function encodeCursor(at: Date | string, id: string): string {
 /**
  * The status is the topic's latest execution situation, read by precedence rather than by the
  * most recent delivery: a disconnected channel first, then any Turn still running, then anything
- * still queued, and only then the outcome of the last execution. An accepted delivery counts as
+ * still queued, and only then the outcome of the last execution. `hasPending` is the topic's live
+ * queue rather than any pending row, so a delivery later messages already overtook cannot outrank
+ * their outcome; see {@link topicCtes}. An accepted delivery counts as
  * running only while its deadline has not passed, its Session is alive, and no later Turn ran in
  * that Session; a Session runs one Turn at a time, so a later acceptance proves the earlier one
  * ended without a report. A delivery the Account withdrew from the queue is stored as expired with
@@ -299,6 +301,14 @@ function sameTopic(left: string, right: string): SQL {
  * inbound message and each chat Session into its topic, and keeps only the deliveries that count as
  * executions of that topic: the channel Session's ambient observer copy of a message the thread
  * Session owns is left out, as is a delivery expired because a newer revision superseded it.
+ *
+ * A topic counts as queued from the arrival order of its messages, not from the presence of any
+ * pending row. A delivery the worker cannot place keeps retrying under a seven-day TTL, so a single
+ * stuck row used to hold the whole topic at `queued` for a week while later messages in it ran to a
+ * report. Only a pending delivery inside its TTL whose message is no older than the topic's newest
+ * settled one is still waiting its turn; an older one was overtaken and no longer describes where
+ * the topic stands. Pending wins an exact tie, so a message that arrives while an earlier Turn is
+ * finishing still reads as queued rather than being swallowed by that Turn's report.
  */
 function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicScope | ChannelScope; now: Date }): SQL {
   const channelFilter = (alias: string) =>
@@ -441,6 +451,8 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         d.attention,
         d.state,
         d.accepted_at,
+        d.expires_at,
+        tm.occurred_at as message_at,
         aw.next_accepted_at,
         tm.im_binding_id,
         tm.channel_id,
@@ -478,7 +490,10 @@ function topicCtes(input: { accountId: string; agentId?: string; scope?: TopicSc
         channel_id,
         topic_key,
         bool_or(is_running) as has_running,
-        bool_or(state = 'pending') as has_pending,
+        max(message_at) filter (
+          where state = 'pending' and expires_at > ${input.now.toISOString()}::timestamptz
+        ) as live_pending_message_at,
+        max(message_at) filter (where state <> 'pending') as settled_message_at,
         max(activity_at) as last_execution_at,
         (array_agg(id order by activity_at desc, id desc))[1] as latest_execution_id
       from executions
@@ -982,7 +997,10 @@ export class TaskService {
           t.channel_id,
           t.topic_key,
           t.has_running,
-          t.has_pending,
+          (
+            t.live_pending_message_at is not null
+            and (t.settled_message_at is null or t.live_pending_message_at >= t.settled_message_at)
+          ) as has_pending,
           t.latest_execution_id,
           mt.anchor_id,
           mt.anchor_at,

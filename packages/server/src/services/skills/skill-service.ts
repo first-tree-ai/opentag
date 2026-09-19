@@ -122,12 +122,13 @@ export class SkillService {
   async setEnabled(callerUserId: string, agentId: string, skillId: string, enabled: boolean): Promise<SkillDetail> {
     await this.#requireAgent(callerUserId, agentId);
     const existing = await this.#requireSkill(agentId, skillId);
+    // Optimistic concurrency: a write that raced a replace on this row changes nothing.
     const [row] = await this.#database
       .update(agentSkills)
       .set({ enabled, updatedAt: this.#now() })
-      .where(eq(agentSkills.id, existing.id))
+      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
       .returning();
-    if (!row) throw skillNotFound();
+    if (!row) throw skillNameConflict("The Skill changed concurrently; reload and retry");
     this.#logger?.info(
       { agentId, enabled, skillId: row.id, name: row.name },
       enabled ? "Skill enabled" : "Skill disabled",
@@ -138,16 +139,21 @@ export class SkillService {
   async remove(callerUserId: string, agentId: string, skillId: string): Promise<void> {
     await this.#requireAgent(callerUserId, agentId);
     const existing = await this.#requireSkill(agentId, skillId);
-    await this.#database.delete(agentSkills).where(eq(agentSkills.id, existing.id));
+    const deleted = await this.#database
+      .delete(agentSkills)
+      .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
+      .returning();
+    if (deleted.length === 0) throw skillNameConflict("The Skill changed concurrently; reload and retry");
+    const row = deleted[0] as SkillRow;
     if (this.#store) {
-      await this.#bestEffortDelete(this.#store, existing.objectKey, "removed Skill", existing);
+      await this.#bestEffortDelete(this.#store, row.objectKey, "removed Skill", row);
     } else {
       this.#logger?.warn(
-        { agentId, skillId: existing.id, name: existing.name },
+        { agentId, skillId: row.id, name: row.name },
         "Skill storage is unavailable; the removed Skill's object cannot be cleaned up",
       );
     }
-    this.#logger?.info({ agentId, skillId: existing.id, name: existing.name }, "Skill removed");
+    this.#logger?.info({ agentId, skillId: row.id, name: row.name }, "Skill removed");
   }
 
   async openBundle(callerUserId: string, agentId: string, skillId: string): Promise<SkillBundle> {
@@ -304,21 +310,43 @@ export class SkillService {
           revision: sql`${agentSkills.revision} + 1`,
           updatedAt: this.#now(),
         })
-        .where(eq(agentSkills.id, existing.id))
+        // Optimistic concurrency: a replace built on a stale read changes nothing. If another writer
+        // moved the row since we read it, this matches zero rows and we must not touch its object.
+        .where(and(eq(agentSkills.id, existing.id), eq(agentSkills.revision, existing.revision)))
         .returning();
     } catch (error) {
       await this.#bestEffortDelete(store, objectKey, "new Skill object after a failed replace write", existing);
       throw error;
     }
     if (!row) {
-      await this.#bestEffortDelete(store, objectKey, "new Skill object after a missing replace row", existing);
-      throw skillNotFound();
+      await this.#discardUnreferencedObject(store, objectKey, existing);
+      throw skillNameConflict("The Skill changed concurrently; retry the upload");
     }
     if (existing.objectKey !== objectKey) {
-      await this.#bestEffortDelete(store, existing.objectKey, "replaced Skill object", existing);
+      await this.#deleteReplacedObject(store, existing, objectKey);
     }
     this.#logUpload("Skill replaced", row, normalized.sha256);
     return toSkillDetail(row);
+  }
+
+  /** Removes a newly written object only when no current row still references it. */
+  async #discardUnreferencedObject(store: SkillObjectStore, objectKey: string, existing: SkillRow): Promise<void> {
+    const [current] = await this.#database.select().from(agentSkills).where(eq(agentSkills.id, existing.id)).limit(1);
+    if (current?.objectKey === objectKey) return;
+    await this.#bestEffortDelete(store, objectKey, "new Skill object after a concurrent replace", existing);
+  }
+
+  /**
+   * Deletes the replaced object only while our own write is still the row's current object.
+   *
+   * A later replace may have moved the row to a different key — or even back to this same key by
+   * re-uploading identical content — so deleting the old object unconditionally can strand the row
+   * on an object that no longer exists. An orphaned object is harmless; a dangling row is not.
+   */
+  async #deleteReplacedObject(store: SkillObjectStore, existing: SkillRow, newObjectKey: string): Promise<void> {
+    const [current] = await this.#database.select().from(agentSkills).where(eq(agentSkills.id, existing.id)).limit(1);
+    if (current?.objectKey !== newObjectKey) return;
+    await this.#bestEffortDelete(store, existing.objectKey, "replaced Skill object", existing);
   }
 
   async #openBundle(row: SkillRow): Promise<SkillBundle> {

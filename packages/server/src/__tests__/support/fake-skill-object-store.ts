@@ -16,6 +16,11 @@ export class FakeSkillObjectStore implements SkillObjectStore {
   failNextGetWith?: SkillObjectStoreError;
   failNextHeadWith?: SkillObjectStoreError;
   failNextDeleteWith?: SkillObjectStoreError;
+  /**
+   * One-shot gate awaited at the start of the next `delete`, before the object is removed. Lets a
+   * test pause a writer between its row update and its old-object cleanup.
+   */
+  beforeDelete?: { promise: Promise<void>; open: () => void; onPause?: () => void };
 
   /** Seeds a stored object directly, bypassing the counters (fixture setup). */
   plant(key: string, body: Uint8Array): void {
@@ -73,6 +78,12 @@ export class FakeSkillObjectStore implements SkillObjectStore {
 
   async delete(key: string): Promise<void> {
     this.deletes += 1;
+    const gate = this.beforeDelete;
+    if (gate) {
+      this.beforeDelete = undefined;
+      gate.onPause?.();
+      await gate.promise;
+    }
     if (this.failNextDeleteWith) {
       const error = this.failNextDeleteWith;
       this.failNextDeleteWith = undefined;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ImBindingUnbindRequiredDetailSchema } from "./im-binding.js";
 import { MCP_ERROR_CODES } from "./mcp.js";
+import { SKILL_ERROR_CODES } from "./skill.js";
 
 export const ErrorCategorySchema = z.enum(["credential", "deterministic", "validation", "transient", "rate_limit"]);
 
@@ -74,6 +75,8 @@ export const ErrorCodeSchema = z.enum([
   "GITHUB_DELEGATED_IM_BINDING_INVALID",
   /* MCP (Model Context Protocol) management failures; kept in step with MCP_ERROR_CODES. */
   ...Object.values(MCP_ERROR_CODES),
+  /* Agent Skill failures; kept in step with SKILL_ERROR_CODES. */
+  ...Object.values(SKILL_ERROR_CODES),
   "CLIENT_VERSION_UNSUPPORTED",
   "COMPUTER_IDENTITY_CONFLICT",
   "COMPUTER_NOT_FOUND",

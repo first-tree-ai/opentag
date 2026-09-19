@@ -264,6 +264,45 @@ describe("parseSkillManifest", () => {
     );
   });
 
+  it("rejects collection-valued description (block sequence, block mapping, flow forms)", () => {
+    const reason = "description must be a string, not a list or map";
+    expectReason("---\nname: demo\ndescription:\n  - read\n  - write\n---\n", reason);
+    expectReason("---\nname: demo\ndescription:\n  purpose: read files\n---\n", reason);
+    expectReason("---\nname: demo\ndescription: [read, write]\n---\n", reason);
+    expectReason("---\nname: demo\ndescription: {purpose: read files}\n---\n", reason);
+  });
+
+  it("rejects collection-valued name (block sequence and flow list)", () => {
+    const reason = "name must be a string, not a list or map";
+    expectReason("---\nname:\n  - a\n  - b\ndescription: A demo skill\n---\n", reason);
+    expectReason("---\nname: [a, b]\ndescription: A demo skill\n---\n", reason);
+  });
+
+  it("still accepts plain strings, including a blank first line and list-like text", () => {
+    expectManifest("---\nname: demo\ndescription:\n  plain text over\n  lines\n---\n", {
+      name: "demo",
+      description: "plain text over lines",
+    });
+    expectManifest("---\nname: demo\ndescription: This is\n  a plain continuation\n---\n", {
+      name: "demo",
+      description: "This is a plain continuation",
+    });
+  });
+
+  it("still accepts a `|` block whose text contains sequence-item lines", () => {
+    expectManifest("---\nname: demo\ndescription: |\n  - item\n  - another\n---\n", {
+      name: "demo",
+      description: "- item\n- another",
+    });
+  });
+
+  it("still skips collections under unknown keys", () => {
+    expectManifest(
+      "---\nname: demo\ndescription: A demo skill\nmetadata:\n  - one\n  - two\nallowed-tools:\n  - read\n---\n",
+      { name: "demo", description: "A demo skill" },
+    );
+  });
+
   it("rejects a missing frontmatter block", () => {
     expectReason("# Demo\nname: demo\n", "missing its frontmatter");
   });

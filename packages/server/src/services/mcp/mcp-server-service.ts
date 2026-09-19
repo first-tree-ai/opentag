@@ -231,6 +231,35 @@ export class McpServerService {
 
   // ---------------------------------------------------------------- bindings
 
+  /**
+   * One Agent's mounts as raw joined rows, for the runtime gateway.
+   *
+   * `listAgentServers` answers the same query but maps to the management DTO, which deliberately
+   * omits the tool snapshot's contents and every credential-shaped column — correct for an API
+   * response, useless for building a tool catalogue. This returns the rows themselves so the gateway
+   * can read `tools`, `protocol_era`, and the override columns without a second round trip.
+   *
+   * Ownership is proven the same way every other read in this service proves it: the Agent must
+   * belong to the Account and not be deleted, and the definition must be the Account's.
+   */
+  async listAgentBindings(accountId: string, agentId: string): Promise<McpJoinedBinding[]> {
+    await this.#requireAgent(accountId, agentId);
+    const rows = await this.#database
+      .select({ binding: agentMcpServers, server: mcpServers, authorization: mcpServerAuthorizations })
+      .from(agentMcpServers)
+      .innerJoin(mcpServers, eq(mcpServers.id, agentMcpServers.mcpServerId))
+      .leftJoin(
+        mcpServerAuthorizations,
+        and(
+          eq(mcpServerAuthorizations.mcpServerId, agentMcpServers.mcpServerId),
+          eq(mcpServerAuthorizations.agentId, agentMcpServers.agentId),
+        ),
+      )
+      .where(and(eq(agentMcpServers.agentId, agentId), eq(mcpServers.accountId, accountId)))
+      .orderBy(asc(mcpServers.name));
+    return rows.map((row) => ({ binding: row.binding, server: row.server, authorization: row.authorization }));
+  }
+
   async listAgentServers(accountId: string, agentId: string): Promise<MCPAgentServer[]> {
     await this.#requireAgent(accountId, agentId);
     const rows = await this.#database

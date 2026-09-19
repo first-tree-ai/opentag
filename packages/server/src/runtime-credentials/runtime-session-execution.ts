@@ -18,6 +18,7 @@ import {
 import type { RuntimeExecutionAuthority } from "./execution-authority.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { RuntimeGitHubAdmission } from "./github-admission.js";
+import type { RuntimeMcpServicePolicy } from "./mcp-policy.js";
 import { VALIDATION_EXECUTION_MAX_LIFETIME_MS } from "./runtime-validation-execution.js";
 import type { RuntimeScopeResolverPort, RuntimeScopeSnapshot } from "./scope-resolver.js";
 import {
@@ -45,6 +46,11 @@ export interface RuntimeSessionExecutionDeps {
    * keeps the feature fully off regardless of what a Client requests.
    */
   webPolicy?: RuntimeWebServicePolicy;
+  /**
+   * MCP gateway service policy. Absent means no execution can carry MCP scopes, which keeps the
+   * gateway fully unreachable regardless of what a Client requests.
+   */
+  mcpPolicy?: RuntimeMcpServicePolicy;
 }
 
 /**
@@ -83,7 +89,7 @@ export async function openRuntimeSessionExecution(
   if (decision.status === "invalid") return rejected("execution_source_invalid");
   const purpose: RuntimeExecutionPurpose = decision.validation ? "validation" : "execution";
   const candidates = await candidateProviders(deps, snapshot, decision.validation, frame.source);
-  const services = describeSessionServices(deps, frame, context, snapshot);
+  const services = await describeSessionServices(deps, frame, context, snapshot);
   if (candidates.length === 0 && services.length === 0) return rejected("execution_authority_denied");
   const record = openSessionRecord(deps, frame, context, snapshot, purpose, connectionId, services);
   if (!record) return rejected("owner_unavailable");
@@ -94,6 +100,7 @@ export async function openRuntimeSessionExecution(
   }
   const opened: RuntimeExecutionRecord = { ...record, providers };
   deps.executions.update(opened);
+  const wireServices = services.filter((service) => negotiated(context, service.service));
   return {
     type: "runtime:execution:result",
     requestId: frame.requestId,
@@ -101,9 +108,13 @@ export async function openRuntimeSessionExecution(
     executionId: opened.executionId,
     expiresAt: new Date(opened.expiresAt).toISOString(),
     providers: [...providers.values()],
-    // Service grants are only on the wire when the Client negotiated the webTools capability;
-    // older Clients never see a field their strict schema would reject.
-    ...(services.length > 0 && context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.webTools] === 1 ? { services } : {}),
+    /*
+     * Each grant is on the wire only when the Client negotiated that service's own capability, so an
+     * older Client never sees a field its strict schema would reject. The filter is per service
+     * rather than per frame: gating the whole array on one capability would have shipped an MCP
+     * grant to a peer that negotiated only webTools.
+     */
+    ...(wireServices.length > 0 ? { services: wireServices } : {}),
   };
 }
 
@@ -190,22 +201,46 @@ function openSessionRecord(
 }
 
 /**
- * Platform services attach only when the Client explicitly requested them over a negotiated
- * webTools capability, the deployment policy authorizes the owning Account, and the Session fence
- * already passed. A requested-but-unauthorized service is omitted (the tools never register),
- * never silently granted through a shared default.
+ * The capability each platform service rides on.
+ *
+ * Kept as a table rather than a chain of `if`s because the emit gate and this function must agree
+ * exactly: a service whose capability the peer did not negotiate must be neither granted here nor
+ * put on the wire below, and a single shared table is what makes those two statements one fact.
  */
-function describeSessionServices(
+const SERVICE_CAPABILITY: Record<RuntimeExecutionService["service"], string> = {
+  web: RUNTIME_CAPABILITY.webTools,
+  mcp: RUNTIME_CAPABILITY.mcpGateway,
+};
+
+function negotiated(context: RuntimeBusinessContext, service: RuntimeExecutionService["service"]): boolean {
+  return context.negotiatedCapabilities?.[SERVICE_CAPABILITY[service]] === 1;
+}
+
+/**
+ * Platform services attach only when the Client explicitly requested them over that service's own
+ * negotiated capability, the policy authorizes the subject, and the Session fence already passed. A
+ * requested-but-unauthorized service is omitted (its tools never register), never silently granted
+ * through a shared default.
+ */
+async function describeSessionServices(
   deps: RuntimeSessionExecutionDeps,
   frame: ExecutionOpenFrame,
   context: RuntimeBusinessContext,
   snapshot: RuntimeScopeSnapshot,
-): RuntimeExecutionService[] {
-  if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.webTools] !== 1) return [];
-  if (!frame.services?.includes("web") || !deps.webPolicy) return [];
-  const scopes = deps.webPolicy.authorizeWeb({ accountId: snapshot.computer.ownerAccountId });
-  if (!scopes || scopes.length === 0) return [];
-  return [{ service: "web", scopes: [...scopes] }];
+): Promise<RuntimeExecutionService[]> {
+  const services: RuntimeExecutionService[] = [];
+  if (negotiated(context, "web") && frame.services?.includes("web") && deps.webPolicy) {
+    const scopes = deps.webPolicy.authorizeWeb({ accountId: snapshot.computer.ownerAccountId });
+    if (scopes && scopes.length > 0) services.push({ service: "web", scopes: [...scopes] });
+  }
+  if (negotiated(context, "mcp") && frame.services?.includes("mcp") && deps.mcpPolicy) {
+    const scopes = await deps.mcpPolicy.authorizeMcp({
+      accountId: snapshot.computer.ownerAccountId,
+      agentId: snapshot.agent.id,
+    });
+    if (scopes && scopes.length > 0) services.push({ service: "mcp", scopes: [...scopes] });
+  }
+  return services;
 }
 
 async function describeSessionCandidates(

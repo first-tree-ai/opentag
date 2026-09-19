@@ -1,14 +1,15 @@
 import { z } from "zod";
+import { RuntimeExecutionServiceRequestSchema, RuntimeExecutionServiceSchema } from "./execution-services.js";
 import {
   GitBranchRefSchema,
   GitHubRepositoryAccessSchema,
   GitHubRepositoryPublishModeSchema,
   GitHubRepositoryRoleSchema,
 } from "./github-integration.js";
+import { MCP_GATEWAY_PATH } from "./mcp-gateway.js";
 import { runtimeByteString as byteString } from "./runtime-config.js";
 import { RuntimeImOutboxContextSchema, RuntimeOpaqueIdSchema } from "./runtime-domain.js";
 import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
-import { RuntimeExecutionServiceRequestSchema, RuntimeExecutionServiceSchema } from "./web-tools.js";
 
 /**
  * Runtime credential delegation contract (control + data planes).
@@ -365,6 +366,55 @@ export const RuntimeProxyTicketResultSchema = z.discriminatedUnion("status", [
 ]);
 export type RuntimeProxyTicketResult = z.infer<typeof RuntimeProxyTicketResultSchema>;
 
+export const RuntimeMcpGatewayRejectCodeSchema = z.enum([
+  "execution_unknown",
+  "execution_closed",
+  "capability_unsupported",
+  "service_not_granted",
+  "owner_unavailable",
+]);
+export type RuntimeMcpGatewayRejectCode = z.infer<typeof RuntimeMcpGatewayRejectCodeSchema>;
+
+export const RuntimeMcpGatewayRequestSchema = z
+  .object({
+    type: z.literal("runtime:mcp:gateway"),
+    requestId,
+    executionId,
+  })
+  .strict();
+export type RuntimeMcpGatewayRequest = z.infer<typeof RuntimeMcpGatewayRequestSchema>;
+
+/**
+ * The MCP gateway bearer for one execution.
+ *
+ * Its own frame rather than a field on the execution-open result, because the open result has never
+ * carried a secret and both existing secrets in this protocol — capability tokens and proxy tickets
+ * — are fetched this way. Only the path travels; the Client composes the URL against the server
+ * origin it already pinned, so the Server never names a destination the Client will dial.
+ */
+export const RuntimeMcpGatewayResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      type: z.literal("runtime:mcp:gateway:result"),
+      requestId,
+      status: z.literal("succeeded"),
+      executionId,
+      token: opaqueToken,
+      expiresAt: isoDateTime,
+      path: z.literal(MCP_GATEWAY_PATH),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("runtime:mcp:gateway:result"),
+      requestId,
+      status: z.literal("rejected"),
+      code: RuntimeMcpGatewayRejectCodeSchema,
+    })
+    .strict(),
+]);
+export type RuntimeMcpGatewayResult = z.infer<typeof RuntimeMcpGatewayResultSchema>;
+
 export const RuntimeCredentialRevokedCodeSchema = z.enum([
   "execution_closed",
   "connection_replaced",
@@ -389,6 +439,7 @@ export const RuntimeCredentialClientFrameSchema = z.discriminatedUnion("type", [
   RuntimeCredentialRenewRequestSchema,
   RuntimeExecutionCloseRequestSchema,
   RuntimeProxyTicketRequestSchema,
+  RuntimeMcpGatewayRequestSchema,
 ]);
 export type RuntimeCredentialClientFrame = z.infer<typeof RuntimeCredentialClientFrameSchema>;
 
@@ -397,6 +448,7 @@ export const RuntimeCredentialServerFrameSchema = z.discriminatedUnion("type", [
   RuntimeCredentialResultSchema,
   RuntimeExecutionClosedResultSchema,
   RuntimeProxyTicketResultSchema,
+  RuntimeMcpGatewayResultSchema,
   RuntimeCredentialRevokedFrameSchema,
 ]);
 export type RuntimeCredentialServerFrame = z.infer<typeof RuntimeCredentialServerFrameSchema>;

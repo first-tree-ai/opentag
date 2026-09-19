@@ -622,18 +622,11 @@ export const RUNTIME_WEB_SERVICE = "web" as const;
 export const RuntimeWebServiceScopeSchema = z.enum(["web:search", "web:fetch"]);
 export type RuntimeWebServiceScope = z.infer<typeof RuntimeWebServiceScopeSchema>;
 
-/** Services a Client may request at execution open (gated by the webTools capability). */
-export const RuntimeExecutionServiceRequestSchema = z.literal(RUNTIME_WEB_SERVICE);
-export type RuntimeExecutionServiceRequest = z.infer<typeof RuntimeExecutionServiceRequestSchema>;
-
-/** One service grant attached to an opened execution; scopes are the exact authorized operations. */
-export const RuntimeExecutionServiceSchema = z
-  .object({
-    service: z.literal(RUNTIME_WEB_SERVICE),
-    scopes: z.array(RuntimeWebServiceScopeSchema).min(1).max(2),
-  })
-  .strict();
-export type RuntimeExecutionService = z.infer<typeof RuntimeExecutionServiceSchema>;
+/*
+ * The execution-service request and grant schemas live in `./execution-services.ts`. They were
+ * defined here while `web` was the only service; they are shared across every service now, so
+ * keeping them in this module would have made each new service import from the web-tools contract.
+ */
 
 /** The scope each fixed route requires. */
 export function webServiceScopeForOperation(operation: "search" | "fetch"): RuntimeWebServiceScope {

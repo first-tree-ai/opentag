@@ -215,6 +215,7 @@ export {
   type ValidationIssue,
   ValidationIssueSchema,
 } from "./errors.js";
+export * from "./execution-services.js";
 export * from "./github-integration.js";
 export * from "./github-management.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
@@ -328,6 +329,7 @@ export {
 export * from "./im-binding.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
+export * from "./mcp-gateway.js";
 export * from "./runner-workspace.js";
 export {
   getRuntimeConfigurationOptions,

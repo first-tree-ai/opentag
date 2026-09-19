@@ -7,7 +7,6 @@ import {
   parseWebTargetUrl,
   parseWebTimeoutHeader,
   RouterGatewayErrorSchema,
-  RuntimeExecutionServiceSchema,
   WEB_FETCH_RESPONSE_MAX_BYTES,
   WEB_FETCH_TIMEOUT_CAP_MS,
   WEB_GATEWAY_FETCH_PATH,
@@ -277,14 +276,6 @@ describe("execution and gateway requests", () => {
       WebFetchExecutionRequestSchema.safeParse({ protocolVersion: 1, executionId: id, toolCallId: id, urls: ["x"] })
         .success,
     ).toBe(false);
-  });
-
-  it("service grants are exact", () => {
-    expect(
-      RuntimeExecutionServiceSchema.safeParse({ service: "web", scopes: ["web:search", "web:fetch"] }).success,
-    ).toBe(true);
-    expect(RuntimeExecutionServiceSchema.safeParse({ service: "web", scopes: ["web:delete"] }).success).toBe(false);
-    expect(RuntimeExecutionServiceSchema.safeParse({ service: "llm", scopes: [] }).success).toBe(false);
   });
 });
 

@@ -1,4 +1,5 @@
 import {
+  MCP_GATEWAY_PATH,
   RUNTIME_CAPABILITY,
   type RuntimeCredentialClientFrame,
   RuntimeCredentialClientFrameSchema,
@@ -9,6 +10,8 @@ import {
   type RuntimeCredentialServerFrame,
   type RuntimeExecutionOpenRejectCode,
   type RuntimeExecutionOpenResult,
+  type RuntimeMcpGatewayRejectCode,
+  type RuntimeMcpGatewayResult,
   type RuntimeProxyTicketResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../observability/service-logger.js";
@@ -23,6 +26,8 @@ import {
 import type { RuntimeExecutionAuthority } from "./execution-authority.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { RuntimeGitHubAdmission } from "./github-admission.js";
+import type { RuntimeMcpGatewayTokenStore } from "./mcp-gateway-token-store.js";
+import type { RuntimeMcpServicePolicy } from "./mcp-policy.js";
 import { openRuntimeSessionExecution } from "./runtime-session-execution.js";
 import { issueRuntimeValidationRun, openRuntimeValidationExecution } from "./runtime-validation-execution.js";
 import type { RuntimeScopeResolverPort } from "./scope-resolver.js";
@@ -56,6 +61,10 @@ export interface RuntimeCredentialOwnerOptions {
   cloudControlActive?: (identity: RuntimeControlIdentity) => Promise<boolean> | boolean;
   /** Deployment web service policy; absent keeps the web service fully off at execution open. */
   webPolicy?: RuntimeWebServicePolicy;
+  /** MCP gateway service policy; absent keeps the gateway unreachable at execution open. */
+  mcpPolicy?: RuntimeMcpServicePolicy;
+  /** Execution-scoped MCP gateway bearers; absent means the token frame can never succeed. */
+  mcpGatewayTokens?: RuntimeMcpGatewayTokenStore;
   logger?: ServiceLogger;
   sweepIntervalMs?: number;
 }
@@ -152,6 +161,7 @@ export class RuntimeCredentialOwner {
     if (frame.type === "runtime:credential:acquire") return this.#acquire(frame, context);
     if (frame.type === "runtime:credential:renew") return this.#renew(frame, context);
     if (frame.type === "runtime:execution:close") return this.#closeExecution(frame, context);
+    if (frame.type === "runtime:mcp:gateway") return this.#mcpGatewayToken(frame, context);
     return this.#ticket(frame, context);
   }
 
@@ -267,6 +277,55 @@ export class RuntimeCredentialOwner {
     };
   }
 
+  /**
+   * Hand this execution its MCP gateway bearer.
+   *
+   * The grant on the open result says the service is authorized; this frame is where the credential
+   * itself is issued, keeping the open result free of secrets as every other credential in this
+   * protocol does. The scope is re-read from the live execution rather than trusted from the frame,
+   * so a Client cannot ask for a token for an execution that was never granted the service.
+   */
+  #mcpGatewayToken(
+    frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:mcp:gateway" }>,
+    context: RuntimeBusinessContext,
+  ): RuntimeMcpGatewayResult {
+    const rejected = (code: RuntimeMcpGatewayRejectCode) =>
+      ({
+        type: "runtime:mcp:gateway:result",
+        requestId: frame.requestId,
+        status: "rejected",
+        code,
+      }) satisfies RuntimeMcpGatewayResult;
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.mcpGateway] !== 1 || !context.connectionId) {
+      return rejected("capability_unsupported");
+    }
+    const store = this.#options.mcpGatewayTokens;
+    if (!store) return rejected("capability_unsupported");
+    const execution = this.#contextExecution(frame.executionId, context);
+    if (!execution) return rejected("execution_unknown");
+    const granted = execution.services?.some(
+      (service) => service.service === "mcp" && service.scopes.includes("mcp:tools"),
+    );
+    if (!granted) return rejected("service_not_granted");
+    try {
+      const { token, expiresAt } = store.issue({
+        executionId: execution.executionId,
+        expiresAt: execution.expiresAt,
+      });
+      return {
+        type: "runtime:mcp:gateway:result",
+        requestId: frame.requestId,
+        status: "succeeded",
+        executionId: execution.executionId,
+        token,
+        expiresAt: new Date(expiresAt).toISOString(),
+        path: MCP_GATEWAY_PATH,
+      };
+    } catch {
+      return rejected("owner_unavailable");
+    }
+  }
+
   #ticket(
     frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:proxy:ticket" }>,
     context: RuntimeBusinessContext,
@@ -326,6 +385,12 @@ export class RuntimeCredentialOwner {
     if (!record) return;
     this.#options.capabilities.revokeExecution(executionId);
     this.#options.tickets.revokeExecution(executionId);
+    /*
+     * The one place every execution ends — explicit close, connection replacement, owner loss, and
+     * the stale sweep all land here. Revoking the gateway bearer at this single point is what makes
+     * "the token dies with the turn" true for every path rather than only the polite one.
+     */
+    this.#options.mcpGatewayTokens?.revokeExecution(executionId);
     if (!notify) return;
     const frame: RuntimeCredentialServerFrame = { type: "runtime:credential:revoked", executionId, code };
     try {
@@ -384,6 +449,16 @@ export class RuntimeCredentialOwner {
         type: "runtime:execution:closed",
         requestId: data.requestId,
         executionId: data.executionId,
+        status: "rejected",
+        code: "owner_unavailable",
+      };
+    }
+    // Answering in the requester's own result type; a Client awaits a reply that matches its frame,
+    // so falling through to the ticket shape would leave an MCP request hanging until it timed out.
+    if (data.type === "runtime:mcp:gateway") {
+      return {
+        type: "runtime:mcp:gateway:result",
+        requestId: data.requestId,
         status: "rejected",
         code: "owner_unavailable",
       };

@@ -1,14 +1,25 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, type Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { RunnerCloudTurnWorkerRequest } from "@opentag/shared";
+import type {
+  EffectiveRuntimeSnapshot,
+  RunnerCloudSessionWorkerRequest,
+  RunnerCloudTurnWorkerRequest,
+  RuntimeImOutboxContext,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentPromptRequest } from "../agent-runtime/types.js";
+import type {
+  AgentInput,
+  AgentPromptRequest,
+  CreateAgentRuntimeRequest,
+  ResumeAgentRuntimeRequest,
+} from "../agent-runtime/types.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcClient } from "../providers/pi/rpc-wire.js";
+import type { CloudContextTreePreparation } from "../runner/cloud-context-tree.js";
 import {
   type CloudTurnPiFactory,
   type CloudTurnPiRuntime,
@@ -39,6 +50,43 @@ function turnRequest(executionDir: string, sessionDirectory?: string) {
     ...(sessionDirectory ? { piSessionDirectory: sessionDirectory } : {}),
   };
   return request;
+}
+
+function sessionRequest(
+  executionDir: string,
+  overrides: Partial<RunnerCloudSessionWorkerRequest> = {},
+): RunnerCloudSessionWorkerRequest {
+  const delivery = cloudDeliveryFixture();
+  const runtime = delivery.runtime;
+  return {
+    kind: "session-message",
+    executionDir,
+    model: MODEL,
+    sessionKind: "internal",
+    message: {
+      type: "session:message:deliver",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      targetSessionId: delivery.sessionId,
+      agentId: runtime.agentId,
+      placementGeneration: 1,
+      content: { kind: "text", text: "Report the integration status." },
+      runtime,
+    },
+    ...overrides,
+  };
+}
+
+/** Every regular file under a directory tree; used to prove scratch material never persists. */
+async function filesUnder(directory: string): Promise<Buffer[]> {
+  const files: Buffer[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...(await filesUnder(path)));
+    else if (entry.isFile()) files.push(await readFile(path));
+  }
+  return files;
 }
 
 /** Local fixture execution directory: environment.json with the explicit loopback seam. */
@@ -167,6 +215,40 @@ describe("cloud-turn-worker", () => {
     expect(prompt).not.toContain("Agent Home");
     expect(prompt).not.toContain("Context Tree");
     expect(prompt).not.toContain("shared across this Agent's Sessions");
+  });
+
+  it("renders the current Context Tree truthfully with the Agent slug and exact path", () => {
+    const snapshot = cloudDeliveryFixture().runtime;
+    const ready = renderCloudSystemPrompt(
+      { ...snapshot, instructions: { ...snapshot.instructions, platform: "OpenTag Agent slug: tree-agent" } },
+      { contextTree: { status: "ready", treePath: "/ws/tree", branch: "master", sha: "a".repeat(40) } },
+    );
+    expect(ready).toContain("Context Tree: /ws/tree");
+    expect(ready).toContain("tree-agent");
+    expect(ready).toContain("members/tree-agent/");
+    expect(ready).toContain("branch master, commit aaaaaaaaaaaa");
+
+    const dirty = renderCloudSystemPrompt(snapshot, {
+      contextTree: { status: "stale", treePath: "/ws/tree", reason: "DIRTY_TREE" },
+    });
+    expect(dirty).toContain("Context Tree: /ws/tree");
+    expect(dirty).toContain("unpublished changes");
+    expect(dirty).toContain("do not reset or discard");
+
+    const stale = renderCloudSystemPrompt(snapshot, {
+      contextTree: { status: "stale", treePath: "/ws/tree", reason: "TIMEOUT" },
+    });
+    expect(stale).toContain("may be outdated");
+    expect(stale).toContain("TIMEOUT");
+
+    const unconfigured = renderCloudSystemPrompt(snapshot, { contextTree: { status: "unconfigured" } });
+    expect(unconfigured).toContain("disabled for this Agent");
+
+    const denied = renderCloudSystemPrompt(snapshot, {
+      contextTree: { status: "unavailable", reason: "GITHUB_PERMISSION" },
+    });
+    expect(denied).toContain("Context Tree unavailable (GITHUB_PERMISSION)");
+    expect(denied).toContain("does not grant this Session the selected repository");
   });
 
   it("resumes the SAME Pi binding/history across two Turns of one allocation", async () => {
@@ -435,6 +517,104 @@ describe("cloud-turn-worker", () => {
     await expect(stat(observed.environmentFile as string)).rejects.toThrow();
   });
 
+  it("never starts Pi when the execution deadline fires during Context Tree preparation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-prep-deadline-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const request = turnRequest(executionDir);
+    request.delivery = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() + 30).toISOString() });
+    let factoryBuilt = false;
+    const completion = await runCloudTurnWorker(request, {
+      createPiFactory: () => {
+        factoryBuilt = true;
+        throw new Error("Pi must not start after the execution deadline");
+      },
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      prepareContextTree: async (input): Promise<CloudContextTreePreparation> => {
+        await new Promise<void>((resolve) => {
+          if (input.signal?.aborted) resolve();
+          else input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { status: { status: "unavailable", reason: "TIMEOUT" } };
+      },
+      workspace: join(root, "workspace"),
+    });
+    expect(completion.outcome).toBe("failed");
+    expect(completion.errorReason).toBe("turn_timeout");
+    expect(factoryBuilt).toBe(false);
+  });
+
+  it("never starts Pi when the caller stops during Context Tree preparation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-prep-stop-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const controller = new AbortController();
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const running = runCloudTurnWorker(turnRequest(executionDir), {
+      createPiFactory: () => {
+        throw new Error("Pi must not start after the caller stopped");
+      },
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      prepareContextTree: async (input): Promise<CloudContextTreePreparation> => {
+        markStarted();
+        await new Promise<void>((resolve) => {
+          if (input.signal?.aborted) resolve();
+          else input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { status: { status: "unavailable", reason: "TIMEOUT" } };
+      },
+      signal: controller.signal,
+      workspace: join(root, "workspace"),
+    });
+    await started;
+    controller.abort();
+    const completion = await running;
+    expect(completion.outcome).toBe("cancelled");
+    expect(completion.errorReason).toBe("client_shutdown");
+  });
+
+  it("continues the base task with a truthful status when only the preparation budget expires", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-prep-budget-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const prompts: string[] = [];
+    const createPiFactory = (): CloudTurnPiFactory => ({
+      create: async (request) => {
+        prompts.push(request.systemPrompt ?? "");
+        return {
+          close: async () => undefined,
+          prompt: async () => ({ output: [{ text: "continued", type: "text" }], status: "completed" }),
+        } as unknown as CloudTurnPiRuntime;
+      },
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    });
+    const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+      contextTreePreparationBudgetMs: 20,
+      createPiFactory,
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      prepareContextTree: async (input): Promise<CloudContextTreePreparation> => {
+        await new Promise<void>((resolve) => {
+          if (input.signal?.aborted) resolve();
+          else input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { status: { status: "unavailable", reason: "TIMEOUT" } };
+      },
+      workspace: join(root, "workspace"),
+    });
+    expect(completion.outcome).toBe("completed");
+    // The task ran; the prompt tells the Agent the truth about optional memory.
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("Context Tree unavailable (TIMEOUT)");
+  });
+
   it("kills real Pi child processes when the Turn is cancelled", async () => {
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-cancel-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
@@ -496,5 +676,283 @@ describe("cloud-turn-worker", () => {
     expect(child?.signalCode ?? (child?.exitCode === null ? null : "exited")).toBe("SIGTERM");
     expect(completion.outcome).toBe("cancelled");
     expect(completion.errorReason).toBe("client_shutdown");
+  });
+});
+
+describe("session-message worker integration", () => {
+  it("runs an internal Session child with its own instructions and no IM outbox material", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-internal-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "session-1");
+    let environment: Record<string, string> = {};
+    let systemPrompt = "";
+    let input: AgentInput | undefined;
+    const createPiFactory = (factoryInput: { environment: Record<string, string> }): CloudTurnPiFactory => {
+      environment = factoryInput.environment;
+      return {
+        create: async (request) => {
+          systemPrompt = request.systemPrompt ?? "";
+          return {
+            close: async () => undefined,
+            prompt: async (prompt: AgentPromptRequest) => {
+              input = prompt.input;
+              return { output: [{ text: "internal-done", type: "text" }], status: "completed" };
+            },
+          } as unknown as CloudTurnPiRuntime;
+        },
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      };
+    };
+
+    const completion = await runCloudTurnWorker(sessionRequest(executionDir), {
+      createPiFactory,
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    });
+    expect(completion.outcome).toBe("completed");
+    // Internal children have no IM outbox and no provider env file to pretend otherwise.
+    expect(environment.OPENTAG_PROVIDER_ENV_FILE).toBeUndefined();
+    expect(systemPrompt).not.toContain("## Session collaboration");
+    const text = input?.items.map((item) => item.text).join("\n") ?? "";
+    expect(text).toContain('<opentag-session-message-context source="managed">');
+    expect(text).toContain("Your final text is not returned automatically");
+    expect(text).toContain("opentag session send");
+    // No fake IM input: neither IM managed context nor a fabricated provider reference.
+    expect(text).not.toContain("<opentag-im-context");
+    expect(text).not.toContain("Default provider outbox context");
+    expect(input?.items.at(-1)).toEqual({ type: "text", text: "Report the integration status." });
+  });
+
+  it("keeps the visible callback's exact channel/thread outbox and provider environment file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-visible-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "session-1");
+    const outbox: RuntimeImOutboxContext = {
+      channelId: "C0EXAMPLE",
+      provider: "slack",
+      sessionKind: "thread",
+      threadTs: "1700000000.1234",
+    };
+    const observed: { inputText?: string; providerFile?: string; fileContent?: string; fileMode?: number } = {};
+    const createPiFactory = (factoryInput: { environment: Record<string, string> }): CloudTurnPiFactory => {
+      observed.providerFile = factoryInput.environment.OPENTAG_PROVIDER_ENV_FILE;
+      return {
+        create: async () =>
+          ({
+            close: async () => undefined,
+            prompt: async (prompt: AgentPromptRequest) => {
+              observed.inputText = prompt.input.items.map((item) => item.text).join("\n");
+              if (observed.providerFile) {
+                observed.fileContent = await readFile(observed.providerFile, "utf8");
+                observed.fileMode = (await stat(observed.providerFile)).mode & 0o777;
+              }
+              return { output: [{ text: "visible-done", type: "text" }], status: "completed" };
+            },
+          }) as unknown as CloudTurnPiRuntime,
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      };
+    };
+
+    const completion = await runCloudTurnWorker(
+      sessionRequest(executionDir, { outboxContext: outbox, sessionKind: "visible" }),
+      {
+        createPiFactory,
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+      },
+    );
+    expect(completion.outcome).toBe("completed");
+    // The visible continuation keeps its real provider scope and the outbox instruction path.
+    expect(observed.inputText).toContain('Default provider outbox context: {"channelId":"C0EXAMPLE"');
+    expect(observed.inputText).toContain("1700000000.1234");
+    expect(observed.inputText).toContain("deliver it through the provider CLI");
+    expect(observed.inputText).not.toContain("Your final text is not returned automatically");
+    expect(observed.providerFile).toBeDefined();
+    expect(observed.fileMode).toBe(0o600);
+    expect(observed.fileContent).toContain("export HTTPS_PROXY='http://127.0.0.1:18080'");
+    await expect(stat(observed.providerFile as string)).rejects.toThrow();
+  });
+
+  it("exposes the exact proof during the run only and replaces it on the next message", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-proof-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const workspace = join(root, "workspace");
+    const proofA = { proofId: randomUUID(), token: "proof-token-a-0123456789abcdef" };
+    const proofB = { proofId: randomUUID(), token: "proof-token-b-0123456789abcdef" };
+    const observed: { paths: string[]; contents: unknown[]; modes: number[] } = { paths: [], contents: [], modes: [] };
+    const capture = async (environment: Record<string, string>) => {
+      const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
+      if (!proofPath) throw new Error("missing proof path");
+      observed.paths.push(proofPath);
+      observed.contents.push(JSON.parse(await readFile(proofPath, "utf8")));
+      observed.modes.push((await stat(proofPath)).mode & 0o777);
+      return { output: [{ text: "proof-done", type: "text" }], status: "completed" as const };
+    };
+    const createPiFactory = (factoryInput: { environment: Record<string, string> }): CloudTurnPiFactory => ({
+      create: async (request) => {
+        expect(request.systemPrompt).toContain("## Session collaboration");
+        return {
+          close: async () => undefined,
+          prompt: async () => capture(factoryInput.environment),
+        } as unknown as CloudTurnPiRuntime;
+      },
+      resume: async (request) => {
+        expect(request.systemPrompt).toContain("## Session collaboration");
+        return {
+          close: async () => undefined,
+          prompt: async () => capture(factoryInput.environment),
+        } as unknown as CloudTurnPiRuntime;
+      },
+    });
+    const run = async (executionDir: string, proof: typeof proofA) => {
+      const request = sessionRequest(executionDir, {
+        sessionCollaboration: { proof, serverUrl: "https://server.example.test" },
+      });
+      const completion = await runCloudTurnWorker(request, {
+        createPiFactory,
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace,
+      });
+      expect(completion.outcome).toBe("completed");
+    };
+
+    await run(await fixtureExecution(root, "session-1"), proofA);
+    expect(observed.contents[0]).toEqual(proofA);
+    expect(observed.modes[0]).toBe(0o600);
+    // The proof file belongs to per-message scratch, never the Session workspace.
+    expect(observed.paths[0]?.startsWith(`${workspace}/`)).toBe(false);
+    await expect(stat(observed.paths[0] as string)).rejects.toMatchObject({ code: "ENOENT" });
+
+    await run(await fixtureExecution(root, "session-2"), proofB);
+    expect(observed.contents[1]).toEqual(proofB);
+    // Each message gets a fresh proof file; the previous one is gone and never archived.
+    expect(observed.paths[1]).not.toBe(observed.paths[0]);
+    await expect(stat(observed.paths[0] as string)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(observed.paths[1] as string)).rejects.toMatchObject({ code: "ENOENT" });
+    for (const bytes of await filesUnder(workspace)) {
+      expect(bytes.includes(Buffer.from(proofA.token))).toBe(false);
+      expect(bytes.includes(Buffer.from(proofB.token))).toBe(false);
+    }
+  });
+
+  it("continues the same Pi binding and history while applying the current Session snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-continuity-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const continuity = join(root, "continuity");
+    const delivery = cloudDeliveryFixture();
+    const base: EffectiveRuntimeSnapshot = {
+      ...delivery.runtime,
+      instructions: { agent: "Base agent instruction.", platform: "Base platform." },
+    };
+    const opened: {
+      kind: "create" | "resume";
+      sessionDirectory: string;
+      sessionId?: string;
+      systemPrompt?: string;
+      inputText?: string;
+      runId?: string;
+    }[] = [];
+    const createPiFactory = (factoryInput: {
+      environment: Record<string, string>;
+      sessionDirectory: string;
+    }): CloudTurnPiFactory => {
+      const open = async (
+        request: CreateAgentRuntimeRequest | ResumeAgentRuntimeRequest,
+        kind: "create" | "resume",
+      ) => {
+        const binding =
+          "binding" in request
+            ? request.binding
+            : { payload: { sessionId: randomUUID() }, providerId: "pi", schemaVersion: 1 };
+        const entry = {
+          kind,
+          sessionDirectory: factoryInput.sessionDirectory,
+          sessionId: (binding.payload as { sessionId?: string }).sessionId,
+          systemPrompt: request.systemPrompt,
+        } as (typeof opened)[number];
+        opened.push(entry);
+        await request.eventSink({ binding, type: "binding_changed" });
+        return {
+          close: async () => undefined,
+          prompt: async (prompt: AgentPromptRequest) => {
+            entry.inputText = prompt.input.items.map((item) => item.text).join("\n");
+            entry.runId = prompt.runId;
+            return { output: [{ text: `${kind}-done`, type: "text" }], status: "completed" };
+          },
+        } as unknown as CloudTurnPiRuntime;
+      };
+      return {
+        create: (request) => open(request, "create"),
+        resume: (request) => open(request, "resume"),
+      };
+    };
+
+    await runCloudTurnWorker(
+      {
+        kind: "turn",
+        delivery: cloudDeliveryFixture({ agentId: base.agentId, runtime: base, sessionId: delivery.sessionId }),
+        executionDir: await fixtureExecution(root, "turn-1"),
+        model: MODEL,
+        piSessionDirectory: continuity,
+      },
+      {
+        createPiFactory,
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+      },
+    );
+
+    const updated: EffectiveRuntimeSnapshot = {
+      ...base,
+      instructions: { agent: "Session child instruction.", platform: "Session platform." },
+      revision: {
+        agent: { id: randomUUID(), sequence: 2 },
+        session: { id: randomUUID(), sequence: 2 },
+      },
+    };
+    const message = {
+      type: "session:message:deliver" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      targetSessionId: delivery.sessionId,
+      agentId: updated.agentId,
+      placementGeneration: 2,
+      content: { kind: "text" as const, text: "Continue the visible work." },
+      runtime: updated,
+    };
+    await runCloudTurnWorker(
+      sessionRequest(await fixtureExecution(root, "session-2"), { message, piSessionDirectory: continuity }),
+      {
+        createPiFactory,
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+      },
+    );
+
+    expect(opened.map((entry) => entry.kind)).toEqual(["create", "resume"]);
+    // The continuation resumes the exact binding and history from the Turn that created it.
+    expect(opened[0]?.sessionId).toBeDefined();
+    expect(opened[1]?.sessionId).toBe(opened[0]?.sessionId);
+    expect(opened[0]?.sessionDirectory).toBe(opened[1]?.sessionDirectory);
+    // The Session message runs on the current snapshot, not the snapshot that created the binding.
+    expect(opened[0]?.systemPrompt).toContain("Base agent instruction.");
+    expect(opened[1]?.systemPrompt).toContain("Session child instruction.");
+    expect(opened[1]?.systemPrompt).toContain("Session platform.");
+    expect(opened[1]?.systemPrompt).not.toContain("Base agent instruction.");
+    expect(opened[1]?.inputText).toContain('<opentag-session-message-context source="managed">');
+    expect(opened[1]?.inputText).toContain("Continue the visible work.");
+    expect(opened[1]?.runId).toBe(`cloud-session-${message.messageId}`);
+    // The continuation binding persists under the Session continuity directory, not scratch.
+    await expect(readFile(join(continuity, "pi-binding.json"), "utf8")).resolves.toContain("pi");
   });
 });

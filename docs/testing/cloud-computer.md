@@ -217,4 +217,6 @@ remain pending real-environment evidence. E4 adds no new database tables. E5 wor
 include release and replacement, rather than treating this E3/E4 harness as persistence evidence.
 E6 concurrent Session checks and the combined E4–E6 staging procedure are documented in
 [Cloud Runner execution](../cloud-runner-execution.md#e6-concurrent-cloud-sessions).
-E7–E8 remain separate work. Local E6 evidence does not complete the pending native Cloud/IM acceptance.
+E7 lifecycle checks are documented in [Cloud Runner execution](../cloud-runner-execution.md#e7-idle-reclamation-and-same-account-physical-reuse);
+E8 configuration, Tree and collaboration boundaries are documented in [Cloud Context](../cloud-context.md).
+Local evidence does not complete native Cloud/IM acceptance.

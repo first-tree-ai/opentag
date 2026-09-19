@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
+  RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
   RunnerAcceptanceReportWireSchema,
@@ -451,6 +452,8 @@ class RunnerChannelBridge implements CloudCredentialChannel {
   scope?: CloudTurnScope;
   /** True only after a negotiated `cloudDeliveryVersion: 1` welcome. Legacy E3 stays Cloud-free. */
   cloudEnabled = false;
+  /** True only when the Server echoed the E8 Session-collaboration capability at the same welcome. */
+  sessionCollaborationEnabled = false;
   readonly credentialListeners = new Set<(frame: RuntimeCredentialServerFrame) => void>();
   readonly stateListeners = new Set<(state: "registered" | "closed") => void>();
 
@@ -876,6 +879,7 @@ async function serveOnce(
       bridge.sendFn = undefined;
       bridge.scope = undefined;
       bridge.cloudEnabled = false;
+      bridge.sessionCollaborationEnabled = false;
       bridge.emitState("closed");
       state.turns.onChannelClosed();
       state.active?.abort.abort();
@@ -931,6 +935,7 @@ async function serveOnce(
         requestId: randomUUID(),
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
+        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_VERSION,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
@@ -971,6 +976,7 @@ async function serveOnce(
         resourceUid: data.resourceUid ?? null,
       };
       bridge.cloudEnabled = cloudCapable;
+      bridge.sessionCollaborationEnabled = data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION;
       bridge.sendFn = send;
       bridge.emitState("registered");
       armSilence();
@@ -1512,6 +1518,10 @@ type CloudServerFrame = Extract<
       | "delivery:cancel"
       | "delivery:report:ack"
       | "delivery:query"
+      | "session:message:run"
+      | "session:message:verified"
+      | "session:message:cancel"
+      | "session:message:settled:ack"
       | "credential:frame";
   }
 >;
@@ -1523,17 +1533,27 @@ function isCloudServerFrame(frame: RunnerServerFrame): frame is CloudServerFrame
     frame.type === "delivery:cancel" ||
     frame.type === "delivery:report:ack" ||
     frame.type === "delivery:query" ||
+    frame.type === "session:message:run" ||
+    frame.type === "session:message:verified" ||
+    frame.type === "session:message:cancel" ||
+    frame.type === "session:message:settled:ack" ||
     frame.type === "credential:frame"
   );
 }
 
 /**
- * Cloud delivery frames exist only on a negotiated `cloudDeliveryVersion: 1` channel. On a legacy
- * E3 channel they are a protocol violation: the connection cycles instead of touching Cloud state.
- * Cancellation stays synchronous so it never waits behind queued durable work.
+ * Cloud delivery frames exist only on a negotiated `cloudDeliveryVersion: 1` channel. Session
+ * collaboration frames additionally require the E8 echo, so a Server that never negotiated the
+ * capability can never cause a session Turn to run. On a legacy channel the frame is a protocol
+ * violation: the connection cycles instead of touching Cloud state. Cancellation stays synchronous
+ * so it never waits behind queued durable work.
  */
 function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
   if (!c.bridge.cloudEnabled) {
+    c.finish();
+    return;
+  }
+  if (data.type.startsWith("session:message:") && !c.bridge.sessionCollaborationEnabled) {
     c.finish();
     return;
   }
@@ -1552,6 +1572,18 @@ function dispatchCloudFrame(data: CloudServerFrame, c: FrameDispatch): void {
       break;
     case "delivery:query":
       c.enqueueCloudControl("delivery:query", () => c.turns.handleQuery(data));
+      break;
+    case "session:message:run":
+      c.enqueueCloudControl("session:message:run", () => c.turns.handleSessionMessageRun(data));
+      break;
+    case "session:message:verified":
+      c.enqueueCloudControl("session:message:verified", () => c.turns.handleSessionMessageVerified(data));
+      break;
+    case "session:message:cancel":
+      c.turns.handleSessionMessageCancel(data.messageId);
+      break;
+    case "session:message:settled:ack":
+      c.enqueueCloudControl("session:message:settled:ack", () => c.turns.handleSessionMessageSettledAck(data));
       break;
     case "credential:frame":
       c.bridge.emitCredential(data.frame);

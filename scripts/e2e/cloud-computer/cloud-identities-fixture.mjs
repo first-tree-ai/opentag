@@ -48,6 +48,11 @@ const EXTRA_ENV_KEYS = new Set([
   "OPENTAG_CLOUD_RUNNER_VPC_SUBNET",
   "OPENTAG_CLOUD_RUNNER_EXECUTION_TAG",
   "OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN",
+  "OPENTAG_PUBLIC_URL",
+  "OPENTAG_CLOUD_MODEL_ENABLED",
+  "OPENTAG_CLOUD_MODEL_UPSTREAM_BASE_URL",
+  "OPENTAG_CLOUD_MODEL_MASTER_KEY",
+  "OPENTAG_CLOUD_MODEL_ALLOWED_MODELS",
 ]);
 const BASIC_ENV_KEYS = [
   "PATH",
@@ -75,7 +80,7 @@ function copyEnvWithoutSecrets(source) {
 function pickAllowedEnv(extraEnv = {}) {
   const unknown = Object.keys(extraEnv).filter((key) => !EXTRA_ENV_KEYS.has(key));
   if (unknown.length > 0) {
-    throw new Error(`Refused extra env keys ${unknown.join(", ")}; only email, acceptance, download URL`);
+    throw new Error(`Refused extra env keys ${unknown.join(", ")}; use the explicit acceptance allowlist`);
   }
   return Object.fromEntries(Object.entries(extraEnv).filter(([, value]) => value !== undefined && value !== ""));
 }
@@ -451,6 +456,8 @@ async function assembleFixture(input) {
   rememberSecret(secrets, jwtSecret);
   rememberSecret(secrets, betterAuthSecret);
   rememberSecret(secrets, encryptionKey.toString("base64"));
+  rememberSecret(secrets, extraEnvState.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN);
+  rememberSecret(secrets, extraEnvState.OPENTAG_CLOUD_MODEL_MASTER_KEY);
 
   let e1;
   if (upgradeFromE1) {

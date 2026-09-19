@@ -1,18 +1,26 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
+import { computeTurnResultHash, type SessionMessageDeliveryRequest, type TurnReportRequest } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertCloudJournalScope,
   CLOUD_JOURNAL_MAX_ENTRIES,
   CloudJournal,
+  type CloudJournalDeliveryEntry,
+  type CloudJournalEntry,
   CloudJournalError,
   type CloudJournalScope,
+  cloudJournalEntryKey,
   computeCloudDeliveryInputHash,
 } from "../runner/cloud-journal.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
+
+function asDelivery(entry: CloudJournalEntry | undefined): CloudJournalDeliveryEntry {
+  if (entry?.kind !== "delivery") throw new Error("expected a delivery journal entry");
+  return entry;
+}
 
 function scopeFor(sessionId: string, overrides: Partial<CloudJournalScope> = {}): CloudJournalScope {
   return {
@@ -40,6 +48,23 @@ function reportFor(deliveryId: string, turnId: string, effects: "completed" | "n
     ...(effects === "not_started" ? { errorReason: "turn_timeout" as const } : {}),
   };
   return { ...base, resultHash: computeTurnResultHash(base) } satisfies TurnReportRequest;
+}
+
+function sessionFixture(overrides: Partial<SessionMessageDeliveryRequest> = {}): SessionMessageDeliveryRequest {
+  const runtime = cloudDeliveryFixture().runtime;
+  const messageId = overrides.messageId ?? randomUUID();
+  return {
+    type: "session:message:deliver",
+    requestId: messageId,
+    messageId,
+    sourceSessionId: randomUUID(),
+    targetSessionId: randomUUID(),
+    agentId: runtime.agentId,
+    placementGeneration: 1,
+    content: { kind: "text", text: "child task" },
+    runtime,
+    ...overrides,
+  };
 }
 
 describe("CloudJournal", () => {
@@ -91,7 +116,7 @@ describe("CloudJournal", () => {
       });
       // A foreign entry means the local state cannot be proven settled: nothing may be discarded.
       await expect(journal.resetScope(owned.scope)).rejects.toBeInstanceOf(CloudJournalError);
-      expect((await journal.list()).map((entry) => entry.deliveryId).sort()).toEqual(
+      expect((await journal.list()).map((entry) => cloudJournalEntryKey(entry)).sort()).toEqual(
         [owned.delivery.deliveryId, foreign.delivery.deliveryId].sort(),
       );
     } finally {
@@ -105,7 +130,7 @@ describe("CloudJournal", () => {
     expect(entry.scope).toEqual(scope);
     const reopened = await CloudJournal.open(directory);
     const [persisted] = await reopened.list();
-    expect(persisted?.delivery).toEqual(delivery);
+    expect(asDelivery(persisted).delivery).toEqual(delivery);
     expect(persisted?.inputHash).toBe(computeCloudDeliveryInputHash(delivery));
     expect(persisted?.scope).toEqual(scope);
     // All five allocation identity fields define the owner, so any change fails closed.
@@ -223,7 +248,7 @@ describe("CloudJournal", () => {
     const reopened = await CloudJournal.open(directory);
     const [entry] = await reopened.list();
     expect(entry?.phase).toBe("started");
-    expect(entry?.delivery).toEqual(delivery);
+    expect(asDelivery(entry).delivery).toEqual(delivery);
   });
 
   it("retires a pre-start rejection ONLY from received and never erases started/reported state", async () => {
@@ -349,5 +374,124 @@ describe("CloudJournal", () => {
     );
     const reopened = await CloudJournal.open(directory);
     await expect(reopened.list()).rejects.toMatchObject({ code: "store_failed" });
+  });
+
+  describe("Session message entries", () => {
+    it("journals received -> started -> reported and retires only on the exact settlement ack", async () => {
+      const opened = await CloudJournal.open(directory);
+      const message = sessionFixture();
+      const scope = scopeFor(message.targetSessionId);
+      const received = await opened.recordSessionReceived({
+        message,
+        sessionKind: "internal",
+        scope,
+        requestId: message.requestId,
+        turnId: "turn-s",
+      });
+      expect(received).toMatchObject({ kind: "session-message", phase: "received", messageId: message.messageId });
+      expect((await opened.markSessionStarted(message.messageId, scope)).phase).toBe("started");
+      const reported = await opened.recordSessionSettled(message.messageId, scope, "completed");
+      expect(reported).toMatchObject({ phase: "reported", settlement: { outcome: "completed" } });
+      await expect(opened.recordSessionSettled(message.messageId, scope, "failed")).rejects.toMatchObject({
+        code: "conflict",
+      });
+      const [persisted] = await (await CloudJournal.open(directory)).list();
+      expect(persisted).toMatchObject({
+        kind: "session-message",
+        sessionKind: "internal",
+        phase: "reported",
+        settlement: { outcome: "completed" },
+      });
+      expect(persisted?.kind === "session-message" ? persisted.message.content : undefined).toEqual(message.content);
+      await expect(
+        opened.clearSessionAcknowledged(message.messageId, scope, { status: "recorded", turnId: "other" }),
+      ).rejects.toMatchObject({ code: "ack_mismatch" });
+      await opened.clearSessionAcknowledged(message.messageId, scope, { status: "recorded", turnId: "turn-s" });
+      expect(await opened.list()).toEqual([]);
+    });
+
+    it("enforces the internal/visible outbox contract and refuses changed input under one dispatch", async () => {
+      const opened = await CloudJournal.open(directory);
+      const message = sessionFixture();
+      const scope = scopeFor(message.targetSessionId);
+      await expect(
+        opened.recordSessionReceived({
+          message,
+          sessionKind: "internal",
+          outboxContext: { provider: "feishu", sessionKind: "channel", chatId: "chat" },
+          scope,
+          requestId: message.requestId,
+          turnId: "turn-s",
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      await expect(
+        opened.recordSessionReceived({
+          message,
+          sessionKind: "visible",
+          scope,
+          requestId: message.requestId,
+          turnId: "turn-s",
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+      const first = await opened.recordSessionReceived({
+        message,
+        sessionKind: "internal",
+        scope,
+        requestId: message.requestId,
+        turnId: "turn-s",
+      });
+      const replay = await opened.recordSessionReceived({
+        message,
+        sessionKind: "internal",
+        scope,
+        requestId: message.requestId,
+        turnId: "turn-other",
+      });
+      expect(replay.turnId).toBe(first.turnId);
+      await expect(
+        opened.recordSessionReceived({
+          message: { ...message, content: { kind: "text", text: "changed" } },
+          sessionKind: "internal",
+          scope,
+          requestId: message.requestId,
+          turnId: "turn-s",
+        }),
+      ).rejects.toMatchObject({ code: "conflict" });
+    });
+
+    it("never reports completion before the started boundary and still parses legacy v2 delivery files", async () => {
+      const opened = await CloudJournal.open(directory);
+      const message = sessionFixture();
+      const scope = scopeFor(message.targetSessionId);
+      await opened.recordSessionReceived({
+        message,
+        sessionKind: "internal",
+        scope,
+        requestId: message.requestId,
+        turnId: "turn-s",
+      });
+      await expect(opened.recordSessionSettled(message.messageId, scope, "completed")).rejects.toMatchObject({
+        code: "invalid_transition",
+      });
+      expect((await opened.recordSessionSettled(message.messageId, scope, "cancelled")).phase).toBe("reported");
+
+      const delivery = cloudDeliveryFixture();
+      const deliveryScope = scopeFor(delivery.sessionId);
+      await opened.recordReceived({
+        delivery,
+        scope: deliveryScope,
+        deliveryId: delivery.deliveryId,
+        requestId: delivery.requestId,
+        turnId: "turn-1",
+      });
+      // An E7 v2 file predates `kind`; it must still parse as an IM delivery after restart.
+      const file = join(directory, `${delivery.deliveryId}.json`);
+      const legacy = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+      delete legacy.kind;
+      await writeFile(file, JSON.stringify(legacy), "utf8");
+      const entry = await (await CloudJournal.open(directory)).read(delivery.deliveryId);
+      expect(entry?.kind).toBe("delivery");
+      expect(entry?.phase).toBe("received");
+    });
   });
 });

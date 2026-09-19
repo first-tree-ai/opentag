@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EffectiveRuntimeSnapshot, RunnerCloudTurnWorkerRequest } from "@opentag/shared";
+import type { EffectiveRuntimeSnapshot, RunnerCloudWorkerRequest } from "@opentag/shared";
 import type {
   AgentPromptRequest,
   AgentRunResult,
@@ -20,50 +20,44 @@ import {
 import { type SandboxLoopbackForwarder, startSandboxLoopbackForwarder } from "../cloud-runtime/sandbox-loopback.js";
 import { PiAgentRuntimeFactory } from "../providers/pi/agent-runtime.js";
 import type { PiRpcProcessSpawnOptions } from "../providers/pi/rpc-wire.js";
-import {
-  buildAgentInput,
-  completionForError,
-  completionForResult,
-  type TurnCompletion,
-  turnTimeoutMs,
-} from "../runtime/agent-turn-runner.js";
+import { completionForError, completionForResult, type TurnCompletion } from "../runtime/agent-turn-runner.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import { providerRoutingEnvironment, RUNTIME_PROXY_PROVIDER_URL_KEY } from "../runtime/runtime-proxy-material.js";
 import { skillArgsOf } from "./acceptance.js";
+import {
+  CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS,
+  type CloudContextTreePreparation,
+  type CloudContextTreePreparationInput,
+  type CloudContextTreeStatus,
+  cloudAgentSlug,
+  prepareCloudContextTree,
+} from "./cloud-context-tree.js";
+import {
+  cloudSessionCliEnvironment,
+  cloudWorkerInput,
+  cloudWorkerRuntime,
+  cloudWorkerTimeout,
+} from "./cloud-worker-input.js";
 import { registerRunnerSignalCleanup } from "./signals.js";
-import { assembleRunnerToolSkills } from "./skills.js";
+import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js";
 
 /**
- * In-sandbox Cloud Turn worker (E4). Runs INSIDE the native Sandbox (or the local harness seam).
- * The bounded stdin document is the only control input: the delivery payload, the
- * execution-scoped model grant, and the per-execution public material directory written by the
- * trusted Runner. The model token and proxy handles land only in a disposable Pi home inside the
- * disposable sandbox filesystem — never in argv, logs, the Session workspace, or any parent-visible
- * location. stdout carries exactly one JSON result line.
+ * In-sandbox Cloud worker: one IM Turn or Session message inside the disposable Sandbox. The
+ * bounded stdin document is the only control input; model grants, proxy handles and Session
+ * proofs land only in disposable scratch or the disposable Pi home — never in argv, logs, the
+ * workspace, or parent-visible storage. stdout carries exactly one JSON result line.
  *
- * Continuity: one Cloud Sandbox serves exactly one Agent Session, so the worker keeps the Pi
- * conversation directory and the persisted provider binding under the Session workspace's private
- * `.opentag/pi-session` subtree across Turns of that allocation (it survives a native rootfs
- * reset). A same-Session second message resumes the exact binding/history instead of starting a
- * blank Pi session; E5 restores that directory before a replacement allocation becomes ready.
- * Model grants and the published proxy environment are per-turn scratch files and are
- * never part of the persisted conversation state.
+ * Continuity: the Pi conversation and persisted binding live under the Session workspace's
+ * private `.opentag/pi-session` subtree (or the supplied allocation-stable directory), so a
+ * same-Session next message resumes the exact history instead of a blank Pi session; E5 restores
+ * that directory before a replacement allocation becomes ready. Grants and scratch files are
+ * per-message and never persist.
  *
- * The proxy environment manifest the trusted Runner published is applied to the Pi process so IM
- * and Git CLIs reach providers through the trusted Relay/adapter; the platform master key and raw
- * IM tokens never enter the Sandbox. Only the execution-scoped routing inputs reach the Pi
- * process; the standard proxy/CA variables are derived inside provider launchers and in the
- * scratch provider env file the model sources explicitly, so the Agent's ordinary subprocesses
- * keep public routing and the system trust store.
- *
- * NATIVE UDS BOUNDARY: production always requires BOTH real mounted `connect.sock`/`slack.sock`
- * endpoints. The loopback fallback exists ONLY for the explicit local test seam
- * `localProxyLoopbackSeam: true`; production never sets it, so a missing native mount fails the
- * Turn before Pi starts. Whether a bind-mounted Unix socket is connectable through the native
- * Cloud Run Sandbox supervisor remains live-unverified until a GCP acceptance run.
- *
- * Cancellation: the worker kills every Pi child it owns and closes the runtime; a SIGTERM cleanup
- * failure is surfaced on stderr, never swallowed.
+ * The per-execution proxy manifest is the only credential source for Pi and its tools; platform
+ * keys and raw IM tokens never enter the Sandbox, and routing/CA variables reach only the
+ * provider shell that sources them. NATIVE UDS BOUNDARY: production requires both mounted
+ * `connect.sock`/`slack.sock`; the loopback fallback exists only for the explicit
+ * `localProxyLoopbackSeam` test seam. Cancellation kills every Pi child this worker owns.
  */
 
 /** Pi custom provider name for the Server-mediated model path. */
@@ -159,13 +153,24 @@ function terminateTrackedProcesses(pids: Set<number>, options: { immediate?: boo
 }
 
 /**
- * Cloud-accurate managed system prompt. The Local renderer (`renderManagedSystemPrompt`) asserts a
- * persistent Agent Home shared across an Agent's Sessions and Context Tree/Session-CLI access —
- * none of which hold inside a Session-scoped Cloud Sandbox (E8 is deferred), so the Cloud
- * worker renders the deployment's platform/agent/session instructions with Cloud-true context and
- * never reuses the Local wording.
+ * Optional context for the Cloud system prompt: this Turn's Context Tree status and whether the
+ * execution holds real Session-collaboration material (proof and server URL). Absent context
+ * keeps the corresponding sections out of the prompt.
  */
-export function renderCloudSystemPrompt(snapshot: EffectiveRuntimeSnapshot): string {
+export interface CloudSystemPromptContext {
+  readonly contextTree?: CloudContextTreeStatus;
+  readonly sessionCollaboration?: boolean;
+}
+
+/**
+ * Cloud-accurate managed system prompt. It never reuses the Local renderer's persistent Agent
+ * Home / shared-workspace wording; the Context Tree and Session sections appear only with real
+ * per-Turn state.
+ */
+export function renderCloudSystemPrompt(
+  snapshot: EffectiveRuntimeSnapshot,
+  context?: CloudSystemPromptContext,
+): string {
   return [
     "# OpenTag managed instructions",
     "",
@@ -178,6 +183,17 @@ export function renderCloudSystemPrompt(snapshot: EffectiveRuntimeSnapshot): str
     "- Saved workspaces are limited to 256 MiB of file content, 50,000 entries and a 128 MiB compressed archive. Hard links, sockets, FIFOs and links outside the workspace cannot be saved. Keep dependency caches, large installs and disposable build output outside the workspace (for example /tmp); recreate them on later Turns. Exceeding these limits blocks further execution and requires recovery or explicit discard of unsaved changes.",
     "- Credentials are execution-scoped and short-lived; the managed IM/Git CLIs reach providers through the platform proxy. Never ask the user for tokens and never persist credential material.",
     "",
+    ...renderCloudContextTree(snapshot, context?.contextTree),
+    ...(context?.sessionCollaboration
+      ? [
+          "## Session collaboration",
+          "",
+          "Use `opentag session create`, `opentag session send`, and `opentag session list` to coordinate authorized Sessions of this Agent. Use `--help` for command options.",
+          "Each Cloud Session has its own workspace and history. Send relevant information explicitly; another Session cannot read this workspace. Only published Context Tree knowledge is shared.",
+          "Your source Session identity is supplied by this execution. Do not copy or persist its temporary proof. A child Session reports through `opentag session send`; its final text is not automatically returned to its parent.",
+          "",
+        ]
+      : []),
     "## Platform",
     "",
     snapshot.instructions.platform,
@@ -190,8 +206,83 @@ export function renderCloudSystemPrompt(snapshot: EffectiveRuntimeSnapshot): str
   ].join("\n");
 }
 
+/**
+ * The Context Tree section the Cloud Sandbox can truthfully offer. The Agent is told plainly when
+ * durable memory is absent or stale, so it cannot mistake a failed connection for an empty tree or
+ * a failed synchronization for the newest published state.
+ */
+function renderCloudContextTree(
+  snapshot: EffectiveRuntimeSnapshot,
+  status: CloudContextTreeStatus | undefined,
+): readonly string[] {
+  if (!status) return [];
+  if (status.status === "ready") {
+    const slug = cloudAgentSlug(snapshot.instructions.platform);
+    const member = slug
+      ? `Your Agent slug is \`${slug}\` (also stated in the Platform section): \`members/${slug}/\` is your own private working memory in the tree. Do not write to another Agent's member directory.`
+      : "`members/<your Agent slug>/` is your own private working memory in the tree; the Agent slug is stated in the Platform section below. Do not write to another Agent's member directory.";
+    return [
+      "## Context Tree",
+      "",
+      `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
+        status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
+      }.`,
+      "This is the Context Tree selected in this Agent's settings. The checkout lives inside this Session's own workspace and is saved and restored with it, including unpublished drafts. Only the published tree is shared with other Agents that select the same repository; your files and Pi conversation stay private to this Session.",
+      "Read the decisions that bear on a task before planning or changing code, and record durable decisions there. Use the context-tree-read and context-tree-write skills; the `context-tree` command is on PATH.",
+      member,
+      "",
+    ];
+  }
+  if (status.status === "stale") {
+    const dirty = status.reason === "DIRTY_TREE";
+    return [
+      "## Context Tree",
+      "",
+      `Context Tree: ${status.treePath} — ${
+        dirty
+          ? "the preserved checkout has unpublished changes"
+          : `this Turn's synchronization failed (${status.reason})`
+      }.`,
+      ...(dirty
+        ? [
+            "The changes were left untouched. Inspect them with the `context-tree` command (`context-tree read --tree-path <tree> …`, `context-tree verify --tree-path <tree>`) or with `git`, and continue any prepared write worktree. Synchronizing or publishing will keep failing until the changes are committed or otherwise resolved; do not reset or discard them silently.",
+          ]
+        : [
+            "The on-disk copy may be outdated: it is not confirmed to be the newest published state. Unpublished drafts were left untouched. You may read the local copy as potentially stale context, and expect synchronizing or publishing to fail until a later Turn succeeds.",
+          ]),
+      "",
+    ];
+  }
+  if (status.status === "unconfigured") {
+    return [
+      "## Context Tree",
+      "",
+      "Context Tree: disabled for this Agent (no Context Tree repository is selected in the Agent's settings).",
+      "Durable memory is not active. Do not assume earlier decisions were recorded, and do not create or connect a tree yourself.",
+      "",
+    ];
+  }
+  return [
+    "## Context Tree",
+    "",
+    `Context Tree unavailable (${status.reason}).`,
+    "Durable memory is not active for this Turn; continue the task without it. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
+    ...(status.reason === "GITHUB_PERMISSION"
+      ? [
+          "The current execution does not grant this Session the selected repository, so the managed connection stays detached until the grant returns.",
+        ]
+      : []),
+    ...(status.reason === "DIRTY_TREE"
+      ? [
+          "The preserved checkout contains unpublished changes from an earlier Turn. They were left untouched; do not commit, reset, or discard them silently — report their presence.",
+        ]
+      : []),
+    "",
+  ];
+}
+
 /** The model grant becomes exactly one disposable Pi provider document set. */
-export function cloudTurnPiDocuments(request: RunnerCloudTurnWorkerRequest): {
+export function cloudTurnPiDocuments(request: RunnerCloudWorkerRequest): {
   authJson: string;
   modelsJson: string;
   settingsJson: string;
@@ -254,6 +345,13 @@ export interface CloudTurnWorkerRunOptions {
    * required there, so a missing native mount can never degrade into a loopback execution.
    */
   readonly localProxyLoopbackSeam?: boolean;
+  /**
+   * Test seam: replace Context Tree preparation (production runs the packaged CLI through
+   * `prepareCloudContextTree`). Receives only per-Turn, in-sandbox inputs.
+   */
+  readonly prepareContextTree?: (input: CloudContextTreePreparationInput) => Promise<CloudContextTreePreparation>;
+  /** Test seam: override the bounded pre-run Context Tree preparation budget. */
+  readonly contextTreePreparationBudgetMs?: number;
   /** Test seam: build the Pi factory for this turn (production builds the real one). */
   readonly createPiFactory?: (input: {
     readonly environment: Record<string, string>;
@@ -262,8 +360,52 @@ export interface CloudTurnWorkerRunOptions {
   }) => CloudTurnPiFactory;
 }
 
+/** The effective execution bounds shared by optional preparation and the Pi run. */
+interface TurnExecutionContext {
+  readonly signal: AbortSignal;
+  readonly stopReason: () => string | undefined;
+}
+
+function createTurnExecutionContext(
+  request: RunnerCloudWorkerRequest,
+  options: CloudTurnWorkerRunOptions,
+): TurnExecutionContext {
+  const deadline = AbortSignal.timeout(Math.max(1, cloudWorkerTimeout(request, options.now?.() ?? Date.now())));
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  return {
+    signal,
+    // Distinguish a caller stop from the Turn deadline at the moment a stop is observed.
+    stopReason: () => (options.signal?.aborted ? "client_shutdown" : deadline.aborted ? "turn_timeout" : undefined),
+  };
+}
+
+/**
+ * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It is
+ * fully awaited, so a stop leaves no CLI child or `git` writing after the Turn stopped waiting.
+ */
+function prepareTurnContextTree(
+  request: RunnerCloudWorkerRequest,
+  options: CloudTurnWorkerRunOptions,
+  execution: TurnExecutionContext,
+  scratch: string,
+  environment: Record<string, string>,
+): Promise<CloudContextTreePreparation> {
+  const budget = AbortSignal.timeout(
+    Math.max(1, options.contextTreePreparationBudgetMs ?? CLOUD_CONTEXT_TREE_PREPARATION_BUDGET_MS),
+  );
+  return (options.prepareContextTree ?? prepareCloudContextTree)({
+    agentSlug: cloudAgentSlug(cloudWorkerRuntime(request).instructions.platform),
+    environment,
+    path: `${request.executionDir}/bin:/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin`,
+    repository: cloudWorkerRuntime(request).contextTreeRepository,
+    scratch,
+    signal: AbortSignal.any([execution.signal, budget]),
+    workspace: options.workspace,
+  });
+}
+
 export async function runCloudTurnWorker(
-  request: RunnerCloudTurnWorkerRequest,
+  request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
 ): Promise<TurnCompletion> {
   assertSafeInSandboxPath(request.executionDir, "execution directory");
@@ -308,6 +450,16 @@ export async function runCloudTurnWorker(
     );
     forwarder = await openProxyBridge(request.executionDir, manifest.environment, options);
 
+    // The effective execution deadline and caller cancellation bound everything below, including
+    // optional Context Tree preparation (which additionally has its own small budget).
+    const execution = createTurnExecutionContext(request, options);
+    const contextTree = await prepareTurnContextTree(request, options, execution, scratch, manifest.environment);
+    if (execution.signal.aborted) {
+      // The execution deadline or caller stop fired during preparation. The preparation child
+      // (including any nested git) was stopped and awaited, so Pi must not start now.
+      return completionForError(new Error("The Turn stopped during Context Tree preparation"), execution.stopReason());
+    }
+
     const documents = cloudTurnPiDocuments(request);
     await writeFile(join(piHome, "auth.json"), documents.authJson, { mode: 0o600 });
     await writeFile(join(piHome, "models.json"), documents.modelsJson, { mode: 0o600 });
@@ -316,7 +468,14 @@ export async function runCloudTurnWorker(
     const baseEnvironment: NodeJS.ProcessEnv = {
       HOME: home,
       LANG: "C.UTF-8",
-      PATH: `${request.executionDir}/bin:/usr/local/bin:/opt/opentag/tools/bin:/usr/bin:/bin`,
+      PATH: [
+        ...(contextTree.binDirectory ? [contextTree.binDirectory] : []),
+        `${request.executionDir}/bin`,
+        "/usr/local/bin",
+        "/opt/opentag/tools/bin",
+        "/usr/bin",
+        "/bin",
+      ].join(":"),
       PI_CODING_AGENT_DIR: piHome,
       PI_CODING_AGENT_SESSION_DIR: sessionDirectory,
       TMPDIR: tmpdir(),
@@ -328,25 +487,24 @@ export async function runCloudTurnWorker(
       mount: request.executionDir,
     });
     const runtimeEnvironment = environment as Record<string, string>;
-    // The managed outbox instructions tell the model to load provider credentials from
-    // `$OPENTAG_PROVIDER_ENV_FILE`. Publish that per-turn file inside the disposable scratch so
-    // the same instruction works inside the Sandbox; it dies with the scratch and is never part
-    // of the persistent Pi conversation directory. The file additionally exposes the scoped
-    // routing inputs as standard proxy/CA variables for exactly the shell that sources it, which
-    // is what the Slack raw file upload/download flow needs; the Pi process itself never gets
-    // them. CA paths follow the Sandbox-owned copy prepared above.
-    const providerEnvironmentPath = join(scratch, "provider-environment.sh");
-    await writeFile(
-      providerEnvironmentPath,
-      serializeEnvironment({ ...environment, ...providerRoutingEnvironment(environment) }, process.platform),
-      { mode: 0o600 },
-    );
-    runtimeEnvironment.OPENTAG_PROVIDER_ENV_FILE = providerEnvironmentPath;
+    Object.assign(runtimeEnvironment, await cloudSessionCliEnvironment(request, scratch));
+    // Internal children receive no IM outbox material. Visible callbacks retain the same scoped CLI path as IM Turns.
+    if (request.kind === "turn" || request.sessionKind === "visible") {
+      const providerEnvironmentPath = join(scratch, "provider-environment.sh");
+      await writeFile(
+        providerEnvironmentPath,
+        serializeEnvironment({ ...environment, ...providerRoutingEnvironment(environment) }, process.platform),
+        { mode: 0o600 },
+      );
+      runtimeEnvironment.OPENTAG_PROVIDER_ENV_FILE = providerEnvironmentPath;
+    }
 
-    // Reuse the E3 Runner tool skills (`git`/`gh`/`lark-cli`/`slack`) through the same assembly and
-    // argument helper; an empty skill set is the honest host-dev case, never a different runtime.
+    // Reuse the packaged Context Tree skills and the E3 Runner tool skills (`git`/`gh`/
+    // `lark-cli`/`slack`) through the same assembly and argument helper; a missing skill set is
+    // the honest host-dev case, never a different runtime.
+    const contextTreeSkills = await assembleContextTreeSkills().catch(() => undefined);
     const toolSkills = await assembleRunnerToolSkills();
-    const skillPaths = toolSkills.skills.map((skill) => skill.directory);
+    const skillPaths = [...(contextTreeSkills?.skillPaths ?? []), ...toolSkills.skills.map((skill) => skill.directory)];
     const factory =
       options.createPiFactory?.({ environment: runtimeEnvironment, pids, sessionDirectory }) ??
       new PiAgentRuntimeFactory({
@@ -363,8 +521,8 @@ export async function runCloudTurnWorker(
 
     const configuration = {
       model: `${CLOUD_MODEL_PI_PROVIDER}/${request.model.model}`,
-      ...(request.delivery.runtime.reasoningEffort
-        ? { reasoningEffort: request.delivery.runtime.reasoningEffort }
+      ...(cloudWorkerRuntime(request).reasoningEffort
+        ? { reasoningEffort: cloudWorkerRuntime(request).reasoningEffort }
         : {}),
     };
     const common = {
@@ -373,7 +531,10 @@ export async function runCloudTurnWorker(
         if (event.type === "binding_changed") await persistBinding(bindingFile, event.binding);
       },
       policy: TURN_POLICY,
-      systemPrompt: renderCloudSystemPrompt(request.delivery.runtime),
+      systemPrompt: renderCloudSystemPrompt(cloudWorkerRuntime(request), {
+        contextTree: contextTree.status,
+        sessionCollaboration: request.sessionCollaboration !== undefined,
+      }),
       workspace: { cwd: options.workspace, environment: runtimeEnvironment },
     };
     const persisted = await readPersistedBinding(bindingFile);
@@ -382,31 +543,25 @@ export async function runCloudTurnWorker(
       : await factory.create(common);
     runtime = activeRuntime;
 
-    const timeout = turnTimeoutMs(request.delivery, options.now?.() ?? Date.now());
-    const deadline = AbortSignal.timeout(Math.max(1, timeout));
-    const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
     const onAbort = () => terminateTrackedProcesses(pids);
-    signal.addEventListener("abort", onAbort, { once: true });
+    execution.signal.addEventListener("abort", onAbort, { once: true });
     let completion: TurnCompletion;
-    // Distinguish a caller stop from the Turn deadline at the moment the run settles.
-    const stopReason = () =>
-      options.signal?.aborted ? "client_shutdown" : deadline.aborted ? "turn_timeout" : undefined;
     try {
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
-        input: buildAgentInput(request.delivery),
-        signal,
+        input: cloudWorkerInput(request),
+        signal: execution.signal,
       });
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.
       completion =
         result.status === "completed"
           ? completionForResult(result, undefined)
-          : completionForResult(result, stopReason());
+          : completionForResult(result, execution.stopReason());
     } catch (error) {
-      completion = completionForError(error, stopReason());
+      completion = completionForError(error, execution.stopReason());
     } finally {
-      signal.removeEventListener("abort", onAbort);
+      execution.signal.removeEventListener("abort", onAbort);
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);
     }
@@ -500,6 +655,8 @@ function assertSafeInSandboxPath(value: string, label: string): string {
   return value;
 }
 
-function randomTurnRunId(request: RunnerCloudTurnWorkerRequest): string {
-  return `cloud-turn-${request.delivery.deliveryId}`;
+function randomTurnRunId(request: RunnerCloudWorkerRequest): string {
+  return request.kind === "turn"
+    ? `cloud-turn-${request.delivery.deliveryId}`
+    : `cloud-session-${request.message.messageId}`;
 }

@@ -10,6 +10,7 @@ import { MCP_GATEWAY_PATH } from "./mcp-gateway.js";
 import { runtimeByteString as byteString } from "./runtime-config.js";
 import { RuntimeImOutboxContextSchema, RuntimeOpaqueIdSchema } from "./runtime-domain.js";
 import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
+import { SessionCliProofGrantSchema } from "./session-cli.js";
 
 /**
  * Runtime credential delegation contract (control + data planes).
@@ -215,6 +216,12 @@ export const RuntimeExecutionOpenResultSchema = z.discriminatedUnion("status", [
       executionId,
       expiresAt: isoDateTime,
       providers: z.array(RuntimeExecutionProviderSchema).max(16),
+      /**
+       * E8: the managed Session's CLI proof, minted at the actual execution open for a Cloud
+       * collaboration-negotiated connection. Present only on a succeeded open of a Session work
+       * source; the trusted Runner relays it to the worker ephemerally and never journals it.
+       */
+      sessionCliProof: SessionCliProofGrantSchema.optional(),
       /**
        * Granted platform services with their exact authorized scopes. Present only when the
        * `runtime.webTools` capability was negotiated; an empty providers list with a non-empty

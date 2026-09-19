@@ -7,6 +7,7 @@ import {
   TurnReportRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, gt, inArray, lt, or } from "drizzle-orm";
+import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { computers } from "../db/schema/computers.js";
 import { type RuntimeDurableWorkRow, runtimeDurableWork } from "../db/schema/runtime-durable-work.js";
@@ -34,6 +35,41 @@ export const RUNTIME_DURABLE_WORK_ALLOWED_TRANSITIONS = {
   failed: ["failed", "running", "retryable", "dead-letter"],
   "dead-letter": ["dead-letter", "accepted", "retryable"],
 } as const satisfies Record<RuntimeDurableWorkRecord["status"], readonly RuntimeDurableWorkRecord["status"][]>;
+
+/**
+ * The exact allocation a Cloud Session message was accepted on. Recovery compares ONLY this
+ * against the session's authoritative current allocation; a timeout is never treated as proof of
+ * loss, and a record whose allocation was retired/replaced can no longer block or replay.
+ */
+export const CloudWorkAllocationSchema = z
+  .object({
+    sandboxId: z.string().uuid(),
+    environmentGeneration: z.number().int().safe().positive(),
+    resourceName: z.string().min(1).max(1024),
+  })
+  .strict();
+export type CloudWorkAllocation = z.infer<typeof CloudWorkAllocationSchema>;
+
+/**
+ * The Server-owned Cloud Session message durable payload: the original immutable dispatch request
+ * plus the allocation and Runner turn it was accepted for. The bare request remains valid for the
+ * existing Local client records; the explicit marker keeps the two shapes unambiguous.
+ */
+export const CloudSessionWorkEnvelopeSchema = z
+  .object({
+    type: z.literal("cloud-session-message-work"),
+    request: SessionMessageDeliveryRequestSchema,
+    allocation: CloudWorkAllocationSchema,
+    turnId: z.string().min(1).max(256),
+  })
+  .strict();
+export type CloudSessionWorkEnvelope = z.infer<typeof CloudSessionWorkEnvelopeSchema>;
+
+/** Parse a durable session-message payload; undefined for a bare Local request or invalid data. */
+export function parseCloudSessionWorkEnvelope(payload: unknown): CloudSessionWorkEnvelope | undefined {
+  const parsed = CloudSessionWorkEnvelopeSchema.safeParse(payload);
+  return parsed.success ? parsed.data : undefined;
+}
 
 export interface RuntimeDurableWorkStoreOptions {
   now?: () => number;
@@ -183,6 +219,30 @@ export class PostgresRuntimeDurableWorkStore {
         ...(hasMore && lastRow ? { nextCursor: encodeCursor(lastRow) } : {}),
       };
     });
+  }
+
+  /**
+   * Read one exact durable record. The Server-side collaboration owner uses this to preserve
+   * accepted Session work and to terminalize it on verified settlement without inventing a
+   * second record store; it never mutates truth, so no lock ordering risk exists.
+   */
+  async read(
+    computerId: string,
+    kind: RuntimeDurableWorkKind,
+    key: string,
+  ): Promise<RuntimeDurableWorkRecord | undefined> {
+    const [row] = await this.#database
+      .select()
+      .from(runtimeDurableWork)
+      .where(
+        and(
+          eq(runtimeDurableWork.computerId, computerId),
+          eq(runtimeDurableWork.kind, kind),
+          eq(runtimeDurableWork.recordKey, key),
+        ),
+      )
+      .limit(1);
+    return row ? rowToRecord(row) : undefined;
   }
 
   async write(computerId: string, input: RuntimeDurableWorkRecord): Promise<void> {
@@ -373,11 +433,12 @@ function rowToRecord(row: RuntimeDurableWorkRow): RuntimeDurableWorkRecord {
 }
 
 function validatePayload(record: RuntimeDurableWorkRecord): void {
-  const parsed =
+  const valid =
     record.kind === "session-message"
-      ? SessionMessageDeliveryRequestSchema.safeParse(record.payload)
-      : TurnReportRequestSchema.safeParse(record.payload);
-  if (!parsed.success) throw new Error(`Invalid ${record.kind} durable payload`);
+      ? SessionMessageDeliveryRequestSchema.safeParse(record.payload).success ||
+        CloudSessionWorkEnvelopeSchema.safeParse(record.payload).success
+      : TurnReportRequestSchema.safeParse(record.payload).success;
+  if (!valid) throw new Error(`Invalid ${record.kind} durable payload`);
 }
 
 function stableJson(value: unknown): string {

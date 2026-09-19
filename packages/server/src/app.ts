@@ -63,6 +63,7 @@ import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } f
 import { McpServiceError } from "./services/mcp/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import type { CloudSessionCollaborationOwner } from "./services/sandboxes/cloud-session-collaboration-owner.js";
 import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
@@ -93,6 +94,7 @@ export interface CreateAppOptions {
     hub: RunnerHub;
     /** E4 Session-scoped Cloud IM delivery over the Runner channel. */
     cloudDelivery?: CloudDeliveryOwner;
+    cloudSession?: CloudSessionCollaborationOwner;
   };
   /** E4 controlled model path; present exactly when the deployment model proxy is enabled. */
   cloudModel?: CloudModelProxyRouteOptions;

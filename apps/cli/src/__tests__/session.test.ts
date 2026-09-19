@@ -319,6 +319,33 @@ describe("session CLI", () => {
     else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
   });
 
+  it("uses the managed Cloud endpoint without any Computer identity or login", async () => {
+    vi.mocked(client.readSessionCliProofFile).mockResolvedValue({
+      proofId: "11111111-1111-4111-8111-111111111111",
+      token: "p".repeat(40),
+    });
+    vi.mocked(client.readComputerIdentity).mockClear();
+    const list = vi.spyOn(OpenTagApi.prototype, "listInternalSessions").mockResolvedValue({
+      items: [],
+      nextCursor: undefined,
+    });
+    const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
+    const previousUrl = process.env.OPENTAG_SESSION_SERVER_URL;
+    process.env.OPENTAG_SESSION_PROOF_FILE = "/tmp/cloud-session-proof";
+    process.env.OPENTAG_SESSION_SERVER_URL = "https://cloud.example.test";
+    try {
+      await expect(runSessionList({})).resolves.toEqual({ items: [], nextCursor: undefined });
+      expect(client.readComputerIdentity).not.toHaveBeenCalled();
+      expect(list).toHaveBeenCalledWith("p".repeat(40), expect.anything());
+    } finally {
+      if (previousProof === undefined) delete process.env.OPENTAG_SESSION_PROOF_FILE;
+      else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
+      if (previousUrl === undefined) delete process.env.OPENTAG_SESSION_SERVER_URL;
+      else process.env.OPENTAG_SESSION_SERVER_URL = previousUrl;
+      list.mockRestore();
+    }
+  });
+
   it("accepts stdin as the message source", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-session-stdin-"));
     const proofPath = join(home, "proof.json");

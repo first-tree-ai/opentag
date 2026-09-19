@@ -514,7 +514,11 @@ async function startWss(
   onAuth?: (frame: Record<string, unknown>) => boolean,
   timing = { interval: 50, timeout: 100_000 },
   behavior: WssBehavior = {},
-  cloud: { readonly capability?: 1; readonly resourceUid?: string | null } = {},
+  cloud: {
+    readonly capability?: 1;
+    readonly resourceUid?: string | null;
+    readonly sessionCollaboration?: 1;
+  } = {},
 ): Promise<WssHarness> {
   const port = await freePort();
   const wss = new WebSocketServer({ host: "127.0.0.1", port });
@@ -531,29 +535,26 @@ async function startWss(
   const frames: Record<string, unknown>[] = [];
   const sockets: WsSocket[] = [];
   const waiters: { type: string; resolve: (frame: Record<string, unknown>) => void }[] = [];
+  const welcomeFrame = () => ({
+    type: "server:welcome",
+    protocolVersion: 1,
+    sandboxId: "2b63a21e-f6c7-4474-91ea-4dabf0566a24",
+    sessionId: WSS_SESSION_ID,
+    environmentGeneration: 1,
+    resourceName: "projects/p/locations/r/instances/ots-s-2b63a21ef6c7-1",
+    ...(cloud.capability ? { cloudDeliveryVersion: cloud.capability } : {}),
+    ...(cloud.sessionCollaboration ? { sessionCollaborationVersion: cloud.sessionCollaboration } : {}),
+    ...(cloud.capability ? { resourceUid: cloud.resourceUid ?? null } : {}),
+    heartbeatIntervalMs: timing.interval,
+    heartbeatTimeoutMs: timing.timeout,
+  });
   const replyAuth = (socket: WsSocket, frame: Record<string, unknown>) => {
     const ok = onAuth?.(frame) ?? frame.token === BOOTSTRAP_TOKEN;
     socket.send(
       JSON.stringify({ type: "auth:result", ok, ...(frame.requestId ? { requestId: frame.requestId } : {}) }),
     );
-    if (ok) {
-      socket.send(
-        JSON.stringify({
-          type: "server:welcome",
-          protocolVersion: 1,
-          sandboxId: "2b63a21e-f6c7-4474-91ea-4dabf0566a24",
-          sessionId: WSS_SESSION_ID,
-          environmentGeneration: 1,
-          resourceName: "projects/p/locations/r/instances/ots-s-2b63a21ef6c7-1",
-          ...(cloud.capability ? { cloudDeliveryVersion: cloud.capability } : {}),
-          ...(cloud.capability ? { resourceUid: cloud.resourceUid ?? null } : {}),
-          heartbeatIntervalMs: timing.interval,
-          heartbeatTimeoutMs: timing.timeout,
-        }),
-      );
-    } else {
-      socket.close(4401, "auth failed");
-    }
+    if (ok) socket.send(JSON.stringify(welcomeFrame()));
+    else socket.close(4401, "auth failed");
   };
   const replyByBehavior = (socket: WsSocket, frame: Record<string, unknown>, connectionIndex: number) => {
     if (connectionIndex < (behavior.dropAuthConnections ?? 0)) return;
@@ -1610,10 +1611,12 @@ describe("Runner cancellation and connection lifetime", () => {
     const journal = await CloudJournal.open(join(stateDir, "journal"));
     const entries = await journal.list();
     expect(entries).toHaveLength(1);
-    expect(entries[0]?.phase).toBe("reported");
-    expect(entries[0]?.report?.outcome).toBe("cancelled");
-    expect(entries[0]?.report?.executionEffects).toBe("may_have_occurred");
-    expect(entries[0]?.report?.errorReason).toBe("client_shutdown");
+    const entry = entries[0];
+    if (entry?.kind !== "delivery") throw new Error("expected a delivery journal entry");
+    expect(entry.phase).toBe("reported");
+    expect(entry.report?.outcome).toBe("cancelled");
+    expect(entry.report?.executionEffects).toBe("may_have_occurred");
+    expect(entry.report?.errorReason).toBe("client_shutdown");
   }, 30_000);
 
   it("keeps a legacy E3 welcome Cloud-free and still runs E3 acceptance", async () => {
@@ -1648,6 +1651,106 @@ describe("Runner cancellation and connection lifetime", () => {
     wss.send({ type: "acceptance:run", requestId: "e3-1", mode: "offline", deadlineAtMs: Date.now() + 60_000 });
     const result = await wss.waitFor("acceptance:result");
     expect(["passed", "failed"]).toContain(result.outcome);
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("requests the E8 capability and handles Session frames only when the Server echoed it", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1", sessionCollaboration: 1 },
+    );
+    const stop = new AbortController();
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-session-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory: fakeSandboxFactory(),
+        signal: stop.signal,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    const auth = wss.frames.find((frame) => frame.type === "auth") as
+      | { sessionCollaborationVersion?: number }
+      | undefined;
+    expect(auth?.sessionCollaborationVersion).toBe(1);
+    const runtime = cloudDeliveryFixture().runtime;
+    const messageId = randomUUID();
+    wss.send({
+      type: "session:message:run",
+      requestId: messageId,
+      message: {
+        type: "session:message:deliver",
+        requestId: messageId,
+        messageId,
+        sourceSessionId: randomUUID(),
+        targetSessionId: WSS_SESSION_ID,
+        agentId: runtime.agentId,
+        placementGeneration: 1,
+        content: { kind: "text", text: "child task" },
+        runtime,
+      },
+      sessionKind: "internal",
+    });
+    const receipt = await wss.waitFor("session:message:received");
+    expect(receipt).toMatchObject({ status: "accepted", phase: "received", messageId });
+    stop.abort();
+    expect(await running).toBe(143);
+  }, 30_000);
+
+  it("treats a Session frame without the E8 echo as a protocol violation", async () => {
+    const wss = await startWss(
+      undefined,
+      { interval: 50, timeout: 100_000 },
+      {},
+      { capability: 1, resourceUid: "uid-1" },
+    );
+    const stop = new AbortController();
+    const output = io();
+    const stateDir = await mkdtemp(join(tmpdir(), "opentag-runner-session-legacy-"));
+    cleanup.push(() => rm(stateDir, { recursive: true, force: true }));
+    const running = runRunnerServe(
+      { ...serveConfig(wss.url), stateDir },
+      {
+        installSignalHandlers: false,
+        randomJitter: () => 0,
+        sandboxFactory: fakeSandboxFactory(),
+        signal: stop.signal,
+        stderr: output.stderr,
+      },
+    );
+    await wss.waitFor("runner:ready");
+    const runtime = cloudDeliveryFixture().runtime;
+    const messageId = randomUUID();
+    wss.send({
+      type: "session:message:run",
+      requestId: messageId,
+      message: {
+        type: "session:message:deliver",
+        requestId: messageId,
+        messageId,
+        sourceSessionId: randomUUID(),
+        targetSessionId: WSS_SESSION_ID,
+        agentId: runtime.agentId,
+        placementGeneration: 1,
+        content: { kind: "text", text: "child task" },
+        runtime,
+      },
+      sessionKind: "internal",
+    });
+    const firstSocket = wss.sockets[0] as WsSocket;
+    await new Promise<void>((resolve) => {
+      if (firstSocket.readyState === firstSocket.CLOSED) resolve();
+      else firstSocket.once("close", () => resolve());
+    });
+    expect(wss.frames.some((frame) => frame.type === "session:message:received")).toBe(false);
     stop.abort();
     expect(await running).toBe(143);
   }, 30_000);

@@ -1,19 +1,19 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
-import { promisify } from "node:util";
 import type { AgentRuntimeProvider } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
+import { collectDescendantPids, waitForProcessTreeGone } from "../runner/processes.js";
 import { resolveAccountHome } from "../storage/context-tree-home.js";
 import { ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
-
-const execFileAsync = promisify(execFile);
 
 /** Context Tree commands are local and bounded; a hung CLI must not stall Session start. */
 const CLI_TIMEOUT_MS = 20_000;
 /** A GitHub target clones on first use, so its first connect is allowed to take longer. */
 const CLI_NETWORK_TIMEOUT_MS = 120_000;
+/** SIGTERM grace before SIGKILL; the owned tree is awaited either way. */
+const CLI_KILL_GRACE_MS = 2_000;
 const CLI_MAX_BUFFER = 1024 * 1024;
 const SESSION_START_BUDGET_MS = 5_000;
 const FAILURE_COOLDOWN_MS = 60_000;
@@ -47,8 +47,138 @@ export type ContextTreeExecFile = (
   },
 ) => Promise<{ stdout: string }>;
 
-const defaultExecFile: ContextTreeExecFile = async (file, args, options) =>
-  execFileAsync(file, [...args], { ...options, encoding: "utf8" });
+interface ContextTreeCliProcessError extends Error {
+  readonly stdout: string;
+  readonly killed: boolean;
+  readonly signal?: string;
+}
+
+function cliProcessError(
+  message: string,
+  fields: { stdout: string; killed: boolean; signal?: string },
+): ContextTreeCliProcessError {
+  return Object.assign(new Error(message), fields);
+}
+
+function cliAbortError(message: string): ContextTreeCliProcessError {
+  return cliProcessError(message, { killed: true, signal: "SIGTERM", stdout: "" });
+}
+
+function cliExitError(
+  terminating: boolean,
+  bufferExceeded: boolean,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stdout: string,
+): ContextTreeCliProcessError | undefined {
+  if (!terminating && !bufferExceeded && code === 0) return undefined;
+  return cliProcessError(`Context Tree CLI exited with ${code ?? signal ?? "unknown"}`, {
+    killed: terminating,
+    stdout,
+    ...(terminating ? { signal: "SIGTERM" } : signal ? { signal } : {}),
+  });
+}
+
+function signalOwned(pid: number, signal: NodeJS.Signals, detached: boolean): void {
+  try {
+    if (detached) process.kill(-pid, signal);
+    else process.kill(pid, signal);
+  } catch {
+    try {
+      process.kill(pid, signal);
+    } catch {
+      /* the process is already gone */
+    }
+  }
+}
+
+/**
+ * Stop the CLI and every descendant it owns. `git` children are detached into their own process
+ * groups, so the CLI group alone is not the whole tree: enumerate descendants before signalling,
+ * stop each group, escalate after a grace period, and resolve only once none remain.
+ */
+function createOwnedTreeStopper(child: ChildProcess, detached: boolean): () => Promise<void> {
+  let stopped: Promise<void> | undefined;
+  return () => {
+    stopped ??= (async () => {
+      const descendants = child.pid === undefined ? [] : await collectDescendantPids(child.pid);
+      const pids = [child.pid, ...descendants].filter((pid): pid is number => typeof pid === "number");
+      for (const pid of pids) signalOwned(pid, "SIGTERM", detached);
+      try {
+        await waitForProcessTreeGone(pids, { timeoutMs: CLI_KILL_GRACE_MS });
+        return;
+      } catch {
+        /* escalate below */
+      }
+      for (const pid of pids) signalOwned(pid, "SIGKILL", detached);
+      await waitForProcessTreeGone(pids, { timeoutMs: CLI_KILL_GRACE_MS }).catch(() => undefined);
+    })();
+    return stopped;
+  };
+}
+
+/**
+ * Production exec: one CLI child in its own process group. `execFile` signals only the direct
+ * child, so a nested `git` would keep mutating the workspace after the caller stopped waiting.
+ * A timeout or abort therefore stops the whole owned tree and the returned promise settles only
+ * after those processes are gone.
+ */
+const defaultExecFile: ContextTreeExecFile = (file, args, options) =>
+  new Promise<{ stdout: string }>((resolveRun, rejectRun) => {
+    if (options.signal?.aborted) {
+      rejectRun(cliAbortError("Context Tree CLI was aborted before it started"));
+      return;
+    }
+    const detached = process.platform !== "win32";
+    const child = spawn(file, [...args], {
+      cwd: options.cwd,
+      detached,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: options.windowsHide,
+    });
+    let stdout = "";
+    let bufferExceeded = false;
+    let settled = false;
+    let terminating = false;
+    let cleanup: Promise<void> | undefined;
+    const stopOwnedTree = createOwnedTreeStopper(child, detached);
+    const terminate = () => {
+      if (terminating) return;
+      terminating = true;
+      cleanup = stopOwnedTree();
+    };
+    const timer = setTimeout(terminate, options.timeout);
+    timer.unref?.();
+    options.signal?.addEventListener("abort", terminate, { once: true });
+    const finish = (error?: ContextTreeCliProcessError) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", terminate);
+      if (error) rejectRun(error);
+      else resolveRun({ stdout });
+    };
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (!bufferExceeded && stdout.length > options.maxBuffer) {
+        bufferExceeded = true;
+        terminate();
+      }
+    });
+    child.stderr?.resume();
+    child.once("error", (error: Error) => {
+      finish(
+        cliProcessError(error.message, { killed: terminating, stdout, ...(terminating ? { signal: "SIGTERM" } : {}) }),
+      );
+    });
+    child.once("close", (code, signal) => {
+      const error = cliExitError(terminating, bufferExceeded, code, signal, stdout);
+      const complete = () => finish(error);
+      if (cleanup) void cleanup.then(complete, complete);
+      else complete();
+    });
+  });
 
 export function resolveContextTreePackage(from: string = import.meta.url): ContextTreePackage | undefined {
   try {

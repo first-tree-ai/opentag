@@ -271,6 +271,8 @@ function makeOwner(
   options: {
     withModel?: boolean;
     logger?: import("../observability/service-logger.js").ServiceLogger;
+    sessionProofs?: import("../services/sandboxes/index.js").CloudDeliveryOwnerOptions["sessionProofs"];
+    credentialsOwner?: unknown;
     allocationStatus?: (
       sandboxId: string,
     ) => Promise<import("../services/sandboxes/index.js").SandboxAllocationReconciliation | undefined>;
@@ -291,7 +293,9 @@ function makeOwner(
     hub,
     modelBaseUrl: "https://server.example.com/api/v1/cloud-model",
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.credentialsOwner ? { credentials: { owner: options.credentialsOwner as never } } : {}),
     ...(options.withModel === false ? {} : { modelGrants: grants }),
+    ...(options.sessionProofs ? { sessionProofs: options.sessionProofs } : {}),
     ...(options.allocationStatus ? { allocationStatus: options.allocationStatus } : {}),
   });
   return { hub, fence, custody, grants, owner };
@@ -398,6 +402,8 @@ describe("CloudDeliveryOwner", () => {
     expect(verified).toHaveLength(1);
     expect((verified[0] as { status: string }).status).toBe("verified");
     expect((verified[0] as { model?: { model: string } }).model?.model).toBe(MODEL);
+    // A connection that did not negotiate E8 (the E7 default here) never receives the field.
+    expect(verified[0]).not.toHaveProperty("sessionCliProof");
     const accepted = await deliveryRow(deliveryId);
     expect(accepted.state).toBe("accepted");
     expect(accepted.turnId).toBe(turnId);
@@ -412,6 +418,79 @@ describe("CloudDeliveryOwner", () => {
     const stillAccepted = await deliveryRow(deliveryId);
     expect(stillAccepted.state).toBe("accepted");
     expect(stillAccepted.turnId).toBe(turnId);
+  });
+
+  it("mints the Session-CLI proof only at the actual execution open on a negotiated connection", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const mintCloud = vi.fn(async () => ({ proofId: randomUUID(), token: "unit-session-proof-token" }));
+    const executionResult = {
+      type: "runtime:execution:result" as const,
+      requestId: "unused",
+      status: "succeeded" as const,
+      executionId: randomUUID(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      providers: [],
+    };
+    const credentialOwner = { handle: vi.fn(async () => executionResult) };
+    const { hub, fence, owner } = makeOwner({ credentialsOwner: credentialOwner, sessionProofs: { mintCloud } });
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const openFrame = {
+      type: "runtime:execution:open" as const,
+      requestId: randomUUID(),
+      sessionId: scope.sessionId,
+      agentId: agent.id,
+      placementGeneration: 1,
+      runId: randomUUID(),
+      source: { kind: "session-message" as const, messageId: randomUUID() },
+      sandbox: {
+        environmentGeneration: 1,
+        resourceUid: `unit-uid-${scope.sandboxId.slice(0, 8)}`,
+        sandboxId: scope.sandboxId,
+      },
+    };
+
+    // A legacy E7 connection opens its real execution but never receives a proof.
+    const legacy = await owner.handleCredentialFrame(connection, openFrame);
+    expect(legacy).toMatchObject({ status: "succeeded" });
+    expect(legacy).not.toHaveProperty("sessionCliProof");
+    expect(mintCloud).not.toHaveBeenCalled();
+
+    // An E8-negotiated connection receives the proof bound to the ACTUAL execution id.
+    const sent2: RunnerServerFrame[] = [];
+    const socket2 = fakeSocket(sent2);
+    hub.attach(scope, socket2);
+    hub.markReady(scope, READINESS, socket2);
+    const replacement = fence.attach({
+      computerId: cloud.computerId,
+      installationId: randomUUID(),
+      scope,
+      sessionCollaborationEligible: true,
+      socket: socket2,
+    });
+    const negotiated = await owner.handleCredentialFrame(replacement, openFrame);
+    expect(negotiated).toMatchObject({
+      sessionCliProof: { token: "unit-session-proof-token" },
+      status: "succeeded",
+    });
+    expect(mintCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: replacement.connectionId,
+        executionId: executionResult.executionId,
+        placementGeneration: 1,
+        sandboxId: scope.sandboxId,
+        sessionId: scope.sessionId,
+      }),
+    );
+
+    // A validation execution is never a Session CLI authority.
+    mintCloud.mockClear();
+    const validation = await owner.handleCredentialFrame(replacement, {
+      ...openFrame,
+      source: { kind: "validation", validationRunId: randomUUID() },
+    });
+    expect(validation).not.toHaveProperty("sessionCliProof");
+    expect(mintCloud).not.toHaveBeenCalled();
   });
 
   it("records the Turn Report exactly once and acks; a lost ack retransmits idempotently", async () => {

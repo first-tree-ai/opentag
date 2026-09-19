@@ -62,6 +62,8 @@ export type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind
 export type AgentDetailView = AgentDetail & {
   availability: AgentAvailability;
   messaging: DetailEvidence<ImBindingSummary>;
+  /** The bound Computer's exact kind when the Account read confirmed it; Cloud-only settings rely on it. */
+  computerKind?: "local" | "cloud";
 };
 
 /**

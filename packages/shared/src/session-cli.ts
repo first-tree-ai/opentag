@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runtimeByteString } from "./runtime-config.js";
 import {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RuntimeMaxDurationMsSchema,
@@ -73,6 +74,19 @@ export const SessionCliListResponseSchema = z
     nextCursor: z.string().min(1).max(2048).optional(),
   })
   .strict();
+
+/**
+ * The Server-minted proof a managed Runtime hands to the in-Session CLI. The token is a bearer
+ * credential bound to the exact Session/placement/execution connection; it is delivered only over
+ * authenticated runtime channels (Local reconcile, Cloud verified frames) and worker stdin.
+ */
+export const SessionCliProofGrantSchema = z
+  .object({
+    proofId: z.string().uuid(),
+    token: runtimeByteString(4096, "Session CLI proof exceeds the 4 KiB limit", 32),
+  })
+  .strict();
+export type SessionCliProofGrant = z.infer<typeof SessionCliProofGrantSchema>;
 
 export type SessionCliCreateRequest = z.infer<typeof SessionCliCreateRequestSchema>;
 export type SessionCliSendRequest = z.infer<typeof SessionCliSendRequestSchema>;

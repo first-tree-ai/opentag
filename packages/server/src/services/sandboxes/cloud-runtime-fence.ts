@@ -27,6 +27,12 @@ export interface CloudConnectionRecord {
    */
   readonly socket?: RunnerControlSocket;
   /**
+   * Whether this connection may be handed Session-CLI proofs and receive `session:message:*`
+   * frames. Set only when the Runner requested the E8 capability in its auth frame and the Server
+   * echoed it; a legacy E7 Runner keeps existing IM delivery with no unknown field or frame.
+   */
+  readonly sessionCollaborationEligible: boolean;
+  /**
    * Whether this connection may receive execution permission. A report-only reconnect (the active
    * authority chain was inactive at handshake) sets false: existing custody may still be settled
    * or reported, but no grant is ever minted until a fresh active handshake replaces the record.
@@ -61,6 +67,7 @@ export class CloudRuntimeFence {
     scope: RunnerScope;
     socket?: RunnerControlSocket;
     executionEligible?: boolean;
+    sessionCollaborationEligible?: boolean;
   }): CloudConnectionRecord {
     this.detachSandbox(input.scope.sandboxId);
     const record: CloudConnectionRecord = {
@@ -71,6 +78,7 @@ export class CloudRuntimeFence {
       scope: input.scope,
       ...(input.socket ? { socket: input.socket } : {}),
       executionEligible: input.executionEligible !== false,
+      sessionCollaborationEligible: input.sessionCollaborationEligible === true,
     };
     this.#byConnection.set(record.connectionId, record);
     this.#bySandbox.set(input.scope.sandboxId, record.connectionId);
@@ -95,6 +103,11 @@ export class CloudRuntimeFence {
   connectionForSandbox(sandboxId: string): CloudConnectionRecord | undefined {
     const connectionId = this.#bySandbox.get(sandboxId);
     return connectionId ? this.#byConnection.get(connectionId) : undefined;
+  }
+
+  /** The exact attach record for one connection id, or undefined when it was detached. */
+  connectionById(connectionId: string): CloudConnectionRecord | undefined {
+    return this.#byConnection.get(connectionId);
   }
 
   /**

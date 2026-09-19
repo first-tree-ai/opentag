@@ -67,6 +67,36 @@ describe("Runtime durable work HTTP API", () => {
     await app.close();
   });
 
+  it("refuses a Computer-forged Cloud Session work envelope", async () => {
+    const store = { list: vi.fn(), write: vi.fn() };
+    const app = createApp({
+      runtimeDurableWork: { machineAuth: { verifyMachineToken: vi.fn().mockResolvedValue({ computerId }) }, store },
+    });
+    const forged = {
+      ...record,
+      payload: {
+        type: "cloud-session-message-work",
+        request: record.payload,
+        allocation: {
+          sandboxId: randomUUID(),
+          environmentGeneration: 1,
+          resourceName: "projects/unit/locations/us-west1/instances/ots-s-forged-1",
+        },
+        turnId: "turn-forged",
+      },
+    };
+    const response = await app.inject({
+      method: "PUT",
+      url: `${HTTP_PATHS.runtimeDurableWork}/session-message/${encodeURIComponent(record.key)}`,
+      headers: { authorization: "Bearer machine", "content-type": "application/json" },
+      payload: forged,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    expect(store.write).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("returns one valid page when more than 1024 records exist", async () => {
     const allItems = Array.from({ length: 1_025 }, (_, index) => ({ ...record, key: `record-${index}` }));
     const items = allItems.slice(0, 1_024);

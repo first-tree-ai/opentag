@@ -1,4 +1,4 @@
-# Cloud Runner execution (E3–E7)
+# Cloud Runner execution (E3–E8)
 
 [简体中文](./zh-CN/cloud-runner-execution.md)
 
@@ -534,3 +534,9 @@ keeps that physical name and UID without create/PATCH and each Session restores 
 archive. Separately, let the idle budget expire, verify provider-confirmed deletion, and restore
 the original Session into a fresh Instance. Also verify a stale Session bearer cannot follow the
 transfer, and explicit stop wins against an in-flight borrow or automatic release.
+
+## E8: Context Tree and Session collaboration
+
+See [Cloud Context Tree and Session collaboration](./cloud-context.md) for current configuration,
+private workspace recovery, published knowledge, managed Session CLI authority, and validation
+boundaries. E8 reuses the existing Sandbox lifecycle and does not introduce another allocation model.

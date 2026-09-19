@@ -10,8 +10,8 @@ import { z } from "zod";
  * `docs/design/agent-skills.md`.
  *
  * Like every module under `src/` that the browser entrypoint re-exports, this one is
- * browser-compatible: no `node:*` import and no `Buffer`. Byte lengths are measured with
- * `TextEncoder` for the same reason `mcp.ts` avoids the Node global.
+ * browser-compatible: it imports nothing from the Node standard library and never uses the Node
+ * byte-array global. Byte lengths are measured with `TextEncoder`, as `mcp.ts` does.
  */
 
 /* ---------------------------------- limits --------------------------------- */

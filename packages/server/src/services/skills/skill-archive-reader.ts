@@ -255,14 +255,17 @@ const S_IFLNK = 0o120000;
 /**
  * The canonical mode for a zip member: `0755` when a Unix-made regular file carries any execute bit,
  * `0644` otherwise — the same normalization the tar path applies. A Unix symlink, a special file, or
- * any setuid/setgid/sticky bit is rejected; a DOS/Windows entry has no mode to lose, so it is `0644`.
+ * any setuid/setgid/sticky bit is rejected; a Unix entry whose mode carries permission bits without
+ * file-type bits (Python's `zipfile` does this) is an ordinary member; a DOS/Windows entry has no
+ * mode to lose, so it is `0644`.
  */
 function canonicalZipMode(rawName: string, directory: Map<string, ZipDirectoryEntry>): number {
   const info = directory.get(rawName);
   if (!info?.madeByUnix || info.unixMode === 0) return 0o644;
   const type = info.unixMode & S_IFMT;
   if (type === S_IFLNK) throw skillArchiveInvalid("Skill archive may not contain links");
-  if (type !== S_IFREG && type !== S_IFDIR) {
+  // An absent file-type is an ordinary member, not a special file.
+  if (type !== 0 && type !== S_IFREG && type !== S_IFDIR) {
     throw skillArchiveInvalid("Skill archive may not contain special files");
   }
   if ((info.unixMode & 0o7000) !== 0) {

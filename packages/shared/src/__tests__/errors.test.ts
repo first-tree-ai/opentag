@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ErrorEnvelopeSchema } from "../errors.js";
+import { ErrorCodeSchema, ErrorEnvelopeSchema } from "../errors.js";
+import { SKILL_ERROR_CODE_METADATA, SKILL_ERROR_CODES } from "../skill.js";
 
 describe("error contracts", () => {
   it("accepts a typed error envelope", () => {
@@ -79,6 +80,19 @@ describe("error contracts", () => {
     expect(ErrorEnvelopeSchema.parse({ error: { code, category, message: "Messaging request failed" } })).toMatchObject(
       { error: { code, category } },
     );
+  });
+
+  it("admits every Skill error code through ErrorCodeSchema", () => {
+    for (const code of Object.values(SKILL_ERROR_CODES)) {
+      expect(ErrorCodeSchema.safeParse(code).success).toBe(true);
+    }
+  });
+
+  it("round-trips a Skill failure through the error envelope", () => {
+    const code = SKILL_ERROR_CODES.NAME_CONFLICT;
+    const category = SKILL_ERROR_CODE_METADATA[code].category;
+    const envelope = { error: { code, category, message: "A Skill with this name already exists" } };
+    expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
   });
 
   it("carries the structured unbind-required identity only on its own code", () => {

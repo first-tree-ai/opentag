@@ -109,6 +109,7 @@ describe("production Cloud runtime composition", () => {
         createConvergeTimeoutMs: 120_000,
         bootstrapTokenTtlSeconds: 600,
         acceptanceTimeoutMs: 60_000,
+        idleTimeoutMs: 120_000,
       },
     };
     const store = new FakeWorkspaceObjectStore();

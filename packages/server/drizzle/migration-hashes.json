@@ -233,7 +233,12 @@
     },
     {
       "idx": 46,
-      "tag": "0046_feishu_pending_activation",
+      "tag": "0046_wild_skullbuster",
+      "sha256": "b1c5af12dbb7d5b377bd9a3eba6de29e68781c1cb079c53e1c14ae55e7866506"
+    },
+    {
+      "idx": 47,
+      "tag": "0047_feishu_pending_activation",
       "sha256": "72db458dfcc32cadd5c560faecf0fcf0b44d802fa2f890be84b92e12024b6a29"
     }
   ]

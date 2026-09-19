@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { link, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import type { CloudTurnRunnerOptions } from "../runner/cloud-turns.js";
 import type { NativeSandbox } from "../runner/native-sandbox.js";
 import { runRunnerServe } from "../runner/serve.js";
 import type { NativeWebExecutionChannel } from "../runner/web-gateway.js";
+import { createWorkspaceArchive } from "../runner/workspace-archive.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const sandboxId = "2b63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -37,7 +38,7 @@ interface ProtocolPeerOptions {
   readonly sessionId?: string;
   /** Deterministic save failure: reject the Nth and every later archive upload without storing it. */
   readonly rejectUploadsFrom?: number;
-  readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | undefined;
+  readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | object[] | undefined;
   readonly httpToken?: () => string;
 }
 
@@ -60,6 +61,7 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
   };
   let current: WebSocket | undefined;
   const frames: Record<string, unknown>[] = [];
+  const claimTokens: string[] = [];
   const waiters = new Set<() => void>();
   const readyObjects: RunnerWorkspaceObject[] = [];
   const upload = async (request: IncomingMessage, response: ServerResponse) => {
@@ -92,6 +94,9 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     response.end(JSON.stringify(object));
   };
   const serve = async (request: IncomingMessage, response: ServerResponse) => {
+    // Record every claim attempt, including rejected ones: a bearer used for the wrong
+    // assignment must be visible to the tests instead of hidden behind a 403.
+    if (request.url?.endsWith("/claim")) claimTokens.push(String(request.headers.authorization ?? ""));
     if (request.headers.authorization !== `Bearer ${options.httpToken?.() ?? `fixture-${generation}`}`) {
       response.writeHead(403).end();
       return;
@@ -122,7 +127,7 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     expect(frame.workspaceVersion).toBe(1);
     const reply = options.authReply?.(frame, ++authAttempts);
     if (reply) {
-      socket.send(JSON.stringify(reply));
+      for (const item of Array.isArray(reply) ? reply : [reply]) socket.send(JSON.stringify(item));
       return;
     }
     socket.send(JSON.stringify({ type: "auth:result", ok: true }));
@@ -162,7 +167,31 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
     instancePrefix,
     identity: { sandboxId: peerSandboxId, sessionId: peerSessionId },
     readyObjects,
+    claimTokens,
     object: () => ({ ...object }),
+    resetObject() {
+      bytes = Buffer.alloc(0);
+      object = {
+        generation: "1",
+        metageneration: "1",
+        ownerGeneration: 1,
+        saved: false,
+        sealed: false,
+        ...digest(bytes),
+      };
+    },
+    /** Seed a genuine saved archive for the next claim/download (the borrower's own storage). */
+    seedObject(content: Buffer) {
+      bytes = Buffer.from(content);
+      object = {
+        generation: "1",
+        metageneration: "1",
+        ownerGeneration: 1,
+        saved: true,
+        sealed: false,
+        ...digest(bytes),
+      };
+    },
     count(type: string) {
       return frames.filter((frame) => frame.type === type).length;
     },
@@ -898,3 +927,574 @@ it("keeps Session B running to its own checkpoint when Session A cannot save", a
     await rm(root, { recursive: true, force: true });
   }
 }, 30_000);
+
+/* ----------------------------------------------------------------------------------------------
+ * E7 assignment rebind over the same physical Runner: one process, two Sessions.
+ * ------------------------------------------------------------------------------------------- */
+
+const REBIND_SANDBOX_B = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee";
+const REBIND_SESSION_B = "ffffffff-6666-4666-8666-ffffffffffff";
+const REBIND_RESOURCE_UID = "uid-1";
+
+async function buildSeededArchive(root: string, name: string, content: string): Promise<Buffer> {
+  const seedDir = join(root, `seed-${name}`);
+  await mkdir(seedDir, { recursive: true });
+  await writeFile(join(seedDir, name), content);
+  const archivePath = join(root, `seed-${name}.tar.gz`);
+  await createWorkspaceArchive(seedDir, archivePath);
+  return readFile(archivePath);
+}
+
+async function runRebindScenario(input: {
+  root: string;
+  peer: Awaited<ReturnType<typeof protocolPeer>>;
+  stop: AbortController;
+  state: { destroyed: number; launched: number };
+  web?: { close: () => Promise<void> };
+  /** Test seam: additional native delete behavior (for example a one-shot failure). */
+  destroy?: () => Promise<void>;
+  /** Test seam replacing the reconnect backoff so reconnects are observable, not timed. */
+  sleep?: (ms: number) => Promise<void>;
+}) {
+  const workspace = join(input.root, "workspace");
+  const stderr: string[] = [];
+  (input.state as { stderr?: string[] }).stderr = stderr;
+  const native = {
+    launch: vi.fn(async () => {
+      input.state.launched += 1;
+    }),
+    destroy: vi.fn(async () => {
+      input.state.destroyed += 1;
+      await input.destroy?.();
+    }),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const running = runRunnerServe(
+    {
+      backendUrl: input.peer.url,
+      bootstrapToken: "fixture-a",
+      controlToken: "control-a",
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(input.root, "private"),
+      workspacePersistence: true,
+      ...(input.web ? { webTools: true } : {}),
+    },
+    {
+      installSignalHandlers: false,
+      signal: input.stop.signal,
+      stderr: { write: (chunk: string) => stderr.push(chunk) },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      ...(input.sleep ? { sleep: input.sleep } : {}),
+      ...(input.web
+        ? {
+            webAuthority: {} as never,
+            onWebGateway: (gateway: { openExecution: (...args: never[]) => Promise<NativeWebExecutionChannel> }) => {
+              vi.spyOn(gateway, "openExecution").mockResolvedValue({
+                close: input.web?.close,
+              } as never);
+            },
+          }
+        : {}),
+    },
+  );
+  return { workspace, native, running, stderr };
+}
+
+function rebindWelcomeReply(frame: Record<string, unknown>) {
+  return [
+    { type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) },
+    {
+      type: "server:welcome",
+      protocolVersion: 1,
+      sandboxId: REBIND_SANDBOX_B,
+      sessionId: REBIND_SESSION_B,
+      environmentGeneration: 2,
+      // The physical Instance identity never changes across a Session transfer.
+      resourceName: "projects/p/locations/r/instances/ots-test-1",
+      resourceUid: REBIND_RESOURCE_UID,
+      cloudDeliveryVersion: 1,
+      workspaceVersion: 1,
+      reuseVersion: 1,
+      heartbeatIntervalMs: 50,
+      heartbeatTimeoutMs: 10_000,
+    },
+    { type: "server:credential", token: "fixture-b" },
+  ];
+}
+
+it("rebinds one physical Runner to a transferred Session, restoring only its archive", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-rebind-"));
+  let httpToken = "fixture-a";
+  let firstAuth: Record<string, unknown> | undefined;
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) {
+        firstAuth = frame;
+        return undefined;
+      }
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const { workspace, running } = await runRebindScenario({ root, peer, stop, state });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(firstAuth).toMatchObject({
+      controlToken: "control-a",
+      reuseVersion: 1,
+      workspaceVersion: 1,
+      token: "fixture-a",
+    });
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+    await writeFile(join(workspace, "old-session.txt"), "not visible to the next Session");
+    // Private trusted-parent material must be removed by the rebind: neither the journal root, nor
+    // per-turn credential material, nor the public socket root can leak into the next Session.
+    await mkdir(join(root, "private", "turn-material"), { recursive: true });
+    await mkdir(join(root, "private", "bridge-public"), { recursive: true });
+    await writeFile(join(root, "private", "turn-material", "stale-credential"), "A private");
+    await writeFile(join(root, "private", "bridge-public", "stale.sock"), "A public");
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+
+    // The borrower has its own storage URI and its own archive: the rebind must download and
+    // restore B's bytes, not merely wipe A's workspace.
+    peer.seedObject(await buildSeededArchive(root, "b-marker.txt", "B assignment state"));
+    peer.advance();
+    peer.disconnect();
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a", "Bearer fixture-b"]);
+    expect(state.destroyed).toBeGreaterThanOrEqual(1);
+    expect(await readFile(join(workspace, "b-marker.txt"), "utf8")).toBe("B assignment state");
+    await expect(readFile(join(workspace, "old-session.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(root, "private", "turn-material"))).toEqual([]);
+    expect(await readdir(join(root, "private", "bridge-public"))).toEqual([]);
+  } finally {
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("requires the assignment credential on a process restart, never the static birth bearer", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-restart-"));
+  let httpToken = "fixture-a";
+  let restarted = false;
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame) =>
+      restarted
+        ? [
+            { type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) },
+            {
+              type: "server:welcome",
+              protocolVersion: 1,
+              sandboxId,
+              sessionId,
+              environmentGeneration: 1,
+              resourceName: "projects/p/locations/r/instances/ots-test-1",
+              resourceUid: "uid-1",
+              cloudDeliveryVersion: 1,
+              workspaceVersion: 1,
+              reuseVersion: 1,
+              heartbeatIntervalMs: 50,
+              heartbeatTimeoutMs: 10_000,
+            },
+            { type: "server:credential", token: "fixture-fresh" },
+          ]
+        : undefined,
+  });
+  const workspace = join(root, "workspace");
+  const stateDir = join(root, "private");
+  const start = () => {
+    const stop = new AbortController();
+    const running = runRunnerServe(
+      {
+        backendUrl: peer.url,
+        bootstrapToken: "fixture-a",
+        controlToken: "control-a",
+        sandboxName: "ots-test-1",
+        workspace,
+        stateDir,
+        workspacePersistence: true,
+      },
+      {
+        installSignalHandlers: false,
+        signal: stop.signal,
+        stderr: { write: () => undefined },
+        sandboxFactory: () =>
+          ({
+            launch: async () => undefined,
+            destroy: async () => undefined,
+            probe: async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" }),
+          }) as unknown as NativeSandbox,
+      },
+    );
+    return { stop, running };
+  };
+
+  const first = start();
+  await peer.wait("runner:ready");
+  // The marker records an unsealed local assignment; the `httpToken` fixture is then rotated so
+  // only the Server-issued credential for the restarted parent can claim the workspace.
+  await vi.waitFor(() => expect(peer.object().saved).toBe(true));
+  first.stop.abort();
+  await first.running;
+
+  restarted = true;
+  httpToken = "fixture-fresh";
+  const second = start();
+  try {
+    await peer.wait("runner:ready", 1);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a", "Bearer fixture-fresh"]);
+  } finally {
+    second.stop.abort();
+    await second.running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("requires the welcomed credential on a control first bind even with no local marker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-first-bind-"));
+  const peer = await protocolPeer({
+    // Only the Server-issued credential for the welcomed assignment is accepted: the static env
+    // bearer (birth Session A) would be visible as a rejected claim attempt.
+    httpToken: () => "fixture-b",
+    authReply: (frame) => [
+      { type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) },
+      {
+        type: "server:welcome",
+        protocolVersion: 1,
+        sandboxId: REBIND_SANDBOX_B,
+        sessionId: REBIND_SESSION_B,
+        environmentGeneration: 1,
+        resourceName: "projects/p/locations/r/instances/ots-test-1",
+        resourceUid: REBIND_RESOURCE_UID,
+        cloudDeliveryVersion: 1,
+        workspaceVersion: 1,
+        reuseVersion: 1,
+        heartbeatIntervalMs: 50,
+        heartbeatTimeoutMs: 10_000,
+      },
+    ],
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const { running } = await runRebindScenario({ root, peer, stop, state });
+  try {
+    await peer.wait("auth");
+    // The Runner is connected and heartbeating while it waits; no HTTP claim may have used the
+    // static birth bearer before the current assignment credential arrived.
+    await peer.wait("heartbeat", 1);
+    expect(peer.claimTokens).toEqual([]);
+    peer.send({ type: "server:credential", token: "fixture-b" });
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-b"]);
+  } finally {
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("drains an in-flight rebind cleanup before the next connection can start", { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-drain-"));
+  let httpToken = "fixture-a";
+  let attempts = 0;
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      attempts = attempt;
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const closeStarted = deferred();
+  const allowClose = deferred();
+  let reconnectCalls = 0;
+  const { running } = await runRebindScenario({
+    root,
+    peer,
+    stop,
+    state,
+    web: {
+      close: async () => {
+        closeStarted.resolve();
+        await allowClose.promise;
+      },
+    },
+    sleep: async () => {
+      reconnectCalls += 1;
+    },
+  });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    peer.seedObject(await buildSeededArchive(root, "b-marker.txt", "B assignment state"));
+    peer.advance(); // the peer's storage generation catches up with the B welcome
+
+    // The next connection triggers the rebind cleanup; park it inside the cleanup close.
+    peer.disconnect();
+    await closeStarted.promise;
+    // Disconnect the connection that owns the in-flight cleanup.
+    peer.disconnect();
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    // No successor connection may start while the old cleanup is unsettled, and readiness must
+    // not be published for the new assignment yet.
+    expect(reconnectCalls).toBe(1);
+    expect(attempts).toBe(2);
+    expect(peer.count("auth")).toBe(1);
+    expect(peer.count("runner:ready")).toBe(0);
+
+    allowClose.resolve();
+    await vi.waitFor(() => expect(reconnectCalls).toBe(2));
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    expect(attempts).toBeGreaterThanOrEqual(3);
+    expect(peer.count("auth")).toBe(2);
+    expect(await readFile(join(root, "workspace", "b-marker.txt"), "utf8")).toBe("B assignment state");
+  } finally {
+    allowClose.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("persists the durable marker before adopting the new assignment in memory", { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-marker-write-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const allowReconnect = deferred();
+  let reconnectCalls = 0;
+  const { workspace, running, stderr } = await runRebindScenario({
+    root,
+    peer,
+    stop,
+    state,
+    sleep: async () => {
+      reconnectCalls += 1;
+      if (reconnectCalls > 1) await allowReconnect.promise;
+    },
+  });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    peer.seedObject(await buildSeededArchive(root, "b-marker.txt", "B assignment state"));
+    peer.advance();
+
+    // Block the next durable marker write: the atomic rename cannot replace a directory.
+    await rm(join(root, "private", "assignment.json"), { force: true });
+    await mkdir(join(root, "private", "assignment.json"), { recursive: true });
+
+    peer.disconnect();
+    await vi.waitFor(
+      () => {
+        expect(stderr.join("")).toContain("The Runner assignment marker was not durable");
+      },
+      { timeout: 5_000, interval: 25 },
+    );
+    // The failed write is not adopted in memory: the runner parks before another reconnect and
+    // prepares nothing while the durable marker still proves the old sealed assignment.
+    expect(reconnectCalls).toBe(2);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+    expect(peer.count("runner:ready")).toBe(0);
+
+    // Unblock and let the retry persist the marker before it prepares the new assignment.
+    await rm(join(root, "private", "assignment.json"), { recursive: true, force: true });
+    allowReconnect.resolve();
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const persisted = JSON.parse(await readFile(join(root, "private", "assignment.json"), "utf8")) as {
+      sandboxId: string;
+    };
+    expect(persisted.sandboxId).toBe(REBIND_SANDBOX_B);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a", "Bearer fixture-b"]);
+    expect(await readFile(join(workspace, "b-marker.txt"), "utf8")).toBe("B assignment state");
+  } finally {
+    allowReconnect.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("fails fatally and stops reconnecting when rebind cleanup cannot delete the native sandbox", {
+  timeout: 20_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-destroy-fail-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const firstStop = new AbortController();
+  const first = await runRebindScenario({
+    root,
+    peer,
+    stop: firstStop,
+    state: { destroyed: 0, launched: 0 },
+  });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    firstStop.abort();
+    expect(await first.running).toBe(143);
+  } finally {
+    firstStop.abort();
+  }
+  peer.advance();
+
+  // The restarted parent launches the native sandbox before the welcome; its rebind cleanup now
+  // cannot delete that namespace. The Runner must terminate instead of reconnecting over it.
+  let destroyCalls = 0;
+  let reconnectCalls = 0;
+  const secondStop = new AbortController();
+  const secondState = { destroyed: 0, launched: 0 };
+  const second = await runRebindScenario({
+    root,
+    peer,
+    stop: secondStop,
+    state: secondState,
+    destroy: async () => {
+      destroyCalls += 1;
+      if (destroyCalls === 1) throw new Error("sandbox delete failed");
+    },
+    sleep: async () => {
+      reconnectCalls += 1;
+    },
+  });
+  try {
+    expect(await second.running).toBe(5);
+    expect(secondState.launched).toBe(1);
+    // The fatal cleanup failure plus the shutdown retry; no reconnect over the unverified namespace.
+    expect(destroyCalls).toBe(2);
+    expect(reconnectCalls).toBe(0);
+    expect(peer.count("runner:ready")).toBe(0);
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+  } finally {
+    secondStop.abort();
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed when a new assignment arrives without a sealed workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-unsealed-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const { running, stderr } = await runRebindScenario({ root, peer, stop, state });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    // No seal: the old assignment may still hold unsaved work, so B must never execute. The
+    // refusal is observed on the Runner's own log, with no sleep-based timing assumption.
+    peer.advance();
+    peer.disconnect();
+    await vi.waitFor(
+      () => {
+        expect(stderr.join("")).toContain("refusing a new assignment: the previous workspace was not sealed");
+      },
+      { timeout: 5_000, interval: 50 },
+    );
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+    expect(peer.count("runner:ready")).toBe(0);
+  } finally {
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed when rebind cleanup cannot close the previous web execution", { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-e7-cleanup-fail-"));
+  let httpToken = "fixture-a";
+  const peer = await protocolPeer({
+    httpToken: () => httpToken,
+    authReply: (frame, attempt) => {
+      if (attempt === 1) return undefined;
+      httpToken = "fixture-b";
+      return rebindWelcomeReply(frame);
+    },
+  });
+  const stop = new AbortController();
+  const state = { destroyed: 0, launched: 0 };
+  const { workspace, running, stderr } = await runRebindScenario({
+    root,
+    peer,
+    stop,
+    state,
+    web: {
+      close: async () => {
+        throw new Error("cleanup failed");
+      },
+    },
+  });
+  try {
+    expect((await peer.wait("runner:ready")).workspaceRestored).toBe(true);
+    await writeFile(join(workspace, "old-session.txt"), "must survive a failed cleanup");
+    // The previous assignment IS sealed, so the rebind reaches the cleanup step whose execution
+    // close is forced to fail: the failure must stop the hand-off.
+    const requestId = randomUUID();
+    peer.send({ type: "workspace:seal", requestId });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId, ok: true });
+    peer.seedObject(await buildSeededArchive(root, "b-marker.txt", "must not be restored"));
+    peer.advance();
+    peer.disconnect();
+    await vi.waitFor(
+      () => {
+        expect(stderr.join("")).toContain("cleanup failed");
+      },
+      { timeout: 5_000, interval: 50 },
+    );
+    expect(peer.claimTokens).toEqual(["Bearer fixture-a"]);
+    expect(peer.count("runner:ready")).toBe(0);
+    // The unsealed/old workspace is retained, never replaced by the new assignment's archive.
+    expect(await readFile(join(workspace, "old-session.txt"), "utf8")).toBe("must survive a failed cleanup");
+    // No claim/PUT ran for the new assignment: the seeded object is untouched.
+    expect(peer.object().generation).toBe("1");
+  } finally {
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});

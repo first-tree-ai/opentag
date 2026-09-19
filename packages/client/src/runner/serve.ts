@@ -1,10 +1,11 @@
 import { createHash, randomInt, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
+  RUNNER_REUSE_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
   RunnerAcceptanceReportWireSchema,
@@ -19,6 +20,13 @@ import {
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions } from "ws";
 import { CLOUD_EXECUTION_MOUNT } from "../cloud-runtime/sandbox-entry.js";
+import {
+  assignmentsMatch,
+  hasUnmarkedAssignmentState,
+  type RunnerAssignment,
+  readRunnerAssignment,
+  writeRunnerAssignment,
+} from "./assignment-state.js";
 import type { CloudCredentialChannel } from "./cloud-credential-connection.js";
 import { CloudJournal } from "./cloud-journal.js";
 import { CloudTurnRunner, type CloudTurnRunnerOptions, type CloudTurnScope } from "./cloud-turns.js";
@@ -66,8 +74,18 @@ export interface RunnerServeConfig {
    * Always outside the Session workspace and every Sandbox mount.
    */
   readonly stateDir: string;
-  /** Declared platform container port for the startup probe; absent means no health listener. */
+  /**
+   * Declared platform container port for the startup probe. `loadRunnerServeConfig` always
+   * supplies it (the declared 8080 unless PORT overrides); direct/test constructions may omit it
+   * and then no listener starts.
+   */
   readonly healthPort?: number;
+  /**
+   * E7 physical control credential from the Instance env. Old Runners ignore it; a Runner that
+   * has it authenticates the control channel with it and keeps the Session bearer only for
+   * workspace HTTP (the Server issues the current assignment's bearer after attach).
+   */
+  readonly controlToken?: string;
   /** Set by a persistence-enabled Server; legacy E3 acceptance does not negotiate storage. */
   readonly workspacePersistence?: boolean;
   /**
@@ -142,6 +160,13 @@ export function resolveRunnerBackendUrl(raw: string): string {
   return url.toString();
 }
 
+/**
+ * The Runner image and the Cloud Run Instance declare exactly this single container port, and the
+ * platform's default startup TCP probe targets it. An injected `PORT` stays the strict override;
+ * absence must not disable the listener.
+ */
+const DECLARED_CONTAINER_PORT = 8080;
+
 export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig {
   const backendRaw = env.OPENTAG_RUNNER_BACKEND_URL;
   if (!backendRaw) throw new Error("OPENTAG_RUNNER_BACKEND_URL is required for serve mode");
@@ -151,18 +176,23 @@ export function loadRunnerServeConfig(env: NodeJS.ProcessEnv): RunnerServeConfig
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(sandboxName)) {
     throw new Error("OPENTAG_RUNNER_SANDBOX_NAME is not a safe sandbox name");
   }
-  const healthPort = parseRunnerHealthPort(env.PORT);
+  const healthPort = parseRunnerHealthPort(env.PORT) ?? DECLARED_CONTAINER_PORT;
   const persistence = env.OPENTAG_RUNNER_WORKSPACE_PERSISTENCE;
   if (persistence !== undefined && persistence !== "1" && persistence !== "0") {
     throw new Error("OPENTAG_RUNNER_WORKSPACE_PERSISTENCE must be 1 or 0");
   }
+  const controlToken = env.OPENTAG_RUNNER_CONTROL_TOKEN;
+  if (controlToken !== undefined && (controlToken.length === 0 || controlToken.length > 8192)) {
+    throw new Error("OPENTAG_RUNNER_CONTROL_TOKEN is not a valid credential");
+  }
   return {
     backendUrl: resolveRunnerBackendUrl(backendRaw),
     bootstrapToken: token,
+    ...(controlToken ? { controlToken } : {}),
     sandboxName,
     workspace: env.OPENTAG_RUNNER_WORKSPACE ?? join(tmpdir(), "opentag-runner-workspaces", sandboxName),
     stateDir: env.OPENTAG_RUNNER_STATE_DIR ?? defaultRunnerStateDir(sandboxName),
-    ...(healthPort !== undefined ? { healthPort } : {}),
+    healthPort,
     ...(persistence === "1" ? { workspacePersistence: true } : {}),
     ...parseRunnerWebTools(env.OPENTAG_RUNNER_WEB_TOOLS),
   };
@@ -179,9 +209,9 @@ function parseRunnerWebTools(value: string | undefined): { readonly webTools?: b
 }
 
 /**
- * The platform sets PORT because the Instance declares its single container port. Only an exact
- * integer 1..65535 is accepted; 0 and out-of-range values are configuration errors (the helper
- * itself accepts 0 so tests can request an ephemeral port directly).
+ * Only an exact integer 1..65535 is accepted; absence falls back to the declared container port
+ * in `loadRunnerServeConfig`, while 0 and out-of-range values remain configuration errors (the
+ * helper itself accepts 0 so tests can request an ephemeral port directly).
  */
 function parseRunnerHealthPort(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -243,12 +273,116 @@ interface WorkState {
   stopping: boolean;
   fatal: boolean;
   present: boolean;
+  /** Session workspace bearer for the CURRENT assignment; replaced by `server:credential`. */
   token: string;
+  /** E7 immutable physical control credential; never used for workspace HTTP. */
+  controlToken?: string;
   /** Per-connection hook surfacing durable-boundary failures instead of swallowing them. */
   persistenceFailure?: (error: unknown) => void;
   workspace?: ServeWorkspace;
   /** One acceptance execution, opened only after its final restored namespace exists. */
   afterWorkspaceRestore?: () => Promise<void>;
+  /** E7 assignment identity bound to the local workspace/journal on disk. */
+  assignment?: RunnerAssignment;
+  /** Current Cloud Turn controller; rebuilt only on an assignment change. */
+  turns: CloudTurnRunner;
+  /** Trusted-parent journal; reset and reopened on assignment change. */
+  journal: CloudJournal;
+  readonly journalDir: string;
+  readonly privateTurnRoot: string;
+  readonly publicRoot: string;
+  /** Active native web execution channel, reopened after an assignment rebind. */
+  webExecution?: NativeWebExecutionChannel;
+  /** Monotonic receipt counter for `server:credential` frames. */
+  credentialEpoch: number;
+  /** Assignment key of the current Session bearer; undefined until a credential is received. */
+  tokenScope?: string;
+  /**
+   * True when the Session bearer must be obtained from the Server before the first HTTP claim:
+   * set for a process restart that found an assignment marker, and for every changed assignment.
+   * A truly fresh first bind may use the bearer minted for it at Instance creation.
+   */
+  assignmentRequired: boolean;
+  /** Waiters for a credential that arrives AFTER they registered. `error` rejects a timeout. */
+  credentialWaiters: Array<(error?: Error) => void>;
+  /**
+   * Set while the closing connection still owns in-flight restore/rebind work: a credential wait
+   * started after the close cannot succeed, so it fails fast instead of blocking the drain.
+   * Cleared when the next connection starts.
+   */
+  credentialInterrupt?: Error;
+}
+
+/** Assignment identity used to bind a Session bearer to the welcome that produced it. */
+function assignmentKey(scope: { sandboxId: string; environmentGeneration: number }): string {
+  return `${scope.sandboxId}:${scope.environmentGeneration}`;
+}
+
+/** Apply one credential frame: bind the Session bearer to the assignment that received it. */
+function applyCredential(
+  state: WorkState,
+  bridge: RunnerChannelBridge,
+  credentials: { token?: string; controlToken?: string },
+): void {
+  if (credentials.token) {
+    state.token = credentials.token;
+    state.tokenScope = bridge.scope ? assignmentKey(bridge.scope) : undefined;
+  }
+  if (credentials.controlToken) state.controlToken = credentials.controlToken;
+  state.credentialEpoch += 1;
+  for (const waiter of state.credentialWaiters.splice(0)) waiter();
+}
+
+/**
+ * Wait for a `server:credential` that arrives after `epoch`. A credential received before this
+ * call resolves immediately. A timeout REJECTS: preparing against a bearer that is not proven to
+ * belong to the current assignment must fail closed, never proceed on the expectation that the
+ * old token might still work.
+ */
+function waitForCredentialAfter(state: WorkState, epoch: number, timeoutMs: number): Promise<void> {
+  if (state.credentialEpoch > epoch) return Promise.resolve();
+  if (state.credentialInterrupt) return Promise.reject(state.credentialInterrupt);
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      state.credentialWaiters = state.credentialWaiters.filter((waiter) => waiter !== finish);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(
+      () => finish(new Error("the assignment credential was not received before the deadline")),
+      timeoutMs,
+    );
+    timer.unref?.();
+    state.credentialWaiters.push(finish);
+  });
+}
+
+/**
+ * The Session bearer for the CURRENT assignment. A fresh first bind may use the bearer minted for
+ * it at Instance creation; a restart or a changed assignment must receive the Server's bearer for
+ * the holder before any workspace HTTP claim. The check also covers the case where the credential
+ * arrived before the serialized restore operation ran.
+ */
+async function ensureAssignmentCredential(
+  state: WorkState,
+  scope: { sandboxId: string; environmentGeneration: number },
+  timeoutMs: number,
+  options: { required: boolean },
+): Promise<void> {
+  if (state.tokenScope === assignmentKey(scope)) return;
+  // A negotiated physical-control attach always requires the credential for the welcome it just
+  // received, even on a first bind with no local marker: the immutable env bearer may belong to
+  // a different birth Session after a transfer. A legacy first bind keeps the old behavior.
+  if (!options.required && !state.assignmentRequired) return;
+  const baseline = state.credentialEpoch;
+  await waitForCredentialAfter(state, baseline, timeoutMs);
+  if (state.tokenScope !== assignmentKey(scope)) {
+    throw new Error("the received credential does not belong to the current assignment");
+  }
 }
 
 /**
@@ -344,14 +478,29 @@ class RunnerChannelBridge implements CloudCredentialChannel {
   }
 }
 
+async function resetDirectory(directory: string): Promise<void> {
+  await rm(directory, { recursive: true, force: true });
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+}
+
 function attachWorkspace(
   config: RunnerServeConfig,
   options: RunnerServeOptions,
   current: WorkState,
   sandbox: NativeSandbox,
-  turns: CloudTurnRunner,
   bridge: RunnerChannelBridge,
 ): void {
+  current.turns = createCloudTurnRunner({
+    bridge,
+    journal: current.journal,
+    options,
+    privateTurnRoot: current.privateTurnRoot,
+    publicRoot: current.publicRoot,
+    sandbox,
+    serverUrl: config.backendUrl,
+    state: () => current,
+    workspacePersistence: config.workspacePersistence === true,
+  });
   if (!config.workspacePersistence) return;
   current.workspace = new ServeWorkspace({
     workspace: new CloudWorkspace({
@@ -364,8 +513,80 @@ function attachWorkspace(
     }),
     sandbox,
     state: () => current,
-    turns,
+    turns: current.turns,
   });
+}
+
+/**
+ * Gate for replacing the current assignment: a previous marker may be discarded only when it
+ * recorded a successful seal; without a marker nothing may look like it could hold unsaved work.
+ */
+async function assignmentReplacementAllowed(input: {
+  config: RunnerServeConfig;
+  options: RunnerServeOptions;
+  current: WorkState;
+  assignment: RunnerAssignment | undefined;
+}): Promise<boolean> {
+  if (input.assignment) {
+    if (input.assignment.sealed) return true;
+    logLine(input.options.stderr, "refusing a new assignment: the previous workspace was not sealed");
+    return false;
+  }
+  const leftover = await hasUnmarkedAssignmentState({
+    workspace: input.config.workspace,
+    journalDir: input.current.journalDir,
+    privateTurnRoot: input.current.privateTurnRoot,
+    publicRoot: input.current.publicRoot,
+  });
+  if (!leftover) return true;
+  logLine(input.options.stderr, "refusing a new assignment: unmarked local workspace state exists");
+  return false;
+}
+
+/**
+ * E7 sealed-assignment discard: the previous assignment's durable work is settled, so its local
+ * workspace, private credential material, public socket root and completed journal entries are
+ * removed before a fresh controller/workspace is built. Every step is required; a failure fails
+ * closed for the new assignment rather than executing over unproven local state.
+ */
+async function discardSealedAssignment(input: {
+  config: RunnerServeConfig;
+  options: RunnerServeOptions;
+  current: WorkState;
+  sandbox: NativeSandbox;
+  bridge: RunnerChannelBridge;
+  webGateway: NativeSandboxWebGateway | undefined;
+  assignment: RunnerAssignment;
+}): Promise<void> {
+  const { config, options, current, sandbox, bridge, webGateway, assignment } = input;
+  await current.turns.close();
+  await current.webExecution?.close();
+  current.webExecution = undefined;
+  if (current.present) {
+    try {
+      await sandbox.destroy();
+    } catch (error) {
+      // Mirror ServeWorkspace.#quiesce: a native namespace whose deletion cannot be verified is
+      // fatal, and the reconnect loop must not restart another rebind over it.
+      current.fatal = true;
+      throw error;
+    }
+    current.present = false;
+  }
+  await current.journal.resetScope({
+    sandboxId: assignment.sandboxId,
+    sessionId: assignment.sessionId,
+    environmentGeneration: assignment.environmentGeneration,
+    resourceName: assignment.resourceName,
+    resourceUid: assignment.resourceUid,
+  });
+  await resetDirectory(config.workspace);
+  await resetDirectory(current.privateTurnRoot);
+  await resetDirectory(current.publicRoot);
+  current.workspace = undefined;
+  current.journal = await CloudJournal.open(current.journalDir);
+  attachWorkspace(config, options, current, sandbox, bridge);
+  await prepareServeWebExecution(current, webGateway, sandbox, options);
 }
 
 export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
@@ -398,25 +619,49 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     return startupExitCode(error);
   }
   let state: WorkState | undefined;
-  // Per-connection hook: a durable-boundary failure surfaces through the current channel, never
-  // through an empty catch that would silently drop a received delivery.
-  const turns = createCloudTurnRunner({
-    bridge,
-    journal,
-    options,
-    privateTurnRoot,
-    publicRoot,
-    sandbox,
-    serverUrl: config.backendUrl,
-    state: () => state,
-    workspacePersistence: config.workspacePersistence === true,
-  });
-
   let health: RunnerHealthListener | undefined;
   let stopping = false,
     exitCode = 143,
     launchAttempted = false;
   const stopListeners = new Set<() => void>();
+
+  /**
+   * E7 assignment bind. A welcome for the SAME assignment keeps all local unsaved bytes. A welcome
+   * for a DIFFERENT assignment is accepted only when the previous assignment proved its workspace
+   * sealed; then old native/controller/workspace/journal/private/public state is destroyed and a
+   * fresh controller + workspace is built for the new Session before any restore or readiness.
+   */
+  const rebindAssignment = async (): Promise<boolean> => {
+    const current = state;
+    const scope = bridge.scope;
+    if (!current || !scope) return false;
+    const assignment = current.assignment;
+    if (assignment && assignmentsMatch(assignment, scope)) return true;
+    if (!(await assignmentReplacementAllowed({ config, options, current, assignment }))) return false;
+    if (assignment) {
+      // Sealed previous assignment: its durable work is settled, so discard the completed local
+      // state rather than accumulating it. Any failure here fails closed for the new assignment.
+      await discardSealedAssignment({ config, options, current, sandbox, bridge, webGateway, assignment });
+      // The old Session bearer is invalid for the new assignment: the restore path below must
+      // receive the Server's credential for the holder before any workspace HTTP claim.
+      current.assignmentRequired = true;
+    }
+    // Persist BEFORE the in-memory assignment: a failed disk write must not let a reconnect
+    // short-circuit the durable marker and prepare the new Session while the old sealed marker
+    // still owns the local workspace.
+    const proposed: RunnerAssignment = {
+      sandboxId: scope.sandboxId,
+      sessionId: scope.sessionId,
+      environmentGeneration: scope.environmentGeneration,
+      resourceName: scope.resourceName,
+      resourceUid: scope.resourceUid ?? "",
+      sealed: false,
+    };
+    await writeRunnerAssignment(config.stateDir, proposed);
+    current.assignment = proposed;
+    return true;
+  };
+
   const requestStop = (code: number) => {
     stopping = true;
     exitCode = code;
@@ -424,7 +669,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       state.stopping = true;
       state.active?.abort.abort();
     }
-    turns.onChannelClosed();
+    state?.turns.onChannelClosed();
     for (const listener of stopListeners) listener();
   };
   const removeSignals = installRunnerSignals(requestStop, options);
@@ -434,13 +679,30 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     if (stopping) return exitCode;
     launchAttempted = true;
     await sandbox.launch();
-    state = { probe: await sandbox.probe(), stopping, fatal: false, present: true, token: config.bootstrapToken };
-    attachWorkspace(config, options, state, sandbox, turns, bridge);
+    state = {
+      probe: await sandbox.probe(),
+      stopping,
+      fatal: false,
+      present: true,
+      token: config.bootstrapToken,
+      ...(config.controlToken ? { controlToken: config.controlToken } : {}),
+      journal,
+      journalDir,
+      privateTurnRoot,
+      publicRoot,
+      credentialEpoch: 0,
+      assignmentRequired: false,
+      credentialWaiters: [],
+      assignment: await readRunnerAssignment(config.stateDir),
+      turns: undefined as unknown as CloudTurnRunner,
+    };
+    attachWorkspace(config, options, state, sandbox, bridge);
     await prepareServeWebExecution(state, webGateway, sandbox, options);
-    // The platform's default TCP startup probe needs a listening socket on the declared port.
-    // Start it only after native readiness is proven, and only when the platform provided PORT.
+    // The platform's default TCP startup probe needs a listening socket on the declared port,
+    // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). Start
+    // it only after native readiness is proven.
     health = await startServeHealthListener(config, options, stopping);
-    await maintainConnections(config, state, sandbox, options, stopListeners, turns, bridge);
+    await maintainConnections(config, state, sandbox, options, stopListeners, bridge, rebindAssignment);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
   } catch (error) {
     reportStartupError(error, options);
@@ -451,7 +713,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     // Mark it before settling the controller so an interrupted turn's verified reset can only
     // delete the namespace, never relaunch it ahead of cleanup; then await the live worker and
     // abort it before any sandbox deletion.
-    await settleCloudController(turns, state);
+    await settleCloudController(state);
     // The probe listener and process handlers are released even when sandbox cleanup throws.
     try {
       if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
@@ -471,23 +733,26 @@ async function prepareServeWebExecution(
   sandbox: NativeSandbox,
   options: RunnerServeOptions,
 ): Promise<void> {
-  const open = () => openServeWebExecution(webGateway, sandbox, options, state.stopping);
+  const open = () => openServeWebExecution(state, webGateway, sandbox, options);
   if (state.workspace) state.afterWorkspaceRestore = open;
   else await open();
 }
 
 async function openServeWebExecution(
+  state: WorkState,
   webGateway: NativeSandboxWebGateway | undefined,
   sandbox: NativeSandbox,
   options: RunnerServeOptions,
-  stopping: boolean,
 ): Promise<void> {
-  if (stopping || !webGateway || !options.webAuthority) return;
+  if (state.stopping || !webGateway || !options.webAuthority) return;
+  await state.webExecution?.close();
+  state.webExecution = undefined;
   const channel = await webGateway.openExecution({ sandbox, authority: options.webAuthority });
+  state.webExecution = channel;
   options.onWebExecution?.(channel);
 }
 
-/** Platform TCP startup probe: started only after native readiness, only when PORT was declared. */
+/** Platform TCP startup probe: started after native readiness when a health port is configured. */
 async function startServeHealthListener(
   config: RunnerServeConfig,
   options: RunnerServeOptions,
@@ -536,9 +801,11 @@ async function serveOnce(
   sandbox: NativeSandbox,
   options: RunnerServeOptions,
   stopListeners: Set<() => void>,
-  turns: CloudTurnRunner,
   bridge: RunnerChannelBridge,
+  rebind: () => Promise<boolean>,
 ): Promise<ConnectionOutcome> {
+  // The previous connection drained before this one starts; its interrupt no longer applies.
+  state.credentialInterrupt = undefined;
   const socket = (options.webSocketFactory ?? ((url, settings) => new WebSocket(url, settings)))(config.backendUrl, {
     maxPayload: 256 * 1024,
     handshakeTimeout: options.authTimeoutMs ?? DEFAULT_AUTH_TIMEOUT_MS,
@@ -610,11 +877,20 @@ async function serveOnce(
       bridge.scope = undefined;
       bridge.cloudEnabled = false;
       bridge.emitState("closed");
-      turns.onChannelClosed();
+      state.turns.onChannelClosed();
       state.active?.abort.abort();
+      // A credential wait owned by this closing connection can never succeed: interrupt it so the
+      // serialized cloud-control tail (which may hold an in-flight rebind cleanup) drains promptly.
+      const interrupted = new Error("the control channel closed before the assignment credential arrived");
+      state.credentialInterrupt = interrupted;
+      for (const waiter of state.credentialWaiters.splice(0)) waiter(interrupted);
+      // Drain the serialized cloud-control tail before this connection reports closed: the next
+      // connection must never start another rebind/restore over a workspace the old one is still
+      // cleaning. `controlTail` only ever grows while `closed` is false, so this is the full tail.
+      const drain = controlTail;
       socket.terminate();
-      // Work owns its own cleanup promise. Reconnect only after it settles.
-      void Promise.resolve(state.active?.done).then(() => resolve({ kind, healthy }));
+      // Work and the queued control tail own their own cleanup promises. Reconnect after BOTH.
+      void Promise.all([Promise.resolve(state.active?.done), drain]).then(() => resolve({ kind, healthy }));
     };
     const send = (frame: unknown) => {
       if (closed || socket.readyState !== WebSocket.OPEN) return;
@@ -656,6 +932,9 @@ async function serveOnce(
         token: state.token,
         cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
+        ...(state.controlToken && config.workspacePersistence
+          ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
+          : {}),
       }),
     );
     const onWelcome = (data: RunnerWelcomeFrame) => {
@@ -701,16 +980,21 @@ async function serveOnce(
       );
       // Journal-driven retransmission of durable Cloud delivery state on every (re)attach, for
       // NEGOTIATED Cloud connections only. A legacy E3 channel never touches Cloud state.
-      prepareRunnerConnection(state, turns, cloudCapable, {
+      prepareRunnerConnection(state, cloudCapable, {
         ready,
         isClosed: () => closed,
         enqueue: enqueueCloudControl,
+        rebind,
+        ensureCredential: () =>
+          ensureAssignmentCredential(state, data, options.authTimeoutMs ?? PERSISTENT_AUTH_TIMEOUT_MS, {
+            required: data.reuseVersion === RUNNER_REUSE_VERSION,
+          }),
       });
       logLine(options.stderr, "authenticated control channel ready");
       return;
     };
     const onAcceptance = (data: RunnerAcceptanceRunFrame) => {
-      if (state.active || turns.hasPendingWork || (state.workspace && !state.workspace.ready)) {
+      if (state.active || state.turns.hasPendingWork || (state.workspace && !state.workspace.ready)) {
         send({
           type: "acceptance:result",
           requestId: data.requestId,
@@ -728,7 +1012,7 @@ async function serveOnce(
         ready,
         finish,
         isClosed: () => closed,
-        turnSlotAvailable: () => turns.notifyAvailable(),
+        turnSlotAvailable: () => state.turns.notifyAvailable(),
       });
       return;
     };
@@ -751,7 +1035,22 @@ async function serveOnce(
           // Report acks and credential traffic must keep flowing while drainForRelease waits.
           // This promise deliberately does not occupy enqueueCloudControl's receive queue.
           void workspace.seal().then(
-            () => send({ type: "workspace:seal:result", requestId: frame.requestId, ok: true }),
+            async () => {
+              // The trusted-parent marker must survive the seal: a later rebind may only discard
+              // this assignment's state when the seal was durably recorded.
+              try {
+                await markAssignmentSealed(state, config);
+              } catch {
+                send({
+                  type: "workspace:seal:result",
+                  requestId: frame.requestId,
+                  ok: false,
+                  code: "workspace_save_failed",
+                });
+                return;
+              }
+              send({ type: "workspace:seal:result", requestId: frame.requestId, ok: true });
+            },
             () =>
               send({
                 type: "workspace:seal:result",
@@ -761,7 +1060,7 @@ async function serveOnce(
               }),
           );
         },
-        turns,
+        turns: state.turns,
         bridge,
         enqueueCloudControl,
         authResult: (ok) => {
@@ -772,9 +1071,7 @@ async function serveOnce(
         heartbeat: () => {
           if (welcome && Date.now() - welcomeAt >= welcome.heartbeatTimeoutMs) healthy = true;
         },
-        credential: (token) => {
-          state.token = token;
-        },
+        credential: (credentials) => applyCredential(state, bridge, credentials),
         cancel: (requestId) => {
           if (state.active?.requestId === requestId) state.active.abort.abort();
         },
@@ -807,30 +1104,38 @@ async function serveOnce(
 }
 function prepareRunnerConnection(
   state: WorkState,
-  turns: CloudTurnRunner,
   cloudCapable: boolean,
   callbacks: {
     ready: () => void;
     isClosed: () => boolean;
     enqueue: (label: string, operation: () => Promise<void>) => void;
+    rebind: () => Promise<boolean>;
+    ensureCredential: () => Promise<void>;
   },
 ): void {
   const workspace = state.workspace;
   if (!workspace) {
     callbacks.ready();
-    if (cloudCapable) callbacks.enqueue("reconcile", () => turns.reconcile());
+    if (cloudCapable) callbacks.enqueue("reconcile", () => state.turns.reconcile());
     return;
   }
   callbacks.enqueue("restore", async () => {
+    // E7 first: a welcome that names a DIFFERENT assignment must clean the sealed old workspace
+    // and rebuild the controller before any journal reconciliation runs against the new scope.
+    if (!(await callbacks.rebind()) || callbacks.isClosed()) return;
     // A failed save must never hide an already-journaled result behind another restore attempt.
     // Admission remains blocked by workspace.ready while custody/report acknowledgments flow.
-    if (cloudCapable) await turns.reconcile();
-    if (!(await workspace.prepare()) || callbacks.isClosed()) return;
+    if (cloudCapable) await state.turns.reconcile();
+    // The workspace claim uses the Session bearer: it must belong to the current assignment first
+    // (a fresh first bind may use the bearer minted for it at creation).
+    await callbacks.ensureCredential();
+    const currentWorkspace = state.workspace;
+    if (!currentWorkspace || !(await currentWorkspace.prepare()) || callbacks.isClosed()) return;
     await state.afterWorkspaceRestore?.();
     state.afterWorkspaceRestore = undefined;
     callbacks.ready();
-    if (cloudCapable) await turns.reconcile();
-    turns.notifyAvailable();
+    if (cloudCapable) await state.turns.reconcile();
+    state.turns.notifyAvailable();
   });
 }
 
@@ -896,12 +1201,12 @@ async function maintainConnections(
   sandbox: NativeSandbox,
   options: RunnerServeOptions,
   stopListeners: Set<() => void>,
-  turns: CloudTurnRunner,
   bridge: RunnerChannelBridge,
+  rebind: () => Promise<boolean>,
 ): Promise<void> {
   let failures = 0;
   while (!state.stopping && !state.fatal) {
-    const outcome = await serveOnce(config, state, sandbox, options, stopListeners, turns, bridge);
+    const outcome = await serveOnce(config, state, sandbox, options, stopListeners, bridge, rebind);
     // This barrier covers worker exit AND native deletion/recreation. No successor connection
     // can dispatch work into a sandbox still owned by the prior connection.
     await state.active?.done;
@@ -955,9 +1260,18 @@ async function waitReconnect(
 }
 
 /** Mark the exit as a stop, then settle (abort + await) the live Cloud controller first. */
-async function settleCloudController(turns: CloudTurnRunner, state: WorkState | undefined): Promise<void> {
+async function settleCloudController(state: WorkState | undefined): Promise<void> {
   if (state) state.stopping = true;
-  await turns.close().catch(() => undefined);
+  await state?.turns.close().catch(() => undefined);
+}
+
+/** Persist the seal-complete assignment marker; a failure must keep the Server's seal retryable. */
+async function markAssignmentSealed(state: WorkState, config: RunnerServeConfig): Promise<void> {
+  const assignment = state.assignment;
+  if (!assignment) return;
+  const sealed = { ...assignment, sealed: true };
+  await writeRunnerAssignment(config.stateDir, sealed);
+  state.assignment = sealed;
 }
 
 async function cleanupRunner(
@@ -1113,18 +1427,54 @@ interface FrameDispatch {
   enqueueCloudControl: (label: string, operation: () => Promise<void>) => void;
   authResult: (ok: boolean) => void;
   heartbeat: () => void;
-  credential: (token: string) => void;
+  credential: (credentials: { token?: string; controlToken?: string }) => void;
   cancel: (id: string) => void;
   error: () => void;
 }
+/**
+ * Renewal-only reply: a fresh Session bearer, a fresh physical control credential, or both. An
+ * authenticated connection never accepts it (the Server only sends it for an expired credential).
+ */
+function dispatchRenewedFrame(data: Extract<RunnerServerFrame, { type: "auth:renewed" }>, c: FrameDispatch): void {
+  if (!c.authenticated && c.renewExpired && (data.token !== undefined || data.controlToken !== undefined)) {
+    c.credential({
+      ...(data.token !== undefined ? { token: data.token } : {}),
+      ...(data.controlToken !== undefined ? { controlToken: data.controlToken } : {}),
+    });
+    c.finish("renewed");
+    return;
+  }
+  c.finish();
+}
+
+/** Post-welcome frames that are neither Cloud delivery nor renewal. */
+function dispatchEstablishedFrame(data: RunnerServerFrame, c: FrameDispatch): void {
+  switch (data.type) {
+    case "workspace:seal":
+      c.onWorkspaceSeal(data);
+      break;
+    case "server:heartbeat":
+      c.heartbeat();
+      break;
+    case "server:credential":
+      c.credential({ token: data.token, ...(data.controlToken ? { controlToken: data.controlToken } : {}) });
+      break;
+    case "acceptance:cancel":
+      c.cancel(data.requestId);
+      break;
+    case "acceptance:run":
+      c.onAcceptance(data);
+      break;
+    case "error":
+      c.error();
+      break;
+  }
+}
+
 function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
   if (c.closed) return;
   if (data.type === "auth:renewed") {
-    if (c.authenticated || !c.renewExpired) c.finish();
-    else {
-      c.credential(data.token);
-      c.finish("renewed");
-    }
+    dispatchRenewedFrame(data, c);
     return;
   }
   if (data.type === "auth:result") {
@@ -1150,26 +1500,7 @@ function dispatchFrame(data: RunnerServerFrame, c: FrameDispatch): void {
     dispatchCloudFrame(data, c);
     return;
   }
-  switch (data.type) {
-    case "workspace:seal":
-      c.onWorkspaceSeal(data);
-      break;
-    case "server:heartbeat":
-      c.heartbeat();
-      break;
-    case "server:credential":
-      c.credential(data.token);
-      break;
-    case "acceptance:cancel":
-      c.cancel(data.requestId);
-      break;
-    case "acceptance:run":
-      c.onAcceptance(data);
-      break;
-    case "error":
-      c.error();
-      break;
-  }
+  dispatchEstablishedFrame(data, c);
 }
 
 type CloudServerFrame = Extract<

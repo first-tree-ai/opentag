@@ -1,5 +1,6 @@
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
+  RUNNER_REUSE_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_CLOSE,
   RUNNER_WS_MAX_FRAME_BYTES,
@@ -127,6 +128,8 @@ export class RunnerConnection {
   #closed = false;
   #scope: RunnerScope | undefined;
   #cloudConnection: CloudConnectionRecord | undefined;
+  /** Immutable physical birth identity of an E7 control-authenticated connection. */
+  #controlClaims: RunnerBootstrapClaims | undefined;
   /** E4 reconnect after the active chain ended: report/query/proxy traffic only. */
   #reportOnly = false;
   /** Set at attach: only a connection that negotiated E4 may use the channel-scope fallback. */
@@ -232,9 +235,19 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     renewExpired: boolean,
+    controlToken: string | undefined,
+    reuseVersion: number | undefined,
   ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
+      return;
+    }
+    // E7 physical control authentication is a strictly separate path: a stale Session bearer is
+    // NEVER used to resolve a different current holder, even within one account. The control
+    // credential names the immutable physical birth identity; the Server resolves the unique
+    // current owning Sandbox by resource name and validates that owner's authority below.
+    if (controlToken !== undefined && reuseVersion === RUNNER_REUSE_VERSION) {
+      await this.#handleControlAuth(controlToken, requestId, wantsCloudDelivery, wantsWorkspace, renewExpired);
       return;
     }
     const claims = await this.#verifyBootstrapToken(token, requestId, wantsWorkspace && renewExpired);
@@ -248,6 +261,78 @@ export class RunnerConnection {
       wantsWorkspace,
       resolved.reportOnly,
     );
+  }
+
+  /**
+   * E7 control-token attach. Verification is two-stage: the signed physical birth identity, then
+   * the current owner of the unique `currentResourceName`. Only a control credential can follow a
+   * transfer; invalid control evidence is rejected rather than downgraded to the Session token.
+   */
+  async #handleControlAuth(
+    controlToken: string,
+    requestId: string | undefined,
+    wantsCloudDelivery: boolean,
+    wantsWorkspace: boolean,
+    renewExpired: boolean,
+  ): Promise<void> {
+    let controlClaims: RunnerBootstrapClaims;
+    try {
+      controlClaims = await this.#options.tokens.verifyControl(controlToken);
+    } catch {
+      if (renewExpired && (await this.#renewExpiredControl(controlToken))) return;
+      if (!this.#closed) this.#rejectAuth(requestId, "physical control credential invalid or expired");
+      return;
+    }
+    // The signed credential is verified, so the connection is no longer arbitrary input: the
+    // physical-holder resolution performs a bounded provider read and uses the same 45 s
+    // provider-read deadline as renewal. An ordinary handshake keeps its short deadline.
+    this.#armAuthDeadline(RENEWAL_AUTH_TIMEOUT_MS);
+    const holderClaims = await this.#options.service.resolveRunnerControlHolder(controlClaims);
+    if (this.#closed) return;
+    if (!holderClaims) {
+      // A deleted instance will terminate this process; a transient database read or a not-yet
+      // tracked holder must keep retrying with the SAME durable physical credential.
+      this.#send({
+        type: "error",
+        code: "RUNNER_ALLOCATION_NOT_TRACKED",
+        message: "No Sandbox currently owns this physical Instance; retry the attach",
+      });
+      this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "physical Instance has no current owner");
+      return;
+    }
+    const resolved = await this.#resolveAuthenticatedScope(holderClaims, requestId, wantsCloudDelivery, wantsWorkspace);
+    if (!resolved) return;
+    this.#controlClaims = controlClaims;
+    await this.#attachAuthenticatedRunner(
+      resolved.scope,
+      requestId,
+      wantsCloudDelivery,
+      wantsWorkspace,
+      resolved.reportOnly,
+      { reuseCapable: wantsWorkspace && this.#options.service.workspacePersistenceEnabled },
+    );
+  }
+
+  /**
+   * Renewal-only physical evidence: the signature names the same birth identity AND the provider
+   * still shows the tracked binding. A fresh control credential keeps the birth claims; the
+   * ordinary handshake resolves the current holder again.
+   */
+  async #renewExpiredControl(token: string): Promise<boolean> {
+    const claims = await this.#options.tokens.expiredControlClaimsForRenewal(token);
+    if (!claims || this.#closed) return false;
+    this.#armAuthDeadline(RENEWAL_AUTH_TIMEOUT_MS);
+    try {
+      const renewed = await this.#options.service.renewExpiredControl(claims);
+      if (!renewed) return false;
+      if (!this.#closed) {
+        this.#send({ type: "auth:renewed", controlToken: renewed });
+        this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "reconnect with the renewed control credential");
+      }
+    } catch {
+      if (!this.#closed) this.#closeWith(RUNNER_WS_CLOSE_RETRY_LATER, "control credential renewal unavailable");
+    }
+    return true;
   }
 
   async #verifyBootstrapToken(
@@ -337,6 +422,7 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     reportOnly: boolean,
+    control?: { reuseCapable: boolean },
   ): Promise<void> {
     const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
     // E5 capability negotiation is independent of delivery: echo only when the Runner requested
@@ -352,7 +438,10 @@ export class RunnerConnection {
     // connection for its scope. No await between this check and the hub mutation, so a socket
     // that closed mid-verification can never evict a healthy Runner or become a ghost entry.
     if (this.#closed) return;
-    const outcome = this.#options.hub.attach(validated, this.#adapter, { liveWindowMs: this.#heartbeatTimeoutMs });
+    const outcome = this.#options.hub.attach(validated, this.#adapter, {
+      liveWindowMs: this.#heartbeatTimeoutMs,
+      reuseCapable: control?.reuseCapable === true,
+    });
     if (outcome === "duplicate") {
       // A live, heartbeating connection already owns this scope. Rejecting the newcomer —
       // without an auth:result — keeps this retriable on the Runner side: after the dead
@@ -395,6 +484,7 @@ export class RunnerConnection {
       ...(cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
       ...(cloudNegotiated && fence?.resourceUid ? { resourceUid: fence.resourceUid } : {}),
       ...(workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
+      ...(control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
       heartbeatIntervalMs: this.#heartbeatIntervalMs,
       heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
     });
@@ -460,8 +550,16 @@ export class RunnerConnection {
   async #issueRenewedCredential(current: RunnerScope, stillCurrent: RunnerScope): Promise<void> {
     if (!this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
     const token = await this.#options.tokens.issue(claimsFromScope(stillCurrent));
+    // The physical control credential is renewed alongside the Session bearer: it stays bound to
+    // the immutable birth claims, never to the current assignment, so a later process restart can
+    // still find the holder of the physical Instance.
+    const controlToken = this.#controlClaims ? await this.#options.tokens.issueControl(this.#controlClaims) : undefined;
     if (this.#closed || !this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
-    this.#options.hub.sendToCurrent(current.sandboxId, this.#adapter, { type: "server:credential", token });
+    this.#options.hub.sendToCurrent(current.sandboxId, this.#adapter, {
+      type: "server:credential",
+      token,
+      ...(controlToken ? { controlToken } : {}),
+    });
   }
 
   async #renewCredential(): Promise<void> {
@@ -845,6 +943,8 @@ export class RunnerConnection {
       data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
       data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
       data.renewExpired === true,
+      data.controlToken,
+      data.reuseVersion,
     );
   }
 

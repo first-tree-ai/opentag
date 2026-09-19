@@ -2,6 +2,8 @@ import type { ChannelName } from "@opentag/shared";
 import { readBoundedJson } from "./bounded-json.js";
 import { CloudRunAdminError } from "./errors.js";
 import {
+  RUNNER_INSTANCE_LABELS,
+  RUNNER_INSTANCE_MANAGED_BY,
   type RunnerInstanceIdentityInput,
   runnerInstanceId,
   runnerInstanceLabels,
@@ -22,6 +24,12 @@ export interface RunnerInstanceSpec extends RunnerInstanceIdentityInput {
   environment: ChannelName;
   backendUrl: string;
   bootstrapToken: string;
+  /**
+   * E7 physical control credential. Delivered to the Instance alongside the Session bootstrap
+   * token so a Runner process restart can re-attach to whichever Sandbox currently holds this
+   * physical instance; legacy Runners ignore the extra env var.
+   */
+  controlToken?: string;
   /** E5: arm the Runner-side workspace restore/save path; set only for workspace-enabled allocations. */
   workspacePersistence?: boolean;
 }
@@ -242,6 +250,48 @@ export class CloudRunAdmin {
   }
   verifyInstance(view: CloudRunInstanceView, identity: RunnerInstanceIdentityInput): void {
     this.verifyOwnership(view, identity);
+    this.#verifyExecutionPolicy(view);
+  }
+
+  /**
+   * E7 tracked-binding proof for an instance that survives ownership transfers. The physical
+   * labels keep their immutable BIRTH identity, so a later holder row can never reproduce them
+   * from its own scope: name + tracked UID + the managed/environment labels prove this exact
+   * physical resource, while the full execution policy (image, VPC, service account, resources,
+   * ingress) still proves the deployment configuration. Strict birth labels remain mandatory on
+   * first create/adopt via `verifyInstance`; they are never weakened there.
+   */
+  verifyTrackedInstance(
+    view: CloudRunInstanceView,
+    input: { resourceName: string; resourceUid: string; environment: ChannelName },
+  ): void {
+    this.verifyTrackedOwnership(view, input);
+    this.#verifyExecutionPolicy(view);
+  }
+
+  /**
+   * Ownership only (name + tracked UID + managed/environment labels), without deployment policy.
+   * Save, renewal and cleanup of an already-owned Instance must survive an image or VPC config
+   * change; only the borrow/eligibility path re-applies the full execution policy.
+   */
+  verifyTrackedOwnership(
+    view: CloudRunInstanceView,
+    input: { resourceName: string; resourceUid: string; environment: ChannelName },
+  ): void {
+    if (
+      view.name !== input.resourceName ||
+      view.uid !== input.resourceUid ||
+      view.labels[RUNNER_INSTANCE_LABELS.managedBy] !== RUNNER_INSTANCE_MANAGED_BY ||
+      view.labels[RUNNER_INSTANCE_LABELS.environment] !== input.environment
+    ) {
+      throw new CloudRunAdminError(
+        "ownership_mismatch",
+        "Cloud Run Instance does not match the tracked physical binding",
+      );
+    }
+  }
+
+  #verifyExecutionPolicy(view: CloudRunInstanceView): void {
     this.verifyNetworkAttachment(view);
     const p = view.policy;
     const containers = Array.isArray(p?.containers) ? p.containers : [];
@@ -327,6 +377,7 @@ export class CloudRunAdmin {
       env: [
         { name: "OPENTAG_RUNNER_BACKEND_URL", value: spec.backendUrl },
         { name: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN", value: spec.bootstrapToken },
+        ...(spec.controlToken ? [{ name: "OPENTAG_RUNNER_CONTROL_TOKEN", value: spec.controlToken }] : []),
         { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
         ...(spec.workspacePersistence === true ? [{ name: "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE", value: "1" }] : []),
       ],

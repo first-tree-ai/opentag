@@ -46,6 +46,7 @@ import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
+import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 let unit: UnitDatabase;
@@ -146,7 +147,7 @@ async function account(email = "owner@example.test") {
   return id;
 }
 
-async function ownedSandbox(accountId: string) {
+async function ownedSandbox(accountId: string, channel = "unit-channel") {
   const cloud = await new ComputerService(unit.database, unusedAccountResolver, {
     cloudIdentities,
   }).ensureCloudComputerForAccount(accountId);
@@ -171,7 +172,7 @@ async function ownedSandbox(accountId: string) {
   });
   return new SandboxService(unit.database, new SessionService(unit.database), { cloudIdentities }).ensureForAccount(
     accountId,
-    { imBindingId: bindingId, channelId: "unit-channel", conversationKind: "channel", kind: "channel" },
+    { imBindingId: bindingId, channelId: channel, conversationKind: "channel", kind: "channel" },
   );
 }
 
@@ -193,12 +194,14 @@ interface RunnerContext {
   tokens: RunnerBootstrapTokenService;
   hub: RunnerHub;
   service: SandboxRunnerService;
+  store?: FakeWorkspaceObjectStore;
 }
 
-function makeRunnerContext(options: { tokenTtlSeconds?: number } = {}): RunnerContext {
+function makeRunnerContext(options: { tokenTtlSeconds?: number; workspace?: boolean } = {}): RunnerContext {
   const fake = new FakeCloudRunAdmin();
   const tokens = new RunnerBootstrapTokenService(JWT_SECRET, { ttlSeconds: options.tokenTtlSeconds ?? 600 });
   const hub = new RunnerHub();
+  const store = options.workspace ? new FakeWorkspaceObjectStore() : undefined;
   const service = new SandboxRunnerService(unit.database, {
     cloudAdmin: fake as never,
     tokens,
@@ -209,11 +212,12 @@ function makeRunnerContext(options: { tokenTtlSeconds?: number } = {}): RunnerCo
     acceptanceTimeoutMs: 10_000,
     createConvergeTimeoutMs: 30_000,
     sleep: () => Promise.resolve(),
+    ...(store ? { workspace: { store } } : {}),
   });
-  return { fake, tokens, hub, service };
+  return { fake, tokens, hub, service, ...(store ? { store } : {}) };
 }
 
-async function createRunnerApp(accountId: string, options: { tokenTtlSeconds?: number } = {}) {
+async function createRunnerApp(accountId: string, options: { tokenTtlSeconds?: number; workspace?: boolean } = {}) {
   const context = makeRunnerContext(options);
   const app = createApp({
     authService: authService(accountId),
@@ -1854,6 +1858,231 @@ describe("E4 Cloud IM delivery over the runner channel", () => {
     // No credential stack was wired into this owner: the tunnel fails closed.
     expect(tunnel.frame.code).toBe("owner_unavailable");
     client.socket.close();
+    await client.closed;
+  });
+});
+
+describe("E7 physical control credential", () => {
+  async function readyWithWorkspace(
+    ctx: RunnerContext & { address: string },
+    sandboxId: string,
+  ): Promise<typeof sandboxes.$inferSelect> {
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandboxId));
+    if (!row) throw new Error("Missing Sandbox fixture");
+    const scope = {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const socket = {
+      send(frame: { type: string; requestId?: string }) {
+        if (frame.type !== "workspace:seal" || !frame.requestId) return;
+        ctx.store?.plant(
+          {
+            storageUri: row.storageUri,
+            sandboxId: row.id,
+            sessionId: row.sessionId,
+            environmentGeneration: row.environmentGeneration,
+          },
+          { saved: true, sealed: true, ownerGeneration: row.environmentGeneration },
+        );
+        ctx.hub.settleWorkspaceSeal(
+          row.id,
+          { type: "workspace:seal:result", requestId: frame.requestId, ok: true },
+          socket as never,
+        );
+      },
+      close() {},
+    };
+    ctx.hub.attach(scope, socket as never, { reuseCapable: true });
+    ctx.hub.markReady(
+      scope,
+      {
+        sandboxName: scope.resourceName.split("/").at(-1) as string,
+        rootfs: "/opt/sandbox-root",
+        nodeVersion: "v24.19.0",
+        piVersion: "0.84.2",
+        runnerVersion: RUNNER_VERSION,
+        reportedAt: new Date().toISOString(),
+      },
+      socket as never,
+    );
+    await ctx.service.promoteDeferredReadiness(row.id);
+    const [ready] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandboxId));
+    if (!ready) throw new Error("Missing ready Sandbox fixture");
+    expect(ready.lifecycle).toBe("ready");
+    return ready;
+  }
+
+  async function transferStack() {
+    const accountId = await account();
+    const ctx = await createRunnerApp(accountId, { workspace: true });
+    const a = await ownedSandbox(accountId, "control-a");
+    await ctx.service.startForAccount(accountId, a.sandboxId);
+    const rowA = await readyWithWorkspace(ctx, a.sandboxId);
+    const claimsA = {
+      sandboxId: a.sandboxId,
+      sessionId: a.sessionId,
+      environmentGeneration: rowA.environmentGeneration,
+      resourceName: rowA.currentResourceName as string,
+    };
+    const sessionA = await ctx.tokens.issue(claimsA);
+    const controlA = await ctx.tokens.issueControl(claimsA);
+    const b = await ownedSandbox(accountId, "control-b");
+    await ctx.service.startForAccount(accountId, b.sandboxId);
+    const [rowB] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, b.sandboxId));
+    if (!rowB) throw new Error("Missing borrower Sandbox fixture");
+    expect(rowB.currentResourceName).toBe(rowA.currentResourceName);
+    expect(rowB.currentResourceUid).toBe(rowA.currentResourceUid);
+    return { ctx, a, b, claimsA, sessionA, controlA, rowA, rowB };
+  }
+
+  it("resolves only through the signed control credential and rejects a stale Session bearer", async () => {
+    const { ctx, b, sessionA, controlA, rowB } = await transferStack();
+
+    const legacy = await connectRunner(ctx.address);
+    legacy.send({ type: "auth", requestId: randomUUID(), token: sessionA, workspaceVersion: 1 });
+    expect((await legacy.waitFor("auth:result")).ok).toBe(false);
+    await legacy.closed;
+
+    const control = await connectRunner(ctx.address);
+    control.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: sessionA,
+      controlToken: controlA,
+      reuseVersion: 1,
+      workspaceVersion: 1,
+      renewExpired: true,
+    });
+    expect((await control.waitFor("auth:result")).ok).toBe(true);
+    const welcome = await control.waitFor("server:welcome");
+    expect(welcome).toMatchObject({
+      sandboxId: b.sandboxId,
+      sessionId: b.sessionId,
+      environmentGeneration: rowB.environmentGeneration,
+      resourceName: rowB.currentResourceName,
+      reuseVersion: 1,
+    });
+    await vi.waitFor(() =>
+      expect(ctx.hub.describe(b.sandboxId)).toMatchObject({ connected: true, reuseCapable: true }),
+    );
+    control.socket.close();
+    await control.closed;
+  });
+
+  it("rejects a control attach when the provider no longer shows the tracked UID", async () => {
+    const { ctx, sessionA, controlA, rowB } = await transferStack();
+    ctx.fake.replaceUid(rowB.currentResourceName as string, "uid-replaced");
+    const client = await connectRunner(ctx.address);
+    client.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: sessionA,
+      controlToken: controlA,
+      reuseVersion: 1,
+      workspaceVersion: 1,
+      renewExpired: true,
+    });
+    const closed = await client.closed;
+    expect(closed.code).toBe(1013);
+    expect(ctx.hub.describe(rowB.id).connected).toBe(false);
+  });
+
+  it("waits out the bounded provider read after validating the control credential", async () => {
+    const accountId = await account();
+    const ctx = await createBareRunnerApp(accountId, { authTimeoutMs: 200 });
+    const sandbox = await ownedSandbox(accountId, "slow-control");
+    await ctx.service.startForAccount(accountId, sandbox.sandboxId);
+    const [row] = await unit.database.select().from(sandboxes).where(eq(sandboxes.id, sandbox.sandboxId));
+    if (!row) throw new Error("Missing Sandbox fixture");
+    const claims = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const controlToken = await ctx.tokens.issueControl(claims);
+    const sessionToken = await ctx.tokens.issue(claims);
+    const existing = ctx.fake.getInstance.bind(ctx.fake);
+    let reads = 0;
+    ctx.fake.getInstance = async (name: string) => {
+      reads += 1;
+      // Deliberately slower than the ordinary 200 ms auth deadline: only the post-credential
+      // provider-read deadline may cover this read.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return existing(name);
+    };
+
+    const client = await connectRunner(ctx.address);
+    client.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: sessionToken,
+      controlToken,
+      reuseVersion: 1,
+      workspaceVersion: 1,
+      renewExpired: true,
+    });
+    expect((await client.waitFor("auth:result")).ok).toBe(true);
+    const welcome = await client.waitFor("server:welcome");
+    expect(welcome).toMatchObject({
+      sandboxId: sandbox.sandboxId,
+      environmentGeneration: row.environmentGeneration,
+    });
+    // The physical-holder resolution performed the provider read that exceeded the ordinary
+    // 200 ms auth deadline; only the post-credential provider deadline could cover it.
+    expect(reads).toBeGreaterThanOrEqual(1);
+    client.socket.close();
+    await client.closed;
+  });
+
+  it("renews an expired control credential only against the tracked physical binding", async () => {
+    const { ctx, claimsA, sessionA } = await transferStack();
+    const expiredIssuer = new RunnerBootstrapTokenService(JWT_SECRET, {
+      ttlSeconds: 600,
+      now: () => new Date(Date.now() - 3_600_000),
+    });
+    const expiredControl = await expiredIssuer.issueControl(claimsA);
+
+    const renewed = await connectRunner(ctx.address);
+    renewed.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: sessionA,
+      controlToken: expiredControl,
+      reuseVersion: 1,
+      workspaceVersion: 1,
+      renewExpired: true,
+    });
+    const frame = await renewed.waitFor("auth:renewed");
+    expect(typeof frame.controlToken).toBe("string");
+    expect(frame.token).toBeUndefined();
+    expect((await renewed.closed).code).toBe(1013);
+  });
+
+  it("rejects an expired control credential when the tracked binding is gone", async () => {
+    const { ctx, claimsA, sessionA, rowB } = await transferStack();
+    // Provider-confirmed absence: the tracked UID no longer exists, so renewal must fail closed.
+    const instance = ctx.fake.instances.get(rowB.currentResourceName as string);
+    if (instance) instance.gone = true;
+    const expiredIssuer = new RunnerBootstrapTokenService(JWT_SECRET, {
+      ttlSeconds: 600,
+      now: () => new Date(Date.now() - 3_600_000),
+    });
+    const expiredControl = await expiredIssuer.issueControl(claimsA);
+    const client = await connectRunner(ctx.address);
+    client.send({
+      type: "auth",
+      requestId: randomUUID(),
+      token: sessionA,
+      controlToken: expiredControl,
+      reuseVersion: 1,
+      workspaceVersion: 1,
+      renewExpired: true,
+    });
+    expect((await client.waitFor("auth:result")).ok).toBe(false);
     await client.closed;
   });
 });

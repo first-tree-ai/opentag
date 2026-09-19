@@ -1,6 +1,6 @@
 {
-  "id": "0ffd80df-ed05-4d66-978f-531e843470bd",
-  "prevId": "4ab5dd54-fe26-424e-944a-4640c2a5784f",
+  "id": "c83054c1-8c98-45e2-8335-652437a820aa",
+  "prevId": "0ffd80df-ed05-4d66-978f-531e843470bd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2387,7 +2387,7 @@
         },
         "im_bindings_setup_owner_shape": {
           "name": "im_bindings_setup_owner_shape",
-          "value": "(\"im_bindings\".\"setup_owner_instance_id\" is null and \"im_bindings\".\"setup_owner_heartbeat_at\" is null and\n        \"im_bindings\".\"encrypted_setup_context\" is null and \"im_bindings\".\"setup_expires_at\" is null)\n        or (\"im_bindings\".\"setup_attempt_id\" is not null and \"im_bindings\".\"setup_intent\" is not null and\n        \"im_bindings\".\"setup_state\" is not null and \"im_bindings\".\"setup_owner_instance_id\" is not null and\n        \"im_bindings\".\"setup_owner_heartbeat_at\" is not null and \"im_bindings\".\"encrypted_setup_context\" is not null and\n        \"im_bindings\".\"setup_expires_at\" is not null)"
+          "value": "((\"im_bindings\".\"setup_state\"::text is distinct from 'pending_activation') and (\n          (\"im_bindings\".\"setup_owner_instance_id\" is null and \"im_bindings\".\"setup_owner_heartbeat_at\" is null and\n            \"im_bindings\".\"encrypted_setup_context\" is null and \"im_bindings\".\"setup_expires_at\" is null)\n          or (\"im_bindings\".\"setup_attempt_id\" is not null and \"im_bindings\".\"setup_intent\" is not null and\n            \"im_bindings\".\"setup_state\" is not null and \"im_bindings\".\"setup_owner_instance_id\" is not null and\n            \"im_bindings\".\"setup_owner_heartbeat_at\" is not null and \"im_bindings\".\"encrypted_setup_context\" is not null and\n            \"im_bindings\".\"setup_expires_at\" is not null)))\n        or (\"im_bindings\".\"provider\" = 'feishu' and \"im_bindings\".\"status\" <> 'disabled' and\n          \"im_bindings\".\"setup_state\"::text = 'pending_activation' and \"im_bindings\".\"setup_attempt_id\" is not null and\n          \"im_bindings\".\"setup_intent\" is not null and \"im_bindings\".\"setup_owner_instance_id\" is null and\n          \"im_bindings\".\"setup_owner_heartbeat_at\" is null and \"im_bindings\".\"encrypted_setup_context\" is not null and\n          \"im_bindings\".\"setup_expires_at\" is not null)"
         },
         "im_bindings_connection_owner_shape": {
           "name": "im_bindings_connection_owner_shape",
@@ -5983,7 +5983,8 @@
         "succeeded",
         "failed",
         "expired",
-        "canceled"
+        "canceled",
+        "pending_activation"
       ]
     },
     "public.im_binding_status": {

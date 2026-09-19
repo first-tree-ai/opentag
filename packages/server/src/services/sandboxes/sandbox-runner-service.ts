@@ -6,9 +6,9 @@ import type {
   RunnerReadiness,
 } from "@opentag/shared";
 import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
-import { and, eq, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { computers, sandboxes } from "../../db/schema/index.js";
+import { agents, computers, imBindings, imMessageDeliveries, sandboxes, sessions } from "../../db/schema/index.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
 import { SandboxServiceError, sandboxNotFound, WorkspaceRestoreRequiredError, WorkspaceSaveError } from "./errors.js";
 import {
@@ -62,6 +62,13 @@ export interface SandboxRunnerServiceOptions {
   acceptanceTimeoutMs: number;
   /** Bounded window for adopting a submitted create and for verifying cleanup by read-back. */
   createConvergeTimeoutMs: number;
+  /**
+   * E7 single idle budget: a ready environment with no business activity for this long is
+   * reclaimed by the periodic sweep. A same-account borrow is on demand for any quiescent
+   * candidate and is not gated on this budget. One clock (`lastActivityAt`), never heartbeat
+   * activity.
+   */
+  idleTimeoutMs?: number;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   deleteVerifyTimeoutMs?: number;
@@ -79,6 +86,9 @@ export interface SandboxRunnerServiceOptions {
 }
 
 const DELETE_VERIFY_DEFAULT_MS = 60_000;
+const IDLE_RECLAIM_DEFAULT_MS = 120_000;
+/** Bounded batch of idle rows one sweep pass may consider. */
+const IDLE_RECLAIM_BATCH = 25;
 /** Durable create-phase markers recorded in `lastErrorCode`. */
 const MARKER_RETRYABLE = ["cloud_create_rejected", "cloud_create_failed"] as const;
 type Marker =
@@ -167,6 +177,15 @@ export interface SandboxAllocationReconciliation {
   physical: "present" | "absent" | "untracked" | "unknown";
 }
 
+/** One sealed same-account idle sibling prepared for an on-demand physical hand-off. */
+interface IdleSiblingSnapshot {
+  sandboxId: string;
+  sessionId: string;
+  environmentGeneration: number;
+  resourceName: string;
+  resourceUid: string;
+}
+
 export class SandboxRunnerService {
   readonly #database: DatabaseClient;
   readonly #cloud: CloudRunAdmin;
@@ -178,6 +197,7 @@ export class SandboxRunnerService {
   readonly #acceptanceTimeoutMs: number;
   readonly #createConvergeTimeoutMs: number;
   readonly #deleteVerifyTimeoutMs: number;
+  readonly #idleTimeoutMs: number;
   readonly #workspace: { store: WorkspaceObjectStore; sealTimeoutMs: number } | undefined;
   readonly #now: () => Date;
   readonly #sleep: (ms: number) => Promise<void>;
@@ -194,6 +214,10 @@ export class SandboxRunnerService {
     this.#acceptanceTimeoutMs = options.acceptanceTimeoutMs;
     this.#createConvergeTimeoutMs = options.createConvergeTimeoutMs;
     this.#deleteVerifyTimeoutMs = options.deleteVerifyTimeoutMs ?? DELETE_VERIFY_DEFAULT_MS;
+    this.#idleTimeoutMs = options.idleTimeoutMs ?? IDLE_RECLAIM_DEFAULT_MS;
+    if (!Number.isSafeInteger(this.#idleTimeoutMs) || this.#idleTimeoutMs < 1) {
+      throw new Error("SandboxRunnerService requires a positive idleTimeoutMs");
+    }
     this.#workspace = options.workspace
       ? {
           store: options.workspace.store,
@@ -216,18 +240,39 @@ export class SandboxRunnerService {
   async startForAccount(accountId: string, sandboxId: string): Promise<AccountSandboxRunnerStatusResponse> {
     await this.#releaseMissingReadyAllocation(accountId, sandboxId);
     await this.#prepareWorkspaceAllocation(accountId, sandboxId);
-    const reservation = await this.#database.transaction(async (transaction) => {
-      // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
-      // un-ended Session, non-suspended Account, owned Cloud Computer.
-      const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, { lock: true, authority: "manage" });
-      if (!owned) throw sandboxNotFound();
-      const row = owned.sandbox;
-      if (row.lifecycle === "releasing") {
-        throw runnerConflict("The Sandbox environment is being released; retry after release completes");
-      }
-      if (row.lifecycle === "unallocated") return this.#reserveNewGeneration(transaction, row);
-      return this.#reserveExistingAllocation(row);
-    });
+    // E7 on-demand borrow: a fresh unallocated Session may take a same-account idle sibling's
+    // physical Instance. The candidate is claimed (execution blocked) and sealed BEFORE the
+    // reservation transaction, so no database transaction spans the E5 seal or a cloud read.
+    const preflight = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
+    if (!preflight) throw sandboxNotFound();
+    const borrowed =
+      preflight.sandbox.lifecycle === "unallocated"
+        ? await this.#prepareIdleSiblingForReuse(accountId, preflight.sandbox.id)
+        : undefined;
+    const reservation = await this.#database
+      .transaction(async (transaction) => {
+        // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
+        // un-ended Session, non-suspended Account, owned Cloud Computer.
+        const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, { lock: true, authority: "manage" });
+        if (!owned) throw sandboxNotFound();
+        const row = owned.sandbox;
+        if (row.lifecycle === "releasing") {
+          throw runnerConflict("The Sandbox environment is being released; retry after release completes");
+        }
+        if (row.lifecycle === "unallocated") {
+          if (borrowed) {
+            const adopted = await this.#transferClaimedAllocation(transaction, row, borrowed, accountId);
+            if (adopted) return { action: "reuse" as const, row: adopted };
+          }
+          return this.#reserveNewGeneration(transaction, row);
+        }
+        return this.#reserveExistingAllocation(row);
+      })
+      .catch(async (error: unknown) => {
+        if (borrowed) await this.#releaseUnusedBorrow(borrowed);
+        throw error;
+      });
+    if (borrowed && reservation.action !== "reuse") await this.#releaseUnusedBorrow(borrowed);
 
     if (reservation.action === "allocate" || reservation.action === "retry") {
       try {
@@ -244,6 +289,16 @@ export class SandboxRunnerService {
       } catch (error) {
         throw mapCloudError(error, "reconcile the Sandbox environment");
       }
+    } else if (reservation.action === "reuse" && borrowed) {
+      // The transfer committed: the physical Instance is now owned by the claimant, so the old
+      // holder's Runner channel must close and reconnect through its physical control credential,
+      // which resolves the unique current holder (the claimant) on the next attach.
+      this.#hub.closeScope({
+        sandboxId: borrowed.sandboxId,
+        sessionId: borrowed.sessionId,
+        environmentGeneration: borrowed.environmentGeneration,
+        resourceName: borrowed.resourceName,
+      });
     }
     await this.#promoteReadyIfReported(sandboxId);
     return this.statusForAccount(accountId, sandboxId);
@@ -352,9 +407,13 @@ export class SandboxRunnerService {
 
   /** preparing/ready: retry only after a definitive failure; otherwise reconcile with GET. */
   #reserveExistingAllocation(row: typeof sandboxes.$inferSelect): {
-    action: "retry" | "reconcile" | "report";
+    action: "reclaiming" | "retry" | "reconcile" | "report";
     row: typeof sandboxes.$inferSelect;
   } {
+    // An automatic idle claim owns the environment (seal/borrow in flight): a start must never
+    // race it, and ingress stays pending until the claim resolves to a transfer or a fresh
+    // allocation. Retrying is always safe because the claim is durable.
+    if (row.idleReclaimAt !== null) return { action: "reclaiming", row };
     if (row.currentResourceName !== null && row.currentResourceUid !== null) return { action: "report", row };
     if (RETRYABLE_MARKERS.has(row.lastErrorCode ?? "")) return { action: "retry", row };
     return { action: "reconcile", row };
@@ -380,6 +439,10 @@ export class SandboxRunnerService {
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { lock: true, authority: "manage" });
     if (!owned) throw sandboxNotFound();
     const row = owned.sandbox;
+    // An automatic idle claim blocks execution but never terminates the input: the Session either
+    // gets the physical Instance back through a fresh allocation later or a sibling was borrowed,
+    // so ingress keeps retrying instead of rejecting the message as a stopped environment.
+    if (row.idleReclaimAt !== null) return "pending";
     if (row.lifecycle === "ready" && (!this.#workspace || this.#hub.describe(sandboxId).connected)) return "ready";
     if (row.lifecycle === "releasing") return "stopped";
     if (row.lifecycle === "unallocated" && row.environmentGeneration > 0 && !this.#workspace) return "restore_required";
@@ -441,7 +504,11 @@ export class SandboxRunnerService {
       const now = this.#now();
       const releaseMarker = stopReleaseMarker(row, input, this.#workspace !== undefined);
       if (row.lifecycle === "unallocated") return { action: "report" as const, row };
-      if (row.lifecycle === "releasing" && releaseMarker !== WORKSPACE_DISCARD_REQUESTED) {
+      if (
+        row.lifecycle === "releasing" &&
+        row.idleReclaimAt === null &&
+        releaseMarker !== WORKSPACE_DISCARD_REQUESTED
+      ) {
         return { action: "release" as const, row };
       }
       // Stamp save/discard intent with the phase transition. Pending-create markers remain
@@ -450,6 +517,10 @@ export class SandboxRunnerService {
         .update(sandboxes)
         .set({
           lifecycle: "releasing",
+          // An explicit stop is the operator's decision and must win over a late borrow: clear the
+          // automatic claim marker in the SAME transition that precedes cloud DELETE, so no
+          // in-flight transfer can still revalidate and take the physical Instance.
+          idleReclaimAt: null,
           ...(releaseMarker ? { lastErrorCode: releaseMarker, lastErrorAt: now } : {}),
           lastActivityAt: now,
           updatedAt: now,
@@ -487,7 +558,7 @@ export class SandboxRunnerService {
     const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "manage" });
     if (!owned) throw sandboxNotFound();
     const row = owned.sandbox;
-    if (row.lifecycle !== "ready") {
+    if (row.lifecycle !== "ready" || row.idleReclaimAt !== null) {
       throw runnerConflict("The Sandbox environment is not ready; start it and wait for runner readiness");
     }
     const snapshot = this.#hub.describe(sandboxId);
@@ -503,6 +574,9 @@ export class SandboxRunnerService {
     const socket = this.#hub.currentSocket(sandboxId);
     if (!socket) throw runnerConflict("No ready Runner is attached to the current Sandbox environment");
     const deadlineAtMs = this.#now().getTime() + this.#acceptanceTimeoutMs;
+    // An acceptance run can hold the Sandbox for many minutes: count its start and end as
+    // business activity so the single idle budget never fires mid-run.
+    await this.noteActivity(sandboxId);
     try {
       const result = await this.#hub.runAcceptance(
         sandboxId,
@@ -511,7 +585,15 @@ export class SandboxRunnerService {
           deadlineAtMs,
           ...(input.piConfig ? { piConfig: input.piConfig } : {}),
         },
-        { timeoutMs: this.#acceptanceTimeoutMs, socket, ...(options.signal ? { signal: options.signal } : {}) },
+        {
+          timeoutMs: this.#acceptanceTimeoutMs,
+          socket,
+          ...(options.signal ? { signal: options.signal } : {}),
+          // Registration happens inside the hub BEFORE this hook; the hook takes the Sandbox row
+          // lock and refuses when an idle claim already owns the row. The database transaction is
+          // released before the run itself, so execution never holds a connection.
+          authorize: () => this.#acceptanceStillOwned(sandboxId),
+        },
       );
       return {
         requestId: result.requestId,
@@ -525,7 +607,26 @@ export class SandboxRunnerService {
     } catch (error) {
       if (error instanceof RunnerAcceptanceUnavailableError) throw runnerConflict(error.message);
       throw error;
+    } finally {
+      await this.noteActivity(sandboxId).catch(() => undefined);
     }
+  }
+
+  /**
+   * Short row-lock validation for an acceptance that already registered in the hub. It runs after
+   * registration and before any frame leaves the Server, so an idle claim (which checks the same
+   * hub busy state under the same row lock) and an acceptance can never both win.
+   */
+  async #acceptanceStillOwned(sandboxId: string): Promise<boolean> {
+    return this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select({ lifecycle: sandboxes.lifecycle, idleReclaimAt: sandboxes.idleReclaimAt })
+        .from(sandboxes)
+        .where(eq(sandboxes.id, sandboxId))
+        .limit(1)
+        .for("update");
+      return row?.lifecycle === "ready" && row.idleReclaimAt === null;
+    });
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -544,6 +645,10 @@ export class SandboxRunnerService {
     const row = owned.sandbox;
     if (row.sessionId !== claims.sessionId) return undefined;
     if (row.lifecycle !== "preparing" && row.lifecycle !== "ready") return undefined;
+    // E7: an automatic idle claim revokes execution authority immediately. The Runner may stay
+    // attached in the report/seal-capable channel scope (validateRunnerChannelScope) but can
+    // never publish new execution until a transfer/resume assigns it a live environment.
+    if (row.idleReclaimAt !== null) return undefined;
     if (row.environmentGeneration !== claims.environmentGeneration) return undefined;
     if (row.currentResourceName === null || row.currentResourceName !== claims.resourceName) return undefined;
     // An early pending Runner may connect before the create caller tracks its UID, but a
@@ -592,12 +697,132 @@ export class SandboxRunnerService {
     if (!row?.currentResourceUid || row.currentResourceName !== claims.resourceName) return undefined;
     const view = await this.#cloud.getInstance(claims.resourceName);
     if (!view || view.uid !== row.currentResourceUid) return undefined;
-    this.#cloud.verifyOwnership(view, this.#identityFor(row, row.environmentGeneration));
+    // Ownership only: the birth labels may belong to a previous Session after an ownership
+    // transfer, and a deployment image/config change must not block renewal of an owned legacy
+    // Instance.
+    try {
+      this.#cloud.verifyTrackedOwnership(view, {
+        resourceName: claims.resourceName,
+        resourceUid: row.currentResourceUid,
+        environment: this.#environment,
+      });
+    } catch {
+      return undefined;
+    }
     const token = await this.#tokens.issue(claims);
     // Recheck after provider/signing awaits. A concurrent release/replacement revokes renewal.
     const current = await loadSandboxRecordById(this.#database, claims.sandboxId);
     if (!current || current.currentResourceUid !== row.currentResourceUid) return undefined;
     return (await this.validateRunnerChannelScope(claims)) ? token : undefined;
+  }
+
+  /**
+   * E7 physical binding for one immutable birth identity: the unique row that currently holds
+   * `claims.resourceName` is the only valid owner. No account or Session token can steer this;
+   * the caller must already have verified the signed control credential.
+   */
+  async resolveRunnerControlHolder(claims: RunnerBootstrapClaims): Promise<RunnerBootstrapClaims | undefined> {
+    const holder = await this.#holderByResourceName(claims.resourceName);
+    if (!holder || holder.sandbox.lifecycle === "unallocated") return undefined;
+    // The birth row still owns the account the physical Instance belongs to; a cross-account
+    // binding can never validate even if a name collision were somehow materialized.
+    const birth = await loadSandboxOwnerById(this.#database, claims.sandboxId);
+    if (!birth) return undefined;
+    const [birthComputer] = await this.#database
+      .select({ ownerAccountId: computers.ownerAccountId })
+      .from(computers)
+      .where(eq(computers.id, birth.computerId))
+      .limit(1);
+    const [holderComputer] = await this.#database
+      .select({ ownerAccountId: computers.ownerAccountId })
+      .from(computers)
+      .where(eq(computers.id, holder.computerId))
+      .limit(1);
+    if (!birthComputer || !holderComputer || birthComputer.ownerAccountId !== holderComputer.ownerAccountId) {
+      return undefined;
+    }
+    // Signed birth identity + physical presence: the control token carries the immutable birth
+    // claims, so the original ownership labels remain the strongest proof for the whole life of
+    // the Instance, including after transfers. The provider read is bounded by the admin client's
+    // request deadline; an unreadable provider proves nothing and keeps the runner retrying.
+    const resourceName = holder.sandbox.currentResourceName;
+    const resourceUid = holder.sandbox.currentResourceUid;
+    if (resourceName === null || resourceUid === null) return undefined;
+    let view: Awaited<ReturnType<CloudRunAdmin["getInstance"]>>;
+    try {
+      view = await this.#cloud.getInstance(resourceName);
+    } catch {
+      return undefined;
+    }
+    if (!view || view.uid !== resourceUid) return undefined;
+    try {
+      this.#cloud.verifyOwnership(view, {
+        environment: this.#environment,
+        sandboxId: claims.sandboxId,
+        sessionId: claims.sessionId,
+        environmentGeneration: claims.environmentGeneration,
+      });
+    } catch {
+      return undefined;
+    }
+    // DB recheck after the provider I/O: the unique holder must still be the same row and UID.
+    const current = await this.#holderByResourceName(resourceName);
+    if (
+      !current ||
+      current.sandbox.id !== holder.sandbox.id ||
+      current.sandbox.currentResourceUid !== resourceUid ||
+      current.sandbox.lifecycle === "unallocated"
+    ) {
+      return undefined;
+    }
+    return {
+      sandboxId: current.sandbox.id,
+      sessionId: current.sandbox.sessionId,
+      environmentGeneration: current.sandbox.environmentGeneration,
+      resourceName: resourceName,
+    };
+  }
+
+  /**
+   * Renewal-only physical evidence for an expired control credential: the signature must name the
+   * same birth identity, and the provider must still show the tracked binding. The returned
+   * credential keeps the original birth claims; the fresh ordinary handshake resolves the current
+   * holder again.
+   */
+  async renewExpiredControl(claims: RunnerBootstrapClaims): Promise<string | undefined> {
+    const holder = await this.#holderByResourceName(claims.resourceName);
+    if (!holder || holder.sandbox.lifecycle === "unallocated" || holder.sandbox.currentResourceUid === null)
+      return undefined;
+    let view: Awaited<ReturnType<CloudRunAdmin["getInstance"]>>;
+    try {
+      view = await this.#cloud.getInstance(claims.resourceName);
+    } catch {
+      return undefined;
+    }
+    if (!view || view.uid !== holder.sandbox.currentResourceUid) return undefined;
+    try {
+      // Birth-label ownership only: the token names the immutable physical origin, and cleanup or
+      // renewal must survive a deployment image/config change.
+      this.#cloud.verifyOwnership(view, {
+        environment: this.#environment,
+        sandboxId: claims.sandboxId,
+        sessionId: claims.sessionId,
+        environmentGeneration: claims.environmentGeneration,
+      });
+    } catch {
+      return undefined;
+    }
+    // DB recheck after the provider read before signing a fresh control credential.
+    const current = await this.#holderByResourceName(claims.resourceName);
+    if (
+      !current ||
+      current.sandbox.id !== holder.sandbox.id ||
+      current.sandbox.currentResourceUid !== holder.sandbox.currentResourceUid ||
+      current.sandbox.lifecycle === "unallocated"
+    ) {
+      return undefined;
+    }
+    return this.#tokens.issueControl(claims);
   }
 
   /**
@@ -656,6 +881,10 @@ export class SandboxRunnerService {
     if (this.#workspace && options.workspaceRestored !== true) return "workspace_not_restored";
     const current = await this.#currentScopeRow(scope);
     if (!current) return "stale";
+    // A claimed environment is quiescing for a transfer or deletion: its Runner must never
+    // re-publish readiness. Return `deferred` (not `stale`) so an authenticated connection that
+    // is needed for the E5 seal stays attached instead of being closed by the readiness path.
+    if (current.idleReclaimAt !== null) return "deferred";
     if (current.lifecycle === "ready") return "ready";
     if (current.lifecycle !== "preparing") return "stale";
     // No verified UID is tracked yet: stay deferred. Cloud I/O belongs to start/stop only.
@@ -693,13 +922,19 @@ export class SandboxRunnerService {
     }
     const identity = this.#identityFor(row, row.environmentGeneration);
     let bootstrapToken: string;
+    let controlToken: string;
     try {
-      bootstrapToken = await this.#tokens.issue({
+      const claims = {
         sandboxId: row.id,
         sessionId: row.sessionId,
         environmentGeneration: row.environmentGeneration,
         resourceName,
-      });
+      };
+      bootstrapToken = await this.#tokens.issue(claims);
+      // E7 physical control credential: the same immutable birth identity under a separate
+      // audience. It lets a restarted Runner process find the CURRENT holder after a transfer;
+      // the Session bearer above can never do that.
+      controlToken = await this.#tokens.issueControl(claims);
     } catch (error) {
       // Local failure before any submission: retry is safe. Only the submission owner reaches
       // here (reservation winner, or the retry that just won the pending CAS).
@@ -714,6 +949,7 @@ export class SandboxRunnerService {
           environment: this.#environment,
           backendUrl: this.#backendUrl,
           bootstrapToken,
+          controlToken,
           // E5: only a workspace-enabled allocation arms the Runner-side restore/save path.
           ...(this.#workspace ? { workspacePersistence: true } : {}),
         },
@@ -1056,18 +1292,34 @@ export class SandboxRunnerService {
    * tracked was never ready, so it owes no save).
    */
   async #releaseSavingWorkspace(row: typeof sandboxes.$inferSelect): Promise<void> {
-    const resourceName = row.currentResourceName;
-    const resourceUid = row.currentResourceUid;
-    const saveOwed = row.lastErrorCode === WORKSPACE_SAVE_REQUIRED || row.lastErrorCode === WORKSPACE_SAVE_FAILED;
-    if (resourceName !== null && resourceUid !== null && saveOwed) {
-      const view = await this.#cloud.getInstance(resourceName);
-      if (view !== undefined && view.uid === resourceUid && view.workspacePersistence !== false) {
-        await this.#sealWorkspaceForRelease(row);
-      }
-    }
+    await this.#sealWorkspaceIfOwed(row);
     // Only now does the Runner channel close; the existing verified cloud cleanup follows.
     this.#closeRunnerScope(row);
     await this.#releaseAllocation(row);
+  }
+
+  /**
+   * The seal half of E5 release, shared by explicit stop and automatic idle reclamation: a save
+   * is owed exactly when the durable marker says so, and the proven archive short-circuits the
+   * Runner round-trip so a crash/retry never re-extracts or re-seals. A provider-absent or
+   * different-UID resource has no local copy to protect and is skipped; the caller still decides
+   * whether physical cleanup is complete.
+   */
+  async #sealWorkspaceIfOwed(row: typeof sandboxes.$inferSelect): Promise<void> {
+    if (!this.#workspace) return;
+    const resourceName = row.currentResourceName;
+    const resourceUid = row.currentResourceUid;
+    const saveOwed = row.lastErrorCode === WORKSPACE_SAVE_REQUIRED || row.lastErrorCode === WORKSPACE_SAVE_FAILED;
+    if (resourceName === null || resourceUid === null || !saveOwed) return;
+    const view = await this.#cloud.getInstance(resourceName);
+    if (view?.uid === resourceUid && view.workspacePersistence === false && row.idleReclaimAt !== null) {
+      // An older Instance may contain the only local copy even after Server persistence is
+      // enabled. Automatic cleanup cannot inherit explicit stop's legacy discard behavior.
+      throw new WorkspaceSaveError("the existing Instance cannot persist its workspace automatically");
+    }
+    if (view !== undefined && view.uid === resourceUid && view.workspacePersistence !== false) {
+      await this.#sealWorkspaceForRelease(row);
+    }
   }
 
   /**
@@ -1266,7 +1518,7 @@ export class SandboxRunnerService {
     row: { id: string; environmentGeneration: number; sessionId: string },
     resourceName: string | null,
     resourceUid: string | null,
-    expectedLifecycle: "releasing" | "ready" = "releasing",
+    expectedLifecycle: "preparing" | "releasing" | "ready" = "releasing",
   ): Promise<boolean> {
     const now = this.#now();
     const [cleared] = await this.#database
@@ -1276,6 +1528,7 @@ export class SandboxRunnerService {
         currentResourceName: null,
         currentResourceUid: null,
         currentOperationName: null,
+        idleReclaimAt: null,
         lastErrorCode: null,
         lastErrorAt: null,
         lastActivityAt: now,
@@ -1303,6 +1556,678 @@ export class SandboxRunnerService {
       });
     }
     return true;
+  }
+
+  /* ------------------------------------------------------------------------------------------
+   * E7 idle reclamation and same-account physical reuse
+   * ---------------------------------------------------------------------------------------- */
+
+  /**
+   * Business activity on a ready environment. Heartbeats never call this: the single idle budget
+   * is measured from real work boundaries only, and the `idle_reclaim_at is null` guard means a
+   * late activity write can never un-claim a row.
+   */
+  async noteActivity(sandboxId: string): Promise<void> {
+    const now = this.#now();
+    await this.#database
+      .update(sandboxes)
+      .set({ lastActivityAt: now, updatedAt: now })
+      .where(and(eq(sandboxes.id, sandboxId), eq(sandboxes.lifecycle, "ready"), isNull(sandboxes.idleReclaimAt)));
+  }
+
+  /**
+   * One bounded automatic idle sweep, safe under restarts and concurrent Server processes:
+   * - a ready environment idle past the single budget is claimed (execution authority blocked),
+   *   sealed through E5, then transitioned to releasing for verified deletion;
+   * - a row already claimed by an abandoned borrow is retried once its own `last_activity_at`
+   *   budget has passed; the claim timestamp is ownership/intent evidence, never a second clock;
+   * - an automatic row already in `releasing` resumes from the durable marker without another
+   *   budget, and a provider-confirmed absent binding is cleared without a delete call;
+   * - unknown reads and fail-create phases never clear a reference.
+   * No transaction is held across cloud or storage I/O.
+   */
+  async reclaimIdleSandboxes(): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
+    // Automatic deletion is enabled exactly when the deployment persists workspaces. Without the
+    // object store a ready instance may hold the only copy of its workspace, so the sweep never
+    // destroys it; explicit Account stop remains the operator path there.
+    if (!this.#workspace) return { claimed: 0, released: 0, recovered: 0, failed: 0 };
+    const now = this.#now();
+    const idleCutoff = new Date(now.getTime() - this.#idleTimeoutMs);
+    // Startup includes claim, archive download, the restored checkpoint upload and native
+    // initialization. The create API's convergence budget alone cannot bound that work.
+    const startupCutoff = new Date(now.getTime() - this.#createConvergeTimeoutMs - 4 * RUNNER_WORKSPACE_TIMEOUT_MS);
+    let claimed = 0;
+    let released = 0;
+    let failed = 0;
+
+    // 1) Ready rows past the single idle budget. The budget clock is ALWAYS `lastActivityAt`:
+    //    `idleReclaimAt` only records who owns the reclamation intent, so an abandoned claim is
+    //    retried on the next pass after the row's original budget, never after a fresh window.
+    for (const candidate of await this.#idleReadyCandidates(idleCutoff)) {
+      const outcome = await this.#reclaimIdleCandidate(candidate.id);
+      if (outcome.claimed) claimed += 1;
+      if (outcome.released) released += 1;
+      if (outcome.failed) failed += 1;
+    }
+
+    // 2) Automatic rows already in `releasing`: a failed or interrupted delete resumes from the
+    //    durable marker without waiting out another budget, because the budget was already spent
+    //    before the transition. Explicit stop rows carry no marker and stay outside the sweep.
+    for (const candidate of await this.#automaticReleasingCandidates()) {
+      const [row] = await this.#rowById(candidate.id);
+      if (!row || row.idleReclaimAt === null) continue;
+      try {
+        await this.#releaseCurrentAllocation(row);
+        released += 1;
+      } catch {
+        // The release funnel already recorded the durable failure state for the next sweep.
+        failed += 1;
+      }
+    }
+
+    const recovered = await this.#recoverStalePreparingAllocations(startupCutoff);
+    return { claimed, released, recovered: recovered.recovered, failed: failed + recovered.failed };
+  }
+
+  /** Ready rows whose original activity budget has passed, claimed or not. */
+  async #idleReadyCandidates(cutoff: Date): Promise<{ id: string }[]> {
+    return this.#database
+      .select({ id: sandboxes.id })
+      .from(sandboxes)
+      .where(
+        and(
+          eq(sandboxes.lifecycle, "ready"),
+          isNotNull(sandboxes.currentResourceName),
+          isNotNull(sandboxes.currentResourceUid),
+          lte(sandboxes.lastActivityAt, cutoff),
+        ),
+      )
+      .orderBy(asc(sandboxes.updatedAt), asc(sandboxes.id))
+      .limit(IDLE_RECLAIM_BATCH);
+  }
+
+  /** Automatic-only releasing rows: the durable marker is the sweep's authorization. */
+  async #automaticReleasingCandidates(): Promise<{ id: string }[]> {
+    return this.#database
+      .select({ id: sandboxes.id })
+      .from(sandboxes)
+      .where(and(eq(sandboxes.lifecycle, "releasing"), isNotNull(sandboxes.idleReclaimAt)))
+      .orderBy(asc(sandboxes.updatedAt), asc(sandboxes.id))
+      .limit(IDLE_RECLAIM_BATCH);
+  }
+
+  /**
+   * E7 stale-adoption recovery, bounded by create convergence plus workspace startup time (not
+   * the idle budget). A `preparing` row whose tracked Instance has not produced a READY Runner
+   * within that deadline would otherwise strand the borrower and its pending inputs forever. A
+   * connected-but-never-ready Runner is included: restore attempts that never complete are a
+   * startup failure, not disposable idle work, and the borrower's own archive is never touched.
+   */
+  async #recoverStalePreparingAllocations(startupCutoff: Date): Promise<{ recovered: number; failed: number }> {
+    const candidates = await this.#database
+      .select({ id: sandboxes.id })
+      .from(sandboxes)
+      .where(
+        and(
+          eq(sandboxes.lifecycle, "preparing"),
+          isNotNull(sandboxes.currentResourceName),
+          isNotNull(sandboxes.currentResourceUid),
+          isNull(sandboxes.idleReclaimAt),
+          lte(sandboxes.lastActivityAt, startupCutoff),
+        ),
+      )
+      .orderBy(asc(sandboxes.lastActivityAt), asc(sandboxes.id))
+      .limit(IDLE_RECLAIM_BATCH);
+    let recovered = 0;
+    let failed = 0;
+    for (const candidate of candidates) {
+      // A ready connection is promoted by the normal readiness path, never recycled here.
+      if (this.#hub.describe(candidate.id).ready) {
+        await this.#promoteReadyIfReported(candidate.id).catch(() => undefined);
+        continue;
+      }
+      try {
+        await this.#releaseStalePreparing(candidate.id);
+        recovered += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { recovered, failed };
+  }
+
+  /**
+   * One bounded stale adoption: verify the tracked provider binding, then delete and clear. The
+   * preparing -> releasing transition carries the automatic `idleReclaimAt` intent so ingress
+   * keeps returning pending (never a terminal stopped) for inputs waiting on this Session, and a
+   * failed delete is retried by the same sweep via the durable marker.
+   */
+  async #releaseStalePreparing(sandboxId: string): Promise<void> {
+    const [row] = await this.#rowById(sandboxId);
+    if (
+      row?.lifecycle !== "preparing" ||
+      row.currentResourceName === null ||
+      row.currentResourceUid === null ||
+      row.idleReclaimAt !== null
+    ) {
+      return;
+    }
+    const resourceName = row.currentResourceName;
+    const resourceUid = row.currentResourceUid;
+    let view: Awaited<ReturnType<CloudRunAdmin["getInstance"]>>;
+    try {
+      view = await this.#cloud.getInstance(resourceName);
+    } catch {
+      // An unreadable provider proves nothing: keep the binding and retry on the next sweep.
+      throw new CloudRunAdminError("unavailable", "The stale allocation could not be read");
+    }
+    if (!view || view.uid !== resourceUid) {
+      await this.#clearReleased(row, resourceName, resourceUid, "preparing");
+      return;
+    }
+    // Ownership only: a deployment image/config change must never block cleanup of an owned
+    // legacy Instance.
+    this.#cloud.verifyTrackedOwnership(view, { resourceName, resourceUid, environment: this.#environment });
+    // Recheck AFTER the provider I/O: a connection that became ready while we were reading must
+    // be promoted, never recycled as a failed startup; a row that moved on is left alone.
+    if (this.#hub.describe(sandboxId).ready) {
+      await this.#promoteReadyIfReported(sandboxId);
+      return;
+    }
+    const [current] = await this.#rowById(sandboxId);
+    if (
+      current?.lifecycle !== "preparing" ||
+      current.idleReclaimAt !== null ||
+      current.environmentGeneration !== row.environmentGeneration ||
+      current.currentResourceName !== resourceName ||
+      current.currentResourceUid !== resourceUid
+    ) {
+      return;
+    }
+    const now = this.#now();
+    const [releasing] = await this.#database
+      .update(sandboxes)
+      .set({ lifecycle: "releasing", idleReclaimAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(sandboxes.id, row.id),
+          eq(sandboxes.lifecycle, "preparing"),
+          eq(sandboxes.environmentGeneration, row.environmentGeneration),
+          eq(sandboxes.currentResourceName, resourceName),
+          eq(sandboxes.currentResourceUid, resourceUid),
+          isNull(sandboxes.idleReclaimAt),
+        ),
+      )
+      .returning();
+    if (!releasing) return;
+    await this.#releaseCurrentAllocation(releasing);
+  }
+
+  /** One bounded candidate: claim, prove the save, then release. Failures stay durably recorded. */
+  async #reclaimIdleCandidate(sandboxId: string): Promise<{ claimed: boolean; released: boolean; failed: boolean }> {
+    // Rotate every attempted candidate, including an unsupported or busy Instance. This is
+    // scheduling fairness only: eligibility continues to use lastActivityAt exclusively.
+    await this.#database
+      .update(sandboxes)
+      .set({ updatedAt: this.#now() })
+      .where(and(eq(sandboxes.id, sandboxId), eq(sandboxes.lifecycle, "ready")));
+    let claimed = false;
+    try {
+      claimed = (await this.#claimIdle(sandboxId, { automatic: true })) !== undefined;
+    } catch {
+      // Provider failure before the claim must not block ingress or the remainder of this pass.
+      return { claimed: false, released: false, failed: true };
+    }
+    // The busy decision is made by `#claimIdle` UNDER the Sandbox row lock; this re-read only
+    // classifies the visible state for the sweep counters.
+    if (!claimed && this.#hub.isBusy(sandboxId)) return { claimed: false, released: false, failed: true };
+    const [row] = await this.#rowById(sandboxId);
+    if (!row || row.idleReclaimAt === null) return { claimed, released: false, failed: false };
+    try {
+      // Seal BEFORE leaving `ready`: a failed save keeps the resource binding and the durable
+      // claim so the next sweep retries; a proven archive short-circuits the Runner round-trip.
+      await this.#sealWorkspaceIfOwed(row);
+      const now = this.#now();
+      const [releasing] = await this.#database
+        .update(sandboxes)
+        .set({ lifecycle: "releasing", updatedAt: now })
+        .where(
+          and(
+            eq(sandboxes.id, row.id),
+            eq(sandboxes.lifecycle, "ready"),
+            eq(sandboxes.environmentGeneration, row.environmentGeneration),
+            eq(sandboxes.currentResourceName, row.currentResourceName as string),
+            eq(sandboxes.currentResourceUid, row.currentResourceUid as string),
+            isNotNull(sandboxes.idleReclaimAt),
+          ),
+        )
+        .returning();
+      if (!releasing) return { claimed, released: false, failed: false }; // stop or borrow won
+      await this.#releaseCurrentAllocation(releasing);
+      return { claimed, released: true, failed: false };
+    } catch (error) {
+      if (error instanceof WorkspaceSaveError) {
+        await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, { preserveCreateMarkers: true }).catch(
+          () => undefined,
+        );
+      } else if (!(error instanceof SandboxServiceError)) {
+        await this.#recordError(row, "cloud_delete_incomplete", error, { preserveCreateMarkers: true }).catch(
+          () => undefined,
+        );
+      }
+      return { claimed, released: false, failed: true };
+    }
+  }
+
+  /**
+   * Atomic idle claim under the Sandbox row lock, shared by the automatic sweep and an on-demand
+   * same-account borrow. The unsettled-delivery check runs AFTER the row lock, and dispatch
+   * custody takes the same row lock, so an accepted/claimed dispatch and a claim can never both
+   * commit. Any unsettled work (pending/claimed dispatch, accepted/unreported) refuses the claim.
+   */
+  async #claimIdle(
+    sandboxId: string,
+    options: { automatic: boolean },
+  ): Promise<typeof sandboxes.$inferSelect | undefined> {
+    const [candidate] = await this.#rowById(sandboxId);
+    if (
+      candidate?.lifecycle !== "ready" ||
+      candidate.idleReclaimAt !== null ||
+      candidate.currentResourceName === null ||
+      candidate.currentResourceUid === null
+    )
+      return undefined;
+    // Preflight before taking execution authority. An old non-persistent Instance can never
+    // fulfill a seal request, and an incompatible deployment cannot be reused. Neither should
+    // make an otherwise usable Session permanently pending. Recheck the binding under the lock.
+    const view = await this.#cloud.getInstance(candidate.currentResourceName);
+    if (view?.uid === candidate.currentResourceUid) {
+      if (view.workspacePersistence === false) return undefined;
+      const identity = {
+        resourceName: candidate.currentResourceName,
+        resourceUid: candidate.currentResourceUid,
+        environment: this.#environment,
+      };
+      if (options.automatic) this.#cloud.verifyTrackedOwnership(view, identity);
+      else this.#cloud.verifyTrackedInstance(view, identity);
+    }
+    const now = this.#now();
+    const cutoff = new Date(now.getTime() - this.#idleTimeoutMs);
+    return this.#database.transaction(async (transaction) => {
+      const [row] = await transaction
+        .select()
+        .from(sandboxes)
+        .where(eq(sandboxes.id, sandboxId))
+        .limit(1)
+        .for("update");
+      if (row?.lifecycle !== "ready" || row.idleReclaimAt !== null) return undefined;
+      if (row.currentResourceName === null || row.currentResourceUid === null) return undefined;
+      if (
+        row.environmentGeneration !== candidate.environmentGeneration ||
+        row.currentResourceName !== candidate.currentResourceName ||
+        row.currentResourceUid !== candidate.currentResourceUid
+      )
+        return undefined;
+      // Acceptance registration also runs under this row lock (via the hub authorize hook), so
+      // this in-memory check cannot miss a concurrent acceptance.
+      if (this.#hub.isBusy(sandboxId)) return undefined;
+      if (!this.#withinIdleBudget(row, options, now, cutoff)) return undefined;
+      if (await this.#hasUnsettledWork(transaction, row.sessionId)) return undefined;
+      const [claimed] = await transaction
+        .update(sandboxes)
+        .set({
+          idleReclaimAt: now,
+          lastErrorCode: WORKSPACE_SAVE_REQUIRED,
+          lastErrorAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(sandboxes.id, row.id),
+            eq(sandboxes.lifecycle, "ready"),
+            isNull(sandboxes.idleReclaimAt),
+            eq(sandboxes.environmentGeneration, row.environmentGeneration),
+            eq(sandboxes.currentResourceName, row.currentResourceName),
+            eq(sandboxes.currentResourceUid, row.currentResourceUid),
+          ),
+        )
+        .returning();
+      return claimed;
+    });
+  }
+
+  /** The single budget check: `automatic` uses the idle cutoff, a borrow only refuses the future. */
+  #withinIdleBudget(
+    row: typeof sandboxes.$inferSelect,
+    options: { automatic: boolean },
+    now: Date,
+    cutoff: Date,
+  ): boolean {
+    if (options.automatic) return row.lastActivityAt.getTime() <= cutoff.getTime();
+    return row.lastActivityAt.getTime() <= now.getTime();
+  }
+
+  /** Unsettled work in the Session blocks every claim, under the same row lock as the claim. */
+  async #hasUnsettledWork(transaction: DatabaseTransaction, sessionId: string): Promise<boolean> {
+    const [unsettled] = await transaction
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .where(
+        and(
+          eq(imMessageDeliveries.sessionId, sessionId),
+          or(
+            and(eq(imMessageDeliveries.state, "pending"), isNull(imMessageDeliveries.reason)),
+            and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
+          ),
+        ),
+      )
+      .limit(1);
+    return unsettled !== undefined;
+  }
+
+  /**
+   * E7 on-demand borrow candidate: a same-account idle sibling with a connected reuse-capable
+   * Runner, no active work, and the current deployment policy still verified on the provider.
+   * Provider eligibility, claim and seal happen before any caller transaction. An unproven save
+   * retains the claim; a proven seal that cannot transfer follows verified release.
+   */
+  async #prepareIdleSiblingForReuse(
+    accountId: string,
+    claimantSandboxId: string,
+  ): Promise<IdleSiblingSnapshot | undefined> {
+    // Reuse is defined only with durable workspace persistence: without it a sealed Instance has
+    // no archive to hand over, so the physical resource must never cross a Session boundary.
+    if (!this.#workspace) return undefined;
+    const candidates = await this.#idleSiblingCandidates(accountId, claimantSandboxId);
+    for (const candidate of candidates) {
+      if (!this.#isReuseCandidateReady(candidate)) continue;
+      const prepared = await this.#claimAndSealSibling(candidate);
+      if (prepared === "skip") continue;
+      return prepared;
+    }
+    return undefined;
+  }
+
+  /** A candidate is borrowable only through a connected, ready, E7-negotiated, non-busy Runner. */
+  #isReuseCandidateReady(candidate: typeof sandboxes.$inferSelect): boolean {
+    const snapshot = this.#hub.describe(candidate.id);
+    return (
+      snapshot.connected &&
+      snapshot.ready &&
+      snapshot.reuseCapable &&
+      snapshot.scope !== null &&
+      snapshot.scope.environmentGeneration === candidate.environmentGeneration &&
+      snapshot.scope.resourceName === candidate.currentResourceName &&
+      !this.#hub.isBusy(candidate.id)
+    );
+  }
+
+  /**
+   * Claim and seal one sibling. `"skip"` means this candidate cannot be used or was confirmed
+   * absent (try the next one); `undefined` means the claim is retained for the sweep after a seal
+   * failure. A prepared snapshot returns the exact claimed identity for the transfer transaction.
+   */
+  async #claimAndSealSibling(
+    candidate: typeof sandboxes.$inferSelect,
+  ): Promise<IdleSiblingSnapshot | undefined | "skip"> {
+    let claimed: typeof sandboxes.$inferSelect | undefined;
+    try {
+      claimed = await this.#claimIdle(candidate.id, { automatic: false });
+    } catch {
+      return "skip";
+    }
+    if (!claimed) return "skip";
+    try {
+      await this.#sealWorkspaceIfOwed(claimed);
+      await this.#clearClaimMarkers(claimed);
+      const resourceName = claimed.currentResourceName;
+      const resourceUid = claimed.currentResourceUid;
+      if (resourceName === null || resourceUid === null) return "skip";
+      const view = await this.#cloud.getInstance(resourceName);
+      if (!view || view.uid !== resourceUid) {
+        await this.#clearClaimedAbsent(claimed);
+        return "skip";
+      }
+      this.#cloud.verifyTrackedInstance(view, { resourceName, resourceUid, environment: this.#environment });
+      if (view.workspacePersistence === false) {
+        throw new WorkspaceSaveError("the idle Instance does not carry workspace persistence");
+      }
+      const scope: WorkspaceObjectScope = {
+        storageUri: claimed.storageUri,
+        sandboxId: claimed.id,
+        sessionId: claimed.sessionId,
+        environmentGeneration: claimed.environmentGeneration,
+      };
+      if (!(await this.#workspaceSealProven(scope, claimed.environmentGeneration))) {
+        throw new WorkspaceSaveError("the idle workspace archive could not be verified");
+      }
+      return {
+        sandboxId: claimed.id,
+        sessionId: claimed.sessionId,
+        environmentGeneration: claimed.environmentGeneration,
+        resourceName,
+        resourceUid,
+      };
+    } catch {
+      // A proven seal can be released immediately; an unproven save remains claimed for retry.
+      // Never "unclaim" a sealed Runner: its controller can no longer execute the old generation.
+      await this.#releaseUnusedBorrow({
+        sandboxId: claimed.id,
+        sessionId: claimed.sessionId,
+        environmentGeneration: claimed.environmentGeneration,
+        resourceName: claimed.currentResourceName as string,
+        resourceUid: claimed.currentResourceUid as string,
+      });
+      return undefined;
+    }
+  }
+
+  /** A sealed hand-off that did not commit follows normal verified deletion, without another idle wait. */
+  async #releaseUnusedBorrow(candidate: IdleSiblingSnapshot): Promise<void> {
+    const [releasing] = await this.#database
+      .update(sandboxes)
+      .set({ lifecycle: "releasing", updatedAt: this.#now() })
+      .where(
+        and(
+          eq(sandboxes.id, candidate.sandboxId),
+          eq(sandboxes.lifecycle, "ready"),
+          eq(sandboxes.environmentGeneration, candidate.environmentGeneration),
+          eq(sandboxes.currentResourceName, candidate.resourceName),
+          eq(sandboxes.currentResourceUid, candidate.resourceUid),
+          isNotNull(sandboxes.idleReclaimAt),
+          isNull(sandboxes.lastErrorCode),
+        ),
+      )
+      .returning();
+    if (!releasing) return;
+    try {
+      await this.#releaseCurrentAllocation(releasing);
+    } catch {
+      // The normal release path records the failure; the existing sweep retries releasing rows.
+    }
+  }
+
+  /** Same-account idle siblings, oldest activity first; the uniqueness index picks one owner. */
+  async #idleSiblingCandidates(
+    accountId: string,
+    excludeSandboxId: string,
+  ): Promise<(typeof sandboxes.$inferSelect)[]> {
+    const rows = await this.#database
+      .select({ sandbox: sandboxes })
+      .from(sandboxes)
+      .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .where(
+        and(
+          eq(computers.ownerAccountId, accountId),
+          eq(computers.kind, "cloud"),
+          ne(sandboxes.id, excludeSandboxId),
+          eq(sandboxes.lifecycle, "ready"),
+          isNotNull(sandboxes.currentResourceName),
+          isNotNull(sandboxes.currentResourceUid),
+          isNull(sandboxes.idleReclaimAt),
+        ),
+      )
+      .orderBy(asc(sandboxes.lastActivityAt), asc(sandboxes.id))
+      .limit(4);
+    return rows.map((row) => row.sandbox);
+  }
+
+  /**
+   * Single-winner ownership hand-off. The claimant row is already locked by the caller and the
+   * candidate is locked second here. There is no lock cycle to order around: a candidate must be
+   * `ready` with a tracked binding and a claimant must be `unallocated`, so the two roles are
+   * disjoint and concurrent transfers touch disjoint candidate rows. The candidate is revalidated
+   * against the exact claim (`idle_reclaim_at`, same account, generation, name, UID, no pending
+   * marker), cleared first so the unique indexes never see two owners, and only then assigned to
+   * the claimant with generation + 1. A lost race returns undefined and leaves the candidate
+   * for the caller to release through the normal verified cleanup path.
+   */
+  async #transferClaimedAllocation(
+    transaction: DatabaseTransaction,
+    claimant: typeof sandboxes.$inferSelect,
+    candidate: IdleSiblingSnapshot,
+    accountId: string,
+  ): Promise<typeof sandboxes.$inferSelect | undefined> {
+    // Lock order: `startForAccount` already holds the claimant row lock (FOR UPDATE) before this
+    // call, and the candidate is locked second here. The dependency is acyclic because a row can
+    // only be a candidate while it is `ready` with a tracked binding and a claimant while it is
+    // `unallocated`; those states are disjoint, so no transfer ever locks another transfer's
+    // claimant, and concurrent transfers touch disjoint candidate rows.
+    const [claimed] = await transaction
+      .select()
+      .from(sandboxes)
+      .where(eq(sandboxes.id, candidate.sandboxId))
+      .limit(1)
+      .for("update");
+    if (
+      claimed?.lifecycle !== "ready" ||
+      claimed.idleReclaimAt === null ||
+      claimed.environmentGeneration !== candidate.environmentGeneration ||
+      claimed.currentResourceName !== candidate.resourceName ||
+      claimed.currentResourceUid !== candidate.resourceUid ||
+      claimed.lastErrorCode !== null
+    ) {
+      return undefined;
+    }
+    // Revalidate same-account ownership under the lock AFTER the awaited seal/provider calls: the
+    // candidate selection ran in a different statement, and a borrow must never cross accounts.
+    const [candidateOwner] = await transaction
+      .select({ accountId: computers.ownerAccountId, kind: computers.kind })
+      .from(sandboxes)
+      .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .where(eq(sandboxes.id, claimed.id))
+      .limit(1);
+    if (candidateOwner?.kind !== "cloud" || candidateOwner.accountId !== accountId) {
+      return undefined;
+    }
+    const now = this.#now();
+    const [cleared] = await transaction
+      .update(sandboxes)
+      .set({
+        lifecycle: "unallocated",
+        currentResourceName: null,
+        currentResourceUid: null,
+        currentOperationName: null,
+        idleReclaimAt: null,
+        lastErrorCode: null,
+        lastErrorAt: null,
+        lastActivityAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(sandboxes.id, claimed.id),
+          eq(sandboxes.lifecycle, "ready"),
+          isNotNull(sandboxes.idleReclaimAt),
+          eq(sandboxes.environmentGeneration, candidate.environmentGeneration),
+          eq(sandboxes.currentResourceName, candidate.resourceName),
+          eq(sandboxes.currentResourceUid, candidate.resourceUid),
+        ),
+      )
+      .returning({ id: sandboxes.id });
+    if (!cleared) return undefined;
+    const [adopted] = await transaction
+      .update(sandboxes)
+      .set({
+        lifecycle: "preparing",
+        environmentGeneration: claimant.environmentGeneration + 1,
+        currentResourceName: candidate.resourceName,
+        currentResourceUid: candidate.resourceUid,
+        currentOperationName: null,
+        idleReclaimAt: null,
+        lastErrorCode: null,
+        lastErrorAt: null,
+        lastActivityAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(sandboxes.id, claimant.id),
+          eq(sandboxes.lifecycle, "unallocated"),
+          eq(sandboxes.environmentGeneration, claimant.environmentGeneration),
+        ),
+      )
+      .returning();
+    if (!adopted) {
+      throw runnerConflict("The Sandbox environment changed while the physical Instance was being adopted");
+    }
+    return adopted;
+  }
+
+  /** Provider-confirmed absence: safe to clear the exact tracked binding without a delete call. */
+  async #clearClaimedAbsent(row: typeof sandboxes.$inferSelect): Promise<void> {
+    if (row.currentResourceName === null || row.currentResourceUid === null) return;
+    if (!(await this.#clearReleased(row, row.currentResourceName, row.currentResourceUid, "ready"))) {
+      throw runnerConflict("The Sandbox environment changed while absence was being verified");
+    }
+  }
+
+  /**
+   * A proven seal resolves the claim's save debt: clear the marker while the automatic claim is
+   * still held, so a following transfer revalidation sees a clean claim and the sweep does not
+   * request a second Runner round-trip. The record is also the durable "sealed" intent a restart
+   * reads before deciding whether the resource may be deleted.
+   */
+  async #clearClaimMarkers(row: typeof sandboxes.$inferSelect): Promise<void> {
+    if (row.currentResourceName === null || row.currentResourceUid === null) return;
+    await this.#database
+      .update(sandboxes)
+      .set({ lastErrorCode: null, lastErrorAt: null, updatedAt: this.#now() })
+      .where(
+        and(
+          eq(sandboxes.id, row.id),
+          eq(sandboxes.environmentGeneration, row.environmentGeneration),
+          eq(sandboxes.currentResourceName, row.currentResourceName),
+          eq(sandboxes.currentResourceUid, row.currentResourceUid),
+          isNotNull(sandboxes.idleReclaimAt),
+        ),
+      );
+  }
+
+  /**
+   * The unique current holder of one physical resource name. `current_resource_name` is a
+   * partial-unique index, so at most one row can answer; the physical UID must be tracked for the
+   * binding to be transferable/attachable.
+   */
+  async #holderByResourceName(
+    resourceName: string,
+  ): Promise<{ sandbox: typeof sandboxes.$inferSelect; computerId: string } | undefined> {
+    const [row] = await this.#database
+      .select({ sandbox: sandboxes, computerId: computers.id })
+      .from(sandboxes)
+      .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .where(and(eq(sandboxes.currentResourceName, resourceName), isNotNull(sandboxes.currentResourceUid)))
+      .limit(1);
+    return row;
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -1359,6 +2284,7 @@ export class SandboxRunnerService {
           eq(sandboxes.environmentGeneration, snapshot.scope.environmentGeneration),
           eq(sandboxes.currentResourceName, snapshot.scope.resourceName),
           eq(sandboxes.lifecycle, "preparing"),
+          isNull(sandboxes.idleReclaimAt),
           isNotNull(sandboxes.currentResourceUid),
         ),
       )
@@ -1426,7 +2352,12 @@ export class SandboxRunnerService {
           and(
             eq(sandboxes.id, row.id),
             eq(sandboxes.environmentGeneration, row.environmentGeneration),
-            inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
+            or(
+              inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
+              // E7: a ready row claimed for idle reclamation still owns its physical binding and
+              // must be able to record a seal/delete failure until the claim resolves.
+              and(eq(sandboxes.lifecycle, "ready"), isNotNull(sandboxes.idleReclaimAt)),
+            ),
             ...(options.preserveCreateMarkers
               ? [or(isNull(sandboxes.lastErrorCode), notInArray(sandboxes.lastErrorCode, preservedMarkersFor(code)))]
               : WORKSPACE_RELEASE_MARKER_LIST.includes(code)
@@ -1488,7 +2419,7 @@ export class SandboxRunnerService {
       currentResourceUid: row.currentResourceUid,
       currentOperationName: row.currentOperationName,
       runnerConnected: snapshot.connected && currentScope,
-      runnerReady: row.lifecycle === "ready" && snapshot.ready && currentScope,
+      runnerReady: row.lifecycle === "ready" && row.idleReclaimAt === null && snapshot.ready && currentScope,
       runnerReadiness: currentScope ? snapshot.readiness : null,
       lastErrorCode: row.lastErrorCode,
       lastErrorAt: row.lastErrorAt?.toISOString() ?? null,

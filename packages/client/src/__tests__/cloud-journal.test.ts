@@ -73,6 +73,32 @@ describe("CloudJournal", () => {
     return { journal, delivery, scope, entry };
   }
 
+  it("resets only entries that belong to the sealed assignment and fails closed on any other", async () => {
+    const first = await received();
+    const sameScope = await received({ journal: first.journal, scope: first.scope });
+    await first.journal.resetScope(first.scope);
+    expect(await first.journal.list()).toEqual([]);
+    expect(sameScope.scope).toEqual(first.scope);
+
+    const foreignDirectory = await mkdtemp(join(tmpdir(), "cloud-journal-foreign-"));
+    try {
+      const journal = await CloudJournal.open(foreignDirectory);
+      const owned = await received({ journal });
+      const foreign = await received({
+        delivery: cloudDeliveryFixture({ sessionId: "session-2" }),
+        scope: scopeFor("session-2", { resourceUid: "uid-2" }),
+        journal,
+      });
+      // A foreign entry means the local state cannot be proven settled: nothing may be discarded.
+      await expect(journal.resetScope(owned.scope)).rejects.toBeInstanceOf(CloudJournalError);
+      expect((await journal.list()).map((entry) => entry.deliveryId).sort()).toEqual(
+        [owned.delivery.deliveryId, foreign.delivery.deliveryId].sort(),
+      );
+    } finally {
+      await rm(foreignDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("persists the exact input, canonical input hash, and allocation scope across reopen", async () => {
     const { delivery, scope, entry } = await received();
     expect(entry.inputHash).toBe(computeCloudDeliveryInputHash(delivery));

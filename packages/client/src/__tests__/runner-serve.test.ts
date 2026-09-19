@@ -97,8 +97,10 @@ describe("loadRunnerServeConfig", () => {
     expect(() => loadRunnerServeConfig({ ...base, OPENTAG_RUNNER_SANDBOX_NAME: "9bad" })).toThrow(/SANDBOX_NAME/);
   });
 
-  it("accepts only an exact integer PORT in range for the declared health port", () => {
-    expect(loadRunnerServeConfig(base).healthPort).toBeUndefined();
+  it("defaults the declared 8080 health port and accepts only an exact PORT override", () => {
+    // Cloud Run's default TCP startup probe targets the declared 8080 even when the platform does
+    // not inject PORT; the runtime must not silently ship without the probe listener.
+    expect(loadRunnerServeConfig(base).healthPort).toBe(8080);
     expect(loadRunnerServeConfig({ ...base, PORT: "8080" }).healthPort).toBe(8080);
     expect(loadRunnerServeConfig({ ...base, PORT: "65535" }).healthPort).toBe(65535);
     for (const PORT of ["0", "-1", "65536", "1.5", "abc", "", " 8080", "08080"]) {
@@ -262,14 +264,18 @@ describe("NativeSandbox", () => {
         return fakeChild(() => ({ code: 0, stdout: "v24.19.0" })) as never;
       },
     });
+    const controlToken = "unit-control-token-secret";
     process.env.OPENTAG_RUNNER_BOOTSTRAP_TOKEN = BOOTSTRAP_TOKEN;
+    process.env.OPENTAG_RUNNER_CONTROL_TOKEN = controlToken;
     await sandbox.launch();
     for (const env of seen) {
       expect(JSON.stringify(env)).not.toContain(BOOTSTRAP_TOKEN);
+      expect(JSON.stringify(env)).not.toContain(controlToken);
       expect(Object.keys(env.env ?? {})).toEqual(["PATH"]);
     }
     await sandbox.destroy();
     delete process.env.OPENTAG_RUNNER_BOOTSTRAP_TOKEN;
+    delete process.env.OPENTAG_RUNNER_CONTROL_TOKEN;
   });
 });
 
@@ -1484,10 +1490,12 @@ describe("Runner cancellation and connection lifetime", () => {
         model: modelGrantFor(delivery),
       });
       wss.closeSocket();
-      // The runner reconnected, proving the old connection closed and its generation advanced.
+      // The closing connection drains its control tail before the reconnect, so release the
+      // blocked journal read first; the queued verified frame must still be skipped because the
+      // connection is already closed when it reaches the head of the queue.
+      releaseRead();
       await waitFor(() => wss.sockets.length >= 2, "replacement connection");
       await waitFor(() => wss.frames.filter((frame) => frame.type === "runner:ready").length >= 2, "replacement ready");
-      releaseRead();
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));

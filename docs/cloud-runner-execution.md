@@ -1,4 +1,4 @@
-# Cloud Runner execution (E3–E5)
+# Cloud Runner execution (E3–E7)
 
 [简体中文](./zh-CN/cloud-runner-execution.md)
 
@@ -18,8 +18,8 @@ CLI release version. E3 adds no database migration or table.
   late callbacks. `storage_uri` remains the stable persistence address.
 - E3 alone does not save or restore that address. E5 adds
   [latest workspace persistence and restoration](./cloud-workspace-persistence.md), including Pi
-  conversation state. IM dispatch and reliable receipts are E4; reuse/idle recycling remains
-  subsequent work. E3 acceptance alone does not establish durable Cloud execution.
+  conversation state. IM dispatch and reliable receipts are E4; idle reclamation and same-account physical reuse are
+  E7. E3 acceptance alone does not establish durable Cloud execution.
 
 ## Lifecycle and control
 
@@ -29,10 +29,12 @@ allocation. An uncertain create or delete retains the row's resource reference a
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
 
-The Instance runs `opentag-runner serve`. It declares the single container port `8080` so the
-platform's default TCP startup probe has a listening socket; after native readiness is verified,
-the Runner listens on that port only to accept and immediately end connections — no data is read
-or written, and the listener carries no command, HTTP, or credential surface. The control channel
+The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
+native readiness is verified the Runner listens on that **declared port by default** (an injected
+`PORT` remains the explicit override), so the platform's default TCP startup probe always has a
+socket even when the runtime does not provide `PORT`. The listener only accepts and immediately
+ends connections — no data is read or written, and it carries no command, HTTP, or credential
+surface. The control channel
 remains the Runner's outbound WSS connection to `/api/v1/sandbox-runners/ws`; the Instance exposes
 no parent HTTP control service. Authentication is
 in the first frame, never the URL. Tokens are scoped to the current Sandbox/Session/generation/
@@ -216,9 +218,9 @@ allocation remains current; no new execution is authorized. Temporary database v
 do not masquerade as revocation. Authentication facts are read before hub registration so a
 heartbeat cannot precede the authentication result.
 
-Boundary: E3 remains the native-execution acceptance path. E4 does not implement GCS workspace
-restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or Context Tree
-synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
+Boundary: E3 remains the native-execution acceptance path. The E4 acceptance path does not cover
+GCS workspace restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or
+Context Tree synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
 provider ingress/reply acceptance remain pending; current evidence is local composition and
 external local probes only. Do not claim E4 accepted from local results.
 
@@ -324,7 +326,8 @@ concurrent acceptance. `summary.json` records source revision, substitutions, re
 results and cleanup. Every in-flight step settles before teardown. On success, failure or handled
 SIGINT/SIGTERM, cloud deletion is attempted before fixture teardown; uncertain cleanup fails the
 run and preserves a resource receipt for operator reconciliation. SIGKILL or host loss still
-requires operator cleanup using that receipt; no E7 background reaper is claimed here.
+requires operator cleanup using that receipt; this harness does not wait for the Server E7 idle
+sweep, and the sweep itself is covered by the unit suites above.
 
 A final acceptance requires both local gates and real cloud proof, followed by verified deletion
 of task-owned resources. Validation-only API calls prove request compatibility, not execution.
@@ -404,3 +407,130 @@ proxy host allowlist remains unchanged.
 Deploy this Server before the updated Runner image: workspace Runners now opt into
 `renewExpired` in the strict auth frame. Renewal-only replies require a fresh handshake and use
 bounded reconnect backoff; renewal authentication allows 45 seconds for the Cloud API read.
+
+## E7: idle reclamation and same-account physical reuse
+
+E7 recycles a quiescent Cloud environment without a second window or a warm pool. One budget —
+`OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS`, default 120 seconds — is measured from the last
+**business** activity (`sandboxes.last_activity_at`); heartbeats never count. Inside that budget
+the Instance stays `ready`, so the owning Session can continue without a save/restore. The same
+budget has one consequence when nobody continues: a bounded sweep (fixed ~15 s cadence in the
+existing Server process, one pass at a time) seals the workspace through the E5 path and then
+deletes the Instance. Automatic deletion runs only when the deployment persists workspaces: a
+legacy allocation started without persistence may hold the only copy of its state and is left to
+explicit Account stop, even after Server persistence is enabled. Such Instances are skipped before
+claiming, so their Session remains usable. Sweep selection rotates by `updated_at`; the idle
+budget still uses only `last_activity_at`, so failing or unsupported rows cannot monopolize a batch.
+There is no retention clock, no preallocated pool and no new scheduler service.
+
+E7 requires a single Server process while Runner control ownership, busy state and readiness live
+in the process-local `RunnerHub`. Database CAS alone does not make active-active Servers supported.
+Shutdown drains the current sweep before closing the database.
+
+A second, same-account Session may borrow the physical Instance on demand instead of cold
+allocating. The borrower must be an `unallocated` Sandbox on the same logical Cloud Computer, and
+the candidate must be `ready`, unclaimed, connected through an E7-capable Runner, with no pending
+or accepted-unreported delivery and no in-flight acceptance. The sequence is durable at every
+step: verify provider persistence and deployment policy before claiming, atomically claim the
+candidate (execution blocked), seal through E5 and verify a fresh
+GCS `saved + sealed + owner-generation` proof, then one transaction that locks both rows, clears
+the origin binding first and assigns the borrower `preparing` with generation + 1 and the exact
+same resource name and UID. No Cloud Run create, PATCH or configuration change happens. The
+origin keeps its own stable `storage_uri` and later cold-restores from its archive; the borrower
+restores its own archive. If the transfer cannot commit after sealing (including a concurrent
+start that already allocated the borrower), the sealed origin follows verified deletion immediately.
+It can then cold-restore from its archive; clearing a claim alone cannot reopen a sealed Runner.
+An unproven save keeps the allocation for retry.
+
+The automatic claim is the single nullable `sandboxes.idle_reclaim_at` column (migration 0046, no
+new table). While it is set, execution authority is revoked, a start reports pending, and normal
+ingress returns `pending` — never a terminal `environment_stopped` — so a message that arrives
+during recycle or borrow is retried. Lifecycle stays `ready` while sealing; only a proven seal
+moves an automatically reclaimed row to `releasing` for verified deletion. The budget clock is
+always `last_activity_at`; `idle_reclaim_at` only records who owns the reclamation intent, so an
+abandoned claim is retried after the row's original budget, never after a fresh window. Once a
+proven seal moved a row to `releasing`, a failed or interrupted delete is retried on the next
+sweep from the durable marker without waiting out another budget. A failed or unknown seal keeps
+the resource binding, the claim and the existing workspace-save marker. A provider-confirmed
+absent UID clears the binding; a failed read never does. An explicit Account stop clears the
+marker in the same transition that precedes cloud DELETE, so a late transfer can never win.
+
+Stale adoption uses create convergence plus four workspace transfer budgets (currently an extra
+480 seconds for claim, download, checkpoint upload and native initialization; not an idle window):
+a `preparing` allocation whose tracked Instance has not produced a READY Runner within that
+deadline, including a connected-but-never-ready restore, is re-read from the provider. A
+confirmed absent or replaced UID clears the binding; a present, ownership-verified tracked
+Instance is released through the verified delete path with the automatic intent marker set, so
+ingress keeps returning pending for that Session. The borrower's own archive is untouched, so its
+next start restores it into a new generation instead of leaving the Sandbox `preparing` forever.
+
+Ownership and deployment policy are checked separately: name + tracked UID + managed/environment
+labels prove ownership for save, renewal and cleanup, so an already-owned Instance can still be
+sealed or deleted after an image or VPC configuration change; only the borrow/eligibility path
+re-applies the full execution policy.
+
+Idle claim and dispatch acceptance share one database authority boundary: both take the Sandbox
+row lock, and the claim refuses any pending/claimed dispatch or accepted-unreported custody.
+Business activity is touched on dispatch, receipt, report and acceptance boundaries only; a long
+silent execution is custody-busy, not idle. Automatic reclamation can never cancel active work.
+
+### Physical control credential
+
+Runner control authentication is separate from Session workspace authority. The Server signs a
+physical **control** credential under its own audience (`opentag-cloud-runner-control`) at
+creation, alongside the existing Session bootstrap token, and places it in the optional
+`OPENTAG_RUNNER_CONTROL_TOKEN` Instance environment variable; older Runners ignore it. Only this
+credential may resolve a Runner to a **different** current owner after a transfer: the Server
+verifies the signature, resolves the unique row that currently holds `currentResourceName`,
+performs a bounded provider read under the same 45-second provider-read deadline as renewal
+(an ordinary handshake keeps its short deadline) proving that exact tracked UID is still present
+with the original immutable birth labels (the signed control claims), and rechecks the holder row
+after the read before validating that owner's authority (active for execution, exact persisted
+allocation for report/seal). A stale Session bearer can never cross into another Session's authority, even
+within one account. Workspace HTTP keeps accepting only the exact Session audience for the
+current scope. Control renewal requires a valid signature plus the tracked UID and provider
+binding; no token table or file is added. `server:credential` refreshes the current assignment's
+Session token and the control credential, and the control token never enters the native Sandbox,
+archives, public mounts or logs.
+
+An E7-capable Runner negotiates `reuseVersion: 1` in the auth/welcome exchange and is registered
+in the hub as reuse-capable; older E5 Runners are never asked to follow a hand-off (idle deletion
+still saves them). On a changed assignment the Runner quiesces the old controller and native
+child, closes credential/web execution work, discards the old workspace, private material,
+public socket and completed journal only when the trusted-parent assignment marker records a
+successful seal, and rebuilds a fresh journal/controller/workspace before restoring the new
+Session's archive. The same assignment keeps unsaved local bytes; a missing seal proof, a
+cleanup failure or an unproven credential all fail closed with no new execution. Every
+negotiated physical-control attach — including a first bind with no local marker, a process
+restart with local assignment state, or any changed assignment — must receive the Server's
+Session credential for the current holder before the first workspace HTTP claim; the static birth
+bearer is never reused for a different Session, and a credential timeout fails closed. A
+disconnect while the old assignment's rebind cleanup is in flight drains the serialized
+control-work tail and interrupts its credential wait, so the next connection can never race the
+cleanup or publish readiness over an unsettled workspace.
+
+### Local evidence and acceptance boundary
+
+```bash
+pnpm --filter @opentag/server exec vitest run src/__tests__/sandbox-idle-instance-reuse.test.ts
+pnpm --filter @opentag/server exec vitest run src/__tests__/runner-ws.test.ts -t "E7 physical control credential"
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/sandbox-instance-reuse-race.test.ts
+pnpm --filter @opentag/client exec vitest run src/__tests__/runner-workspace-wire.test.ts
+```
+
+The Server suite proves the sweep budget, unsettled-work fences, seal-failure retry, provider
+absence, same-account transfer with zero create, cross-account refusal, non-reuse-capable Runner
+refusal and explicit-stop suppression on real PostgreSQL transactions, including gated
+interleavings (two borrowers, stop versus in-flight borrow, dispatch versus idle claim,
+acceptance versus idle claim) that synchronize on real state changes rather than sleeps. The
+client wire suite proves one physical Runner is rebound to a transferred Session with the same
+physical UID, the borrower's archive is genuinely restored, private material is cleared only
+after a recorded seal, and unsealed or failed-cleanup rebinds stay closed. These fixtures do not
+exercise GCP policy re-verification or a real Instance process restart.
+
+During GCP acceptance, record the origin Session's resource name and UID, then start a second
+same-account Session while the first is idle and before its deletion. Confirm the reuse path
+keeps that physical name and UID without create/PATCH and each Session restores only its own
+archive. Separately, let the idle budget expire, verify provider-confirmed deletion, and restore
+the original Session into a fresh Instance. Also verify a stale Session bearer cannot follow the
+transfer, and explicit stop wins against an in-flight borrow or automatic release.

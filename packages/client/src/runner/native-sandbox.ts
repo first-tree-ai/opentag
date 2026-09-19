@@ -374,7 +374,7 @@ export class NativeSandbox {
         if(fs.existsSync(p)||fs.existsSync('/opt/sandbox-root'))process.exit(10);
         for(const file of ['/proc/self/environ','/proc/1/environ']) {
           const value=fs.readFileSync(file,'utf8');
-          if(value.includes('OPENTAG_RUNNER_BOOTSTRAP_TOKEN')||value.includes('OPENTAG_RUNNER_BACKEND_URL'))process.exit(11);
+          if(value.includes('OPENTAG_RUNNER_BOOTSTRAP_TOKEN')||value.includes('OPENTAG_RUNNER_CONTROL_TOKEN')||value.includes('OPENTAG_RUNNER_BACKEND_URL'))process.exit(11);
         }
         fs.mkdirSync(require('node:path').dirname(p),{recursive:true});fs.writeFileSync(p,'sandbox');
         process.stdout.write('isolated');`;

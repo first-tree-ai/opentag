@@ -1,4 +1,4 @@
-# Cloud Runner 执行（E3–E5）
+# Cloud Runner 执行（E3–E7）
 
 [English](../cloud-runner-execution.md)
 
@@ -13,7 +13,7 @@ Runner 属于 Client，沿用 CLI 发布版本；不新增数据表或迁移。
 - sandboxes 关联 Session 与当前资源，使用 generation、确定的资源名、provider UID、operation name
   防止晚到回调影响新分配，storage_uri 保留稳定持久化地址。
 - 单独的 E3 不保存或恢复 storage_uri。E5 增加[最新工作目录保存与恢复](./cloud-workspace-persistence.md)，
-  包括 Pi 会话状态。IM 可靠投递属于 E4，复用及空闲回收随后实现；E3 验收本身不证明 Cloud 的持久化能力。
+  包括 Pi 会话状态。IM 可靠投递属于 E4，空闲回收与同账号物理实例复用属于 E7；E3 验收本身不证明 Cloud 的持久化能力。
 
 ## 生命周期与控制
 
@@ -21,8 +21,9 @@ Runner 属于 Client，沿用 CLI 发布版本；不新增数据表或迁移。
 资源名，并发请求核对同一个分配。创建或删除结果不明时保留归属和错误状态；创建仍可能到达时，
 GET 404 不代表已清理。删除同时校验 UID 和 etag，避免误删同名替换资源。
 
-Instance 内运行 opentag-runner serve。仅为平台默认 TCP 启动探针声明唯一的容器端口 8080；原生就绪
-验证通过后，Runner 只在该端口接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。
+Instance 内运行 opentag-runner serve。声明唯一的容器端口 8080；原生就绪验证通过后，Runner 默认
+监听该**声明端口**（注入的 PORT 仍是显式覆盖），因此即使运行时未提供 PORT，平台默认 TCP 启动探针
+也一定有可用 socket。该监听器只接受连接并立即结束，不读写数据，也不提供命令、HTTP 或凭证接口。
 控制通道仍是 Runner 主动连接 /api/v1/sandbox-runners/ws 的 WSS；Instance 不开放父容器 HTTP
 控制接口。令牌在首帧发送，绑定当前 Sandbox、Session、generation、资源名，不进入 URL。
 Server 回复心跳，通过当前已认证连接续期令牌。重连使用父进程内存中的新令牌；接收工作及结果前
@@ -245,7 +246,7 @@ loopback 端口，供另行批准的 WSS-only proxy／tunnel 使用；脚本不�
 脚本创建两个独立 Session 分配，并发执行真实原生验收。summary.json 记录源码版本、替代项、资源
 名称／UID、结果与清理。所有正在进行的步骤收敛后才拆除环境。成功、失败及 SIGINT／SIGTERM 都先
 删除云资源，再清理本地 fixture；清理不明则失败并保留资源记录。SIGKILL／主机丢失仍需按记录人工
-核对，不宣称已经有 E7 后台回收。最终验收要求本地门禁、真实云执行与资源删除全部有证据；
+核对，不等待 Server 的 E7 空闲扫描（其本身由上述单元套件覆盖）。最终验收要求本地门禁、真实云执行与资源删除全部有证据；
 validate-only API 仅证明请求兼容。
 
 ## E6：Cloud Session 并发
@@ -310,3 +311,100 @@ CA；普通 HTTPS、公网 GitLab 保留直接出站与系统信任。`gh`、Sla
 
 先部署本次 Server，再更新 Runner 镜像：持久化 Runner 会在严格认证帧中发送 `renewExpired`。
 续发凭证后仍需重新握手，并使用有界重连退避；续发认证允许 45 秒完成 Cloud API 查询。
+
+## E7：空闲回收与同账号物理实例复用
+
+E7 在不引入第二个时间窗或预热池的前提下回收空闲 Cloud 环境。唯一预算是
+OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS（默认 120 秒），从最后一次**业务**活动
+（sandboxes.last_activity_at）起算，心跳不计入。预算内 Instance 保持 ready，原 Session 可
+直接继续而无需保存／恢复。若无人继续，同一预算由现有 Server 进程内的有界扫描（约 15 秒固定
+周期，同一时刻只跑一轮）经 E5 路径封存工作目录后删除 Instance。只有在部署启用工作目录持久化
+时才会自动删除：启动时未启用持久化的旧分配可能持有唯一状态副本，即使后来 Server 启用了
+持久化，也只能由显式 Account stop 处理。这类实例在认领前跳过，原 Session 仍然可用。扫描按
+updated_at 轮转候选，空闲预算仍只使用 last_activity_at，失败或不支持持久化的行不会长期占满批次。
+没有额外保留时钟、预热池或新的调度服务。
+
+E7 当前要求单个 Server 进程：Runner 控制归属、占用和就绪状态都保存在进程内的 RunnerHub。
+仅有数据库 CAS 并不代表支持多 Server 同时工作。关闭数据库前会等待当前扫描结束。
+
+同账号的另一个 Session 可以按需借用该物理 Instance，而不是重新冷启动。借用方必须是同一
+逻辑 Cloud Computer 上的 unallocated Sandbox；候选必须是 ready、未被占用、连接着支持 E7 的
+Runner，且没有 pending 或 accepted／未上报的投递、没有进行中的 acceptance。每一步都持久
+可重试：先校验 provider 持久化能力与部署策略，再原子认领候选（立即撤销执行权）、经 E5 封存并校验最新的 GCS saved + sealed +
+owner-generation 证明，然后在同一事务中锁定两行，先清空原行归属，再把借用行置为 preparing、
+generation + 1，资源名与 UID 完全不变。整个过程不会调用 Cloud Run create、PATCH 或修改配置。
+原 Session 保留自己的稳定 storage_uri 以便日后冷恢复；借用方恢复自己的归档。封存后若转移不能
+提交（包括并发启动已给借用方分配了资源），立即对已封存的原实例执行可验证删除，原 Session 随后
+可从归档冷恢复。只清除认领标记无法重新开放已封存的 Runner；保存结果未确认时仍保留资源重试。
+
+自动认领就是 sandboxes 上唯一的可空列 idle_reclaim_at（迁移 0046，不新增表）。该标记存在
+期间执行权被撤销，start 返回 pending，常规入口返回 pending 而**不会**返回终态
+environment_stopped，因此回收或借用期间到达的消息会重试。封存过程中 lifecycle 仍为 ready；
+只有证明封存成功后才把自动回收的行转为 releasing 并做可验证删除。预算时钟始终是
+last_activity_at；idle_reclaim_at 只记录回收意图归属，因此被放弃的认领会按该行原始预算重试，
+而不是重新开始一个新窗口。已证明封存并转入 releasing 后，删除失败或被中断时扫描凭持久标记在
+下一轮直接重试，不再等待另一个预算。封存失败或结果不明时保留资源归属、认领标记和既有 workspace
+保存标记。provider 确认 UID 不存在时清除绑定；读取失败绝不清除。显式 Account stop 在同一事务中
+清空该标记，先于 cloud DELETE，因此晚到的转移永远无法胜出。
+
+陈旧认领使用创建收敛期限加四个工作目录传输预算（当前额外 480 秒，覆盖 claim、下载、恢复后的
+checkpoint 上传和原生初始化，不是空闲窗口）：preparing 分配在该期限内没有产生
+READY Runner（包括已连接但始终未就绪的恢复）时会重新读取 provider。确认 UID 不存在或被替换时
+清除绑定；仍然存在且通过归属校验的 tracked Instance 带自动意图标记走可验证删除路径，因此该
+Session 的入口持续返回 pending。借用方自己的归档不受影响，下次启动会把它恢复到新一代，而不是
+让 Sandbox 永远停在 preparing。
+
+归属与部署执行策略分开校验：名称 + tracked UID + managed/environment 标签证明归属，用于保存、
+续期和清理，因此镜像或 VPC 配置变化后仍能封存或删除既有 Instance；只有借用／资格路径才重新校验
+完整执行策略。
+
+空闲认领与投递接收共用同一个数据库权威边界：两者都持有 Sandbox 行锁，认领会拒绝任何
+pending／已冻结投递或 accepted 未上报托管。只有在投递、收件、上报和 acceptance 边界才更新
+业务活动；长时间静默执行属于托管占用，不是空闲。自动回收绝不取消进行中的工作。
+
+### 物理控制凭证
+
+Runner 控制认证与 Session 工作目录权威彻底分离。Server 在创建时用独立受众
+（opentag-cloud-runner-control）签发的物理**控制**凭证，与既有 Session bootstrap token 一起
+通过可选的 OPENTAG_RUNNER_CONTROL_TOKEN 环境变量下发；旧 Runner 忽略它。只有该凭证可以在
+转移后把 Runner 解析到**不同**的当前所有者：Server 校验签名，按 currentResourceName 解析唯一
+持有行，在与续期相同的 45 秒 provider 读取期限内做一次有界读取（普通握手仍使用较短期限），证明该
+tracked UID 仍然存在且携带原始不可变 birth 标签（即签名的控制 claims），读取后再复查持有行，最后
+校验该所有者的权威（执行需 active，上报／封存需精确持久
+分配）。过期 Session
+bearer 即使在同账号内也绝不跨入另一个 Session 的权威。工作目录 HTTP 仍只接受精确当前作用域
+的 Session 受众。控制凭证续期需要有效签名、tracked UID 与 provider 绑定；不新增 token 表或
+文件。server:credential 同时刷新当前分配的 Session token 与控制凭证，控制令牌不进入原生
+Sandbox、归档、公开挂载或日志。
+
+支持 E7 的 Runner 在 auth/welcome 中协商 reuseVersion: 1，并在 hub 中登记为可复用；旧 E5
+Runner 永远不会被要求跟随交接（空闲删除仍会保存它们）。分配变化时，Runner 先静默旧控制器与
+原生子进程、关闭凭证／web 执行、仅在可信父目录的 assignment 标记记录封存成功时丢弃旧工作
+目录、私有材料、公开 socket 与已完成 journal，再重建新的 journal／controller／workspace，
+最后才恢复新 Session 的归档。同一分配保留未保存的本地数据；缺少封存证明、清理失败或凭证未
+证明时一律 fail closed，不执行新分配。每一次协商成功的物理控制 attach——包括没有本地标记的首次
+绑定、带本地分配状态的父进程重启、以及任何分配变化——都必须先收到 Server 为当前持有者签发的
+Session 凭证，才能进行第一次工作目录 HTTP claim；静态 birth bearer 绝不用于不同 Session，凭证
+超时同样 fail closed。旧分配的重绑清理仍在进行时若连接断开，会先排空串行控制工作尾并中断其凭证等待，
+因此下一个连接绝不会与清理竞争，也不会在未结算的工作目录上发布就绪。
+
+### 本地证据与真实环境验收边界
+
+```bash
+pnpm --filter @opentag/server exec vitest run src/__tests__/sandbox-idle-instance-reuse.test.ts
+pnpm --filter @opentag/server exec vitest run src/__tests__/runner-ws.test.ts -t "E7 physical control credential"
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/sandbox-instance-reuse-race.test.ts
+pnpm --filter @opentag/client exec vitest run src/__tests__/runner-workspace-wire.test.ts
+```
+
+Server 套件在真实 PostgreSQL 事务上证明预算回收、未结算工作围栏、封存失败重试、provider 缺失、
+零 create 的同账号转移、跨账号拒绝、不可复用 Runner 拒绝以及显式 stop 抑制，并包含以真实状态变化
+（而非 sleep）同步的 gated 交错：两个借用方、stop 与在途借用、dispatch 与空闲认领、acceptance
+与空闲认领。Client wire 套件证明同一个物理 Runner 以不变的物理 UID 重绑到转移后的 Session、真正
+恢复了借用方归档、只有记录封存成功后才清理私有材料，且未封存或清理失败时保持 closed。这些
+fixture 不覆盖 GCP 策略复验或真实 Instance 进程重启。
+
+GCP 验收时，先记录原 Session 的资源名与 UID，在其空闲且尚未删除时启动同账号第二个 Session。
+确认复用保持相同物理名称与 UID，不执行 create／PATCH，且每个 Session 只恢复自己的归档。
+另行等待空闲预算耗尽，确认 provider 已删除资源，再把原 Session 恢复到新的 Instance。
+同时验证旧 Session bearer 无法跟随转移，以及显式 stop 能胜过进行中的借用或自动释放。

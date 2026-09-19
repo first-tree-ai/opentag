@@ -15,7 +15,10 @@ export interface ProbeRunnerToolsOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly execFile?: typeof execFileAsync;
   readonly expected?: Readonly<Record<string, string>>;
+  /** Default timeout for every probe; defaults to 10 seconds. */
   readonly timeoutMs?: number;
+  /** Native Pi startup may need a longer budget than generic tools. */
+  readonly piTimeoutMs?: number;
 }
 
 const DEFAULT_TOOLS: ReadonlyArray<{ name: string; args: readonly string[] }> = [
@@ -100,10 +103,36 @@ async function probeCommand(
     // Anchored patterns evaluate the first output line; tools like gh print extra lines after it.
     return { name: label, ok: evaluate(firstLine), ...(firstLine ? { detail: firstLine.slice(0, 200) } : {}) };
   } catch (error) {
-    const err = error as { message?: string; stderr?: string; stdout?: string };
-    const detail = `${err.stdout ?? ""}${err.stderr ?? err.message ?? error}`.trim().slice(0, 400);
-    return { name: label, ok: false, detail };
+    const detail = probeFailureDetail(error);
+    return { name: label, ok: false, ...(detail ? { detail } : {}) };
   }
+}
+
+/**
+ * Best-effort diagnostic text for a failed probe command. execFile rejects with `stdout`/`stderr`
+ * as (possibly empty) strings; `??` never falls through an empty string, so an empty capture must
+ * explicitly fall back to the failure message or the error itself. Signal/killed/code metadata is
+ * preserved when present so a native startup timeout or kill is diagnosable without a re-run.
+ */
+function probeFailureDetail(error: unknown): string {
+  const err = error as {
+    message?: string;
+    stderr?: string;
+    stdout?: string;
+    killed?: boolean;
+    signal?: string;
+    code?: number | string;
+  };
+  const captured = `${err.stdout ?? ""}${err.stderr ?? ""}`.trim();
+  const fallback = (typeof err.message === "string" ? err.message : String(error)).trim();
+  const status = [
+    err.code !== undefined && err.code !== null ? `code=${err.code}` : "",
+    err.signal ? `signal=${err.signal}` : "",
+    err.killed ? "killed" : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join(" ");
+  return `${captured || fallback}${status ? ` (${status})` : ""}`.trim().slice(0, 400);
 }
 
 export async function probeRunnerTools(options: ProbeRunnerToolsOptions = {}): Promise<readonly RunnerToolProbe[]> {
@@ -113,8 +142,14 @@ export async function probeRunnerTools(options: ProbeRunnerToolsOptions = {}): P
   const results: RunnerToolProbe[] = [];
   for (const tool of DEFAULT_TOOLS) {
     results.push(
-      await probeCommand(run, tool.name, tool.name, tool.args, env, timeoutMs, (detail) =>
-        evaluateVersionProbe(tool.name, detail, options.expected),
+      await probeCommand(
+        run,
+        tool.name,
+        tool.name,
+        tool.args,
+        env,
+        (tool.name === "pi" ? options.piTimeoutMs : undefined) ?? timeoutMs,
+        (detail) => evaluateVersionProbe(tool.name, detail, options.expected),
       ),
     );
   }

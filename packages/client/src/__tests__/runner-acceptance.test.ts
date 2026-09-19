@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentPromptRequest,
   AgentRuntime,
@@ -11,10 +11,12 @@ import type {
   AgentRuntimeProbeResult,
 } from "../agent-runtime/types.js";
 import { createTrackedFactory, RUNNER_PI_PROBE_TIMEOUT_MS, runRunnerAcceptance } from "../runner/acceptance.js";
+import * as runnerProbes from "../runner/probe.js";
 import { CONTEXT_TREE_PACKAGED_SKILL_DIRECTORIES } from "../runner/skills.js";
 
 const directories: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   const { rm } = await import("node:fs/promises");
   await Promise.all(directories.splice(0).map((path) => rm(path, { force: true, recursive: true })));
 });
@@ -382,6 +384,27 @@ describe("runner acceptance disposable Context Tree", () => {
         (item) => item.name === "model" && item.detail?.includes("offline checks must pass before real mode"),
       ),
     ).toBe(true);
+  });
+
+  it("applies the native startup budget only to the Pi offline probe", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "opentag-runner-probe-"));
+    directories.push(workspace);
+    const probe = vi.spyOn(runnerProbes, "probeRunnerTools").mockResolvedValue([{ name: "pi", ok: true }]);
+    await runRunnerAcceptance({
+      mode: "offline",
+      piHome: workspace,
+      runtimeHome: workspace,
+      sessionDirectory: join(workspace, "sessions"),
+      workspace,
+      path: "/runner/bin",
+      assembleSkills: async () => fakeAssembledSkills(workspace),
+    });
+    // Generic tools keep the 10s default; only the native Pi provider probe carries the 30s
+    // startup allowance, so a slow `pi --version` in a gVisor sandbox cannot be killed early.
+    expect(probe).toHaveBeenCalledWith({
+      env: { PATH: "/runner/bin", HOME: workspace },
+      piTimeoutMs: RUNNER_PI_PROBE_TIMEOUT_MS,
+    });
   });
 
   it("prepares the native Pi probe with the 30s Runner budget", async () => {

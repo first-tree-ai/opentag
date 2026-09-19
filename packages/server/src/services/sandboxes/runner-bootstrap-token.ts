@@ -18,6 +18,13 @@ import { z } from "zod";
  */
 
 const BOOTSTRAP_AUDIENCE = "opentag-cloud-runner";
+/**
+ * E7 physical control audience. A control token names the immutable physical birth identity of
+ * one Cloud Run Instance and is the ONLY credential that may resolve a Runner to a different
+ * current holder after an ownership transfer. It can never be replayed as a Session workspace
+ * bearer (separate audience) and vice versa.
+ */
+const CONTROL_AUDIENCE = "opentag-cloud-runner-control";
 const BOOTSTRAP_ISSUER = "opentag";
 const BOOTSTRAP_DEFAULT_TTL_SECONDS = 1_800;
 
@@ -69,10 +76,43 @@ export class RunnerBootstrapTokenService {
 
   async verify(token: string): Promise<RunnerBootstrapClaims> {
     try {
-      return this.#claims((await this.#verifyJwt(token)).payload);
+      return this.#claims((await this.#verifyJwt(token, BOOTSTRAP_AUDIENCE)).payload);
     } catch {
       throw new RunnerBootstrapTokenError();
     }
+  }
+
+  /**
+   * E7 physical control credential for one immutable birth identity. Same claims shape, distinct
+   * audience: verification can never succeed across the two credential kinds.
+   */
+  async issueControl(claims: RunnerBootstrapClaims): Promise<string> {
+    const payload = RunnerBootstrapClaimsSchema.parse(claims);
+    const issuedAt = Math.floor(this.#now().getTime() / 1000);
+    return new SignJWT(payload)
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setIssuer(BOOTSTRAP_ISSUER)
+      .setAudience(CONTROL_AUDIENCE)
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + this.#ttlSeconds)
+      .sign(this.#key);
+  }
+
+  async verifyControl(token: string): Promise<RunnerBootstrapClaims> {
+    try {
+      return this.#claims((await this.#verifyJwt(token, CONTROL_AUDIENCE)).payload);
+    } catch {
+      throw new RunnerBootstrapTokenError();
+    }
+  }
+
+  /**
+   * Expired control evidence. The caller must still prove the tracked physical UID and provider
+   * binding before a fresh control credential is issued; signature validity alone is never
+   * authority.
+   */
+  async expiredControlClaimsForRenewal(token: string): Promise<RunnerBootstrapClaims | undefined> {
+    return this.#expiredClaims(token, CONTROL_AUDIENCE);
   }
 
   /**
@@ -83,8 +123,12 @@ export class RunnerBootstrapTokenService {
    * this renewal ability, including across Server restarts; no separate refresh-token store.
    */
   async expiredClaimsForRenewal(token: string): Promise<RunnerBootstrapClaims | undefined> {
+    return this.#expiredClaims(token, BOOTSTRAP_AUDIENCE);
+  }
+
+  async #expiredClaims(token: string, audience: string): Promise<RunnerBootstrapClaims | undefined> {
     try {
-      await this.#verifyJwt(token);
+      await this.#verifyJwt(token, audience);
     } catch (error) {
       if (error instanceof errors.JWTExpired && error.claim === "exp") {
         try {
@@ -97,10 +141,10 @@ export class RunnerBootstrapTokenService {
     return undefined;
   }
 
-  #verifyJwt(token: string) {
+  #verifyJwt(token: string, audience: string) {
     return jwtVerify(token, this.#key, {
       algorithms: ["HS256"],
-      audience: BOOTSTRAP_AUDIENCE,
+      audience,
       currentDate: this.#now(),
       issuer: BOOTSTRAP_ISSUER,
       requiredClaims: ["exp", "iat"],

@@ -14,6 +14,7 @@ import {
   imBindings,
   imMessageDeliveries,
   imMessages,
+  sandboxes,
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
@@ -39,7 +40,7 @@ export interface RecordedTurnRecord {
 }
 
 export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
-export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation";
+export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation" | "claimed";
 export type DeliveryReleaseStatus = "released" | "already_released" | "conflict";
 export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
@@ -132,6 +133,16 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state !== "pending") return "conflict";
+      // E7 authority boundary: automatic idle reclamation and dispatch custody serialize on the
+      // Sandbox row lock. A ready Cloud environment claimed for reclamation can never accept new
+      // dispatch columns, so the idle claim and the pending delivery cannot both commit.
+      const [sandbox] = await transaction
+        .select({ lifecycle: sandboxes.lifecycle, idleReclaimAt: sandboxes.idleReclaimAt })
+        .from(sandboxes)
+        .where(eq(sandboxes.sessionId, scope.session.id))
+        .limit(1)
+        .for("update");
+      if (sandbox && (sandbox.lifecycle !== "ready" || sandbox.idleReclaimAt !== null)) return "claimed";
       const existing = existingDispatchStatus(scope.delivery, request.requestId, inputHash);
       if (existing) return existing;
       const [dispatched] = await transaction

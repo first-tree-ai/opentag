@@ -34,6 +34,30 @@ describe("SkillService object lifecycle", () => {
     expect(store.keys()).toEqual([]);
   });
 
+  it("keeps the committed row's object when the insert throws after committing", async () => {
+    const accountId = await h.createUser();
+    const agentId = await h.createAgent(accountId);
+    const store = new FakeSkillObjectStore();
+    const service = new SkillService({
+      database: h.committingThenThrowingInsertDatabase(),
+      store,
+      keyPrefix: "skills",
+    });
+
+    await expect(h.upload(service, accountId, agentId, "committed-then-throw")).rejects.toThrow(
+      "forced insert commit-then-throw",
+    );
+    // The row committed before the failure surfaced, so the conditional cleanup must leave its
+    // object alone: no delete, the row is listed, and its bundle still reads.
+    expect(store.deletes).toBe(0);
+    const listed = await service.list(accountId, agentId);
+    expect(listed.skills).toHaveLength(1);
+    expect(store.keys()).toHaveLength(1);
+    const skillId = listed.skills[0]?.id as string;
+    const bundle = await service.openBundle(accountId, agentId, skillId);
+    expect(bundle.sha256).toBe(listed.skills[0]?.archiveSha256);
+  });
+
   it("completes an insert without inspecting the object, even when head fails", async () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);

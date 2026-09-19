@@ -34,6 +34,7 @@ export interface SkillHarness {
   bumpRevision(skillId: string): Promise<void>;
   databasePausingFirstReturning(beforeReturn: () => Promise<void>): DatabaseClient;
   failingInsertDatabase(): DatabaseClient;
+  committingThenThrowingInsertDatabase(): DatabaseClient;
   failingUpdateDatabase(): DatabaseClient;
   capturingLogger(): { logger: ServiceLogger; warns: Array<Record<string, unknown>> };
 }
@@ -181,6 +182,38 @@ export function createSkillHarness(unit: UnitDatabase): SkillHarness {
     });
   }
 
+  /**
+   * Wraps the client so a Skill row insert commits and then throws, modelling a dropped connection
+   * that returns no result even though the row landed.
+   */
+  function committingThenThrowingInsertDatabase(): DatabaseClient {
+    return new Proxy(database, {
+      get(target, property, receiver) {
+        if (property === "insert") {
+          return (table: unknown) => {
+            if (table === agentSkills) {
+              const insert = Reflect.get(target, "insert", receiver) as (value: unknown) => {
+                values: (input: unknown) => { returning: () => Promise<unknown> };
+              };
+              const builder = insert.call(target, table);
+              return {
+                values: (input: unknown) => ({
+                  returning: async () => {
+                    await builder.values(input).returning();
+                    throw new Error("forced insert commit-then-throw");
+                  },
+                }),
+              };
+            }
+            const insert = Reflect.get(target, "insert", receiver) as (value: unknown) => unknown;
+            return insert.call(target, table);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+  }
+
   /** Wraps the client so a Skill row update fails, exercising the replace compensation path. */
   function failingUpdateDatabase(): DatabaseClient {
     return new Proxy(database, {
@@ -233,6 +266,7 @@ export function createSkillHarness(unit: UnitDatabase): SkillHarness {
     bumpRevision,
     databasePausingFirstReturning,
     failingInsertDatabase,
+    committingThenThrowingInsertDatabase,
     failingUpdateDatabase,
     capturingLogger,
   };

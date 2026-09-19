@@ -261,10 +261,9 @@ export class SkillService {
     const now = this.#now();
     let row: SkillRow | undefined;
     try {
-      // The try covers ONLY the insert. A brand-new Skill id is referenced by no other row, so a
-      // failed insert leaves this object referenced by nothing and it can only be ours — deleting it
-      // is safe here. Nothing after a committed insert may ever delete it: the row would be left
-      // pointing at a missing object, which no retry could repair.
+      // The try covers ONLY the insert. Nothing after a committed insert may ever delete its object:
+      // the row would be left pointing at a missing object, which no retry could repair. The catch's
+      // cleanup is therefore conditional — it deletes only when the row is absent.
       [row] = await this.#database
         .insert(agentSkills)
         .values({
@@ -287,7 +286,10 @@ export class SkillService {
         .returning();
       if (!row) throw new Error("The Skill insert returned no row");
     } catch (error) {
-      await bestEffortDeleteSkillObject(store, objectKey, "new Skill object after a failed insert", this.#logger);
+      // The insert may have committed before the failure surfaced — a dropped connection returns no
+      // result even though the row landed — so the guard re-reads the row by id and deletes the
+      // object only while it is ABSENT. An unreadable row is treated as do-not-delete.
+      await discardUnreferencedObject(this.#database, store, objectKey, skillId, this.#logger);
       if (isUniqueViolation(error, "agent_skills_agent_name_unique")) throw skillNameConflict();
       throw error;
     }

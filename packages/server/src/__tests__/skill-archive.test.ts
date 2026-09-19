@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import { normalizeSkillArchive } from "../services/skills/index.js";
 import {
   buildRawZip,
+  buildStoredZip,
   gzipOfZeros,
   skillManifest,
   tarGz,
   tarGzWithDeclaredSize,
+  tarMemberModes,
   zipFiles,
   zipLocalHeader,
   zipWithDeclaredSize,
@@ -228,6 +230,69 @@ describe("normalizeSkillArchive", () => {
     const normalized = await normalizeSkillArchive(zip, "zip");
     expect(normalized.manifest.name).toBe("stored-ok");
     expect(normalized.files.map((file) => file.path)).toEqual(["SKILL.md", "lib/x.txt"]);
+  });
+
+  it("carries a Unix zip member's execute bit into the canonical tar", async () => {
+    const zip = buildStoredZip([
+      { name: "SKILL.md", body: skillManifest("exec-skill"), unixMode: 0o100644 },
+      { name: "scripts/run.sh", body: "#!/bin/sh\n", unixMode: 0o100755 },
+    ]);
+    const tar = await tarGz([
+      { name: "SKILL.md", body: skillManifest("exec-skill"), mode: 0o644 },
+      { name: "scripts/run.sh", body: "#!/bin/sh\n", mode: 0o755 },
+    ]);
+    const fromZip = await normalizeSkillArchive(zip, "zip");
+    const fromTar = await normalizeSkillArchive(tar, "tar.gz");
+    // The same tree normalizes to identical bytes whichever container it arrived in.
+    expect(fromZip.sha256).toBe(fromTar.sha256);
+    const modes = await tarMemberModes(fromZip.archive);
+    expect(modes.get("scripts/run.sh")).toBe(0o755);
+    expect(modes.get("SKILL.md")).toBe(0o644);
+  });
+
+  it("rejects a Unix zip symlink and a setuid member", async () => {
+    await failure(
+      normalizeSkillArchive(
+        buildStoredZip([
+          { name: "SKILL.md", body: skillManifest("link-skill"), unixMode: 0o100644 },
+          { name: "link", body: "SKILL.md", unixMode: 0o120777 },
+        ]),
+        "zip",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    await failure(
+      normalizeSkillArchive(
+        buildStoredZip([
+          { name: "SKILL.md", body: skillManifest("setuid-skill"), unixMode: 0o100644 },
+          { name: "evil", body: "x", unixMode: 0o104755 },
+        ]),
+        "zip",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+  });
+
+  it("normalizes a DOS-made zip to 0644", async () => {
+    const zip = buildStoredZip([
+      { name: "SKILL.md", body: skillManifest("dos-skill") },
+      { name: "scripts/run.sh", body: "#!/bin/sh\n" },
+    ]);
+    const normalized = await normalizeSkillArchive(zip, "zip");
+    const modes = await tarMemberModes(normalized.archive);
+    expect(modes.get("scripts/run.sh")).toBe(0o644);
+  });
+
+  it("rejects a malformed zip central directory", async () => {
+    await failure(
+      normalizeSkillArchive(new TextEncoder().encode("not a zip at all"), "zip"),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+    const valid = buildStoredZip([{ name: "SKILL.md", body: skillManifest("truncated") }]);
+    await failure(
+      normalizeSkillArchive(valid.slice(0, valid.byteLength - 16), "zip"),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
   });
 
   it("rejects a gzip that inflates past the decompressed-stream ceiling", () => {

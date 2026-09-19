@@ -10,6 +10,7 @@ import {
 import { type UnzipFileInfo, type Unzipped, unzipSync } from "fflate";
 import { type Entry as TarEntry, type Headers as TarHeaders, extract as tarExtract } from "tar-stream";
 import { SkillServiceError, skillArchiveInvalid, skillArchiveTooLarge } from "./errors.js";
+import { readZipDirectory, type ZipDirectoryEntry } from "./skill-zip-directory.js";
 
 /**
  * Reads a Skill upload into a flat list of file members.
@@ -28,6 +29,30 @@ export interface RawSkillEntry {
   body: Uint8Array;
   /** Original permission bits, used only to decide the exec bit on re-pack. */
   mode: number;
+}
+
+/**
+ * Injectable ceilings so tests can exercise a bound cheaply without materializing a real bomb. All
+ * values default to the production constants; `DEFAULT_MAX_TAR_STREAM_BYTES` is the default guard
+ * over the decompressed tar stream (payload plus bounded per-member framing).
+ */
+export interface SkillReadLimits {
+  maxUnpackedBytes?: number;
+  maxTarStreamBytes?: number;
+}
+
+export const DEFAULT_MAX_TAR_STREAM_BYTES = SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
+
+function resolveReadLimits(limits?: SkillReadLimits): { maxUnpackedBytes: number; maxTarStreamBytes: number } {
+  const maxUnpackedBytes = limits?.maxUnpackedBytes ?? SKILL_UNPACKED_MAX_BYTES;
+  const maxTarStreamBytes = limits?.maxTarStreamBytes ?? DEFAULT_MAX_TAR_STREAM_BYTES;
+  if (!Number.isInteger(maxUnpackedBytes) || maxUnpackedBytes <= 0) {
+    throw skillArchiveInvalid("Skill read limit maxUnpackedBytes must be a positive integer");
+  }
+  if (!Number.isInteger(maxTarStreamBytes) || maxTarStreamBytes <= 0) {
+    throw skillArchiveInvalid("Skill read limit maxTarStreamBytes must be a positive integer");
+  }
+  return { maxUnpackedBytes, maxTarStreamBytes };
 }
 
 /**
@@ -79,13 +104,6 @@ function mapArchiveReadError(error: unknown): SkillServiceError {
   return skillArchiveInvalid("Skill archive could not be read");
 }
 
-/**
- * Backstop over the decompressed tar stream: the payload ceiling plus enough framing for the maximum
- * member count (two 512-byte blocks per member, headers and padding). A gzip that inflates beyond
- * this without yielding members is aborted before it can burn unbounded CPU or memory.
- */
-const MAX_TAR_STREAM_BYTES = SKILL_UNPACKED_MAX_BYTES + (SKILL_MAX_ENTRIES + 2) * 512 * 2;
-
 /** Counts decompressed bytes as they pass and fails the stream once the ceiling is exceeded. */
 function createTarStreamMeter(limit: number): Transform {
   let seen = 0;
@@ -99,12 +117,16 @@ function createTarStreamMeter(limit: number): Transform {
 }
 
 /** Reads one tar entry body, refusing to read past its declared size or the global unpacked cap. */
-async function readTarEntryBody(entry: AsyncIterable<Uint8Array>, size: number): Promise<Uint8Array> {
+async function readTarEntryBody(
+  entry: AsyncIterable<Uint8Array>,
+  size: number,
+  maxUnpackedBytes: number,
+): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of entry) {
     total += chunk.byteLength;
-    if (total > size || total > SKILL_UNPACKED_MAX_BYTES) {
+    if (total > size || total > maxUnpackedBytes) {
       throw skillArchiveInvalid("Skill archive member exceeds its declared size");
     }
     chunks.push(Buffer.from(chunk));
@@ -117,6 +139,7 @@ async function readTarEntryBody(entry: AsyncIterable<Uint8Array>, size: number):
 async function collectTarEntry(
   entry: TarEntry,
   state: { seen: Set<string>; declaredBytes: number },
+  maxUnpackedBytes: number,
 ): Promise<RawSkillEntry | null> {
   const header = entry.header;
   if ((header.type ?? "file") === "directory") {
@@ -137,15 +160,18 @@ async function collectTarEntry(
   state.seen.add(path);
   const size = typeof header.size === "number" && header.size >= 0 ? header.size : 0;
   state.declaredBytes += size;
-  if (state.declaredBytes > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
-  const body = await readTarEntryBody(entry, size);
+  if (state.declaredBytes > maxUnpackedBytes) throw skillArchiveTooLarge();
+  const body = await readTarEntryBody(entry, size, maxUnpackedBytes);
   return { path, body, mode };
 }
 
-async function readTarGzEntries(bytes: Uint8Array): Promise<RawSkillEntry[]> {
+async function readTarGzEntries(
+  bytes: Uint8Array,
+  limits: { maxUnpackedBytes: number; maxTarStreamBytes: number },
+): Promise<RawSkillEntry[]> {
   const source = Readable.from([bytes]);
   const gunzip = createGunzip();
-  const meter = createTarStreamMeter(MAX_TAR_STREAM_BYTES);
+  const meter = createTarStreamMeter(limits.maxTarStreamBytes);
   const extract = tarExtract();
   const streamed = pipeline(source, gunzip, meter, extract);
   const entries: RawSkillEntry[] = [];
@@ -155,7 +181,7 @@ async function readTarGzEntries(bytes: Uint8Array): Promise<RawSkillEntry[]> {
     for await (const entry of extract) {
       count += 1;
       if (count > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
-      const collected = await collectTarEntry(entry, state);
+      const collected = await collectTarEntry(entry, state, limits.maxUnpackedBytes);
       if (collected) entries.push(collected);
     }
     await streamed;
@@ -185,7 +211,12 @@ interface ZipBoundsState {
  * sizes are therefore summed against the input length — overlapping members cannot all fit inside
  * the archive — and a stored entry whose two sizes disagree is rejected outright.
  */
-function assertZipEntryWithinBounds(info: UnzipFileInfo, state: ZipBoundsState, inputBytes: number): void {
+function assertZipEntryWithinBounds(
+  info: UnzipFileInfo,
+  state: ZipBoundsState,
+  inputBytes: number,
+  maxUnpackedBytes: number,
+): void {
   state.count += 1;
   if (state.count > SKILL_MAX_ENTRIES) throw skillArchiveInvalid("Skill archive has too many members");
   if (
@@ -201,18 +232,44 @@ function assertZipEntryWithinBounds(info: UnzipFileInfo, state: ZipBoundsState, 
   }
   state.compressedBytes += info.size;
   if (state.compressedBytes > inputBytes) throw skillArchiveInvalid("Skill archive members overlap");
-  if (info.originalSize > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
+  if (info.originalSize > maxUnpackedBytes) throw skillArchiveTooLarge();
   state.declaredBytes += info.originalSize;
-  if (state.declaredBytes > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
+  if (state.declaredBytes > maxUnpackedBytes) throw skillArchiveTooLarge();
 }
 
-function readZipEntries(bytes: Uint8Array): RawSkillEntry[] {
+const S_IFMT = 0o170000;
+const S_IFREG = 0o100000;
+const S_IFDIR = 0o040000;
+const S_IFLNK = 0o120000;
+
+/**
+ * The canonical mode for a zip member: `0755` when a Unix-made regular file carries any execute bit,
+ * `0644` otherwise — the same normalization the tar path applies. A Unix symlink, a special file, or
+ * any setuid/setgid/sticky bit is rejected; a DOS/Windows entry has no mode to lose, so it is `0644`.
+ */
+function canonicalZipMode(rawName: string, directory: Map<string, ZipDirectoryEntry>): number {
+  const info = directory.get(rawName);
+  if (!info?.madeByUnix || info.unixMode === 0) return 0o644;
+  const type = info.unixMode & S_IFMT;
+  if (type === S_IFLNK) throw skillArchiveInvalid("Skill archive may not contain links");
+  if (type !== S_IFREG && type !== S_IFDIR) {
+    throw skillArchiveInvalid("Skill archive may not contain special files");
+  }
+  if ((info.unixMode & 0o7000) !== 0) {
+    throw skillArchiveInvalid("Skill archive member carries a setuid or setgid bit");
+  }
+  return (info.unixMode & 0o111) !== 0 ? 0o755 : 0o644;
+}
+
+function readZipEntries(bytes: Uint8Array, maxUnpackedBytes: number): RawSkillEntry[] {
+  const directory = new Map<string, ZipDirectoryEntry>();
+  for (const item of readZipDirectory(bytes, SKILL_MAX_ENTRIES + 1)) directory.set(item.name, item);
   const state: ZipBoundsState = { seen: new Set<string>(), declaredBytes: 0, compressedBytes: 0, count: 0 };
   let unzipped: Unzipped;
   try {
     unzipped = unzipSync(bytes, {
       filter: (info) => {
-        assertZipEntryWithinBounds(info, state, bytes.byteLength);
+        assertZipEntryWithinBounds(info, state, bytes.byteLength, maxUnpackedBytes);
         return true;
       },
     });
@@ -222,7 +279,7 @@ function readZipEntries(bytes: Uint8Array): RawSkillEntry[] {
   // Backstop on the bytes that actually exist, independent of any declared size.
   let actualBytes = 0;
   for (const body of Object.values(unzipped)) actualBytes += body?.byteLength ?? 0;
-  if (actualBytes > SKILL_UNPACKED_MAX_BYTES) throw skillArchiveTooLarge();
+  if (actualBytes > maxUnpackedBytes) throw skillArchiveTooLarge();
   const entries: RawSkillEntry[] = [];
   for (const [rawName, body] of Object.entries(unzipped)) {
     if (rawName.endsWith("/") || body === undefined) continue;
@@ -230,11 +287,16 @@ function readZipEntries(bytes: Uint8Array): RawSkillEntry[] {
     if (isIgnoredSkillPath(path)) continue;
     if (state.seen.has(path)) throw skillArchiveInvalid(`Skill archive member is duplicated: ${path}`);
     state.seen.add(path);
-    entries.push({ path, body, mode: 0o644 });
+    entries.push({ path, body, mode: canonicalZipMode(rawName, directory) });
   }
   return entries;
 }
 
-export async function readSkillEntries(bytes: Uint8Array, format: SkillArchiveFormat): Promise<RawSkillEntry[]> {
-  return format === "zip" ? readZipEntries(bytes) : readTarGzEntries(bytes);
+export async function readSkillEntries(
+  bytes: Uint8Array,
+  format: SkillArchiveFormat,
+  limits?: SkillReadLimits,
+): Promise<RawSkillEntry[]> {
+  const resolved = resolveReadLimits(limits);
+  return format === "zip" ? readZipEntries(bytes, resolved.maxUnpackedBytes) : readTarGzEntries(bytes, resolved);
 }

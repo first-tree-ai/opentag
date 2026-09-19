@@ -1,6 +1,9 @@
 import { Buffer } from "node:buffer";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import { gzipSync, zipSync } from "fflate";
-import { type Headers as TarHeaders, pack as tarPack } from "tar-stream";
+import { type Headers as TarHeaders, extract as tarExtract, pack as tarPack } from "tar-stream";
 
 /**
  * Archive fixtures for the Skill tests. Real `tar.gz`/`zip` bytes are built through the same
@@ -148,13 +151,17 @@ export interface RawZipEntry {
   originalSize: number;
   /** Byte offset of this entry's local header within the local section. */
   offset: number;
+  /** "Version made by" high byte `3` marks a Unix ZIP, which is the only place a mode lives. */
+  madeByUnix?: boolean;
+  /** The Unix mode, shifted into the high 16 bits of `externalFileAttributes`. */
+  unixMode?: number;
 }
 
 function zipCentralEntry(entry: RawZipEntry): Buffer {
   const nameBytes = Buffer.from(entry.name, "utf8");
   const record = Buffer.alloc(46);
   record.writeUInt32LE(0x02014b50, 0);
-  record.writeUInt16LE(20, 4);
+  record.writeUInt16LE(entry.madeByUnix ? 0x0314 : 0x0014, 4);
   record.writeUInt16LE(20, 6);
   record.writeUInt16LE(0, 8);
   record.writeUInt16LE(entry.compression, 10);
@@ -166,7 +173,7 @@ function zipCentralEntry(entry: RawZipEntry): Buffer {
   record.writeUInt16LE(0, 32);
   record.writeUInt16LE(0, 34);
   record.writeUInt16LE(0, 36);
-  record.writeUInt32LE(0, 38);
+  record.writeUInt32LE(entry.unixMode === undefined ? 0 : (entry.unixMode << 16) >>> 0, 38);
   record.writeUInt32LE(entry.offset, 42);
   return Buffer.concat([record, nameBytes]);
 }
@@ -188,6 +195,39 @@ export function buildRawZip(local: Uint8Array, entries: RawZipEntry[]): Uint8Arr
   return new Uint8Array(Buffer.concat([localBytes, central, end]));
 }
 
+export interface StoredZipEntry {
+  name: string;
+  body: Uint8Array | string;
+  /** When set, the entry is Unix-made with this external mode; otherwise it is a DOS entry. */
+  unixMode?: number;
+}
+
+/**
+ * A well-formed stored (uncompressed) zip. Each entry gets its own local record with a correct
+ * offset, and a Unix caller may set the external mode that the central-directory parser reads.
+ */
+export function buildStoredZip(entries: StoredZipEntry[]): Uint8Array {
+  const local: Buffer[] = [];
+  const central: RawZipEntry[] = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const body = bytesOf(entry.body);
+    const record = Buffer.concat([zipLocalHeader(entry.name, 0, body.byteLength, body.byteLength), Buffer.from(body)]);
+    central.push({
+      name: entry.name,
+      compression: 0,
+      size: body.byteLength,
+      originalSize: body.byteLength,
+      offset,
+      madeByUnix: entry.unixMode !== undefined,
+      unixMode: entry.unixMode,
+    });
+    local.push(record);
+    offset += record.byteLength;
+  }
+  return buildRawZip(Buffer.concat(local), central);
+}
+
 /**
  * A zip whose deflate record declares a huge uncompressed size for zero compressed bytes. `fflate`'s
  * filter sees the declared size before it allocates the output buffer, which is the contract the
@@ -202,4 +242,17 @@ export function zipWithDeclaredSize(name: string, uncompressedSize: number): Uin
 /** A gzip stream that inflates to `size` zero bytes — a compression bomb. */
 export function gzipOfZeros(size: number): Uint8Array {
   return gzipSync(new Uint8Array(size), { level: 9, mtime: 0 });
+}
+
+/** The member name → mode map of a stored `tar.gz`, for asserting the canonical repack. */
+export async function tarMemberModes(bytes: Uint8Array): Promise<Map<string, number>> {
+  const extract = tarExtract();
+  const modes = new Map<string, number>();
+  const done = pipeline(Readable.from([Buffer.from(bytes)]), createGunzip(), extract);
+  for await (const entry of extract) {
+    if ((entry.header.type ?? "file") !== "directory") modes.set(entry.header.name, entry.header.mode ?? 0);
+    entry.resume();
+  }
+  await done;
+  return modes;
 }

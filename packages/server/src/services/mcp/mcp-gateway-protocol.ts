@@ -198,11 +198,15 @@ async function discoverResult(handlers: McpGatewayHandlers): Promise<unknown> {
 function instructionsOf(notes: readonly string[]): { instructions?: string } {
   if (notes.length === 0) return {};
   const text = notes.join("\n");
-  const bounded =
-    Buffer.byteLength(text, "utf8") > MCP_GATEWAY_INSTRUCTIONS_MAX_BYTES
-      ? `${text.slice(0, MCP_GATEWAY_INSTRUCTIONS_MAX_BYTES)}…`
-      : text;
-  return { instructions: bounded };
+  if (Buffer.byteLength(text, "utf8") <= MCP_GATEWAY_INSTRUCTIONS_MAX_BYTES) return { instructions: text };
+  /*
+   * Cut by bytes, because the bound is in bytes. `slice` counts UTF-16 units, so a note in any
+   * non-ASCII script could still exceed the limit the check had just applied. Truncating the encoded
+   * form and decoding with the fatal-free default drops a trailing partial sequence rather than
+   * emitting a broken one.
+   */
+  const encoded = Buffer.from(text, "utf8").subarray(0, MCP_GATEWAY_INSTRUCTIONS_MAX_BYTES - 3);
+  return { instructions: `${new TextDecoder().decode(encoded)}…` };
 }
 
 /**

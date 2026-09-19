@@ -37,11 +37,6 @@ export interface McpUpstreamCallInput {
 
 export interface McpUpstreamCallResult {
   result: unknown;
-  /** The era actually spoken, so a caller can refresh a stale cache. */
-  era: "modern" | "legacy";
-  protocolVersion: string;
-  /** True when the cached era proved wrong and the row's cache should be dropped. */
-  eraInvalidated: boolean;
 }
 
 export interface McpUpstreamCallerOptions {
@@ -85,7 +80,7 @@ export class McpUpstreamCaller {
     });
     try {
       const result = await this.#dispatchModern(transport, input);
-      return { result, era: "modern", protocolVersion: version, eraInvalidated: false };
+      return { result };
     } catch (error) {
       const advertised = retryableVersionRefusal(error);
       if (!advertised) throw error;
@@ -97,13 +92,7 @@ export class McpUpstreamCaller {
         fetcher: this.#fetcher,
         protocolVersion: retryVersion,
       });
-      const result = await this.#dispatchModern(retry, input);
-      return {
-        result,
-        era: "modern",
-        protocolVersion: retryVersion,
-        eraInvalidated: retryVersion !== version,
-      };
+      return { result: await this.#dispatchModern(retry, input) };
     }
   }
 
@@ -156,12 +145,7 @@ export class McpUpstreamCaller {
         ...(input.signal ? { signal: input.signal } : {}),
       },
     );
-    return {
-      result,
-      era: "legacy",
-      ...(negotiatedVersion ? { protocolVersion: negotiatedVersion } : { protocolVersion: "" }),
-      eraInvalidated: false,
-    };
+    return { result };
   }
 }
 

@@ -78,12 +78,7 @@ function call(fetcher: McpOutboundFetcher, overrides: Record<string, unknown> = 
 describe("the modern path", () => {
   it("calls once at the row's cached version", async () => {
     const { fetcher, sent } = scriptedFetcher((body) => rpcOk(body, { content: [] }));
-    const result = await call(fetcher);
-    expect(result).toMatchObject({
-      era: "modern",
-      protocolVersion: MCP_MODERN_PROTOCOL_VERSION,
-      eraInvalidated: false,
-    });
+    await call(fetcher);
     expect(sent).toHaveLength(1);
     expect(sent[0]?.method).toBe("tools/call");
     expect(sent[0]?.headers["MCP-Protocol-Version"]).toBe(MCP_MODERN_PROTOCOL_VERSION);
@@ -115,10 +110,10 @@ describe("the modern path", () => {
           })
         : rpcOk(body, { content: [] }),
     );
-    const result = await call(fetcher, { cachedVersion: "2099-01-01" });
-    expect(result.era).toBe("modern");
+    await call(fetcher, { cachedVersion: "2099-01-01" });
+    // Two dispatches, and both on the modern path: the refusal proved the first never executed.
     expect(sent.map((exchange) => exchange.method)).toEqual(["tools/call", "tools/call"]);
-    expect(result.eraInvalidated).toBe(true);
+    expect(sent[1]?.headers["MCP-Protocol-Version"]).toBe(MCP_MODERN_PROTOCOL_VERSION);
   });
 });
 
@@ -137,9 +132,9 @@ describe("the legacy path", () => {
           }
         : rpcOk(body, { content: [] }),
     );
-    const result = await call(fetcher, { cachedEra: "legacy", cachedVersion: "2025-06-18" });
-    expect(result).toMatchObject({ era: "legacy", protocolVersion: "2025-06-18" });
+    await call(fetcher, { cachedEra: "legacy", cachedVersion: "2025-06-18" });
     expect(sent.map((exchange) => exchange.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    expect(sent[2]?.headers["MCP-Protocol-Version"]).toBe("2025-06-18");
     // The session the handshake opened rides every subsequent request.
     expect(sent[2]?.headers["mcp-session-id"]).toBe("sess-1");
   });
@@ -160,8 +155,7 @@ describe("the legacy path", () => {
     const { fetcher, sent } = scriptedFetcher((body) =>
       rpcOk(body, body.method === "initialize" ? { protocolVersion: MCP_MODERN_PROTOCOL_VERSION } : { content: [] }),
     );
-    const result = await call(fetcher, { cachedEra: "legacy" });
-    expect(result.protocolVersion).toBe("");
+    await call(fetcher, { cachedEra: "legacy" });
     expect(sent[1]?.headers["MCP-Protocol-Version"]).toBeUndefined();
   });
 });

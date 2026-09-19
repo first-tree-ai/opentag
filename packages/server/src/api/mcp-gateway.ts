@@ -27,15 +27,7 @@ const ERROR_STATUS: Record<McpGatewayErrorCode, number> = {
   execution_unknown: 404,
   execution_closed: 409,
   scope_denied: 403,
-  invalid_request: 400,
-  request_too_large: 413,
-  protocol_unsupported: 400,
-  tool_unknown: 404,
-  tool_ambiguous: 409,
-  catalog_unavailable: 503,
-  result_too_large: 502,
   timeout: 504,
-  unknown: 500,
 };
 
 /** JSON-RPC parse/invalid-request codes, used before a method is even known. */
@@ -62,6 +54,18 @@ export function registerMcpGatewayRoutes(app: FastifyInstance, options: McpGatew
    */
   app.register(async (scope) => {
     scope.setErrorHandler(async (error, _request, reply) => sendGatewayFailure(reply, null, error, options));
+    /*
+     * The Streamable HTTP client may open a GET for a server-initiated stream. This gateway has
+     * none — every reply is a single JSON body — so the honest answer is "not allowed here", not
+     * Fastify's route-not-found, which reads as the endpoint being absent entirely.
+     */
+    scope.get(MCP_GATEWAY_PATH, async (_request, reply) =>
+      reply
+        .status(405)
+        .header("Allow", "POST")
+        .header("Cache-Control", "no-store")
+        .send(jsonRpcError(null, RPC_INVALID_REQUEST, "The MCP gateway accepts POST only")),
+    );
     scope.post(
       MCP_GATEWAY_PATH,
       { preHandler: authPreHandler, bodyLimit: MCP_GATEWAY_REQUEST_MAX_BYTES },
@@ -76,6 +80,15 @@ async function handleGatewayRequest(
   options: McpGatewayRoutesOptions,
 ): Promise<unknown> {
   reply.header("Cache-Control", "no-store");
+  /*
+   * An abandoned request must not keep its upstream call — and its concurrency slot — alive for the
+   * full tool deadline. The socket closing is the only signal the gateway gets that the model's turn
+   * is gone, so it is wired straight through to the outbound fetch.
+   */
+  const aborted = new AbortController();
+  request.raw.once("close", () => {
+    if (!reply.sent) aborted.abort();
+  });
   const context = request.mcpGatewayContext;
   /* v8 ignore next -- the preHandler always sets the context or answers. */
   if (!context) throw new McpGatewayError("unauthenticated", "MCP gateway authentication is required");
@@ -92,7 +105,7 @@ async function handleGatewayRequest(
     return sendGatewayFailure(reply, id, error, options);
   }
 
-  const handlers = buildHandlers(options, execution.accountId, execution.agentId);
+  const handlers = buildHandlers(options, execution.accountId, execution.agentId, aborted.signal);
   try {
     const outcome = await dispatchGatewayRequest(rpc, handlers);
     if (outcome.kind === "accepted") return reply.status(202).send();
@@ -110,7 +123,12 @@ async function handleGatewayRequest(
  * while a transport error would end the turn over a condition the user can fix. Failures of the
  * *catalogue* still propagate — a client that cannot list tools has nothing to act on.
  */
-function buildHandlers(options: McpGatewayRoutesOptions, accountId: string, agentId: string): McpGatewayHandlers {
+function buildHandlers(
+  options: McpGatewayRoutesOptions,
+  accountId: string,
+  agentId: string,
+  signal: AbortSignal,
+): McpGatewayHandlers {
   return {
     listTools: () => options.service.catalog(accountId, agentId),
     callTool: async (name, args) => {
@@ -119,11 +137,17 @@ function buildHandlers(options: McpGatewayRoutesOptions, accountId: string, agen
           accountId,
           agentId,
           name,
+          signal,
           ...(args ? { arguments: args } : {}),
         });
         return result;
       } catch (error) {
-        const message = error instanceof McpServiceError ? error.message : "The MCP tool call failed";
+        // An abort is the caller's own doing, not something to describe back to it as a tool failure.
+        const message = signal.aborted
+          ? "The MCP tool call was cancelled"
+          : error instanceof McpServiceError
+            ? error.message
+            : "The MCP tool call failed";
         options.logger?.warn?.({ code: "MCP_GATEWAY_TOOL_CALL_FAILED", agentId }, "An MCP gateway tool call failed");
         return toolErrorResult(message);
       }

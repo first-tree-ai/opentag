@@ -232,17 +232,6 @@ export class McpServerService {
   // ---------------------------------------------------------------- bindings
 
   /**
-   * One Agent's mounts as raw joined rows, for the runtime gateway.
-   *
-   * `listAgentServers` answers the same query but maps to the management DTO, which deliberately
-   * omits the tool snapshot's contents and every credential-shaped column — correct for an API
-   * response, useless for building a tool catalogue. This returns the rows themselves so the gateway
-   * can read `tools`, `protocol_era`, and the override columns without a second round trip.
-   *
-   * Ownership is proven the same way every other read in this service proves it: the Agent must
-   * belong to the Account and not be deleted, and the definition must be the Account's.
-   */
-  /**
    * Whether this Agent has anything the runtime gateway could reach.
    *
    * Asked once per execution open, so it is a bounded existence check rather than a read of the
@@ -281,6 +270,17 @@ export class McpServerService {
     return rows.length > 0;
   }
 
+  /**
+   * One Agent's mounts as raw joined rows, for the runtime gateway.
+   *
+   * `listAgentServers` answers the same query but maps to the management DTO, which deliberately
+   * omits the tool snapshot's contents and every credential-shaped column — correct for an API
+   * response, useless for building a tool catalogue. This returns the rows themselves so the gateway
+   * can read `tools`, `protocol_era`, and the override columns without a second round trip.
+   *
+   * Ownership is proven the same way every other read in this service proves it: the Agent must
+   * belong to the Account and not be deleted, and the definition must be the Account's.
+   */
   async listAgentBindings(accountId: string, agentId: string): Promise<McpJoinedBinding[]> {
     await this.#requireAgent(accountId, agentId);
     const rows = await this.#database

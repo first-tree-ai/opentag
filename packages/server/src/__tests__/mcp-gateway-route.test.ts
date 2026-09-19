@@ -8,6 +8,7 @@ import { LiveMcpServicePolicy } from "../runtime-credentials/mcp-policy.js";
 import type { RuntimeExecutionRecord } from "../runtime-credentials/types.js";
 import { MCP_ERROR_CODES, McpServiceError } from "../services/mcp/errors.js";
 import type { McpGatewayService } from "../services/mcp/mcp-gateway-service.js";
+import { McpTransportError } from "../services/mcp/mcp-transport.js";
 
 /**
  * The route's own contract: which status each refusal carries, and that every body stays JSON-RPC.
@@ -138,6 +139,23 @@ describe("request shape", () => {
     await app.close();
   });
 
+  /*
+   * A Streamable HTTP client may open a GET for a server stream. This gateway has none, so the
+   * honest answer is "not allowed here" — Fastify's 404 reads as the endpoint being absent.
+   */
+  it("answers a GET with 405 and an Allow header", async () => {
+    const { app, token } = harness();
+    const response = await app.inject({
+      method: "GET",
+      url: MCP_GATEWAY_PATH,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(response.statusCode).toBe(405);
+    expect(response.headers.allow).toBe("POST");
+    expect((response.json() as Record<string, unknown>).jsonrpc).toBe("2.0");
+    await app.close();
+  });
+
   it("marks every response uncacheable", async () => {
     const { app, token } = harness();
     const response = await app.inject({
@@ -207,6 +225,32 @@ describe("service failures", () => {
     await app.close();
   });
 
+  /*
+   * The upstream's own words are what let a model retry with better arguments, so a transport error
+   * must not be flattened into a generic failure. `McpTransportError` extends `McpServiceError` and
+   * already carries the bounded upstream message, which is what makes this work.
+   */
+  it("forwards the upstream complaint to the model", async () => {
+    const { app, token } = harness({
+      callTool: (async () => {
+        throw new McpTransportError(MCP_ERROR_CODES.UPSTREAM_ERROR, "title must not be empty", 200, {
+          code: -32602,
+          message: "title must not be empty",
+        });
+      }) as unknown as McpGatewayService["callTool"],
+    });
+    const response = await post(app, token, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "linear__create_issue", arguments: {} },
+    });
+    const result = response.body.result as { isError: boolean; content: { text: string }[] };
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("title must not be empty");
+    await app.close();
+  });
+
   it("redacts an unexpected tool-call failure rather than echoing it", async () => {
     const { app, token } = harness({
       callTool: (async () => {
@@ -232,6 +276,32 @@ describe("service failures", () => {
     const response = await post(app, token, { jsonrpc: "2.0", id: 1, method: "tools/list" });
     expect(response.status).toBe(500);
     expect((response.body.error as { message: string }).message).toBe("Internal error");
+    await app.close();
+  });
+});
+
+describe("cancellation", () => {
+  /*
+   * An abandoned request must not hold its upstream call — and its concurrency slot — for the full
+   * tool deadline, which is now two minutes. The socket closing is the only signal the gateway gets
+   * that the model's turn is gone.
+   */
+  it("passes a signal the caller can abort into the tool call", async () => {
+    let seen: AbortSignal | undefined;
+    const { app, token } = harness({
+      callTool: (async (input: { signal?: AbortSignal }) => {
+        seen = input.signal;
+        return { result: { content: [] } };
+      }) as unknown as McpGatewayService["callTool"],
+    });
+    await post(app, token, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "linear__x" },
+    });
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(seen?.aborted).toBe(false);
     await app.close();
   });
 });

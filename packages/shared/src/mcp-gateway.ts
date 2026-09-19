@@ -62,9 +62,6 @@ export const MCP_GATEWAY_TOOL_NAME_MAX_BYTES = 128;
 /** Total tools the gateway will publish for one Agent, across every Server it has bound. */
 export const MCP_GATEWAY_MAX_TOOLS = 400;
 
-/** Serialized bound on one `tools/call` result forwarded back to the caller. */
-export const MCP_GATEWAY_RESULT_MAX_BYTES = 1024 * 1024;
-
 /** Inbound JSON-RPC request bound. */
 export const MCP_GATEWAY_REQUEST_MAX_BYTES = 1024 * 1024;
 
@@ -149,21 +146,18 @@ function shortDigest(value: string): string {
  * These describe the *gateway*, not an upstream Server. An upstream failure is reported to the model
  * as a tool result with `isError: true`, because a model reads and recovers from that, while a
  * transport error ends its turn.
+ *
+ * The list is exactly what the gateway produces. Codes for conditions it can describe but never
+ * reaches — an ambiguous tool name, an oversized result, a catalogue outage — were declared and
+ * mapped to statuses before anything raised them, which made the contract describe a larger surface
+ * than the implementation has.
  */
 export const MCP_GATEWAY_ERROR_CODES = [
   "unauthenticated",
   "execution_unknown",
   "execution_closed",
   "scope_denied",
-  "invalid_request",
-  "request_too_large",
-  "protocol_unsupported",
-  "tool_unknown",
-  "tool_ambiguous",
-  "catalog_unavailable",
-  "result_too_large",
   "timeout",
-  "unknown",
 ] as const;
 export const McpGatewayErrorCodeSchema = z.enum(MCP_GATEWAY_ERROR_CODES);
 export type McpGatewayErrorCode = z.infer<typeof McpGatewayErrorCodeSchema>;

@@ -81,32 +81,30 @@ export class McpGatewayService {
    */
   async catalog(accountId: string, agentId: string): Promise<McpGatewayCatalog> {
     const bindings = await this.#servers.listAgentBindings(accountId, agentId);
-    const tools: McpGatewayTool[] = [];
     const notes: string[] = [];
-    const seen = new Map<string, string>();
+    const candidates = composeCandidates(usableMounts(bindings, notes));
+    const claimants = claimantsByName(candidates);
+    const tools: McpGatewayTool[] = [];
+    const reported = new Set<string>();
     let truncated = false;
-    for (const mount of usableMounts(bindings, notes)) {
-      for (const tool of mount.tools) {
-        if (tools.length >= this.#maxTools) {
-          truncated = true;
-          break;
+    for (const candidate of candidates) {
+      const owners = claimants.get(candidate.name) ?? [];
+      if (owners.length > 1) {
+        if (!reported.has(candidate.name)) {
+          reported.add(candidate.name);
+          notes.push(`Tool "${candidate.name}" is unavailable: ${owners.join(" and ")} both produce that name.`);
         }
-        const name = composeGatewayToolName(mount.serverName, tool.name);
-        const owner = seen.get(name);
-        if (owner !== undefined) {
-          /*
-           * Two snapshot entries composed to one name. Publishing either would make the call
-           * ambiguous and route silently to whichever won the race, so both are dropped and the
-           * collision is stated — a missing tool with a reason beats a tool that calls the wrong
-           * Server.
-           */
-          notes.push(`Tool "${name}" is unavailable: ${owner} and ${mount.serverName} both produce that name.`);
-          continue;
-        }
-        seen.set(name, mount.serverName);
-        tools.push({ name, description: tool.description, inputSchema: tool.inputSchema ?? undefined });
+        continue;
       }
-      if (truncated) break;
+      if (tools.length >= this.#maxTools) {
+        truncated = true;
+        break;
+      }
+      tools.push({
+        name: candidate.name,
+        description: candidate.tool.description,
+        inputSchema: candidate.tool.inputSchema ?? undefined,
+      });
     }
     if (truncated) {
       notes.push(`Only the first ${this.#maxTools} tools are listed; some bound MCP Servers are not represented.`);
@@ -191,6 +189,40 @@ function usableMounts(bindings: readonly McpJoinedBinding[], notes: string[]): U
     usable.push({ joined, serverName, tools });
   }
   return usable;
+}
+
+interface ToolCandidate {
+  name: string;
+  serverName: string;
+  tool: MCPToolSnapshot;
+}
+
+/** Every tool of every usable mount, with its model-facing name already composed. */
+function composeCandidates(mounts: readonly UsableMount[]): ToolCandidate[] {
+  return mounts.flatMap((mount) =>
+    mount.tools.map((tool) => ({
+      name: composeGatewayToolName(mount.serverName, tool.name),
+      serverName: mount.serverName,
+      tool,
+    })),
+  );
+}
+
+/**
+ * Which Servers claim each composed name.
+ *
+ * Counted across every mount before anything is published, because a collision can only be judged
+ * once both sides are known. Publishing the first arrival and dropping the second — what an
+ * as-you-go check does — leaves a tool in the catalogue that can never be called: `dispatchToolCall`
+ * resolves over the same snapshots, finds two matches and refuses. Withholding both and saying so is
+ * better than advertising one that always fails.
+ */
+function claimantsByName(candidates: readonly ToolCandidate[]): Map<string, string[]> {
+  const claimants = new Map<string, string[]>();
+  for (const candidate of candidates) {
+    claimants.set(candidate.name, [...(claimants.get(candidate.name) ?? []), candidate.serverName]);
+  }
+  return claimants;
 }
 
 /** Recompute composed names over the Agent's usable mounts and find the exact match. */

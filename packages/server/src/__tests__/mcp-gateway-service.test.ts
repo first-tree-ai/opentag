@@ -155,6 +155,37 @@ describe("catalog", () => {
   });
 
   /*
+   * Both sides of a collision are withheld, not just the loser. Publishing the first arrival leaves
+   * a tool in the catalogue that can never be called, because `callTool` resolves over the same
+   * snapshots, finds two matches and refuses — advertised and permanently broken is worse than
+   * absent with a reason.
+   */
+  it("withholds every tool of a colliding name and says so once", async () => {
+    // Reachable through a Server whose own `tools/list` repeats a name; the probe stores the page
+    // as given, so the snapshot can hold two entries that compose identically.
+    const { service } = build([
+      mount({ name: "linear", tools: [{ name: "search" }, { name: "create" }, { name: "search" }] }),
+    ]);
+    const catalog = await service.catalog(ACCOUNT, AGENT);
+    expect(catalog.tools.map((tool) => tool.name)).not.toContain("linear__search");
+    // The Server's other tool is unaffected; only the clashing name is withheld.
+    expect(catalog.tools.map((tool) => tool.name)).toContain("linear__create");
+    expect(catalog.notes.filter((note) => note.includes("linear__search"))).toHaveLength(1);
+    // Exactly one note, not one per occurrence.
+    expect(catalog.tools.filter((tool) => tool.name === "linear__search")).toHaveLength(0);
+  });
+
+  it("refuses to route a colliding name rather than picking a Server", async () => {
+    const { service, upstreamCall } = build([
+      mount({ name: "linear", tools: [{ name: "search" }, { name: "search" }] }),
+    ]);
+    await expect(service.callTool({ accountId: ACCOUNT, agentId: AGENT, name: "linear__search" })).rejects.toThrow(
+      /No MCP tool named/,
+    );
+    expect(upstreamCall).not.toHaveBeenCalled();
+  });
+
+  /*
    * A tool whose snapshot row is malformed contributes nothing rather than reaching a model with a
    * name or schema the gateway could not validate.
    */

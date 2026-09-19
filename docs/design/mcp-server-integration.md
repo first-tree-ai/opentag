@@ -320,6 +320,9 @@ The rules are applied uniformly to all of them:
   would have refused.
 - At most four concurrent outbound requests per Account, a 10-second deadline, and a 1 MiB response
   bound. Discovery hops count against the same budget, so the chain cannot be used to sidestep it.
+  **These are the management-plane numbers.** A runtime tool call uses a second fetcher instance with
+  its own deadline (120 s) and its own per-Account counter (8) — see [the gateway](#the-mcp-gateway)
+  for why sharing them was wrong.
 
 `mcp-transport.ts`, `mcp-oauth.ts`, `mcp-probe.ts`, and `mcp-oauth-flow-service.ts` must not call
 `fetch` themselves; they take `fetchOutbound` from the policy module. A regression test scans those
@@ -685,8 +688,25 @@ are transport errors.
 No new database table, and therefore no migration: the token store is in memory. No user-visible API
 key and no management surface — the credential is issued automatically per execution and never shown.
 Every outbound request goes through the same `McpOutboundFetcher` a probe uses, so the SSRF gate, the
-four-per-Account concurrency limit, the redirect refusal, and the response bound all apply unchanged
-to a runtime call.
+redirect refusal, and response bound all apply unchanged to a runtime call — those are properties of
+the fetcher class.
+
+What a runtime call does **not** share is the probe's *budget*. It uses its own fetcher instance,
+which means its own deadline and its own per-Account concurrency counter. A probe is a bounded read
+on the Server's own schedule; a tool call runs as long as the tool does — a search, a database
+query, code execution, a browser action — and ten seconds turned all of those into a generic failure
+the model could not act on. Separating the counters also stops a background probe or a token refresh
+from exhausting the slots a live turn needs, which matters because Claude Code issues tool calls in
+parallel.
+
+**A failed tool call is never replayed.** The probe retries freely because `server/discover` and
+`tools/list` are reads; a `tools/call` is not, and replaying one can file the same issue twice while
+the gateway reports only the second. A retry happens only for JSON-RPC `-32022
+UnsupportedProtocolVersion`, which a Server emits while rejecting the envelope and which therefore
+proves nothing ran. Every other failure — a 5xx, a JSON-RPC error carrying the tool's own complaint,
+a `-32601` that may have come from inside the tool, a `400`/`404` whose body is not a recognized
+modern error — propagates. A wrong cached era costs one failed call, and re-probing is what corrects
+it; the runtime path never re-detects an era on its own.
 
 ## HTTP API
 

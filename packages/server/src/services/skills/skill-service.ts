@@ -259,8 +259,13 @@ export class SkillService {
     });
     await this.#putObject(store, objectKey, normalized.archive, normalized.sha256);
     const now = this.#now();
+    let row: SkillRow | undefined;
     try {
-      const [row] = await this.#database
+      // The try covers ONLY the insert. A brand-new Skill id is referenced by no other row, so a
+      // failed insert leaves this object referenced by nothing and it can only be ours — deleting it
+      // is safe here. Nothing after a committed insert may ever delete it: the row would be left
+      // pointing at a missing object, which no retry could repair.
+      [row] = await this.#database
         .insert(agentSkills)
         .values({
           id: skillId,
@@ -281,15 +286,15 @@ export class SkillService {
         })
         .returning();
       if (!row) throw new Error("The Skill insert returned no row");
-      await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);
-      this.#logUpload("Skill uploaded", row, normalized.sha256);
-      return toSkillDetail(row);
     } catch (error) {
-      // A brand-new Skill id is referenced by no other row, so this object can only be ours.
-      await bestEffortDeleteSkillObject(store, objectKey, "new Skill object after a failed row write", this.#logger);
+      await bestEffortDeleteSkillObject(store, objectKey, "new Skill object after a failed insert", this.#logger);
       if (isUniqueViolation(error, "agent_skills_agent_name_unique")) throw skillNameConflict();
       throw error;
     }
+    // No `ensureObjectPresent`: no other writer can hold a key under a brand-new skill id, so there
+    // is no concurrent delete to repair — only an extra failure mode after the row already committed.
+    this.#logUpload("Skill uploaded", row, normalized.sha256);
+    return toSkillDetail(row);
   }
 
   async #replaceSkill(
@@ -340,6 +345,8 @@ export class SkillService {
     if (existing.objectKey !== objectKey) {
       await deleteReplacedObject(this.#database, store, existing, objectKey, this.#logger);
     }
+    // Deliberately outside the update's try/catch: the row is already committed, so a failure here
+    // surfaces as SKILL_STORAGE_UNAVAILABLE and must never trigger cleanup of `objectKey`.
     await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);
     this.#logUpload("Skill replaced", row, normalized.sha256);
     return toSkillDetail(row);

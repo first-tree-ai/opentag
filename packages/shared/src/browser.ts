@@ -19,6 +19,7 @@ export type { TurnFailureReason } from "./runtime-domain.js";
 export * from "./runtime-protocol.js";
 export * from "./sandbox.js";
 export * from "./sign-in-destination.js";
+export * from "./skill.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

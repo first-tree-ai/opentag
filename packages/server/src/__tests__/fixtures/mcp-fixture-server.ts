@@ -389,9 +389,41 @@ export class McpFixtureServer {
     return challenge === this.#pkceChallenge;
   }
 
+  /**
+   * The two tool methods, as one step.
+   *
+   * Grouped rather than inlined into `#mcp` so that dispatch stays under the repository's complexity
+   * ratchet; returns whether it answered.
+   */
+  #tools(
+    response: ServerResponse,
+    method: string,
+    request: { id?: unknown; params?: { cursor?: string; name?: string } },
+  ): boolean {
+    if (method === "tools/list") {
+      const pages = this.#options.toolPages ?? [{ tools: [{ name: "echo" }] }];
+      const index = request.params?.cursor ? Number(request.params.cursor.replace("page-", "")) : 0;
+      const page = pages[index] ?? { tools: [] };
+      rpc(response, request.id, {
+        tools: page.tools,
+        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+      });
+      return true;
+    }
+    if (method === "tools/call") {
+      rpc(response, request.id, toolCallResult(request.params?.name));
+      return true;
+    }
+    return false;
+  }
+
   async #mcp(response: ServerResponse, body: unknown): Promise<void> {
     if (this.#options.onMcpRequest) await this.#options.onMcpRequest();
-    const request = body as { id?: unknown; method?: string; params?: { cursor?: string } };
+    const request = body as {
+      id?: unknown;
+      method?: string;
+      params?: { cursor?: string; name?: string; arguments?: unknown };
+    };
     const method = request.method ?? "";
     if (method === "server/discover") {
       if (this.#options.legacy) {
@@ -420,19 +452,15 @@ export class McpFixtureServer {
       response.end();
       return;
     }
-    if (method === "tools/list") {
-      const pages = this.#options.toolPages ?? [{ tools: [{ name: "echo" }] }];
-      const index = request.params?.cursor ? Number(request.params.cursor.replace("page-", "")) : 0;
-      const page = pages[index] ?? { tools: [] };
-      rpc(response, request.id, {
-        tools: page.tools,
-        ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-      });
-      return;
-    }
+    if (this.#tools(response, method, request)) return;
     response.writeHead(404, { "content-type": "application/json" });
     response.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "no method" } }));
   }
+}
+
+/** Echoes the call back so a routing test can assert which Server received which tool. */
+function toolCallResult(name: unknown): Record<string, unknown> {
+  return { content: [{ type: "text", text: JSON.stringify({ name }) }], isError: false };
 }
 
 async function readBody(request: IncomingMessage): Promise<unknown> {

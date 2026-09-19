@@ -79,6 +79,18 @@ export const AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE = `${AGENT_MCP_AUTHORIZATION
 export const AGENT_MCP_PROBE_TEMPLATE = `${AGENT_MCP_SERVER_TEMPLATE}/probe`;
 /** A public static document describing this deployment as an OAuth client (CIMD). */
 export const MCP_CLIENT_METADATA_PATH = "/oauth/client-metadata.json";
+/*
+ * Agent Skills. A Skill is owned by exactly one Agent, so every Account- and Computer-scoped path is
+ * addressed under an Agent. The runtime path is session-proof authenticated and takes the Skill name
+ * rather than the id, because the Agent CLI only knows names; the Server resolves the proof's agent.
+ */
+export const AGENT_SKILLS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/skills`;
+export const AGENT_SKILL_TEMPLATE = `${AGENT_SKILLS_TEMPLATE}/:skillId`;
+export const AGENT_SKILL_BUNDLE_TEMPLATE = `${AGENT_SKILL_TEMPLATE}/bundle`;
+export const COMPUTER_AGENT_SKILLS_TEMPLATE = `${API_V1_PREFIX}/computer/agents/:agentId/skills`;
+export const COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE = `${COMPUTER_AGENT_SKILLS_TEMPLATE}/:skillId/bundle`;
+export const RUNTIME_SKILLS_PATH = `${API_V1_PREFIX}/runtime/skills`;
+export const RUNTIME_SKILL_BUNDLE_TEMPLATE = `${RUNTIME_SKILLS_PATH}/:name/bundle`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
@@ -118,6 +130,7 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
+  runtimeSkills: RUNTIME_SKILLS_PATH,
   runtimeDurableWork: RUNTIME_DURABLE_WORK_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
@@ -322,4 +335,28 @@ export function runtimeDurableWorkPath(kind: string, key: string): string {
 export const AGENT_CONTEXT_TREE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/context-tree`;
 export function agentContextTreePath(agentId: string): string {
   return `${agentByIdPath(agentId)}/context-tree`;
+}
+
+export function agentSkillsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/skills`;
+}
+
+export function agentSkillPath(agentId: string, skillId: string): string {
+  return `${agentSkillsPath(agentId)}/${encodeURIComponent(skillId)}`;
+}
+
+export function agentSkillBundlePath(agentId: string, skillId: string): string {
+  return `${agentSkillPath(agentId, skillId)}/bundle`;
+}
+
+export function computerAgentSkillsPath(agentId: string): string {
+  return `${API_V1_PREFIX}/computer/agents/${encodeURIComponent(agentId)}/skills`;
+}
+
+export function computerAgentSkillBundlePath(agentId: string, skillId: string): string {
+  return `${computerAgentSkillsPath(agentId)}/${encodeURIComponent(skillId)}/bundle`;
+}
+
+export function runtimeSkillBundlePath(name: string): string {
+  return `${RUNTIME_SKILLS_PATH}/${encodeURIComponent(name)}/bundle`;
 }

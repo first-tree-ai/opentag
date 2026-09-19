@@ -23,7 +23,7 @@ import type { SkillCommandDependencies } from "./shared.js";
  * Agent's authored work.
  */
 
-function conflictError(name: string, cause: OpenTagApiError): CommandError {
+function conflictError(name: string, cause: { requestId?: string }): CommandError {
   return new CommandError(
     {
       code: SKILL_ERROR_CODES.NAME_CONFLICT,
@@ -35,6 +35,16 @@ function conflictError(name: string, cause: OpenTagApiError): CommandError {
     `A Skill named "${name}" already exists; pass --replace to replace it`,
     { cause },
   );
+}
+
+/**
+ * CONTRACT GAP: `SKILL_*` codes are not yet members of the shared `ErrorCodeSchema`, so a server
+ * 409 arrives with the status-derived `VALIDATION_ERROR` code. Until the contract lane adds them,
+ * treat any 409 from an upload as the name conflict so the user still sees the `--replace` hint.
+ */
+function isUploadConflict(error: unknown): error is OpenTagApiError {
+  if (!(error instanceof OpenTagApiError)) return false;
+  return error.code === SKILL_ERROR_CODES.NAME_CONFLICT || error.status === 409;
 }
 
 async function resolveSkill(nameOrId: string, authority: SkillAuthority): Promise<Skill> {
@@ -72,9 +82,7 @@ export async function runSkillPush(
         ? await authority.api.uploadAgentSkill(authority.accessToken, authority.agentId, input)
         : await authority.api.pushRuntimeSkill(authority.proof, input);
   } catch (error) {
-    if (error instanceof OpenTagApiError && error.code === SKILL_ERROR_CODES.NAME_CONFLICT) {
-      throw conflictError(packed.name, error);
-    }
+    if (isUploadConflict(error)) throw conflictError(packed.name, error);
     throw error;
   }
   const cwd = dependencies.cwd ?? process.cwd();

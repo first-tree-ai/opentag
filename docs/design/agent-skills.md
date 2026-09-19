@@ -67,13 +67,16 @@ The Server validates every upload before it stores anything:
 
 The parser is the same bounded, dependency-free function the contract layer exports; it understands
 plain and quoted scalars and `>`/`|` block scalars, and refuses anything it cannot represent
-faithfully rather than guessing. **`name` and `description` must be strings.** A collection value is
-rejected the way the Agent Skills reference validator rejects it — a flow list or map
-(`description: [read, write]`, `description: {purpose: read files}`) and a block sequence or mapping
-after the key (`description:` followed by `- item` lines or `purpose: read files`). Folding a
-collection into a string first would accept a `SKILL.md` that is not a valid Skill manifest. The
-manifest description is trimmed of leading and trailing whitespace, because a block scalar's chomping
-indicator otherwise leaves a trailing newline in a value that is stored and shown as a single line.
+faithfully rather than guessing. **`name` and `description` must be strings.** The value is
+classified by YAML's structural rules rather than by listing collection shapes: a plain value is
+rejected when its effective first line starts with a flow indicator (`[`, `{`, `]`, `}`, `,`), an
+anchor/alias/tag/directive indicator (`&`, `*`, `!`, `%`, `@`, a backtick), or a block-sequence or
+block-mapping indicator (`-`, `?`, `:` followed by space or end of line), and when any line of a plain
+scalar contains a mapping colon (`: ` or a trailing `:`). That covers flow lists and maps, block
+sequences, block mappings, and explicit `? key` / `: value` entries, while a `|`/`>` block whose text
+contains `- item` or `key: value` lines is still a string. The manifest description is trimmed of
+leading and trailing whitespace, because a block scalar's chomping indicator otherwise leaves a
+trailing newline in a value that is stored and shown as a single line.
 
 Because the Server re-packs deterministically, **the stored `sha256` is the Server's, not the
 uploader's.** The `x-opentag-skill-sha256` header is an integrity check on the transfer, not a claim
@@ -261,8 +264,8 @@ Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no data
 | Area | What is asserted |
 | --- | --- |
 | Name rules | 64-character names accepted; uppercase, leading/trailing hyphen, consecutive hyphens, 65-character, empty, underscore, and space names rejected; every reserved name rejected and an ordinary name accepted |
-| Manifest parser | Plain (including multi-line, folded like `>`) and single-/double-quoted (including doubled quotes and escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored with nested maps and block sequences; block-scalar descriptions trimmed of leading and trailing whitespace; a `|` block containing `- item` lines is still a string |
-| Manifest rejection | Missing frontmatter, unterminated frontmatter, an indented line with no preceding key, missing `name` or `description`, a duplicate `name`/`description`, an inline comment on a plain value, a collection value for `name`/`description` (flow list/map or block sequence/mapping), invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
+| Manifest parser | Plain (including multi-line, folded like `>`) and single-/double-quoted (including doubled quotes and escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored with nested maps and block sequences; block-scalar descriptions trimmed of leading and trailing whitespace; a `|` block containing `- item` or `key: value` lines is still a string |
+| Manifest rejection | Missing frontmatter, unterminated frontmatter, an indented line with no preceding key, missing `name` or `description`, a duplicate `name`/`description`, an inline comment on a plain value, a structurally collection-valued `name`/`description` (every plain-scalar start indicator, block sequence/mapping, explicit `? key`/`: value`, flow list/map on the key line or a continuation line, a mapping key after a quote), a plain value containing `: ` or ending in `:`, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
 | Resource schemas | Round trips for `SkillSchema`, `SkillDetailSchema`, `ListAgentSkillsResponseSchema`, `RuntimeSkillManifestSchema` and `SkillInstallMarkerSchema`; rejection of a bad sha, `revision: 0`, an over-limit archive, an over-limit runtime list, and unknown keys |
 | Error codes | Every code has metadata, every metadata key is a known code, and each status/category matches the table |
 | HTTP paths | Each builder produces the expected string and percent-encodes arguments containing spaces and slashes |

@@ -29,7 +29,12 @@ import { computers, imBindings, slackInstallations, users } from "../../../db/sc
 import { ConnectionRegistry } from "../../../runtime/connection-registry.js";
 import type { ProviderReadinessSource } from "../../computers/index.js";
 import { ApplicationCipher } from "../../crypto.js";
-import type { FeishuRegistration, FeishuRegistrationGateway } from "../../im-bindings/feishu/index.js";
+import type {
+  FeishuBindingActivation,
+  FeishuCandidateCheckOutcome,
+  FeishuRegistration,
+  FeishuRegistrationGateway,
+} from "../../im-bindings/feishu/index.js";
 import { FeishuSetupService } from "../../im-bindings/feishu/index.js";
 import { ImBindingService } from "../../im-bindings/index.js";
 import { AgentSetupService, type AgentSetupServiceOptions } from "../agent-setup-service.js";
@@ -115,6 +120,7 @@ interface HarnessOptions {
   imCliReadiness?: ImCliReadinessStatus;
   credentialExecutionReadiness?: { status: IntegrationCredentialExecutionStatus };
   registrations?: FeishuRegistrationGateway;
+  activation?: FeishuBindingActivation;
   slackOAuthAvailable?: boolean;
   prepareComputer?: NonNullable<AgentSetupServiceOptions["prepareComputer"]>;
 }
@@ -137,7 +143,7 @@ function harness(options: HarnessOptions = {}) {
         throw new Error("The scenario did not expect a Feishu registration");
       },
     },
-    activation: { activateAtomicAttempt: vi.fn() },
+    activation: options.activation ?? { activateAtomicAttempt: vi.fn() },
   });
   const agentService = new AgentService(unitDatabase.database, { now: () => NOW });
   const setupReadiness: ProviderReadinessSource | undefined =
@@ -645,10 +651,93 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 
+  it.each([false, true])("preserves a healthy route (%s) while durable reauthorization waits", async (healthy) => {
+    const bootstrap = await account("durable-setup@example.com");
+    let resolveResult: (result: { appId: string; appSecret: string; teamBrand: "feishu" }) => void = () => undefined;
+    const result = new Promise<{ appId: string; appSecret: string; teamBrand: "feishu" }>((resolve) => {
+      resolveResult = resolve;
+    });
+    const activation: FeishuBindingActivation = {
+      checkCandidate: vi.fn(
+        async (): Promise<FeishuCandidateCheckOutcome> => ({
+          status: "waiting",
+          reason: "permissions_pending",
+          missingScopes: ["im:message"],
+        }),
+      ),
+      activateAtomicAttempt: vi.fn(),
+    };
+    const { feishuSetup, imBindingService, service } = harness({
+      runtimeReadiness: runtimeReadiness("ready"),
+      imCliReadiness: healthy ? "ready" : "checking",
+      credentialExecutionReadiness: { status: healthy ? "ready" : "unconfirmed" },
+      registrations: {
+        start: vi.fn(
+          (): FeishuRegistration => ({
+            qrReady: Promise.resolve({
+              url: "https://accounts.feishu.cn/device",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result,
+            abort: vi.fn(),
+          }),
+        ),
+      },
+      activation,
+    });
+    const { agentId } = await messagingReadyAgent(bootstrap.userId);
+    const { imBindingId } = await activateFeishuBinding(imBindingService, agentId);
+    if (healthy) await observeFeishuConnection(imBindingId);
+    const config = await imBindingService.getConfigForAgent(bootstrap.userId, agentId);
+    if (!config) throw new Error("Feishu binding fixture was not activated");
+    const attempt = await feishuSetup.createOrReuse(bootstrap.userId, agentId, "reauthorize", {
+      kind: "bound",
+      provider: "feishu",
+      bindingId: imBindingId,
+      credentialGeneration: config.credentialGeneration,
+    });
+    resolveResult({ appId: "cli_app", appSecret: "candidate-secret", teamBrand: "feishu" });
+
+    await vi.waitFor(async () => {
+      expect((await feishuSetup.get(bootstrap.userId, attempt.id)).activation?.reason).toBe("permissions_pending");
+    });
+    const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+    expectContractValid(snapshot);
+    if (healthy) {
+      expect(snapshot.messaging).toEqual({
+        kind: "ready",
+        provider: "feishu",
+        bindingId: imBindingId,
+        credentialGeneration: config.credentialGeneration,
+      });
+    } else {
+      expect(snapshot.actions).toContainEqual({ kind: "refresh" });
+      expect(snapshot.messaging).toEqual({
+        kind: "authorizing",
+        provider: "feishu",
+        attemptId: attempt.id,
+        qrUrl: null,
+        expiresAt: expect.any(String),
+        activation: {
+          appId: "cli_app",
+          reason: "permissions_pending",
+          missingScopes: ["im:message"],
+          lastCheckedAt: expect.any(String),
+          nextCheckAt: expect.any(String),
+        },
+      });
+    }
+    // The existing working connection keeps its real ready projection while the new authorization waits.
+    const summary = await imBindingService.getForAgent(bootstrap.userId, agentId);
+    expect(summary?.bindingState).toBe("active");
+    expect(JSON.stringify(snapshot)).not.toContain("candidate-secret");
+  });
+
   it("fails an attempt whose QR expired instead of projecting it as authorizing", async () => {
     const bootstrap = await account();
     const { feishuSetup, service } = harness({
       runtimeReadiness: runtimeReadiness("ready"),
+      imCliReports: { feishu: "ready", slack: "ready" },
       registrations: registrationGateway(new Date(Date.now() - 5_000)),
     });
     const { agentId } = await messagingReadyAgent(bootstrap.userId);
@@ -671,8 +760,11 @@ describe("Agent setup projection Messaging states", () => {
         errorCode: "FEISHU_SETUP_EXPIRED",
       },
       blockers: [{ code: "messaging-not-ready", provider: "feishu", bindingId: binding.id, state: "blocked" }],
-      // A terminal attempt keeps its binding: the Account unbinds it before any Provider can start again.
-      actions: [{ kind: "unbind-messaging", provider: "feishu", bindingId: binding.id }],
+      // A terminal initial attempt retains its slot and offers same-Provider retry.
+      actions: [
+        { kind: "start-messaging", provider: "feishu" },
+        { kind: "unbind-messaging", provider: "feishu", bindingId: binding.id },
+      ],
     });
   });
 

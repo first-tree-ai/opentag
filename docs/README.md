@@ -17,6 +17,7 @@ Start with the [Quick Start](../README.md#quick-start) or the [development guide
 
 ## Chat setup
 
+- [Feishu connection lifecycle](./feishu-connection-lifecycle.md)
 - [Slack App configuration](./slack-app-setup.md)
 - [Slack live acceptance](./slack-live-acceptance.md)
 

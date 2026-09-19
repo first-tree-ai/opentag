@@ -22,6 +22,9 @@ export async function disableImBindingInTransaction(
     .set({
       status: "disabled",
       encryptedCredential: null,
+      // Preserve terminal history; an open authorization is atomically canceled with its secret.
+      setupState: sql`case when ${imBindings.setupState}::text in ('awaiting_user', 'pending_activation', 'validating')
+        then 'canceled'::feishu_setup_state else ${imBindings.setupState} end`,
       encryptedSetupContext: null,
       setupOwnerInstanceId: null,
       setupOwnerHeartbeatAt: null,

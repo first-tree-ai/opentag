@@ -32,6 +32,7 @@ export const feishuSetupState = pgEnum("feishu_setup_state", [
   "failed",
   "expired",
   "canceled",
+  "pending_activation",
 ]);
 export const slackRouteKind = pgEnum("slack_route_kind", ["default"]);
 
@@ -129,12 +130,23 @@ export const imBindings = pgTable(
     ),
     check(
       "im_bindings_setup_owner_shape",
-      sql`(${table.setupOwnerInstanceId} is null and ${table.setupOwnerHeartbeatAt} is null and
-        ${table.encryptedSetupContext} is null and ${table.setupExpiresAt} is null)
-        or (${table.setupAttemptId} is not null and ${table.setupIntent} is not null and
-        ${table.setupState} is not null and ${table.setupOwnerInstanceId} is not null and
-        ${table.setupOwnerHeartbeatAt} is not null and ${table.encryptedSetupContext} is not null and
-        ${table.setupExpiresAt} is not null)`,
+      // `pending_activation` is the one durable ownerless candidate shape: the encrypted context and
+      // its retention deadline must both exist, the attempt must be fully identified, and the row
+      // must still be a live Feishu setup. Every legacy state keeps the previous branches verbatim.
+      // `setup_state::text` is deliberate: PostgreSQL cannot reference a freshly added enum label in
+      // the same transaction that adds it, and the cast keeps the constraint order-independent.
+      sql`((${table.setupState}::text is distinct from 'pending_activation') and (
+          (${table.setupOwnerInstanceId} is null and ${table.setupOwnerHeartbeatAt} is null and
+            ${table.encryptedSetupContext} is null and ${table.setupExpiresAt} is null)
+          or (${table.setupAttemptId} is not null and ${table.setupIntent} is not null and
+            ${table.setupState} is not null and ${table.setupOwnerInstanceId} is not null and
+            ${table.setupOwnerHeartbeatAt} is not null and ${table.encryptedSetupContext} is not null and
+            ${table.setupExpiresAt} is not null)))
+        or (${table.provider} = 'feishu' and ${table.status} <> 'disabled' and
+          ${table.setupState}::text = 'pending_activation' and ${table.setupAttemptId} is not null and
+          ${table.setupIntent} is not null and ${table.setupOwnerInstanceId} is null and
+          ${table.setupOwnerHeartbeatAt} is null and ${table.encryptedSetupContext} is not null and
+          ${table.setupExpiresAt} is not null)`,
     ),
     check(
       "im_bindings_connection_owner_shape",

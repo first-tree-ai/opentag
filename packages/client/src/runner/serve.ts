@@ -401,6 +401,8 @@ function createCloudTurnRunner(input: {
   state: () => WorkState | undefined;
   workspacePersistence: boolean;
 }): CloudTurnRunner {
+  const server = new URL(input.serverUrl);
+  server.protocol = server.protocol === "wss:" ? "https:" : "http:";
   return new CloudTurnRunner({
     canStart: () => {
       const current = input.state();
@@ -434,7 +436,7 @@ function createCloudTurnRunner(input: {
       : {}),
     scope: () => input.bridge.scope,
     send: (frame) => input.bridge.sendFrame(frame),
-    serverUrl: input.serverUrl,
+    serverUrl: server.origin,
     stateDirectory: input.privateTurnRoot,
     log: (message) => logLine(input.options.stderr, message),
     ...(input.options.cloudTurnSeams ?? {}),

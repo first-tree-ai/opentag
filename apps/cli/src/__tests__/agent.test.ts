@@ -279,6 +279,31 @@ describe("Agent CLI core", () => {
     expect(formatImBinding(undefined)).toBe("No IM binding configured");
     expect(formatFeishuSetup(attempt)).toContain("qrUrl\thttps://opentag.example/qr");
     expect(formatFeishuSetup({ ...attempt, qrUrl: null, errorCode: "EXPIRED" })).toContain("errorCode\tEXPIRED");
+    for (const [reason, hint] of [
+      ["permissions_pending", "Administrator approval of all required permissions"],
+      ["runtime_unavailable", "Agent runtime readiness"],
+      ["app_unavailable", "Application installation or enablement"],
+      ["temporary_failure", "Temporary check failure; retrying automatically"],
+      ["checking", "Connection verification in progress"],
+    ] as const) {
+      const formatted = formatFeishuSetup({
+        ...attempt,
+        state: "pending_activation",
+        qrUrl: null,
+        activation: {
+          appId: "cli_saved",
+          reason,
+          missingScopes: ["im:message"],
+          lastCheckedAt: null,
+          nextCheckAt: "2026-08-19T00:00:30.000Z",
+        },
+      });
+      expect(formatted).toContain(`waitingFor\t${hint}`);
+      expect(formatted).toContain("No new scan is needed.");
+      expect(formatted).toContain("missingScopes\tim:message");
+      expect(formatted).toContain(`expiresAt\t${attempt.expiresAt}`);
+    }
+    expect(formatFeishuSetup(attempt)).not.toContain("authorization\tSaved");
     expect(client.disableImBinding).toHaveBeenCalledWith("access", binding.id);
     expect(client.getImBindingDiagnostics).toHaveBeenCalledWith("access", binding.id);
   });

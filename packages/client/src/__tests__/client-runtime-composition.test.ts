@@ -9,6 +9,7 @@ import {
   type ContextTreeOperationFrame,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   type SessionReconcileRequest,
 } from "@opentag/shared";
@@ -69,6 +70,45 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it.each([undefined, "legacy", "proxy"] as const)(
+    "negotiates credential proxy support only when the composed mode is %s",
+    async (credentialMode) => {
+      const home = await temporaryDirectory("opentag-credential-mode-negotiation-");
+      const server = await runtimeServer();
+      cleanup.push(server.close);
+      const connection = runtimeConnection(server.url);
+      server.wss.on("connection", (socket) => {
+        socket.on("message", (data) => {
+          const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (frame.type === "auth") completeAuth(socket, frame);
+          if (frame.type === "computer:register") socket.send(JSON.stringify(registrationResult(frame)));
+          if (frame.type === "heartbeat") socket.send(JSON.stringify(heartbeatResult(frame)));
+        });
+      });
+      const runtime = await createClientRuntime(connection, {
+        clientVersion: "0.0.1",
+        credentialMode,
+        environment: { HOME: home, PATH: process.env.PATH },
+        factory: readyFactory(),
+        home,
+      });
+      const running = runtime.run();
+      try {
+        await connection.whenRegistered();
+        const proxyVersion = credentialMode === "proxy" ? 1 : undefined;
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.runtimeCredential)).toBe(proxyVersion);
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.providerProxy)).toBe(proxyVersion);
+        expect(connection.capabilityVersion(RUNTIME_CAPABILITY.imCredentialGrant)).toBe(2);
+        expect(() => connection.setCredentialProxyEnabled(credentialMode !== "proxy")).toThrow(
+          "Credential proxy mode must be configured before connecting",
+        );
+      } finally {
+        runtime.stop();
+        await running;
+      }
+    },
+  );
+
   it("can initialize Pi without the optional packaged Context Tree skills", async () => {
     const packageResolver = vi.spyOn(contextTreeModule, "resolveContextTreePackage").mockReturnValue(undefined);
     cleanup.push(async () => {
@@ -680,7 +720,13 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("--version");
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
-    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(4);
+    expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(3);
+    const managedSessionArgs = [
+      ...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+      "-c",
+      `shell_environment_policy.set.ZDOTDIR=${JSON.stringify(home)}`,
+    ];
+    expect(launches.filter((line) => line === managedSessionArgs.join(" "))).toHaveLength(1);
     await expect(
       runtime.reconciler.reconcile({
         ...reconcileRequest(connection.installationId, snapshot()),

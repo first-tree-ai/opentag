@@ -1037,7 +1037,14 @@ describe("Runner cancellation and connection lifetime", () => {
       { ...serveConfig(wss.url), stateDir },
       {
         cloudTurnSeams: {
-          openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/unit" }),
+          openExecution: async () => ({
+            close: async () => undefined,
+            executionDir: "/run/opentag-execution/unit",
+            sessionCliProof: {
+              proofId: "11111111-1111-4111-8111-111111111111",
+              token: "ephemeral-proof-0123456789abcdef0123456789",
+            },
+          }),
           runWorker: async (input) => {
             workerInputs.push(input);
             return {
@@ -1084,6 +1091,9 @@ describe("Runner cancellation and connection lifetime", () => {
     await waitFor(() => workerInputs.length === 1, "single cloud worker");
     // The worker stdin never carries any trusted (private/journal) host path from the Runner state root.
     expect(workerInputs[0]?.stdin).not.toContain(stateDir);
+    expect(JSON.parse(workerInputs[0]?.stdin ?? "{}").sessionCollaboration.serverUrl).toBe(
+      new URL(wss.url.replace("ws:", "http:")).origin,
+    );
     expect(wss.frames.filter((frame) => frame.type === "delivery:report")).toHaveLength(1);
     wss.send({
       type: "delivery:report:ack",

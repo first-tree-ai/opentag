@@ -69,7 +69,31 @@ export function formatFeishuSetup(attempt: FeishuSetupAttempt): string {
     `qrUrl\t${attempt.qrUrl ?? "-"}`,
     `expiresAt\t${attempt.expiresAt}`,
     `errorCode\t${attempt.errorCode ?? "-"}`,
+    ...(attempt.activation
+      ? [
+          `authorization\tSaved; OpenTag will connect automatically when requirements are ready. No new scan is needed.`,
+          `appId\t${attempt.activation.appId}`,
+          `waitingFor\t${activationReason(attempt.activation.reason)}`,
+          `missingScopes\t${attempt.activation.missingScopes.join(",") || "-"}`,
+          `nextCheckAt\t${attempt.activation.nextCheckAt}`,
+        ]
+      : []),
   ].join("\n");
+}
+
+function activationReason(reason: NonNullable<FeishuSetupAttempt["activation"]>["reason"]): string {
+  switch (reason) {
+    case "permissions_pending":
+      return "Administrator approval of all required permissions";
+    case "app_unavailable":
+      return "Application installation or enablement";
+    case "runtime_unavailable":
+      return "Agent runtime readiness";
+    case "temporary_failure":
+      return "Temporary check failure; retrying automatically";
+    case "checking":
+      return "Connection verification in progress";
+  }
 }
 
 export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string {

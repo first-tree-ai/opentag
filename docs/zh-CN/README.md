@@ -18,6 +18,7 @@
 
 ## 聊天设置
 
+- [飞书连接生命周期](./feishu-connection-lifecycle.md)
 - [Slack App 配置](./slack-app-setup.md)
 - [Slack 实际环境验收](./slack-live-acceptance.md)
 

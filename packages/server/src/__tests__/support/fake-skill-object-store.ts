@@ -1,0 +1,85 @@
+import { type SkillObjectStore, SkillObjectStoreError } from "../../services/skills/skill-object-store.js";
+
+/**
+ * Deterministic in-memory double of `SkillObjectStore` with the contract semantics the tests rely
+ * on: content-addressed keys, exact-byte reads, and typed `SkillObjectStoreError` failures so the
+ * service's error mapping and best-effort cleanup paths are exercised for real. Instrumented with
+ * call counters and injectable failures.
+ */
+export class FakeSkillObjectStore implements SkillObjectStore {
+  readonly #objects = new Map<string, Uint8Array>();
+  puts = 0;
+  gets = 0;
+  heads = 0;
+  deletes = 0;
+  failNextPutWith?: SkillObjectStoreError;
+  failNextGetWith?: SkillObjectStoreError;
+  failNextHeadWith?: SkillObjectStoreError;
+  failNextDeleteWith?: SkillObjectStoreError;
+
+  /** Seeds a stored object directly, bypassing the counters (fixture setup). */
+  plant(key: string, body: Uint8Array): void {
+    this.#objects.set(key, body.slice());
+  }
+
+  /** The raw stored bytes for assertions; undefined when nothing exists. */
+  stored(key: string): Uint8Array | undefined {
+    const body = this.#objects.get(key);
+    return body ? body.slice() : undefined;
+  }
+
+  keys(): string[] {
+    return [...this.#objects.keys()].sort();
+  }
+
+  async put(key: string, body: Uint8Array, _meta: { sha256: string }): Promise<void> {
+    this.puts += 1;
+    if (this.failNextPutWith) {
+      const error = this.failNextPutWith;
+      this.failNextPutWith = undefined;
+      throw error;
+    }
+    this.#objects.set(key, body.slice());
+  }
+
+  async get(key: string): Promise<ReadableStream<Uint8Array>> {
+    this.gets += 1;
+    if (this.failNextGetWith) {
+      const error = this.failNextGetWith;
+      this.failNextGetWith = undefined;
+      throw error;
+    }
+    const body = this.#objects.get(key);
+    if (!body) throw new SkillObjectStoreError("not_found", "The Skill bundle is absent");
+    const bytes = body.slice();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+  }
+
+  async head(key: string): Promise<{ bytes: number } | null> {
+    this.heads += 1;
+    if (this.failNextHeadWith) {
+      const error = this.failNextHeadWith;
+      this.failNextHeadWith = undefined;
+      throw error;
+    }
+    const body = this.#objects.get(key);
+    return body ? { bytes: body.byteLength } : null;
+  }
+
+  async delete(key: string): Promise<void> {
+    this.deletes += 1;
+    if (this.failNextDeleteWith) {
+      const error = this.failNextDeleteWith;
+      this.failNextDeleteWith = undefined;
+      throw error;
+    }
+    if (!this.#objects.delete(key)) {
+      throw new SkillObjectStoreError("not_found", "The Skill bundle is absent");
+    }
+  }
+}

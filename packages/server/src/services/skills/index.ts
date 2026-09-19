@@ -1,0 +1,48 @@
+/*
+ * Agent Skills server-side support.
+ *
+ * Delivered here: metadata in `agent_skills`, an S3-compatible object store behind
+ * `SkillObjectStore`, upload validation and deterministic re-packing, and `SkillService` with the
+ * Account, Computer, and Agent CLI surfaces. Storage is optional at deploy time; without it, listing
+ * works and bundle operations fail with `SKILL_STORAGE_UNAVAILABLE`. See
+ * docs/design/agent-skills.md.
+ */
+
+export {
+  SkillServiceError,
+  skillArchiveInvalid,
+  skillArchiveTooLarge,
+  skillHashMismatch,
+  skillLimitReached,
+  skillManifestInvalid,
+  skillNameConflict,
+  skillNameReserved,
+  skillNotFound,
+  skillStorageFailure,
+  skillStorageUnavailable,
+} from "./errors.js";
+export {
+  S3SkillObjectStore,
+  type S3SkillObjectStoreConfig,
+  type S3SkillObjectStoreOptions,
+} from "./s3-skill-object-store.js";
+export { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-archive.js";
+export {
+  isIgnoredSkillPath,
+  normalizeMemberPath,
+  type RawSkillEntry,
+  readSkillEntries,
+} from "./skill-archive-reader.js";
+export {
+  type SkillObjectKeyInput,
+  type SkillObjectStore,
+  SkillObjectStoreError,
+  type SkillObjectStoreErrorCode,
+  skillObjectKey,
+} from "./skill-object-store.js";
+export {
+  type SkillBundle,
+  SkillService,
+  type SkillServiceOptions,
+  type SkillUploadInput,
+} from "./skill-service.js";

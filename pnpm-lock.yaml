@@ -248,6 +248,9 @@ importers:
       '@slack/web-api':
         specifier: ^8.1.1
         version: 8.1.1
+      aws4fetch:
+        specifier: ^1.0.20
+        version: 1.0.20
       better-auth:
         specifier: ^1.7.2
         version: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.15.6)(kysely@0.29.5)(postgres@3.4.9))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@4.1.11)
@@ -257,6 +260,9 @@ importers:
       fastify:
         specifier: ^5.12.3
         version: 5.12.3
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       graphql:
         specifier: 17.0.2
         version: 17.0.2
@@ -269,6 +275,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      tar-stream:
+        specifier: 3.2.0
+        version: 3.2.0
       ws:
         specifier: ^8.21.3
         version: 8.21.3
@@ -282,6 +291,9 @@ importers:
       '@testcontainers/postgresql':
         specifier: ^12.1.0
         version: 12.1.0
+      '@types/tar-stream':
+        specifier: ^3.1.4
+        version: 3.1.4
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
@@ -2323,6 +2335,9 @@ packages:
 
   avvio@9.3.0:
     resolution: {integrity: sha512-g2tQ7LE7oOSqDfwEm3M+ZCMTJc7KiZCdJ4UwyZJb5ckTKyYu50OYmvv0mCFXPuYXoM4zkSt8zM9XQ9KCvxA74A==}
+
+  aws4fetch@1.0.20:
+    resolution: {integrity: sha512-/djoAN709iY65ETD6LKCtyyEI04XIBP5xVvfmNxsEP0uJB5tyaGBztSryRr4HqMStr9R06PisQE7m9zDTXKu6g==}
 
   axe-core@4.13.0:
     resolution: {integrity: sha512-UzGt8zg7Ny8djbYMhxl2zuEevVa7r2gJjYY5Lwr1xM7+XU2nd6CkIWFTVcCIbAP63vSz71NaVyyuSk9lHKcy0A==}
@@ -6462,6 +6477,8 @@ snapshots:
     dependencies:
       '@fastify/error': 4.2.0
       fastq: 1.20.1
+
+  aws4fetch@1.0.20: {}
 
   axe-core@4.13.0: {}
 

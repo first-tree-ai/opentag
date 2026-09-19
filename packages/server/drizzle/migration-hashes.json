@@ -235,6 +235,11 @@
       "idx": 46,
       "tag": "0046_wild_skullbuster",
       "sha256": "b1c5af12dbb7d5b377bd9a3eba6de29e68781c1cb079c53e1c14ae55e7866506"
+    },
+    {
+      "idx": 47,
+      "tag": "0047_chemical_hawkeye",
+      "sha256": "be69e95f8f635e2a1323d912dcf8831009c5379d4ed2acfa84cdf4b04dd08fd5"
     }
   ]
 }

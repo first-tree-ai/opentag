@@ -27,6 +27,7 @@ import {
   createServerDiagnosticReporter,
   createServiceLoggerPort,
   initTelemetry,
+  type ServiceLogger,
   shutdownTelemetry,
 } from "./observability/index.js";
 import { createPlatformRuntime } from "./platform-runtime.js";
@@ -99,6 +100,7 @@ import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
+import { S3SkillObjectStore, SkillService } from "./services/skills/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
@@ -290,6 +292,34 @@ function createApplicationCipher(config: ServerConfig): ApplicationCipher {
     keys: config.encryptionKeyRing.keys,
     activeKeyId: config.encryptionKeyRing.activeKeyId,
     writeVersion: config.imCredentialEncryptionWriteVersion,
+  });
+}
+
+/**
+ * Builds the Agent Skill runtime. The service always exists — without object storage it still lists
+ * Skills and manages their rows, and only bundle reads/writes fail with SKILL_STORAGE_UNAVAILABLE.
+ * The S3 store is constructed only when the storage group is coherently configured.
+ */
+function createSkillRuntime(config: ServerConfig, database: DatabaseClient, logger: ServiceLogger): SkillService {
+  const storage = config.skillStorage;
+  const store = storage.enabled
+    ? new S3SkillObjectStore({
+        config: {
+          endpoint: storage.endpoint,
+          region: storage.region,
+          bucket: storage.bucket,
+          accessKeyId: storage.accessKeyId,
+          secretAccessKey: storage.secretAccessKey,
+          forcePathStyle: storage.forcePathStyle,
+        },
+        logger,
+      })
+    : undefined;
+  return new SkillService({
+    database,
+    ...(store ? { store } : {}),
+    keyPrefix: storage.enabled ? storage.prefix : "skills",
+    logger,
   });
 }
 
@@ -522,6 +552,7 @@ export async function startServer(): Promise<void> {
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
+    const skillService = createSkillRuntime(config, database, serviceLogger("skills"));
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
@@ -791,6 +822,7 @@ export async function startServer(): Promise<void> {
         proofs: sessionCliProofService,
         sessions: sessionService,
       },
+      skills: { service: skillService, proofs: sessionCliProofService },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,

@@ -94,6 +94,7 @@ interface PiRuntimeOptions {
   readonly policy: AgentRuntimePolicy;
   readonly resume: boolean;
   readonly sessionDirectory?: string;
+  readonly skillPaths?: readonly string[];
   readonly systemPrompt: string;
 }
 
@@ -158,6 +159,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #sessionDirectory?: string;
+  readonly #skillArgs: readonly string[];
   readonly #systemPrompt: string;
   readonly #createClient: (args: readonly string[], extraEnvironment?: Readonly<Record<string, string>>) => PiRpcClient;
   readonly #tools = new Map<string, PiTool>();
@@ -195,6 +197,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#sessionDirectory = options.sessionDirectory;
+    this.#skillArgs = (options.skillPaths ?? []).flatMap((path) => ["--skill", path]);
     this.#systemPrompt = options.systemPrompt;
     this.#createClient = options.createClient;
     this.#sessionExists = options.resume;
@@ -351,6 +354,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       "--mode",
       "rpc",
       ...PI_RESOURCE_DISABLE_ARGUMENTS,
+      ...this.#skillArgs,
       "--session-id",
       this.#sessionId,
       ...(this.#sessionDirectory ? ["--session-dir", this.#sessionDirectory] : []),
@@ -795,6 +799,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         policy: request.policy,
         resume: mode === "resume",
         sessionDirectory: this.#sessionDirectory,
+        skillPaths: request.skillPaths,
         systemPrompt: request.systemPrompt,
       });
     } catch (error) {

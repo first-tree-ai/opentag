@@ -141,12 +141,9 @@ describe("Agent Skill API methods", () => {
         404,
       ),
     );
-    // CONTRACT GAP: the SKILL_* codes are not yet members of the shared ErrorCodeSchema, so a
-    // Skill error envelope does not parse and the client falls back to the status-derived code.
-    // The transport still rejects with the 404 status, which is what the caller can act on today.
     await expect(missing.api.openAgentSkillBundle("account-access", AGENT_ID, SKILL_ID)).rejects.toMatchObject({
+      code: "SKILL_NOT_FOUND",
       status: 404,
-      category: "deterministic",
     });
   });
 

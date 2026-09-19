@@ -38,13 +38,11 @@ function conflictError(name: string, cause: { requestId?: string }): CommandErro
 }
 
 /**
- * CONTRACT GAP: `SKILL_*` codes are not yet members of the shared `ErrorCodeSchema`, so a server
- * 409 arrives with the status-derived `VALIDATION_ERROR` code. Until the contract lane adds them,
- * treat any 409 from an upload as the name conflict so the user still sees the `--replace` hint.
+ * A name conflict is reported by the server as `SKILL_NAME_CONFLICT`; the shared error envelope
+ * admits that code, so the CLI can act on it directly.
  */
 function isUploadConflict(error: unknown): error is OpenTagApiError {
-  if (!(error instanceof OpenTagApiError)) return false;
-  return error.code === SKILL_ERROR_CODES.NAME_CONFLICT || error.status === 409;
+  return error instanceof OpenTagApiError && error.code === SKILL_ERROR_CODES.NAME_CONFLICT;
 }
 
 async function resolveSkill(nameOrId: string, authority: SkillAuthority): Promise<Skill> {

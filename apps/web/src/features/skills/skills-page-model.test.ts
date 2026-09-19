@@ -60,6 +60,11 @@ describe("checkSkillArchiveFile", () => {
       rejection: "unsupported_format",
     });
   });
+
+  it("accepts the exact filename this page downloads a bundle as", () => {
+    // W2: a bundle downloaded from the page arrives named `<skill>.tar.gz` and must be re-uploadable.
+    expect(checkSkillArchiveFile({ name: "demo.tar.gz", size: 10 })).toEqual({ ok: true, format: "tar.gz" });
+  });
 });
 
 describe("sha256Hex", () => {

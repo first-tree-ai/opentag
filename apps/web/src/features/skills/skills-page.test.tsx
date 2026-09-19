@@ -69,6 +69,8 @@ describe("SkillsPage", () => {
     expect(screen.getByText(/2 KB · 3 files · Updated/)).toBeTruthy();
     const download = screen.getByRole("link", { name: "Download" });
     expect(download.getAttribute("href")).toBe(`/api/v1/agents/${AGENT_ID}/skills/${SKILL_ID}/bundle`);
+    // W2: the saved filename is the canonical archive this page's own upload pre-check accepts.
+    expect(download.getAttribute("download")).toBe("Release notes writer.tar.gz");
   });
 
   it("shows the empty state when the Agent has no Skills", async () => {

@@ -66,9 +66,14 @@ export function SkillRow({
             transitioning={update.isPending}
           />
           {storageAvailable ? (
+            /*
+             * The bundle is the canonical `tar.gz` the Server stores. Naming the file after the
+             * Skill alone produced an extensionless download that this page's own upload pre-check
+             * rejected (`unsupported_format`), so a downloaded bundle could never be re-uploaded.
+             */
             <a
               className={buttonClassName({ size: "compact", variant: "secondary" })}
-              download={skill.name}
+              download={`${skill.name}.tar.gz`}
               href={downloadUrl}
             >
               {m.skills_download()}

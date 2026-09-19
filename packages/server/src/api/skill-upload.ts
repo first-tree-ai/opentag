@@ -9,7 +9,7 @@ import {
   SkillArchiveSha256Schema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { skillArchiveInvalid, skillArchiveTooLarge } from "../services/skills/index.js";
+import { SkillServiceError, skillArchiveInvalid, skillArchiveTooLarge } from "../services/skills/index.js";
 
 /**
  * Shared octet-stream upload transport for the Account and Agent CLI POSTs.
@@ -47,7 +47,7 @@ function singleHeader(request: FastifyRequest, name: string): string | undefined
 }
 
 /** Every precondition is checked here, before a single body byte is read. */
-function parseUploadHeaders(request: FastifyRequest): {
+export function parseSkillUploadHeaders(request: FastifyRequest): {
   declaredBytes: number;
   declaredSha256: string;
   format: SkillArchiveFormat;
@@ -118,7 +118,7 @@ export function registerSkillUploadRoute(app: FastifyInstance, options: SkillUpl
       const onStreamError = () => undefined;
       request.raw.on("error", onStreamError);
       try {
-        const headers = parseUploadHeaders(request);
+        const headers = parseSkillUploadHeaders(request);
         const bytes = await readExactBody(request, headers.declaredBytes);
         const frame: SkillUploadFrame = {
           bytes,
@@ -128,6 +128,16 @@ export function registerSkillUploadRoute(app: FastifyInstance, options: SkillUpl
         };
         const response = await options.upload(request, frame);
         return reply.code(200).send(response);
+      } catch (error) {
+        // The route lives in an encapsulated scope, so it renders the Skill error envelope itself
+        // instead of relying on the root Account-facing handler. It is built without
+        // `ErrorEnvelopeSchema` because that schema does not yet list the SKILL_* codes.
+        if (error instanceof SkillServiceError) {
+          return reply.code(error.statusCode).send({
+            error: { code: error.code, category: error.category, message: error.message, requestId: request.id },
+          });
+        }
+        throw error;
       } finally {
         clearTimeout(timer);
         request.raw.off("error", onStreamError);

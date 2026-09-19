@@ -106,6 +106,28 @@ GHCR package 是公开的，因此 CapRover 匿名拉取镜像即可。如果该
 **CapRover → Cluster → Docker Registries** 中用带 `read:packages` 的 GitHub token 添加 registry 凭据，否则每次部署都会
 在拉取阶段失败。
 
+## Agent Skills 对象存储
+
+Agent Skills 以「每个 Skill 一个 `tar.gz` 对象」的形式存放在兼容 S3 的对象存储中。该存储是可选的：
+未配置下面这组变量时，Skill 的列表、启用、禁用与删除仍然可用，但所有 bundle 的上传与下载都会以
+`SKILL_STORAGE_UNAVAILABLE` 失败，界面会禁用这些操作，而不是给出一个无效按钮。五个必需值必须一起配置，缺一不可，
+否则服务器会拒绝启动。
+
+| 变量 | 取值 |
+| --- | --- |
+| `OPENTAG_SKILL_STORAGE_ENDPOINT` | 兼容 S3 服务的 HTTP(S) origin，不含凭据、query 或 fragment |
+| `OPENTAG_SKILL_STORAGE_REGION` | 客户端签名使用的 region，例如 `us-east-1` |
+| `OPENTAG_SKILL_STORAGE_BUCKET` | 存放 Skill 归档的 bucket，必须保持私有 |
+| `OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID` | 对该 bucket 有读写权限的 access key |
+| `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | 该 access key 对应的 secret，永远不会写入日志 |
+| `OPENTAG_SKILL_STORAGE_PREFIX` | 可选的对象键前缀，默认 `skills` |
+| `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | 可选，默认 `true`，MinIO 以及多个其他服务要求开启 |
+
+bundle 始终以调用方自己的凭据（Account session、Computer machine token 或 Session CLI proof）经服务器中转，
+因此 bucket 无需 presigned URL 或公开访问，可以完全私有。对象键由服务器根据 Account、Agent、Skill 与内容哈希推导，
+调用方无法指定路径。`docker-compose.yml` 会启动本地 MinIO，并通过一次性 init 容器创建 `opentag-skills` bucket；
+`.env.example` 中被注释的配置块已指向该服务。
+
 ## 官网登录状态提示
 
 当 `OPENTAG_PUBLIC_URL` 为 `https://app.opentag.build` 时，Server 提供

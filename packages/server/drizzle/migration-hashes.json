@@ -240,6 +240,11 @@
       "idx": 47,
       "tag": "0047_feishu_pending_activation",
       "sha256": "72db458dfcc32cadd5c560faecf0fcf0b44d802fa2f890be84b92e12024b6a29"
+    },
+    {
+      "idx": 48,
+      "tag": "0048_known_gertrude_yorkes",
+      "sha256": "be69e95f8f635e2a1323d912dcf8831009c5379d4ed2acfa84cdf4b04dd08fd5"
     }
   ]
 }

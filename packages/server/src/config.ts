@@ -370,6 +370,18 @@ const ServerEnvironmentSchema = z
     OPENTAG_CLOUD_STORAGE_BASE: z.string().trim().optional(),
     OPENTAG_CLOUD_RUNNER_VERSION: z.string().trim().optional(),
     /*
+     * Optional S3-compatible object storage for Agent Skill bundles. The five material values are
+     * configured together or not at all; without them, Skill listing still works and every bundle
+     * read or write fails with SKILL_STORAGE_UNAVAILABLE. The bucket is expected to stay private.
+     */
+    OPENTAG_SKILL_STORAGE_ENDPOINT: z.string().trim().optional(),
+    OPENTAG_SKILL_STORAGE_REGION: z.string().trim().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_BUCKET: z.string().trim().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+    OPENTAG_SKILL_STORAGE_PREFIX: z.string().trim().min(1).default("skills"),
+    OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: booleanString("true"),
+    /*
      * Platform web tools: fixed Server routes forwarding to the existing Router. Off by default;
      * enabling requires the Router origin plus an explicit Account→tenant secret-reference map.
      */
@@ -562,6 +574,44 @@ const ServerEnvironmentSchema = z
         message: "OPENTAG_CLOUD_RUNNER_VERSION is required when Cloud identities are enabled",
       });
     }
+  })
+  .superRefine((value, context) => {
+    const endpoint = value.OPENTAG_SKILL_STORAGE_ENDPOINT;
+    const group = [
+      endpoint,
+      value.OPENTAG_SKILL_STORAGE_REGION,
+      value.OPENTAG_SKILL_STORAGE_BUCKET,
+      value.OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID,
+      value.OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY,
+    ];
+    const configured = group.filter(Boolean).length;
+    if (configured === 0) return;
+    if (configured < group.length) {
+      context.addIssue({
+        code: "custom",
+        message: "The OPENTAG_SKILL_STORAGE_* group must be configured together",
+      });
+      return;
+    }
+    let parsed: URL | undefined;
+    try {
+      parsed = new URL(endpoint as string);
+    } catch {
+      parsed = undefined;
+    }
+    if (
+      !parsed ||
+      !["http:", "https:"].includes(parsed.protocol) ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "OPENTAG_SKILL_STORAGE_ENDPOINT must be an HTTP(S) URL without credentials, query, or fragment",
+      });
+    }
   });
 
 function isLoopbackHostname(value: string): boolean {
@@ -695,7 +745,28 @@ export interface ServerConfig {
    * Cloud Runner plus the fixed upstream, environment-only master key, and a model allowlist.
    */
   cloudModel: CloudModelConfig;
+  /**
+   * Optional S3-compatible object storage for Agent Skill bundles. Off by default; without it Skill
+   * listing still works and every bundle read or write fails with SKILL_STORAGE_UNAVAILABLE.
+   */
+  skillStorage: SkillStorageConfig;
 }
+
+export type SkillStorageConfig =
+  | { enabled: false }
+  | {
+      enabled: true;
+      /** Credential-less HTTP(S) origin (optionally with a base path) of the S3-compatible service. */
+      endpoint: string;
+      region: string;
+      bucket: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      /** Object-key prefix; defaults to `skills`. */
+      prefix: string;
+      /** Path-style addressing for services that cannot serve virtual-hosted buckets. */
+      forcePathStyle: boolean;
+    };
 
 export type WebToolsConfig =
   | { enabled: false }
@@ -784,6 +855,13 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
     OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
     OPENTAG_CLOUD_RUNNER_VERSION: emptyToUndefined(environment.OPENTAG_CLOUD_RUNNER_VERSION),
+    OPENTAG_SKILL_STORAGE_ENDPOINT: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_ENDPOINT),
+    OPENTAG_SKILL_STORAGE_REGION: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_REGION),
+    OPENTAG_SKILL_STORAGE_BUCKET: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_BUCKET),
+    OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID),
+    OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY),
+    OPENTAG_SKILL_STORAGE_PREFIX: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_PREFIX),
+    OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: environment.OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE,
     OPENTAG_WEB_ENABLED: environment.OPENTAG_WEB_ENABLED,
     OPENTAG_WEB_ROUTER_BASE_URL: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_BASE_URL),
     OPENTAG_WEB_ROUTER_TENANTS: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_TENANTS),
@@ -879,6 +957,26 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       environment,
       resolveCloudRunnerConfig(environment, parsed.OPENTAG_CLOUD_IDENTITIES_ENABLED).enabled,
     ),
+    skillStorage: resolveSkillStorageConfig(parsed),
+  };
+}
+
+function resolveSkillStorageConfig(parsed: z.infer<typeof ServerEnvironmentSchema>): SkillStorageConfig {
+  const endpoint = parsed.OPENTAG_SKILL_STORAGE_ENDPOINT;
+  const region = parsed.OPENTAG_SKILL_STORAGE_REGION;
+  const bucket = parsed.OPENTAG_SKILL_STORAGE_BUCKET;
+  const accessKeyId = parsed.OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID;
+  const secretAccessKey = parsed.OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY;
+  if (!endpoint || !region || !bucket || !accessKeyId || !secretAccessKey) return { enabled: false };
+  return {
+    enabled: true,
+    endpoint,
+    region,
+    bucket,
+    accessKeyId,
+    secretAccessKey,
+    prefix: parsed.OPENTAG_SKILL_STORAGE_PREFIX,
+    forcePathStyle: parsed.OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE,
   };
 }
 

@@ -1,5 +1,5 @@
 {
-  "id": "bbabdee3-2d68-4964-9d28-f2f831b66dd8",
+  "id": "8ee5d538-31c5-4ace-a6d7-cac121c9b8ff",
   "prevId": "0ffd80df-ed05-4d66-978f-531e843470bd",
   "version": "7",
   "dialect": "postgresql",
@@ -5429,7 +5429,11 @@
       "checkConstraints": {
         "agent_skills_name_format": {
           "name": "agent_skills_name_format",
-          "value": "\"agent_skills\".\"name\" ~ '^[a-z0-9][a-z0-9-]{0,63}$'"
+          "value": "\"agent_skills\".\"name\" ~ '^[a-z0-9]+(-[a-z0-9]+)*$'"
+        },
+        "agent_skills_name_length": {
+          "name": "agent_skills_name_length",
+          "value": "char_length(\"agent_skills\".\"name\") between 1 and 64"
         },
         "agent_skills_description_bounds": {
           "name": "agent_skills_description_bounds",

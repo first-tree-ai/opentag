@@ -32,10 +32,13 @@ import { agents } from "./agents.js";
 export const skillSource = pgEnum("skill_source", ["web_upload", "cli_upload", "agent_upload"]);
 
 /**
- * The name format is the shared `SkillNameSchema` spelled for PostgreSQL. Spelled with an explicit
- * trailing hyphen in the bracket so the generated DDL needs no quote or backslash escaping.
+ * The name format is the shared `SkillNameSchema` spelled for PostgreSQL: lowercase alphanumerics
+ * joined by single hyphens, so a leading, trailing, or doubled hyphen is rejected. Quoted with
+ * `sql.raw`, the same technique `mcp.ts` uses, so the generated DDL needs no quote or backslash
+ * escaping. The length bound is a separate `char_length` check because PostgreSQL's `~` is not
+ * anchored by the pattern's own length and the shared rule caps the name at 64 characters.
  */
-const SKILL_NAME_REGEX = "^[a-z0-9][a-z0-9-]{0,63}$";
+const SKILL_NAME_REGEX = "^[a-z0-9]+(-[a-z0-9]+)*$";
 const SKILL_SHA256_REGEX = "^[0-9a-f]{64}$";
 
 export const agentSkills = pgTable(
@@ -66,6 +69,7 @@ export const agentSkills = pgTable(
     uniqueIndex("agent_skills_agent_name_unique").on(table.agentId, sql`lower(${table.name})`),
     index("agent_skills_agent_id_idx").on(table.agentId),
     check("agent_skills_name_format", sql`${table.name} ~ ${sql.raw(`'${SKILL_NAME_REGEX}'`)}`),
+    check("agent_skills_name_length", sql`char_length(${table.name}) between 1 and 64`),
     check("agent_skills_description_bounds", sql`char_length(${table.description}) between 1 and 1024`),
     check("agent_skills_sha256_format", sql`${table.archiveSha256} ~ ${sql.raw(`'${SKILL_SHA256_REGEX}'`)}`),
     check("agent_skills_archive_bytes_bounds", sql`${table.archiveBytes} between 1 and 16777216`),

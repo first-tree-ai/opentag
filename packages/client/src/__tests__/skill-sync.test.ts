@@ -1,5 +1,6 @@
+import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -47,6 +48,34 @@ describe("SkillSyncManager", () => {
     expect(downloads).toHaveLength(1);
     expect(records.some((record) => record.fields.code === "skill_sync_skip")).toBe(true);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "materializes a runnable script and does not report it as edited on the next sync",
+    async () => {
+      const root = await temporaryRoot();
+      const cwd = join(root, "workspace");
+      await mkdir(cwd, { recursive: true });
+      const packed = await buildSkill(root, "my-skill", "# Body\n", {
+        "scripts/run.sh": "#!/bin/sh\necho synced\n",
+      });
+      const entry = manifestEntry(packed, "my-skill");
+      const { api } = fakeApi([{ skills: [entry] }], new Map([[entry.id, packed.archive]]));
+      const records: LogRecord[] = [];
+      const manager = managerFor(api, records);
+
+      await manager.ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+      const script = join(cwd, ".claude", "skills", "my-skill", "scripts", "run.sh");
+      expect((await lstat(script)).mode & 0o777).toBe(0o700);
+      expect(execFileSync(script, { encoding: "utf8" }).trim()).toBe("synced");
+
+      // Mode normalization must not make the digest look edited, or the copy is quarantined.
+      const second = await manager.ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+      expect(second.status).toBe("synced");
+      expect(second.skillPaths).toEqual([join(cwd, ".claude", "skills", "my-skill")]);
+      expect(records.some((record) => record.fields.code === "skill_conflict_quarantined")).toBe(false);
+      await expect(stat(join(cwd, ".opentag", "skill-conflicts"))).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
 
   it("replaces a managed Skill when the platform version changes", async () => {
     const root = await temporaryRoot();
@@ -297,5 +326,15 @@ describe("hashSkillDirectory", () => {
     const after = await (await import("../skills/skill-sync.js")).hashSkillDirectory(root);
     expect(after).toBe(before);
     expect(after).toBe(createHash("sha256").update("f\0SKILL.md\0").update("x").digest("hex"));
+  });
+
+  it("hashes content and relative paths only, so a mode change is not a local edit", async () => {
+    const root = await temporaryRoot();
+    const { hashSkillDirectory } = await import("../skills/skill-sync.js");
+    await mkdir(join(root, "scripts"));
+    await writeFile(join(root, "scripts", "run.sh"), "#!/bin/sh\necho ok\n", { mode: 0o755 });
+    const executable = await hashSkillDirectory(root);
+    await chmod(join(root, "scripts", "run.sh"), 0o600);
+    expect(await hashSkillDirectory(root)).toBe(executable);
   });
 });

@@ -105,6 +105,15 @@ function entryMode(mode: number, directory: boolean): number {
   return (mode & 0o111) === 0 ? 0o644 : 0o755;
 }
 
+/**
+ * The private mode a bundled file is installed with: `0o700` when the archive records an owner
+ * execute bit, otherwise `0o600`. Group/other bits are dropped, and setuid/setgid/sticky are never
+ * carried — a Skill is executable only for the owner who materialized it.
+ */
+function extractFileMode(headerMode: number | undefined): number {
+  return typeof headerMode === "number" && (headerMode & 0o100) !== 0 ? 0o700 : 0o600;
+}
+
 async function lstatEntry(abs: string, rel: string): Promise<Awaited<ReturnType<typeof lstat>>> {
   try {
     return await lstat(abs);
@@ -357,8 +366,9 @@ async function handleMember(root: string, header: TarHeaders, stream: Readable, 
     }
   });
   await mkdir(dirname(dest), { recursive: true, mode: 0o700 });
-  await pipeline(stream, tap, createWriteStream(dest, { flags: "wx", mode: 0o600 }));
-  await chmod(dest, 0o600);
+  const fileMode = extractFileMode(header.mode);
+  await pipeline(stream, tap, createWriteStream(dest, { flags: "wx", mode: fileMode }));
+  await chmod(dest, fileMode);
 }
 
 export async function extractSkillArchive(stream: Readable, targetDirectory: string): Promise<void> {

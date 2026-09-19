@@ -1,6 +1,19 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  truncate,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -77,7 +90,7 @@ async function writeTar(
 }
 
 describe("packSkillDirectory", () => {
-  it("round trips a skill directory through pack and extract with modes intact", async () => {
+  it("round trips a skill directory through pack and extract", async () => {
     const root = await temporaryRoot();
     const skill = await writeSkill(root, {
       "scripts/run.sh": "#!/bin/sh\necho hi\n",
@@ -93,8 +106,35 @@ describe("packSkillDirectory", () => {
     expect(await readFile(join(target, "SKILL.md"), "utf8")).toContain("A test skill");
     expect(await readFile(join(target, "scripts", "run.sh"), "utf8")).toContain("echo hi");
     expect(await readFile(join(target, "reference", "notes.md"), "utf8")).toBe("notes\n");
-    expect((await lstat(join(target, "scripts", "run.sh"))).mode & 0o777).toBe(0o600);
     expect((await lstat(target)).mode & 0o777).toBe(0o700);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "extracts an executable script that still runs, keeping the owner execute bit only",
+    async () => {
+      const root = await temporaryRoot();
+      const skill = await writeSkill(root, { "scripts/run.sh": "#!/bin/sh\necho ok\n" });
+      await chmod(join(skill, "scripts", "run.sh"), 0o755);
+      const packed = await packSkillDirectory(skill);
+
+      const target = join(root, "out");
+      await extractSkillArchive(Readable.from(Buffer.from(packed.archive)), target);
+      const script = join(target, "scripts", "run.sh");
+      expect((await lstat(script)).mode & 0o777).toBe(0o700);
+      expect(execFileSync(script, { encoding: "utf8" }).trim()).toBe("ok");
+    },
+  );
+
+  it.skipIf(process.platform === "win32")("strips group and other bits but preserves owner execute", async () => {
+    const root = await temporaryRoot();
+    const skill = await writeSkill(root, { "wide.sh": "#!/bin/sh\necho wide\n", "plain.txt": "plain\n" });
+    await chmod(join(skill, "wide.sh"), 0o777);
+    const packed = await packSkillDirectory(skill);
+
+    const target = join(root, "out");
+    await extractSkillArchive(Readable.from(Buffer.from(packed.archive)), target);
+    expect((await lstat(join(target, "wide.sh"))).mode & 0o777).toBe(0o700);
+    expect((await lstat(join(target, "plain.txt"))).mode & 0o777).toBe(0o600);
   });
 
   it("excludes repository, dependency, OS and marker files", async () => {

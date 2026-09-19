@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RuntimeSkillManifest } from "@opentag/shared";
 import { vi } from "vitest";
 import type { ClientLogger } from "../../observability/logger.js";
@@ -57,13 +57,23 @@ export async function cleanupSkillSyncHarness(): Promise<void> {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 }
 
-export async function buildSkill(root: string, name: string, body = "# Body\n"): Promise<PackedSkillDirectory> {
+export async function buildSkill(
+  root: string,
+  name: string,
+  body = "# Body\n",
+  files: Record<string, string> = {},
+): Promise<PackedSkillDirectory> {
   const directory = join(root, `source-${name}`);
   await mkdir(directory, { recursive: true });
   await writeFile(
     join(directory, "SKILL.md"),
     ["---", `name: ${name}`, `description: ${name} description`, "---", "", body].join("\n"),
   );
+  for (const [rel, content] of Object.entries(files)) {
+    const path = join(directory, ...rel.split("/"));
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, { mode: 0o755 });
+  }
   return packSkillDirectory(directory);
 }
 

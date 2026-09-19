@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
-import { createReadStream, type Dirent } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { Readable } from "node:stream";
 import {
   type AgentRuntimeProvider,
   type RuntimeSkillManifest,
@@ -12,9 +10,10 @@ import {
 } from "@opentag/shared";
 import type { ClientLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory } from "../storage/durable-file.js";
-import { extractSkillArchive, SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
+import { SKILL_CONTENT_SIDECAR_FILE } from "./skill-archive.js";
 import { verifySkillBundle } from "./skill-bundle.js";
 import { readBundleBody } from "./skill-bundle-body.js";
+import { hashSkillDirectory, moveAside, stageBundle, sweepStaleStaging } from "./skill-install.js";
 import { skillConflictsRoot, skillRootForProvider, skillStagingRoot, unsafeSkillRootReason } from "./skill-roots.js";
 
 /**
@@ -55,6 +54,8 @@ export interface SkillSyncManagerOptions {
   readonly logger: ClientLogger;
   readonly now?: () => number;
   readonly budgetMs?: number;
+  /** Test seam for the final staged-directory rename; defaults to the real `rename`. */
+  readonly rename?: typeof rename;
 }
 
 export interface SkillSyncAgentInput {
@@ -143,38 +144,7 @@ async function listManagedDirectories(layout: SkillInstallLayout): Promise<Map<s
   return managed;
 }
 
-/** Content digest of a directory, ignoring the platform marker and its sidecar. */
-export async function hashSkillDirectory(root: string): Promise<string> {
-  const hash = createHash("sha256");
-  await hashSkillTree(root, "", hash);
-  return hash.digest("hex");
-}
-
-async function hashSkillTree(directory: string, prefix: string, hash: ReturnType<typeof createHash>): Promise<void> {
-  const entries = (await readdir(directory, { withFileTypes: true })).sort((left, right) =>
-    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-  );
-  for (const entry of entries) await hashSkillEntry(directory, prefix, entry, hash);
-}
-
-async function hashSkillEntry(
-  directory: string,
-  prefix: string,
-  entry: Dirent,
-  hash: ReturnType<typeof createHash>,
-): Promise<void> {
-  if (entry.name === SKILL_MARKER_FILE || entry.name === SKILL_CONTENT_SIDECAR_FILE) return;
-  const rel = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
-  const absolute = join(directory, entry.name);
-  if (entry.isDirectory()) {
-    hash.update(`d\0${rel}\0`);
-    await hashSkillTree(absolute, rel, hash);
-    return;
-  }
-  if (!entry.isFile()) return;
-  hash.update(`f\0${rel}\0`);
-  for await (const chunk of createReadStream(absolute)) hash.update(chunk as Buffer);
-}
+export { hashSkillDirectory };
 
 async function readContentDigest(directory: string): Promise<string | undefined> {
   try {
@@ -236,53 +206,6 @@ async function downloadedBundle(
   return verifySkillBundle(bytes, entry);
 }
 
-async function installBundle(
-  layout: SkillInstallLayout,
-  stagingRoot: string,
-  entry: RuntimeSkillManifest["skills"][number],
-  bytes: Uint8Array,
-): Promise<string> {
-  await ensurePrivateDirectory(dirname(stagingRoot), stagingRoot);
-  await ensurePrivateDirectory(dirname(layout.root), layout.root);
-  const staging = await mkdtemp(join(stagingRoot, "skill-"));
-  try {
-    await extractSkillArchive(Readable.from(Buffer.from(bytes)), staging);
-    await writeFile(
-      join(staging, SKILL_MARKER_FILE),
-      `${JSON.stringify({ skillId: entry.id, archiveSha256: entry.archiveSha256 })}\n`,
-      { mode: 0o600 },
-    );
-    await writeFile(join(staging, SKILL_CONTENT_SIDECAR_FILE), `${await hashSkillDirectory(staging)}\n`, {
-      mode: 0o600,
-    });
-    const destination = join(layout.root, layout.directoryName(entry.name));
-    await rm(destination, { recursive: true, force: true });
-    await rename(staging, destination);
-    return destination;
-  } catch (error) {
-    await rm(staging, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-/** A staging crash leaves an unmarked directory; anything older than the sync budget is garbage. */
-async function sweepStaleStaging(stagingRoot: string, budgetMs: number, now: () => number): Promise<void> {
-  let entries: string[];
-  try {
-    entries = await readdir(stagingRoot);
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    const path = join(stagingRoot, entry);
-    try {
-      if (now() - (await stat(path)).mtimeMs > budgetMs) await rm(path, { recursive: true, force: true });
-    } catch {
-      // A concurrent sync may have renamed or removed it already.
-    }
-  }
-}
-
 async function quarantineConflict(
   cwd: string,
   name: string,
@@ -304,6 +227,7 @@ export class SkillSyncManager {
   readonly #logger: ClientLogger;
   readonly #now: () => number;
   readonly #budgetMs: number;
+  readonly #rename: typeof rename;
 
   constructor(options: SkillSyncManagerOptions) {
     this.#api = options.api;
@@ -311,6 +235,7 @@ export class SkillSyncManager {
     this.#logger = options.logger;
     this.#now = options.now ?? (() => Date.now());
     this.#budgetMs = options.budgetMs ?? SKILL_SYNC_DEFAULT_BUDGET_MS;
+    this.#rename = options.rename ?? rename;
   }
 
   async ensureAgent(input: SkillSyncAgentInput): Promise<SkillSyncResult> {
@@ -375,12 +300,12 @@ export class SkillSyncManager {
         );
         continue;
       }
-      // Download and verify before touching the old copy: a corrupt or truncated bundle must
-      // never cost the Agent the Skill it already had.
+      // Download and verify, then stage and validate the whole replacement before the current
+      // copy is touched. Only a fully prepared bundle may ever displace what is on disk.
       const bytes = await downloadedBundle(this.#api, token, input.agentId, entry, signal);
-      if (current) await this.#retireManaged(input, entry.name, current);
       const started = this.#now();
-      await installBundle(layout, skillStagingRoot(input.cwd), entry, bytes);
+      const staged = await stageBundle(skillStagingRoot(input.cwd), entry, bytes);
+      await this.#swapIn(input, layout, current, entry.name, staged);
       this.#logger.debug(
         {
           code: current ? "skill_sync_update" : "skill_sync_install",
@@ -397,11 +322,38 @@ export class SkillSyncManager {
     return this.#existingSkillPaths(layout);
   }
 
+  /**
+   * Install a validated staging directory over the current copy.
+   *
+   * The current copy is moved aside (never deleted) until the rename succeeds, so a failure at the
+   * final step restores it. An edited copy is quarantined instead, which already preserves it.
+   */
+  async #swapIn(
+    input: SkillSyncAgentInput,
+    layout: SkillInstallLayout,
+    current: ManagedDirectory | undefined,
+    name: string,
+    staged: string,
+  ): Promise<void> {
+    await ensurePrivateDirectory(dirname(layout.root), layout.root);
+    let aside: string | undefined;
+    if (current) aside = (await this.#retireManaged(input, name, current, true)).aside;
+    const destination = join(layout.root, layout.directoryName(name));
+    try {
+      await this.#rename(staged, destination);
+    } catch (error) {
+      if (aside) await rename(aside, destination).catch(() => undefined);
+      await rm(staged, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+    if (aside) await rm(aside, { recursive: true, force: true }).catch(() => undefined);
+  }
+
   async #removeDeparted(input: SkillSyncAgentInput, name: string, managed: ManagedDirectory): Promise<void> {
-    const outcome = await this.#retireManaged(input, name, managed);
+    const { kind } = await this.#retireManaged(input, name, managed, false);
     this.#logger.debug(
-      { code: "skill_sync_remove", skill: name, outcome },
-      outcome === "quarantined"
+      { code: "skill_sync_remove", skill: name, outcome: kind },
+      kind === "quarantined"
         ? "Skill is no longer enabled; locally edited copy quarantined"
         : "Skill is no longer enabled; removed",
     );
@@ -412,22 +364,27 @@ export class SkillSyncManager {
    *
    * The edited-check lives in one place so the update and removal paths cannot drift apart: a
    * locally edited copy is always quarantined into `.opentag/skill-conflicts/`, never silently
-   * destroyed. An unedited copy is removed.
+   * destroyed. On a replacement an unedited copy is moved aside (returned as `aside`) so it can be
+   * restored; a removal deletes it outright.
    */
   async #retireManaged(
     input: SkillSyncAgentInput,
     name: string,
     current: ManagedDirectory,
-  ): Promise<"quarantined" | "removed"> {
+    keepAside: boolean,
+  ): Promise<{ kind: "quarantined" | "removed"; aside?: string }> {
     const recorded = await readContentDigest(current.path);
     const live = await hashSkillDirectory(current.path).catch(() => undefined);
     const edited = recorded !== undefined && live !== undefined && recorded !== live;
     if (edited) {
       await quarantineConflict(input.cwd, name, current.path, this.#now(), this.#logger);
-      return "quarantined";
+      return { kind: "quarantined" };
+    }
+    if (keepAside) {
+      return { kind: "removed", aside: await moveAside(skillStagingRoot(input.cwd), current.path, randomUUID()) };
     }
     await rm(current.path, { recursive: true, force: true });
-    return "removed";
+    return { kind: "removed" };
   }
 }
 

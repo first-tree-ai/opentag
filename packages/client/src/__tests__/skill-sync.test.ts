@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -388,6 +388,69 @@ describe("SkillSyncManager", () => {
     });
     expect(result.status).toBe("unavailable");
     expect(records.some((record) => record.fields.code === "skill_root_unsafe")).toBe(true);
+  });
+
+  it("keeps the old Skill when a hash-matching bundle cannot be extracted", async () => {
+    const root = await temporaryRoot();
+    const cwd = join(root, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const good = await buildSkill(root, "my-skill", "# One\n");
+    const oldEntry = manifestEntry(good, "my-skill");
+    const { api: okApi } = fakeApi([{ skills: [oldEntry] }], new Map([[oldEntry.id, good.archive]]));
+    await managerFor(okApi, []).ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+    const installed = join(cwd, ".claude", "skills", "my-skill", "SKILL.md");
+    expect(await readFile(installed, "utf8")).toContain("# One");
+
+    // Size and sha match the manifest, but the bytes are not a tar.gz.
+    const garbage = Buffer.from("not a gzip at all");
+    const badEntry = {
+      id: oldEntry.id,
+      name: "my-skill",
+      archiveSha256: createHash("sha256").update(garbage).digest("hex"),
+      archiveBytes: garbage.byteLength,
+    };
+    const { api: badApi } = fakeApi([{ skills: [badEntry] }], new Map([[badEntry.id, new Uint8Array(garbage)]]));
+    const records: LogRecord[] = [];
+    const result = await managerFor(badApi, records).ensureAgent({
+      agentId: randomUUID(),
+      cwd,
+      provider: "claude-code",
+    });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.skillPaths).toEqual([join(cwd, ".claude", "skills", "my-skill")]);
+    expect(await readFile(installed, "utf8")).toContain("# One");
+    expect(records.some((record) => record.fields.code === "skill_sync_unavailable")).toBe(true);
+  });
+
+  it("restores the old Skill when the staged rename into place fails", async () => {
+    const root = await temporaryRoot();
+    const cwd = join(root, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const good = await buildSkill(root, "my-skill", "# One\n");
+    const oldEntry = manifestEntry(good, "my-skill");
+    const { api: okApi } = fakeApi([{ skills: [oldEntry] }], new Map([[oldEntry.id, good.archive]]));
+    await managerFor(okApi, []).ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+    const installed = join(cwd, ".claude", "skills", "my-skill", "SKILL.md");
+
+    const updated = await buildSkill(root, "my-skill", "# Two\n");
+    const newEntry = manifestEntry(updated, "my-skill");
+    const { api: newApi } = fakeApi([{ skills: [newEntry] }], new Map([[newEntry.id, updated.archive]]));
+    const records: LogRecord[] = [];
+    const manager = new SkillSyncManager({
+      api: newApi as never,
+      machineToken: async () => "machine-token",
+      logger: recordingLogger(records),
+      rename: async (from, to) => {
+        if (String(to).endsWith(`skills/my-skill`)) throw new Error("injected rename failure");
+        await rename(from, to);
+      },
+    });
+    const result = await manager.ensureAgent({ agentId: randomUUID(), cwd, provider: "claude-code" });
+
+    expect(result.status).toBe("unavailable");
+    expect(result.skillPaths).toEqual([join(cwd, ".claude", "skills", "my-skill")]);
+    expect(await readFile(installed, "utf8")).toContain("# One");
   });
 
   it("stages outside the discovered skill root and sweeps stale staging only", async () => {

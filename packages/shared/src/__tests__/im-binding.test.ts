@@ -8,10 +8,13 @@ import {
   AgentSetupExpectedMessagingStateSchema,
   AgentSetupReturnSurfaceSchema,
 } from "../agent-setup.js";
+import { FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE } from "../http-paths.js";
 import {
   CreateFeishuSetupAttemptRequestSchema,
   FEISHU_REQUIRED_TENANT_SCOPES,
+  FeishuSetupActivationSchema,
   FeishuSetupAttemptSchema,
+  FeishuSetupStateSchema,
   hasRequiredFeishuTenantScopes,
   hasRequiredSlackBotScopes,
   ImBindingDiagnosticsSchema,
@@ -174,6 +177,57 @@ describe("IM binding contracts", () => {
         installedAt: "2026-08-19T00:00:00.000Z",
       }).installedAt,
     ).toBeInstanceOf(Date);
+  });
+
+  it("models durable pending activation without exposing candidate secrets", () => {
+    const attemptId = crypto.randomUUID();
+    const activation = {
+      appId: "cli_durable",
+      reason: "permissions_pending" as const,
+      missingScopes: ["im:message", "im:chat:readonly"],
+      lastCheckedAt: "2026-09-10T00:00:00.000Z",
+      nextCheckAt: "2026-09-10T00:01:00.000Z",
+    };
+    expect(FeishuSetupStateSchema.options).toContain("pending_activation");
+    // A legacy attempt without an activation projection still parses.
+    expect(
+      FeishuSetupAttemptSchema.parse({
+        id: attemptId,
+        agentId: crypto.randomUUID(),
+        intent: "create",
+        state: "awaiting_user",
+        qrUrl: null,
+        expiresAt: "2026-09-10T00:01:00.000Z",
+        errorCode: null,
+        completedAt: null,
+        createdAt: "2026-09-10T00:00:00.000Z",
+      }).activation,
+    ).toBeUndefined();
+    const parsed = FeishuSetupAttemptSchema.parse({
+      id: attemptId,
+      agentId: crypto.randomUUID(),
+      intent: "create",
+      state: "pending_activation",
+      qrUrl: null,
+      expiresAt: "2026-10-10T00:00:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-09-10T00:00:00.000Z",
+      activation,
+    });
+    expect(parsed.activation).toEqual(activation);
+    expect(() => FeishuSetupAttemptSchema.parse({ ...parsed, activation: undefined })).toThrow();
+    expect(() => FeishuSetupAttemptSchema.parse({ ...parsed, qrUrl: "https://example.com/qr" })).toThrow();
+    expect(() => FeishuSetupAttemptSchema.parse({ ...parsed, state: "succeeded" })).toThrow();
+    expect(() =>
+      FeishuSetupActivationSchema.parse({ ...activation, missingScopes: ["im:message", "im:message"] }),
+    ).toThrow();
+
+    // The projection is strictly bounded: no secret, no unknown reason, no foreign scope names.
+    expect(() => FeishuSetupActivationSchema.parse({ ...activation, appSecret: "secret" })).toThrow();
+    expect(() => FeishuSetupActivationSchema.parse({ ...activation, reason: "approved" })).toThrow();
+    expect(() => FeishuSetupActivationSchema.parse({ ...activation, missingScopes: ["not-a-scope"] })).toThrow();
+    expect(FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE).toBe("/api/v1/im-bindings/feishu/setup-attempts/:attemptId/check");
   });
 
   it("keeps provider identity and credential metadata out of member-safe summaries", () => {

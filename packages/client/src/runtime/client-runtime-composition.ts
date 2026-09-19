@@ -39,7 +39,7 @@ import {
 } from "../providers/pi/agent-runtime.js";
 import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
 import { SkillSyncManager } from "../skills/skill-sync.js";
-import { RuntimeStorageError } from "../storage/durable-file.js";
+import { ensurePrivateDirectory, RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
 import { AgentRuntimeAvailabilityTester } from "./agent-runtime-availability-tester.js";
@@ -691,6 +691,7 @@ export async function createClientRuntime(
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const credentialMode = options.credentialMode ?? "legacy";
+  connection.setCredentialProxyEnabled(credentialMode === "proxy");
   const contextTree = new ContextTreeManager({
     environment: sourceEnvironment,
     codexHome,
@@ -760,6 +761,11 @@ export async function createClientRuntime(
       composeProviderCliLaunchPath(
         credentialEnvironment.shimDirForSession(sessionId),
         providerCliTurnPlans.sessionDir(sessionId),
+      ),
+    providerCliReplyWritableRoot: (sessionId) =>
+      ensurePrivateDirectory(
+        providerCliTurnPlans.layout.plans,
+        join(providerCliTurnPlans.sessionDir(sessionId), "runs"),
       ),
     slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,

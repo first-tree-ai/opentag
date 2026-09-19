@@ -18,6 +18,7 @@
 
 ## 聊天设置
 
+- [飞书连接生命周期](./feishu-connection-lifecycle.md)
 - [Slack App 配置](./slack-app-setup.md)
 - [Slack 实际环境验收](./slack-live-acceptance.md)
 
@@ -39,3 +40,4 @@
 - [Agent Runtime contract](../design/agent-runtime-contract.md)
 - [Agent Runtime test plan](../design/agent-runtime-test-plan.md)
 - [Context Tree integration](../design/context-tree-integration.md)
+- [Agent Skills](../design/agent-skills.md)

@@ -94,6 +94,8 @@ export interface SessionRuntimeManagerOptions {
   readonly slackConfigWritableRoot?: (sessionId: string) => string | undefined;
   /** Absolute Session launch-bin directory prepended to the Agent Runtime PATH. Visible only. */
   readonly providerCliLaunchPath?: (sessionId: string) => string | undefined;
+  /** Prepare only this visible Session's reply evidence directory, never its trusted plan directory. */
+  readonly providerCliReplyWritableRoot?: (sessionId: string) => Promise<string>;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -113,6 +115,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #slackConfigWritableRoot?: SessionRuntimeManagerOptions["slackConfigWritableRoot"];
   readonly #providerCliLaunchPath?: SessionRuntimeManagerOptions["providerCliLaunchPath"];
+  readonly #providerCliReplyWritableRoot?: SessionRuntimeManagerOptions["providerCliReplyWritableRoot"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -136,6 +139,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#contextTreeEnvironment = options.contextTreeEnvironment;
     this.#slackConfigWritableRoot = options.slackConfigWritableRoot;
     this.#providerCliLaunchPath = options.providerCliLaunchPath;
+    this.#providerCliReplyWritableRoot = options.providerCliReplyWritableRoot;
     this.#proofManager =
       options.proofManager ??
       ({
@@ -319,6 +323,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       cwd: managed.cwd,
       provider: managed.snapshot.provider,
     });
+    const replyRoots = await visibleReplyWritableRoots(managed, this.#providerCliReplyWritableRoot);
     const common = {
       eventSink,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
@@ -344,6 +349,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
             : {}),
         },
         writableRoots: [
+          ...replyRoots,
           ...visibleSlackWritableRoots(
             managed.sessionKind,
             managed.cwd,
@@ -606,6 +612,14 @@ function visibleProviderCliPath(
   resolveLaunchPath: ((sessionId: string) => string | undefined) | undefined,
 ): { pathPrepend?: string } {
   return managed.sessionKind === "visible" ? { pathPrepend: resolveLaunchPath?.(managed.binding.sessionId) } : {};
+}
+
+async function visibleReplyWritableRoots(
+  managed: ManagedSessionRuntime,
+  prepareRoot: SessionRuntimeManagerOptions["providerCliReplyWritableRoot"],
+): Promise<string[]> {
+  if (managed.sessionKind !== "visible" || !prepareRoot) return [];
+  return [await prepareRoot(managed.binding.sessionId)];
 }
 
 async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promise<string[]> {

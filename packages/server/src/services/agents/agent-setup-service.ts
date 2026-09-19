@@ -279,14 +279,21 @@ export class AgentSetupService {
       throw new AgentSetupObservationError("Messaging observation failed", { cause });
     });
     if (!binding) return { kind: "not-configured" };
+    if (binding.handoff.bindingState === "active" && binding.handoff.handoffReady) {
+      return activeMessagingState(binding, binding.handoff);
+    }
     const attempt = binding.provider === "feishu" ? await this.#observeAttempt(agentId) : undefined;
-    if (attempt && (attempt.state === "awaiting_user" || attempt.state === "validating")) {
+    if (
+      attempt &&
+      (attempt.state === "awaiting_user" || attempt.state === "pending_activation" || attempt.state === "validating")
+    ) {
       return {
         kind: "authorizing",
         provider: "feishu",
         attemptId: attempt.id,
         qrUrl: attempt.qrUrl,
         expiresAt: attempt.expiresAt,
+        ...(attempt.activation ? { activation: attempt.activation } : {}),
       };
     }
     const { handoff } = binding;
@@ -315,8 +322,7 @@ function provisioningMessagingState(
   binding: AgentSetupBindingState,
   attempt: FeishuSetupAttempt | undefined,
 ): AgentSetupMessagingState {
-  // The attempt is terminal (or no longer observable): the provisioning binding names it exactly
-  // and the only way forward is to unbind it before a Provider can be started again.
+  // Terminal first authorization retains its exact slot for a same-Provider retry.
   return {
     kind: "blocked",
     provider: binding.provider,
@@ -514,7 +520,16 @@ function deriveSetupActions(
       return [{ kind: "refresh" }];
     case "needs-messaging":
     case "ready":
-      return messagingActions(messaging, slackOAuthAvailable);
+      return messagingActions(messaging, slackOAuthAvailable).filter(
+        (action) =>
+          action.kind !== "start-messaging" ||
+          (computer.kind === "bound" &&
+            AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS.every((provider) =>
+              computer.imCliReadiness.some(
+                (entry) => entry.provider === provider && entry.status === "ready" && entry.observedAt !== null,
+              ),
+            )),
+      );
   }
 }
 
@@ -537,27 +552,17 @@ function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailab
       return [{ kind: "refresh" }];
     case "authorizing":
       if (messaging.provider !== "feishu") return [{ kind: "refresh" }];
-      return [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId }];
+      return [
+        ...(messaging.activation ? [{ kind: "refresh" } as const] : []),
+        { kind: "cancel-messaging-attempt", provider: "feishu", attemptId: messaging.attemptId },
+      ];
     case "waiting-handoff":
       return [
         { kind: "refresh" },
         { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
       ];
     case "blocked":
-      if (messaging.code === "authorization-failed") {
-        if (!messaging.bindingId) throw new Error("A failed Messaging authorization must name its binding");
-        return [{ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId }];
-      }
-      if (!messaging.bindingId) throw new Error("A blocked Messaging binding must name its binding");
-      if (!messaging.credentialGeneration) {
-        throw new Error("A configured blocked Messaging binding must name its credential generation");
-      }
-      return currentBindingActions(
-        messaging.provider,
-        messaging.bindingId,
-        messaging.credentialGeneration,
-        slackOAuthAvailable,
-      );
+      return blockedMessagingActions(messaging, slackOAuthAvailable);
     case "ready":
       return currentBindingActions(
         messaging.provider,
@@ -566,6 +571,31 @@ function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailab
         slackOAuthAvailable,
       );
   }
+}
+
+function blockedMessagingActions(
+  messaging: Extract<AgentSetupMessagingState, { kind: "blocked" }>,
+  slackOAuthAvailable: boolean,
+): AgentSetupAction[] {
+  if (messaging.code === "authorization-failed") {
+    if (!messaging.bindingId) throw new Error("A failed Messaging authorization must name its binding");
+    return [
+      ...(messaging.provider === "feishu" && messaging.credentialGeneration === 0
+        ? [{ kind: "start-messaging", provider: "feishu" } as const]
+        : []),
+      { kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId },
+    ];
+  }
+  if (!messaging.bindingId) throw new Error("A blocked Messaging binding must name its binding");
+  if (!messaging.credentialGeneration) {
+    throw new Error("A configured blocked Messaging binding must name its credential generation");
+  }
+  return currentBindingActions(
+    messaging.provider,
+    messaging.bindingId,
+    messaging.credentialGeneration,
+    slackOAuthAvailable,
+  );
 }
 
 function currentBindingActions(

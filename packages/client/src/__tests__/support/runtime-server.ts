@@ -5,6 +5,7 @@ import {
   RUNTIME_PROTOCOL_V2,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+  type RuntimeCapabilityOffers,
 } from "@opentag/shared";
 import type { WebSocket } from "ws";
 
@@ -45,7 +46,7 @@ export function registrationResult(frame: Record<string, unknown>, connectionId 
     protocolVersion: RUNTIME_PROTOCOL_V2,
     connectionId,
     negotiatedCapabilities: negotiateRuntimeCapabilities(
-      RUNTIME_CLIENT_CAPABILITY_OFFERS,
+      (frame.supportedCapabilities as RuntimeCapabilityOffers | undefined) ?? RUNTIME_CLIENT_CAPABILITY_OFFERS,
       RUNTIME_SERVER_CAPABILITY_OFFERS,
     ),
   };

@@ -564,20 +564,37 @@ class ReliableFeishuChannel implements FeishuChannel {
   }
 }
 
-function createSignalAwareHttpInstance(signal: AbortSignal): HttpInstance {
+function createFeishuHttpInstance(signal?: AbortSignal): HttpInstance {
   const instance = defaultHttpInstance as unknown as HttpInstance;
   const withSignal = <D>(options: HttpRequestOptions<D> | undefined): HttpRequestOptions<D> =>
-    ({ ...(options ?? {}), signal }) as HttpRequestOptions<D>;
+    ({ ...(options ?? {}), ...(signal ? { signal } : {}) }) as HttpRequestOptions<D>;
   return {
     request: (options) => instance.request(withSignal(options)),
     get: (url, options) => instance.get(url, withSignal(options)),
     delete: (url, options) => instance.delete(url, withSignal(options)),
     head: (url, options) => instance.head(url, withSignal(options)),
     options: (url, options) => instance.options(url, withSignal(options)),
-    post: (url, data, options) => instance.post(url, data, withSignal(options)),
+    post: async (url, data, options) => {
+      const response = await instance.post(url, data, withSignal(options));
+      // The SDK converts HTTP-200 token failures to a plain Error, losing the structured code.
+      // Preserve only that code at the transport boundary; never retain credentials or raw messages.
+      if (/\/open-apis\/auth\/v3\/(?:tenant|app)_access_token\/internal$/.test(url)) {
+        const code = (response as { code?: unknown } | undefined)?.code;
+        if (typeof code === "number" && code !== 0) {
+          throw Object.assign(new Error("FEISHU_TOKEN_REQUEST_FAILED"), { code });
+        }
+      }
+      return response;
+    },
     put: (url, data, options) => instance.put(url, data, withSignal(options)),
     patch: (url, data, options) => instance.patch(url, data, withSignal(options)),
   } as HttpInstance;
+}
+
+export interface FeishuBotProbe {
+  openId: string;
+  /** Provider-reported bot activation status; `null` when the platform omits it. */
+  activateStatus: number | null;
 }
 
 export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> {
@@ -614,6 +631,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       domain,
       logger: REDACTING_SDK_LOGGER,
       loggerLevel: LoggerLevel.error,
+      httpInstance: createFeishuHttpInstance(),
     };
     this.#client = new Client(clientOptions);
     this.#scopeList = input.scopeList ?? (() => this.#client.application.v6.scope.list({}));
@@ -624,7 +642,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
         (signal) =>
           new Client({
             ...clientOptions,
-            httpInstance: createSignalAwareHttpInstance(signal),
+            httpInstance: createFeishuHttpInstance(signal),
           }) as unknown as FeishuHttpClient,
       );
     this.#channel =
@@ -649,7 +667,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   async listGrantedWorkspaceScopes(): Promise<string[]> {
     const response = await this.#scopeList();
     if (response.code !== undefined && response.code !== 0) {
-      throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");
+      throw Object.assign(new Error("FEISHU_SCOPE_VALIDATION_FAILED"), { code: response.code });
     }
     if (!response.data?.scopes) throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");
     return [
@@ -659,6 +677,26 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
           .map((scope) => scope.scope_name),
       ),
     ].sort();
+  }
+
+  /**
+   * Reads the official Bot info endpoint without touching the message channel. The durable-candidate
+   * check uses this to tell an installed-but-not-enabled App apart from missing tenant scopes, and a
+   * candidate must never open a socket just to answer that question.
+   */
+  async probeBotIdentity(): Promise<FeishuBotProbe> {
+    const response = await this.#client.request<{
+      code?: number;
+      bot?: { open_id?: string; activate_status?: number };
+    }>({ url: "/open-apis/bot/v3/info", method: "GET" });
+    if (response.code !== undefined && response.code !== 0) {
+      throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { code: response.code });
+    }
+    const openId = response.bot?.open_id;
+    if (!openId) {
+      throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
+    }
+    return { openId, activateStatus: response.bot?.activate_status ?? null };
   }
 
   normalizeInbound(input: VerifiedFeishuEnvelope): NormalizedInboundImEvent[] {

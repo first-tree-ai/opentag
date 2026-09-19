@@ -51,6 +51,7 @@ function scriptedAdapter(
     refreshPreparation: vi.fn(async () => undefined),
     startFeishuAttempt: vi.fn(async () => undefined),
     cancelFeishuAttempt: vi.fn(async () => undefined),
+    checkFeishuAttempt: vi.fn(async () => undefined),
     startSlackInstall: vi.fn(async () => "https://slack.com/oauth/v2/authorize?state=scripted"),
     unbindMessaging: vi.fn(async () => undefined),
     ...overrides,
@@ -941,9 +942,17 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(cancel).toHaveBeenCalledWith(attemptId);
-    expect(screen.getByText("Lark authorization didn't complete. Disconnect Lark, then reconnect it.")).toBeTruthy();
+    expect(screen.getByText("Couldn’t connect Lark. Try scanning a new QR code.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Lark setup" }));
+    await settle();
+    expect(screen.getByText("Waiting for you to scan…")).toBeTruthy();
+    const retried = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    expect(retried.messaging.kind).toBe("authorizing");
+    if (retried.messaging.kind === "authorizing" && retried.messaging.provider === "feishu") {
+      expect(retried.messaging.attemptId).not.toBe(attemptId);
+    }
   });
 
   it("starts the Slack install by leaving for Slack", async () => {
@@ -2187,12 +2196,12 @@ describe("AgentSetupPage request fencing", () => {
     expect(calls).toBe(2);
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await settle();
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Lark setup" })).toBeTruthy();
 
     // The poll's late reply still describes the attempt the reader just canceled; it must not land.
     stale.resolve(await modelRead(SETUP_AGENT_ID));
     await settle();
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Lark setup" })).toBeTruthy();
     expect(screen.queryByText("Waiting for you to scan…")).toBeNull();
   });
 

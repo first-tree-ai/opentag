@@ -278,7 +278,9 @@ function classifyZipMode(mode: number, name: string): ZipMemberKind {
 /**
  * The canonical mode for a zip member: `0755` when a Unix-made regular file carries any execute bit,
  * `0644` otherwise — the same normalization the tar path applies. A Unix symlink, a special file, or
- * any setuid/setgid/sticky bit is rejected; a DOS/Windows entry has no mode to lose, so it is `0644`.
+ * any setuid/setgid/sticky bit is rejected; a Unix entry whose mode carries permission bits without
+ * file-type bits (Python's `zipfile` does this) is an ordinary member; a DOS/Windows entry has no
+ * mode to lose, so it is `0644`.
  */
 function canonicalZipMode(rawName: string, directory: Map<string, ZipDirectoryEntry>): number {
   const info = directory.get(rawName);

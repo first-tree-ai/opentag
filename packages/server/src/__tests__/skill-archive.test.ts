@@ -297,6 +297,32 @@ describe("normalizeSkillArchive", () => {
     }
   });
 
+  it("accepts a Unix zip member whose mode carries permissions but no file-type bits", async () => {
+    // Python's zipfile stores create_system=3 with external_attr >> 16 equal to the permission bits
+    // alone (no regular-file type bit); that is an ordinary member, not a special file.
+    const zip = buildStoredZip([
+      { name: "SKILL.md", body: skillManifest("perms-only"), unixMode: 0o600 },
+      { name: "scripts/run.sh", body: "#!/bin/sh\n", unixMode: 0o700 },
+    ]);
+    const normalized = await normalizeSkillArchive(zip, "zip");
+    const modes = await tarMemberModes(normalized.archive);
+    expect(modes.get("SKILL.md")).toBe(0o644);
+    expect(modes.get("scripts/run.sh")).toBe(0o755);
+  });
+
+  it("still rejects a Unix zip special file", async () => {
+    await failure(
+      normalizeSkillArchive(
+        buildStoredZip([
+          { name: "SKILL.md", body: skillManifest("fifo-skill"), unixMode: 0o100644 },
+          { name: "pipe", body: "", unixMode: 0o010644 },
+        ]),
+        "zip",
+      ),
+      SKILL_ERROR_CODES.ARCHIVE_INVALID,
+    );
+  });
+
   it("rejects a Unix zip symlink and a setuid member", async () => {
     await failure(
       normalizeSkillArchive(

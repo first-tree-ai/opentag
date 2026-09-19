@@ -182,7 +182,10 @@ export class SkillService {
 
   async openBundleForComputer(computerId: string, agentId: string, skillId: string): Promise<SkillBundle> {
     await this.#requireComputerAgent(computerId, agentId);
-    return this.#openBundle(await this.#requireSkill(agentId, skillId));
+    const row = await this.#requireSkill(agentId, skillId);
+    // The manifest lists enabled Skills only; a disabled Skill is not addressable on this surface.
+    if (!row.enabled) throw skillNotFound();
+    return this.#openBundle(row);
   }
 
   // -------------------------------------------------------------- agent (cli)

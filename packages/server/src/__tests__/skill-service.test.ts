@@ -284,6 +284,10 @@ describe("SkillService", () => {
 
     await service.setEnabled(accountId, agentId, detail.id, false);
     expect((await service.manifestForComputer(boundComputer, agentId)).skills).toEqual([]);
+    // A disabled Skill is a hard stop on the Computer surface, not just absent from the manifest.
+    await expect(service.openBundleForComputer(boundComputer, agentId, detail.id)).rejects.toMatchObject({
+      code: SKILL_ERROR_CODES.NOT_FOUND,
+    });
     await service.setEnabled(accountId, agentId, detail.id, true);
     expect((await service.manifestForComputer(boundComputer, agentId)).skills[0]).toMatchObject({
       id: detail.id,

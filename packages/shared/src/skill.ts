@@ -257,13 +257,21 @@ function collectIgnoredValueLines(lines: string[], startIndex: number): number {
   return index;
 }
 
+/** A YAML inline comment begins at whitespace followed by `#`; a plain scalar may not contain one. */
+function hasInlineComment(line: string): boolean {
+  return /[ \t]#/.test(line);
+}
+
 /**
  * A plain scalar, optionally continued on following indented lines. Continuations are folded the way
  * `>` folds them, so a long description written over several lines keeps its paragraph breaks.
  */
-function readPlainScalar(lines: string[], index: number, rawValue: string): ManifestFieldValue {
+function readPlainScalar(lines: string[], index: number, key: string, rawValue: string): ManifestFieldValue {
   const collected = collectBlockLines(lines, index + 1);
   const continuation = stripBlockIndent(collected.lines);
+  if (hasInlineComment(rawValue) || continuation.some(hasInlineComment)) {
+    return { ok: false, reason: `Skill manifest has an inline comment on the ${key} value` };
+  }
   return { ok: true, value: foldLines([rawValue, ...continuation]), nextIndex: collected.nextIndex };
 }
 
@@ -280,7 +288,7 @@ function readManifestFieldValue(lines: string[], index: number, key: string, raw
     if (scalar === null) return { ok: false, reason: `Skill manifest has an unsupported value for ${key}` };
     return { ok: true, value: scalar, nextIndex: index + 1 };
   }
-  return readPlainScalar(lines, index, rawValue);
+  return readPlainScalar(lines, index, key, rawValue);
 }
 
 function readFrontmatterEntry(lines: string[], index: number): FrontmatterEntry {
@@ -315,6 +323,7 @@ function parseFrontmatterEntries(
     if (!entry.ok) return entry;
     index = entry.nextIndex;
     if (entry.key !== "name" && entry.key !== "description") continue;
+    if (entries.has(entry.key)) return { ok: false, reason: `Skill manifest has a duplicate ${entry.key} field` };
     entries.set(entry.key, entry.value);
   }
   return { ok: true, entries };
@@ -328,7 +337,8 @@ function parseFrontmatterEntries(
  * supports plain scalars (single- or multi-line, folded like `>`) and quoted scalars plus `>`/`|`
  * block scalars with an optional `-`/`+` chomping indicator. Unknown top-level keys are ignored
  * together with their value, including nested maps and block sequences, because real `SKILL.md`
- * files carry `metadata` and `allowed-tools`. Anything it cannot represent faithfully is a typed
+ * files carry `metadata` and `allowed-tools`. A plain `name`/`description` scalar may not carry an
+ * inline comment, and neither key may repeat. Anything it cannot represent faithfully is a typed
  * rejection with a specific reason, which the Server surfaces as `SKILL_MANIFEST_INVALID`.
  */
 export function parseSkillManifest(markdown: string): ParseSkillManifestResult {

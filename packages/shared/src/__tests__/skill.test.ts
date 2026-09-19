@@ -250,6 +250,20 @@ describe("parseSkillManifest", () => {
     expectReason("---\n  orphan: x\n---\n", "indented line with no preceding key");
   });
 
+  it("rejects an inline comment on a plain name or description value", () => {
+    expectReason("---\nname: demo\ndescription: A demo # comment\n---\n", "inline comment");
+    expectReason("---\nname: demo # comment\ndescription: A demo skill\n---\n", "inline comment");
+    expectReason("---\nname: demo\ndescription: A demo\n  more # comment\n---\n", "inline comment");
+  });
+
+  it("rejects a duplicate name or description field", () => {
+    expectReason("---\nname: demo\nname: other\ndescription: A demo skill\n---\n", "duplicate name field");
+    expectReason(
+      "---\nname: demo\ndescription: A demo skill\ndescription: Another\n---\n",
+      "duplicate description field",
+    );
+  });
+
   it("rejects a missing frontmatter block", () => {
     expectReason("# Demo\nname: demo\n", "missing its frontmatter");
   });

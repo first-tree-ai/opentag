@@ -59,14 +59,14 @@ function validSkill(overrides: Record<string, unknown> = {}) {
 }
 
 describe("skill name rules", () => {
-  it("accepts lowercase letters, numbers, and hyphens", () => {
+  it("accepts lowercase letters, numbers, and single hyphens", () => {
     for (const name of ["a", "demo", "my-skill", "a1-b2-c3", "a".repeat(64)]) {
       expect(SkillNameSchema.safeParse(name).success).toBe(true);
     }
   });
 
-  it("rejects uppercase, a leading hyphen, over-long, and empty names", () => {
-    for (const name of ["MySkill", "-skill", "a".repeat(65), "", "skill_name", "skill name"]) {
+  it("rejects uppercase, hyphen placement, over-long, and empty names", () => {
+    for (const name of ["MySkill", "-skill", "pdf-", "a--b", "a".repeat(65), "", "skill_name", "skill name"]) {
       expect(SkillNameSchema.safeParse(name).success).toBe(false);
     }
   });
@@ -132,22 +132,38 @@ describe("parseSkillManifest", () => {
   it("folds a `>` block scalar", () => {
     expectManifest("---\nname: demo\ndescription: >\n  Folded\n  text\n---\n", {
       name: "demo",
-      description: "Folded text\n",
+      description: "Folded text",
     });
   });
 
   it("keeps paragraph breaks in a folded block scalar", () => {
     expectManifest("---\nname: demo\ndescription: >\n  Para one\n\n  Para two\n---\n", {
       name: "demo",
-      description: "Para one\nPara two\n",
+      description: "Para one\nPara two",
     });
   });
 
   it("keeps newlines in a literal `|` block scalar", () => {
     expectManifest("---\nname: demo\ndescription: |\n  Line one\n  Line two\n---\n", {
       name: "demo",
-      description: "Line one\nLine two\n",
+      description: "Line one\nLine two",
     });
+  });
+
+  it("trims folded, literal, and keep-chomped block descriptions", () => {
+    const markdowns = [
+      "---\nname: demo\ndescription: >\n  Folded\n  text\n---\n",
+      "---\nname: demo\ndescription: |\n  Line one\n  Line two\n---\n",
+      "---\nname: demo\ndescription: >+\n  Folded\n  text\n\n---\n",
+    ];
+    for (const markdown of markdowns) {
+      const result = parseSkillManifest(markdown);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.manifest.description).toBe(result.manifest.description.trim());
+        expect(result.manifest.description.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("honors the strip and keep chomping indicators", () => {
@@ -155,9 +171,13 @@ describe("parseSkillManifest", () => {
       name: "demo",
       description: "Folded text",
     });
+    expectManifest("---\nname: demo\ndescription: >+\n  Folded\n  text\n\n---\n", {
+      name: "demo",
+      description: "Folded text",
+    });
     expectManifest("---\nname: demo\ndescription: |+\n  Line one\n\n---\n", {
       name: "demo",
-      description: "Line one\n\n",
+      description: "Line one",
     });
   });
 
@@ -175,6 +195,75 @@ describe("parseSkillManifest", () => {
     });
   });
 
+  it("ignores nested maps and block sequences under unknown keys", () => {
+    const markdown = [
+      "---",
+      "name: demo",
+      "description: A demo skill",
+      "license: MIT",
+      "metadata:",
+      "  author: x",
+      "  requires:",
+      "    - y",
+      "allowed-tools:",
+      "  - read",
+      "  - write",
+      "---",
+    ].join("\n");
+    expectManifest(markdown, { name: "demo", description: "A demo skill" });
+  });
+
+  it("accepts OpenTag's own context-tree-read manifest shape", () => {
+    const markdown = [
+      "---",
+      "name: context-tree-read",
+      "description: Read a node, subtree, or search result from Context Tree.",
+      "metadata:",
+      "  author: x",
+      "  requires:",
+      "    - y",
+      "allowed-tools:",
+      "- read",
+      "---",
+    ].join("\n");
+    expectManifest(markdown, {
+      name: "context-tree-read",
+      description: "Read a node, subtree, or search result from Context Tree.",
+    });
+  });
+
+  it("folds a multi-line plain description", () => {
+    expectManifest("---\nname: demo\ndescription: This is\n  a long description\n  over lines\n---\n", {
+      name: "demo",
+      description: "This is a long description over lines",
+    });
+  });
+
+  it("keeps paragraph breaks in a multi-line plain description", () => {
+    expectManifest("---\nname: demo\ndescription:\n  Para one\n\n  Para two\n---\n", {
+      name: "demo",
+      description: "Para one\nPara two",
+    });
+  });
+
+  it("rejects an indented line with no preceding key", () => {
+    expectReason("---\n  orphan: x\n---\n", "indented line with no preceding key");
+  });
+
+  it("rejects an inline comment on a plain name or description value", () => {
+    expectReason("---\nname: demo\ndescription: A demo # comment\n---\n", "inline comment");
+    expectReason("---\nname: demo # comment\ndescription: A demo skill\n---\n", "inline comment");
+    expectReason("---\nname: demo\ndescription: A demo\n  more # comment\n---\n", "inline comment");
+  });
+
+  it("rejects a duplicate name or description field", () => {
+    expectReason("---\nname: demo\nname: other\ndescription: A demo skill\n---\n", "duplicate name field");
+    expectReason(
+      "---\nname: demo\ndescription: A demo skill\ndescription: Another\n---\n",
+      "duplicate description field",
+    );
+  });
+
   it("rejects a missing frontmatter block", () => {
     expectReason("# Demo\nname: demo\n", "missing its frontmatter");
   });
@@ -189,12 +278,17 @@ describe("parseSkillManifest", () => {
   });
 
   it("rejects an invalid name", () => {
-    expectReason("---\nname: Demo\ndescription: A demo skill\n---\n", "Skill name must start");
+    expectReason("---\nname: Demo\ndescription: A demo skill\n---\n", "Skill name must be 1 to 64 characters");
   });
 
   it("rejects an over-long or empty description", () => {
     expectReason(`---\nname: demo\ndescription: ${"x".repeat(SKILL_DESCRIPTION_MAX_LENGTH + 1)}\n---\n`, "Too big");
     expectReason("---\nname: demo\ndescription: ''\n---\n", "Too small");
+  });
+
+  it("rejects a whitespace-only description", () => {
+    expectReason("---\nname: demo\ndescription: '   '\n---\n", "Too small");
+    expectReason("---\nname: demo\ndescription: >\n   \n---\n", "Too small");
   });
 
   it("rejects input larger than the manifest limit before parsing", () => {

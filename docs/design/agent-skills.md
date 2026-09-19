@@ -67,7 +67,9 @@ The Server validates every upload before it stores anything:
 
 The parser is the same bounded, dependency-free function the contract layer exports; it understands
 plain and quoted scalars and `>`/`|` block scalars, and refuses anything it cannot represent
-faithfully rather than guessing.
+faithfully rather than guessing. The manifest description is trimmed of leading and trailing
+whitespace, because a block scalar's chomping indicator otherwise leaves a trailing newline in a
+value that is stored and shown as a single line.
 
 Because the Server re-packs deterministically, **the stored `sha256` is the Server's, not the
 uploader's.** The `x-opentag-skill-sha256` header is an integrity check on the transfer, not a claim
@@ -163,8 +165,15 @@ have, verifies the sha256, and materializes it:
 | Provider | Target |
 | --- | --- |
 | Claude Code | `<workspace>/.claude/skills/<name>/` |
-| Codex | `<workspace>/.agents/skills/<name>/` (to be verified in the Client lane; fallback documented there) |
+| Codex | Agent-scoped only: `<workspace>/.agents/skills/<name>/`, or a per-Agent `CODEX_HOME`; otherwise out of v1 |
 | Pi | explicit `--skill <path>` arguments |
+
+**Codex materialization must be Agent-scoped.** The only acceptable targets are the workspace's
+`.agents/skills` or a per-Agent `CODEX_HOME`. The OS account home's `.agents/skills` is shared by
+every Agent on the Computer and is **never** a target or a fallback — writing there would expose one
+Agent's Skills to its siblings, which is exactly what per-Agent ownership exists to prevent. If
+neither Agent-scoped option works on the target Codex version, Codex is out of v1 rather than falling
+back to the shared account home.
 
 Every platform-managed directory carries a `.opentag-skill.json` marker containing the Skill id and
 the archive sha256. **Sync only ever touches directories carrying that marker**, so a Skill an Agent
@@ -180,6 +189,20 @@ the MCP gateway applies to an unreachable upstream.
 file (`OPENTAG_SESSION_PROOF_FILE`), the same mechanism `opentag session create` uses. The Agent id
 comes from the proof; the command cannot target another Agent. A pushed Skill lands under the
 `agent_upload` source and the same validation as any other upload.
+
+**Push then sync.** When the pushed directory is the Skill's own materialization target — for example
+a Skill the Agent authored in `<workspace>/.claude/skills/<name>` — the CLI writes the
+`.opentag-skill.json` marker into that directory after the upload succeeds, so the directory becomes
+platform-managed. From then on a Web replace, disable, or delete reaches that Agent on the next sync
+like any other Skill, instead of the local copy looking unmanaged and being left alone.
+
+Push also reports name collisions: if the manifest name matches a directory that does not carry the
+marker, that directory is skipped and the collision is reported rather than overwritten, because an
+unmarked directory may be something the Agent is still authoring.
+
+Sync completes the loop by removing marked directories that are absent from the runtime manifest — a
+Skill that was disabled or deleted. Ownership stays one-way: the platform is the source of truth for
+every directory it manages.
 
 ## Cloud sandboxes
 
@@ -203,11 +226,12 @@ no machine token the Computer surface accepts today) and `--skill` argument asse
 | `SKILL_MANIFEST_FILE` | `SKILL.md` | The required manifest filename |
 | `SKILL_MARKER_FILE` | `.opentag-skill.json` | The marker that identifies a platform-managed directory |
 
-Names are lowercase alphanumerics and hyphens, must start with a letter or number, and are at most 64
-characters (`SkillNameSchema`). Ten names are reserved because OpenTag already ships them and an
-upload must not shadow them: the six `context-tree-*` skills plus `git`, `gh`, `lark-cli`, and
-`slack`. The reserved list is copied from the Client's runner skill directories and the Client lane
-adds a parity test, because `@opentag/shared` may not depend on the Client package.
+Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
+end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved
+because OpenTag already ships them and an upload must not shadow them: the six `context-tree-*`
+skills plus `git`, `gh`, `lark-cli`, and `slack`. The reserved list is copied from the Client's runner
+skill directories and the Client lane adds a parity test, because `@opentag/shared` may not depend on
+the Client package.
 
 ## Error codes
 
@@ -232,9 +256,9 @@ Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no data
 
 | Area | What is asserted |
 | --- | --- |
-| Name rules | Valid lowercase names; uppercase, leading hyphen, 65-character, empty, and underscore/space names rejected; every reserved name rejected and an ordinary name accepted |
-| Manifest parser | Plain, single-quoted (including doubled quotes) and double-quoted (including escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored |
-| Manifest rejection | Missing frontmatter, unterminated frontmatter, missing `name` or `description`, invalid name, over-long or empty description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
+| Name rules | 64-character names accepted; uppercase, leading/trailing hyphen, consecutive hyphens, 65-character, empty, underscore, and space names rejected; every reserved name rejected and an ordinary name accepted |
+| Manifest parser | Plain (including multi-line, folded like `>`) and single-/double-quoted (including doubled quotes and escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored with nested maps and block sequences; block-scalar descriptions trimmed of leading and trailing whitespace |
+| Manifest rejection | Missing frontmatter, unterminated frontmatter, an indented line with no preceding key, missing `name` or `description`, a duplicate `name`/`description`, an inline comment on a plain value, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
 | Resource schemas | Round trips for `SkillSchema`, `SkillDetailSchema`, `ListAgentSkillsResponseSchema`, `RuntimeSkillManifestSchema` and `SkillInstallMarkerSchema`; rejection of a bad sha, `revision: 0`, an over-limit archive, an over-limit runtime list, and unknown keys |
 | Error codes | Every code has metadata, every metadata key is a known code, and each status/category matches the table |
 | HTTP paths | Each builder produces the expected string and percent-encodes arguments containing spaces and slashes |

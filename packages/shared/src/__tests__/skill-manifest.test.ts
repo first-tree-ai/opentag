@@ -272,6 +272,45 @@ describe("parseSkillManifest", () => {
     );
   });
 
+  it("rejects plain values that YAML resolves to null", () => {
+    expectReason("---\nname: demo\ndescription: ~\n---\n", "description must be a string, not a null");
+    expectReason("---\nname: demo\ndescription: null\n---\n", "description must be a string, not a null");
+    expectReason("---\nname: demo\ndescription: NULL\n---\n", "description must be a string, not a null");
+    expectReason("---\nname: ~\ndescription: A demo skill\n---\n", "name must be a string, not a null");
+  });
+
+  it("rejects plain values that YAML resolves to a boolean", () => {
+    for (const value of ["true", "True", "TRUE", "false", "yes", "Yes", "no", "NO", "on", "Off", "y", "N"]) {
+      expectReason(`---\nname: demo\ndescription: ${value}\n---\n`, "description must be a string, not a boolean");
+    }
+    expectReason("---\nname: no\ndescription: A demo skill\n---\n", "name must be a string, not a boolean");
+  });
+
+  it("rejects plain values that YAML resolves to a number", () => {
+    const integers = ["123", "+42", "-7", "1_000", "0x1F", "0o17", "0b101", "0123", "1.5", ".5", "1e3", "-1.5e-3"];
+    for (const value of [...integers, ".inf", "-.INF", ".nan", ".NaN"]) {
+      expectReason(`---\nname: demo\ndescription: ${value}\n---\n`, "description must be a string, not a number");
+    }
+    expectReason("---\nname: 123\ndescription: A demo skill\n---\n", "name must be a string, not a number");
+  });
+
+  it("rejects plain values that YAML resolves to a date", () => {
+    for (const value of ["2024-01-01", "2024-01-01T00:00:00Z", "2024-01-01 12:30:00"]) {
+      expectReason(`---\nname: demo\ndescription: ${value}\n---\n`, "description must be a string, not a date");
+    }
+  });
+
+  it("keeps quoted non-string tokens and embedded tokens as strings", () => {
+    expectManifest('---\nname: demo\ndescription: "123"\n---\n', { name: "demo", description: "123" });
+    expectManifest("---\nname: demo\ndescription: 'true'\n---\n", { name: "demo", description: "true" });
+    expectManifest('---\nname: demo\ndescription: "2024-01-01"\n---\n', {
+      name: "demo",
+      description: "2024-01-01",
+    });
+    expectManifest("---\nname: demo\ndescription: true story\n---\n", { name: "demo", description: "true story" });
+    expectManifest("---\nname: v2\ndescription: 123 things\n---\n", { name: "v2", description: "123 things" });
+  });
+
   it("rejects a missing frontmatter block", () => {
     expectReason("# Demo\nname: demo\n", "missing its frontmatter");
   });

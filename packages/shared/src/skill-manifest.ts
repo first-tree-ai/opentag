@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveYamlNonStringType, type YamlNonStringType } from "./skill-manifest-scalar.js";
 
 /**
  * `SKILL.md` manifest parsing for the Agent Skills contract.
@@ -138,6 +139,10 @@ function parseScalarValue(raw: string): string | null {
     return value.slice(1, -1).replaceAll("''", "'");
   }
   return value;
+}
+
+function nonStringRejection(key: string, type: YamlNonStringType): ManifestFieldValue {
+  return { ok: false, reason: `Skill manifest ${key} must be a string, not a ${type}` };
 }
 
 function parseBlockIndicator(raw: string): { style: BlockScalarStyle; chomp: BlockScalarChomp } | null {
@@ -408,7 +413,10 @@ function readPlainScalar(lines: string[], index: number, key: string, rawValue: 
   if (effectiveRejection) return effectiveRejection;
   const continuationRejection = checkPlainContinuationLines(valueLines, effective, key);
   if (continuationRejection) return continuationRejection;
-  return { ok: true, value: foldLines(valueLines), nextIndex: collected.nextIndex };
+  const folded = foldLines(valueLines).trim();
+  const nonStringType = resolveYamlNonStringType(folded);
+  if (nonStringType !== null) return nonStringRejection(key, nonStringType);
+  return { ok: true, value: folded, nextIndex: collected.nextIndex };
 }
 
 function readManifestFieldValue(lines: string[], index: number, key: string, rawValue: string): ManifestFieldValue {

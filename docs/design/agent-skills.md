@@ -74,9 +74,14 @@ anchor/alias/tag/directive indicator (`&`, `*`, `!`, `%`, `@`, a backtick), or a
 block-mapping indicator (`-`, `?`, `:` followed by space or end of line), and when any line of a plain
 scalar contains a mapping colon (`: ` or a trailing `:`). That covers flow lists and maps, block
 sequences, block mappings, and explicit `? key` / `: value` entries, while a `|`/`>` block whose text
-contains `- item` or `key: value` lines is still a string. The manifest description is trimmed of
-leading and trailing whitespace, because a block scalar's chomping indicator otherwise leaves a
-trailing newline in a value that is stored and shown as a single line.
+contains `- item` or `key: value` lines is still a string. A plain value that YAML resolves to a
+non-string — null (`~`, `null`), a boolean (`true`, `yes`, `on`, …), a number (integer, hex, octal,
+float, `.inf`, `.nan`), or a date/timestamp (`2024-01-01`) — is rejected as
+`Skill manifest <key> must be a string, not a <type>`, because the reference validator's strict parser
+rejects it too; a quoted token (`"123"`) or one merely embedded in text (`true story`, `v2`) stays a
+string. The manifest description is trimmed of leading and trailing whitespace, because a block
+scalar's chomping indicator otherwise leaves a trailing newline in a value that is stored and shown as
+a single line.
 
 Because the Server re-packs deterministically, **the stored `sha256` is the Server's, not the
 uploader's.** The `x-opentag-skill-sha256` header is an integrity check on the transfer, not a claim
@@ -265,7 +270,7 @@ Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no data
 | --- | --- |
 | Name rules | 64-character names accepted; uppercase, leading/trailing hyphen, consecutive hyphens, 65-character, empty, underscore, and space names rejected; every reserved name rejected and an ordinary name accepted |
 | Manifest parser | Plain (including multi-line, folded like `>`) and single-/double-quoted (including doubled quotes and escapes) scalars; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored with nested maps and block sequences; block-scalar descriptions trimmed of leading and trailing whitespace; a `|` block containing `- item` or `key: value` lines is still a string |
-| Manifest rejection | Missing frontmatter, unterminated frontmatter, an indented line with no preceding key, missing `name` or `description`, a duplicate `name`/`description`, an inline comment on a plain value, a structurally collection-valued `name`/`description` (every plain-scalar start indicator, block sequence/mapping, explicit `? key`/`: value`, flow list/map on the key line or a continuation line, a mapping key after a quote), a plain value containing `: ` or ending in `:`, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
+| Manifest rejection | Missing frontmatter, unterminated frontmatter, an indented line with no preceding key, missing `name` or `description`, a duplicate `name`/`description`, an inline comment on a plain value, a structurally collection-valued `name`/`description` (every plain-scalar start indicator, block sequence/mapping, explicit `? key`/`: value`, flow list/map on the key line or a continuation line, a mapping key after a quote), a plain value containing `: ` or ending in `:`, a plain value that YAML resolves to null/boolean/number/date, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
 | Resource schemas | Round trips for `SkillSchema`, `SkillDetailSchema`, `ListAgentSkillsResponseSchema`, `RuntimeSkillManifestSchema` and `SkillInstallMarkerSchema`; rejection of a bad sha, `revision: 0`, an over-limit archive, an over-limit runtime list, and unknown keys |
 | Error codes | Every code has metadata, every metadata key is a known code, and each status/category matches the table |
 | HTTP paths | Each builder produces the expected string and percent-encodes arguments containing spaces and slashes |

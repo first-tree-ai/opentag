@@ -104,41 +104,55 @@ export async function dispatchGatewayRequest(
   // acknowledge rather than answer, and a reply to a notification is itself a protocol violation.
   if (request.id === undefined) return { kind: "accepted" };
   const id = replyId(request);
-
-  if (request.method === "initialize") {
-    return { kind: "json", status: 200, body: jsonRpcResult(id, await initializeResult(handlers, request)) };
-  }
-  if (request.method === "server/discover") {
-    return { kind: "json", status: 200, body: jsonRpcResult(id, await discoverResult(handlers)) };
-  }
-  if (request.method === "ping") {
-    return { kind: "json", status: 200, body: jsonRpcResult(id, {}) };
-  }
-  if (request.method === "tools/list") {
-    const catalog = await handlers.listTools();
+  const method = METHODS[request.method];
+  if (!method) {
     return {
       kind: "json",
-      status: 200,
-      // No `nextCursor`: the catalogue is already bounded and served whole, so there is never a
-      // further page. Emitting a cursor we would then have to honour would be a lie about state the
-      // gateway deliberately does not keep.
-      body: jsonRpcResult(id, { tools: catalog.tools.map(toWireTool) }),
+      status: 404,
+      body: jsonRpcError(id, MCP_RPC_METHOD_NOT_FOUND, `Unknown method "${request.method}"`),
     };
   }
-  if (request.method === "tools/call") {
+  return method(request, handlers, id);
+}
+
+type MethodHandler = (
+  request: McpGatewayRpcRequest,
+  handlers: McpGatewayHandlers,
+  id: string | number | null,
+) => Promise<McpGatewayReply>;
+
+/**
+ * The methods this gateway answers.
+ *
+ * A table rather than a chain of comparisons, so the supported set is one readable list and an
+ * unknown method has exactly one answer. Everything absent here — `resources/*`, `prompts/*`,
+ * elicitation, sampling — is deliberately not implemented, and the capabilities this gateway
+ * advertises say so.
+ */
+const METHODS: Record<string, MethodHandler> = {
+  initialize: async (request, handlers, id) => ok(id, await initializeResult(handlers, request)),
+  "server/discover": async (_request, handlers, id) => ok(id, await discoverResult(handlers)),
+  ping: async (_request, _handlers, id) => ok(id, {}),
+  "tools/list": async (_request, handlers, id) => {
+    const catalog = await handlers.listTools();
+    // No `nextCursor`: the catalogue is already bounded and served whole, so there is never a further
+    // page. Emitting a cursor we would then have to honour would describe state the gateway does not
+    // keep.
+    return ok(id, { tools: catalog.tools.map(toWireTool) });
+  },
+  "tools/call": async (request, handlers, id) => {
     const params = isRecord(request.params) ? request.params : undefined;
     const name = params && typeof params.name === "string" ? params.name : undefined;
     if (!name) {
       return { kind: "json", status: 200, body: jsonRpcError(id, MCP_RPC_INVALID_PARAMS, "A tool name is required") };
     }
     const args = params && isRecord(params.arguments) ? params.arguments : undefined;
-    return { kind: "json", status: 200, body: jsonRpcResult(id, await handlers.callTool(name, args)) };
-  }
-  return {
-    kind: "json",
-    status: 404,
-    body: jsonRpcError(id, MCP_RPC_METHOD_NOT_FOUND, `Unknown method "${request.method}"`),
-  };
+    return ok(id, await handlers.callTool(name, args));
+  },
+};
+
+function ok(id: string | number | null, result: unknown): McpGatewayReply {
+  return { kind: "json", status: 200, body: jsonRpcResult(id, result) };
 }
 
 /**

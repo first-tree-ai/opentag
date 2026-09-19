@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -377,6 +378,51 @@ describe("Agent Runtime Client Turn vertical", () => {
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     await fixture.runtimeManager.close();
   });
+
+  /*
+   * The seam every unit test stops short of: a Server-granted MCP gateway travelling the whole
+   * Client chain — turn runner, Session runtime manager, the real Claude Code factory, the real
+   * hosted-tool bridge — and arriving as the file the CLI actually reads. Each hop is covered
+   * separately; nothing before this asserted they compose.
+   */
+  it("writes the granted MCP gateway into the config Claude Code is launched with", async () => {
+    const gateway = { url: "https://server.example.test/api/v1/mcp", token: "otmg_vertical" };
+    const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code", undefined, gateway);
+    const accepted = await fixture.custody.accept(delivery(fixture.runtime, "delivery-mcp", "hello"));
+    await accepted.onAcceptedSent?.();
+    await fixture.waitForReport(0);
+
+    const launched = fixture.claudeProcesses[0];
+    expect(launched).toBeDefined();
+
+    // The file exists, is the one named on the command line, and carries the gateway entry.
+    const configuration = JSON.parse(launched?.mcpConfig ?? "{}") as {
+      mcpServers: Record<string, { type: string; url: string; headers: Record<string, string> }>;
+    };
+    expect(configuration.mcpServers["opentag-mcp"]).toEqual({
+      type: "http",
+      url: gateway.url,
+      headers: { Authorization: `Bearer ${gateway.token}` },
+    });
+
+    // And the CLI is actually pointed at it, with the whole-server rule that admits every
+    // aggregated tool — the names of which are not known when this file is written.
+    const args = launched?.args ?? [];
+    expect(args).toContain("--strict-mcp-config");
+    expect(args[args.indexOf("--mcp-config") + 1]).toBeTruthy();
+    expect(args).toContain("--allowedTools");
+    expect(args).toContain("mcp__opentag-mcp");
+  });
+
+  it("writes no gateway entry when the Server granted no MCP service", async () => {
+    const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code");
+    const accepted = await fixture.custody.accept(delivery(fixture.runtime, "delivery-no-mcp", "hello"));
+    await accepted.onAcceptedSent?.();
+    await fixture.waitForReport(0);
+    const launched = fixture.claudeProcesses[0];
+    expect(JSON.parse(launched?.mcpConfig ?? "{}")).toEqual({ mcpServers: {} });
+    expect(launched?.args ?? []).not.toContain("mcp__opentag-mcp");
+  });
 });
 
 async function runtimeFixture(
@@ -384,6 +430,7 @@ async function runtimeFixture(
   startingGate: Promise<void> = Promise.resolve(),
   provider: "codex" | "claude-code" = "codex",
   claudeFailure?: "bridge" | "process" | "spawn",
+  mcp?: { url: string; token: string },
 ) {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-turn-integration-"));
   directories.push(home);
@@ -457,7 +504,7 @@ async function runtimeFixture(
     } as never,
     runtimeManager,
     credentialEnvironment: {
-      prepare: async () => ({ path: "/tmp/provider-env.sh", provider: "slack" }),
+      prepare: async () => ({ path: "/tmp/provider-env.sh", provider: "slack", ...(mcp ? { mcp } : {}) }),
       cleanup: async () => undefined,
     },
     logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),
@@ -826,6 +873,12 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
 
 class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
+  /**
+   * The `--mcp-config` file as it stood when the process was created — which is exactly when the
+   * real CLI reads it, and after which the bridge deletes it. Captured here because no assertion
+   * outside the run can see it.
+   */
+  readonly mcpConfig: string | undefined;
   readonly #failSpawn: boolean;
   readonly #terminalGate: Promise<void>;
 
@@ -833,6 +886,8 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.args = args;
     this.#failSpawn = failSpawn;
     this.#terminalGate = terminalGate;
+    const configPath = args[args.indexOf("--mcp-config") + 1];
+    this.mcpConfig = configPath ? readFileSync(configPath, "utf8") : undefined;
   }
 
   async execute(

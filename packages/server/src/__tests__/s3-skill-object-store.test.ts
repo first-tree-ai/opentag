@@ -164,3 +164,73 @@ describe("S3SkillObjectStore", () => {
     expect(lines.join("\n")).not.toContain(SECRET);
   });
 });
+
+function xmlResponse(body: string) {
+  return (_request: IncomingMessage, response: ServerResponse) => {
+    response.writeHead(200, { "content-type": "application/xml", "content-length": String(Buffer.byteLength(body)) });
+    response.end(body);
+  };
+}
+
+describe("S3SkillObjectStore.list", () => {
+  it("sends a bounded ListObjectsV2 request and parses the page", async () => {
+    respond = xmlResponse(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult>
+  <IsTruncated>false</IsTruncated>
+  <Contents>
+    <Key>skills/accounts/a/agents/b/skills/c/abc.tar.gz</Key>
+    <LastModified>2026-01-02T03:04:05.000Z</LastModified>
+    <Size>42</Size>
+  </Contents>
+</ListBucketResult>`,
+    );
+
+    const page = await store().list("skills/", { limit: 2 });
+
+    expect(recorded[0]?.method).toBe("GET");
+    expect(recorded[0]?.url).toBe("/opentag-skills/?list-type=2&prefix=skills%2F&max-keys=2");
+    expect(page.nextCursor).toBeUndefined();
+    expect(page.objects).toEqual([
+      {
+        key: "skills/accounts/a/agents/b/skills/c/abc.tar.gz",
+        lastModified: new Date("2026-01-02T03:04:05.000Z"),
+        bytes: 42,
+      },
+    ]);
+  });
+
+  it("unescapes the key and follows a continuation token", async () => {
+    respond = xmlResponse(
+      `<ListBucketResult>
+  <IsTruncated>true</IsTruncated>
+  <NextContinuationToken>page-2</NextContinuationToken>
+  <Contents>
+    <Key>skills/a&amp;b/skill.tar.gz</Key>
+    <LastModified>2026-01-02T03:04:05.000Z</LastModified>
+    <Size>1</Size>
+  </Contents>
+</ListBucketResult>`,
+    );
+    const objectStore = store();
+    const first = await objectStore.list("skills/", { limit: 1 });
+    expect(first.objects[0]?.key).toBe("skills/a&b/skill.tar.gz");
+    expect(first.nextCursor).toBe("page-2");
+
+    await objectStore.list("skills/", { limit: 1, cursor: "page-2" });
+    expect(recorded[1]?.url).toContain("continuation-token=page-2");
+  });
+
+  it("rejects a malformed listing", async () => {
+    respond = xmlResponse("<ListBucketResult><Contents><Key>skills/x.tar.gz</Key></Contents></ListBucketResult>");
+    await failure(store().list("skills/"), "invalid_response");
+
+    respond = xmlResponse("<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>");
+    await failure(store().list("skills/"), "invalid_response");
+  });
+
+  it("rejects an out-of-range page size before sending", async () => {
+    await failure(store().list("skills/", { limit: 5000 }), "rejected");
+    expect(recorded).toHaveLength(0);
+  });
+});

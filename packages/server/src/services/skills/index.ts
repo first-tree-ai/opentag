@@ -39,7 +39,11 @@ export {
   type SkillReadLimits,
 } from "./skill-archive-reader.js";
 export {
+  isSkillObjectKey,
   type SkillObjectKeyInput,
+  type SkillObjectListEntry,
+  type SkillObjectListOptions,
+  type SkillObjectListResult,
   type SkillObjectStore,
   SkillObjectStoreError,
   type SkillObjectStoreErrorCode,

@@ -35,12 +35,33 @@ function sanitizeMessage(message: string): string {
     .slice(0, MESSAGE_MAX_CHARS);
 }
 
+export interface SkillObjectListEntry {
+  key: string;
+  lastModified: Date;
+  bytes: number;
+}
+
+export interface SkillObjectListOptions {
+  /** Opaque token from a previous page; absent starts at the beginning. */
+  cursor?: string;
+  /** Maximum objects in this page. */
+  limit?: number;
+}
+
+export interface SkillObjectListResult {
+  objects: SkillObjectListEntry[];
+  /** Present when more objects remain; pass it back to continue. */
+  nextCursor?: string;
+}
+
 export interface SkillObjectStore {
   /** Writes exactly `body`; `meta.sha256` is the payload hash sent as `x-amz-content-sha256`. */
   put(key: string, body: Uint8Array, meta: { sha256: string }): Promise<void>;
   get(key: string): Promise<ReadableStream<Uint8Array>>;
   head(key: string): Promise<{ bytes: number } | null>;
   delete(key: string): Promise<void>;
+  /** Lists the objects under `prefix`, one bounded page at a time, oldest-first is not guaranteed. */
+  list(prefix: string, options?: SkillObjectListOptions): Promise<SkillObjectListResult>;
 }
 
 export interface SkillObjectKeyInput {
@@ -91,4 +112,28 @@ export function skillObjectKey(input: SkillObjectKeyInput): string {
     throw new SkillObjectStoreError("rejected", "Skill object key sha256 is not a hex digest");
   }
   return `${prefix}/accounts/${accountId}/agents/${agentId}/skills/${skillId}/${input.sha256}.tar.gz`;
+}
+
+const ARCHIVE_FILENAME = /^[0-9a-f]{64}\.tar\.gz$/;
+
+/**
+ * Whether `key` has the shape `skillObjectKey` produces, without knowing the prefix.
+ *
+ * The GC must never delete anything else that happens to share the bucket, so it checks the full
+ * tail — `accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz` — rather than a prefix match.
+ * A caller cannot reach this with a traversal segment, because a stored key is always built here.
+ */
+export function isSkillObjectKey(key: string): boolean {
+  const segments = key.split("/");
+  if (segments.length < 8) return false;
+  const [accounts, account, agents, agent, skills, skill, filename] = segments.slice(-7);
+  return (
+    accounts === "accounts" &&
+    agents === "agents" &&
+    skills === "skills" &&
+    UUID.test(account as string) &&
+    UUID.test(agent as string) &&
+    UUID.test(skill as string) &&
+    ARCHIVE_FILENAME.test(filename as string)
+  );
 }

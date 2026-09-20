@@ -206,7 +206,7 @@ describe("MCP OAuth callback", () => {
       { state: "state-1", error_description: "d".repeat(2049) },
       { state: "state-1", code: "c".repeat(8193) },
       { state: "state-1", surprise: "1" },
-    ]) {
+    ] as Record<string, string>[]) {
       const { location, response } = await callback(app, query);
       expect(response.statusCode, JSON.stringify(query)).toBe(302);
       expect(location.searchParams.get("mcp_oauth_error")).toBe(MCP_ERROR_CODES.OAUTH_FAILED);

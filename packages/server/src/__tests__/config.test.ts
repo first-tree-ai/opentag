@@ -759,6 +759,8 @@ describe("Skill storage configuration", () => {
       secretAccessKey: "opentag-minio-dev",
       prefix: "skills",
       forcePathStyle: true,
+      gcIntervalSeconds: 3600,
+      gcGraceSeconds: 86400,
     });
     expect(
       parseServerConfig({
@@ -768,6 +770,27 @@ describe("Skill storage configuration", () => {
         OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: "false",
       }).skillStorage,
     ).toMatchObject({ prefix: "bundles", forcePathStyle: false });
+  });
+
+  it("defaults the GC window, allows disabling it, and floors the grace period", () => {
+    expect(parseServerConfig({ ...required, ...skillStorageEnvironment }).skillStorage).toMatchObject({
+      gcIntervalSeconds: 3600,
+      gcGraceSeconds: 86400,
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS: "0",
+      }).skillStorage,
+    ).toMatchObject({ gcIntervalSeconds: 0 });
+    expect(() =>
+      parseServerConfig({
+        ...required,
+        ...skillStorageEnvironment,
+        OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: "299",
+      }),
+    ).toThrow();
   });
 
   it("allows a base path but rejects a partial group and a bad endpoint", () => {

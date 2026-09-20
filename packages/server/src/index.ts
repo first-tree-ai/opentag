@@ -100,7 +100,7 @@ import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
-import { S3SkillObjectStore, SkillService } from "./services/skills/index.js";
+import { S3SkillObjectStore, SkillObjectGc, SkillService } from "./services/skills/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
@@ -298,29 +298,41 @@ function createApplicationCipher(config: ServerConfig): ApplicationCipher {
 /**
  * Builds the Agent Skill runtime. The service always exists — without object storage it still lists
  * Skills and manages their rows, and only bundle reads/writes fail with SKILL_STORAGE_UNAVAILABLE.
- * The S3 store is constructed only when the storage group is coherently configured.
+ * The S3 store, and with it the orphan-object collector, is constructed only when the storage group
+ * is coherently configured and collection is not disabled.
  */
-function createSkillRuntime(config: ServerConfig, database: DatabaseClient, logger: ServiceLogger): SkillService {
+function createSkillRuntime(
+  config: ServerConfig,
+  database: DatabaseClient,
+  logger: ServiceLogger,
+): { service: SkillService; gc?: SkillObjectGc } {
   const storage = config.skillStorage;
-  const store = storage.enabled
-    ? new S3SkillObjectStore({
-        config: {
-          endpoint: storage.endpoint,
-          region: storage.region,
-          bucket: storage.bucket,
-          accessKeyId: storage.accessKeyId,
-          secretAccessKey: storage.secretAccessKey,
-          forcePathStyle: storage.forcePathStyle,
-        },
-        logger,
-      })
-    : undefined;
-  return new SkillService({
-    database,
-    ...(store ? { store } : {}),
-    keyPrefix: storage.enabled ? storage.prefix : "skills",
+  if (!storage.enabled) {
+    return { service: new SkillService({ database, keyPrefix: "skills", logger }) };
+  }
+  const store = new S3SkillObjectStore({
+    config: {
+      endpoint: storage.endpoint,
+      region: storage.region,
+      bucket: storage.bucket,
+      accessKeyId: storage.accessKeyId,
+      secretAccessKey: storage.secretAccessKey,
+      forcePathStyle: storage.forcePathStyle,
+    },
     logger,
   });
+  const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger });
+  if (storage.gcIntervalSeconds <= 0) return { service };
+  const gc = new SkillObjectGc({
+    database,
+    store,
+    prefix: storage.prefix,
+    intervalMs: storage.gcIntervalSeconds * 1000,
+    graceMs: storage.gcGraceSeconds * 1000,
+    logger,
+    onError: (error) => logger.error({ error }, "Skill object GC pass failed"),
+  });
+  return { service, gc };
 }
 
 /** Every configured value startup errors must never echo, including the raw key ring JSON. */
@@ -552,7 +564,7 @@ export async function startServer(): Promise<void> {
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
-    const skillService = createSkillRuntime(config, database, serviceLogger("skills"));
+    const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
@@ -822,7 +834,7 @@ export async function startServer(): Promise<void> {
         proofs: sessionCliProofService,
         sessions: sessionService,
       },
-      skills: { service: skillService, proofs: sessionCliProofService },
+      skills: { service: skillRuntime.service, proofs: sessionCliProofService },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
@@ -855,6 +867,7 @@ export async function startServer(): Promise<void> {
     sandboxIdleReclaimer?.start();
     github?.worker.start();
     mcpRefreshWorker.start();
+    skillRuntime.gc?.start();
     channelTargetPoller.start();
     const closeForSignal = () => {
       void app?.close();
@@ -868,6 +881,7 @@ export async function startServer(): Promise<void> {
       await sandboxIdleReclaimer?.stop();
       imDeliveryWorker.stop();
       mcpRefreshWorker.stop();
+      skillRuntime.gc?.stop();
       if (github) await github.worker.stop();
       await platformRuntime.close();
       await feishuSetupService.stop();

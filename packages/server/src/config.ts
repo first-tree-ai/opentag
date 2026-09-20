@@ -382,6 +382,12 @@ const ServerEnvironmentSchema = z
     OPENTAG_SKILL_STORAGE_PREFIX: z.string().trim().min(1).default("skills"),
     OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: booleanString("true"),
     /*
+     * Deferred orphan-object collection. `0` disables the worker; the grace period protects an object
+     * another request may still be writing or reading, so it has a floor and is never zero.
+     */
+    OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS: z.coerce.number().int().min(0).default(3600),
+    OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: z.coerce.number().int().min(300).default(86400),
+    /*
      * Platform web tools: fixed Server routes forwarding to the existing Router. Off by default;
      * enabling requires the Router origin plus an explicit Account→tenant secret-reference map.
      */
@@ -766,6 +772,10 @@ export type SkillStorageConfig =
       prefix: string;
       /** Path-style addressing for services that cannot serve virtual-hosted buckets. */
       forcePathStyle: boolean;
+      /** Orphan-object collection interval in seconds; `0` disables the worker. */
+      gcIntervalSeconds: number;
+      /** Minimum age before an orphaned object may be collected, in seconds. */
+      gcGraceSeconds: number;
     };
 
 export type WebToolsConfig =
@@ -862,6 +872,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY),
     OPENTAG_SKILL_STORAGE_PREFIX: emptyToUndefined(environment.OPENTAG_SKILL_STORAGE_PREFIX),
     OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: environment.OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE,
+    OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS: environment.OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS,
+    OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS: environment.OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS,
     OPENTAG_WEB_ENABLED: environment.OPENTAG_WEB_ENABLED,
     OPENTAG_WEB_ROUTER_BASE_URL: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_BASE_URL),
     OPENTAG_WEB_ROUTER_TENANTS: emptyToUndefined(environment.OPENTAG_WEB_ROUTER_TENANTS),
@@ -977,6 +989,8 @@ function resolveSkillStorageConfig(parsed: z.infer<typeof ServerEnvironmentSchem
     secretAccessKey,
     prefix: parsed.OPENTAG_SKILL_STORAGE_PREFIX,
     forcePathStyle: parsed.OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE,
+    gcIntervalSeconds: parsed.OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS,
+    gcGraceSeconds: parsed.OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS,
   };
 }
 

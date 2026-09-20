@@ -252,19 +252,42 @@ const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
 const S_IFLNK = 0o120000;
 
+type ZipMemberKind = "file" | "directory" | "link" | "special";
+
+/** The member shapes the ZIP spec names; every other non-zero type is `special` by exclusion. */
+const ZIP_KIND_BY_TYPE = new Map<number, ZipMemberKind>([
+  [S_IFREG, "file"],
+  [S_IFDIR, "directory"],
+  [S_IFLNK, "link"],
+]);
+
+/**
+ * Classifies a zip member from its Unix mode.
+ *
+ * The type bits are optional: Python's `zipfile.ZipFile.writestr` writes `create_system = 3` (Unix)
+ * with permission bits only (`external_attr >> 16 == 0o600`), so `mode & S_IFMT` is 0 for an ordinary
+ * file. Absent type bits are therefore treated as a regular file — or a directory when the name ends
+ * in `/` — and only an explicit non-zero type other than regular, directory, or symlink is special.
+ */
+function classifyZipMode(mode: number, name: string): ZipMemberKind {
+  const type = mode & S_IFMT;
+  if (type === 0) return name.endsWith("/") ? "directory" : "file";
+  return ZIP_KIND_BY_TYPE.get(type) ?? "special";
+}
+
 /**
  * The canonical mode for a zip member: `0755` when a Unix-made regular file carries any execute bit,
  * `0644` otherwise — the same normalization the tar path applies. A Unix symlink, a special file, or
- * any setuid/setgid/sticky bit is rejected; a DOS/Windows entry has no mode to lose, so it is `0644`.
+ * any setuid/setgid/sticky bit is rejected; a Unix entry whose mode carries permission bits without
+ * file-type bits (Python's `zipfile` does this) is an ordinary member; a DOS/Windows entry has no
+ * mode to lose, so it is `0644`.
  */
 function canonicalZipMode(rawName: string, directory: Map<string, ZipDirectoryEntry>): number {
   const info = directory.get(rawName);
-  if (!info?.madeByUnix || info.unixMode === 0) return 0o644;
-  const type = info.unixMode & S_IFMT;
-  if (type === S_IFLNK) throw skillArchiveInvalid("Skill archive may not contain links");
-  if (type !== S_IFREG && type !== S_IFDIR) {
-    throw skillArchiveInvalid("Skill archive may not contain special files");
-  }
+  if (!info?.madeByUnix) return 0o644;
+  const kind = classifyZipMode(info.unixMode, rawName);
+  if (kind === "link") throw skillArchiveInvalid("Skill archive may not contain links");
+  if (kind === "special") throw skillArchiveInvalid("Skill archive may not contain special files");
   if ((info.unixMode & 0o7000) !== 0) {
     throw skillArchiveInvalid("Skill archive member carries a setuid or setgid bit");
   }

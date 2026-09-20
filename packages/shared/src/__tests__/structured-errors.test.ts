@@ -652,7 +652,7 @@ describe("structured error redaction scanners", () => {
   });
 
   it("fails closed when a serialized value ends inside an escape", () => {
-    expect(redactForLog(`${String.raw`{"cookie":"sk-live-secret`}\\`)).not.toContain("sk-live-secret");
+    expect(redactForLog('{"cookie":"sk-live-secret\\')).not.toContain("sk-live-secret");
     expect(redactForLog(String.raw`{\"cookie\":\"sk-live-secret\uZZ`)).not.toContain("sk-live-secret");
   });
 

@@ -243,6 +243,68 @@ describe("SkillsPage", () => {
     expect(screen.queryByText(/No Skills yet/)).toBeNull();
   });
 
+  /*
+   * W4: a write the Server confirmed must survive a failed follow-up refetch. Before the fix every
+   * `onSuccess` only invalidated, so a 503 on the refetch left the pre-mutation cache on screen and
+   * the UI denied a write that had actually happened.
+   */
+  it("keeps an uploaded Skill on screen when the follow-up refetch fails", async () => {
+    const list = stubList([], "available");
+    const created = skill({ name: "Alpha", id: SKILL_ID });
+    vi.spyOn(browserApi, "uploadAgentSkill").mockResolvedValue({ ...created, files: [], filesTruncated: false });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    wrap(<SkillsPage agentId={AGENT_ID} />, client);
+    await screen.findByText(/No Skills yet/);
+
+    // The list refetch the mutation triggers fails; the confirmed write must still reach the screen.
+    list.mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
+    fireEvent.change(fileInput(), { target: { files: [archiveFile("alpha.tar.gz", "hello")] } });
+
+    expect(await screen.findByText("Alpha")).toBeTruthy();
+    expect(await screen.findByText("Skill storage unavailable")).toBeTruthy();
+    expect(screen.queryByText(/Couldn/)).toBeNull();
+    expect(screen.queryByText(/No Skills yet/)).toBeNull();
+  });
+
+  it("keeps the flipped toggle on screen when the follow-up refetch fails", async () => {
+    const list = stubList([skill({ enabled: true })], "available");
+    vi.spyOn(browserApi, "updateAgentSkill").mockResolvedValue({
+      ...skill({ enabled: false }),
+      files: [],
+      filesTruncated: false,
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    wrap(<SkillsPage agentId={AGENT_ID} />, client);
+    const toggle = await screen.findByRole("switch", { name: "Enable Release notes writer" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    list.mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Enable Release notes writer" }).getAttribute("aria-checked")).toBe(
+        "false",
+      ),
+    );
+    expect(await screen.findByText("Skill storage unavailable")).toBeTruthy();
+  });
+
+  it("keeps a deleted Skill off screen when the follow-up refetch fails", async () => {
+    const list = stubList([skill()], "available");
+    vi.spyOn(browserApi, "removeAgentSkill").mockResolvedValue(undefined);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    wrap(<SkillsPage agentId={AGENT_ID} />, client);
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    await screen.findByText("Delete Release notes writer?");
+
+    list.mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: "Delete Skill" }));
+
+    await waitFor(() => expect(screen.queryByText("Release notes writer")).toBeNull());
+    expect(await screen.findByText("Skill storage unavailable")).toBeTruthy();
+    expect(screen.queryByText(/Couldn/)).toBeNull();
+  });
+
   it("renders the storage-unavailable notice from the list response with no extra request", async () => {
     const list = stubList([skill()], "unavailable");
     const detail = vi.spyOn(browserApi, "agentSkill");

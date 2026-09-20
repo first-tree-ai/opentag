@@ -433,15 +433,19 @@ describe("Runner wire-budget rejections", () => {
   const runtime = {
     agentId: "0b12b3c0-0000-4000-8000-000000000004",
     contextTreeRepository: null,
-    execution: { approvalPolicy: "never", networkAccess: true },
+    execution: { approvalPolicy: "never" as const, networkAccess: true },
     instructions: { agent: "Agent.", platform: "Platform." },
     model: "deepseek-v4.1-flash-expires-on-0910",
-    provider: "pi",
+    provider: "pi" as const,
     revision: {
       agent: { id: "0b12b3c0-0000-4000-8000-000000000005", sequence: 1 },
       session: { id: "0b12b3c0-0000-4000-8000-000000000006", sequence: 1 },
     },
-    workspace: { mode: "empty_on_create", sharing: "agent", workspaceId: "0b12b3c0-0000-4000-8000-000000000007" },
+    workspace: {
+      mode: "empty_on_create" as const,
+      sharing: "agent" as const,
+      workspaceId: "0b12b3c0-0000-4000-8000-000000000007",
+    },
   };
   const sessionMessage = {
     type: "session:message:deliver" as const,

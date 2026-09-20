@@ -50,4 +50,90 @@ describe("TaskMessageBody", () => {
     expect(screen.queryByRole("link", { name: "Run script" })).toBeNull();
     expect(screen.getByText("Run script")).toBeTruthy();
   });
+
+  it("says there is no text rather than rendering an empty paragraph", () => {
+    render(<TaskMessageBody format="plain_text" text="" />);
+
+    expect(screen.getByText("No text content")).toBeTruthy();
+    expect(document.querySelector('[data-content-format="plain_text"]')?.textContent).toBe("No text content");
+  });
+
+  it("renders every heading level, quoting the Agent's own structure", () => {
+    render(
+      <TaskMessageBody
+        format="markdown"
+        text={`# One
+
+## Two
+
+### Three
+
+#### Four
+
+##### Five
+
+###### Six`}
+      />,
+    );
+
+    // H1 and H2 become the page's third level so a reply never outranks the surrounding document.
+    expect(screen.getByRole("heading", { level: 3, name: "One" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Two" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Three" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Four" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Five" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 4, name: "Six" })).toBeTruthy();
+  });
+
+  it("renders a quote, both list kinds, a rule, and a fenced block", () => {
+    const { container } = render(
+      <TaskMessageBody
+        format="markdown"
+        text={`> Quoted claim
+
+- bullet one
+- bullet two
+
+1. first
+2. second
+
+---
+
+\`\`\`sh\npnpm check\n\`\`\``}
+      />,
+    );
+
+    expect(container.querySelector("blockquote")?.textContent?.trim()).toBe("Quoted claim");
+    expect(container.querySelector("ul")?.textContent).toContain("bullet one");
+    expect(container.querySelector("ol")?.textContent).toContain("first");
+    expect(container.querySelector("hr")).toBeTruthy();
+    // The fenced block keeps its own pre, and its code child loses the inline-chip styling there.
+    const pre = container.querySelector("pre");
+    expect(pre?.textContent).toContain("pnpm check");
+    expect(pre?.querySelector("code")).toBeTruthy();
+  });
+
+  it("renders an image with no alt text as nothing, since there is nothing to describe", () => {
+    render(<TaskMessageBody format="markdown" text="![](https://example.com/decoration.png)" />);
+
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByText(/\[Image:/)).toBeNull();
+  });
+
+  it("keeps a nested list's structure instead of flattening it into one paragraph", () => {
+    render(<TaskMessageBody format="markdown" text={`- outer\n\n  - inner\n- second outer`} />);
+
+    expect(screen.getByText("outer")).toBeTruthy();
+    expect(screen.getByText("inner")).toBeTruthy();
+    expect(screen.getByText("second outer")).toBeTruthy();
+  });
+
+  it("marks the body with the format it was given, so a reader can style each differently", () => {
+    const { container, unmount } = render(<TaskMessageBody format="markdown" text="# Heading" />);
+    expect(container.querySelector('[data-content-format="markdown"]')).toBeTruthy();
+    unmount();
+
+    render(<TaskMessageBody format="plain_text" text="# Heading" />);
+    expect(document.querySelector('[data-content-format="plain_text"]')).toBeTruthy();
+  });
 });

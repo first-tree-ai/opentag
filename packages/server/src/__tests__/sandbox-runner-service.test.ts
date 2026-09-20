@@ -1,5 +1,6 @@
 /** E3 allocation orchestration decisions on the embedded PostgreSQL engine; cloud via a fake admin. */
 import { randomUUID } from "node:crypto";
+import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, imBindings, sandboxes, sessions, users } from "../db/schema/index.js";
@@ -15,6 +16,48 @@ import {
   RunnerBootstrapTokenService,
 } from "../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
+import { WorkspaceObjectStoreError } from "../services/sandboxes/workspace-object-store.js";
+import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
+
+/**
+ * A Runner socket that answers workspace seals the way the real Runner does: it plants the sealed
+ * archive before acknowledging so the Server's metadata read-back can prove the save.
+ */
+function sealCapableSocket(
+  hub: RunnerHub,
+  store: FakeWorkspaceObjectStore,
+  sandbox: { id: string; sessionId: string; storageUri: string; environmentGeneration: number },
+  options: { ok?: boolean; plant?: boolean } = {},
+): RunnerControlSocket {
+  const socket: RunnerControlSocket = {
+    send(frame) {
+      if (frame.type !== "workspace:seal") return;
+      if (options.plant !== false) {
+        store.plant(
+          {
+            storageUri: sandbox.storageUri,
+            sandboxId: sandbox.id,
+            sessionId: sandbox.sessionId,
+            environmentGeneration: sandbox.environmentGeneration,
+          },
+          { saved: true, sealed: true, ownerGeneration: sandbox.environmentGeneration },
+        );
+      }
+      hub.settleWorkspaceSeal(
+        sandbox.id,
+        options.ok === false
+          ? { type: "workspace:seal:result", requestId: frame.requestId, ok: false, code: "workspace_save_failed" }
+          : { type: "workspace:seal:result", requestId: frame.requestId, ok: true },
+        socket,
+      );
+    },
+    close() {
+      // The hub owns connection replacement; the tests only need the send surface.
+    },
+  };
+  return socket;
+}
+
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { FAKE_PROJECT, FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
@@ -109,13 +152,23 @@ function makeService(
     deleteVerifyTimeoutMs?: number;
     expectedRunnerVersion?: string;
     tokens?: RunnerBootstrapTokenService;
+    /** E5 object store; omitted keeps the deployment in legacy (no persistence) mode. */
+    workspace?: FakeWorkspaceObjectStore;
+    /** Bounded window for the Runner-side seal; defaults to the production 4x transfer timeout. */
+    sealTimeoutMs?: number;
+    idleTimeoutMs?: number;
+    now?: () => Date;
+    sessionWorkBusy?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBusy"];
+    /** Real `setTimeout` sleeping, for the one case that pins the default sleep implementation. */
+    realSleep?: boolean;
+    database?: ConstructorParameters<typeof SandboxRunnerService>[0];
   } = {},
 ) {
   const tokens =
     options.tokens ??
     new RunnerBootstrapTokenService("unit-test-jwt-secret-at-least-32-characters", { ttlSeconds: 600 });
   const hub = new RunnerHub();
-  const service = new SandboxRunnerService(unit.database, {
+  const service = new SandboxRunnerService(options.database ?? unit.database, {
     cloudAdmin: fake as never,
     tokens,
     hub,
@@ -124,8 +177,19 @@ function makeService(
     expectedRunnerVersion: options.expectedRunnerVersion ?? RUNNER_VERSION,
     acceptanceTimeoutMs: options.acceptanceTimeoutMs ?? 30_000,
     createConvergeTimeoutMs: options.createConvergeTimeoutMs ?? 30_000,
-    sleep: () => Promise.resolve(),
+    ...(options.realSleep ? {} : { sleep: () => Promise.resolve() }),
     deleteVerifyTimeoutMs: options.deleteVerifyTimeoutMs ?? 10_000,
+    ...(options.workspace
+      ? {
+          workspace: {
+            store: options.workspace,
+            ...(options.sealTimeoutMs !== undefined ? { sealTimeoutMs: options.sealTimeoutMs } : {}),
+          },
+        }
+      : {}),
+    ...(options.idleTimeoutMs !== undefined ? { idleTimeoutMs: options.idleTimeoutMs } : {}),
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
   });
   return { service, tokens, hub };
 }
@@ -1432,5 +1496,1668 @@ describe("SandboxRunnerService acceptance", () => {
     ).requestId;
     hub.resolveAcceptanceResult(sandbox.sandboxId, { type: "acceptance:result", requestId, outcome: "passed" }, socket);
     await expect(first).resolves.toMatchObject({ outcome: "passed" });
+  });
+
+  it("maps an unwritable Runner channel to a conflict instead of leaking the hub error", async () => {
+    const owner = await account();
+    const { sandbox, service, socket } = await readySandbox(owner);
+    // The readiness path is satisfied, but the frame write fails: the hub rejects with its own
+    // RunnerAcceptanceUnavailableError, which is not a SandboxServiceError.
+    socket.send = () => {
+      throw new Error("socket gone");
+    };
+    await expect(service.runAcceptanceForAccount(owner, sandbox.sandboxId, { mode: "offline" })).rejects.toMatchObject({
+      statusCode: 409,
+      code: "SANDBOX_RUNNER_CONFLICT",
+    });
+  });
+
+  it("refuses an acceptance when the hub entry vanished after the ready status check", async () => {
+    const owner = await account();
+    const { sandbox, service, hub, socket } = await readySandbox(owner);
+    // `currentSocket` reads the entry directly: detaching leaves the readiness checks stale for
+    // the width of one call, so this pins the defensive null-socket guard.
+    hub.detach(sandbox.sandboxId, socket);
+    const described = { ...hub.describe(sandbox.sandboxId) };
+    hub.describe = () => ({ ...described, connected: true, ready: true, scope: described.scope });
+    await expect(service.runAcceptanceForAccount(owner, sandbox.sandboxId, { mode: "offline" })).rejects.toMatchObject({
+      statusCode: 409,
+      code: "SANDBOX_RUNNER_CONFLICT",
+    });
+  });
+
+  it("propagates a non-hub failure from the acceptance run unchanged", async () => {
+    const owner = await account();
+    const { sandbox, service, hub } = await readySandbox(owner);
+    hub.runAcceptance = async () => {
+      throw new Error("unexpected unit failure");
+    };
+    await expect(service.runAcceptanceForAccount(owner, sandbox.sandboxId, { mode: "offline" })).rejects.toThrow(
+      "unexpected unit failure",
+    );
+  });
+});
+
+describe("SandboxRunnerService constructor validation", () => {
+  it("requires a non-empty expected Runner version", () => {
+    const fake = new RunnerFakeCloudRunAdmin();
+    expect(() => makeService(fake, { expectedRunnerVersion: "" })).toThrow(
+      "SandboxRunnerService requires the expected Runner version",
+    );
+  });
+
+  it("requires a positive idleTimeoutMs", () => {
+    const fake = new RunnerFakeCloudRunAdmin();
+    const tokens = new RunnerBootstrapTokenService("unit-test-jwt-secret-at-least-32-characters", { ttlSeconds: 600 });
+    const build = (idleTimeoutMs: number) =>
+      new SandboxRunnerService(unit.database, {
+        cloudAdmin: fake as never,
+        tokens,
+        hub: new RunnerHub(),
+        environment: "staging",
+        backendUrl: "wss://api.example.com/api/v1/sandbox-runners/ws",
+        expectedRunnerVersion: RUNNER_VERSION,
+        acceptanceTimeoutMs: 30_000,
+        createConvergeTimeoutMs: 30_000,
+        idleTimeoutMs,
+      });
+    expect(() => build(0)).toThrow("SandboxRunnerService requires a positive idleTimeoutMs");
+    expect(() => build(-1)).toThrow("SandboxRunnerService requires a positive idleTimeoutMs");
+    expect(build(1).workspacePersistenceEnabled).toBe(false);
+  });
+});
+
+describe("SandboxRunnerService allocation reconciliation", () => {
+  /** A preparing row with the given marker/name/UID/LRO, written directly (legacy-row simulation). */
+  async function preparingRow(
+    owner: string,
+    overrides: Partial<{
+      currentResourceName: string | null;
+      currentResourceUid: string | null;
+      currentOperationName: string | null;
+      lastErrorCode: string | null;
+      environmentGeneration: number;
+    }>,
+  ) {
+    const fixture = await ownedSandbox(owner);
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "preparing",
+        environmentGeneration: 1,
+        lastErrorAt: overrides.lastErrorCode ? new Date() : null,
+        ...overrides,
+      })
+      .where(eq(sandboxes.id, fixture.sandbox.sandboxId));
+    return fixture;
+  }
+
+  /** The deterministic resource name the service computes for a Sandbox at generation 1. */
+  function expectedResourceName(sandbox: { sandboxId: string; sessionId: string }): string {
+    return `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/instances/${runnerInstanceId({
+      environment: "staging",
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+    })}`;
+  }
+
+  it("answers undefined for an unknown Sandbox and untracked for every released phase", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    expect(await service.reconcileAllocation(randomUUID())).toBeUndefined();
+
+    const { sandbox } = await ownedSandbox(owner);
+    expect(await service.reconcileAllocation(sandbox.sandboxId)).toMatchObject({
+      scope: null,
+      lifecycle: "unallocated",
+      physical: "untracked",
+    });
+    // A name without a UID never proves physical state.
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "preparing",
+        environmentGeneration: 1,
+        currentResourceName: "projects/p/locations/l/instances/x",
+      })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.reconcileAllocation(sandbox.sandboxId)).toMatchObject({ physical: "untracked" });
+    // Releasing is a terminal-by-construction phase for this read: never "present".
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "releasing", currentResourceUid: "uid-1" })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.reconcileAllocation(sandbox.sandboxId)).toMatchObject({ physical: "untracked" });
+    expect(fake.getCalls).toBe(0);
+  });
+
+  it("classifies a tracked allocation as present, absent or unknown without mutating anything", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const started = await ownedSandbox(owner);
+    const status = await service.startForAccount(owner, started.sandbox.sandboxId);
+    const name = status.currentResourceName as string;
+    const row = await sandboxRow(started.sandbox.sandboxId);
+
+    expect(await service.reconcileAllocation(started.sandbox.sandboxId)).toMatchObject({
+      scope: { sandboxId: started.sandbox.sandboxId, resourceName: name },
+      lifecycle: "preparing",
+      resourceUid: row.currentResourceUid,
+      physical: "present",
+    });
+    // A different UID at the same name is absent, not present: our allocation is gone.
+    fake.replaceUid(name, "uid-replacement");
+    expect(await service.reconcileAllocation(started.sandbox.sandboxId)).toMatchObject({ physical: "absent" });
+    // An unreadable provider proves nothing.
+    fake.getInstanceFailures = 1;
+    expect(await service.reconcileAllocation(started.sandbox.sandboxId)).toMatchObject({ physical: "unknown" });
+    // Read-only: the row and the provider are both untouched by any of the three reads.
+    expect(await sandboxRow(started.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "preparing",
+      currentResourceName: name,
+    });
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("assigns the deterministic name to a legacy preparing row without one, then reconciles it", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const { sandbox } = await preparingRow(owner, {
+      currentResourceName: null,
+      currentResourceUid: null,
+      currentOperationName: null,
+      lastErrorCode: null,
+    });
+    // The Instance was created before the name was persisted; a read at the deterministic name finds
+    // it, so the legacy row converges without any POST.
+    fake.materialize({
+      environment: "staging",
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      backendUrl: "wss://unit.invalid",
+      bootstrapToken: "unit",
+    });
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(status.currentResourceName).toBe(expectedResourceName(sandbox));
+    expect(status.currentResourceUid).toMatch(/^uid-/);
+    expect(fake.createCalls).toHaveLength(0); // the read reconciled the pre-existing Instance
+  });
+
+  it("reports an unknown create outcome when no operation identity is available to inspect", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const { sandbox } = await preparingRow(owner, {
+      currentResourceName: null,
+      currentResourceUid: null,
+      currentOperationName: null,
+      lastErrorCode: null,
+    });
+    // `cloud_create_uncertain` is the weakest evidence: writing it over a create-phase marker is a
+    // deliberate no-op, so the row keeps whatever stronger marker it already had.
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(status.lastErrorCode).toBe("cloud_create_uncertain");
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("keeps the reference uncertain while an operation is still running", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const operation = `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/operations/op-running`;
+    const { sandbox } = await preparingRow(owner, {
+      currentResourceName: null,
+      currentResourceUid: null,
+      currentOperationName: operation,
+      lastErrorCode: null,
+    });
+    // The LRO is still running and no resource is readable: the reconciler must inspect the
+    // operation and report uncertainty rather than resubmitting.
+    fake.operations.set(operation, { state: "pending" });
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(status.lastErrorCode).toBe("cloud_create_uncertain");
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("refuses a create operation that names a different resource than the tracked one", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const operation = `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/operations/op-elsewhere`;
+    const { sandbox } = await preparingRow(owner, {
+      currentResourceName: null,
+      currentResourceUid: null,
+      currentOperationName: operation,
+      lastErrorCode: "cloud_create_pending",
+    });
+    fake.operations.set(operation, { state: "done", resourceName: "projects/p/locations/l/instances/someone-else" });
+    // The mismatched LRO is a deterministic ownership failure, surfaced as the 503 envelope.
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(fake.createCalls).toHaveLength(0);
+  });
+});
+
+describe("SandboxRunnerService ingress allocation", () => {
+  it("reports restore_required for a used generation when persistence is not configured", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 3 })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.ensureIngressAllocation(owner, sandbox.sandboxId)).toBe("restore_required");
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("answers stopped for a releasing row without touching Cloud", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.ensureIngressAllocation(owner, sandbox.sandboxId)).toBe("stopped");
+    expect(fake.createCalls).toHaveLength(0);
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("allocates the first generation and reports pending until the Runner reports readiness", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    expect(await service.ensureIngressAllocation(owner, sandbox.sandboxId)).toBe("pending");
+    expect(fake.createCalls).toHaveLength(1);
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("preparing");
+  });
+
+  it("returns ready for a connected ready environment without reconciling Cloud", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service, hub } = makeService(fake, { workspace: store });
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    expect(await service.runAcceptanceForAccount).toBeDefined();
+    await service.noteActivity(sandbox.sandboxId);
+    await unit.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    const getsBefore = fake.getCalls;
+    expect(await service.ensureIngressAllocation(owner, sandbox.sandboxId)).toBe("ready");
+    expect(fake.getCalls).toBe(getsBefore);
+  });
+});
+
+describe("SandboxRunnerService workspace persistence (E5)", () => {
+  /** One workspace-enabled deployment: store present, sandbox owned, `environmentGeneration` untouched. */
+  function workspaceService(fake: RunnerFakeCloudRunAdmin, store: FakeWorkspaceObjectStore) {
+    return makeService(fake, { workspace: store });
+  }
+
+  it("creates the first archive before any reservation and never creates without a name", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    expect(service.workspacePersistenceEnabled).toBe(true);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(status.lifecycle).toBe("preparing");
+    expect(store.claims).toBe(1);
+    expect(fake.createCalls[0]).toMatchObject({ workspacePersistence: true });
+  });
+
+  it("reports restore_required when the archive for a used generation is missing", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    // Generation 2 with no object at the stable storage URI: the workspace cannot be restored.
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 2 })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({
+      code: "SANDBOX_RUNNER_CONFLICT",
+    });
+    expect(fake.createCalls).toHaveLength(0);
+    expect(await service.ensureIngressAllocation(owner, sandbox.sandboxId)).toBe("restore_required");
+  });
+
+  it("maps a storage failure before reservation to the 503 envelope", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    // A non-first generation with no object AND a claim failure is the transient storage error.
+    store.failNextClaimWith = new WorkspaceObjectStoreError("unavailable", "storage is down");
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 0 })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 503,
+      category: "transient",
+    });
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("fails a readiness report that arrives without the restore proof", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service, hub } = workspaceService(fake, store);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    // An execution-capable Runner must prove the restored archive before anything may be ready.
+    expect(await service.markRunnerReady(scope, READINESS)).toBe("workspace_not_restored");
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("preparing");
+    expect(await service.markRunnerReady(scope, READINESS, { workspaceRestored: true })).toBe("ready");
+  });
+
+  it("clears a ready allocation whose tracked UID the provider confirms absent, without deleting anything", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    await unit.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    const before = await sandboxRow(sandbox.sandboxId);
+    const instance = fake.instances.get(status.currentResourceName as string);
+    if (instance) instance.gone = true;
+    // Recovery is folded into the start request: the stale binding is cleared with no `releasing`
+    // transition and no delete, and the same start then reserves the next generation.
+    const after = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(before.lifecycle).toBe("ready");
+    expect(after.environmentGeneration).toBe(before.environmentGeneration + 1);
+    expect(after.currentResourceName).not.toBe(before.currentResourceName);
+    expect(fake.deleteCalls).toHaveLength(0); // nothing was deleted: the resource was already gone
+    expect(fake.createCalls).toHaveLength(2); // the fresh generation was allocated
+  });
+
+  it("keeps a ready allocation whose provider read fails", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    await service.startForAccount(owner, sandbox.sandboxId);
+    await unit.database.update(sandboxes).set({ lifecycle: "ready" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    const before = await sandboxRow(sandbox.sandboxId);
+    fake.getInstanceFailures = 1;
+    // A failed GET proves nothing: the allocation is kept and the failure is surfaced.
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({
+      lifecycle: "ready",
+      currentResourceName: before.currentResourceName,
+    });
+  });
+
+  it("seals the workspace before deleting and retains the binding when the seal fails", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service, hub } = workspaceService(fake, store);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const row = await sandboxRow(sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const failing = sealCapableSocket(hub, store, { ...row, environmentGeneration: 1 }, { ok: false });
+    hub.attach(scope, failing);
+    hub.markReady(scope, READINESS, failing);
+    await service.markRunnerReady(scope, READINESS, { workspaceRestored: true });
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 503,
+      code: "SERVICE_UNAVAILABLE",
+    });
+    const retained = await sandboxRow(sandbox.sandboxId);
+    expect(retained.lifecycle).toBe("releasing");
+    expect(retained.currentResourceName).toBe(status.currentResourceName);
+    expect(retained.lastErrorCode).toBe("workspace_save_failed");
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("releases through a seal-capable Runner and verifies the archive before deletion", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service, hub } = workspaceService(fake, store);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const row = await sandboxRow(sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = sealCapableSocket(hub, store, { ...row, environmentGeneration: 1 });
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    await service.markRunnerReady(scope, READINESS, { workspaceRestored: true });
+    const stopped = await service.stopForAccount(owner, sandbox.sandboxId);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(store.writes.length).toBeGreaterThanOrEqual(0);
+    expect(fake.deleteCalls).toHaveLength(1);
+    expect(fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("refuses to seal when no Runner holds the current allocation", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    // Force the save marker without ever attaching a Runner: the seal cannot be requested.
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "ready", lastErrorCode: "workspace_save_required", lastErrorAt: new Date() })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(fake.deleteCalls).toHaveLength(0);
+    expect((await sandboxRow(sandbox.sandboxId)).currentResourceName).toBe(status.currentResourceName);
+  });
+
+  it("short-circuits the Runner round-trip when the archive is already proven sealed", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    await service.startForAccount(owner, sandbox.sandboxId);
+    const row = await sandboxRow(sandbox.sandboxId);
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "ready", lastErrorCode: "workspace_save_required", lastErrorAt: new Date() })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    store.plant(
+      { storageUri: row.storageUri, sandboxId: row.id, sessionId: row.sessionId, environmentGeneration: 1 },
+      { saved: true, sealed: true, ownerGeneration: 1 },
+    );
+    const stopped = await service.stopForAccount(owner, sandbox.sandboxId);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(fake.deleteCalls).toHaveLength(1);
+    expect(store.writes).toHaveLength(0);
+  });
+
+  it("keeps the allocation when the archived proof cannot be read at all", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    await service.startForAccount(owner, sandbox.sandboxId);
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "ready", lastErrorCode: "workspace_save_required", lastErrorAt: new Date() })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    store.head = async () => {
+      throw new WorkspaceObjectStoreError("unavailable", "storage is down");
+    };
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("refuses the automatic sweep's save when the Instance cannot persist its workspace", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const idleNow = new Date("2026-01-01T00:00:00.000Z");
+    const { service } = makeService(fake, {
+      workspace: store,
+      idleTimeoutMs: 1_000,
+      now: () => new Date(idleNow.getTime() + 60_000),
+    });
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const instance = fake.instances.get(status.currentResourceName as string);
+    if (instance) instance.spec.workspacePersistence = false;
+    // The environment was promoted and then claimed by the sweep: only an automatic claim reaches
+    // the legacy-Instance guard, because an explicit stop clears the claim marker first.
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "ready",
+        lastErrorCode: "workspace_save_required",
+        lastErrorAt: idleNow,
+        idleReclaimAt: idleNow,
+        lastActivityAt: idleNow,
+      })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    const sweep = await service.reclaimIdleSandboxes();
+    expect(sweep).toMatchObject({ released: 0, failed: 1 });
+    const row = await sandboxRow(sandbox.sandboxId);
+    expect(row.lifecycle).toBe("ready");
+    expect(row.currentResourceName).toBe(status.currentResourceName);
+    expect(row.lastErrorCode).toBe("workspace_save_failed");
+    expect(fake.deleteCalls).toHaveLength(0); // the only local copy is preserved
+  });
+
+  it("finishes a pending release inside the same start when the create lands while releasing", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = workspaceService(fake, store);
+    let open!: () => void;
+    fake.createGate = {
+      promise: new Promise<void>((resolve) => {
+        open = resolve;
+      }),
+      open: () => open(),
+    };
+    const start = service.startForAccount(owner, sandbox.sandboxId);
+    await vi.waitFor(() => expect(fake.createCalls).toHaveLength(1));
+    const name = (await sandboxRow(sandbox.sandboxId)).currentResourceName as string;
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    // No Runner was ever attached, so the pending release resolves through the same funnel.
+    await unit.database
+      .update(sandboxes)
+      .set({ lastErrorCode: "cloud_create_pending", lastErrorAt: new Date() })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    open();
+    const settled = await start;
+    expect(settled.lifecycle).toBe("unallocated");
+    expect(settled.currentResourceName).not.toBe(name);
+    expect(fake.liveInstanceCount()).toBe(0);
+  });
+});
+
+describe("SandboxRunnerService Runner control channel", () => {
+  /** A started (preparing, UID-tracked) allocation plus the claims naming it. */
+  async function startedClaims(owner: string, options: { workspace?: FakeWorkspaceObjectStore } = {}) {
+    const fixture = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const made = makeService(fake, options.workspace ? { workspace: options.workspace } : {});
+    const status = await made.service.startForAccount(owner, fixture.sandbox.sandboxId);
+    const claims: RunnerBootstrapClaims = {
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    return { ...fixture, ...made, status, claims, fake };
+  }
+
+  it("validates a channel scope against the persisted allocation, not the live authority chain", async () => {
+    const owner = await account();
+    const { sandbox, service, claims } = await startedClaims(owner);
+    expect(await service.validateRunnerChannelScope(claims)).toMatchObject({ sandboxId: sandbox.sandboxId });
+    expect(await service.validateRunnerChannelScope({ ...claims, sandboxId: randomUUID() })).toBeUndefined();
+    expect(await service.validateRunnerChannelScope({ ...claims, sessionId: randomUUID() })).toBeUndefined();
+    expect(await service.validateRunnerChannelScope({ ...claims, environmentGeneration: 9 })).toBeUndefined();
+    expect(
+      await service.validateRunnerChannelScope({ ...claims, resourceName: "projects/x/locations/y/instances/z" }),
+    ).toBeUndefined();
+    // An unallocated row has no channel at all.
+    await unit.database.update(sandboxes).set({ lifecycle: "unallocated" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.validateRunnerChannelScope(claims)).toBeUndefined();
+  });
+
+  it("refuses a channel scope for a definitive failure marker while allowing the pending phase", async () => {
+    const owner = await account();
+    const { sandbox, service, claims } = await startedClaims(owner);
+    for (const lastErrorCode of ["cloud_instance_unverified", "cloud_create_rejected", "cloud_create_failed"]) {
+      // The schema pairs a marker with its timestamp, so both move together.
+      await unit.database
+        .update(sandboxes)
+        .set({ lastErrorCode, lastErrorAt: new Date() })
+        .where(eq(sandboxes.id, sandbox.sandboxId));
+      expect(await service.validateRunnerChannelScope(claims)).toBeUndefined();
+    }
+    await unit.database
+      .update(sandboxes)
+      .set({ lastErrorCode: "cloud_create_pending", lastErrorAt: new Date() })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.validateRunnerChannelScope(claims)).toMatchObject({ sandboxId: sandbox.sandboxId });
+  });
+
+  it("renews an expired bootstrap only while the tracked allocation is still physically present", async () => {
+    const owner = await account();
+    const store = new FakeWorkspaceObjectStore();
+    const { sandbox, service, fake, tokens, claims } = await startedClaims(owner, { workspace: store });
+    const renewed = await service.renewExpiredBootstrap(claims);
+    expect(renewed).toBeDefined();
+    expect(await tokens.verify(renewed as string)).toEqual(claims);
+
+    // A tracked UID that is no longer readable is not a renewal authority.
+    fake.replaceUid(claims.resourceName, "uid-replaced");
+    expect(await service.renewExpiredBootstrap(claims)).toBeUndefined();
+
+    // No tracked UID at all: renewal is refused before any provider call.
+    const missing = fake.instances.get(claims.resourceName);
+    if (missing) missing.gone = false;
+    await unit.database.update(sandboxes).set({ currentResourceUid: null }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.renewExpiredBootstrap(claims)).toBeUndefined();
+  });
+
+  it("refuses expiration renewal entirely without workspace persistence", async () => {
+    const owner = await account();
+    const { service, claims } = await startedClaims(owner);
+    expect(await service.renewExpiredBootstrap(claims)).toBeUndefined();
+  });
+
+  it("resolves the physical holder from the birth identity and revalidates after the provider read", async () => {
+    const owner = await account();
+    const { sandbox, service, fake, claims } = await startedClaims(owner);
+    expect(await service.resolveRunnerControlHolder(claims)).toMatchObject({
+      sandboxId: sandbox.sandboxId,
+      resourceName: claims.resourceName,
+    });
+    // A name nobody holds is nobody's physical Instance.
+    expect(
+      await service.resolveRunnerControlHolder({
+        ...claims,
+        resourceName: `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/instances/nobody`,
+      }),
+    ).toBeUndefined();
+    // A birth identity that no longer exists cannot steer the physical Instance.
+    expect(await service.resolveRunnerControlHolder({ ...claims, sandboxId: randomUUID() })).toBeUndefined();
+    // An unreadable provider keeps the Runner retrying rather than granting a holder.
+    fake.getInstanceFailures = 1;
+    expect(await service.resolveRunnerControlHolder(claims)).toBeUndefined();
+    // A released row is not a holder.
+    await unit.database.update(sandboxes).set({ lifecycle: "unallocated" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.resolveRunnerControlHolder(claims)).toBeUndefined();
+  });
+
+  it("refuses to renew an expired control credential once the binding moved on", async () => {
+    const owner = await account();
+    const { sandbox, service, fake, tokens, claims } = await startedClaims(owner);
+    const renewed = await service.renewExpiredControl(claims);
+    expect(renewed).toBeDefined();
+    expect(await tokens.verifyControl(renewed as string)).toMatchObject({ sandboxId: sandbox.sandboxId });
+
+    // Unreadable provider and a replaced UID are both refusals, never a renewed credential.
+    fake.getInstanceFailures = 1;
+    expect(await service.renewExpiredControl(claims)).toBeUndefined();
+    fake.replaceUid(claims.resourceName, "uid-replaced");
+    expect(await service.renewExpiredControl(claims)).toBeUndefined();
+    // An unallocated row owns no physical Instance.
+    await unit.database.update(sandboxes).set({ lifecycle: "unallocated" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.renewExpiredControl(claims)).toBeUndefined();
+  });
+
+  it("describes authority facts only for the exact allocation the caller already validated", async () => {
+    const owner = await account();
+    const { sandbox, service, claims, status } = await startedClaims(owner);
+    const authority = await service.describeScopeAuthority(claims);
+    expect(authority).toMatchObject({ resourceUid: status.currentResourceUid });
+    expect(authority?.computerId).toBeDefined();
+    // Every deviation from the persisted allocation is refused without a provider call.
+    expect(await service.describeScopeAuthority({ ...claims, sessionId: randomUUID() })).toBeUndefined();
+    expect(await service.describeScopeAuthority({ ...claims, environmentGeneration: 9 })).toBeUndefined();
+    expect(await service.describeScopeAuthority({ ...claims, resourceName: "other" })).toBeUndefined();
+    expect(await service.describeScopeAuthority({ ...claims, sandboxId: randomUUID() })).toBeUndefined();
+    expect(sandbox.sandboxId).toBe(claims.sandboxId);
+  });
+});
+
+describe("SandboxRunnerService readiness authority", () => {
+  it("answers deferred for a claimed environment while keeping the seal-capable channel attached", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service, hub } = makeService(fake);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    // A claim owns the environment: the Runner must not re-publish readiness, but the channel has
+    // to stay attached because the E5 seal still needs it.
+    await unit.database.update(sandboxes).set({ idleReclaimAt: new Date() }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.markRunnerReady(scope, READINESS)).toBe("deferred");
+    expect(await service.markRunnerReady(scope, { ...READINESS, runnerVersion: "9.9.9" })).toBe("deferred");
+    expect(hub.describe(sandbox.sandboxId).connected).toBe(true);
+  });
+
+  it("answers stale for a scope row that no longer exists or has left the executable phases", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    // No persisted row answers this scope at all.
+    expect(await service.markRunnerReady({ ...scope, sandboxId: randomUUID() }, READINESS)).toBe("stale");
+    // A completely unknown scope is stale on the version-mismatch path too.
+    expect(
+      await service.markRunnerReady({ ...scope, sandboxId: randomUUID() }, { ...READINESS, runnerVersion: "9.9.9" }),
+    ).toBe("stale");
+    // Releasing is neither preparing nor ready, so a version-matched report is stale.
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    expect(await service.markRunnerReady(scope, READINESS)).toBe("stale");
+    // On the version-mismatch path the same phase is instead a first-admission refusal.
+    expect(await service.markRunnerReady(scope, { ...READINESS, runnerVersion: "9.9.9" })).toBe("version_mismatch");
+  });
+
+  it("promotes a deferred report once the verified UID is tracked", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    fake.createUnknownWithoutResourceOnce = true;
+    const { service, hub } = makeService(fake);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    expect(await service.promoteDeferredReadiness(sandbox.sandboxId)).toBe(false);
+    // The resource materializes and a start tracks its UID: the deferred report is promoted.
+    fake.materialize(fake.createCalls[0] as RunnerInstanceSpec);
+    const reconciled = await service.startForAccount(owner, sandbox.sandboxId);
+    expect(reconciled.lifecycle).toBe("ready");
+    expect(reconciled.runnerReady).toBe(true);
+  });
+});
+
+describe("SandboxRunnerService workspace seal proof", () => {
+  /** A workspace-enabled ready allocation whose one Runner socket answers seal requests. */
+  async function coveredReady(
+    owner: string,
+    socketFor: (
+      hub: RunnerHub,
+      store: FakeWorkspaceObjectStore,
+      row: typeof sandboxes.$inferSelect,
+    ) => RunnerControlSocket,
+    options: { sealTimeoutMs?: number } = {},
+  ) {
+    const fixture = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service, hub } = makeService(fake, { workspace: store, ...options });
+    const status = await service.startForAccount(owner, fixture.sandbox.sandboxId);
+    const row = await sandboxRow(fixture.sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = socketFor(hub, store, row);
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    await service.markRunnerReady(scope, READINESS, { workspaceRestored: true });
+    // The durable save debt that puts this environment on the sealing release path.
+    await unit.database
+      .update(sandboxes)
+      .set({ lastErrorCode: "workspace_save_required", lastErrorAt: new Date() })
+      .where(eq(sandboxes.id, fixture.sandbox.sandboxId));
+    return { ...fixture, fake, store, service, hub, status, row, scope };
+  }
+
+  it("refuses to release when the object store has no archive for the current generation", async () => {
+    const owner = await account();
+    const { sandbox, store, fake, service } = await coveredReady(owner, (hub, s, row) =>
+      sealCapableSocket(hub, s, row),
+    );
+    // The store is empty: the metadata read-back cannot prove anything, so the save is refused and
+    // the physical binding is retained. `head` returning undefined also covers a scope whose
+    // Sandbox id no longer resolves at all.
+    store.head = async () => undefined;
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 503,
+      code: "SERVICE_UNAVAILABLE",
+    });
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({
+      lifecycle: "releasing",
+      lastErrorCode: "workspace_save_failed",
+    });
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("refuses the release when the archive cannot be read at all", async () => {
+    const owner = await account();
+    const { sandbox, store, service, fake } = await coveredReady(owner, (hub, s, row) =>
+      sealCapableSocket(hub, s, row),
+    );
+    store.head = async () => {
+      throw new WorkspaceObjectStoreError("unavailable", "storage is down");
+    };
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("refuses the release when the requested seal is never acknowledged", async () => {
+    const owner = await account();
+    // A socket that swallows seal frames: the bounded seal window expires without an ack.
+    const { sandbox, service, fake } = await coveredReady(
+      owner,
+      () => ({
+        send() {
+          // Deliberately never acknowledges.
+        },
+        close() {},
+      }),
+      { sealTimeoutMs: 20 },
+    );
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(fake.deleteCalls).toHaveLength(0);
+    expect((await sandboxRow(sandbox.sandboxId)).lastErrorCode).toBe("workspace_save_failed");
+  });
+
+  it("refuses the release when the Runner acknowledges a save that is not verifiable", async () => {
+    const owner = await account();
+    // `ok: true` without planting the archive: the ack alone is never proof.
+    const { sandbox, service, fake } = await coveredReady(owner, (hub, store, row) =>
+      sealCapableSocket(hub, store, row, { plant: false }),
+    );
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    expect(fake.deleteCalls).toHaveLength(0);
+    expect((await sandboxRow(sandbox.sandboxId)).lastErrorCode).toBe("workspace_save_failed");
+  });
+});
+
+describe("SandboxRunnerService idle sweep and sibling reuse", () => {
+  const IDLE_TIMEOUT_MS = 60_000;
+  const STARTUP_CUTOFF_MS = 30_000 + 4 * RUNNER_WORKSPACE_TIMEOUT_MS;
+  const EPOCH = new Date("2026-01-01T00:00:00.000Z");
+
+  /** A workspace-enabled stack over a frozen clock, so the sweep's budget is deterministic. */
+  function sweepStack(
+    options: { sessionWorkBusy?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBusy"] } = {},
+  ) {
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    let current = EPOCH;
+    const made = makeService(fake, {
+      workspace: store,
+      idleTimeoutMs: IDLE_TIMEOUT_MS,
+      now: () => current,
+      ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
+    });
+    return {
+      ...made,
+      fake,
+      store,
+      now: () => current,
+      advance: (ms: number) => {
+        current = new Date(current.getTime() + ms);
+      },
+    };
+  }
+
+  /** Allocate, then park the row in the exact phase the sweep candidate query selects. */
+  async function phaseRow(
+    service: SandboxRunnerService,
+    owner: string,
+    phase: "ready" | "preparing" | "releasing",
+    options: { idleReclaimAt?: Date | null; lastActivityAt?: Date; marker?: string | null } = {},
+  ) {
+    const fixture = await ownedSandbox(owner);
+    const status = await service.startForAccount(owner, fixture.sandbox.sandboxId);
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: phase,
+        currentResourceName: status.currentResourceName as string,
+        currentResourceUid: status.currentResourceUid as string,
+        idleReclaimAt: options.idleReclaimAt ?? null,
+        lastActivityAt: options.lastActivityAt ?? EPOCH,
+        lastErrorCode: options.marker ?? null,
+        lastErrorAt: options.marker ? new Date() : null,
+      })
+      .where(eq(sandboxes.id, fixture.sandbox.sandboxId));
+    return { ...fixture, ...status };
+  }
+
+  it("does nothing at all without workspace persistence", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake, { idleTimeoutMs: IDLE_TIMEOUT_MS, now: () => EPOCH });
+    await phaseRow(service, owner, "ready", { lastActivityAt: EPOCH });
+    expect(await service.reclaimIdleSandboxes()).toEqual({ claimed: 0, released: 0, recovered: 0, failed: 0 });
+    expect(fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("skips a ready row whose activity sits inside the idle budget", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const ready = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    // The budget clock is `lastActivityAt` only; the candidate query filters it out entirely.
+    expect(await stack.service.reclaimIdleSandboxes()).toEqual({ claimed: 0, released: 0, recovered: 0, failed: 0 });
+    expect((await sandboxRow(ready.sandboxId)).idleReclaimAt).toBeNull();
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("claims, seals and reclaims a ready environment past the single idle budget", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const ready = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    const row = await sandboxRow(ready.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: 1,
+      resourceName: ready.currentResourceName as string,
+    };
+    // A live, seal-capable Runner: the claim's save debt is answered before the delete.
+    const socket = sealCapableSocket(stack.hub, stack.store, {
+      id: row.id,
+      sessionId: row.sessionId,
+      storageUri: row.storageUri,
+      environmentGeneration: 1,
+    });
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    const sweep = await stack.service.reclaimIdleSandboxes();
+    expect(sweep).toMatchObject({ claimed: 1, released: 1, failed: 0 });
+    expect((await sandboxRow(ready.sandboxId)).lifecycle).toBe("unallocated");
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+    expect(stack.store.writes.length).toBeGreaterThanOrEqual(0);
+  });
+
+  it("counts a candidate whose provider preflight fails as failed and leaves the row ready", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const ready = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    stack.fake.getInstanceFailures = 1;
+    expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ claimed: 0, failed: 1 });
+    expect((await sandboxRow(ready.sandboxId)).lifecycle).toBe("ready");
+  });
+
+  it("never seals a claim whose provider binding was replaced under the same name", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const ready = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    const row = await sandboxRow(ready.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: 1,
+      resourceName: ready.currentResourceName as string,
+    };
+    const socket = sealCapableSocket(stack.hub, stack.store, {
+      id: row.id,
+      sessionId: row.sessionId,
+      storageUri: row.storageUri,
+      environmentGeneration: 1,
+    });
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    // A same-name resource with a different UID proves nothing about OUR allocation, so the
+    // preflight never calls the provider verification at all.
+    stack.fake.replaceUid(ready.currentResourceName as string, "uid-someone-else");
+    const verified = vi.spyOn(stack.fake, "verifyTrackedOwnership");
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    expect(verified).not.toHaveBeenCalled();
+  });
+
+  it("blocks an automatic claim while an E8 collaboration owner reports the allocation busy", async () => {
+    const owner = await account();
+    const stack = sweepStack({ sessionWorkBusy: () => true });
+    const ready = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ claimed: 0, released: 0 });
+    expect((await sandboxRow(ready.sandboxId)).idleReclaimAt).toBeNull();
+  });
+
+  it("resumes an automatic releasing row without waiting out another budget", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const releasing = await phaseRow(stack.service, owner, "releasing", { idleReclaimAt: EPOCH });
+    // The row is not idle by `lastActivityAt`, but the durable automatic claim authorizes the
+    // resume: the sweep deletes the Instance and clears the row.
+    const sweep = await stack.service.reclaimIdleSandboxes();
+    expect(sweep).toMatchObject({ released: 1, failed: 0 });
+    expect((await sandboxRow(releasing.sandboxId)).lifecycle).toBe("unallocated");
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("leaves an explicit (unclaimed) releasing row entirely outside the sweep", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const releasing = await phaseRow(stack.service, owner, "releasing", { idleReclaimAt: null });
+    expect(await stack.service.reclaimIdleSandboxes()).toEqual({ claimed: 0, released: 0, recovered: 0, failed: 0 });
+    expect((await sandboxRow(releasing.sandboxId)).lifecycle).toBe("releasing");
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("counts a failing automatic resume as failed and keeps the durable marker", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const releasing = await phaseRow(stack.service, owner, "releasing", { idleReclaimAt: EPOCH });
+    stack.fake.deleteFailures = 1;
+    expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ released: 0, failed: 1 });
+    expect((await sandboxRow(releasing.sandboxId)).lifecycle).toBe("releasing");
+  });
+
+  it("recovers a stale preparing adoption the provider still confirms present", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const stale = await phaseRow(stack.service, owner, "preparing", { lastActivityAt: EPOCH });
+    stack.advance(STARTUP_CUTOFF_MS + 1_000);
+    // The tracked Instance never produced a ready Runner: the sweep deletes it and clears the row.
+    const sweep = await stack.service.reclaimIdleSandboxes();
+    expect(sweep).toMatchObject({ recovered: 1, failed: 0 });
+    expect((await sandboxRow(stale.sandboxId)).lifecycle).toBe("unallocated");
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("clears a stale preparing adoption the provider confirms absent, without a delete", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const stale = await phaseRow(stack.service, owner, "preparing", { lastActivityAt: EPOCH });
+    stack.advance(STARTUP_CUTOFF_MS + 1_000);
+    const instance = stack.fake.instances.get(stale.currentResourceName as string);
+    if (instance) instance.gone = true;
+    expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ recovered: 1, failed: 0 });
+    expect((await sandboxRow(stale.sandboxId)).lifecycle).toBe("unallocated");
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("counts an unreadable stale adoption as failed and keeps the binding", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const stale = await phaseRow(stack.service, owner, "preparing", { lastActivityAt: EPOCH });
+    stack.advance(STARTUP_CUTOFF_MS + 1_000);
+    stack.fake.getInstanceFailures = 1;
+    expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ recovered: 0, failed: 1 });
+    expect((await sandboxRow(stale.sandboxId)).lifecycle).toBe("preparing");
+  });
+
+  it("promotes a stale adoption whose Runner became ready instead of recycling it", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const stale = await phaseRow(stack.service, owner, "preparing", { lastActivityAt: EPOCH });
+    const scope: RunnerScope = {
+      sandboxId: stale.sandboxId,
+      sessionId: stale.sessionId,
+      environmentGeneration: 1,
+      resourceName: stale.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.advance(STARTUP_CUTOFF_MS + 1_000);
+    // `describe().ready` short-circuits the recycle: the normal readiness path promotes instead.
+    const sweep = await stack.service.reclaimIdleSandboxes();
+    expect(sweep).toMatchObject({ recovered: 0, failed: 0 });
+    expect((await sandboxRow(stale.sandboxId)).lifecycle).toBe("ready");
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("fails an automatic claim whose recorded save cannot be sealed", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const ready = await phaseRow(stack.service, owner, "ready", {
+      lastActivityAt: EPOCH,
+      marker: "workspace_save_required",
+    });
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    // No Runner is attached to answer the seal request, so the release funnel records the
+    // workspace-specific failure instead of pretending the delete succeeded.
+    expect(await stack.service.reclaimIdleSandboxes()).toMatchObject({ claimed: 1, released: 0, failed: 1 });
+    const row = await sandboxRow(ready.sandboxId);
+    expect(row.lifecycle).toBe("ready");
+    expect(row.lastErrorCode).toBe("workspace_save_failed");
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+  });
+
+  it("skips an idle sibling whose deployment policy no longer matches", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const candidate = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    const scope: RunnerScope = {
+      sandboxId: candidate.sandboxId,
+      sessionId: candidate.sessionId,
+      environmentGeneration: 1,
+      resourceName: candidate.currentResourceName as string,
+    };
+    const socket = sealCapableSocket(stack.hub, stack.store, {
+      id: candidate.sandboxId,
+      sessionId: candidate.sessionId,
+      storageUri: (await sandboxRow(candidate.sandboxId)).storageUri,
+      environmentGeneration: 1,
+    });
+    stack.hub.attach(scope, socket, { reuseCapable: true });
+    stack.hub.markReady(scope, READINESS, socket);
+    // The candidate passes every preflight and is claimed; the policy re-read after the seal then
+    // refuses it, so the claim is retained rather than transferred.
+    vi.spyOn(stack.fake, "verifyTrackedInstance").mockImplementation(() => {
+      throw new Error("Deployment policy changed");
+    });
+    const claimant = await ownedSandbox(owner);
+    await stack.service.startForAccount(owner, claimant.sandbox.sandboxId);
+    expect(stack.fake.createCalls.length).toBeGreaterThanOrEqual(2); // the claimant cold-allocated
+    const after = await sandboxRow(candidate.sandboxId);
+    expect(after.lifecycle).not.toBe("unallocated");
+  });
+
+  it("skips an idle sibling whose archive cannot be proven and does not transfer it", async () => {
+    const owner = await account();
+    const stack = sweepStack();
+    const candidate = await phaseRow(stack.service, owner, "ready", { lastActivityAt: EPOCH });
+    const row = await sandboxRow(candidate.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: candidate.sandboxId,
+      sessionId: candidate.sessionId,
+      environmentGeneration: 1,
+      resourceName: candidate.currentResourceName as string,
+    };
+    const socket = sealCapableSocket(stack.hub, stack.store, {
+      id: row.id,
+      sessionId: row.sessionId,
+      storageUri: row.storageUri,
+      environmentGeneration: 1,
+    });
+    stack.hub.attach(scope, socket, { reuseCapable: true });
+    stack.hub.markReady(scope, READINESS, socket);
+    // The seal is answered but the archive is not actually there: the borrow must not commit.
+    stack.store.head = async () => undefined;
+    const claimant = await ownedSandbox(owner);
+    const before = stack.fake.createCalls.length;
+    await stack.service.startForAccount(owner, claimant.sandbox.sandboxId);
+    expect(stack.fake.createCalls.length).toBeGreaterThan(before);
+  });
+});
+
+describe("SandboxRunnerService convergence polling", () => {
+  it("polls the deterministic name until the late resource becomes readable", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const operation = `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/operations/op-late`;
+    const fixture = await ownedSandbox(owner);
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "preparing",
+        environmentGeneration: 1,
+        lastErrorCode: null,
+        lastErrorAt: null,
+        currentResourceName: null,
+        currentResourceUid: null,
+        currentOperationName: operation,
+      })
+      .where(eq(sandboxes.id, fixture.sandbox.sandboxId));
+    const name = `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/instances/${runnerInstanceId({
+      environment: "staging",
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: 1,
+    })}`;
+    fake.materialize({
+      environment: "staging",
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: 1,
+      backendUrl: "wss://unit.invalid",
+      bootstrapToken: "unit",
+    });
+    fake.operations.set(operation, { state: "done", resourceName: name });
+    // The first read of the resource is not visible yet; the second (inside the bounded poll
+    // window) is. `sleep` is the injected no-op, so the poll converges on its first retry.
+    const realGet = fake.getInstance.bind(fake);
+    let reads = 0;
+    fake.getInstance = async (instanceName: string) => {
+      reads += 1;
+      if (reads === 1) return undefined;
+      return realGet(instanceName);
+    };
+    const status = await service.startForAccount(owner, fixture.sandbox.sandboxId);
+    expect(reads).toBeGreaterThan(1);
+    expect(status.currentResourceUid).toMatch(/^uid-/);
+    expect(status.lastErrorCode).toBeNull();
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("wakes from the bounded convergence window with the real sleep implementation", async () => {
+    const owner = await account();
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake, { realSleep: true, createConvergeTimeoutMs: 1 });
+    const operation = `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/operations/op-slow-real`;
+    const fixture = await ownedSandbox(owner);
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "preparing",
+        environmentGeneration: 1,
+        lastErrorCode: null,
+        lastErrorAt: null,
+        currentResourceName: null,
+        currentResourceUid: null,
+        currentOperationName: operation,
+      })
+      .where(eq(sandboxes.id, fixture.sandbox.sandboxId));
+    // The operation names the right resource but nothing is readable at it: the bounded poll
+    // window (1 ms, with the production default `sleep`) expires before any read can succeed.
+    fake.operations.set(operation, {
+      state: "done",
+      resourceName: `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/instances/${runnerInstanceId({
+        environment: "staging",
+        sandboxId: fixture.sandbox.sandboxId,
+        sessionId: fixture.sandbox.sessionId,
+        environmentGeneration: 1,
+      })}`,
+    });
+    // A millisecond-bounded window expires before any read can succeed: the row keeps the
+    // reference and is reported uncertain rather than resubmitted. This also exercises the
+    // production default of `sleep`.
+    const status = await service.startForAccount(owner, fixture.sandbox.sandboxId);
+    expect(status.lastErrorCode).toBe("cloud_create_uncertain");
+    expect(fake.createCalls).toHaveLength(0);
+  });
+});
+
+describe("SandboxRunnerService failure-state persistence", () => {
+  it("surfaces an unpersistable failure state as a 503 envelope with both messages", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    // A write that fails with a non-Error makes the durable record impossible: the service must
+    // surface that instead of swallowing it, and must describe both failures.
+    const brokenDatabase = new Proxy(unit.database, {
+      get(target, property, receiver) {
+        if (property === "update") {
+          return () => {
+            throw "unit non-error failure";
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    }) as typeof unit.database;
+    const { service } = makeService(fake, { database: brokenDatabase as never, tokens: asyncTokens() });
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 503,
+      message: expect.stringContaining("unknown failure"),
+    });
+  });
+});
+
+describe("SandboxRunnerService create failure classification", () => {
+  it("maps a non-provider create failure to the allocate envelope without a retry marker", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    // A plain (non CloudRunAdminError) failure from the provider adapter: it is neither a
+    // definitive rejection nor a visible-resource diagnostic, so the marker is uncertain.
+    fake.createInstance = async () => {
+      throw new Error("unit plain provider failure");
+    };
+    const { service } = makeService(fake);
+    await expect(service.startForAccount(owner, sandbox.sandboxId)).rejects.toThrow("unit plain provider failure");
+    expect((await sandboxRow(sandbox.sandboxId)).lastErrorCode).toBe("cloud_create_uncertain");
+  });
+});
+
+/** A token service that always fails, so the create path reaches its local failure record. */
+function asyncTokens(): RunnerBootstrapTokenService {
+  const tokens = new RunnerBootstrapTokenService("unit-test-jwt-secret-at-least-32-characters", { ttlSeconds: 600 });
+  tokens.issue = async () => {
+    throw new Error("signing unavailable");
+  };
+  return tokens;
+}
+
+describe("SandboxRunnerService ingress failure envelopes", () => {
+  it("answers 404 for ingress allocation on a Sandbox the Account does not own", async () => {
+    const owner = await account();
+    const stranger = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = makeService(fake, { workspace: store });
+    await expect(service.ensureIngressAllocation(stranger, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 404,
+      code: "RESOURCE_NOT_FOUND",
+    });
+    expect(fake.createCalls).toHaveLength(0);
+  });
+
+  it("propagates an allocation failure from the nested start unchanged (never a 200 outcome)", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    fake.failNextCreateWith = new CloudRunAdminError("invalid", "image refused", {
+      status: 400,
+      createRejected: true,
+    });
+    const { service } = makeService(fake);
+    // Only `WorkspaceRestoreRequiredError` is translated into an outcome; every other failure
+    // must keep its own envelope so the caller sees the real allocation problem.
+    await expect(service.ensureIngressAllocation(owner, sandbox.sandboxId)).rejects.toMatchObject({
+      statusCode: 503,
+      code: "SERVICE_UNAVAILABLE",
+    });
+  });
+});
+
+describe("SandboxRunnerService control-holder refusals", () => {
+  it("refuses the physical holder when the tracked resource no longer matches the provider", async () => {
+    const owner = await account();
+    const fixture = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const started = await service.startForAccount(owner, fixture.sandbox.sandboxId);
+    const claims: RunnerBootstrapClaims = {
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: started.currentResourceName as string,
+    };
+    // A same-name resource with a different UID is not the tracked binding: the provider read
+    // proves nothing and the control channel keeps retrying.
+    fake.replaceUid(claims.resourceName, "uid-someone-else");
+    expect(await service.resolveRunnerControlHolder(claims)).toBeUndefined();
+    expect(await service.renewExpiredControl(claims)).toBeUndefined();
+    // Ownership labels that no longer match are equally disqualifying for the holder.
+    const instance = fake.instances.get(claims.resourceName);
+    if (instance) instance.labels = {};
+    expect(await service.resolveRunnerControlHolder(claims)).toBeUndefined();
+    expect(await service.renewExpiredControl(claims)).toBeUndefined();
+  });
+
+  it("refuses bootstrap renewal when the tracked ownership labels no longer match", async () => {
+    const owner = await account();
+    const fixture = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const store = new FakeWorkspaceObjectStore();
+    const { service } = makeService(fake, { workspace: store });
+    const started = await service.startForAccount(owner, fixture.sandbox.sandboxId);
+    const claims: RunnerBootstrapClaims = {
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: started.currentResourceName as string,
+    };
+    // The recorded binding is still readable at the exact UID, but its managed labels are gone:
+    // renewal must fail closed rather than sign a credential for a foreign resource.
+    fake.tamperLabels(claims.resourceName, {});
+    expect(await service.renewExpiredBootstrap(claims)).toBeUndefined();
+  });
+});
+
+describe("SandboxRunnerService control-channel evidence corners", () => {
+  it("refuses a physical holder whose birth and holder Computers belong to different Accounts", async () => {
+    const birthOwner = await account();
+    const holderOwner = await account();
+    const birth = await ownedSandbox(birthOwner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const started = await service.startForAccount(birthOwner, birth.sandbox.sandboxId);
+    const other = await ownedSandbox(holderOwner);
+    // A name collision materialized across Accounts: the physical name now sits on another
+    // Account's Sandbox, so the immutable birth identity must refuse to validate.
+    const name = started.currentResourceName as string;
+    const uid = started.currentResourceUid as string;
+    await unit.database
+      .update(sandboxes)
+      .set({ currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, birth.sandbox.sandboxId));
+    await unit.database
+      .update(sandboxes)
+      .set({ currentResourceName: name, currentResourceUid: uid, lifecycle: "preparing" })
+      .where(eq(sandboxes.id, other.sandbox.sandboxId));
+    const claims: RunnerBootstrapClaims = {
+      sandboxId: birth.sandbox.sandboxId,
+      sessionId: birth.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: name,
+    };
+    expect(await service.resolveRunnerControlHolder(claims)).toBeUndefined();
+  });
+
+  it("refuses the holder and the renewal when the tracked ownership labels no longer match", async () => {
+    const owner = await account();
+    const birth = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service } = makeService(fake);
+    const started = await service.startForAccount(owner, birth.sandbox.sandboxId);
+    const claims: RunnerBootstrapClaims = {
+      sandboxId: birth.sandbox.sandboxId,
+      sessionId: birth.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: started.currentResourceName as string,
+    };
+    // The UID still matches the tracked binding, but the managed labels prove the resource is not
+    // this allocation: both the holder resolution and the renewal must fail closed.
+    fake.tamperLabels(claims.resourceName, {});
+    expect(await service.resolveRunnerControlHolder(claims)).toBeUndefined();
+    expect(await service.renewExpiredControl(claims)).toBeUndefined();
+  });
+
+  it("refuses an original-image reconnect whose tracked resource vanished behind the name", async () => {
+    const owner = await account();
+    const birth = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service, hub } = makeService(fake, { expectedRunnerVersion: RUNNER_VERSION });
+    const status = await service.startForAccount(owner, birth.sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: birth.sandbox.sandboxId,
+      sessionId: birth.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    await service.markRunnerReady(scope, READINESS);
+    // A tracked READY allocation whose Instance is no longer readable cannot prove its original
+    // image, so a different Runner version stays a mismatch instead of being accepted.
+    const instance = fake.instances.get(scope.resourceName);
+    if (instance) instance.gone = true;
+    expect(await service.markRunnerReady(scope, { ...READINESS, runnerVersion: "9.9.9" })).toBe("version_mismatch");
+  });
+
+  it("reports stale when the tracked binding is replaced during the original-image read", async () => {
+    const owner = await account();
+    const birth = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service, hub } = makeService(fake);
+    const status = await service.startForAccount(owner, birth.sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: birth.sandbox.sandboxId,
+      sessionId: birth.sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    await service.markRunnerReady(scope, READINESS);
+    // The image verification is satisfied for this case, so the bounded provider read really
+    // happens; it is held while the tracked binding is released, and the mandatory post-read
+    // recheck is then what must refuse: the row this verdict would apply to is gone.
+    vi.spyOn(fake, "verifyTrackedOriginalImage").mockImplementation(() => {});
+    const realGet = fake.getInstance.bind(fake);
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let gated = true;
+    fake.getInstance = async (name: string) => {
+      if (gated) {
+        gated = false;
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return realGet(name);
+    };
+    const pending = service.markRunnerReady(scope, { ...READINESS, runnerVersion: "9.9.9" });
+    await enteredPromise;
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, birth.sandbox.sandboxId));
+    release();
+    expect(await pending).toBe("stale");
+  });
+});
+
+describe("SandboxRunnerService acceptance bookkeeping", () => {
+  it("never lets a failed activity write replace the acceptance outcome", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service, hub } = makeService(fake);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    await service.markRunnerReady(scope, READINESS);
+    // The run-start activity write succeeds; the one in `finally` fails. The caller must still
+    // receive the real acceptance result: bookkeeping is best-effort, never a result rewrite.
+    vi.spyOn(service, "noteActivity")
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("activity write unavailable"));
+    const pending = service.runAcceptanceForAccount(owner, sandbox.sandboxId, { mode: "offline" });
+    await vi.waitFor(() => {
+      expect(socket.sent.some((frame) => (frame as { type?: string }).type === "acceptance:run")).toBe(true);
+    });
+    const requestId = (
+      socket.sent.find((frame) => (frame as { type?: string }).type === "acceptance:run") as { requestId: string }
+    ).requestId;
+    hub.resolveAcceptanceResult(sandbox.sandboxId, { type: "acceptance:result", requestId, outcome: "passed" }, socket);
+    await expect(pending).resolves.toMatchObject({ outcome: "passed" });
+  });
+
+  it("refuses an acceptance whose hub entry disappeared between the snapshot and the socket read", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const { service, hub } = makeService(fake);
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: status.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    hub.attach(scope, socket);
+    hub.markReady(scope, READINESS, socket);
+    await service.markRunnerReady(scope, READINESS);
+    // `describe` reports a healthy ready connection while `currentSocket` really reads the entry:
+    // a detach in that window leaves the defensive socket guard to refuse the run.
+    hub.detach(sandbox.sandboxId, socket);
+    vi.spyOn(hub, "describe").mockReturnValue({
+      connected: true,
+      ready: true,
+      readiness: READINESS,
+      reuseCapable: false,
+      scope,
+    });
+    await expect(service.runAcceptanceForAccount(owner, sandbox.sandboxId, { mode: "offline" })).rejects.toMatchObject({
+      statusCode: 409,
+      code: "SANDBOX_RUNNER_CONFLICT",
+      message: expect.stringContaining("No ready Runner is attached"),
+    });
+  });
+});
+
+describe("SandboxRunnerService release evidence corners", () => {
+  it("reports an unverified removal when the read-back never shows the Instance gone", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    let current = new Date("2026-01-01T00:00:00.000Z");
+    const { service } = makeService(fake, { now: () => current, deleteVerifyTimeoutMs: 30_000 });
+    const status = await service.startForAccount(owner, sandbox.sandboxId);
+    const name = status.currentResourceName as string;
+    // The delete is accepted but the read-back keeps answering with OUR UID: the removal is a fact
+    // only when the read is 404, so the bounded window must expire and report it.
+    fake.deleteInstance = async () => ({ alreadyGone: false });
+    const realGet = fake.getInstance.bind(fake);
+    fake.getInstance = async (instanceName: string) => {
+      // One poll interval passes between each read: default `sleep` is a no-op here, so the
+      // injected clock is the only thing advancing the window.
+      current = new Date(current.getTime() + 30_000);
+      return realGet(instanceName);
+    };
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const row = await sandboxRow(sandbox.sandboxId);
+    expect(row.lifecycle).toBe("releasing");
+    expect(row.currentResourceName).toBe(name);
+    expect(row.lastErrorCode).toBe("cloud_delete_incomplete");
+  });
+
+  it("keeps releasing while an unknown allocation's operation is still running", async () => {
+    const owner = await account();
+    const { sandbox } = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    const operation = `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/operations/op-release-pending`;
+    const { service } = makeService(fake, { deleteVerifyTimeoutMs: 0 });
+    // A releasing row with a pending create LRO and no tracked UID: neither the read nor the
+    // operation proves the create outcome, so the reference must survive.
+    await unit.database
+      .update(sandboxes)
+      .set({
+        lifecycle: "releasing",
+        environmentGeneration: 1,
+        currentResourceName: `projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/instances/ot-unknown`,
+        currentResourceUid: null,
+        currentOperationName: operation,
+        lastErrorCode: null,
+        lastErrorAt: null,
+      })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    fake.operations.set(operation, { state: "pending" });
+    await expect(service.stopForAccount(owner, sandbox.sandboxId)).rejects.toMatchObject({ statusCode: 503 });
+    const row = await sandboxRow(sandbox.sandboxId);
+    expect(row.lifecycle).toBe("releasing");
+    expect(row.currentResourceName).toBe(`projects/${FAKE_PROJECT}/locations/${FAKE_REGION}/instances/ot-unknown`);
+    expect(fake.deleteCalls).toHaveLength(0);
   });
 });

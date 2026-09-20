@@ -25,7 +25,6 @@ import { type NormalizedSkillArchive, normalizeSkillArchive } from "./skill-arch
 import type { SkillReadLimits } from "./skill-archive-reader.js";
 import {
   bestEffortDeleteSkillObject,
-  deleteReplacedObject,
   discardUnreferencedObject,
   ensureObjectPresent,
   mapSkillStoreError,
@@ -43,7 +42,7 @@ import { type SkillObjectStore, skillObjectKey } from "./skill-object-store.js";
  *    another Account and a missing Agent are deliberately indistinguishable (`SKILL_NOT_FOUND`).
  * 2. **Object keys are derived, never supplied.** The key is built from the Agent's owner, the Agent,
  *    the Skill id, and the Server's own sha256, which is what makes a replace safe without a lock:
- *    write the new key, update the row, then best-effort delete the old key.
+ *    write the new key, update the row, and leave the old object for `SkillObjectGc` to collect.
  */
 
 export interface SkillServiceOptions {
@@ -350,9 +349,10 @@ export class SkillService {
       await discardUnreferencedObject(this.#database, store, objectKey, existing.id, this.#logger);
       throw skillRevisionConflict("The Skill changed concurrently; retry the upload");
     }
-    if (existing.objectKey !== objectKey) {
-      await deleteReplacedObject(this.#database, store, existing, objectKey, this.#logger);
-    }
+    // The previous object is deliberately NOT deleted here. An inline delete is check-then-act: a
+    // later replace may already have made the old key current again, so deleting it could strand
+    // that row on a missing object. It is left as an orphan and collected by `SkillObjectGc` once it
+    // is past the grace period and no row references it.
     // Deliberately outside the update's try/catch: the row is already committed, so a failure here
     // surfaces as SKILL_STORAGE_UNAVAILABLE and must never trigger cleanup of `objectKey`.
     await ensureObjectPresent(this.#database, store, objectKey, row.id, normalized, this.#logger);

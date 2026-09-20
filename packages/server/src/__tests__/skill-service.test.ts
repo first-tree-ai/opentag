@@ -94,7 +94,10 @@ describe("SkillService", () => {
     expect(replaced.id).toBe(first.id);
     expect(replaced.revision).toBe(first.revision + 1);
     expect(replaced.archiveSha256).not.toBe(first.archiveSha256);
-    expect(store.keys()).toHaveLength(1);
+    // A replace no longer deletes the previous object inline; it is left for the GC to collect, so
+    // both keys remain until a later GC pass and the row points at the new one.
+    expect(store.deletes).toBe(0);
+    expect(store.keys()).toHaveLength(2);
     const bundle = await service.openBundle(accountId, agentId, replaced.id);
     expect(bundle.sha256).toBe(replaced.archiveSha256);
   });

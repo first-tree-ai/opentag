@@ -81,32 +81,6 @@ export async function discardUnreferencedObject(
 }
 
 /**
- * Deletes the replaced object only while our own write is still the row's current object.
- *
- * A later replace may have moved the row to a different key — or even back to this same key by
- * re-uploading identical content — so deleting the old object unconditionally can strand the row on
- * an object that no longer exists.
- */
-export async function deleteReplacedObject(
-  database: DatabaseClient,
-  store: SkillObjectStore,
-  existing: { id: string; agentId: string; objectKey: string },
-  newObjectKey: string,
-  logger?: ServiceLogger,
-): Promise<void> {
-  const [current] = await database
-    .select({ objectKey: agentSkills.objectKey })
-    .from(agentSkills)
-    .where(eq(agentSkills.id, existing.id))
-    .limit(1);
-  if (current?.objectKey !== newObjectKey) return;
-  await bestEffortDeleteSkillObject(store, existing.objectKey, "replaced Skill object", logger, {
-    agentId: existing.agentId,
-    skillId: existing.id,
-  });
-}
-
-/**
  * Confirms the object this write committed still exists, restoring it from the in-memory archive if
  * another writer's cleanup removed it between our PUT and our commit. The row is correct either way,
  * so a failed restore is `SKILL_STORAGE_UNAVAILABLE` rather than a silent dangling row.

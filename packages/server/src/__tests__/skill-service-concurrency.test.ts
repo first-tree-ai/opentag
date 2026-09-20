@@ -211,51 +211,35 @@ describe("SkillService object lifecycle", () => {
     expect(bundle.sha256).toBe(seeded.archiveSha256);
   });
 
-  it("restores the object a concurrent cleanup removed after the row write", async () => {
+  it("restores the object an external cleanup removed before the post-commit check", async () => {
     const accountId = await h.createUser();
     const agentId = await h.createAgent(accountId);
     const store = new FakeSkillObjectStore();
     const { logger, warns } = h.capturingLogger();
-    const seeded = await h.upload(h.serviceWith(store), accountId, agentId, "race-b");
-    const originalKey = (await h.objectKeyOf(seeded.id)) as string;
-
-    let releaseDelete!: () => void;
-    const deleteHeld = new Promise<void>((resolve) => {
-      releaseDelete = resolve;
-    });
-    let signalDeletePaused!: () => void;
-    const deletePaused = new Promise<void>((resolve) => {
-      signalDeletePaused = resolve;
-    });
-    let signalDeleteDone!: () => void;
-    const deleteDone = new Promise<void>((resolve) => {
-      signalDeleteDone = resolve;
-    });
-    store.beforeDelete = {
-      promise: deleteHeld,
-      open: releaseDelete,
-      onPause: signalDeletePaused,
-      onDone: signalDeleteDone,
-    };
-    // B's existence check runs after A's cleanup has removed the object A's delete targeted.
-    store.onHead = async () => {
-      releaseDelete();
-      await deleteDone;
+    await h.upload(h.serviceWith(store), accountId, agentId, "restore");
+    // A replace no longer deletes inline, so the remaining way this object can vanish in the window
+    // is an external cleanup (the GC). Simulate that: the first `head` the replace's post-commit
+    // check makes removes the object, and the check must put it back rather than strand the row.
+    const realHead = store.head.bind(store);
+    let removed = false;
+    store.head = async (key) => {
+      if (!removed) {
+        removed = true;
+        await store.delete(key);
+      }
+      return realHead(key);
     };
     const service = new SkillService({ database: h.database, store, keyPrefix: "skills", logger });
 
-    // A updates the row to the new content, then pauses in its cleanup before deleting the old key.
-    const winner = h.upload(service, accountId, agentId, "race-b", { replace: true, files: { "a.txt": "a" } });
-    await deletePaused;
-    // B re-uploads the original content while A is held; A's delete lands before B's existence check.
-    const late = await h.upload(service, accountId, agentId, "race-b", { replace: true });
-    await winner;
+    const replaced = await h.upload(service, accountId, agentId, "restore", {
+      replace: true,
+      files: { "a.txt": "a" },
+    });
 
-    expect(late.archiveSha256).toBe(seeded.archiveSha256);
-    expect(store.stored(originalKey)).toBeDefined();
+    expect(store.stored((await h.objectKeyOf(replaced.id)) as string)).toBeDefined();
     expect(warns.filter((entry) => entry.code === "skill_object_restored")).toHaveLength(1);
-    const bundle = await service.openBundle(accountId, agentId, seeded.id);
-    expect(bundle.sha256).toBe(seeded.archiveSha256);
+    const bundle = await service.openBundle(accountId, agentId, replaced.id);
+    expect(bundle.sha256).toBe(replaced.archiveSha256);
   });
 
   it("does not re-put an object after a replace whose head reports it present", async () => {

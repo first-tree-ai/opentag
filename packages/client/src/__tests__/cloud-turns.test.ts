@@ -7,6 +7,7 @@ import type {
   RunnerCloudDeliveryRunFrame,
   RunnerCloudDeliveryVerifiedFrame,
   RunnerCloudModelGrant,
+  SessionMessageDeliveryRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -92,6 +93,36 @@ function reportsOf(sent: RunnerClientFrame[]) {
     RunnerClientFrame,
     { type: "delivery:report" }
   >[];
+}
+
+/** The exact durable allocation identity the runner asserts for every journaled entry. */
+function journalScopeOf(scope: CloudTurnScope): CloudJournalScope {
+  if (!scope.resourceUid) throw new Error("the fixture scope must carry a resource uid");
+  return {
+    environmentGeneration: scope.environmentGeneration,
+    resourceName: scope.resourceName,
+    resourceUid: scope.resourceUid,
+    sandboxId: scope.sandboxId,
+    sessionId: scope.sessionId,
+  };
+}
+
+/** A minimal valid Session message, for the shared journal key space. */
+function sessionMessageFixture(overrides: Partial<SessionMessageDeliveryRequest> = {}): SessionMessageDeliveryRequest {
+  const runtime = cloudDeliveryFixture().runtime;
+  const messageId = overrides.messageId ?? randomUUID();
+  return {
+    type: "session:message:deliver",
+    requestId: messageId,
+    messageId,
+    sourceSessionId: randomUUID(),
+    targetSessionId: randomUUID(),
+    agentId: runtime.agentId,
+    placementGeneration: 1,
+    content: { kind: "text", text: "child task" },
+    runtime,
+    ...overrides,
+  };
 }
 
 /**
@@ -1493,11 +1524,529 @@ describe("CloudTurnRunner", () => {
     await h.runner.close();
   });
 
+  it("carries the signed usage of a completed turn into the durable report", async () => {
+    const h = harness({
+      worker: async () => ({
+        code: 0,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: {
+            executionEffects: "completed",
+            outcome: "completed",
+            usage: { cachedInputTokens: 2, inputTokens: 10, outputTokens: 4 },
+          },
+        })}\n`,
+      }),
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(reportsOf(h.sent)[0]?.report.usage).toEqual({ cachedInputTokens: 2, inputTokens: 10, outputTokens: 4 });
+    await h.runner.close();
+  });
+
+  it("retains a report the Server could not record and retires it on a later ack", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "report");
+    // An ack that carries no matching turn is ignored; nothing durable is retired on a guess.
+    await h.runner.handleReportAck({
+      type: "delivery:report:ack",
+      requestId: randomUUID(),
+      resultHash: reportsOf(h.sent)[0]?.report.resultHash ?? "",
+      status: "recorded",
+      turnId: "another-turn",
+    });
+    expect(await h.journal.list()).toHaveLength(1);
+    // A receipt for an entry with no durable report is ignored as well.
+    const receipt = cloudDeliveryFixture({ sessionId: h.delivery.sessionId });
+    await h.runner.handleDeliveryRun(runFrame(receipt));
+    await h.runner.handleReportAck({
+      type: "delivery:report:ack",
+      requestId: randomUUID(),
+      resultHash: "0".repeat(64),
+      status: "recorded",
+      turnId: (await h.journal.read(receipt.deliveryId))?.turnId ?? "",
+    });
+    expect(await h.journal.list()).toHaveLength(2);
+    await h.runner.close();
+  });
+
+  it("drops a queued delivery whose entry left the received boundary while the drain waited", async () => {
+    const aStarted = deferred<void>();
+    const releaseA = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec("second");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId));
+    gated.arm();
+    releaseA.resolve(completedExec("a"));
+    await gateEntered.promise;
+    // B leaves the received boundary before its own drain looked it up: it must never start.
+    await h.journal.markStarted(b.deliveryId, journalScopeOf(h.scope));
+    gate.resolve();
+    await waitFor(() => h.runner.activeDeliveryId === undefined, "drain to finish");
+    expect(h.workerInputs).toHaveLength(1);
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("drops a queued delivery whose grant belongs to a closed channel generation", async () => {
+    const aStarted = deferred<void>();
+    const releaseA = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec("second");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId));
+    gated.arm();
+    releaseA.resolve(completedExec("a"));
+    await gateEntered.promise;
+    // The connection that minted B's grant closes while the drain is inside its lookup: the
+    // durable entry stays `received` for a fresh verification and B never starts.
+    h.runner.onChannelClosed();
+    gate.resolve();
+    await waitFor(() => h.runner.activeDeliveryId === undefined && h.runner.activeMessageId === undefined, "drain");
+    await waitFor(async () => (await h.journal.read(b.deliveryId))?.phase === "received", "B still received");
+    expect(h.workerInputs).toHaveLength(1);
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("settles a queued delivery denied the model grant while the drain waited", async () => {
+    const aStarted = deferred<void>();
+    const releaseA = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec("second");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({
+      deadlineAt: new Date(Date.now() + 300).toISOString(),
+      sessionId: a.sessionId,
+    });
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId));
+    gated.arm();
+    releaseA.resolve(completedExec("a"));
+    await gateEntered.promise;
+    // The persisted deadline expires while B waits in the drain: admission refuses it before any
+    // sandbox work and the entry settles as a not-started timeout.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    gate.resolve();
+    await waitFor(() => reportsOf(h.sent).some((frame) => frame.report.deliveryId === b.deliveryId), "denied report");
+    expect(reportsOf(h.sent).find((frame) => frame.report.deliveryId === b.deliveryId)?.report).toMatchObject({
+      errorReason: "turn_timeout",
+      executionEffects: "not_started",
+      outcome: "failed",
+    });
+    expect(h.workerInputs).toHaveLength(1);
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("cancels a queued delivery while its own drain is inside the journal lookup", async () => {
+    const aStarted = deferred<void>();
+    const releaseA = deferred<ExecResult>();
+    const gate = deferred<void>();
+    const gateEntered = deferred<void>();
+    const h = harness({
+      worker: async () => {
+        if (h.workerInputs.length === 1) {
+          aStarted.resolve();
+          return releaseA.promise;
+        }
+        return completedExec("second");
+      },
+    });
+    const a = h.delivery;
+    const b = cloudDeliveryFixture({ sessionId: a.sessionId });
+    const gated = gateJournalList(h.journal, gate.promise, () => gateEntered.resolve());
+    await h.runner.handleDeliveryRun(runFrame(a));
+    await h.runner.handleDeliveryRun(runFrame(b));
+    await h.runner.handleVerified(verifiedFrame(a.requestId));
+    await aStarted.promise;
+    await h.runner.handleVerified(verifiedFrame(b.requestId));
+    gated.arm();
+    releaseA.resolve(completedExec("a"));
+    await gateEntered.promise;
+    // The cancel lands after the drain's first check and before its second: B settles durably as
+    // a not-started cancellation and never reaches the worker.
+    h.runner.handleCancel(b.deliveryId);
+    gate.resolve();
+    await waitFor(
+      () => reportsOf(h.sent).some((frame) => frame.report.deliveryId === b.deliveryId),
+      "queued cancellation report",
+    );
+    expect(reportsOf(h.sent).find((frame) => frame.report.deliveryId === b.deliveryId)?.report).toMatchObject({
+      executionEffects: "not_started",
+      outcome: "cancelled",
+    });
+    expect(h.workerInputs).toHaveLength(1);
+    gated.restore();
+    await h.runner.close();
+  });
+
+  it("settles a cancel that landed before the verified frame was processed", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    // The cancel flag is set synchronously, before the verified frame's queued body runs: the
+    // drain head must settle it durably without ever reaching the worker.
+    const verifying = h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    h.runner.handleCancel(h.delivery.deliveryId);
+    await verifying;
+    await waitFor(
+      () => reportsOf(h.sent).some((frame) => frame.report.deliveryId === h.delivery.deliveryId),
+      "queued cancel report",
+    );
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({ executionEffects: "not_started", outcome: "cancelled" });
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("never runs with a grant revoked between the started marker and the execution read", async () => {
+    const h = harness({
+      worker: async () => {
+        throw new Error("a revoked grant must never reach the worker");
+      },
+    });
+    const realMarkStarted = h.journal.markStarted.bind(h.journal);
+    vi.spyOn(h.journal, "markStarted").mockImplementation(async (...args: Parameters<typeof realMarkStarted>) => {
+      const entry = await realMarkStarted(...args);
+      // The connection drops between the durable started marker and the execution read.
+      h.runner.onChannelClosed();
+      return entry;
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(
+      () => reportsOf(h.sent).some((frame) => frame.report.deliveryId === h.delivery.deliveryId),
+      "revoked-grant report",
+    );
+    // No execution effect happened, so the honest settlement is a not-started cancellation.
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({ executionEffects: "not_started", outcome: "cancelled" });
+    expect(h.workerInputs).toHaveLength(0);
+    vi.restoreAllMocks();
+    await h.runner.close();
+  });
+
+  it("runs the in-sandbox worker through the native sandbox seam when no seam is injected", async () => {
+    const execInputs: { args: readonly string[]; stdin: unknown }[] = [];
+    const closeFailed = vi.fn();
+    const h = harness({
+      runnerOptions: {
+        onPersistenceError: closeFailed,
+        openExecution: async () => ({
+          close: async () => {
+            throw new Error("bridge close failed");
+          },
+          executionDir: "/run/opentag-execution/turn-native",
+        }),
+        runWorker: undefined,
+        sandbox: {
+          exec: (_file: string, args: readonly string[], options: { stdin?: unknown }) => {
+            execInputs.push({ args, stdin: options.stdin });
+            return Promise.resolve(completedExec("native"));
+          },
+        },
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "native turn report");
+    expect(execInputs).toHaveLength(1);
+    expect(reportsOf(h.sent)[0]?.report.finalText).toBe("native");
+    // The bridge close failure is surfaced through the existing failure hook.
+    expect(closeFailed.mock.calls.map((call) => String(call[0]))).toEqual([
+      expect.stringContaining("bridge close failed"),
+    ]);
+    await h.runner.close();
+  });
+
+  it("rejects a worker completion that contradicts its own outcome and error", async () => {
+    for (const stdout of [
+      // "completed" with an error is double-signalled and cannot be trusted.
+      `${JSON.stringify({
+        kind: "result",
+        completion: { errorReason: "provider_failed", executionEffects: "completed", outcome: "completed" },
+      })}\n`,
+      // A non-completed outcome without any error reason is equally untrustworthy.
+      `${JSON.stringify({
+        kind: "result",
+        completion: { executionEffects: "may_have_occurred", outcome: "failed" },
+      })}\n`,
+    ]) {
+      const h = harness({ worker: async () => ({ code: 0, stderr: "", stdout }) });
+      await h.runner.handleDeliveryRun(runFrame(h.delivery));
+      await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+      await waitFor(() => reportsOf(h.sent).length === 1, "rejected completion report");
+      expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+        errorReason: "provider_protocol_error",
+        executionEffects: "may_have_occurred",
+        outcome: "unknown",
+      });
+      await h.runner.close();
+    }
+  });
+
+  it("ignores a frame whose channel is already closed instead of failing the parent", async () => {
+    // A dropped control channel is reported by the send seam itself; the runner must log it and
+    // keep its durable boundary intact rather than propagating the transport error.
+    const h = harness({
+      runnerOptions: {
+        send: () => {
+          throw new Error("channel closed");
+        },
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(async () => (await h.journal.read(h.delivery.deliveryId))?.phase === "reported", "durable report");
+    expect(h.workerInputs).toHaveLength(1);
+    await h.runner.close();
+  });
+
+  it("refuses an oversized in-sandbox result without parsing it", async () => {
+    const huge = `${JSON.stringify({
+      kind: "result",
+      completion: { executionEffects: "completed", outcome: "completed", finalText: "y".repeat(300 * 1024) },
+    })}\n`;
+    const h = harness({ worker: async () => ({ code: 0, stderr: "", stdout: `${huge}z`.slice(0, 300 * 1024) }) });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "oversized result report");
+    expect(reportsOf(h.sent)[0]?.report).toMatchObject({
+      errorReason: "output_too_large",
+      executionEffects: "may_have_occurred",
+      outcome: "unknown",
+    });
+    await h.runner.close();
+  });
+
   it("refuses a delivery outside the current Session scope", async () => {
     const h = harness({ scope: { sessionId: randomUUID() } });
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
     expect(h.sent).toHaveLength(0);
     expect(await h.journal.list()).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("refuses a delivery re-dispatch whose journal key belongs to a Session message", async () => {
+    const h = harness();
+    // The journal key space is shared: a delivery id that already names a Session entry is a
+    // visible conflict and must never be acknowledged as a second kind of custody.
+    const message = sessionMessageFixture({ messageId: h.delivery.deliveryId });
+    await h.journal.recordSessionReceived({
+      message,
+      scope: journalScopeOf(h.scope),
+      sessionKind: "internal",
+      requestId: message.requestId,
+      turnId: randomUUID(),
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    expect(h.sent).toHaveLength(0);
+    expect((await h.journal.list())[0]?.kind).toBe("session-message");
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
+  });
+
+  it("refuses a delivery re-dispatch that was journaled under another allocation", async () => {
+    const first = harness();
+    await first.runner.handleDeliveryRun(runFrame(first.delivery));
+    await first.runner.close();
+    // A replacement allocation reopens the same durable directory and re-receives the payload.
+    const replacementSent: RunnerClientFrame[] = [];
+    const replacementJournal = await CloudJournal.open(first.journalDirectory);
+    const replacement = new CloudTurnRunner({
+      credentialChannel: () => {
+        throw new Error("unused");
+      },
+      journal: replacementJournal,
+      openExecution: async () => ({ close: async () => undefined, executionDir: "/run/opentag-execution/turn-x" }),
+      runWorker: async () => completedExec(),
+      sandbox: { exec: () => Promise.reject(new Error("unused native seam")) },
+      scope: () => ({ ...first.scope, environmentGeneration: 2, resourceUid: "replacement-uid" }),
+      send: (frame) => replacementSent.push(frame),
+      serverUrl: "https://server.example.com",
+      stateDirectory: first.journalDirectory,
+    });
+    await replacement.handleDeliveryRun(runFrame(first.delivery));
+    expect(replacementSent).toHaveLength(0);
+    expect(await replacementJournal.list()).toHaveLength(1);
+    await replacement.close();
+  });
+
+  it("ignores a delivery:run that arrives after the runner was closed", async () => {
+    const h = harness();
+    await h.runner.close();
+    // A draining allocation must not acknowledge new work: the Server keeps the unaccepted input.
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    expect(h.sent).toHaveLength(0);
+    expect(await h.journal.list()).toHaveLength(0);
+  });
+
+  it("reports a started entry unknown while releasing and never executes it", async () => {
+    const h = harness();
+    const scope = journalScopeOf(h.scope);
+    await h.journal.recordReceived({
+      delivery: h.delivery,
+      deliveryId: h.delivery.deliveryId,
+      requestId: h.delivery.requestId,
+      scope,
+      turnId: randomUUID(),
+    });
+    await h.journal.markStarted(h.delivery.deliveryId, scope);
+    // Release re-announces the entry repeatedly until its report is acknowledged, so wait for the
+    // durable report rather than for one specific frame count.
+    const draining = h.runner.drainForRelease(2_000);
+    await waitFor(
+      async () => (await h.journal.read(h.delivery.deliveryId))?.phase === "reported",
+      "unknown release report",
+    );
+    const entry = await h.journal.read(h.delivery.deliveryId);
+    if (entry?.kind !== "delivery" || !entry.report) throw new Error("missing durable release report");
+    expect(entry.report).toMatchObject({
+      errorReason: "turn_state_unknown",
+      executionEffects: "may_have_occurred",
+      outcome: "unknown",
+    });
+    await h.runner.handleReportAck({
+      type: "delivery:report:ack",
+      requestId: randomUUID(),
+      resultHash: entry.report.resultHash,
+      status: "recorded",
+      turnId: entry.turnId,
+    });
+    await draining;
+    expect(await h.journal.list()).toEqual([]);
+    expect(h.workerInputs).toHaveLength(0);
+  });
+
+  it("answers a recovery query for an unknown delivery and re-sends a journaled report", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await waitFor(() => reportsOf(h.sent).length === 1, "report");
+    const entry = await h.journal.read(h.delivery.deliveryId);
+    if (entry?.kind !== "delivery") throw new Error("missing delivery journal entry");
+    h.sent.length = 0;
+    // An unknown delivery id is answered "none" from the journal without a scope assertion.
+    await h.runner.handleQuery({
+      type: "delivery:query",
+      deliveryId: randomUUID(),
+      requestId: randomUUID(),
+      turnId: entry.turnId,
+    });
+    // A reported entry is re-sent, and never while its own workspace checkpoint still holds it.
+    await h.runner.handleQuery({
+      type: "delivery:query",
+      deliveryId: entry.deliveryId,
+      requestId: randomUUID(),
+      turnId: entry.turnId,
+    });
+    expect(h.sent.map((frame) => frame.type)).toEqual([
+      "delivery:query:result",
+      "delivery:query:result",
+      "delivery:report",
+    ]);
+    expect(reportsOf(h.sent)[0]?.report.resultHash).toBe(entry.report?.resultHash);
+    await h.runner.close();
+  });
+
+  it("never replays a report that the live turn is still publishing", async () => {
+    const h = harness({ runnerOptions: { checkpoint: async () => undefined } });
+    const recorded = deferred<void>();
+    const release = deferred<void>();
+    const realRecord = h.journal.recordReport.bind(h.journal);
+    vi.spyOn(h.journal, "recordReport").mockImplementation(async (...args: Parameters<typeof realRecord>) => {
+      const entry = await realRecord(...args);
+      recorded.resolve();
+      await release.promise;
+      return entry;
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await recorded.promise;
+    // The durable report exists and the live turn still owns the slot: reconciliation must not
+    // race the turn's own publication with a replay.
+    h.sent.length = 0;
+    await h.runner.reconcile();
+    expect(h.sent).toHaveLength(0);
+    release.resolve();
+    await h.runner.waitForActive();
+    expect(reportsOf(h.sent)).toHaveLength(1);
+    vi.restoreAllMocks();
+    await h.runner.close();
+  });
+
+  it("leaves verified work at the received boundary when the queue is full", async () => {
+    const workerStarted = deferred<void>();
+    const release = deferred<ExecResult>();
+    const h = harness({
+      worker: async () => {
+        workerStarted.resolve();
+        return release.promise;
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await workerStarted.promise;
+    // Fill the bounded Session queue while the single turn slot stays occupied, then verify one
+    // more delivery: it must stay durably `received` and wait for a fresh verification.
+    const queued = Array.from({ length: 64 }, () => cloudDeliveryFixture({ sessionId: h.delivery.sessionId }));
+    for (const delivery of queued) {
+      await h.runner.handleDeliveryRun(runFrame(delivery));
+      await h.runner.handleVerified(verifiedFrame(delivery.requestId));
+    }
+    const overflow = cloudDeliveryFixture({ sessionId: h.delivery.sessionId });
+    await h.runner.handleDeliveryRun(runFrame(overflow));
+    await h.runner.handleVerified(verifiedFrame(overflow.requestId));
+    expect((await h.journal.read(overflow.deliveryId))?.phase).toBe("received");
+    expect(h.workerInputs).toHaveLength(1);
+    release.resolve(cancelledExec());
+    await h.runner.waitForActive();
     await h.runner.close();
   });
 });

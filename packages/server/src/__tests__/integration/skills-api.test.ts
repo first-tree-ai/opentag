@@ -197,6 +197,7 @@ describe("Skill HTTP surfaces", () => {
     expect(bundle.statusCode).toBe(200);
     expect(bundle.headers[SKILL_SHA256_HEADER]).toBe(detail.archiveSha256);
     expect(bundle.headers["cache-control"]).toBe("no-store");
+    expect(bundle.headers["content-disposition"]).toBe('attachment; filename="http-skill.tar.gz"');
     expect(sha256(bundle.rawPayload)).toBe(detail.archiveSha256);
 
     const computerManifest = () =>

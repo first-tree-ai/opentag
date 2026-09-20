@@ -3,10 +3,12 @@ import {
   AGENT_SKILL_BUNDLE_TEMPLATE,
   AGENT_SKILL_TEMPLATE,
   AGENT_SKILLS_TEMPLATE,
+  COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE,
   COMPUTER_AGENT_SKILLS_TEMPLATE,
   ErrorEnvelopeSchema,
   HTTP_PATHS,
   RuntimeSkillManifestSchema,
+  runtimeSkillBundlePath,
   SKILL_ERROR_CODES,
   SKILL_FORMAT_HEADER,
   SKILL_REPLACE_HEADER,
@@ -19,6 +21,7 @@ import type { FastifyRequest } from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { registerComputerSkillRoutes } from "../api/computer-skills.js";
 import { registerRuntimeSkillRoutes } from "../api/runtime-skills.js";
+import { skillBundleDisposition } from "../api/skill-bundle.js";
 import { parseSkillUploadHeaders } from "../api/skill-upload.js";
 import { registerSkillRoutes } from "../api/skills.js";
 import { createApp } from "../app.js";
@@ -121,6 +124,19 @@ const VALID_UPLOAD_HEADERS = {
   "content-length": "3",
   [SKILL_SHA256_HEADER]: SHA,
 };
+
+describe("skillBundleDisposition", () => {
+  it("names the saved file after the Skill", () => {
+    expect(skillBundleDisposition("demo")).toBe('attachment; filename="demo.tar.gz"');
+    expect(skillBundleDisposition("release-notes-2")).toBe('attachment; filename="release-notes-2.tar.gz"');
+  });
+
+  it("falls back for a name outside the contract's character set", () => {
+    for (const hostile of ['evil".tar.gz', "a\r\nx-disposition: inline", "UPPER", "a/b", "?", ""]) {
+      expect(skillBundleDisposition(hostile)).toBe('attachment; filename="skill.tar.gz"');
+    }
+  });
+});
 
 describe("Skill upload header preconditions", () => {
   it("accepts the canonical header set and defaults", () => {
@@ -299,7 +315,7 @@ describe("Skill routes", () => {
     await app.close();
   });
 
-  it("streams a download with no-store, length, and sha headers", async () => {
+  it("streams a download with no-store, length, sha, and filename headers", async () => {
     const app = createApp({});
     registerSkillRoutes(app, fakeService(), userAuth(), {});
     const response = await app.inject({
@@ -311,8 +327,43 @@ describe("Skill routes", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.headers["content-type"]).toBe(SKILL_UPLOAD_CONTENT_TYPE);
     expect(response.headers["content-length"]).toBe("3");
+    expect(response.headers["content-disposition"]).toBe('attachment; filename="demo.tar.gz"');
     expect(response.headers[SKILL_SHA256_HEADER]).toBe(SHA);
     expect(response.body).toBe("abc");
+    await app.close();
+  });
+
+  it("names the saved file on the computer bundle surface too", async () => {
+    const app = createApp({});
+    registerComputerSkillRoutes(
+      app,
+      {
+        verifyMachineToken: async () => ({ computerId: "computer-1", credentialId: "c", installationId: "i" }),
+      } as unknown as ComputerAuthVerifier,
+      fakeService(),
+    );
+    const response = await app.inject({
+      method: "GET",
+      url: COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE.replace(":agentId", AGENT).replace(":skillId", SKILL),
+      headers: { authorization: "Bearer machine-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-disposition"]).toBe('attachment; filename="demo.tar.gz"');
+    await app.close();
+  });
+
+  it("names the saved file on the runtime bundle surface too", async () => {
+    const app = createApp({});
+    registerRuntimeSkillRoutes(app, fakeService(), {
+      authenticate: async () => ({ agentId: AGENT, computerId: "computer-1" }),
+    } as unknown as Pick<SessionCliProofService, "authenticate">);
+    const response = await app.inject({
+      method: "GET",
+      url: runtimeSkillBundlePath("demo"),
+      headers: { "x-opentag-session-cli-proof": "proof" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-disposition"]).toBe('attachment; filename="demo.tar.gz"');
     await app.close();
   });
 

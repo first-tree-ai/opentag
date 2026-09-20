@@ -122,11 +122,16 @@ Agent Skills 以「每个 Skill 一个 `tar.gz` 对象」的形式存放在兼�
 | `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | 该 access key 对应的 secret，永远不会写入日志 |
 | `OPENTAG_SKILL_STORAGE_PREFIX` | 可选的对象键前缀，默认 `skills` |
 | `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | 可选，默认 `true`，MinIO 以及多个其他服务要求开启 |
+| `OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` | 可选，清理孤儿 Skill 对象的间隔秒数，默认 `3600`，设为 `0` 可关闭清理 |
+| `OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` | 可选，对象可被清理前的最小存活秒数，默认 `86400`，下限 `300` |
 
 bundle 始终以调用方自己的凭据（Account session、Computer machine token 或 Session CLI proof）经服务器中转，
 因此 bucket 无需 presigned URL 或公开访问，可以完全私有。对象键由服务器根据 Account、Agent、Skill 与内容哈希推导，
 调用方无法指定路径。`docker-compose.yml` 会启动本地 MinIO，并通过一次性 init 容器创建 `opentag-skills` bucket；
 `.env.example` 中被注释的配置块已指向该服务。
+
+替换 Skill 时会写入新对象并保留旧对象，由后台清理器回收那些超过宽限期、且没有任何 Skill 行引用的对象。清理器
+不会触碰键不是 Skill 对象键的对象，因此可以与其他前缀共用同一个 bucket。两个 `GC_` 变量仅在配置了存储组时才有意义。
 
 ## 官网登录状态提示
 

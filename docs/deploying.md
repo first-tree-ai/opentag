@@ -131,6 +131,8 @@ or not at all; the server refuses to start on a partially configured group.
 | `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | Secret for that access key; never logged |
 | `OPENTAG_SKILL_STORAGE_PREFIX` | Optional object-key prefix; defaults to `skills` |
 | `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | Optional; defaults to `true`, which MinIO and several other services require |
+| `OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` | Optional collection interval for orphaned Skill objects; defaults to `3600`, and `0` disables collection |
+| `OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` | Optional minimum object age before collection; defaults to `86400` with a floor of `300` |
 
 Bundles stream through the server under the caller's own credential — the Account session, a Computer
 machine token, or a Session CLI proof — so the bucket never needs presigned or public URLs and can be
@@ -138,6 +140,12 @@ fully private. Object keys are derived server-side from the Account, Agent, Skil
 a caller never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
 container that creates the `opentag-skills` bucket, and the commented block in `.env.example` points
 the server at it.
+
+Replacing a Skill writes a new object and leaves the previous one in place; a background collector
+sweeps objects that are older than the grace period and are not referenced by any Skill row. The
+collector never touches an object whose key is not a Skill object key, so it is safe to share the
+bucket with other prefixes. The two `GC_` values are only meaningful when the storage group is
+configured.
 
 ## Official website session indicator
 

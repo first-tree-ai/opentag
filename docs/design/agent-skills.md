@@ -1,17 +1,16 @@
 # Agent Skills
 
-> **Status: only the shared contract is delivered at this commit.**
+> **Status: the shared contract is the source of truth; the lanes build against it.**
 >
-> This commit delivers the `@opentag/shared` runtime schemas, constants, HTTP path templates, the
-> manifest parser, and this document — the contract layer. The Server, Client/CLI and Web lanes are
-> planned and not implemented here.
+> The `@opentag/shared` runtime schemas, constants, HTTP path templates, the manifest parser, and this
+> document are delivered in `packages/shared/src/skill.ts`, `packages/shared/src/skill-manifest.ts`,
+> and their tests. The Server lane delivers the `agent_skills` table and its migration, the
+> `SkillObjectStore` and its S3 adapter, the three HTTP surfaces, and the deferred orphan-object
+> collector. The Web lane delivers the Skills page. The Client/CLI lane delivers `opentag skill push`
+> and runtime materialization on a Computer.
 >
-> Delivered now: `packages/shared/src/skill.ts`, the Agent Skill entries in
-> `packages/shared/src/http-paths.ts`, their public exports, and unit tests.
->
-> Not yet delivered: the `agent_skills` table and its migration, the `SkillObjectStore` and its S3
-> adapter, the three HTTP route surfaces, CLI `skill` commands, Web UI, and runtime materialization
-> on a Computer. Nothing in this repository serves or consumes a Skill yet.
+> Where this document and the shipped contract differ, the contract wins; a change to it is a change
+> to this design.
 
 ## What this feature is for
 
@@ -92,9 +91,11 @@ the Server copies into the row.
 ## Object storage
 
 **Skills are stored in S3-compatible object storage behind a `SkillObjectStore` interface**
-(`put`/`get`/`head`/`delete`), with an S3 adapter built on `aws4fetch` and an in-memory fake for
+(`put`/`get`/`head`/`delete`/`list`), with an S3 adapter built on `aws4fetch` and an in-memory fake for
 tests — the same interface/adapter/fake shape as `WorkspaceObjectStore` in
-`packages/server/src/services/sandboxes/workspace-object-store.ts`.
+`packages/server/src/services/sandboxes/workspace-object-store.ts`. `list` is a bounded
+`ListObjectsV2` page (`prefix`, optional `cursor`/`limit`) used only by the object collector; the S3
+adapter parses its XML with a small extractor rather than an XML dependency.
 
 `aws4fetch` is chosen over the AWS SDK v3 because it is SigV4 over `fetch` with zero transitive
 dependencies and no default-checksum behaviour, which several S3-compatible services reject. The
@@ -106,10 +107,36 @@ adapter supports path-style addressing for services that require it.
 <prefix>/accounts/<accountId>/agents/<agentId>/skills/<skillId>/<sha256>.tar.gz
 ```
 
-Keying by content hash makes a replace safe without a lock: write the new key, update the row, then
-best-effort delete the old key. A reader either sees the old row with the old key or the new row with
-the new key; it never sees a torn object, and an orphaned object left by a failed delete is harmless
-and can be swept later.
+Keying by content hash makes a replace safe without a lock: write the new key, update the row, and
+leave the previous object in place. A reader either sees the old row with the old key or the new row
+with the new key; it never sees a torn object.
+
+## Orphan-object collection
+
+**A replace never deletes the object it replaced.** Deleting it inline would be check-then-act: the
+"is the old key still the row's key?" read and the delete are two steps, and a later replace can make
+that old key current again in between, after which the delete would strand the row on a missing
+object. So the previous object is left as an orphan and `SkillObjectGc` sweeps it later.
+
+`SkillObjectGc` is a timer-driven worker — no overlapping runs, `unref`'d, errors logged and never
+thrown — that pages through `list(<prefix>/)` and deletes an object only when **all three** hold:
+
+- its key parses as a Skill object key (`…/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz`),
+  so anything else that shares the bucket is never touched;
+- it is older than the grace period (`OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS`, default one day), so a
+  just-written object is never swept;
+- **no `agent_skills.object_key` references it.** References are checked in batches, then the single
+  key is re-checked immediately before its delete, because a row can appear between the two.
+
+Deletes are capped per run (`maxDeletesPerRun`, default 500); a failed delete is logged and left for
+the next pass. Logging is one `info` summary per run (scanned, deleted, skipped-young,
+skipped-referenced, duration), `debug` per delete, and `warn` on a failed delete.
+
+**The residual window is now only between the PUT and the row commit.** `ensureObjectPresent` re-checks
+the row's object after the row write and restores it from the in-memory archive if it vanished, but
+with collection deferred to a grace period a freshly written object is never a GC candidate, so the
+window is narrow in practice. `remove()` still deletes its object inline: a user who deletes a Skill
+expects its bytes gone immediately, and no row can reference a key under that Skill's id afterwards.
 
 ## Upload transport
 
@@ -160,7 +187,13 @@ OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID
 OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY
 OPENTAG_SKILL_STORAGE_PREFIX
 OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE
+OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS
+OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS
 ```
+
+The two `GC_` values are only meaningful when storage is enabled:
+`OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` defaults to one hour and `0` disables the collector,
+`OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` defaults to one day with a floor of 300 seconds.
 
 Routes are always registered, because a self-hosted deployment without object storage should still
 be able to manage Skills. Without storage, listing still works and reports `storage: "unavailable"`;
@@ -253,6 +286,7 @@ the Client package.
 | --- | --- | --- | --- |
 | `NOT_FOUND` | `SKILL_NOT_FOUND` | deterministic | 404 |
 | `NAME_CONFLICT` | `SKILL_NAME_CONFLICT` | deterministic | 409 |
+| `REVISION_CONFLICT` | `SKILL_REVISION_CONFLICT` | deterministic | 409 |
 | `LIMIT_REACHED` | `SKILL_LIMIT_REACHED` | deterministic | 409 |
 | `NAME_RESERVED` | `SKILL_NAME_RESERVED` | validation | 400 |
 | `MANIFEST_INVALID` | `SKILL_MANIFEST_INVALID` | validation | 400 |
@@ -274,13 +308,24 @@ Unit tests in `packages/shared/src/__tests__/skill.test.ts` (no network, no data
 | Manifest parser | Plain (including multi-line, folded like `>`) and single-/double-quoted (including doubled quotes and escapes) scalars, with a quoted scalar starting on the key line or a continuation line and spanning lines; folded `>` and literal `|` block scalars; `-`/`+` chomping; paragraph breaks; CRLF endings; unknown top-level keys ignored with nested maps and block sequences; block-scalar descriptions trimmed of leading and trailing whitespace; a `|` block containing `- item` or `key: value` lines is still a string |
 | Manifest rejection | Missing frontmatter, unterminated frontmatter, an indented line with no preceding key, missing `name` or `description`, a duplicate `name`/`description`, an inline comment on a plain value, a structurally collection-valued `name`/`description` (every plain-scalar start indicator, block sequence/mapping, explicit `? key`/`: value`, flow list/map on the key line or a continuation line, a mapping key after a quote), a plain value containing `: ` or ending in `:`, a plain value that YAML resolves to null/boolean/number/date, invalid name, over-long, empty or whitespace-only description, and input past `SKILL_MANIFEST_MAX_BYTES`, each with a specific reason; malformed input never throws |
 | Resource schemas | Round trips for `SkillSchema`, `SkillDetailSchema`, `ListAgentSkillsResponseSchema`, `RuntimeSkillManifestSchema` and `SkillInstallMarkerSchema`; rejection of a bad sha, `revision: 0`, an over-limit archive, an over-limit runtime list, and unknown keys |
-| Error codes | Every code has metadata, every metadata key is a known code, and each status/category matches the table |
+| Error codes | Every code has metadata, every metadata key is a known code, and each status/category matches the table; a `SKILL_REVISION_CONFLICT` failure round-trips through the shared error envelope |
 | HTTP paths | Each builder produces the expected string and percent-encodes arguments containing spaces and slashes |
 
 `packages/shared/src/__tests__/public-exports.test.ts` additionally asserts that every new symbol is
 part of the public `@opentag/shared` export surface via the checked-in snapshot.
 
-Server, Client/CLI and Web tests do not exist yet because those lanes are not implemented. When they
-land, the verification they owe is an end-to-end path: upload a Skill through each of the three
-surfaces, and observe a Local Computer materialize it into the provider's skill directory at runtime
+The Server and Web lanes add the coverage those layers owe:
+
+| Suite | What is asserted |
+| --- | --- |
+| `packages/server/src/__tests__/skill-service.test.ts` | Ownership isolation, CRUD and limits, the three surfaces' views, storage degradation, and that a replace leaves the previous object for the GC rather than deleting it inline |
+| `packages/server/src/__tests__/skill-service-concurrency.test.ts` | The "a committed row never points at a deleted object" invariant across racing writers and store failures, including the post-commit restore |
+| `packages/server/src/__tests__/skills-route.test.ts` | Auth on all three surfaces, the Skill error envelope (including `SKILL_REVISION_CONFLICT`), upload preconditions, and `content-disposition` on the account, computer, and runtime bundle responses plus the fallback for a hostile name |
+| `packages/server/src/__tests__/s3-skill-object-store.test.ts` | Signing, path-/virtual-hosted URLs, status mapping, secret redaction, and the `list` request shape, XML parsing (including an escaped key), continuation, and malformed/invalid responses |
+| `packages/server/src/__tests__/skill-object-gc.test.ts` | Deleting an old orphan, keeping a young or referenced object, keeping a key that becomes referenced between listing and deletion, ignoring non-Skill keys, pagination, the per-run cap, a failed delete continuing the run, and the replace→collect round trip |
+| `packages/server/src/__tests__/integration/skills-api.test.ts` | The account lifecycle and Computer manifest over real HTTP and PostgreSQL, with the bundle headers |
+| `apps/web/src/features/skills/*.test.ts(x)` | The error-code map is exhaustive over the contract, an upload/toggle revision conflict reports the new sentence without opening the Replace dialog, and every other page rule |
+
+The remaining end-to-end path is owned by the Client lane: upload a Skill through each of the three
+surfaces and observe a Local Computer materialize it into the provider's skill directory at runtime
 start.

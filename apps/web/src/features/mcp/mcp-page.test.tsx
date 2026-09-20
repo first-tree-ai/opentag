@@ -1191,6 +1191,34 @@ describe("McpPage edit dialog", () => {
     expect(update.mock.calls[0]?.[2]).toEqual({ extraHeaders: {} });
   });
 
+  it("sorts two headers the other way round as freely as the first, so order never matters", async () => {
+    // x-b vs x-a and x-a vs x-b are the two halves of the comparator; both must be a no-op.
+    const headers = entry({
+      effective: {
+        url: "https://mcp.linear.app/sse",
+        authHeader: "authorization",
+        authScheme: "Bearer",
+        extraHeaders: { "x-b": "2", "x-a": "1" },
+      },
+    });
+    stub([headers], detail(1));
+    const update = vi.spyOn(browserApi, "updateAgentMcpServer").mockResolvedValue(headers);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    // Rewriting the rows in the effective order is still the same set, so nothing is sent.
+    const names = screen.getAllByLabelText("Header name") as HTMLInputElement[];
+    const values = screen.getAllByLabelText("Header value") as HTMLInputElement[];
+    fireEvent.change(names[0] as HTMLInputElement, { target: { value: "x-a" } });
+    fireEvent.change(values[0] as HTMLInputElement, { target: { value: "1" } });
+    fireEvent.change(names[1] as HTMLInputElement, { target: { value: "x-b" } });
+    fireEvent.change(values[1] as HTMLInputElement, { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update.mock.calls[0]?.[2]).toEqual({});
+  });
+
   it("treats reordering the headers as no change, because a header set has no order", async () => {
     const twoHeaders = entry({
       effective: {
@@ -1268,6 +1296,57 @@ describe("McpPage edit dialog", () => {
     expect(await screen.findByText("Couldn’t save these settings. Try again.")).toBeTruthy();
   });
 
+  it("falls back to revision 1 and an empty impact when the definition cannot be read", async () => {
+    stub([entry()], detail(1));
+    vi.mocked(browserApi.mcpServer).mockRejectedValue(new ApiError(500, "The definition is unavailable"));
+    const update = vi.spyOn(browserApi, "updateMcpServer").mockResolvedValue(detail(1).server);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    await chooseOption("Scope", "Shared definition");
+
+    // With no definition to read there is no impact to warn about, and no revision to fence on.
+    expect(await screen.findByText(/This will affect 0 Agents/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update.mock.calls[0]?.[1]).toMatchObject({ expectedRevision: 1 });
+  });
+
+  it("counts a missing tool total as none rather than showing a blank", async () => {
+    stub([
+      entry({
+        authorization: {
+          ...(entry().authorization as NonNullable<MCPAgentServer["authorization"]>),
+          probeState: "succeeded",
+          toolsCount: null,
+        },
+      }),
+    ]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText("Found 0 tools")).toBeTruthy();
+  });
+
+  it("says the effective headers are none when the Server has none", async () => {
+    stub(
+      [
+        entry({
+          effective: {
+            url: "https://mcp.linear.app/sse",
+            authHeader: "authorization",
+            authScheme: "Bearer",
+            extraHeaders: {},
+          },
+        }),
+      ],
+      detail(1),
+    );
+    wrap(<McpPage agentId={AGENT_ID} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    expect(await screen.findByText("Effective: -")).toBeTruthy();
+  });
+
   it("uses the bounded edit sentence when a shared-scope save fails without an API error", async () => {
     stub([entry()], detail(1));
     vi.spyOn(browserApi, "updateMcpServer").mockRejectedValue(new Error("offline"));
@@ -1308,6 +1387,21 @@ describe("McpPage remove dialog", () => {
 
     await waitFor(() => expect(remove).toHaveBeenCalledWith(SERVER_ID));
     expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
+  });
+
+  it("removes only this Agent's mount when the user leaves the default choice", async () => {
+    stub([entry()], detail(1));
+    const detach = vi.spyOn(browserApi, "detachMcpServer").mockResolvedValue(undefined);
+    const remove = vi.spyOn(browserApi, "removeMcpServer").mockResolvedValue(undefined);
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+    // "Remove from this Agent only" is the default, so confirming without changing it is the path
+    // that must leave the shared definition alone.
+    fireEvent.click(await screen.findByRole("button", { name: "Remove from this Agent" }));
+
+    await waitFor(() => expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID));
+    expect(remove).not.toHaveBeenCalled();
   });
 
   it("describes removal from this Agent only as reversible", async () => {

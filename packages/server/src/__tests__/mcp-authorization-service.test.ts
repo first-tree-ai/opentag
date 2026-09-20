@@ -77,7 +77,7 @@ async function seed(definition: Partial<typeof mcpServers.$inferInsert> = {}): P
   });
   const [server] = await unit.database
     .insert(mcpServers)
-    .values({ accountId, name: `docs-${agentId.slice(0, 8)}`, ...DEFINITION, ...definition })
+    .values({ ...DEFINITION, ...definition, accountId, name: definition.name ?? `docs-${randomUUID().slice(0, 8)}` })
     .returning();
   await unit.database.insert(agentMcpServers).values({ agentId, mcpServerId: server?.id as string });
   return { accountId, agentId, mcpServerId: server?.id as string };
@@ -322,7 +322,8 @@ describe("McpAuthorizationService.resolveActiveCredential", () => {
     const resolved = await authorization.resolveActiveCredential(ids.accountId, ids.agentId, ids.mcpServerId);
     expect(resolved?.credential).toEqual({ accessToken: "at_1", refreshToken: "rt_1" });
     expect(resolved?.binding.agentId).toBe(ids.agentId);
-    expect(resolved?.server.id).toBe(ids.mcpServerId);
+    // The resolved Server is the definition row, and the binding is the Agent's own mount.
+    expect(resolved?.binding.mcpServerId).toBe(ids.mcpServerId);
     expect(resolved?.authorization.status).toBe("active");
   });
 });
@@ -611,6 +612,25 @@ describe("McpAuthorizationService.probe", () => {
     expect(row).toMatchObject({ probeState: "failed", tools: null, toolsCount: null });
   });
 
+  it("treats a row detached during the probe as no snapshot to measure", async () => {
+    /*
+     * The probe holds an upstream round trip, and a detach deletes the authorization row while it is
+     * in flight. The budget query then finds no row for the pair, which is not a refusal: the write
+     * below is fenced and matches nothing anyway.
+     */
+    const ids = await seed();
+    const { authorization, probe, servers } = build();
+    await authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, { kind: "none" });
+    probe.probe.mockImplementation(async () => {
+      await servers.detachServer(ids.accountId, ids.agentId, ids.mcpServerId);
+      return probeSuccess();
+    });
+    const outcome = await authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId);
+    // The probe still reports what the Server answered; there was simply nowhere left to store it.
+    expect(outcome.probeState).toBe("succeeded");
+    expect(await unit.database.select().from(mcpServerAuthorizations)).toEqual([]);
+  });
+
   it("measures the Account's total without double-counting this row's current snapshot", async () => {
     /*
      * The probe replaces this row's contribution rather than adding to it, so a row already holding a
@@ -626,6 +646,25 @@ describe("McpAuthorizationService.probe", () => {
     expect((await authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId)).probeState).toBe("succeeded");
     // Re-probing the same row with the same snapshot is not an increase, so it still fits.
     expect((await authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId)).probeState).toBe("succeeded");
+  });
+});
+
+describe("McpAuthorizationService clock default", () => {
+  it("works without an injected clock", async () => {
+    // Production never supplies one, so the default has to be a working `now`.
+    const ids = await seed();
+    const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+    const servers = new McpServerService({ database: unit.database });
+    const probe = { probe: vi.fn(async () => probeSuccess()) };
+    const authorization = new McpAuthorizationService({
+      database: unit.database,
+      cipher,
+      probe: probe as unknown as McpProbe,
+      servers,
+    });
+    await authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, { kind: "none" });
+    await authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId);
+    expect((await readRow(ids))?.probedAt).toBeInstanceOf(Date);
   });
 });
 

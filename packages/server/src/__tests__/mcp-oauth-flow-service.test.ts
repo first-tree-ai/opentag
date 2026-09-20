@@ -150,7 +150,12 @@ async function seed(url = MCP_URL): Promise<Seeded> {
   });
   const [server] = await unit.database
     .insert(mcpServers)
-    .values({ accountId, name: `docs-${agentId.slice(0, 8)}`, url, defaultAuthKind: "oauth" })
+    .values({
+      accountId,
+      name: `docs-${randomUUID().slice(0, 8)}-${randomUUID().slice(0, 8)}`,
+      url,
+      defaultAuthKind: "oauth",
+    })
     .returning();
   await unit.database.insert(agentMcpServers).values({ agentId, mcpServerId: server?.id as string });
   return { accountId, agentId, mcpServerId: server?.id as string };
@@ -261,6 +266,70 @@ describe("McpOAuthFlowService.start", () => {
     // CIMD is derived from the deployment, so there is no row to remember.
     expect(await unit.database.select().from(mcpClientRegistrations)).toEqual([]);
     expect((await readAuthorization(ids))?.clientRegistrationId).toBeNull();
+  });
+
+  it("reads a pre-registered client's sealed secret and hands it back", async () => {
+    /*
+     * A deployment's own client is the one a `preregistered` row carries, and its secret is sealed
+     * under the registration AAD rather than stored in the clear.
+     */
+    const ids = await seed();
+    const { cipher, flows } = build(discoverableAs());
+    const sealed = cipher.encryptClientSecret({ accountId: ids.accountId, authorizationServer: ISSUER }, "cs-prereg");
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId: ids.accountId,
+      authorizationServer: ISSUER,
+      source: "preregistered",
+      clientId: "deployment-client",
+      ciphertext: sealed.ciphertext,
+      keyId: sealed.keyId,
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("deployment-client");
+    const row = await readAuthorization(ids);
+    // It is the pre-registered row the flow names, not a new DCR one.
+    const [registration] = await unit.database
+      .select()
+      .from(mcpClientRegistrations)
+      .where(eq(mcpClientRegistrations.accountId, ids.accountId));
+    expect(row?.clientRegistrationId).toBe(registration?.id as string);
+    expect(registration?.source).toBe("preregistered");
+    expect(await unit.database.select().from(mcpClientRegistrations)).toHaveLength(1);
+  });
+
+  it("reuses a recorded registration that carries no secret", async () => {
+    /*
+     * A public DCR client has a client id and nothing else; the token request then names it in the
+     * body rather than authenticating with it.
+     */
+    const ids = await seed();
+    const { flows } = build({ ...discoverableAs(), [TOKEN_URL]: doc({ access_token: "at_1" }) });
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId: ids.accountId,
+      authorizationServer: ISSUER,
+      source: "dcr",
+      clientId: "dcr_public",
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    expect(new URL(started.authorizationUrl).searchParams.get("client_id")).toBe("dcr_public");
+    // The recorded row is reused rather than a second one being registered.
+    expect(await unit.database.select().from(mcpClientRegistrations)).toHaveLength(1);
+    await flows.callback({ code: "code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+    expect((await readAuthorization(ids))?.status).toBe("active");
+  });
+
+  it("stores no secret when the authorization server issues a public client", async () => {
+    const ids = await seed();
+    const { flows } = build({
+      ...discoverableAs(),
+      [REGISTER_URL]: doc({ client_id: "dcr_public" }),
+    });
+    await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    const [registration] = await unit.database
+      .select()
+      .from(mcpClientRegistrations)
+      .where(eq(mcpClientRegistrations.accountId, ids.accountId));
+    expect(registration).toMatchObject({ clientId: "dcr_public", ciphertext: null, keyId: null });
   });
 
   it("registers dynamically once and reuses the recorded client on the next start", async () => {
@@ -442,6 +511,40 @@ describe("McpOAuthFlowService.callback", () => {
     expect(row?.state).toBeNull();
     expect(row?.pkceCiphertext).toBeNull();
     expect(row?.loginSessionHash).toBeNull();
+  });
+
+  it("falls through to the next issuer when a stored client secret cannot be opened", async () => {
+    /*
+     * The catch treats every failure the same way, including one that is not an `McpServiceError`:
+     * a pre-registered secret sealed under a key ring this deployment does not hold is a discovery
+     * failure for this candidate, not an abort.
+     */
+    const ids = await seed();
+    const foreign = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(9)));
+    const sealed = foreign.encryptClientSecret({ accountId: ids.accountId, authorizationServer: ISSUER }, "cs_1");
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId: ids.accountId,
+      authorizationServer: ISSUER,
+      source: "preregistered",
+      clientId: "deployment-client",
+      ciphertext: sealed.ciphertext,
+      keyId: sealed.keyId,
+    });
+    const second = "https://second.example.com";
+    const { flows } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: [ISSUER, second] }),
+      [AS_URL]: asMetadata(),
+      [`${second}/.well-known/oauth-authorization-server`]: doc({
+        issuer: second,
+        authorization_endpoint: `${second}/authorize`,
+        token_endpoint: `${second}/token`,
+        client_id_metadata_document_supported: true,
+      }),
+    });
+    const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+    // The candidate with the unreadable secret failed; the next one completed.
+    expect(new URL(started.authorizationUrl).origin).toBe(second);
+    expect((await readAuthorization(ids))?.authorizationServer).toBe(second);
   });
 
   it("records a denial as terminal rather than leaving the row pending", async () => {
@@ -840,6 +943,42 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     expect(after).toMatchObject({ refreshClaimId: null, refreshClaimedAt: null, status: "active" });
   });
 
+  it("releases the claim when the stored envelope is empty rather than unreadable", async () => {
+    /*
+     * The pair check is a null check, so an empty string in either column passes it — and the
+     * truthiness test here is what refuses it before an attempt to decrypt. Both spellings are
+     * exercised because the column that is empty decides which half of the guard fires, and each
+     * spelling gets its own seeded pair so neither has to reset the shared database mid-test.
+     */
+    const spellings = [
+      { ciphertext: "", keyId: "default" },
+      { ciphertext: "v2.default.x.y.z", keyId: "" },
+    ] as const;
+    for (const spelling of spellings) {
+      const ids = await seed();
+      const [row] = await unit.database
+        .insert(mcpServerAuthorizations)
+        .values({
+          agentId: ids.agentId,
+          mcpServerId: ids.mcpServerId,
+          kind: "oauth",
+          status: "active",
+          authorizationServer: ISSUER,
+          probeState: "pending",
+          ...spelling,
+        })
+        .returning();
+      const { calls, flows } = build(discoverableAs());
+      await expect(flows.refreshAuthorization(row?.id as string)).resolves.toBeUndefined();
+      expect(calls, JSON.stringify(spelling)).toEqual([]);
+      expect(await readAuthorization(ids)).toMatchObject({
+        refreshClaimId: null,
+        refreshClaimedAt: null,
+        status: "active",
+      });
+    }
+  });
+
   it("marks the row expired when the credential carries no refresh token", async () => {
     const ids = await seed();
     const { row } = await authorizedRow(ids, { accessToken: "at" });
@@ -915,7 +1054,6 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
 
   it("revokes the credential on the two terminal upstream errors", async () => {
     for (const upstreamError of ["invalid_grant", "invalid_client"]) {
-      await unit.reset();
       const ids = await seed();
       const { row } = await authorizedRow(ids, { accessToken: "at_1", refreshToken: "rt_1" });
       await unit.database.insert(mcpClientRegistrations).values({
@@ -983,6 +1121,34 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     expect(await readAuthorization(ids)).toMatchObject({
       status: "error",
       failureCode: MCP_ERROR_CODES.UPSTREAM_ERROR,
+      ciphertext: row?.ciphertext,
+    });
+  });
+
+  it("classifies a failure that is not a service error as an unknown outcome", async () => {
+    /*
+     * The client resolution throws a plain `Error` when the recorded secret cannot be authenticated.
+     * That is not a `McpServiceError`, so the row keeps its token and asks a human rather than
+     * retrying: the refresh token was never sent, and discarding it would strand the user.
+     */
+    const ids = await seed();
+    const { row } = await authorizedRow(ids, { accessToken: "at_1", refreshToken: "rt_1" });
+    const foreign = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(9)));
+    const sealed = foreign.encryptClientSecret({ accountId: ids.accountId, authorizationServer: ISSUER }, "cs_1");
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId: ids.accountId,
+      authorizationServer: ISSUER,
+      source: "preregistered",
+      clientId: "deployment-client",
+      ciphertext: sealed.ciphertext,
+      keyId: sealed.keyId,
+    });
+    const { calls, flows } = build(discoverableAs());
+    await flows.refreshAuthorization(row?.id as string);
+    expect(calls.filter((call) => call.url === TOKEN_URL)).toEqual([]);
+    expect(await readAuthorization(ids)).toMatchObject({
+      status: "error",
+      failureCode: MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN,
       ciphertext: row?.ciphertext,
     });
   });

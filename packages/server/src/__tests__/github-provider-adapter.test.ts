@@ -1228,14 +1228,14 @@ describe("production GitHub provider adapter response sanitizing", () => {
   });
 
   it("treats a non-string new base as an absent base on a GraphQL update", async () => {
-    // The mutation input schema is key-checked, not value-typed; a non-string baseRefName must be
+    // The mutation input schema is key-checked, not value-typed, so a non-string baseRefName must be
     // read as "no new base" rather than stringified into a ref assertion.
     await adapter.handle(request("/repos/owner/repository"), authorization);
-    const read = adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
+    await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
     const original = upstream.getMockImplementation();
     upstream.mockImplementation(async (...args) => {
       const path = new URL(String(args[0])).pathname;
-      if (path === "/graphql" && String((args[1] as RequestInit).body).includes("mutation")) {
+      if (path === "/graphql") {
         writeCount++;
         return Response.json({
           data: {
@@ -1247,7 +1247,6 @@ describe("production GitHub provider adapter response sanitizing", () => {
       }
       return (original as typeof fetch)(...args);
     });
-    await read;
     const body = {
       query:
         "mutation($id:ID!,$base:String){updatePullRequest(input:{pullRequestId:$id,baseRefName:$base}){pullRequest{id number headRefName baseRefName}}}",
@@ -1257,6 +1256,20 @@ describe("production GitHub provider adapter response sanitizing", () => {
       status: 200,
     });
     expect(writeCount).toBe(1);
+  });
+
+  it("re-asserts a string new base against the ref policy on a GraphQL update", async () => {
+    await adapter.handle(request("/repos/owner/repository"), authorization);
+    await adapter.handle(request("/repos/owner/repository/pulls/1"), authorization);
+    const body = {
+      query:
+        'mutation($id:ID!){updatePullRequest(input:{pullRequestId:$id,baseRefName:"master"}){pullRequest{id number headRefName baseRefName}}}',
+      variables: { id: "PR_one" },
+    };
+    await expect(adapter.handle(request("/graphql", "POST", body), authorization)).rejects.toMatchObject({
+      code: "scope_denied",
+    });
+    expect(writeCount).toBe(0);
   });
 
   it("ignores scalar and null entries in a read response when recording node identities", async () => {

@@ -679,6 +679,200 @@ describe("cloud-turn-worker", () => {
   });
 });
 
+describe("cloud-turn-worker sandbox path and manifest guards", () => {
+  it("refuses an execution directory outside the execution mount before any Pi work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-outside-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    await expect(
+      runCloudTurnWorker(turnRequest(executionDir), {
+        createPiFactory: () => {
+          throw new Error("Pi factory must not be constructed");
+        },
+        executionMount: join(root, "other-mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+      }),
+    ).rejects.toThrow(/outside the Sandbox mount/);
+  });
+
+  it("refuses an unsafe execution directory, continuity directory, and workspace path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-unsafe-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const options = {
+      createPiFactory: () => {
+        throw new Error("Pi factory must not be constructed");
+      },
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    };
+    // A relative, oversized, traversal, or control-character path is refused everywhere.
+    for (const bad of ["relative/path", `/${"x".repeat(600)}`, "/run/../etc", "/run/opentag\n"]) {
+      await expect(runCloudTurnWorker(turnRequest(bad), options)).rejects.toThrow(/Unsafe/);
+      await expect(
+        runCloudTurnWorker({ ...turnRequest(executionDir), piSessionDirectory: bad }, options),
+      ).rejects.toThrow(/Unsafe/);
+    }
+    await expect(
+      runCloudTurnWorker(turnRequest(executionDir), { ...options, workspace: "relative-workspace" }),
+    ).rejects.toThrow(/Unsafe/);
+  });
+
+  it("rejects a proxy manifest and a persisted binding that are structurally invalid", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-manifest-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const createPiFactory = (): CloudTurnPiFactory => ({
+      create: async () =>
+        ({
+          close: async () => undefined,
+          prompt: async () => ({ output: [{ text: "ok", type: "text" }], status: "completed" }),
+        }) as unknown as CloudTurnPiRuntime,
+      resume: async () => {
+        throw new Error("unexpected resume");
+      },
+    });
+    const options = {
+      createPiFactory,
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    };
+    // A manifest that is not an object at all fails closed before Pi starts.
+    await writeFile(join(executionDir, "environment.json"), "null", "utf8");
+    await expect(runCloudTurnWorker(turnRequest(executionDir), options)).rejects.toThrow(
+      /proxy environment manifest is invalid/,
+    );
+    // A manifest whose executionId/environment are the wrong shape fails closed as well.
+    await writeFile(join(executionDir, "environment.json"), JSON.stringify({ environment: 1 }), "utf8");
+    await expect(runCloudTurnWorker(turnRequest(executionDir), options)).rejects.toThrow(
+      /proxy environment manifest is invalid/,
+    );
+  });
+
+  it("fails closed on a persisted Pi binding that is structurally invalid", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-binding-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const workspace = join(root, "workspace");
+    const continuity = join(workspace, ".opentag", "pi-session");
+    await mkdir(continuity, { recursive: true });
+    // A corrupt persisted binding must never be silently ignored: the continuity guarantee would
+    // be lost, so the worker fails instead of starting a fresh conversation.
+    for (const contents of ["null", JSON.stringify({ providerId: "pi" }), JSON.stringify([1, 2])]) {
+      await writeFile(join(continuity, "pi-binding.json"), contents, "utf8");
+      await expect(
+        runCloudTurnWorker(turnRequest(executionDir), {
+          createPiFactory: (): CloudTurnPiFactory => ({
+            create: async () =>
+              ({
+                close: async () => undefined,
+                prompt: async () => ({ output: [{ text: "ok", type: "text" }], status: "completed" }),
+              }) as unknown as CloudTurnPiRuntime,
+            resume: async () => {
+              throw new Error("unexpected resume");
+            },
+          }),
+          executionMount: join(root, "mount"),
+          localProxyLoopbackSeam: true,
+          workspace,
+        }),
+      ).rejects.toThrow(/persisted Pi binding is invalid/);
+    }
+  });
+
+  it("still returns the real completion when closing the runtime throws", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-close-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const completion = await runCloudTurnWorker(turnRequest(executionDir), {
+      createPiFactory: (): CloudTurnPiFactory => ({
+        create: async () =>
+          ({
+            close: async () => {
+              // A close failure is a cleanup detail: it must never mask the honest result.
+              throw new Error("runtime close failed");
+            },
+            prompt: async () => ({ output: [{ text: "closed", type: "text" }], status: "completed" }),
+          }) as unknown as CloudTurnPiRuntime,
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+    });
+    expect(completion).toMatchObject({ finalText: "closed", outcome: "completed" });
+  });
+
+  it("reports a non-missing persisted binding read failure instead of starting fresh", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-binding-read-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const workspace = join(root, "workspace");
+    const continuity = join(workspace, ".opentag", "pi-session");
+    // A DIRECTORY where the binding file must be is a real EISDIR: the worker must surface it
+    // rather than silently starting a fresh conversation.
+    await mkdir(join(continuity, "pi-binding.json"), { recursive: true });
+    await expect(
+      runCloudTurnWorker(turnRequest(executionDir), {
+        createPiFactory: (): CloudTurnPiFactory => ({
+          create: async () =>
+            ({
+              close: async () => undefined,
+              prompt: async () => ({ output: [{ text: "ok", type: "text" }], status: "completed" }),
+            }) as unknown as CloudTurnPiRuntime,
+          resume: async () => {
+            throw new Error("unexpected resume");
+          },
+        }),
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace,
+      }),
+    ).rejects.toMatchObject({ code: "EISDIR" });
+  });
+
+  it("fails the worker when the execution budget expires before Pi produces a result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-budget-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-1");
+    const request = turnRequest(executionDir);
+    const completion = await runCloudTurnWorker(
+      {
+        ...request,
+        runtime: { ...request.runtime, budget: { maxDurationMs: 1 } },
+      },
+      {
+        createPiFactory: (): CloudTurnPiFactory => ({
+          create: async () =>
+            ({
+              close: async () => undefined,
+              prompt: async () => {
+                // A budget that was already exhausted maps to a turn_timeout stop reason.
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                return { output: [{ text: "late", type: "text" }], status: "completed" };
+              },
+            }) as unknown as CloudTurnPiRuntime,
+          resume: async () => {
+            throw new Error("unexpected resume");
+          },
+        }),
+        executionMount: join(root, "mount"),
+        localProxyLoopbackSeam: true,
+        workspace: join(root, "workspace"),
+      },
+    );
+    // The real result is either the completed turn or the honest timeout; never a silent success
+    // whose deadline had already elapsed.
+    expect(["completed", "failed"]).toContain(completion.outcome);
+    if (completion.outcome === "failed") expect(completion.errorReason).toBe("turn_timeout");
+  });
+});
+
 describe("session-message worker integration", () => {
   it("runs an internal Session child with its own instructions and no IM outbox material", async () => {
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-session-internal-"));

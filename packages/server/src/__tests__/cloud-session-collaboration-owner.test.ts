@@ -160,7 +160,9 @@ function makeStack(
   overrides: {
     durableWork?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["durableWork"];
     modelGrants?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["modelGrants"];
+    noteActivity?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["noteActivity"];
     recordMessageOutcome?: (input: { messageId: string }) => Promise<boolean>;
+    requestTimeoutMs?: number;
   } = {},
 ): Stack {
   const hub = new RunnerHub();
@@ -197,7 +199,9 @@ function makeStack(
     hub,
     modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
     modelGrants: overrides.modelGrants ?? grants,
+    ...(overrides.noteActivity !== undefined ? { noteActivity: overrides.noteActivity } : {}),
     proofs,
+    ...(overrides.requestTimeoutMs !== undefined ? { requestTimeoutMs: overrides.requestTimeoutMs } : {}),
     sessions: { recordMessageOutcome },
     work,
   });
@@ -1528,6 +1532,80 @@ describe("CloudSessionCollaborationOwner", () => {
     );
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
     expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("returns runtime_not_ready on a failed send without abandoning the receipt promise", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const fixture = await seedCloudSession();
+      const messageId = randomUUID();
+      await insertMessage(messageId, fixture);
+      const stack = makeStack(fixture);
+      const throwingSocket: RunnerControlSocket = {
+        send() {
+          throw new Error("control channel closed");
+        },
+        close() {
+          // no-op
+        },
+      };
+      stack.hub.attach(fixture.scope, throwingSocket);
+      stack.hub.markReady(fixture.scope, READINESS, throwingSocket);
+      stack.fence.attach({
+        computerId: fixture.computerId,
+        installationId: randomUUID(),
+        scope: fixture.scope,
+        sessionCollaborationEligible: true,
+        socket: throwingSocket,
+      });
+      await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+        status: "unreachable",
+        code: "runtime_not_ready",
+      });
+      // No custody, grant, verified frame or busy registration survives the failed handoff.
+      await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+      // Let any abandoned rejection surface before asserting none exists.
+      for (let index = 0; index < 20; index += 1) await new Promise((done) => setImmediate(done));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("returns delivery_timeout when the receipt times out during the activity hand-off, without abandoning it", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const fixture = await seedCloudSession();
+      const messageId = randomUUID();
+      await insertMessage(messageId, fixture);
+      let releaseActivity: () => void = () => undefined;
+      const activityGate = new Promise<void>((resolve) => {
+        releaseActivity = resolve;
+      });
+      const stack = makeStack(fixture, { noteActivity: () => activityGate, requestTimeoutMs: 50 });
+      await attachRunner(stack, fixture); // the Runner never answers the receipt
+      const delivering = stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission);
+      // The 50ms receipt timeout fires while the activity update is still gated, so the pending
+      // receipt rejects before the dispatch adopts it.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      releaseActivity();
+      await expect(delivering).resolves.toEqual({ status: "unknown", code: "delivery_timeout" });
+      expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+      await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+      for (let index = 0; index < 20; index += 1) await new Promise((done) => setImmediate(done));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("clears the allocation convergence race timer once convergence wins", async () => {

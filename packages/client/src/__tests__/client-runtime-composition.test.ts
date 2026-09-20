@@ -2821,12 +2821,13 @@ describe("createSkillSyncManager", () => {
   });
 
   it("builds a SkillSyncManager when the composition is fully configured", async () => {
+    const workspace = await temporaryDirectory("opentag-skill-sync-workspace-");
     const manager = createSkillSyncManager(
       { api: api as never, machineToken: "machine-token" },
       createLogger("skills-composition-test"),
     );
     expect(manager).toBeDefined();
-    await expect(manager?.ensureAgent({ agentId: randomUUID(), cwd: tmpdir(), provider: "pi" })).resolves.toEqual({
+    await expect(manager?.ensureAgent({ agentId: randomUUID(), cwd: workspace, provider: "pi" })).resolves.toEqual({
       skillPaths: [],
       status: "synced",
     });

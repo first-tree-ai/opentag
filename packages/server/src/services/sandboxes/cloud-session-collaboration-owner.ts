@@ -1002,7 +1002,7 @@ export class CloudSessionCollaborationOwner {
     connection: CloudConnectionRecord,
     requestId: string,
   ): Promise<RunnerCloudSessionMessageReceivedFrame> {
-    return new Promise<RunnerCloudSessionMessageReceivedFrame>((resolve, reject) => {
+    const promise = new Promise<RunnerCloudSessionMessageReceivedFrame>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(requestId);
         reject(new CloudSessionDispatchTimeoutError());
@@ -1010,6 +1010,12 @@ export class CloudSessionCollaborationOwner {
       timer.unref?.();
       this.#pending.set(requestId, { connectionId: connection.connectionId, resolve, reject, timer });
     });
+    // The dispatch flow adopts this promise only after the send/activity hand-off completes; a
+    // failed send, a timeout, or a disconnect inside that gap rejects it before any awaiter is
+    // attached. Observing the rejection immediately can never change the rejected result the
+    // adopter receives — it only keeps the gap from surfacing as an unhandled rejection.
+    void promise.catch(() => undefined);
+    return promise;
   }
 
   #failPending(requestId: string, error: Error): void {

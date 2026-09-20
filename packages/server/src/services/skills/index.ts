@@ -39,6 +39,15 @@ export {
   type SkillReadLimits,
 } from "./skill-archive-reader.js";
 export {
+  SKILL_GC_DEFAULT_GRACE_MS,
+  SKILL_GC_DEFAULT_INTERVAL_MS,
+  SKILL_GC_DEFAULT_MAX_DELETES_PER_RUN,
+  SKILL_GC_DEFAULT_PAGE_SIZE,
+  SkillObjectGc,
+  type SkillObjectGcOptions,
+  type SkillObjectGcSummary,
+} from "./skill-object-gc.js";
+export {
   isSkillObjectKey,
   type SkillObjectKeyInput,
   type SkillObjectListEntry,

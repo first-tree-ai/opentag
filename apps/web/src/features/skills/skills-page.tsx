@@ -6,7 +6,13 @@ import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Text } from "../../ui/design-system.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
 import { SkillRow } from "./skill-row.js";
-import { checkSkillArchiveFile, sha256Hex, skillErrorMessage, skillRejectionMessage } from "./skills-page-model.js";
+import {
+  checkSkillArchiveFile,
+  sha256Hex,
+  skillErrorMessage,
+  skillRejectionMessage,
+  storageStateForList,
+} from "./skills-page-model.js";
 import { useAgentSkills, useInvalidateAgentSkills, useUploadSkill } from "./skills-queries.js";
 
 /** One archive waiting on the replace confirmation, bound to the Agent it was chosen for. */
@@ -52,7 +58,13 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   const [pendingReplace, setPendingReplace] = useState<PendingReplace | undefined>();
   const [deleteTarget, setDeleteTarget] = useState<Skill | undefined>();
 
-  const storageAvailable = skills.data?.storage !== "unavailable";
+  /*
+   * Three states, not two. Storage is only "available" once a successful list says so; before that it
+   * is "unknown" and every storage-dependent control stays disabled — a failed first load must not
+   * present an enabled Upload, an empty list, or a calm "unavailable" notice that is really an error.
+   */
+  const storage = storageStateForList(skills.data);
+  const storageAvailable = storage === "available";
 
   const openFilePicker = () => {
     setActionError(undefined);
@@ -170,11 +182,12 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
         </Button>
       </PageHeader>
 
-      {!storageAvailable ? <Banner variant="alert">{m.skills_storage_unavailable()}</Banner> : null}
+      {storage === "unavailable" ? <Banner variant="alert">{m.skills_storage_unavailable()}</Banner> : null}
       {actionError ? <Banner variant="error">{actionError}</Banner> : null}
       {skills.isError ? <Banner variant="error">{describeLoadError(skills.error)}</Banner> : null}
 
       <SkillList
+        hasData={skills.data !== undefined}
         isPending={skills.isPending}
         onDelete={setDeleteTarget}
         onError={setActionError}
@@ -195,14 +208,22 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
   );
 }
 
-/** The Agent's Skills, or the reason there are none to show. */
+/**
+ * The Agent's Skills, or the reason there are none to show.
+ *
+ * The empty state is a statement about data that arrived: with no data yet it is loading text while
+ * pending and nothing at all once the request failed — the error banner already says why, and "No
+ * Skills yet" beside a failure would claim a list the page never read.
+ */
 function SkillList({
+  hasData,
   isPending,
   onDelete,
   onError,
   skills,
   storageAvailable,
 }: {
+  hasData: boolean;
   isPending: boolean;
   onDelete: (skill: Skill) => void;
   onError: (message: string | undefined) => void;
@@ -210,6 +231,7 @@ function SkillList({
   storageAvailable: boolean;
 }) {
   if (isPending) return <Text variant="body">{m.common_loading()}</Text>;
+  if (!hasData) return null;
   if (skills.length === 0) return <Text variant="secondary">{m.skills_empty()}</Text>;
   return (
     <ul aria-label={m.skills_list_aria()} className="grid gap-3" data-ui="skills-list">

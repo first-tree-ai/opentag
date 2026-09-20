@@ -16,7 +16,7 @@ import type {
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CloudJournal } from "../runner/cloud-journal.js";
-import { CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
+import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const MODEL_GRANT: RunnerCloudModelGrant = {
@@ -401,6 +401,159 @@ describe("CloudTurnRunner Session collaboration", () => {
       phase: "reported",
       settlement: { outcome: "unknown" },
     });
+    await h.runner.close();
+  });
+
+  it("re-correlates a same-input retry to its new request identity without a second Turn", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    const [first] = sessionReceiptsOf(h.sent);
+    if (!first) throw new Error("missing first receipt");
+    const retry = { ...h.message, requestId: randomUUID() };
+
+    await h.runner.handleSessionMessageRun(sessionRunFrame(retry));
+    const receipts = sessionReceiptsOf(h.sent);
+    expect(receipts).toHaveLength(2);
+    // The retry's receipt correlates the NEW dispatch attempt; the journaled Turn is unchanged.
+    expect(receipts[1]).toMatchObject({
+      requestId: retry.requestId,
+      messageId: h.message.messageId,
+      turnId: first.status === "accepted" ? first.turnId : undefined,
+      phase: "received",
+    });
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      requestId: retry.requestId,
+      turnId: first.status === "accepted" ? first.turnId : undefined,
+      phase: "received",
+    });
+
+    // A verified for the superseded request identity finds no entry and starts nothing.
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(retry.requestId));
+    await h.runner.waitForActive();
+    expect(h.workerInputs).toHaveLength(1);
+    const settled = settledOf(h.sent);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ requestId: retry.requestId, outcome: "completed" });
+
+    // The ack correlates the re-correlated identity and retires the entry exactly once.
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: retry.requestId,
+      messageId: h.message.messageId,
+      turnId: first.status === "accepted" ? first.turnId : "",
+      status: "recorded",
+    });
+    expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("supersedes a stale received entry for a retry with changed runtime and executes once", async () => {
+    const h = harness();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    const [first] = sessionReceiptsOf(h.sent);
+    if (!first || first.status !== "accepted") throw new Error("missing first receipt");
+    const changed: SessionMessageDeliveryRequest = {
+      ...h.message,
+      requestId: randomUUID(),
+      runtime: {
+        ...h.message.runtime,
+        instructions: { ...h.message.runtime.instructions, agent: "Replaced instructions." },
+      },
+    };
+
+    await h.runner.handleSessionMessageRun(sessionRunFrame(changed));
+    const receipts = sessionReceiptsOf(h.sent);
+    expect(receipts).toHaveLength(2);
+    // The stale entry was retired and the retry journaled as a NEW Turn under the new identity.
+    expect(receipts[1]).toMatchObject({ requestId: changed.requestId, phase: "received" });
+    if (receipts[1]?.status !== "accepted") throw new Error("missing retry receipt");
+    expect(receipts[1].turnId).not.toBe(first.turnId);
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      requestId: changed.requestId,
+      turnId: receipts[1].turnId,
+      phase: "received",
+    });
+
+    // A late verified for the retired entry can never start it; only the new attempt executes.
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(changed.requestId));
+    await h.runner.waitForActive();
+    expect(h.workerInputs).toHaveLength(1);
+    expect(settledOf(h.sent)).toHaveLength(1);
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: changed.requestId,
+      messageId: h.message.messageId,
+      turnId: receipts[1].turnId,
+      status: "recorded",
+    });
+    expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("refuses a changed-input redispatch while the Turn is started and settles the running Turn", async () => {
+    const release = deferred<ExecResult>();
+    const h = harness({ worker: () => release.promise });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await waitFor(() => h.workerInputs.length === 1, "worker start");
+    const changed: SessionMessageDeliveryRequest = {
+      ...h.message,
+      requestId: randomUUID(),
+      runtime: {
+        ...h.message.runtime,
+        instructions: { ...h.message.runtime.instructions, agent: "Replaced instructions." },
+      },
+    };
+
+    await h.runner.handleSessionMessageRun(sessionRunFrame(changed));
+    // No second receipt and no second worker: the started Turn owns the message until it settles.
+    expect(sessionReceiptsOf(h.sent)).toHaveLength(1);
+    expect(h.workerInputs).toHaveLength(1);
+    expect(await journal.read(h.message.messageId)).toMatchObject({ phase: "started" });
+
+    release.resolve(completedExec());
+    await waitFor(() => settledOf(h.sent).length === 1, "settlement");
+    expect(settledOf(h.sent)[0]).toMatchObject({ requestId: h.message.requestId, outcome: "completed" });
+    await h.runner.handleSessionMessageSettledAck({
+      type: "session:message:settled:ack",
+      requestId: h.message.requestId,
+      messageId: h.message.messageId,
+      turnId: settledOf(h.sent)[0]?.turnId ?? "",
+      status: "recorded",
+    });
+    expect(await journal.read(h.message.messageId)).toBeUndefined();
+    await h.runner.close();
+  });
+
+  it("anchors the worker timeout and the parent exec backstop to one execution deadline", async () => {
+    const budgetMs = 60_000;
+    const fixture = cloudDeliveryFixture();
+    const message = sessionMessage({
+      agentId: fixture.agentId,
+      runtime: { ...fixture.runtime, budget: { maxDurationMs: budgetMs } },
+    });
+    const h = harness({ message });
+    const startedAt = Date.now();
+    await h.runner.handleSessionMessageRun(sessionRunFrame(message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(message.requestId));
+    await h.runner.waitForActive();
+    const finishedAt = Date.now();
+
+    const [workerInput] = h.workerInputs;
+    if (!workerInput) throw new Error("expected a worker input");
+    const stdin = JSON.parse(workerInput.stdin) as { deadlineAt?: string };
+    if (!stdin.deadlineAt) throw new Error("the worker document must carry the execution deadline");
+    const deadline = Date.parse(stdin.deadlineAt);
+    expect(deadline).toBeGreaterThanOrEqual(startedAt + budgetMs);
+    expect(deadline).toBeLessThanOrEqual(finishedAt + budgetMs);
+    // The backstop is the shared deadline plus only the bounded reporting grace, so the worker's
+    // own turn_timeout always fires first and startup time is never recorded as unknown.
+    expect(workerInput.timeoutMs).toBeGreaterThan(budgetMs);
+    expect(workerInput.timeoutMs).toBeLessThanOrEqual(budgetMs + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS);
     await h.runner.close();
   });
 });

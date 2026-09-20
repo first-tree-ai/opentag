@@ -20,9 +20,11 @@ export function cloudWorkerInput(request: RunnerCloudWorkerRequest): AgentInput 
 }
 
 export function cloudWorkerTimeout(request: RunnerCloudWorkerRequest, now: number): number {
-  return request.kind === "turn"
-    ? turnTimeoutMs(request.delivery, now)
-    : Math.max(1, request.message.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS);
+  if (request.kind === "turn") return turnTimeoutMs(request.delivery, now);
+  // The parent's absolute execution deadline is the single source of truth (queue wait excluded);
+  // an older parent without one falls back to the relative runtime budget.
+  if (request.deadlineAt) return Math.max(1, Date.parse(request.deadlineAt) - now);
+  return Math.max(1, request.message.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS);
 }
 
 /** Proofs and endpoint discovery belong to execution scratch, never restored Session storage. */

@@ -317,5 +317,7 @@ export function collectKnownSecrets(environment: NodeJS.ProcessEnv): string[] {
     environment.OPENTAG_CLOUD_MODEL_MASTER_KEY ?? "",
     // The dev-only static Cloud Runner token is a live Google access token while it is set.
     environment.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN ?? "",
+    // The Skill object-store secret authorizes writes to every Agent's Skill bundles.
+    environment.OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY ?? "",
   ];
 }

@@ -17,6 +17,7 @@ import {
   registerBrowserAuthRoutes,
 } from "./api/browser-auth.js";
 import { type CloudModelProxyRouteOptions, registerCloudModelProxyRoutes } from "./api/cloud-model-proxy.js";
+import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
 import { type GitHubIntegrationsRouteOptions, registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
@@ -32,7 +33,9 @@ import type { RuntimeRoutesOptions } from "./api/runtime.js";
 import { type RuntimeDurableWorkRoutesOptions, registerRuntimeDurableWorkRoutes } from "./api/runtime-durable-work.js";
 import type { RuntimeProviderProxyRoutesOptions } from "./api/runtime-provider-proxy.js";
 import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
+import { registerRuntimeSkillRoutes } from "./api/runtime-skills.js";
 import { type RuntimeWebRoutesOptions, registerRuntimeWebRoutes } from "./api/runtime-web.js";
+import { registerSkillRoutes } from "./api/skills.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWebsiteSessionRoutes } from "./api/website-session.js";
@@ -69,8 +72,9 @@ import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bo
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
 import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
 import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
-import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
+import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
 import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
+import { type SkillService, SkillServiceError } from "./services/skills/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import { registerWebApp } from "./web-app.js";
 
@@ -140,6 +144,15 @@ export interface CreateAppOptions {
     secureCookies: boolean;
   };
   feishuSetupService?: FeishuSetupService;
+  /**
+   * Agent Skills. Always wired by the production bootstrap: the service is built whether or not the
+   * deployment configured object storage, because listing still works without it. `proofs` enables
+   * the Agent CLI surface and is absent when the Session proof runtime is not available.
+   */
+  skills?: {
+    service: SkillService;
+    proofs?: Pick<SessionCliProofService, "authenticate">;
+  };
   slackOAuth?: SlackOAuthRouteOptions;
   /** GitHub integration management; always registered so the UI can read availability. */
   githubIntegrations?: Omit<GitHubIntegrationsRouteOptions, "authService" | "authOptions">;
@@ -184,7 +197,8 @@ type AccountFacingError =
   | AccountSetupServiceError
   | SandboxServiceError
   | McpServiceError
-  | GitHubConnectionServiceError;
+  | GitHubConnectionServiceError
+  | SkillServiceError;
 
 function isAccountFacingError(error: unknown): error is AccountFacingError {
   return (
@@ -197,7 +211,8 @@ function isAccountFacingError(error: unknown): error is AccountFacingError {
     error instanceof AccountSetupServiceError ||
     error instanceof SandboxServiceError ||
     error instanceof McpServiceError ||
-    error instanceof GitHubConnectionServiceError
+    error instanceof GitHubConnectionServiceError ||
+    error instanceof SkillServiceError
   );
 }
 
@@ -588,6 +603,15 @@ export function createApp(options: CreateAppOptions = {}) {
         publicOrigin: options.mcp.publicOrigin,
         secureCookies: options.mcp.secureCookies,
       });
+    }
+    if (options.skills) {
+      registerSkillRoutes(app, options.skills.service, authService, authOptions);
+      if (options.machineAuthService) {
+        registerComputerSkillRoutes(app, options.machineAuthService, options.skills.service);
+      }
+      if (options.skills.proofs) {
+        registerRuntimeSkillRoutes(app, options.skills.service, options.skills.proofs);
+      }
     }
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);

@@ -33,7 +33,9 @@ export class SessionCommandRequestError extends Error {
   }
 }
 
-async function context(environment: NodeJS.ProcessEnv = process.env): Promise<{ api: OpenTagApi; proof: string }> {
+export async function resolveSessionProofContext(
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<{ api: OpenTagApi; proof: string }> {
   const proofPath = environment.OPENTAG_SESSION_PROOF_FILE;
   if (!proofPath) {
     throw new Error(
@@ -75,7 +77,7 @@ export async function runSessionCreate(
     reasoningEffort: options.reasoningEffort,
     maxDurationMs: options.maxDurationMs,
   });
-  const runtime = await context();
+  const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () => runtime.api.createInternalSession(runtime.proof, input));
 }
 
@@ -89,7 +91,7 @@ export async function runSessionSend(
     targetSessionId,
     message,
   });
-  const runtime = await context();
+  const runtime = await resolveSessionProofContext();
   return requestWithRetryKey(input.messageId, () => runtime.api.sendSessionMessage(runtime.proof, input));
 }
 
@@ -113,7 +115,7 @@ export async function runSessionList(options: {
     cursor: options.cursor,
     since: options.since,
   });
-  const runtime = await context();
+  const runtime = await resolveSessionProofContext();
   return runtime.api.listInternalSessions(runtime.proof, input);
 }
 

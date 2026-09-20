@@ -252,6 +252,9 @@ export {
   AGENT_RUNTIME_TEST_TEMPLATE,
   AGENT_SETUP_REFRESH_TEMPLATE,
   AGENT_SETUP_TEMPLATE,
+  AGENT_SKILL_BUNDLE_TEMPLATE,
+  AGENT_SKILL_TEMPLATE,
+  AGENT_SKILLS_TEMPLATE,
   AGENT_SLACK_EVENTS_TEMPLATE,
   AGENT_SLACK_OAUTH_START_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
@@ -282,10 +285,17 @@ export {
   agentRuntimeTestPath,
   agentSetupPath,
   agentSetupRefreshPath,
+  agentSkillBundlePath,
+  agentSkillPath,
+  agentSkillsPath,
   agentSlackEventsPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
+  COMPUTER_AGENT_SKILL_BUNDLE_TEMPLATE,
+  COMPUTER_AGENT_SKILLS_TEMPLATE,
+  computerAgentSkillBundlePath,
+  computerAgentSkillsPath,
   FEISHU_SETUP_ATTEMPT_CHECK_TEMPLATE,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   feishuSetupAttemptCancelPath,
@@ -316,8 +326,11 @@ export {
   mcpServersPath,
   RUNTIME_DURABLE_WORK_PATH,
   RUNTIME_IM_RESOURCE_TEMPLATE,
+  RUNTIME_SKILL_BUNDLE_TEMPLATE,
+  RUNTIME_SKILLS_PATH,
   runtimeDurableWorkPath,
   runtimeImResourcePath,
+  runtimeSkillBundlePath,
   runtimeWebSocketUrl,
   SANDBOX_RUNNER_WEBSOCKET_PATH,
   SLACK_EVENTS_PATH,
@@ -588,6 +601,7 @@ export {
 export * from "./session.js";
 export * from "./session-cli.js";
 export * from "./sign-in-destination.js";
+export * from "./skill.js";
 export {
   BOUNDED_DIAGNOSTIC_SERIALIZATION_BYTES,
   boundedSerialize,

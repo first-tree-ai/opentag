@@ -40,3 +40,4 @@
 - [Agent Runtime contract](../design/agent-runtime-contract.md)
 - [Agent Runtime test plan](../design/agent-runtime-test-plan.md)
 - [Context Tree integration](../design/context-tree-integration.md)
+- [Agent Skills](../design/agent-skills.md)

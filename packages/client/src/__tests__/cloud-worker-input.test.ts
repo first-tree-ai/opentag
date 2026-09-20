@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunnerCloudSessionWorkerRequest } from "@opentag/shared";
 import { afterEach, expect, it } from "vitest";
-import { cloudSessionCliEnvironment, cloudWorkerInput } from "../runner/cloud-worker-input.js";
+import { cloudSessionCliEnvironment, cloudWorkerInput, cloudWorkerTimeout } from "../runner/cloud-worker-input.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
 const roots: string[] = [];
@@ -64,6 +64,16 @@ it("visible callbacks retain their exact outbox and never infer it from message 
   expect(text).toContain("channel-fixture");
   expect(text).toContain("1700000000.1234");
   expect(text).toContain("deliver it through the provider CLI");
+});
+
+it("derives the Session worker timeout from the shared execution deadline when present", () => {
+  const request = sessionRequest();
+  // No deadline from the parent: the relative runtime budget applies as before.
+  expect(cloudWorkerTimeout(request, 1_000)).toBe(30 * 60 * 1_000);
+  const deadlineAt = new Date(1_000 + 42_000).toISOString();
+  expect(cloudWorkerTimeout({ ...request, deadlineAt }, 1_000)).toBe(42_000);
+  // A deadline already in the past still yields the minimal positive window.
+  expect(cloudWorkerTimeout({ ...request, deadlineAt: new Date(500).toISOString() }, 1_000)).toBe(1);
 });
 
 it("materializes a scoped proof only in private execution scratch", async () => {

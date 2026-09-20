@@ -28,6 +28,7 @@ import {
   createServerDiagnosticReporter,
   createServiceLoggerPort,
   initTelemetry,
+  type ServiceLogger,
   shutdownTelemetry,
 } from "./observability/index.js";
 import { createPlatformRuntime } from "./platform-runtime.js";
@@ -107,6 +108,7 @@ import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
+import { S3SkillObjectStore, SkillService } from "./services/skills/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
@@ -343,6 +345,34 @@ function createApplicationCipher(config: ServerConfig): ApplicationCipher {
   });
 }
 
+/**
+ * Builds the Agent Skill runtime. The service always exists — without object storage it still lists
+ * Skills and manages their rows, and only bundle reads/writes fail with SKILL_STORAGE_UNAVAILABLE.
+ * The S3 store is constructed only when the storage group is coherently configured.
+ */
+function createSkillRuntime(config: ServerConfig, database: DatabaseClient, logger: ServiceLogger): SkillService {
+  const storage = config.skillStorage;
+  const store = storage.enabled
+    ? new S3SkillObjectStore({
+        config: {
+          endpoint: storage.endpoint,
+          region: storage.region,
+          bucket: storage.bucket,
+          accessKeyId: storage.accessKeyId,
+          secretAccessKey: storage.secretAccessKey,
+          forcePathStyle: storage.forcePathStyle,
+        },
+        logger,
+      })
+    : undefined;
+  return new SkillService({
+    database,
+    ...(store ? { store } : {}),
+    keyPrefix: storage.enabled ? storage.prefix : "skills",
+    logger,
+  });
+}
+
 /** Every configured value startup errors must never echo, including the raw key ring JSON. */
 function cipherKeySecrets(config: ServerConfig): string[] {
   return Array.from(config.encryptionKeyRing?.keys.values() ?? [], (key) => Buffer.from(key).toString("base64"));
@@ -451,7 +481,7 @@ export async function startServer(): Promise<void> {
     let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
     const cloudSessionWork = new CloudSessionWorkTracker();
     const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config, {
-      sessionWorkBusy: (sandboxId) => cloudSessionWork.isBusy(sandboxId),
+      sessionWorkBusy: (allocation) => cloudSessionWork.isBusy(allocation),
       sessionWorkBarrier: (input) => cloudSessionOwner?.hasUnsettledSessionWork(input) ?? Promise.resolve(false),
     });
     /*
@@ -586,6 +616,7 @@ export async function startServer(): Promise<void> {
       config.encryptionKey,
       sessionAuthority.proof,
     );
+    const skillService = createSkillRuntime(config, database, serviceLogger("skills"));
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
@@ -880,6 +911,7 @@ export async function startServer(): Promise<void> {
         proofs: sessionCliProofService,
         sessions: sessionService,
       },
+      skills: { service: skillService, proofs: sessionCliProofService },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,

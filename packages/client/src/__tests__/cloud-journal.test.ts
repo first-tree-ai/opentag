@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeTurnResultHash, type SessionMessageDeliveryRequest, type TurnReportRequest } from "@opentag/shared";
@@ -457,6 +457,107 @@ describe("CloudJournal", () => {
           turnId: "turn-s",
         }),
       ).rejects.toMatchObject({ code: "conflict" });
+    });
+
+    it("supersedes a received entry atomically, re-correlates retries, and preserves the old entry on failure", async () => {
+      const opened = await CloudJournal.open(directory);
+      const message = sessionFixture();
+      const scope = scopeFor(message.targetSessionId);
+      await opened.recordSessionReceived({
+        message,
+        sessionKind: "internal",
+        scope,
+        requestId: message.requestId,
+        turnId: "turn-s",
+      });
+
+      // A same-input retry under a new attempt identity re-correlates the entry in place.
+      const retryRequestId = randomUUID();
+      const rekeyed = await opened.updateSessionRequestId(message.messageId, scope, retryRequestId);
+      expect(rekeyed).toMatchObject({ requestId: retryRequestId, turnId: "turn-s", phase: "received" });
+      await expect(opened.updateSessionRequestId(message.messageId, scope, retryRequestId)).resolves.toMatchObject({
+        requestId: retryRequestId,
+      });
+
+      // A retry with changed input supersedes the received entry with a fresh Turn.
+      const changed: SessionMessageDeliveryRequest = {
+        ...message,
+        requestId: randomUUID(),
+        runtime: { ...message.runtime, instructions: { ...message.runtime.instructions, agent: "Changed." } },
+      };
+      const replaced = await opened.replaceSessionReceived({
+        message: changed,
+        sessionKind: "internal",
+        scope,
+        requestId: changed.requestId,
+        turnId: "turn-new",
+      });
+      expect(replaced).toMatchObject({ requestId: changed.requestId, turnId: "turn-new", phase: "received" });
+      const reopened = await CloudJournal.open(directory);
+      const [persisted] = await reopened.list();
+      expect(persisted).toMatchObject({
+        kind: "session-message",
+        requestId: changed.requestId,
+        turnId: "turn-new",
+        phase: "received",
+      });
+
+      // A started entry is execution evidence: never superseded and never re-correlated.
+      const startedMessage = sessionFixture();
+      await opened.recordSessionReceived({
+        message: startedMessage,
+        sessionKind: "internal",
+        scope,
+        requestId: startedMessage.requestId,
+        turnId: "turn-s2",
+      });
+      await opened.markSessionStarted(startedMessage.messageId, scope);
+      await expect(
+        opened.replaceSessionReceived({
+          message: { ...startedMessage, requestId: randomUUID() },
+          sessionKind: "internal",
+          scope,
+          requestId: randomUUID(),
+          turnId: "turn-x",
+        }),
+      ).rejects.toMatchObject({ code: "invalid_transition" });
+      await expect(opened.updateSessionRequestId(startedMessage.messageId, scope, randomUUID())).rejects.toMatchObject({
+        code: "invalid_transition",
+      });
+
+      // A failed replacement never erases custody: with the journal directory unwritable the
+      // atomic write fails and the old received entry survives intact.
+      const keptMessage = sessionFixture();
+      await opened.recordSessionReceived({
+        message: keptMessage,
+        sessionKind: "internal",
+        scope,
+        requestId: keptMessage.requestId,
+        turnId: "turn-s3",
+      });
+      await chmod(directory, 0o500);
+      try {
+        await expect(
+          opened.replaceSessionReceived({
+            message: {
+              ...keptMessage,
+              requestId: randomUUID(),
+              runtime: { ...keptMessage.runtime, instructions: { ...keptMessage.runtime.instructions, agent: "New" } },
+            },
+            sessionKind: "internal",
+            scope,
+            requestId: randomUUID(),
+            turnId: "turn-x",
+          }),
+        ).rejects.toMatchObject({ code: "store_failed" });
+      } finally {
+        await chmod(directory, 0o700);
+      }
+      expect(await opened.read(keptMessage.messageId)).toMatchObject({
+        phase: "received",
+        requestId: keptMessage.requestId,
+        turnId: "turn-s3",
+      });
     });
 
     it("never reports completion before the started boundary and still parses legacy v2 delivery files", async () => {

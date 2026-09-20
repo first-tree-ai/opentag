@@ -305,6 +305,7 @@ function defaultConfig() {
     autoMigrate: true,
     cloudIdentities: { enabled: false },
     cloudRunner: { enabled: false },
+    skillStorage: { enabled: false },
     channelTarget: {
       downloadBaseUrl: "https://download.test/releases",
       pollIntervalMs: 300_000,

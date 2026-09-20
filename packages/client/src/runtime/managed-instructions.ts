@@ -68,10 +68,24 @@ function renderAgentHome(agentHome?: string): readonly string[] {
   ];
 }
 
+/**
+ * Reusable know-how an Agent discovers can be saved to its own platform account and restored on
+ * every Computer it runs on, so a good routine is not trapped in one workspace.
+ */
+function renderSkills(cliCommand: string): readonly string[] {
+  return [
+    "## Skills",
+    "",
+    `Reusable routines can be captured as a skill: a directory with a \`SKILL.md\` whose frontmatter has \`name\` and \`description\`. Save one to the platform with \`${cliCommand} skill push <dir>\`. Saved skills are restored on every Computer this Agent runs on.`,
+    "",
+  ];
+}
+
 export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, context?: ManagedSessionContext): string {
   const session = context
     ? [
         ...renderAgentHome(context.agentHome),
+        ...renderSkills(context.cliCommand),
         "## Session",
         "",
         `Current Session: ${context.sessionId}`,

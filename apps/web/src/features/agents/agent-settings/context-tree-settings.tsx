@@ -144,7 +144,9 @@ function failureMessage(
         ? m.agent_settings_context_tree_cloud_authentication_required()
         : m.agent_settings_context_tree_authentication_required({ computerName });
     case "permission_denied":
-      return m.agent_settings_context_tree_permission_denied();
+      return cloud
+        ? m.agent_settings_context_tree_cloud_permission_denied()
+        : m.agent_settings_context_tree_permission_denied();
     case "repository_exists":
       return m.agent_settings_context_tree_repository_exists();
     case "invalid_tree":
@@ -164,7 +166,7 @@ function failureMessage(
     case "pause_required":
       return m.agent_settings_context_tree_pause_required();
     default:
-      return m.agent_settings_context_tree_failed();
+      return cloud ? m.agent_settings_context_tree_cloud_failed() : m.agent_settings_context_tree_failed();
   }
 }
 

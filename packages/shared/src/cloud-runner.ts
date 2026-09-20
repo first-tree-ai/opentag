@@ -739,6 +739,14 @@ export const RunnerCloudSessionWorkerRequestSchema = z
      * selects its visible/internal instruction mode from this value alone.
      */
     sessionKind: z.enum(["internal", "visible"]),
+    /**
+     * The one absolute execution deadline the parent anchored when the Turn left its queue (never
+     * at dispatch, so legitimate queue wait is not charged). The worker's own timeout and the
+     * parent's exec backstop both derive from it, so a slow bridge/startup can never turn a real
+     * `turn_timeout` into an `unknown`. Absent only from an older parent: the worker falls back
+     * to the relative runtime budget.
+     */
+    deadlineAt: z.string().datetime({ offset: true }).optional(),
     /** Nonsecret outbox context, present exactly for a visible target. */
     outboxContext: RuntimeImOutboxContextSchema.optional(),
     /** E8 Session-CLI material for the target Session; stdin-only, never journaled or logged. */

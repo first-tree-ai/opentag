@@ -211,10 +211,13 @@ export function computeCloudSessionInputHash(input: {
   sessionKind: "internal" | "visible";
   outboxContext?: RuntimeImOutboxContext;
 }): string {
+  // The request id is the per-attempt correlation identity, not input: a retry of the same
+  // logical message under a fresh request id must still match the journaled entry's input.
+  const { requestId: _requestId, ...message } = input.message;
   return createHash("sha256")
     .update(
       canonicalJson({
-        message: input.message,
+        message,
         sessionKind: input.sessionKind,
         outboxContext: input.outboxContext ?? null,
       }),
@@ -587,6 +590,74 @@ export class CloudJournal {
         );
       }
       await this.#remove(messageId);
+    });
+  }
+
+  /**
+   * Retire a `received` Session entry whose journaled input was superseded by a new dispatch
+   * attempt and journal the new attempt instead. The old entry never started — a verified that
+   * arrives later misses its retired request id — so no execution evidence is erased; the Server
+   * replaces its never-executed custody record with the new attempt. The new entry REPLACES the
+   * entry file through the existing atomic temp-write + rename (`#write`), so a crash or IO
+   * failure leaves either the old entry or the new entry fully intact — never a torn file — and
+   * the failed call surfaces instead of silently erasing custody.
+   */
+  async replaceSessionReceived(input: CloudJournalSessionRecordInput): Promise<CloudJournalSessionEntry> {
+    return this.#mutate(async () => {
+      const scope = CloudJournalScopeSchema.parse(input.scope);
+      assertSessionEnvelope(input.sessionKind, input.outboxContext);
+      const messageId = input.message.messageId;
+      const existing = await this.#requireScopedSessionEntry(messageId, scope);
+      if (existing.phase !== "received") {
+        throw new CloudJournalError(
+          "invalid_transition",
+          `Session message ${messageId} cannot be superseded from phase ${existing.phase}`,
+        );
+      }
+      const entry: CloudJournalSessionEntry = {
+        kind: "session-message",
+        message: input.message,
+        inputHash: computeCloudSessionInputHash({
+          message: input.message,
+          sessionKind: input.sessionKind,
+          ...(input.outboxContext ? { outboxContext: input.outboxContext } : {}),
+        }),
+        scope,
+        messageId,
+        requestId: input.requestId,
+        turnId: input.turnId,
+        phase: "received",
+        sessionKind: input.sessionKind,
+        ...(input.outboxContext ? { outboxContext: input.outboxContext } : {}),
+      };
+      await this.#write(messageId, entry);
+      return entry;
+    });
+  }
+
+  /**
+   * Correlate a `received` Session entry with a new dispatch attempt of identical input. The Turn
+   * identity and phase are untouched — only the receipt correlation id moves, fsynced before the
+   * new attempt's receipt is sent. A started/reported entry keeps its established identity: its
+   * settlement is already correlated with the Server's custody record.
+   */
+  async updateSessionRequestId(
+    messageId: string,
+    scope: CloudJournalScope,
+    requestId: string,
+  ): Promise<CloudJournalSessionEntry> {
+    return this.#mutate(async () => {
+      const entry = await this.#requireScopedSessionEntry(messageId, scope);
+      if (entry.requestId === requestId) return entry;
+      if (entry.phase !== "received") {
+        throw new CloudJournalError(
+          "invalid_transition",
+          `Session message ${messageId} cannot be re-correlated from phase ${entry.phase}`,
+        );
+      }
+      const next: CloudJournalSessionEntry = { ...entry, requestId };
+      await this.#write(messageId, next);
+      return next;
     });
   }
 

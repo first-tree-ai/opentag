@@ -123,6 +123,38 @@ it("guides a Cloud authentication failure to GitHub integrations, not the local 
   expect(alert.textContent).toMatch(/Integrations/i);
   expect(alert.textContent).not.toMatch(/gh auth login/i);
 });
+it("guides Cloud permission and preparation failures to Integrations instead of local advice", async () => {
+  const operation = vi.spyOn(browserApi, "contextTreeOperation");
+  const view = render(
+    <ContextTreeSettings config={config()} computerName="Computer" computerKind="cloud" online onChanged={vi.fn()} />,
+  );
+  enter(view.container, "acme/memory");
+  operation.mockResolvedValue({ status: "failed", code: "permission_denied" });
+  click(view.container, "Connect");
+  const denied = await screen.findByRole("alert");
+  expect(denied.textContent).toMatch(/Integrations/i);
+  expect(denied.textContent).not.toMatch(/computer/i);
+  operation.mockResolvedValue({ status: "failed", code: "failed" });
+  click(view.container, "Connect");
+  const failed = await screen.findByRole("alert");
+  expect(failed.textContent).toMatch(/Integrations/i);
+  expect(failed.textContent).not.toMatch(/computer and repository/i);
+});
+it("keeps Local permission and preparation failure advice unchanged", async () => {
+  const operation = vi.spyOn(browserApi, "contextTreeOperation");
+  const view = render(<ContextTreeSettings config={config()} computerName="Computer" online onChanged={vi.fn()} />);
+  enter(view.container, "acme/memory");
+  operation.mockResolvedValue({ status: "failed", code: "permission_denied" });
+  click(view.container, "Connect");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "GitHub denied access. Check repository and organization permissions.",
+  );
+  operation.mockResolvedValue({ status: "failed", code: "failed" });
+  click(view.container, "Connect");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "Context Tree preparation failed. Check the computer and repository, then retry.",
+  );
+});
 it("keeps Local create and local authentication guidance unchanged", async () => {
   const operation = vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({
     status: "failed",

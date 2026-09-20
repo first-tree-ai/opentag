@@ -7,6 +7,7 @@ import {
   agents,
   computers,
   imBindings,
+  runtimeDurableWork,
   sandboxes,
   sessionMessages,
   sessionPlacements,
@@ -315,10 +316,14 @@ const allowAdmission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceived
   result: Promise.resolve(await operation(() => undefined)),
 });
 
-async function deliveryInput(fixture: CloudFixture, messageId: string): Promise<CloudSessionDeliveryInput> {
+async function deliveryInput(
+  fixture: CloudFixture,
+  messageId: string,
+  attemptCount = 1,
+): Promise<CloudSessionDeliveryInput> {
   const runtime = await new EffectiveRuntimeSnapshotAssembler(db.database).assembleForSession(fixture.sessionId);
   return {
-    attemptCount: 1,
+    attemptCount,
     message: { content: "continue the task", id: messageId },
     route: routeFor(fixture),
     runtime,
@@ -654,7 +659,7 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(attach.sent).toContainEqual(expect.objectContaining({ messageId, type: "session:message:cancel" }));
     // A sent request is not drain evidence: the durable barrier and busy picture stay in place.
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
-    expect(stack.owner.isSandboxBusy(fixture.sandboxId)).toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
 
     // The Runner's exact terminal result is committed once and acked, which is what clears it.
     await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "cancelled"));
@@ -662,7 +667,7 @@ describe("CloudSessionCollaborationOwner", () => {
       expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
     );
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
-    expect(stack.owner.isSandboxBusy(fixture.sandboxId)).toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
   });
 
   it("retains the barrier when cancellation cannot be sent", async () => {
@@ -802,7 +807,7 @@ describe("CloudSessionCollaborationOwner", () => {
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
     // The approximate in-memory picture is gone (restart): the durable record still blocks.
     stack.work.clearSandbox(fixture.sandboxId);
-    expect(stack.owner.isSandboxBusy(fixture.sandboxId)).toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
     await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
   });
 
@@ -829,5 +834,784 @@ describe("CloudSessionCollaborationOwner", () => {
       "mint exploded",
     );
     await vi.waitFor(() => expect(stack.owner.activeDispatchTargets).toBe(0));
+  });
+
+  it("cancels a re-announced started Turn on a stopped Session and acks its real settlement", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    attach.sent.length = 0;
+
+    // The Session stops while the Turn is running; the Runner reconnects mid-Turn and re-announces.
+    await db.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, fixture.sessionId));
+    await stack.owner.handleReceived(attach.connection, {
+      messageId,
+      phase: "started",
+      requestId: randomUUID(),
+      status: "accepted",
+      turnId: `turn-${messageId}`,
+      type: "session:message:received",
+    });
+
+    // Cancellation is requested and nothing else: no rejection (the Runner ignores it for a
+    // started entry) and, above all, no conflicting terminal state that could strand the real
+    // settlement. Custody stays accepted-unfinished until the Turn's truthful outcome arrives.
+    expect(attach.sent).toContainEqual(expect.objectContaining({ messageId, type: "session:message:cancel" }));
+    expect(attach.sent.some((frame) => frame.type === "session:message:verified")).toBe(false);
+    const [pending] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(pending).toMatchObject({ status: "accepted" });
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+
+    // The Turn's real settle is committed once and acked; only then do barrier and busy clear.
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "cancelled"));
+    expect(attach.sent).toContainEqual(
+      expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
+    );
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("answers a report-only re-announcement on a releasing allocation with cancellation", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+
+    // The allocation starts draining before the Runner's verified arrived; the Runner reconnects
+    // report-only (no execution permission) and re-announces its received entry. Silence here
+    // would strand the entry and time out the release drain.
+    await db.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, fixture.sandboxId));
+    const reportOnly = await attachRunner(stack, fixture, { executionEligible: false });
+    await stack.owner.handleReceived(reportOnly.connection, {
+      messageId,
+      phase: "received",
+      requestId: randomUUID(),
+      status: "accepted",
+      turnId: `turn-${messageId}`,
+      type: "session:message:received",
+    });
+    expect(reportOnly.sent).toContainEqual(expect.objectContaining({ messageId, type: "session:message:cancel" }));
+    expect(reportOnly.sent.some((frame) => frame.type === "session:message:verified")).toBe(false);
+
+    // The entry settles truthfully as cancelled and is acked, which retires custody and the busy
+    // picture so the release drain can finish.
+    await stack.owner.handleSettled(reportOnly.connection, settleFrame(messageId, "cancelled"));
+    expect(reportOnly.sent).toContainEqual(
+      expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
+    );
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    void attach;
+  });
+
+  it("never replays a retired record after allocation loss, even when the Turn provably never started", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const oldVerified = attach.sent.find(
+      (frame): frame is Extract<RunnerServerFrame, { type: "session:message:verified" }> =>
+        frame.type === "session:message:verified",
+    );
+    if (!oldVerified?.model) throw new Error("missing minted grant");
+
+    // The Instance is lost before the Turn settled: the old allocation is authoritatively retired.
+    // `failed/allocation_retired` proves only that the allocation was lost while unsettled — even
+    // for this received-never-verified entry the record cannot prove non-execution, so it is
+    // immutable evidence and never a replay permit.
+    const nextResourceName = `${fixture.scope.resourceName}-next`;
+    await db.database
+      .update(sandboxes)
+      .set({ environmentGeneration: 2, currentResourceName: nextResourceName })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    await expect(stack.owner.reconcileSessionWork(fixture.sessionId)).resolves.toBe(1);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    const grantsBefore = stack.grants.trackedGrantCount;
+
+    // The duplicate logical message reaches the replacement Runner, which journals a new Turn:
+    // custody is refused, the Runner's fresh entry is retired with a rejection, no fresh grant is
+    // minted, and the terminal record is untouched — the same accepted message can never run twice.
+    const retryScope = { ...fixture.scope, environmentGeneration: 2, resourceName: nextResourceName };
+    const retry = await attachRunner(
+      stack,
+      { ...fixture, scope: retryScope },
+      {
+        onFrame: (frame) => {
+          if (frame.type !== "session:message:run") return;
+          const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+          if (!connection) return;
+          void stack.owner.handleReceived(connection, {
+            messageId,
+            phase: "received",
+            requestId: frame.requestId,
+            status: "accepted",
+            turnId: "turn-retry",
+            type: "session:message:received",
+          });
+        },
+      },
+    );
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_unavailable",
+    });
+    expect(retry.sent).toContainEqual(
+      expect.objectContaining({ code: "not_accepted", status: "rejected", type: "session:message:verified" }),
+    );
+    expect(stack.grants.trackedGrantCount).toBe(grantsBefore);
+    expect(stack.owner.isSandboxBusy(retryScope)).toBe(false);
+    const records = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ status: "failed" });
+    if (!records[0]) throw new Error("durable record missing");
+    expect((records[0].lastError as { code?: string } | null)?.code).toBe("allocation_retired");
+    expect((records[0].payload as { turnId?: string }).turnId).toBe(`turn-${messageId}`);
+    // The replaced allocation is not pinned by the retired attempt, and the old grant is dead.
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await expect(stack.grants.verify(oldVerified.model.token)).resolves.toBeUndefined();
+  });
+
+  it("never authorizes a duplicate of a started Turn whose allocation was lost before settlement", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    // The Turn started on the Runner and may have performed external effects before the Instance
+    // disappeared. The durable state after reconcile is the same `failed/allocation_retired` as
+    // for a never-started entry — which is exactly why replay is forbidden.
+    const nextResourceName = `${fixture.scope.resourceName}-next`;
+    await db.database
+      .update(sandboxes)
+      .set({ environmentGeneration: 2, currentResourceName: nextResourceName })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    await expect(stack.owner.reconcileSessionWork(fixture.sessionId)).resolves.toBe(1);
+    const grantsBefore = stack.grants.trackedGrantCount;
+
+    const retryScope = { ...fixture.scope, environmentGeneration: 2, resourceName: nextResourceName };
+    const retry = await attachRunner(
+      stack,
+      { ...fixture, scope: retryScope },
+      {
+        onFrame: (frame) => {
+          if (frame.type !== "session:message:run") return;
+          const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+          if (!connection) return;
+          void stack.owner.handleReceived(connection, {
+            messageId,
+            phase: "received",
+            requestId: frame.requestId,
+            status: "accepted",
+            turnId: "turn-retry",
+            type: "session:message:received",
+          });
+        },
+      },
+    );
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_unavailable",
+    });
+    // No new grant and no second execution; the fresh journal entry is retired.
+    expect(stack.grants.trackedGrantCount).toBe(grantsBefore);
+    expect(stack.owner.isSandboxBusy(retryScope)).toBe(false);
+    expect(retry.sent).toContainEqual(
+      expect.objectContaining({ code: "not_accepted", status: "rejected", type: "session:message:verified" }),
+    );
+    expect(retry.sent.some((frame) => frame.type === "session:message:verified" && frame.status === "verified")).toBe(
+      false,
+    );
+    const [record] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(record).toMatchObject({ status: "failed" });
+    if (!record) throw new Error("durable record missing");
+    expect((record.lastError as { code?: string } | null)?.code).toBe("allocation_retired");
+  });
+
+  it("replaces a superseded never-started record when a retry re-journals with changed input", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const revokeSpy = vi.spyOn(stack.grants, "revokeExecution");
+    // The verified frame is lost in transit: custody is committed but the Turn never starts, and
+    // the Runner's entry waits at `received`.
+    const droppingSocket: RunnerControlSocket = {
+      send(frame) {
+        if (frame.type === "session:message:verified" && frame.status === "verified") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (frame.type === "session:message:run" && connection) {
+          void stack.owner.handleReceived(connection, {
+            messageId,
+            phase: "received",
+            requestId: frame.requestId,
+            status: "accepted",
+            turnId: `turn-${messageId}`,
+            type: "session:message:received",
+          });
+        }
+      },
+      close() {
+        // no-op
+      },
+    };
+    stack.hub.attach(fixture.scope, droppingSocket);
+    stack.hub.markReady(fixture.scope, READINESS, droppingSocket);
+    stack.fence.attach({
+      computerId: fixture.computerId,
+      installationId: randomUUID(),
+      scope: fixture.scope,
+      socket: droppingSocket,
+      sessionCollaborationEligible: true,
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const [accepted] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(accepted).toMatchObject({ status: "accepted" });
+
+    // The retry re-journals the message as a new Turn (the Runner retired the stale received
+    // entry whose input had changed): the same-allocation, never-started record is replaced — not
+    // borrowed — so the new Turn can settle and be acked.
+    const retry = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        void stack.owner.handleReceived(connection, {
+          messageId,
+          phase: "received",
+          requestId: frame.requestId,
+          status: "accepted",
+          turnId: "turn-second",
+          type: "session:message:received",
+        });
+      },
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const records = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(records).toHaveLength(1);
+    if (!records[0]) throw new Error("durable record missing");
+    expect((records[0].payload as { turnId?: string }).turnId).toBe("turn-second");
+    // The superseded Turn's grant died with its custody.
+    expect(revokeSpy).toHaveBeenCalledWith(`turn-${messageId}`);
+
+    await stack.owner.handleSettled(retry.connection, {
+      messageId,
+      outcome: "completed",
+      requestId: randomUUID(),
+      turnId: "turn-second",
+      type: "session:message:settled",
+    });
+    expect(retry.sent).toContainEqual(
+      expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
+    );
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("never lets a late old receipt overwrite the current attempt or clear its occupancy", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    // Attempt 1's verified frame is lost in transit: custody T1 is committed but never started.
+    const droppingSocket: RunnerControlSocket = {
+      send(frame) {
+        if (frame.type === "session:message:verified" && frame.status === "verified") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (frame.type === "session:message:run" && connection) {
+          void stack.owner.handleReceived(connection, {
+            messageId,
+            phase: "received",
+            requestId: frame.requestId,
+            status: "accepted",
+            turnId: `turn-${messageId}`,
+            type: "session:message:received",
+          });
+        }
+      },
+      close() {
+        // no-op
+      },
+    };
+    stack.hub.attach(fixture.scope, droppingSocket);
+    stack.hub.markReady(fixture.scope, READINESS, droppingSocket);
+    stack.fence.attach({
+      computerId: fixture.computerId,
+      installationId: randomUUID(),
+      scope: fixture.scope,
+      socket: droppingSocket,
+      sessionCollaborationEligible: true,
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+
+    // Attempt 2 on the SAME allocation re-journals the message as a new Turn: the superseded
+    // never-started record is replaced (compare-and-set) and T2 becomes the live attempt.
+    const retry = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        void stack.owner.handleReceived(connection, {
+          messageId,
+          phase: "received",
+          requestId: frame.requestId,
+          status: "accepted",
+          turnId: "turn-second",
+          type: "session:message:received",
+        });
+      },
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    retry.sent.length = 0;
+
+    // A stale receipt for the SUPERSEDED Turn arrives late on the current connection: it is
+    // retired with a rejection, never re-verified into a second execution, and the live attempt's
+    // busy registration and custody record stay exactly as they were.
+    await stack.owner.handleReceived(retry.connection, {
+      messageId,
+      phase: "received",
+      requestId: randomUUID(),
+      status: "accepted",
+      turnId: `turn-${messageId}`,
+      type: "session:message:received",
+    });
+    await vi.waitFor(() =>
+      expect(retry.sent).toContainEqual(
+        expect.objectContaining({ code: "not_accepted", status: "rejected", type: "session:message:verified" }),
+      ),
+    );
+    expect(
+      retry.sent.filter((frame) => frame.type === "session:message:verified" && frame.status === "verified"),
+    ).toHaveLength(0);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    const [record] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(record).toMatchObject({ status: "accepted" });
+    if (!record) throw new Error("durable record missing");
+    expect((record.payload as { turnId?: string }).turnId).toBe("turn-second");
+
+    // A late settlement for the superseded Turn is never committed or acked; the live attempt's
+    // record and occupancy are untouched.
+    await stack.owner.handleSettled(retry.connection, {
+      messageId,
+      outcome: "completed",
+      requestId: randomUUID(),
+      turnId: `turn-${messageId}`,
+      type: "session:message:settled",
+    });
+    expect(retry.sent.some((frame) => frame.type === "session:message:settled:ack")).toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+
+    // The live attempt settles and clears normally.
+    await stack.owner.handleSettled(retry.connection, {
+      messageId,
+      outcome: "completed",
+      requestId: randomUUID(),
+      turnId: "turn-second",
+      type: "session:message:settled",
+    });
+    expect(retry.sent).toContainEqual(
+      expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
+    );
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("preserves custody a concurrent re-announcement registered when the redispatch fails", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+
+    // A redispatch attempt registers its own unassigned busy entry, then the connection drops
+    // before any receipt: the failed attempt must release NOTHING — the accepted Turn's merged
+    // registration (turnId) is live custody, not the failed dispatch's property.
+    let captured = false;
+    const gated = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type === "session:message:run") captured = true;
+      },
+    });
+    const redelivering = stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission);
+    await vi.waitFor(() => expect(captured).toBe(true), { timeout: 2_000 });
+    stack.owner.detachConnection(gated.connection.connectionId);
+    await expect(redelivering).resolves.toEqual({ status: "unreachable", code: "runtime_not_ready" });
+
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    expect(stack.work.trackedMessages(fixture.sandboxId)).toEqual([{ messageId, turnId: `turn-${messageId}` }]);
+    // The durable barrier and the accepted outcome are likewise untouched by the failed attempt.
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
+    const [message] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId));
+    expect(message?.lastOutcome).toBe("accepted");
+
+    // The accepted Turn still settles and clears normally.
+    const restored = await attachRunner(stack, fixture);
+    await stack.owner.handleSettled(restored.connection, settleFrame(messageId));
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    void attach;
+  });
+
+  it("refuses to borrow a terminal duplicate record instead of reviving it", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId));
+    expect(attach.sent).toContainEqual(
+      expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
+    );
+    const grantsBefore = stack.grants.trackedGrantCount;
+    attach.sent.length = 0;
+
+    // A redispatch under a brand-new Turn (a Runner that re-journaled the message) meets the
+    // terminal record: custody is refused, the Runner's entry is retired, and no new permission
+    // is minted — the already-executed message can never run a second time.
+    const second = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        void stack.owner.handleReceived(connection, {
+          messageId,
+          phase: "received",
+          requestId: frame.requestId,
+          status: "accepted",
+          turnId: "turn-second",
+          type: "session:message:received",
+        });
+      },
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_unavailable",
+    });
+    expect(second.sent).toContainEqual(
+      expect.objectContaining({ code: "not_accepted", status: "rejected", type: "session:message:verified" }),
+    );
+    expect(stack.grants.trackedGrantCount).toBe(grantsBefore);
+    const [record] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(record).toMatchObject({ status: "succeeded" });
+  });
+
+  it("clears the busy tracker only for the exact retired Turn", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission);
+    // A newer attempt's registration for another message must survive the retirement sweep.
+    const otherMessage = randomUUID();
+    stack.work.register(fixture.scope, otherMessage, "turn-other");
+
+    await db.database
+      .update(sandboxes)
+      .set({ environmentGeneration: 2, currentResourceName: `${fixture.scope.resourceName}-next` })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    await expect(stack.owner.reconcileSessionWork(fixture.sessionId)).resolves.toBe(1);
+    expect(stack.work.trackedMessages(fixture.sandboxId)).toEqual([{ messageId: otherMessage, turnId: "turn-other" }]);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    stack.work.settle(fixture.scope, otherMessage);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("refuses custody when an idle claim committed before the receipt boundary", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    let answer: (() => void) | undefined;
+    const attach = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        answer = () => answeringOnFrame(stack, fixture)(frame);
+      },
+    });
+    const delivering = stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission);
+    await vi.waitFor(() => expect(answer).toBeDefined(), { timeout: 2_000 });
+
+    // An idle claim wins the Sandbox row lock before the receipt arrives: the claim's busy and
+    // barrier checks legitimately saw nothing. Custody must now fail closed so the reclaim drain
+    // converges and the source retries, instead of accepting work onto a sealed environment.
+    await db.database.update(sandboxes).set({ idleReclaimAt: new Date() }).where(eq(sandboxes.id, fixture.sandboxId));
+    answer?.();
+    await expect(delivering).resolves.toEqual({ status: "unreachable", code: "runtime_not_ready" });
+    expect(attach.sent).toContainEqual(
+      expect.objectContaining({
+        code: "environment_reclaimed",
+        status: "rejected",
+        type: "session:message:verified",
+      }),
+    );
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    const [message] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, messageId));
+    expect(message?.lastOutcome).toBe("unknown");
+  });
+
+  it("correlates a same-input retry by its new request identity and settles against it", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const requestIds: string[] = [];
+    const attach = await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        requestIds.push(frame.requestId);
+        // The Runner re-correlates its journaled entry to the newest attempt, so the receipt
+        // carries this dispatch's request id while the Turn identity stays stable.
+        answeringOnFrame(stack, fixture)(frame);
+      },
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId, 2), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    expect(requestIds).toHaveLength(2);
+    expect(requestIds[0]).not.toBe(requestIds[1]);
+    const verified = attach.sent.filter(
+      (frame): frame is Extract<RunnerServerFrame, { type: "session:message:verified" }> =>
+        frame.type === "session:message:verified" && frame.status === "verified",
+    );
+    expect(verified.at(-1)?.requestId).toBe(requestIds[1]);
+    // One custody record, one Turn: the retry was an idempotent re-acceptance, not new work.
+    const records = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(records).toHaveLength(1);
+
+    // The settlement carries the re-correlated request id (never the bare message id); it is
+    // committed and acked against the exact Turn and allocation.
+    const retryRequestId = requestIds[1] as string;
+    await stack.owner.handleSettled(attach.connection, {
+      messageId,
+      outcome: "completed",
+      requestId: retryRequestId,
+      turnId: `turn-${messageId}`,
+      type: "session:message:settled",
+    });
+    expect(attach.sent).toContainEqual(
+      expect.objectContaining({
+        messageId,
+        requestId: retryRequestId,
+        status: "recorded",
+        type: "session:message:settled:ack",
+      }),
+    );
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("never retires accepted custody on a transient durable read failure", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const store = new PostgresRuntimeDurableWorkStore(db.database);
+    // Exactly the next durable read fails; everything else uses the real store.
+    let failReads = 0;
+    const stack = makeStack(fixture, {
+      durableWork: {
+        read: async (computerId, kind, key) => {
+          if (failReads > 0) {
+            failReads -= 1;
+            throw new Error("transient read failure");
+          }
+          return store.read(computerId, kind, key);
+        },
+        write: (computerId, record) => store.write(computerId, record),
+        replaceSessionMessageRecord: (computerId, expected, record) =>
+          store.replaceSessionMessageRecord(computerId, expected, record),
+      },
+    });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+
+    // The Runner re-announces its received entry (a reconnect) while exactly one durable read
+    // fails: the error must surface to the connection handler instead of becoming a false
+    // proven-absence rejection that deletes the Runner's journal and strands the barrier.
+    failReads = 1;
+    attach.sent.length = 0;
+    await expect(
+      stack.owner.handleReceived(attach.connection, {
+        messageId,
+        phase: "received",
+        requestId: randomUUID(),
+        status: "accepted",
+        turnId: `turn-${messageId}`,
+        type: "session:message:received",
+      }),
+    ).rejects.toThrow("transient read failure");
+    expect(attach.sent).toEqual([]);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    const [record] = await db.database
+      .select()
+      .from(runtimeDurableWork)
+      .where(eq(runtimeDurableWork.recordKey, `${fixture.sessionId}:${messageId}`));
+    expect(record).toMatchObject({ status: "accepted" });
+
+    // The retained entry re-announces after the failure (the reconnected Runner): verification,
+    // settlement and ack converge normally.
+    await stack.owner.handleReceived(attach.connection, {
+      messageId,
+      phase: "received",
+      requestId: randomUUID(),
+      status: "accepted",
+      turnId: `turn-${messageId}`,
+      type: "session:message:received",
+    });
+    await vi.waitFor(() =>
+      expect(attach.sent).toContainEqual(
+        expect.objectContaining({ status: "verified", type: "session:message:verified" }),
+      ),
+    );
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId));
+    expect(attach.sent).toContainEqual(
+      expect.objectContaining({ messageId, status: "recorded", type: "session:message:settled:ack" }),
+    );
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+  });
+
+  it("clears the allocation convergence race timer once convergence wins", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    // A cold Sandbox: the dispatch must converge the allocation before it can send.
+    await db.database
+      .update(sandboxes)
+      .set({ lifecycle: "preparing", currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    const hub = new RunnerHub();
+    const fence = new CloudRuntimeFence();
+    const work = new CloudSessionWorkTracker();
+    const grants = new CloudModelGrantService(JWT_SECRET, {
+      allowedModels: [MODEL],
+      maxStreamsPerToken: 2,
+      ttlSeconds: 600,
+    });
+    const owner = new CloudSessionCollaborationOwner({
+      allocation: {
+        ensureEnvironmentAllocated: async () => {
+          await db.database
+            .update(sandboxes)
+            .set({ lifecycle: "ready", currentResourceName: fixture.scope.resourceName })
+            .where(eq(sandboxes.id, fixture.sandboxId));
+          return "ready";
+        },
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
+      database: db.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(db.database),
+      ensureTimeoutMs: 60_000,
+      fence,
+      hub,
+      modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
+      modelGrants: grants,
+      work,
+    });
+    const sent: RunnerServerFrame[] = [];
+    const socket: RunnerControlSocket = {
+      send(frame) {
+        sent.push(frame);
+        if (frame.type === "session:message:run") {
+          const connection = fence.connectionForSandbox(fixture.sandboxId);
+          if (!connection) return;
+          void owner.handleReceived(connection, {
+            messageId,
+            phase: "received",
+            requestId: frame.requestId,
+            status: "accepted",
+            turnId: `turn-${messageId}`,
+            type: "session:message:received",
+          });
+        }
+      },
+      close() {
+        // no-op
+      },
+    };
+    hub.attach(fixture.scope, socket);
+    hub.markReady(fixture.scope, READINESS, socket);
+    fence.attach({
+      computerId: fixture.computerId,
+      installationId: randomUUID(),
+      scope: fixture.scope,
+      sessionCollaborationEligible: true,
+      socket,
+    });
+
+    vi.useFakeTimers();
+    try {
+      const baseline = vi.getTimerCount();
+      await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+        status: "accepted",
+      });
+      // Close the grant service's own sweep interval so only a leaked dispatch/convergence timer
+      // could keep the count above baseline after the dispatch fully resolved.
+      grants.close();
+      expect(vi.getTimerCount()).toBe(baseline);
+    } finally {
+      vi.useRealTimers();
+    }
+    void sent;
   });
 });

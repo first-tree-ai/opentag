@@ -394,48 +394,105 @@ export class CloudTurnRunner {
         this.#log("ignoring session:message:run outside the current Session scope");
         return;
       }
-      const journalScope = this.#requireJournalScope();
-      const existing = await this.#options.journal.read(message.messageId);
-      const reusable = this.#reuseSessionEntry(existing, frame, journalScope);
-      if (existing && !reusable) return;
-      const entry =
-        reusable ??
-        (await this.#options.journal.recordSessionReceived({
-          message,
-          sessionKind: frame.sessionKind,
-          ...(frame.outboxContext ? { outboxContext: frame.outboxContext } : {}),
-          scope: journalScope,
-          requestId: frame.requestId,
-          turnId: randomUUID(),
-        }));
-      this.#sendSessionProgress(entry);
+      const entry = await this.#journalSessionDispatch(frame, this.#requireJournalScope());
+      if (!entry) return;
+      if (entry.phase === "reported") {
+        // The immutable settlement is the only answer to a redispatch of completed custody.
+        this.#sendSessionSettled(entry);
+        return;
+      }
+      // The receipt always correlates THIS dispatch attempt by its unique request id; the
+      // journaled Turn identity stays stable across retries of the same logical message.
+      this.#send({
+        type: "session:message:received",
+        requestId: frame.requestId,
+        messageId: entry.messageId,
+        turnId: entry.turnId,
+        status: "accepted",
+        phase: entry.phase === "started" ? "started" : "received",
+      });
     });
   }
 
-  /** Reuse one already-journaled Session dispatch, or undefined when the re-dispatch must be refused. */
-  #reuseSessionEntry(
+  /**
+   * Journal (or reuse) the entry for one Session run frame; undefined when the dispatch is
+   * refused. Every write is fsynced before the caller may send the receipt.
+   */
+  async #journalSessionDispatch(
+    frame: RunnerCloudSessionMessageRunFrame,
+    journalScope: CloudJournalScope,
+  ): Promise<CloudJournalSessionEntry | undefined> {
+    const message = frame.message;
+    const existing = await this.#options.journal.read(message.messageId);
+    const decision = this.#sessionDispatchDecision(existing, frame, journalScope);
+    if (decision.kind === "refuse") return undefined;
+    if (decision.kind === "reuse") return decision.entry;
+    if (decision.kind === "rekey") {
+      return this.#options.journal.updateSessionRequestId(message.messageId, journalScope, frame.requestId);
+    }
+    const input = {
+      message,
+      sessionKind: frame.sessionKind,
+      ...(frame.outboxContext ? { outboxContext: frame.outboxContext } : {}),
+      scope: journalScope,
+      requestId: frame.requestId,
+      turnId: randomUUID(),
+    };
+    return decision.kind === "replace"
+      ? this.#options.journal.replaceSessionReceived(input)
+      : this.#options.journal.recordSessionReceived(input);
+  }
+
+  /**
+   * How one Session run frame relates to the journaled entry, if any. The request id is the
+   * per-attempt identity and the input hash ignores it, so a retry of the same logical message
+   * reuses its entry, a changed snapshot supersedes a never-started entry, and any started or
+   * reported entry is left to converge through its own settlement — never a second execution.
+   */
+  #sessionDispatchDecision(
     existing: CloudJournalEntry | undefined,
     frame: RunnerCloudSessionMessageRunFrame,
     journalScope: CloudJournalScope,
-  ): CloudJournalSessionEntry | undefined {
-    if (!existing) return undefined;
+  ):
+    | { kind: "fresh" }
+    | { kind: "refuse" }
+    | { kind: "replace" }
+    | { kind: "rekey"; entry: CloudJournalSessionEntry }
+    | { kind: "reuse"; entry: CloudJournalSessionEntry } {
     const messageId = frame.message.messageId;
+    if (!existing) return { kind: "fresh" };
     if (existing.kind !== "session-message") {
       this.#log(`refusing re-dispatch of ${messageId}: journal key belongs to a delivery`);
-      return undefined;
+      return { kind: "refuse" };
     }
     try {
       assertCloudJournalScope(existing, journalScope);
     } catch {
       this.#log(`refusing re-dispatch of ${messageId}: journaled under another allocation`);
-      return undefined;
+      return { kind: "refuse" };
     }
-    if (existing.requestId !== frame.requestId || existing.inputHash !== computeCloudSessionInputHash(frame)) {
-      this.#log(`refusing re-dispatch of ${messageId}: journaled dispatch identity or input differs`);
-      if (existing.phase === "received" && existing.requestId !== frame.requestId) this.#sendSessionProgress(existing);
-      return undefined;
+    const sameAttempt = existing.requestId === frame.requestId;
+    const sameInput = existing.inputHash === computeCloudSessionInputHash(frame);
+    // A journaled dispatch may only be re-sent with the SAME dispatch identity and content.
+    // Changed input under the same attempt identity is a visible conflict, never a second turn.
+    if (sameAttempt && !sameInput) {
+      this.#log(`refusing re-dispatch of ${messageId}: journaled input differs for the same dispatch`);
+      return { kind: "refuse" };
     }
-    return existing;
+    if (sameInput) {
+      // A new attempt for identical input reuses the entry. A still-`received` entry is first
+      // re-correlated to the new attempt; a started/reported entry keeps its settlement identity.
+      return existing.phase === "received" ? { kind: "rekey", entry: existing } : { kind: "reuse", entry: existing };
+    }
+    if (existing.phase === "received") {
+      // The journaled input is outdated and the Turn never started: retire the stale entry and
+      // journal this attempt (the Server replaces the never-executed custody record in step).
+      return { kind: "replace" };
+    }
+    this.#log(
+      `refusing re-dispatch of ${messageId}: a ${existing.phase} entry with changed input settles through its own path`,
+    );
+    return { kind: "refuse" };
   }
 
   /** Server persisted durable custody for one Session message: execution may start. */
@@ -1422,6 +1479,13 @@ export class CloudTurnRunner {
     const scope = this.#options.scope();
     if (!scope) throw new Error("The Runner scope is not established");
     if (signal.aborted) return cancelledBeforeStart();
+    // The single execution deadline for this Turn, anchored only now — after the Session queue
+    // wait — so legitimate queue wait is never charged against the runtime budget. The in-sandbox
+    // worker derives its own timeout from the same absolute deadline and the parent exec backstop
+    // adds only the bounded reporting grace, so the worker's `turn_timeout` always wins over the
+    // backstop and a slow bridge/worker startup can never record a real timeout as `unknown`.
+    const budgetMs = Math.max(1, message.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS);
+    const deadlineAt = new Date(Date.now() + budgetMs).toISOString();
     const openExecution =
       this.#options.openSessionExecution ??
       ((input: CloudSessionExecutionOpenInput) => this.#openSessionBridgeExecution(input));
@@ -1433,6 +1497,7 @@ export class CloudTurnRunner {
         executionDir: execution.executionDir,
         model,
         sessionKind: entry.sessionKind,
+        deadlineAt,
         ...(entry.outboxContext ? { outboxContext: entry.outboxContext } : {}),
         ...(execution.sessionCliProof
           ? { sessionCollaboration: { proof: execution.sessionCliProof, serverUrl: this.#options.serverUrl } }
@@ -1447,8 +1512,7 @@ export class CloudTurnRunner {
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
           }));
-      const budgetMs = message.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS;
-      const timeoutMs = Math.max(1, budgetMs) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
+      const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
       const exec = await runWorker({ stdin, timeoutMs }, signal);
       if (signal.aborted) {
         return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };

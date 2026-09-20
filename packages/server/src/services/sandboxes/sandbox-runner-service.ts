@@ -84,12 +84,14 @@ export interface SandboxRunnerServiceOptions {
     sealTimeoutMs?: number;
   };
   /**
-   * E8 Session collaboration liveness: accepted-unfinished Session-message work on this Sandbox.
-   * Consulted next to `hub.isBusy` under the same Sandbox row lock, so an idle claim or a
-   * sibling borrow can never interrupt a collaboration Turn the IM custody rows cannot see
-   * (Session messages have no durable Turn columns by design).
+   * E8 Session collaboration liveness: accepted-unfinished Session-message work on the exact
+   * allocation being considered. Consulted next to `hub.isBusy` under the same Sandbox row lock,
+   * so an idle claim or a sibling borrow can never interrupt a collaboration Turn the IM custody
+   * rows cannot see (Session messages have no durable Turn columns by design). The allocation
+   * identity (Sandbox + generation + resource) keeps a stale registration on a replaced
+   * allocation from pinning its successor.
    */
-  sessionWorkBusy?: (sandboxId: string) => boolean;
+  sessionWorkBusy?: (allocation: { sandboxId: string; environmentGeneration: number; resourceName: string }) => boolean;
   /**
    * The authoritative durable barrier, awaited inside the same row-lock transaction as the claim.
    * It reads the existing `runtime_durable_work` `session-message` records and compares their
@@ -218,7 +220,9 @@ export class SandboxRunnerService {
   readonly #deleteVerifyTimeoutMs: number;
   readonly #idleTimeoutMs: number;
   readonly #workspace: { store: WorkspaceObjectStore; sealTimeoutMs: number } | undefined;
-  readonly #sessionWorkBusy: ((sandboxId: string) => boolean) | undefined;
+  readonly #sessionWorkBusy:
+    | ((allocation: { sandboxId: string; environmentGeneration: number; resourceName: string }) => boolean)
+    | undefined;
   readonly #sessionWorkBarrier:
     | ((input: {
         allocation: { sandboxId: string; environmentGeneration: number; resourceName: string };
@@ -1851,8 +1855,10 @@ export class SandboxRunnerService {
   /**
    * Atomic idle claim under the Sandbox row lock, shared by the automatic sweep and an on-demand
    * same-account borrow. The unsettled-delivery check runs AFTER the row lock, and dispatch
-   * custody takes the same row lock, so an accepted/claimed dispatch and a claim can never both
-   * commit. Any unsettled work (pending/claimed dispatch, accepted/unreported) refuses the claim.
+   * custody takes the same row lock — IM dispatch registers acceptance under it and the E8
+   * Session-message owner re-verifies the unclaimed allocation under it before writing accepted
+   * custody — so an accepted/claimed dispatch and a claim can never both commit. Any unsettled
+   * work (pending/claimed dispatch, accepted/unreported) refuses the claim.
    */
   async #claimIdle(
     sandboxId: string,
@@ -1969,7 +1975,7 @@ export class SandboxRunnerService {
     sessionId: string,
     transaction: DatabaseTransaction,
   ): Promise<boolean> {
-    if (this.#sessionWorkBusy?.(allocation.sandboxId)) return true;
+    if (this.#sessionWorkBusy?.(allocation)) return true;
     if (!this.#sessionWorkBarrier) return false;
     return this.#sessionWorkBarrier({ allocation, sessionId, transaction });
   }
@@ -2018,15 +2024,21 @@ export class SandboxRunnerService {
   /** A candidate is borrowable only through a connected, ready, E7-negotiated, non-busy Runner. */
   #isReuseCandidateReady(candidate: typeof sandboxes.$inferSelect): boolean {
     const snapshot = this.#hub.describe(candidate.id);
+    const resourceName = candidate.currentResourceName;
     return (
       snapshot.connected &&
       snapshot.ready &&
       snapshot.reuseCapable &&
       snapshot.scope !== null &&
+      resourceName !== null &&
       snapshot.scope.environmentGeneration === candidate.environmentGeneration &&
-      snapshot.scope.resourceName === candidate.currentResourceName &&
+      snapshot.scope.resourceName === resourceName &&
       !this.#hub.isBusy(candidate.id) &&
-      this.#sessionWorkBusy?.(candidate.id) !== true
+      this.#sessionWorkBusy?.({
+        sandboxId: candidate.id,
+        environmentGeneration: candidate.environmentGeneration,
+        resourceName,
+      }) !== true
     );
   }
 

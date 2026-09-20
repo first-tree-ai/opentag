@@ -17,6 +17,7 @@
   "skills_error_name_conflict": "已存在同名技能。",
   "skills_error_name_reserved": "该技能名称已被平台保留。请在 SKILL.md 中改名后重试。",
   "skills_error_not_found": "该技能已不存在。请刷新后重试。",
+  "skills_error_revision_conflict": "该技能在你操作期间发生了变化。请刷新后重试。",
   "skills_error_storage_unavailable": "此部署未提供技能存储。",
   "skills_file_count": [
     {

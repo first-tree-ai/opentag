@@ -17,6 +17,7 @@
   "skills_error_name_conflict": "A Skill with this name already exists.",
   "skills_error_name_reserved": "That Skill name is reserved by the platform. Rename the Skill in its SKILL.md and try again.",
   "skills_error_not_found": "That Skill no longer exists. Refresh and try again.",
+  "skills_error_revision_conflict": "This Skill changed while you were working. Reload and try again.",
   "skills_error_storage_unavailable": "Skill storage is unavailable on this deployment.",
   "skills_file_count": [
     {

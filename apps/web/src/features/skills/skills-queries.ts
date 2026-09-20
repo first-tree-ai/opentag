@@ -34,8 +34,11 @@ export function useAgentSkill(agentId: string, skillId: string | undefined) {
  * One shared invalidator, keyed by the Agent the write targeted. Every write changes both that
  * Agent's list and the affected Skill's detail, and the detail key is a child of the list key, so
  * invalidating the list retires both.
+ *
+ * Exported because a failed write can still move the row: a revision conflict means somebody else
+ * changed the Skill, so the page refreshes the list even though the mutation rejected.
  */
-function useSkillInvalidation() {
+export function useInvalidateAgentSkills() {
   const queryClient = useQueryClient();
   return async (agentId: string) => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.skills.agentSkills(agentId) });
@@ -43,7 +46,7 @@ function useSkillInvalidation() {
 }
 
 export function useUploadSkill() {
-  const invalidate = useSkillInvalidation();
+  const invalidate = useInvalidateAgentSkills();
   return useMutation({
     mutationFn: (input: {
       agentId: string;
@@ -60,7 +63,7 @@ export function useUploadSkill() {
 }
 
 export function useUpdateSkill() {
-  const invalidate = useSkillInvalidation();
+  const invalidate = useInvalidateAgentSkills();
   return useMutation({
     mutationFn: (input: { agentId: string; skillId: string; enabled: boolean }) =>
       browserApi.updateAgentSkill(input.agentId, input.skillId, { enabled: input.enabled }),
@@ -69,7 +72,7 @@ export function useUpdateSkill() {
 }
 
 export function useRemoveSkill() {
-  const invalidate = useSkillInvalidation();
+  const invalidate = useInvalidateAgentSkills();
   return useMutation({
     mutationFn: (input: { agentId: string; skillId: string }) =>
       browserApi.removeAgentSkill(input.agentId, input.skillId),

@@ -7,7 +7,7 @@ import { Banner, Button, Text } from "../../ui/design-system.js";
 import { RemoveSkillDialog, ReplaceSkillDialog } from "./skill-dialogs.js";
 import { SkillRow } from "./skill-row.js";
 import { checkSkillArchiveFile, sha256Hex, skillErrorMessage, skillRejectionMessage } from "./skills-page-model.js";
-import { useAgentSkills, useUploadSkill } from "./skills-queries.js";
+import { useAgentSkills, useInvalidateAgentSkills, useUploadSkill } from "./skills-queries.js";
 
 /** One archive waiting on the replace confirmation, bound to the Agent it was chosen for. */
 interface PendingReplace {
@@ -33,6 +33,7 @@ export function SkillsPage({ agentId }: { agentId: string }) {
 function SkillsPageBody({ agentId }: { agentId: string }) {
   const skills = useAgentSkills(agentId);
   const upload = useUploadSkill();
+  const invalidateSkills = useInvalidateAgentSkills();
   const fileInputRef = useRef<HTMLInputElement>(null);
   /*
    * The body only remounts when the Agent changes, so within one instance this tracks unmount alone.
@@ -94,13 +95,24 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
       if (alive.current) setUploadingName(undefined);
     }
     if (failure === undefined || !alive.current) return;
-    // A name conflict is the one failure the user resolves by confirming, so it opens the dialog
-    // with the archive already hashed rather than reporting an error.
+    await reportUploadFailure(failure, archive);
+  };
+
+  /**
+   * Resolve a failed upload for the archive that produced it.
+   *
+   * A name conflict is the one failure the user resolves by confirming, so it opens the dialog with
+   * the archive already hashed rather than reporting an error. A revision conflict means somebody
+   * else changed the Skill mid-upload: there is nothing to confirm, so report it and refresh the
+   * list rather than offering a Replace the user cannot win.
+   */
+  const reportUploadFailure = async (failure: unknown, archive: PendingReplace | undefined) => {
     if (archive && isNameConflict(failure)) {
       setPendingReplace(archive);
       return;
     }
     setActionError(actionMessage(failure));
+    if (archive && isRevisionConflict(failure)) await invalidateSkills(archive.agentId);
   };
 
   const onFileSelected = async (file: File) => {
@@ -217,6 +229,10 @@ function SkillList({
 
 function isNameConflict(cause: unknown): boolean {
   return cause instanceof ApiError && cause.code === SKILL_ERROR_CODES.NAME_CONFLICT;
+}
+
+function isRevisionConflict(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.code === SKILL_ERROR_CODES.REVISION_CONFLICT;
 }
 
 function actionMessage(cause: unknown): string {

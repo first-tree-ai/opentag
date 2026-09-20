@@ -75,6 +75,7 @@ export function skillSourceLabel(source: SkillSource): string {
 const ERROR_MESSAGES: Record<SkillErrorCode, () => string> = {
   [SKILL_ERROR_CODES.NOT_FOUND]: m.skills_error_not_found,
   [SKILL_ERROR_CODES.NAME_CONFLICT]: m.skills_error_name_conflict,
+  [SKILL_ERROR_CODES.REVISION_CONFLICT]: m.skills_error_revision_conflict,
   [SKILL_ERROR_CODES.LIMIT_REACHED]: m.skills_error_limit_reached,
   [SKILL_ERROR_CODES.NAME_RESERVED]: m.skills_error_name_reserved,
   [SKILL_ERROR_CODES.MANIFEST_INVALID]: m.skills_error_manifest_invalid,

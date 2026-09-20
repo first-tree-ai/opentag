@@ -134,6 +134,7 @@ export const SKILL_UPLOAD_CONTENT_TYPE = "application/octet-stream";
 export const SKILL_ERROR_CODES = {
   NOT_FOUND: "SKILL_NOT_FOUND",
   NAME_CONFLICT: "SKILL_NAME_CONFLICT",
+  REVISION_CONFLICT: "SKILL_REVISION_CONFLICT",
   LIMIT_REACHED: "SKILL_LIMIT_REACHED",
   NAME_RESERVED: "SKILL_NAME_RESERVED",
   MANIFEST_INVALID: "SKILL_MANIFEST_INVALID",
@@ -150,6 +151,7 @@ export const SKILL_ERROR_CODE_METADATA: Readonly<
 > = {
   [SKILL_ERROR_CODES.NOT_FOUND]: { category: "deterministic", statusCode: 404 },
   [SKILL_ERROR_CODES.NAME_CONFLICT]: { category: "deterministic", statusCode: 409 },
+  [SKILL_ERROR_CODES.REVISION_CONFLICT]: { category: "deterministic", statusCode: 409 },
   [SKILL_ERROR_CODES.LIMIT_REACHED]: { category: "deterministic", statusCode: 409 },
   [SKILL_ERROR_CODES.NAME_RESERVED]: { category: "validation", statusCode: 400 },
   [SKILL_ERROR_CODES.MANIFEST_INVALID]: { category: "validation", statusCode: 400 },

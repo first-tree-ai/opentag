@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ErrorEnvelopeSchema } from "../errors.js";
 import {
   agentSkillBundlePath,
   agentSkillPath,
@@ -159,6 +160,13 @@ describe("skill error codes", () => {
       category: "transient",
       statusCode: 503,
     });
+  });
+
+  it("round-trips a revision conflict through the error envelope", () => {
+    const code = SKILL_ERROR_CODES.REVISION_CONFLICT;
+    const category = SKILL_ERROR_CODE_METADATA[code].category;
+    const envelope = { error: { code, category, message: "The Skill changed concurrently; reload and retry" } };
+    expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
   });
 });
 

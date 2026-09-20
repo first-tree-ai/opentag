@@ -142,6 +142,35 @@ describe("SkillsPage", () => {
     expect(upload).toHaveBeenCalledTimes(1);
   });
 
+  it("reports an upload revision conflict, opens no replace dialog, and refreshes the list", async () => {
+    const list = stubList([]);
+    vi.spyOn(browserApi, "uploadAgentSkill").mockRejectedValue(
+      new ApiError(409, "conflict", SKILL_ERROR_CODES.REVISION_CONFLICT),
+    );
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText(/No Skills yet/);
+
+    fireEvent.change(fileInput(), { target: { files: [archiveFile("notes.zip", "hello")] } });
+
+    expect(await screen.findByText("This Skill changed while you were working. Reload and try again.")).toBeTruthy();
+    expect(screen.queryByText(/Replace the existing Skill/)).toBeNull();
+    // The list is invalidated so a Skill that changed underneath the user is re-read.
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  });
+
+  it("reports a revision conflict from a toggle without a replace dialog", async () => {
+    stubList([skill({ enabled: true })]);
+    vi.spyOn(browserApi, "updateAgentSkill").mockRejectedValue(
+      new ApiError(409, "conflict", SKILL_ERROR_CODES.REVISION_CONFLICT),
+    );
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Release notes writer" }));
+
+    expect(await screen.findByText("This Skill changed while you were working. Reload and try again.")).toBeTruthy();
+    expect(screen.queryByText(/Replace the existing Skill/)).toBeNull();
+  });
+
   it("rejects an oversized archive client-side without a request", async () => {
     stubList([]);
     const upload = vi.spyOn(browserApi, "uploadAgentSkill");

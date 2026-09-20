@@ -471,6 +471,21 @@ describe("Feishu adapter", () => {
     }
   });
 
+  it("fetches a resource without a signal through the caller's own client", async () => {
+    const get = vi.fn(async () => ({ getReadableStream: () => Readable.from(Buffer.from("resource")) }));
+    const http = createFeishuHttpCapability({
+      im: { v1: { chatMembers: { get: vi.fn() }, messageResource: { get } } },
+    });
+    // No signal: the capability must read through the client it was given, not build a new one.
+    await expect(
+      http.fetchResource({ messageExternalId: "om_2", providerResourceKey: "file_2", kind: "file" }),
+    ).resolves.toMatchObject({ stream: expect.any(Readable) });
+    expect(get).toHaveBeenCalledWith({
+      path: { message_id: "om_2", file_key: "file_2" },
+      params: { type: "file" },
+    });
+  });
+
   it("creates a read-only HTTP capability for provider resources", async () => {
     const get = vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.from("resource")) });
     const getChatMembers = vi
@@ -638,6 +653,413 @@ describe("Feishu adapter", () => {
       conversation: { externalId: "oc_1", kind: "unknown" },
       message: { externalId: "om-recalled", operation: "deleted" },
     });
+  });
+});
+
+/**
+ * The branch corners the happy-path suite above leaves open: provider envelopes without a platform
+ * event id, deduplication expiry and bounding, the shape guards of the rich-text reader, and the
+ * SDK wiring an adapter builds for itself when no HTTP capability is injected.
+ */
+describe("Feishu adapter branch corners", () => {
+  it("maps a raw receive event without a platform event id onto its message-derived identity", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const raw = rawMessage("ev-identity", "om-identity", "3");
+    delete (raw.header as { event_id?: string }).event_id;
+    await dispatcher.invoke(raw, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["om-identity"]);
+  });
+
+  it("keys a recall without an event id on its message identity and drops one with no message id", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    // No message id at all: the recall normalizes to nothing and never reaches deduplication.
+    await dispatcher.invoke(
+      {
+        schema: "2.0",
+        header: { event_type: "im.message.recalled_v1", tenant_key: "workspace_1" },
+        event: { tenant_key: "workspace_1", chat_id: "oc_1", recall_time: "5" },
+      },
+      { needCheck: false },
+    );
+    expect(received).toHaveLength(0);
+
+    await dispatcher.invoke(
+      {
+        schema: "2.0",
+        header: { event_type: "im.message.recalled_v1", tenant_key: "workspace_1" },
+        event: { tenant_key: "workspace_1", message_id: "om-recall-2", chat_id: "oc_1", recall_time: "5" },
+      },
+      { needCheck: false },
+    );
+    expect(received.map((message) => message.messageId)).toEqual(["om-recall-2"]);
+  });
+
+  it("admits a repeated inbound event again once its deduplication entry expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const admitted: string[] = [];
+      const dispatcher = createReliableFeishuDispatcher((message) => {
+        admitted.push(message.messageId);
+      });
+      const raw = rawMessage("ev-ttl", "om-ttl", "4");
+      await dispatcher.invoke(raw, { needCheck: false });
+      await dispatcher.invoke(raw, { needCheck: false });
+      expect(admitted).toEqual(["om-ttl"]);
+
+      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      await dispatcher.invoke(raw, { needCheck: false });
+      expect(admitted).toEqual(["om-ttl", "om-ttl"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the deduplication table instead of letting it grow without limit", async () => {
+    const admitted: string[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      admitted.push(message.messageId);
+    });
+    // Two keys per event, so this crosses the 10,000-entry bound and forces the eviction loop.
+    for (let index = 0; index < 5_100; index += 1) {
+      await dispatcher.invoke(rawMessage(`ev-bound-${index}`, `om-bound-${index}`, "1"), { needCheck: false });
+    }
+    expect(admitted).toHaveLength(5_100);
+  }, 60_000);
+
+  it("finds a rich-text body under a locale-shaped wrapper and skips scalar siblings", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-locale", "om-post-locale", "10");
+    post.event.message.message_type = "post";
+    // No top-level title: the lookup must walk the wrapper values, ignore the scalar sibling, and
+    // still find the paragraphs.
+    post.event.message.content = JSON.stringify({
+      content: [[{ tag: "text", text: "正文", style: [] }]],
+      note: "scalar sibling",
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["正文"]);
+  });
+
+  it("drops non-object elements from a rich-text paragraph instead of inventing text", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-shape", "om-post-shape", "11");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      content: [[null, "raw string", { tag: "text", text: "kept", style: [] }]],
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    expect(received.map((message) => message.content)).toEqual(["kept"]);
+  });
+
+  it("treats a non-array markdown copy as no text rather than reading it", async () => {
+    const received: NormalizedMessage[] = [];
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received.push(message);
+    });
+    const post = rawMessage("ev-post-md-shape", "om-post-md-shape", "12");
+    post.event.message.message_type = "post";
+    post.event.message.content = JSON.stringify({
+      content: [[{ tag: "img", image_key: "img_1" }]],
+      content_v2: "plain text the reader must not guess at",
+    });
+    await dispatcher.invoke(post, { needCheck: false });
+    // An unusable markdown copy is no text at all: the message falls back to unsupported content
+    // rather than being guessed at.
+    expect(received[0]?.content).toBe("");
+    const [event] = normalizeFeishuMessage({
+      appId: "cli_1",
+      teamId: "workspace_1",
+      message: received[0] as never,
+    });
+    expect(event?.message.content.blocks).toEqual([{ type: "unsupported", providerType: "post" }]);
+  });
+
+  it("refuses to validate a binding when the channel never reported its bot identity", async () => {
+    const adapter = new FeishuAdapter({
+      appId: "cli_no_bot",
+      appSecret: "secret",
+      teamId: null,
+      channel: { connect: vi.fn(), disconnect: vi.fn(), on: () => () => undefined },
+    });
+    await expect(adapter.validateBinding()).rejects.toThrow("FEISHU_BOT_IDENTITY_MISSING");
+  });
+
+  it("rejects a scope listing that carries no scopes at all", async () => {
+    const adapter = new FeishuAdapter({
+      appId: "cli_no_scopes",
+      appSecret: "secret",
+      teamId: null,
+      channel: null,
+      scopeList: async () => ({ code: 0 }),
+    });
+    await expect(adapter.listGrantedWorkspaceScopes()).rejects.toThrow("FEISHU_SCOPE_VALIDATION_FAILED");
+  });
+
+  it("normalizes an inbound envelope through the adapter's own entry point", () => {
+    const adapter = new FeishuAdapter({ appId: "cli_1", appSecret: "secret", teamId: null, channel: null });
+    const [event] = adapter.normalizeInbound({
+      appId: "cli_1",
+      teamId: "workspace_1",
+      message: {
+        messageId: "om_inbound",
+        chatId: "oc_1",
+        chatType: "group",
+        senderId: "ou_human",
+        content: "hello",
+        rawContentType: "text",
+        resources: [],
+        mentions: [],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: 1,
+        raw: { header: { event_id: "ev_inbound", tenant_key: "workspace_1" } },
+      },
+    });
+    expect(event).toMatchObject({
+      providerEventId: "ev_inbound",
+      message: { externalId: "om_inbound", operation: "created" },
+      conversation: { externalId: "oc_1", kind: "channel" },
+    });
+  });
+
+  it("reports no sender name without the capability and delegates to it when present", async () => {
+    const stream = () => ({ stream: Readable.from(Buffer.alloc(0)) });
+    const withoutCapability = new FeishuAdapter({
+      appId: "cli_1",
+      appSecret: "secret",
+      teamId: null,
+      channel: null,
+      http: { fetchResource: async () => stream() },
+    });
+    await expect(
+      withoutCapability.resolveSenderName({ chatId: "oc_1", senderOpenId: "ou_1" }),
+    ).resolves.toBeUndefined();
+
+    const resolveSenderName = vi.fn(async () => "Mia Zhang");
+    const withCapability = new FeishuAdapter({
+      appId: "cli_1",
+      appSecret: "secret",
+      teamId: null,
+      channel: null,
+      http: { fetchResource: async () => stream(), resolveSenderName },
+    });
+    await expect(withCapability.resolveSenderName({ chatId: "oc_1", senderOpenId: "ou_1" })).resolves.toBe("Mia Zhang");
+    expect(resolveSenderName).toHaveBeenCalledWith({ chatId: "oc_1", senderOpenId: "ou_1" });
+  });
+
+  it("fails a sender-name lookup on a provider error code and caches an absent name", async () => {
+    const failing = createFeishuHttpCapability({
+      im: {
+        v1: {
+          chatMembers: { get: vi.fn().mockResolvedValue({ code: 99, msg: "denied" }) },
+          messageResource: { get: vi.fn() },
+        },
+      },
+    });
+    await expect(failing.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_1" })).rejects.toThrow(
+      "FEISHU_SENDER_NAME_LOOKUP_FAILED",
+    );
+
+    const getChatMembers = vi.fn().mockResolvedValue({
+      code: 0,
+      data: { items: [{ member_id: "ou_other", name: "Other" }], has_more: false },
+    });
+    const absent = createFeishuHttpCapability({
+      im: { v1: { chatMembers: { get: getChatMembers }, messageResource: { get: vi.fn() } } },
+    });
+    await expect(absent.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_absent" })).resolves.toBeUndefined();
+    await expect(absent.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_absent" })).resolves.toBeUndefined();
+    // The negative result is cached too, so a second read does not page the provider again.
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-reads a sender name once its cached entry expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const getChatMembers = vi.fn().mockResolvedValue({
+        code: 0,
+        data: { items: [{ member_id: "ou_sender", name: "Mia Zhang" }], has_more: false },
+      });
+      const http = createFeishuHttpCapability({
+        im: { v1: { chatMembers: { get: getChatMembers }, messageResource: { get: vi.fn() } } },
+      });
+      await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
+      await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
+      expect(getChatMembers).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(60 * 60 * 1000 + 1);
+      await expect(http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" })).resolves.toBe("Mia Zhang");
+      expect(getChatMembers).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shares one in-flight sender-name lookup between concurrent readers", async () => {
+    let release: ((value: unknown) => void) | undefined;
+    const getChatMembers = vi.fn().mockReturnValue(
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+    );
+    const http = createFeishuHttpCapability({
+      im: { v1: { chatMembers: { get: getChatMembers }, messageResource: { get: vi.fn() } } },
+    });
+    const first = http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" });
+    const second = http.resolveSenderName?.({ chatId: "oc_1", senderOpenId: "ou_sender" });
+    release?.({ code: 0, data: { items: [{ member_id: "ou_sender", name: "Mia Zhang" }], has_more: false } });
+    await expect(first).resolves.toBe("Mia Zhang");
+    await expect(second).resolves.toBe("Mia Zhang");
+    expect(getChatMembers).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits an inbound message only through the registered handler and refuses before one is set", async () => {
+    vi.resetModules();
+    const actual = await vi.importActual<typeof import("@larksuiteoapi/node-sdk")>("@larksuiteoapi/node-sdk");
+    const outbound = {
+      botIdentity: { openId: "ou_ready", name: "Ready Bot" },
+      connect: vi.fn().mockResolvedValue(undefined),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+    };
+    let dispatch: ((body: unknown) => Promise<void>) | undefined;
+    class FakeWsClient {
+      readonly #onReady: (() => void) | undefined;
+      constructor(options: { onReady?: () => void }) {
+        this.#onReady = options.onReady;
+      }
+      async start(options: { eventDispatcher?: EventDispatcher }): Promise<void> {
+        dispatch = (body) =>
+          (options.eventDispatcher as unknown as { invoke(b: unknown, o: unknown): Promise<void> }).invoke(body, {
+            needCheck: false,
+          });
+        this.#onReady?.();
+      }
+      close(): void {}
+    }
+    vi.doMock("@larksuiteoapi/node-sdk", () => ({
+      ...actual,
+      WSClient: FakeWsClient,
+      createLarkChannel: vi.fn(() => outbound),
+    }));
+    try {
+      const module = await import("../services/im-bindings/feishu/adapter.js");
+      const adapter = new module.FeishuAdapter({ appId: "cli_admit", appSecret: "secret", teamId: null });
+      await adapter.channel.connect();
+      // No message handler registered yet: the frame is refused instead of being silently dropped,
+      // so the Runner-side ACK is a failure the provider will redeliver.
+      await expect(dispatch?.(rawMessage("ev-admit-0", "om-admit-0", "1"))).rejects.toThrow(
+        "FEISHU_ADMISSION_NOT_READY",
+      );
+
+      const admitted: string[] = [];
+      adapter.channel.on({ message: (message) => void admitted.push(message.messageId) });
+      await dispatch?.(rawMessage("ev-admit-1", "om-admit-1", "1"));
+      expect(admitted).toEqual(["om-admit-1"]);
+
+      // A signal that aborted before connect stops the Channel from being started at all.
+      const aborted = new AbortController();
+      aborted.abort(new Error("FEISHU_CONNECT_ABORTED"));
+      await expect(adapter.channel.connect(aborted.signal)).rejects.toThrow("FEISHU_CONNECT_ABORTED");
+      expect(outbound.connect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.doUnmock("@larksuiteoapi/node-sdk");
+      vi.resetModules();
+    }
+  });
+
+  it("wires the default HTTP instance, the per-signal Client and the Bot probe without a socket", async () => {
+    vi.resetModules();
+    const actual = await vi.importActual<typeof import("@larksuiteoapi/node-sdk")>("@larksuiteoapi/node-sdk");
+    const transport = {
+      request: vi.fn(async () => ({ ok: "request" })),
+      get: vi.fn(async () => ({ ok: "get" })),
+      delete: vi.fn(async () => ({ ok: "delete" })),
+      head: vi.fn(async () => ({ ok: "head" })),
+      options: vi.fn(async () => ({ ok: "options" })),
+      post: vi.fn(async () => ({ code: 0 })),
+      put: vi.fn(async () => ({ ok: "put" })),
+      patch: vi.fn(async () => ({ ok: "patch" })),
+    };
+    const httpInstances: Array<Record<string, (...args: never[]) => unknown>> = [];
+    const probes: unknown[] = [];
+    let botResponse: unknown = { code: 0, bot: { open_id: "ou_probe", activate_status: 2 } };
+    const messageResourceGet = vi.fn(async () => ({ getReadableStream: () => Readable.from(Buffer.from("res")) }));
+    class FakeClient {
+      static instances: FakeClient[] = [];
+      readonly options: Record<string, unknown>;
+      constructor(options: Record<string, unknown>) {
+        this.options = options;
+        FakeClient.instances.push(this);
+        const instance = options.httpInstance as Record<string, (...args: never[]) => unknown> | undefined;
+        if (instance) httpInstances.push(instance);
+      }
+      async request(body: unknown): Promise<unknown> {
+        probes.push(body);
+        return botResponse;
+      }
+      get im() {
+        return { v1: { messageResource: { get: messageResourceGet } } };
+      }
+    }
+    vi.doMock("@larksuiteoapi/node-sdk", () => ({ ...actual, Client: FakeClient, defaultHttpInstance: transport }));
+    try {
+      const module = await import("../services/im-bindings/feishu/adapter.js");
+      const adapter = new module.FeishuAdapter({
+        appId: "cli_default",
+        appSecret: "secret",
+        teamId: null,
+        channel: null,
+      });
+
+      // Every verb of the default HttpInstance merges the caller's options.
+      const defaultHttp = httpInstances[0] as Record<string, (url: string, options?: unknown) => Promise<unknown>>;
+      await defaultHttp.get("https://open.feishu.cn/x", { headers: { a: "1" } });
+      await defaultHttp.delete("https://open.feishu.cn/x");
+      await defaultHttp.head("https://open.feishu.cn/x");
+      await defaultHttp.options("https://open.feishu.cn/x");
+      await defaultHttp.put("https://open.feishu.cn/x", {}, { headers: {} });
+      await defaultHttp.patch("https://open.feishu.cn/x", {}, { headers: {} });
+      expect(transport.get).toHaveBeenCalledWith("https://open.feishu.cn/x", { headers: { a: "1" } });
+      for (const verb of ["delete", "head", "options"] as const) {
+        expect(transport[verb]).toHaveBeenCalledWith("https://open.feishu.cn/x", {});
+      }
+
+      // A resource fetch builds a Client bound to the policy's signal and asks for image semantics.
+      await expect(
+        adapter.fetchResource({ messageExternalId: "om_1", providerResourceKey: "img_1", kind: "image" }),
+      ).resolves.toMatchObject({ stream: expect.any(Readable) });
+      expect(messageResourceGet).toHaveBeenCalledWith(
+        { path: { message_id: "om_1", file_key: "img_1" }, params: { type: "image" } },
+        { signal: expect.any(AbortSignal) },
+      );
+      // The per-signal instance is a second wiring, built for this request only.
+      expect(httpInstances).toHaveLength(2);
+
+      botResponse = { code: 7 };
+      await expect(adapter.probeBotIdentity()).rejects.toMatchObject({ code: 7 });
+      botResponse = { code: 0, bot: {} };
+      await expect(adapter.probeBotIdentity()).rejects.toThrow("FEISHU_BOT_IDENTITY_MISSING");
+      botResponse = { code: 0, bot: { open_id: "ou_probe" } };
+      await expect(adapter.probeBotIdentity()).resolves.toEqual({ openId: "ou_probe", activateStatus: null });
+      // The probe never opened a message channel: it is a read of the Bot info endpoint through
+      // the adapter's own Client, so no further Client was built for it.
+      expect(FakeClient.instances).toHaveLength(2);
+    } finally {
+      vi.doUnmock("@larksuiteoapi/node-sdk");
+      vi.resetModules();
+    }
   });
 });
 

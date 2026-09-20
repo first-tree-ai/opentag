@@ -77,6 +77,33 @@ describe("resolveSkillCommandContext inside a Session", () => {
   });
 });
 
+describe("Session proof resolution with no injected environment", () => {
+  it("falls back to the process environment when the caller injected none", async () => {
+    const api = { listRuntimeSkills: vi.fn() } as unknown as OpenTagApi;
+    mockedContext.mockResolvedValue({ api, environment: {}, home: "/home/user" });
+    vi.mocked(client.readSessionCliProofFile).mockResolvedValue({
+      proofId: "11111111-1111-4111-8111-111111111111",
+      token: "p".repeat(40),
+    });
+    const previousProof = process.env.OPENTAG_SESSION_PROOF_FILE;
+    const previousUrl = process.env.OPENTAG_SESSION_SERVER_URL;
+    process.env.OPENTAG_SESSION_PROOF_FILE = "/tmp/proof.json";
+    // The Cloud Session endpoint short-circuits the Computer-identity read, so the fallback can be
+    // driven without a Computer binding on disk.
+    process.env.OPENTAG_SESSION_SERVER_URL = "https://opentag.example";
+    try {
+      const authority = await resolveSkillCommandContext("list", { proof: "p".repeat(40) });
+      expect(authority).toMatchObject({ mode: "agent", proof: "p".repeat(40) });
+      expect(client.readSessionCliProofFile).toHaveBeenCalledWith("/tmp/proof.json");
+    } finally {
+      if (previousProof === undefined) delete process.env.OPENTAG_SESSION_PROOF_FILE;
+      else process.env.OPENTAG_SESSION_PROOF_FILE = previousProof;
+      if (previousUrl === undefined) delete process.env.OPENTAG_SESSION_SERVER_URL;
+      else process.env.OPENTAG_SESSION_SERVER_URL = previousUrl;
+    }
+  });
+});
+
 describe("account authority", () => {
   it("refuses an operator context that resolved without an API", async () => {
     mockedContext.mockResolvedValue({ environment: {}, home: "/home/user" });

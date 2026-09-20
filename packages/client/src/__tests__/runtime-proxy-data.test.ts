@@ -98,25 +98,33 @@ function respondToSequencedOpens(socket: ServerWebSocket, requests: FixtureFrame
 }
 
 /** Scripted fixture: boilerplate auth/ready plus per-open and per-cancel responder callbacks. */
-function scriptedDataFixture(script: {
-  onCancel?(socket: ServerWebSocket, streamId: number): void;
-  onOpen(socket: ServerWebSocket, streamId: number, openIndex: number): void;
-}): (socket: ServerWebSocket) => void {
+function scriptedDataFixture(
+  script: {
+    onCancel?(socket: ServerWebSocket, streamId: number): void;
+    onOpen(socket: ServerWebSocket, streamId: number, openIndex: number): void;
+  },
+  options: { closeOnAuth?: boolean; closeOnOpen?: boolean; silentAuth?: boolean } = {},
+): (socket: ServerWebSocket) => void {
+  let opens = 0;
+  const onAuth = (socket: ServerWebSocket) => {
+    if (options.closeOnAuth) {
+      socket.close();
+      return;
+    }
+    if (!options.silentAuth) socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+  };
+  const onOpen = (socket: ServerWebSocket, streamId: number) => {
+    opens += 1;
+    if (options.closeOnOpen) socket.close();
+    else script.onOpen(socket, streamId, opens);
+  };
   return (socket) => {
-    let opens = 0;
     socket.on("message", (data, isBinary) => {
       if (isBinary) return;
       const frame = decodeJson(data);
-      if (frame.type === "auth") {
-        socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
-        return;
-      }
-      if (frame.type === "open") {
-        opens += 1;
-        script.onOpen(socket, frame.streamId as number, opens);
-        return;
-      }
-      if (frame.type === "cancel") script.onCancel?.(socket, frame.streamId as number);
+      if (frame.type === "auth") onAuth(socket);
+      else if (frame.type === "open") onOpen(socket, frame.streamId as number);
+      else if (frame.type === "cancel") script.onCancel?.(socket, frame.streamId as number);
     });
   };
 }
@@ -427,6 +435,531 @@ describe("RuntimeProxyDataConnection", () => {
     await iterator.next();
     await iterator.return?.();
     await connection.settled();
+  });
+
+  it("rejects an open on a closed connection and an already-aborted request", async () => {
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }));
+    const connection = await connectData(fixture.url);
+    const request = {
+      capability: "cap",
+      provider: "github" as const,
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    };
+    try {
+      const aborted = new AbortController();
+      aborted.abort();
+      await expect(connection.openStream({ ...request, signal: aborted.signal })).rejects.toMatchObject({
+        code: "aborted",
+      });
+      expect(connection.closed).toBe(false);
+      expect(connection.activeStreamCount).toBe(0);
+    } finally {
+      await connection.close();
+    }
+    expect(connection.closed).toBe(true);
+    await expect(connection.openStream(request)).rejects.toMatchObject({ code: "connection_closed" });
+    // Closing again is idempotent.
+    await connection.close();
+  });
+
+  it("rejects an open queued behind the stream limit when the open queue is full", async () => {
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }));
+    const connection = await connectData(fixture.url);
+    const request = {
+      capability: "cap",
+      provider: "github" as const,
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    };
+    const started = Array.from({ length: 8 }, () => connection.openStream(request));
+    const queued = Array.from({ length: 64 }, () => connection.openStream(request));
+    await expect(connection.openStream(request)).rejects.toMatchObject({ code: "queue_full" });
+    expect(connection.activeStreamCount).toBe(8);
+    const closing = connection.close();
+    for (const pending of [...started, ...queued]) {
+      await expect(pending).rejects.toMatchObject({ code: "connection_closed" });
+    }
+    await closing;
+  });
+
+  it("rejects a queued open whose signal aborted before its slot freed", async () => {
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }));
+    const connection = await connectData(fixture.url);
+    const request = {
+      capability: "cap",
+      provider: "github" as const,
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    };
+    const started = Array.from({ length: 8 }, () => connection.openStream(request));
+    const controller = new AbortController();
+    const queued = connection.openStream({ ...request, signal: controller.signal });
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({ code: "aborted" });
+    await connection.close();
+    for (const pending of started) await expect(pending).rejects.toBeInstanceOf(Error);
+  });
+
+  it("cancels with the open_timeout code when a stream never gets a response", async () => {
+    const fixture = await startDataFixture((socket, requests) => {
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) return;
+        const frame = decodeJson(data);
+        requests.push(frame);
+        if (frame.type === "auth") socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+      });
+    });
+    const connection = await RuntimeProxyDataConnection.connect({
+      executionId: EXECUTION_ID,
+      openTimeoutMs: 20,
+      ticket: "ticket-value-with-enough-bytes-1234",
+      url: fixture.url,
+    });
+    try {
+      await expect(
+        connection.openStream({
+          capability: "cap",
+          provider: "github",
+          bindingId: "b",
+          method: "GET",
+          path: "/user",
+          headers: {},
+        }),
+      ).rejects.toMatchObject({ code: "aborted" });
+      // The client told the Server why: the open deadline expired, not a consumer cancel.
+      await wait(20);
+      expect(fixture.requests).toContainEqual(expect.objectContaining({ code: "open_timeout", type: "cancel" }));
+      expect(connection.activeStreamCount).toBe(0);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("cancels with the request_body_failed code when a body source throws", async () => {
+    const fixture = await startDataFixture((socket, requests) => {
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) return;
+        const frame = decodeJson(data);
+        requests.push(frame);
+        if (frame.type === "auth") socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+      });
+    });
+    const connection = await connectData(fixture.url);
+    const failing: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next(): Promise<IteratorResult<Uint8Array>> {
+            return Promise.reject(new Error("body source failed"));
+          },
+        };
+      },
+    };
+    try {
+      await expect(
+        connection.openStream({
+          bindingId: "b",
+          body: failing,
+          capability: "cap",
+          headers: {},
+          method: "POST",
+          path: "/user",
+          provider: "github",
+        }),
+      ).rejects.toMatchObject({ code: "aborted" });
+      await wait(20);
+      expect(fixture.requests).toContainEqual(expect.objectContaining({ code: "request_body_failed", type: "cancel" }));
+      expect(connection.activeStreamCount).toBe(0);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("cancels by the caller's code and fails the body of a Server-cancelled stream", async () => {
+    const fixture = await startDataFixture(
+      scriptedDataFixture({
+        onCancel: (socket, streamId) => socket.send(JSON.stringify({ type: "end", streamId })),
+        onOpen: (socket, streamId, openIndex) => {
+          if (openIndex === 3) {
+            socket.send(JSON.stringify({ type: "cancel", streamId, code: "policy" }));
+            return;
+          }
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+          if (openIndex === 2) socket.send(JSON.stringify({ type: "error", streamId, code: "upstream_failed" }));
+        },
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const request = {
+      capability: "cap",
+      provider: "github" as const,
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    };
+    try {
+      const cancelled = await connection.openStream(request);
+      cancelled.cancel?.("policy");
+      await wait(20);
+      expect(connection.activeStreamCount).toBe(0);
+
+      const failedBody = await connection.openStream(request);
+      await expect(collect(failedBody.body)).rejects.toMatchObject({ code: "stream_error" });
+
+      await expect(connection.openStream(request)).rejects.toMatchObject({ code: "stream_error" });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("waits for send credit before writing a body larger than the initial window", async () => {
+    const sentBytes = { total: 0 };
+    const fixture = await startDataFixture((socket) => {
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) {
+          const frame = Buffer.from(data as Buffer);
+          sentBytes.total += frame.byteLength - 4;
+          // A real flow-controlled Server grants back exactly what it consumed.
+          socket.send(JSON.stringify({ type: "credit", streamId: frame.readUInt32BE(0), bytes: frame.byteLength - 4 }));
+          return;
+        }
+        const frame = decodeJson(data);
+        if (frame.type === "auth") {
+          socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+          return;
+        }
+        if (frame.type === "open") {
+          socket.send(JSON.stringify({ type: "response", streamId: frame.streamId, status: 200, headers: {} }));
+        }
+      });
+    });
+    const connection = await connectData(fixture.url);
+    const total = 1_200_000;
+    try {
+      const response = await connection.openStream({
+        bindingId: "b",
+        body: bodyStream("z".repeat(total)),
+        capability: "cap",
+        headers: {},
+        method: "POST",
+        path: "/user",
+        provider: "github",
+      });
+      expect(response.status).toBe(200);
+      // The whole body is written in ≤64 KiB chunks, which is only possible because the pump waits
+      // for the Server's credit frames after the 1 MiB initial window is exhausted.
+      await wait(1_500);
+      expect(sentBytes.total).toBe(total);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("hands a chunk to a consumer that is already waiting for one", async () => {
+    const fixture = await startDataFixture(
+      scriptedDataFixture({
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+          // Delay the data so the consumer reaches its pending waiter first.
+          setTimeout(() => socket.send(binaryFrame(streamId, "late-chunk"), { binary: true }), 30);
+        },
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const response = await connection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    try {
+      const iterator = response.body[Symbol.asyncIterator]();
+      const pending = iterator.next();
+      const [first] = await Promise.all([pending, wait(60)]);
+      expect(Buffer.from(first.value as Uint8Array).toString("utf8")).toBe("late-chunk");
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("fails a consumer that is already waiting when the stream errors", async () => {
+    const fixture = await startDataFixture(
+      scriptedDataFixture({
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+          setTimeout(() => socket.send(JSON.stringify({ type: "error", streamId, code: "upstream_failed" })), 30);
+        },
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const response = await connection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    try {
+      // The consumer is parked on its pending read when the failure frame arrives.
+      await expect(collect(response.body)).rejects.toMatchObject({ code: "stream_error" });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("logs a socket error without failing the connection", async () => {
+    let socketRef: ServerWebSocket | undefined;
+    const fixture = await startDataFixture((socket) => {
+      socketRef = socket;
+      socket.on("message", (data, isBinary) => {
+        if (isBinary) return;
+        const frame = decodeJson(data);
+        if (frame.type === "auth") socket.send(JSON.stringify({ type: "ready", executionId: EXECUTION_ID }));
+      });
+    });
+    const connection = await connectData(fixture.url);
+    try {
+      // Abruptly kill the peer: the client's socket reports an error and then closes.
+      socketRef?.terminate();
+      await connection.settled();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("terminates a socket that never completes the handshake", async () => {
+    // The fixture never answers the auth frame, so the handshake deadline decides the outcome.
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }, { silentAuth: true }));
+    await expect(
+      RuntimeProxyDataConnection.connect({
+        executionId: EXECUTION_ID,
+        handshakeTimeoutMs: 30,
+        ticket: "ticket-value-with-enough-bytes-1234",
+        url: fixture.url,
+      }),
+    ).rejects.toMatchObject({ code: "auth_failed" });
+  });
+
+  it("fails the handshake when the server closes the socket before ready", async () => {
+    const closing = await startDataFixture(
+      scriptedDataFixture({ onOpen: () => undefined }, { closeOnAuth: true, silentAuth: true }),
+    );
+    await expect(connectData(closing.url)).rejects.toMatchObject({ name: "RuntimeProxyDataError" });
+  });
+
+  it("rejects a binary frame that arrives before the ready handshake", async () => {
+    const fixture = await startDataFixture((socket) => {
+      socket.on("message", () => socket.send(binaryFrame(1, "early"), { binary: true }));
+    });
+    await expect(connectData(fixture.url)).rejects.toMatchObject({
+      code: "protocol_error",
+      message: expect.stringContaining("binary before ready"),
+    });
+  });
+
+  it("rejects an auth reply that is not valid JSON", async () => {
+    const fixture = await startDataFixture((socket) => {
+      socket.on("message", () => socket.send("not json at all"));
+    });
+    await expect(connectData(fixture.url)).rejects.toMatchObject({ code: "protocol_error" });
+  });
+
+  it("fails a stream whose header frame is never sent because the socket closed", async () => {
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }, { closeOnOpen: true }));
+    const connection = await connectData(fixture.url);
+    await expect(
+      connection.openStream({
+        capability: "cap",
+        provider: "github",
+        bindingId: "b",
+        method: "GET",
+        path: "/user",
+        headers: {},
+      }),
+    ).rejects.toBeInstanceOf(Error);
+    await connection.close();
+  });
+
+  it("fails every open stream when the Server closes the data connection", async () => {
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }, { closeOnOpen: true }));
+    const connection = await connectData(fixture.url);
+    const pending = connection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    await expect(pending).rejects.toMatchObject({ code: "connection_lost" });
+    expect(connection.closed).toBe(true);
+    await connection.close();
+  });
+
+  it("aborts an open stream through its request signal", async () => {
+    const fixture = await startDataFixture(scriptedDataFixture({ onOpen: () => undefined }));
+    const connection = await connectData(fixture.url);
+    const controller = new AbortController();
+    const pending = connection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "aborted" });
+    expect(connection.activeStreamCount).toBe(0);
+    await connection.close();
+  });
+
+  it("evicts the oldest tombstone instead of growing without bound", async () => {
+    const fixture = await startDataFixture(
+      scriptedDataFixture({
+        onCancel: () => undefined,
+        // The Server never ends, so each cancelled stream leaves exactly one tombstone behind.
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+        },
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const request = {
+      capability: "cap",
+      provider: "github" as const,
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    };
+    try {
+      for (let index = 0; index < 260; index += 1) {
+        const response = await connection.openStream(request);
+        response.cancel?.("consumer_cancelled");
+      }
+      // 260 locally cancelled streams exceed the 256-entry tombstone limit; the connection is
+      // still healthy and every cancelled stream has left the active map.
+      expect(connection.closed).toBe(false);
+      expect(connection.activeStreamCount).toBe(0);
+    } finally {
+      await connection.close();
+    }
+  }, 20_000);
+
+  it("rejects a duplicate response for a locally cancelled stream", async () => {
+    const fixture = await startDataFixture(
+      scriptedDataFixture({
+        onCancel: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+        },
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+        },
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const response = await connection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    response.cancel?.("consumer_cancelled");
+    await connection.settled();
+    expect(connection.closed).toBe(true);
+    await connection.close();
+  });
+
+  it("rejects credit beyond the window for a locally cancelled stream", async () => {
+    const fixture = await startDataFixture(
+      scriptedDataFixture({
+        onCancel: (socket, streamId) =>
+          socket.send(JSON.stringify({ type: "credit", streamId, bytes: 2 * 1024 * 1024 })),
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+        },
+      }),
+    );
+    const connection = await connectData(fixture.url);
+    const response = await connection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    response.cancel?.("consumer_cancelled");
+    await connection.settled();
+    expect(connection.closed).toBe(true);
+    await connection.close();
+  });
+
+  it("rejects any frame and data after a tombstoned stream completed", async () => {
+    const frameAfterTerminal = await startDataFixture(
+      scriptedDataFixture({
+        onCancel: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "end", streamId }));
+          socket.send(JSON.stringify({ type: "credit", streamId, bytes: 1 }));
+        },
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+        },
+      }),
+    );
+    const firstConnection = await connectData(frameAfterTerminal.url);
+    const firstResponse = await firstConnection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    firstResponse.cancel?.("consumer_cancelled");
+    await firstConnection.settled();
+    expect(firstConnection.closed).toBe(true);
+    await firstConnection.close();
+
+    const dataAfterTerminal = await startDataFixture(
+      scriptedDataFixture({
+        onCancel: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "end", streamId }));
+          socket.send(binaryFrame(streamId, "late"), { binary: true });
+        },
+        onOpen: (socket, streamId) => {
+          socket.send(JSON.stringify({ type: "response", streamId, status: 200, headers: {} }));
+        },
+      }),
+    );
+    const secondConnection = await connectData(dataAfterTerminal.url);
+    const secondResponse = await secondConnection.openStream({
+      capability: "cap",
+      provider: "github",
+      bindingId: "b",
+      method: "GET",
+      path: "/user",
+      headers: {},
+    });
+    secondResponse.cancel?.("consumer_cancelled");
+    await secondConnection.settled();
+    expect(secondConnection.closed).toBe(true);
+    await secondConnection.close();
   });
 
   it("rejects malformed binary after a local cancel", async () => {

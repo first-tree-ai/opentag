@@ -9,7 +9,7 @@ describe("creation step navigation", () => {
   it("shows only Continue on the first step and enables it after a destination is selected", () => {
     const onSubmit = vi.fn();
     const { rerender } = render(
-      <DestinationStep cloudAvailable={false} draft={baseDraft} onChoose={() => undefined} onSubmit={onSubmit} />,
+      <DestinationStep cloud={undefined} draft={baseDraft} onChoose={() => undefined} onSubmit={onSubmit} />,
     );
 
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
@@ -18,7 +18,7 @@ describe("creation step navigation", () => {
 
     rerender(
       <DestinationStep
-        cloudAvailable={false}
+        cloud={{ available: false, reason: "disabled" }}
         draft={{ ...baseDraft, destination: "local" }}
         onChoose={() => undefined}
         onSubmit={onSubmit}
@@ -75,5 +75,60 @@ describe("creation step navigation", () => {
 
     expect(screen.getByRole("button", { name: "Back" }).hasAttribute("disabled")).toBe(false);
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("enables the Cloud destination only once the service answers available", () => {
+    const onChoose = vi.fn();
+    const { rerender } = render(
+      <DestinationStep cloud={undefined} draft={baseDraft} onChoose={onChoose} onSubmit={() => undefined} />,
+    );
+    // No answer yet: the Cloud choice is disabled rather than guessed, and says it is checking.
+    expect(screen.getByRole("button", { name: /Cloud computer/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Checking…")).toBeTruthy();
+
+    rerender(
+      <DestinationStep
+        cloud={{ available: true, reason: null }}
+        draft={baseDraft}
+        onChoose={onChoose}
+        onSubmit={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Cloud computer/ }).hasAttribute("disabled")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: /Cloud computer/ }));
+    expect(onChoose).toHaveBeenCalledWith("cloud");
+
+    rerender(
+      <DestinationStep
+        cloud={{ available: false, reason: "execution_unavailable" }}
+        draft={baseDraft}
+        onChoose={onChoose}
+        onSubmit={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /Cloud computer/ }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Temporarily unavailable")).toBeTruthy();
+    expect(onChoose).toHaveBeenCalledTimes(1);
+  });
+
+  it("fixes the runtime for a Cloud destination and needs no selection to submit", () => {
+    const onSubmit = vi.fn();
+    render(
+      <AgentStep
+        draft={{ destination: "cloud", name: "opentag", runtime: undefined }}
+        onBack={() => undefined}
+        onChange={() => undefined}
+        onSubmit={onSubmit}
+        submitLabel="Create Agent"
+      />,
+    );
+
+    // The picker is replaced by the fixed managed runtime; there is nothing to click.
+    expect(screen.queryByRole("button", { name: /Codex/ })).toBeNull();
+    expect(screen.getByText("Cloud agents always run Pi.")).toBeTruthy();
+    const create = screen.getByRole("button", { name: "Create Agent" });
+    expect(create.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(create);
+    expect(onSubmit).toHaveBeenCalledOnce();
   });
 });

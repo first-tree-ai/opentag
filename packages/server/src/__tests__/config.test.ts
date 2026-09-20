@@ -172,6 +172,43 @@ describe("parseServerConfig", () => {
     ).toThrow(/explicit OPENTAG_ENV=dev/);
   });
 
+  it("parses the E9 Cloud Runner capacity ceilings with conservative defaults", () => {
+    const runnerEnv = {
+      OPENTAG_CLOUD_IDENTITIES_ENABLED: "true",
+      OPENTAG_CLOUD_STORAGE_BASE: "gs://opentag-sandbox/e9",
+      OPENTAG_CLOUD_RUNNER_VERSION: "0.0.5",
+      OPENTAG_CLOUD_RUNNER_ENABLED: "true",
+      OPENTAG_CLOUD_RUNNER_IMAGE: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
+      OPENTAG_CLOUD_RUNNER_PROJECT: "opentag-test",
+      OPENTAG_CLOUD_RUNNER_REGION: "us-west1",
+      OPENTAG_CLOUD_RUNNER_SERVICE_ACCOUNT: "runner@opentag-test.iam.gserviceaccount.com",
+      OPENTAG_CLOUD_RUNNER_BACKEND_ORIGIN: "https://api.example.com",
+      OPENTAG_CLOUD_RUNNER_VPC_NETWORK: "opentag-net",
+      OPENTAG_CLOUD_RUNNER_VPC_SUBNET: "opentag-subnet",
+      OPENTAG_CLOUD_RUNNER_EXECUTION_TAG: "opentag-runner",
+    };
+    // Defaults: 3 occupied Instances per Account, 20 platform-wide.
+    const defaults = parseServerConfig({ ...required, ...runnerEnv });
+    expect(defaults.cloudRunner).toMatchObject({ enabled: true, maxInstancesPerAccount: 3, maxInstances: 20 });
+    // Explicit positive integers are honored.
+    const tuned = parseServerConfig({
+      ...required,
+      ...runnerEnv,
+      OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: "2",
+      OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: "7",
+    });
+    expect(tuned.cloudRunner).toMatchObject({ maxInstancesPerAccount: 2, maxInstances: 7 });
+    // Zero, negative, fractional and non-numeric ceilings are rejected at startup, never coerced.
+    for (const value of ["0", "-1", "1.5", "many"]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: value }),
+      ).toThrow();
+      expect(() =>
+        parseServerConfig({ ...required, ...runnerEnv, OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: value }),
+      ).toThrow();
+    }
+  });
+
   it("enables Cloud identities only with a valid storage prefix and Runner SemVer", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_CLOUD_IDENTITIES_ENABLED: "true" })).toThrow();
     expect(() =>

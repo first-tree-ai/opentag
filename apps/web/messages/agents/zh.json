@@ -58,7 +58,7 @@
   "agents_list_usage_task_single": "{count} 个任务",
   "agents_list_usage_token_plural": "{count} 个 Token",
   "agents_list_usage_token_single": "{count} 个 Token",
-  "agents_list_usage_window": "最近 {days} 天",
+  "agents_list_usage_window": "过去 {days} 天 · IM 任务",
   "agents_messaging_not_connected_summary": "消息应用未连接",
   "agents_messaging_setup_in_progress": "消息应用正在设置中",
   "agents_new_agent": "新建 Agent",

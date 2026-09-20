@@ -11,6 +11,16 @@ export async function runCloudComputerCases(ctx) {
   const { fixture, shared, cookiesA, cookiesB, assertions, cliVersion } = ctx;
   const path = shared.HTTP_PATHS.accountCloudComputer;
   const headers = cloudIdentityHeaders();
+  const availability = await requestJson({ baseUrl: fixture.baseUrl, cookies: cookiesA, method: "GET", path });
+  record(
+    assertions,
+    "cloud-availability-without-runner",
+    availability.ok &&
+      availability.body.enabled === true &&
+      availability.body.available === false &&
+      availability.body.reason === "execution_unavailable",
+    availability.status,
+  );
   const [first, second] = await concurrentPost(
     { baseUrl: fixture.baseUrl, cookies: cookiesA, method: "PUT", path, headers },
     {},
@@ -253,6 +263,7 @@ export async function runAgentCases(ctx) {
 }
 
 async function verifyCloudSetupBoundary(ctx) {
+  const before = await ctx.fixture.postgres.psql("select count(*)::int from sandboxes");
   for (const [method, path] of [
     ["GET", ctx.shared.agentSetupPath(ctx.agentA.id)],
     ["POST", ctx.shared.agentSetupRefreshPath(ctx.agentA.id)],
@@ -265,9 +276,30 @@ async function verifyCloudSetupBoundary(ctx) {
     });
     record(
       ctx.assertions,
-      `cloud-refuses-local-setup-${method.toLowerCase()}`,
-      result.status === 404 && result.body?.error?.code === "RESOURCE_NOT_FOUND",
+      `cloud-server-owned-setup-${method.toLowerCase()}`,
+      result.ok && ctx.shared.AgentSetupSnapshotSchema.safeParse(result.body).success,
       result.status,
     );
   }
+  const after = await ctx.fixture.postgres.psql("select count(*)::int from sandboxes");
+  record(ctx.assertions, "cloud-setup-does-not-allocate", before === after);
+  const overview = await requestJson({
+    baseUrl: ctx.fixture.baseUrl,
+    cookies: ctx.cookiesA,
+    method: "GET",
+    path: ctx.shared.agentCloudPath(ctx.agentA.id),
+  });
+  record(
+    ctx.assertions,
+    "cloud-overview-before-first-task",
+    overview.ok && overview.body.counts.allocated === 0 && overview.body.sessions.length === 0,
+    overview.status,
+  );
+  const foreign = await requestJson({
+    baseUrl: ctx.fixture.baseUrl,
+    cookies: ctx.cookiesB,
+    method: "GET",
+    path: ctx.shared.agentCloudPath(ctx.agentA.id),
+  });
+  record(ctx.assertions, "cloud-overview-refuses-other-account", foreign.status === 404, foreign.status);
 }

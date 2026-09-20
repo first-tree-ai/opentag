@@ -25,7 +25,14 @@ export {
   createCloudSourceConnectionVerifier,
   createSessionCliCloudProofAuthority,
 } from "./cloud-session-collaboration-owner.js";
-export { SandboxServiceError, sandboxNotFound, sandboxScopeInvalid, WorkspaceSaveError } from "./errors.js";
+export {
+  CloudCapacityExceededError,
+  type CloudCapacityScope,
+  SandboxServiceError,
+  sandboxNotFound,
+  sandboxScopeInvalid,
+  WorkspaceSaveError,
+} from "./errors.js";
 export { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
 export {
   type RunnerBootstrapClaims,
@@ -47,6 +54,17 @@ export {
   RunnerWorkspaceService,
   type RunnerWorkspaceServiceOptions,
 } from "./runner-workspace-service.js";
+export {
+  CLOUD_CAPACITY_OCCUPIED_LIFECYCLES,
+  type CloudCapacityLimits,
+  type CloudCapacityOccupancy,
+  cloudCapacityAdmission,
+  countCloudCapacityOccupancy,
+  DEFAULT_CLOUD_CAPACITY_LIMITS,
+  lockCloudCapacityAdmission,
+  normalizeCloudCapacityLimits,
+  occupiedSandbox,
+} from "./sandbox-capacity.js";
 export {
   type IngressAllocationOutcome,
   type RunnerReadyOutcome,

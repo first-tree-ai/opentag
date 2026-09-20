@@ -21,6 +21,8 @@ import {
   AgentCreationIntentResultSchema,
   type ChannelName,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
+  type CloudAvailability,
+  CloudAvailabilitySchema,
   CompleteAccountSetupRequestSchema,
   ComputerConnectCodeIssueResponseSchema,
   ComputerConnectCodeStatusSchema,
@@ -84,6 +86,7 @@ const SandboxParamsSchema = z.object({ sandboxId: z.string().uuid() }).strict();
 const EmptyBodySchema = z.object({}).strict();
 
 export interface AccountRoutesOptions {
+  cloudAvailability?: () => CloudAvailability;
   agentService?: AgentService;
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
@@ -133,6 +136,16 @@ export function registerAccountRoutes(
   options: AccountRoutesOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
+
+  app.get(HTTP_PATHS.accountCloudComputer, { preHandler }, async (_request, reply) => {
+    const availability = options.cloudAvailability?.() ?? {
+      enabled: false,
+      available: false,
+      reason: "disabled",
+      observedAt: new Date().toISOString(),
+    };
+    return reply.header("Cache-Control", "no-store").code(200).send(CloudAvailabilitySchema.parse(availability));
+  });
 
   if (options.agentService) {
     const agentService = options.agentService;

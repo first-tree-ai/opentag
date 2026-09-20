@@ -1,4 +1,4 @@
-import type { CreateAgentRequest } from "@opentag/shared/browser";
+import type { CloudAvailability, CreateAgentRequest } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -11,7 +11,7 @@ import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
 import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
-import { type AgentDraft, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
+import { type AgentDraft, CLOUD_RUNTIME, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
@@ -66,6 +66,22 @@ async function refusedNameHolder(
 interface CreationReport {
   readonly created: (runtimeProvider: string) => void;
   readonly refused: (cause: unknown) => void;
+}
+
+/**
+ * How far the Cloud availability read got. `ready` carries the Server's answer; `failed` is a read
+ * that did not answer — the Cloud choice stays disabled either way, and nothing silently picks
+ * Local for the reader instead.
+ */
+type CloudAvailabilityRead =
+  | { readonly kind: "loading" }
+  | { readonly kind: "ready"; readonly value: CloudAvailability }
+  | { readonly kind: "failed" };
+
+/** A creation draft carries the chosen destination so a Cloud submission can ensure its Computer. */
+interface SelectedCreation {
+  readonly request: CreateAgentRequest;
+  readonly destination: "local" | "cloud";
 }
 
 /** A preview creates no Agent, so it has nothing to report about one. */
@@ -172,6 +188,15 @@ export function AgentSetupSurface({
   );
 }
 
+async function creationRequest(selected: SelectedCreation, preview: boolean): Promise<CreateAgentRequest> {
+  if (selected.destination !== "cloud" || preview) return selected.request;
+  // Ensure only the logical Computer at submission; the first task allocates its environment.
+  const ensured = await browserApi.ensureCloudComputer().catch((cause: unknown) => {
+    throw new Error(m.onboarding_v2_cloud_ensure_failed(), { cause });
+  });
+  return { ...selected.request, computerId: ensured.computerId };
+}
+
 function AgentCreatePage({
   creationPreview,
   creationPreviewInitialView = "destination",
@@ -196,6 +221,13 @@ function AgentCreatePage({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   /**
+   * The deployment's Cloud availability, read once on mount. Creation never blocks on it for
+   * Local, and never offers Cloud before the answer arrives.
+   */
+  const [cloudRead, setCloudRead] = useState<CloudAvailabilityRead>({ kind: "loading" });
+  /** A destination the reader picked themselves is never overridden by a late availability answer. */
+  const destinationChosen = useRef(creationPreviewInitialView === "agent");
+  /**
    * What a refused name leaves behind: the Agent holding it when that Agent could be read, and
    * otherwise the bare fact that one exists. Both are exits, which is the point — on this route the
    * offer is the only way off the page, and it must not depend on a second request succeeding
@@ -208,6 +240,29 @@ function AgentCreatePage({
   useEffect(() => {
     onCreationPreviewViewChange?.(destinationConfirmed ? "agent" : "destination");
   }, [destinationConfirmed, onCreationPreviewViewChange]);
+
+  useEffect(() => {
+    if (creationPreview) return;
+    let live = true;
+    browserApi.cloudAvailability().then(
+      (value) => {
+        if (live) setCloudRead({ kind: "ready", value });
+      },
+      () => {
+        if (live) setCloudRead({ kind: "failed" });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [creationPreview]);
+
+  // Cloud is the default once it is known to be available; an unavailable or unreadable service
+  // leaves the choice to the reader rather than pre-selecting a destination that cannot run.
+  useEffect(() => {
+    if (cloudRead.kind !== "ready" || !cloudRead.value.available || destinationChosen.current) return;
+    setDraft((current) => (current.destination === undefined ? { ...current, destination: "cloud" } : current));
+  }, [cloudRead]);
 
   /*
    * What a refusal offers, if anything. Naming the Agent is always worth saying: it is somewhere
@@ -223,10 +278,15 @@ function AgentCreatePage({
     return onBackToAgents ? undefined : { label: m.agent_create_open_agents(), link: { to: "/agents" } as const };
   }, [onBackToAgents, taken]);
 
-  const selectedRequest = useMemo<CreateAgentRequest | undefined>(() => {
-    if (draft.destination !== "local" || !draftIsSubmittable(draft) || !draft.runtime) return undefined;
+  const selectedRequest = useMemo<SelectedCreation | undefined>(() => {
+    if (!draftIsSubmittable(draft) || draft.destination === undefined) return undefined;
     const name = draft.name.trim();
-    return { displayName: name, name, runtimeProvider: draft.runtime };
+    if (draft.destination === "cloud") {
+      // The runtime is fixed by the product; the Computer binding comes from the ensure at submit.
+      return { destination: "cloud", request: { displayName: name, name, runtimeProvider: CLOUD_RUNTIME } };
+    }
+    if (!draft.runtime) return undefined;
+    return { destination: "local", request: { displayName: name, name, runtimeProvider: draft.runtime } };
   }, [draft]);
 
   /*
@@ -236,7 +296,7 @@ function AgentCreatePage({
    * account of the same fact, and one that can disagree.
    */
   const create = useCallback(
-    async (request: CreateAgentRequest) => {
+    async (selected: SelectedCreation) => {
       if (createInFlight.current) return;
       createInFlight.current = true;
       setSubmitting(true);
@@ -246,6 +306,7 @@ function AgentCreatePage({
       setTaken(undefined);
       const report = creationReport(creationPreview);
       try {
+        const request = await creationRequest(selected, Boolean(creationPreview));
         const created = creationPreview ? await creationPreview(request) : await browserApi.createAgent(request);
         report.created(request.runtimeProvider);
         if (!creationPreview) void syncAgentQueries(queryClient, created.id);
@@ -253,7 +314,7 @@ function AgentCreatePage({
       } catch (cause) {
         report.refused(cause);
         setError(cause instanceof Error && cause.message ? cause.message : m.agent_create_failed());
-        setTaken(await refusedNameHolder(cause, request.name));
+        setTaken(await refusedNameHolder(cause, selected.request.name));
       } finally {
         createInFlight.current = false;
         setSubmitting(false);
@@ -316,9 +377,16 @@ function AgentCreatePage({
             />
           ) : (
             <DestinationStep
-              cloudAvailable={false}
+              cloud={
+                cloudRead.kind === "ready"
+                  ? { available: cloudRead.value.available, reason: cloudRead.value.reason }
+                  : undefined
+              }
               draft={draft}
-              onChoose={(destination) => setDraft({ ...draft, destination })}
+              onChoose={(destination) => {
+                destinationChosen.current = true;
+                setDraft({ ...draft, destination });
+              }}
               onSubmit={() => setDestinationConfirmed(true)}
             />
           )}

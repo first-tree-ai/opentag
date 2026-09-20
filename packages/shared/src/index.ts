@@ -119,6 +119,7 @@ export {
   MINIMUM_SUPPORTED_CLIENT_VERSION,
   unsupportedClientVersionMessage,
 } from "./client-version.js";
+export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {
   type AccountComputerConnectCodeCreateRequest,
@@ -235,6 +236,7 @@ export {
   ACCOUNT_SETUP_COMPLETE_PATH,
   ACCOUNT_TASKS_PATH,
   AGENT_BY_ID_TEMPLATE,
+  AGENT_CLOUD_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_CONTEXT_TREE_TEMPLATE,
@@ -268,6 +270,7 @@ export {
   accountSandboxRunnerStartPath,
   accountSandboxRunnerStopPath,
   agentByIdPath,
+  agentCloudPath,
   agentComputerRebindPath,
   agentConfigPath,
   agentContextTreePath,

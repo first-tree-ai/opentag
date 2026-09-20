@@ -105,6 +105,8 @@ export function createSandboxRunnerRuntime(
     acceptanceTimeoutMs: cloudRunner.acceptanceTimeoutMs,
     createConvergeTimeoutMs: cloudRunner.createConvergeTimeoutMs,
     idleTimeoutMs: cloudRunner.idleTimeoutMs,
+    // E9 admission ceilings from the deployment configuration (defaults 3/20).
+    capacity: { accountLimit: cloudRunner.maxInstancesPerAccount, platformLimit: cloudRunner.maxInstances },
     workspace: { store },
     ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
     ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),

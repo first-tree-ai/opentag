@@ -24,6 +24,7 @@ import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/in
 import { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
 import { CloudRuntimeFence, cloudInstanceIdFor } from "../services/sandboxes/cloud-runtime-fence.js";
+import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
 import type { IngressAllocationOutcome } from "../services/sandboxes/sandbox-runner-service.js";
 import { SandboxService } from "../services/sandboxes/sandbox-service.js";
@@ -310,6 +311,8 @@ interface AllocationCallLog {
   ensured: { accountId: string; imBindingId: string; kind: string }[];
   allocated: { accountId: string; sandboxId: string }[];
   outcome: IngressAllocationOutcome;
+  /** When set, the port rejects with this error instead of returning the outcome. */
+  error?: unknown;
 }
 
 function makeWorker(
@@ -338,6 +341,7 @@ function makeWorker(
             },
             ensureEnvironmentAllocated: async (input) => {
               allocation.allocated.push(input);
+              if (allocation.error) throw allocation.error;
               return allocation.outcome;
             },
           },
@@ -792,6 +796,61 @@ describe("ImDeliveryWorker Cloud routing", () => {
       lastErrorCode: "IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE",
     });
     expect((row?.nextAttemptAt.getTime() ?? 0) - clockMs).toBe(2_000);
+  });
+
+  it("keeps a Cloud input queued with the bounded backoff when capacity admission rejects allocation", async () => {
+    const { scope, cloud } = await cloudScope();
+    const stack = makeStack();
+    const sent: RunnerServerFrame[] = [];
+    const socket = fakeSocket(sent);
+    stack.hub.attach(scope, socket);
+    stack.hub.markReady(scope, READINESS, socket);
+    stack.fence.attach({ computerId: cloud.computerId, installationId: randomUUID(), scope, socket });
+    let clockMs = Date.now();
+    // E9 resource admission is at its ceiling: the new physical reservation is rejected.
+    const allocation: AllocationCallLog = {
+      ensured: [],
+      allocated: [],
+      outcome: "ready",
+      error: new CloudCapacityExceededError("account"),
+    };
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    const worker = makeWorker(stack.owner, allocation, { now: () => new Date(clockMs) });
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(clockMs - 1) })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+
+    const delays: number[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      // The input waits for cloud resources inside the existing reliable queue: pending with the
+      // capped backoff, never dispatched, never terminally rejected, never a new queue.
+      expect(row).toMatchObject({
+        state: "pending",
+        lastErrorCode: "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
+        dispatchRequestId: null,
+      });
+      if (!row) throw new Error("delivery row missing");
+      delays.push(row.nextAttemptAt.getTime() - clockMs);
+      clockMs = row.nextAttemptAt.getTime();
+    }
+    expect(delays).toEqual([2_000, 4_000, 8_000]);
+    expect(allocation.allocated).toHaveLength(3);
+    expect(sent.some((frame) => frame.type === "delivery:run")).toBe(false);
+
+    // A generic allocation failure keeps the existing distinct transient code.
+    allocation.error = new Error("provider unreachable");
+    await worker.runOnce();
+    const [generic] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(generic).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_CLOUD_ALLOCATION_FAILED" });
   });
 
   it("backs off transient Cloud dispatch failures with the attempt count and caps the delay", async () => {

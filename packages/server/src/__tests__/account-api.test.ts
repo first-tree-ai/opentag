@@ -1,6 +1,7 @@
 import {
   accountComputerConnectCodePath,
   accountSandboxPath,
+  agentCloudPath,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
@@ -14,6 +15,7 @@ import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import { OnboardingResetError } from "../services/onboarding-reset/index.js";
+import type { CloudOverviewService } from "../services/sandboxes/cloud-overview-service.js";
 import type { SandboxService } from "../services/sandboxes/index.js";
 import type { AccountSetupService } from "../services/setup/index.js";
 import type { TaskService } from "../services/tasks/index.js";
@@ -908,6 +910,66 @@ describe("the connect-code redemption status read", () => {
 });
 
 describe("Account Cloud identity routes", () => {
+  it("reads deployment availability without creating an identity or environment", async () => {
+    const service = services();
+    const cloudAvailability = vi.fn().mockReturnValue({
+      enabled: true,
+      available: false,
+      reason: "model_unavailable",
+      observedAt: "2026-09-20T00:00:00Z",
+    });
+    const app = createApp({
+      authService: authService(),
+      cloudAvailability,
+      computerService: service.computerService as unknown as ComputerService,
+    });
+    apps.push(app);
+    const anonymous = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudComputer });
+    expect(anonymous.statusCode).toBe(401);
+    expect(cloudAvailability).not.toHaveBeenCalled();
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.accountCloudComputer, headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ available: false, reason: "model_unavailable" });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(service.computerService.ensureCloudComputerForAccount).not.toHaveBeenCalled();
+  });
+
+  it("authorizes and validates the paginated Agent overview before reading it", async () => {
+    const read = vi.fn().mockResolvedValue({
+      agentId,
+      observedAt: "2026-09-20T00:00:00Z",
+      capacity: { accountUsed: 0, accountLimit: 3 },
+      counts: { allocated: 0, queued: 0, running: 0, attention: 0 },
+      sessions: [],
+      nextCursor: null,
+    });
+    const app = createApp({
+      authService: authService(),
+      agentService: services().agentService as unknown as AgentService,
+      cloudOverviewService: { read } as unknown as CloudOverviewService,
+    });
+    apps.push(app);
+    expect((await app.inject({ method: "GET", url: agentCloudPath(agentId) })).statusCode).toBe(401);
+    for (const suffix of ["?limit=101", `?cursor=${computerId}&sessionId=${computerId}`, "?accountId=other"]) {
+      expect(
+        (await app.inject({ method: "GET", url: agentCloudPath(agentId) + suffix, headers: authorization })).statusCode,
+      ).toBe(400);
+    }
+    expect(read).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: "GET",
+      url: agentCloudPath(agentId, { limit: 3, sessionId: computerId }),
+      headers: authorization,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(read).toHaveBeenCalledWith(userId, agentId, { limit: 3, sessionId: computerId });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    read.mockRejectedValue(new Error("database temporarily unavailable"));
+    const failed = await app.inject({ method: "GET", url: agentCloudPath(agentId), headers: authorization });
+    expect(failed.statusCode).toBe(500);
+    expect(failed.json()).not.toHaveProperty("counts");
+  });
+
   const sandboxBody = {
     imBindingId: "4d63a21e-f6c7-4474-91ea-4dabf0566a24",
     channelId: "oc_channel",

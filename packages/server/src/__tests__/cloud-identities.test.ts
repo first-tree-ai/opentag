@@ -99,7 +99,7 @@ describe("Cloud identity database decisions", () => {
     expect(onDiagnostic).not.toHaveBeenCalled();
   });
 
-  it("keeps Cloud identities out of the Local setup and preparation flow until Cloud setup is implemented", async () => {
+  it("projects Cloud setup without invoking Local preparation or assuming deployment availability", async () => {
     const seeded = await binding();
     const prepareComputer = vi.fn();
     const setup = new AgentSetupService(
@@ -109,10 +109,14 @@ describe("Cloud identity database decisions", () => {
       { observeForAgent: async () => undefined },
       { prepareComputer },
     );
-    await expect(setup.getSetupById(seeded.accountId, seeded.agent.id)).rejects.toMatchObject({ statusCode: 404 });
-    await expect(setup.refreshPreparationById(seeded.accountId, seeded.agent.id)).rejects.toMatchObject({
-      statusCode: 404,
-    });
+    const before = await setup.getSetupById(seeded.accountId, seeded.agent.id);
+    await expect(setup.refreshPreparationById(seeded.accountId, seeded.agent.id)).resolves.toBeUndefined();
+    for (const snapshot of [before, await setup.getSetupById(seeded.accountId, seeded.agent.id)]) {
+      expect(snapshot).toMatchObject({
+        stage: "needs-runtime",
+        runtime: { kind: "cloud-managed", availability: { available: false, reason: "disabled" } },
+      });
+    }
     expect(prepareComputer).not.toHaveBeenCalled();
     const capable = await computerService().listAccountComputers(seeded.accountId, true, true);
     expect(capable.computers[0]).toMatchObject({ kind: "cloud", connectionStatus: "online" });

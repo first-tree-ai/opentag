@@ -323,4 +323,73 @@ describe("Provider CLI HTTP reason opt-in", () => {
       reason: "credential_rejected",
     });
   });
+
+  it("serves a Cloud setup snapshot unchanged, with no Local legs to strip", async () => {
+    const cloudComputer = {
+      kind: "cloud" as const,
+      computerId,
+      displayName: "Cloud",
+      platform: "linux" as const,
+      observedAt,
+    };
+    const cloudRuntime = {
+      kind: "cloud-managed" as const,
+      provider: "pi" as const,
+      availability: { enabled: true, available: true, reason: null, observedAt },
+    };
+    const cloudMessaging = { kind: "not-configured" as const };
+    const cloudSnapshot = {
+      agent: {
+        ...snapshot.agent,
+        runtimeProvider: "pi" as const,
+        computer: { computerId, displayName: "Cloud", platform: "linux" as const },
+      },
+      stage: "needs-messaging" as const,
+      computer: cloudComputer,
+      runtime: cloudRuntime,
+      messaging: cloudMessaging,
+      requiredImCliProviders: [],
+      components: projectAgentSetupComponents({
+        computer: cloudComputer,
+        runtime: cloudRuntime,
+        messaging: cloudMessaging,
+        requiredImCliProviders: [],
+      }),
+      blockers: [{ code: "messaging-not-configured" as const }],
+      actions: [{ kind: "start-messaging" as const, provider: "feishu" as const }],
+      observedAt,
+    };
+    const app = createApp({
+      authService: authService(),
+      agentService: {} as unknown as AgentService,
+      agentSetupService: {
+        getSetupById: vi.fn().mockResolvedValue(cloudSnapshot),
+        refreshPreparationById: vi.fn(),
+      } as unknown as AgentSetupService,
+    });
+    apps.push(app);
+
+    const unmarked = await app.inject({ method: "GET", url: agentSetupPath(agentId), headers: authorization });
+    expect(unmarked.statusCode).toBe(200);
+    expect(unmarked.json()).toEqual(cloudSnapshot);
+    expect(unmarked.json().components).toEqual([
+      {
+        kind: "cloud",
+        status: "available",
+        blocking: false,
+        computerId,
+        displayName: "Cloud",
+        platform: "linux",
+        observedAt,
+      },
+    ]);
+
+    const v2 = await app.inject({
+      method: "GET",
+      url: agentSetupPath(agentId),
+      headers: { ...authorization, [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
+    });
+    expect(v2.statusCode).toBe(200);
+    expect(v2.json()).toEqual(cloudSnapshot);
+  });
 });

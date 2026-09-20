@@ -20,6 +20,30 @@ export function sandboxScopeInvalid(): SandboxServiceError {
   return new SandboxServiceError("VALIDATION_ERROR", "validation", "The request payload is invalid", 400);
 }
 
+/** Which admission ceiling rejected a new physical reservation. */
+export type CloudCapacityScope = "account" | "platform";
+
+/**
+ * Stable capacity signal (429, transient): the Account or platform environment ceiling is full.
+ * The typed scope is internal diagnostics only; no resource names, UIDs, or provider detail.
+ */
+export class CloudCapacityExceededError extends SandboxServiceError {
+  readonly scope: CloudCapacityScope;
+
+  constructor(scope: CloudCapacityScope) {
+    super(
+      "CLOUD_CAPACITY_EXCEEDED",
+      "transient",
+      scope === "account"
+        ? "This Account already occupies its Cloud environment capacity; retry after an environment is released"
+        : "The Cloud platform is at its environment capacity; retry shortly",
+      429,
+    );
+    this.name = "CloudCapacityExceededError";
+    this.scope = scope;
+  }
+}
+
 /** The current environment could not prove a final workspace save; retain its allocation. */
 export class WorkspaceSaveError extends Error {
   constructor(message: string) {

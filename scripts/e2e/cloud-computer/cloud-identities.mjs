@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runAgentCases, runCloudComputerCases } from "./cloud-identities-cloud.mjs";
@@ -43,6 +43,18 @@ function cloudEnv(cliVersion, extra = {}) {
   };
 }
 
+async function currentMigrationHashes(repositoryRoot) {
+  const folder = join(repositoryRoot, "packages/server/drizzle");
+  const journal = JSON.parse(await readFile(join(folder, "meta/_journal.json"), "utf8"));
+  return Promise.all(
+    journal.entries.map(async (entry) =>
+      createHash("sha256")
+        .update(await readFile(join(folder, `${entry.tag}.sql`)))
+        .digest("hex"),
+    ),
+  );
+}
+
 async function runUpgradePhase({ repositoryRoot, artifactDirectory, cliVersion, assertions, step }) {
   const fixture = await step("upgrade E1 baseline database into current Server", async () =>
     createCloudIdentitiesFixture({
@@ -60,7 +72,7 @@ async function runUpgradePhase({ repositoryRoot, artifactDirectory, cliVersion, 
       'computer', (select to_jsonb(c) - 'kind' from computers c where id='${E2_IDS.localComputer}'),
       'credential', (select to_jsonb(c) from computer_credentials c where id='${E2_IDS.localCredential}'),
       'agent', (select to_jsonb(a) from agents a where id='${E2_IDS.localAgent}'),
-      'runtime', (select to_jsonb(r) from agent_runtime_configs r where agent_id='${E2_IDS.localAgent}')
+      'runtime', (select to_jsonb(r) - 'context_tree_repository' from agent_runtime_configs r where agent_id='${E2_IDS.localAgent}')
     )::text`;
     const beforeUpgrade = await fixture.postgres.psql(snapshotSql);
     await fixture.startServer();
@@ -73,7 +85,16 @@ async function runUpgradePhase({ repositoryRoot, artifactDirectory, cliVersion, 
       listed.computers.some((entry) => entry.computerId === E2_IDS.localComputer && entry.kind === undefined),
     );
     const ledger = await fixture.readAppliedMigrations();
-    record(assertions, "e1-upgrade-count", ledger.count === 43, String(ledger.count));
+    const expectedHashes = await currentMigrationHashes(repositoryRoot);
+    record(assertions, "e1-upgrade-count", ledger.count === expectedHashes.length, String(ledger.count));
+    record(assertions, "e1-upgrade-source-hashes", JSON.stringify(ledger.hashes) === JSON.stringify(expectedHashes));
+    record(
+      assertions,
+      "e1-context-tree-default",
+      (await fixture.postgres.psql(
+        `select context_tree_repository is null from agent_runtime_configs where agent_id='${E2_IDS.localAgent}'`,
+      )) === "t",
+    );
     record(
       assertions,
       "e1-hash-prefix",
@@ -275,7 +296,13 @@ async function executeCloudIdentities(repositoryRoot) {
     );
     await fixture.startServer();
     const clean = await fixture.readAppliedMigrations();
-    record(assertions, "clean-migration-count", clean.count === 43, String(clean.count));
+    const expectedHashes = await currentMigrationHashes(repositoryRoot);
+    record(assertions, "clean-migration-count", clean.count === expectedHashes.length, String(clean.count));
+    record(
+      assertions,
+      "clean-migration-source-hashes",
+      JSON.stringify(clean.hashes) === JSON.stringify(expectedHashes),
+    );
     const { first, second } = await step("two real dev sign-ins across Server restart", () =>
       signBoth(fixture, assertions),
     );

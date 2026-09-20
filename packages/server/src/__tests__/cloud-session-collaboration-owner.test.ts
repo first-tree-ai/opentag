@@ -26,6 +26,7 @@ import {
   CloudSessionWorkTracker,
   createSessionCliCloudProofAuthority,
 } from "../services/sandboxes/cloud-session-collaboration-owner.js";
+import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import type { AuthorizedSessionMessageRoute } from "../services/sessions/session-service.js";
@@ -1691,5 +1692,81 @@ describe("CloudSessionCollaborationOwner", () => {
       vi.useRealTimers();
     }
     void sent;
+  });
+
+  it("terminates a cold child durably before execution when capacity admission rejects it", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    // A cold Sandbox: the dispatch needs a NEW allocation, and admission rejects it.
+    await db.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    const owner = new CloudSessionCollaborationOwner({
+      allocation: {
+        ensureEnvironmentAllocated: async () => {
+          throw new CloudCapacityExceededError("platform");
+        },
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
+      database: db.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(db.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
+      modelGrants: new CloudModelGrantService(JWT_SECRET, {
+        allowedModels: [MODEL],
+        maxStreamsPerToken: 2,
+        ttlSeconds: 600,
+      }),
+      work: new CloudSessionWorkTracker(),
+    });
+
+    // A terminal capacity outcome the source caller can plan around — never an indefinite wait,
+    // and nothing executes: no custody record, no busy registration, no dispatch tail left behind.
+    await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "rejected",
+      code: "cloud_capacity_exceeded",
+    });
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
+    expect(owner.activeDispatchTargets).toBe(0);
+  });
+
+  it("keeps a generic cold-allocation failure transient and distinguishable from capacity", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    await db.database
+      .update(sandboxes)
+      .set({ lifecycle: "unallocated", environmentGeneration: 0, currentResourceName: null, currentResourceUid: null })
+      .where(eq(sandboxes.id, fixture.sandboxId));
+    const owner = new CloudSessionCollaborationOwner({
+      allocation: {
+        ensureEnvironmentAllocated: async () => {
+          throw new Error("provider unreachable");
+        },
+        ensureSandbox: async () => ({ accountId: fixture.accountId, sandboxId: fixture.sandboxId }),
+      },
+      assembler: new EffectiveRuntimeSnapshotAssembler(db.database),
+      database: db.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(db.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      modelBaseUrl: "https://server.example.test/api/v1/cloud-model",
+      modelGrants: new CloudModelGrantService(JWT_SECRET, {
+        allowedModels: [MODEL],
+        maxStreamsPerToken: 2,
+        ttlSeconds: 600,
+      }),
+      work: new CloudSessionWorkTracker(),
+    });
+
+    await expect(owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(await db.database.select().from(runtimeDurableWork)).toHaveLength(0);
   });
 });

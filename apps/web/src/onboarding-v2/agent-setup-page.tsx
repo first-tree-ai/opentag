@@ -16,6 +16,7 @@
 
 import type {
   AgentSetupAction,
+  AgentSetupComponent,
   AgentSetupSnapshot,
   ImProvider,
   ProviderCliHandoffProgress,
@@ -1045,6 +1046,32 @@ function SetupStageNavigation({
   );
 }
 
+function preparationCheckingItem(rows: ReturnType<typeof preparationSummaryRows>): string {
+  return rows.runtime.status === "checking" || rows.runtime.status === "waiting"
+    ? rows.runtime.label
+    : rows.messaging.label;
+}
+
+function preparationHint(input: {
+  cloud: boolean;
+  ready: boolean;
+  checking: boolean;
+  checkingItem: string;
+  pollExhausted: boolean;
+  refreshAction?: ReactNode;
+}): string {
+  if (input.cloud) {
+    if (input.ready) return m.onboarding_v2_prep_cloud_continue_ready();
+    return input.pollExhausted
+      ? m.onboarding_v2_prep_checking_paused()
+      : m.onboarding_v2_prep_cloud_continue_unavailable();
+  }
+  if (input.ready) return m.onboarding_v2_prep_continue_ready();
+  if (input.checking) return m.onboarding_v2_prep_checking_automatically({ item: input.checkingItem });
+  if (input.pollExhausted) return m.onboarding_v2_prep_checking_paused();
+  return input.refreshAction ? m.onboarding_v2_prep_complete_action() : m.onboarding_v2_prep_continue_waiting();
+}
+
 function PreparationNavigation({
   checking,
   onContinue,
@@ -1061,18 +1088,16 @@ function PreparationNavigation({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const hintId = useId();
-  const rows = preparationSummaryRows(snapshot);
-  const checkingItem =
-    rows.runtime.status === "checking" || rows.runtime.status === "waiting" ? rows.runtime.label : rows.messaging.label;
-  const hint = ready
-    ? m.onboarding_v2_prep_continue_ready()
-    : checking
-      ? m.onboarding_v2_prep_checking_automatically({ item: checkingItem })
-      : pollExhausted
-        ? m.onboarding_v2_prep_checking_paused()
-        : refreshAction
-          ? m.onboarding_v2_prep_complete_action()
-          : m.onboarding_v2_prep_continue_waiting();
+  const rows = snapshot.computer.kind === "cloud" ? undefined : preparationSummaryRows(snapshot);
+  const checkingItem = rows ? preparationCheckingItem(rows) : "";
+  const hint = preparationHint({
+    cloud: snapshot.computer.kind === "cloud",
+    ready,
+    checking,
+    checkingItem,
+    pollExhausted,
+    refreshAction,
+  });
   return (
     <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
       <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0" id={hintId} role="status">
@@ -1122,6 +1147,13 @@ function LocalPreparationSections({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
+  // A Cloud Agent has no machine to connect and no CLIs to prepare: its environment section states
+  // the managed fact and, when the service cannot execute, the deployment's reason.
+  if (snapshot.computer.kind === "cloud") {
+    return stage === "needs-runtime" || showCompletedPreparation ? (
+      <CloudEnvironmentSection snapshot={snapshot} />
+    ) : null;
+  }
   return (
     <>
       {stage === "needs-computer" ? (
@@ -1138,6 +1170,57 @@ function LocalPreparationSections({
       ) : null}
     </>
   );
+}
+
+/**
+ * The Cloud environment leg. It renders the canonical Cloud component only: `available` states the
+ * managed fact that the environment starts with the first real task, and any other status names
+ * the deployment's reason. Nothing here claims a running machine or a completed probe.
+ */
+function CloudEnvironmentSection({ snapshot }: { readonly snapshot: AgentSetupSnapshot }) {
+  const component = snapshot.components.find(
+    (candidate): candidate is Extract<AgentSetupComponent, { kind: "cloud" }> => candidate.kind === "cloud",
+  );
+  if (!component) return null;
+  const available = component.status === "available";
+  return (
+    <section className="otv2-preparation flex flex-col" data-ui="agent-setup-cloud">
+      <header className={SECTION_HEADER}>
+        <Text as="h1" size="lg" variant="heading">
+          {m.onboarding_v2_cloud_title()}
+        </Text>
+        <p className={HINT}>{m.onboarding_v2_cloud_description()}</p>
+      </header>
+      <div className="otv2-preparation__checks">
+        <ComputerSummary
+          status={available ? m.onboarding_v2_cloud_status_ready() : m.onboarding_v2_cloud_status_unavailable()}
+          title={component.displayName}
+          tone={available ? "success" : "warning"}
+        />
+        {available ? (
+          <p className={HINT} data-ui="agent-setup-cloud-ready-detail">
+            {m.onboarding_v2_cloud_ready_detail()}
+          </p>
+        ) : (
+          <p className={HINT} data-ui="agent-setup-cloud-blocked-detail" role="alert">
+            {cloudUnavailableDetail(component.status)}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** The deployment reason a Cloud component carries, as one reader-facing sentence. */
+function cloudUnavailableDetail(status: Extract<AgentSetupComponent, { kind: "cloud" }>["status"]): string {
+  switch (status) {
+    case "execution-unavailable":
+      return m.onboarding_v2_cloud_reason_execution();
+    case "model-unavailable":
+      return m.onboarding_v2_cloud_reason_model();
+    default:
+      return m.onboarding_v2_cloud_reason_disabled();
+  }
 }
 
 function ComputerSetupSection({
@@ -1237,6 +1320,10 @@ function ComputerSetupSection({
         </div>
       </section>
     );
+  }
+  if (computer.kind === "cloud") {
+    // A Cloud Agent never reaches the needs-computer stage: there is no machine to bind or repair.
+    return null;
   }
   return (
     <BoundComputerSection

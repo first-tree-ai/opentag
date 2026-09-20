@@ -711,3 +711,146 @@ describe("Slack OAuth attempt fencing", () => {
     });
   });
 });
+
+/**
+ * The Cloud IM path: a Pi Agent bound to the Account's logical Cloud Computer. There is no Local
+ * registry, daemon, or provider CLI behind it — readiness is the Server-owned binding, the
+ * provider connection observation, the credential inspection, and the injected managed-runtime
+ * answer (the deployment's Cloud configuration in production).
+ */
+async function cloudFixture(options: { runtimeReady?: boolean } = {}) {
+  const bootstrap = await bootstrapTestAccount(unitDatabase.database, {
+    displayName: "Cloud Admin",
+    email: `cloud-${crypto.randomUUID()}@example.com`,
+  });
+  const [computer] = await unitDatabase.database
+    .insert(computers)
+    .values({
+      ownerAccountId: bootstrap.userId,
+      kind: "cloud",
+      currentInstallationId: crypto.randomUUID(),
+      displayName: "Cloud",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "1.2.3",
+    })
+    .returning();
+  if (!computer) throw new Error("Cloud Computer fixture was not created");
+  const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
+  const service = new ImBindingService(unitDatabase.database, cipher, {
+    now: () => fixedNow,
+    agentRuntimeReadiness: () => ((options.runtimeReady ?? true) ? "ready" : "unavailable"),
+    // A Cloud binding must never consult these Local-machine readers.
+    imCliReadiness: () => {
+      throw new Error("Cloud bindings have no Local CLI artifact to read");
+    },
+    credentialExecutionReadiness: () => {
+      throw new Error("Cloud bindings have no Local credential execution to read");
+    },
+  });
+  const agents = new AgentService(unitDatabase.database, { cloudIdentitiesEnabled: true });
+  const agent = await agents.createForAccount(bootstrap.userId, {
+    name: "cloud-agent",
+    displayName: "Cloud Agent",
+    runtimeProvider: "pi",
+    computerId: computer.id,
+  });
+  return { agents, bootstrap, cipher, computer, service, agent };
+}
+
+describe("Cloud Agent messaging readiness", () => {
+  it("hands a connected Slack binding over without any Local CLI or credential execution report", async () => {
+    const value = await cloudFixture();
+    const activated = await value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE");
+
+    // Before the Server observes the workspace connection, the handoff is not ready — and nothing
+    // fabricates a provider CLI phase for it.
+    const waiting = await value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+    expect(waiting).toEqual({ bindingState: "active", handoffReady: false });
+
+    await unitDatabase.database
+      .update(slackInstallations)
+      .set({ observedConnectedAt: fixedNow, observedAt: fixedNow })
+      .where(eq(slackInstallations.agentId, value.agent.id));
+
+    const handoff = await value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+    expect(handoff).toEqual({ bindingState: "active", handoffReady: true });
+    const summary = await value.service.getForAgent(value.bootstrap.userId, value.agent.id);
+    expect(summary?.bindingState).toBe("active");
+    expect(activated.imBindingId).toBeDefined();
+  });
+
+  it("hands a connected Feishu binding over on its Server-owned connection lease", async () => {
+    const value = await cloudFixture();
+    const bindingId = await value.service.activateFeishu(feishuActivationInput(value.agent.id));
+
+    const beforeLease = await value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+    expect(beforeLease).toEqual({ bindingState: "active", handoffReady: false });
+
+    await unitDatabase.database
+      .update(imBindings)
+      .set({
+        connectionOwnerInstanceId: crypto.randomUUID(),
+        connectionLeaseExpiresAt: new Date(fixedNow.getTime() + 60_000),
+        observedAt: fixedNow,
+        observedConnectedAt: fixedNow,
+      })
+      .where(eq(imBindings.id, bindingId));
+
+    const handoff = await value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+    expect(handoff).toEqual({ bindingState: "active", handoffReady: true });
+  });
+
+  it("keeps the handoff closed while the managed runtime cannot execute", async () => {
+    const value = await cloudFixture({ runtimeReady: false });
+    await value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE");
+    await unitDatabase.database
+      .update(slackInstallations)
+      .set({ observedConnectedAt: fixedNow, observedAt: fixedNow })
+      .where(eq(slackInstallations.agentId, value.agent.id));
+
+    const handoff = await value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+    expect(handoff).toEqual({ bindingState: "active", handoffReady: false });
+  });
+
+  it("closes the handoff immediately when the provider revokes the authorization", async () => {
+    const value = await cloudFixture();
+    const activated = await value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE");
+    await unitDatabase.database
+      .update(slackInstallations)
+      .set({ observedConnectedAt: fixedNow, observedAt: fixedNow })
+      .where(eq(slackInstallations.agentId, value.agent.id));
+    expect(await value.service.requireReauthorization(activated.imBindingId, 1, "SLACK_AUTH_INVALID")).toBe(true);
+
+    const handoff = await value.service.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
+    expect(handoff).toEqual({ bindingState: "reauthorization_required", handoffReady: false });
+    // And a same-Provider reauthorization restores it through the existing OAuth path.
+    const { oauth } = slackOAuth(value);
+    const started = await oauth.start(value.bootstrap.userId, value.agent.id, "reauthorize");
+    const result = await oauth.callback({
+      authenticatedUserId: value.bootstrap.userId,
+      code: "oauth-code",
+      state: new URL(started.authorizationUrl).searchParams.get("state") ?? "",
+      sessionBinding: started.sessionBinding,
+    });
+    expect(result).toMatchObject({ result: { imBindingId: activated.imBindingId, credentialGeneration: 3 } });
+  });
+
+  it("reports Cloud diagnostics without fabricating Local machine legs", async () => {
+    const value = await cloudFixture();
+    const activated = await value.service.activateSlack(slackActivationInput(value.agent.id), "B_LIFECYCLE");
+    await unitDatabase.database
+      .update(slackInstallations)
+      .set({ observedConnectedAt: fixedNow, observedAt: fixedNow })
+      .where(eq(slackInstallations.agentId, value.agent.id));
+
+    const diagnostics = await value.service.diagnostics(value.bootstrap.userId, activated.imBindingId);
+    expect(diagnostics.ready).toBe(true);
+    expect(diagnostics.agentRuntimeReadiness).toBe("ready");
+    // No local artifact was ever provisioned and no local credential execution ever ran.
+    expect(diagnostics.providerCliReadiness).toBe("unavailable");
+    expect(diagnostics.credentialExecutionReadiness).toBe("unconfirmed");
+    expect(diagnostics.credentialStatus).toBe("valid");
+    expect(diagnostics.reauthorizationRequired).toBe(false);
+  });
+});

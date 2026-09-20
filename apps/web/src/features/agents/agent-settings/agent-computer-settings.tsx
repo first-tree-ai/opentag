@@ -1,10 +1,11 @@
 import { formatDateTime, formatRelativeTime } from "../../../i18n/format.js";
 import * as m from "../../../paraglide/messages.js";
-import { Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
+import { Button, Icon, StatusIndicator, type StatusTone, Text } from "../../../ui/design-system.js";
 import { ComputerConnect } from "../../computer-connect/computer-connect.js";
 import { AgentComputerChoice } from "../agent-computer-choice.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { computerRecoveryMessage, platformLabel } from "../agent-presentation.js";
+import { CloudComputerSettings } from "../cloud/cloud-environment.js";
 import { AgentSettingsPageHeader } from "./settings-layout.js";
 
 /**
@@ -84,6 +85,27 @@ export function AgentComputerSettings({
   const { lastSeen, label, ready, tone } = computerStatusLine(agent);
   const recovery = computerRecoveryMessage(agent);
   if (!agent.computer) return <AgentComputerBinding agent={agent} onAgentChanged={onAgentChanged} />;
+  /*
+   * A Cloud Computer is a logical identity that is always online: nothing is installed or
+   * repaired here, and the operative state lives in the Session environments. The Local path
+   * below is unchanged — a Cloud Agent never reaches the bind or repair flows.
+   */
+  if (agent.computerKind === "cloud") return <CloudComputerSettings agent={agent} />;
+  if (agent.computerKind === undefined && computerState.state === "unconfirmed") {
+    return (
+      <div className="grid gap-4">
+        <Text as="h2" variant="heading">
+          {agent.computer.displayName}
+        </Text>
+        <StatusIndicator label={m.agent_settings_computer_unconfirmed()} tone="neutral" />
+        <div>
+          <Button type="button" variant="secondary" onClick={onAgentChanged}>
+            {m.common_try_again()}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="grid gap-6">
       <AgentSettingsPageHeader

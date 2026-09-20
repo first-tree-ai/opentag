@@ -337,11 +337,43 @@ export class ImBindingProviderCli {
         );
   }
 
+  /**
+   * One binding's handoff readiness at `now`.
+   *
+   * A Cloud-bound Agent has no Local machine legs: the provider CLI ships with the Runner image
+   * and credentials are validated per execution, so the local artifact/credential readers are
+   * never consulted for it. Its handoff is the Server-owned truth — the binding state, the
+   * provider connection observation, the credential inspection — plus the managed runtime answer
+   * the caller injects (the deployment's Cloud configuration, never a machine report).
+   */
   async readiness(
     input: ImBindingReadinessInput,
     agentRuntimeReadiness: Promise<ProviderReadinessStatus>,
     now: Date,
+    computerKind: "local" | "cloud" = "local",
   ): Promise<ImBindingReadiness> {
+    if (computerKind === "cloud") {
+      const needsReauthorization = reauthorizationRequired(input);
+      const bindingState = needsReauthorization ? "reauthorization_required" : input.status;
+      const connection = connectionObservation(input, now);
+      const connectionReady =
+        input.provider === "slack" ? input.observedConnectedAt !== null : connection?.state === "connected";
+      const runtime = await agentRuntimeReadiness;
+      const ready = bindingState === "active" && connectionReady && runtime === "ready";
+      return {
+        handoff:
+          bindingState === "active" && ready
+            ? { bindingState: "active", handoffReady: true }
+            : { bindingState, handoffReady: false },
+        agentRuntimeReadiness: runtime,
+        // No local artifact is provisioned ahead of the first Cloud execution, so there is no
+        // artifact observation to report; the fence value states that rather than a fabrication.
+        providerCliReadiness: "unavailable",
+        credentialExecutionReadiness: "unconfirmed",
+        reauthorizationRequired: needsReauthorization,
+        connection,
+      };
+    }
     const [runtime, artifactValue, credential] = await Promise.all([
       agentRuntimeReadiness,
       this.#artifactReadiness(input.agentId, input.provider, input.id, input.credentialGeneration),

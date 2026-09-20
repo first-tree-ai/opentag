@@ -64,6 +64,12 @@ export const CloudRunnerEnvironmentSchema = z
      * retention/tuning window.
      */
     OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(120_000),
+    /*
+     * E9 admission ceilings: occupied Instances per Account and platform-wide, counted from the
+     * durable Sandbox facts; lowering them only blocks NEW reservations, never kills running work.
+     */
+    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: z.coerce.number().int().min(1).max(10_000).default(3),
+    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: z.coerce.number().int().min(1).max(1_000_000).default(20),
   })
   .strict();
 
@@ -88,6 +94,10 @@ export type CloudRunnerConfig =
       bootstrapTokenTtlSeconds: number;
       acceptanceTimeoutMs: number;
       idleTimeoutMs: number;
+      /** E9 admission ceiling: occupied Instances per Account (durable Sandbox occupancy). */
+      maxInstancesPerAccount: number;
+      /** E9 admission ceiling: occupied Instances platform-wide. */
+      maxInstances: number;
     };
 
 const REQUIRED_FIELDS = [
@@ -122,6 +132,8 @@ export function resolveCloudRunnerConfig(
     OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS: environment.OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS,
     OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS,
     OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS: environment.OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS,
+    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT: environment.OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT,
+    OPENTAG_CLOUD_RUNNER_MAX_INSTANCES: environment.OPENTAG_CLOUD_RUNNER_MAX_INSTANCES,
   });
   if (!parsed.OPENTAG_CLOUD_RUNNER_ENABLED) return { enabled: false };
   if (parsed.OPENTAG_CLOUD_RUNNER_GCP_ACCESS_TOKEN && environment.OPENTAG_ENV !== "dev") {
@@ -156,6 +168,8 @@ export function resolveCloudRunnerConfig(
     bootstrapTokenTtlSeconds: parsed.OPENTAG_CLOUD_RUNNER_BOOTSTRAP_TOKEN_TTL_SECONDS,
     acceptanceTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_ACCEPTANCE_TIMEOUT_MS,
     idleTimeoutMs: parsed.OPENTAG_CLOUD_RUNNER_IDLE_TIMEOUT_MS,
+    maxInstancesPerAccount: parsed.OPENTAG_CLOUD_RUNNER_MAX_INSTANCES_PER_ACCOUNT,
+    maxInstances: parsed.OPENTAG_CLOUD_RUNNER_MAX_INSTANCES,
   };
 }
 

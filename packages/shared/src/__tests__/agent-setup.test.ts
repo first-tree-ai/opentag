@@ -4,11 +4,18 @@ import {
   AGENT_SETUP_ACTION_KINDS,
   AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
   AgentCreationRecoveryActionSchema,
+  type AgentSetupAction,
+  type AgentSetupBlocker,
+  type AgentSetupComputerState,
+  type AgentSetupMessagingState,
+  type AgentSetupRuntimeState,
   AgentSetupSlackOAuthContextSchema,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
+  type AgentSetupStage,
   projectAgentSetupComponents,
 } from "../agent-setup.js";
+import type { CloudAvailability } from "../cloud-product.js";
 import {
   AGENT_SETUP_REFRESH_TEMPLATE,
   AGENT_SETUP_TEMPLATE,
@@ -29,12 +36,59 @@ const computerIdentity = {
   platform: "darwin" as const,
 };
 
-function agent(computer: typeof computerIdentity | null, requiresComputerRebind?: boolean) {
+const cloudComputerIdentity = {
+  computerId,
+  displayName: "Cloud",
+  platform: "linux" as const,
+};
+
+function cloudAvailability(overrides: Partial<CloudAvailability> = {}): CloudAvailability {
+  return { enabled: true, available: true, reason: null, observedAt, ...overrides };
+}
+
+/** A Cloud-bound Agent snapshot base: the managed identity, the managed runtime, no local CLI gate. */
+function cloudSnapshot(input: {
+  availability: CloudAvailability;
+  stage: AgentSetupStage;
+  messaging: AgentSetupMessagingState;
+  blockers: AgentSetupBlocker[];
+  actions: AgentSetupAction[];
+}): AgentSetupSnapshot {
+  const computer: AgentSetupComputerState = { kind: "cloud", ...cloudComputerIdentity, observedAt };
+  const runtime: AgentSetupRuntimeState = {
+    kind: "cloud-managed",
+    provider: "pi",
+    availability: input.availability,
+  };
+  return {
+    agent: agent(cloudComputerIdentity, undefined, "pi"),
+    stage: input.stage,
+    computer,
+    runtime,
+    messaging: input.messaging,
+    requiredImCliProviders: [],
+    components: projectAgentSetupComponents({
+      computer,
+      runtime,
+      messaging: input.messaging,
+      requiredImCliProviders: [],
+    }),
+    blockers: input.blockers,
+    actions: input.actions,
+    observedAt,
+  };
+}
+
+function agent(
+  computer: AgentSetupSnapshot["agent"]["computer"],
+  requiresComputerRebind?: boolean,
+  runtimeProvider: "codex" | "claude-code" | "pi" = "codex",
+) {
   return {
     id: agentId,
     name: "reviewer",
     displayName: "Reviewer",
-    runtimeProvider: "codex" as const,
+    runtimeProvider,
     receiveMode: "mention_only" as const,
     status: "active" as const,
     createdAt: observedAt,
@@ -563,5 +617,220 @@ describe("Agent setup contracts", () => {
     ).toThrow("Slack create requires the Agent to remain unbound");
     expect(() => AgentSetupSlackOAuthContextSchema.parse({ ...create, returnUrl: "https://example.com" })).toThrow();
     expect(() => AgentSetupSlackOAuthContextSchema.parse({ ...create, setupSessionId: crypto.randomUUID() })).toThrow();
+  });
+});
+
+describe("Agent setup Cloud contracts", () => {
+  it("accepts the canonical Cloud stage matrix", () => {
+    const scenarios = [
+      {
+        name: "Cloud service ready, Messaging not configured",
+        snapshot: cloudSnapshot({
+          availability: cloudAvailability(),
+          stage: "needs-messaging",
+          messaging: { kind: "not-configured" },
+          blockers: [{ code: "messaging-not-configured" }],
+          actions: [
+            { kind: "start-messaging", provider: "slack" },
+            { kind: "start-messaging", provider: "feishu" },
+          ],
+        }),
+      },
+      {
+        name: "Cloud model path missing",
+        snapshot: cloudSnapshot({
+          availability: cloudAvailability({ available: false, reason: "model_unavailable" }),
+          stage: "needs-runtime",
+          messaging: { kind: "not-configured" },
+          blockers: [{ code: "cloud-service-unavailable", reason: "model-unavailable" }],
+          actions: [{ kind: "refresh" }],
+        }),
+      },
+      {
+        name: "Cloud execution disabled",
+        snapshot: cloudSnapshot({
+          availability: cloudAvailability({ available: false, reason: "execution_unavailable" }),
+          stage: "needs-runtime",
+          messaging: { kind: "not-configured" },
+          blockers: [{ code: "cloud-service-unavailable", reason: "execution-unavailable" }],
+          actions: [{ kind: "refresh" }],
+        }),
+      },
+      {
+        name: "Cloud product disabled",
+        snapshot: cloudSnapshot({
+          availability: cloudAvailability({ enabled: false, available: false, reason: "disabled" }),
+          stage: "needs-runtime",
+          messaging: { kind: "not-configured" },
+          blockers: [{ code: "cloud-service-unavailable", reason: "disabled" }],
+          actions: [{ kind: "refresh" }],
+        }),
+      },
+      {
+        name: "Cloud ready Messaging binding",
+        snapshot: cloudSnapshot({
+          availability: cloudAvailability(),
+          stage: "ready",
+          messaging: { kind: "ready", provider: "slack", bindingId, credentialGeneration: 3 },
+          blockers: [],
+          actions: [
+            { kind: "reauthorize-messaging", provider: "slack", bindingId, credentialGeneration: 3 },
+            { kind: "unbind-messaging", provider: "slack", bindingId },
+          ],
+        }),
+      },
+      {
+        name: "Cloud Feishu authorization in progress",
+        snapshot: cloudSnapshot({
+          availability: cloudAvailability(),
+          stage: "needs-messaging",
+          messaging: {
+            kind: "authorizing",
+            provider: "feishu",
+            attemptId,
+            qrUrl: "https://accounts.feishu.cn/device",
+            expiresAt: "2026-09-01T10:10:00.000Z",
+          },
+          blockers: [{ code: "messaging-not-ready", provider: "feishu", state: "authorizing" }],
+          actions: [{ kind: "cancel-messaging-attempt", provider: "feishu", attemptId }],
+        }),
+      },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      expect(AgentSetupSnapshotSchema.parse(scenario.snapshot), scenario.name).toEqual(scenario.snapshot);
+    }
+  });
+
+  it("projects one Cloud component instead of the local preparation legs", () => {
+    const available = cloudSnapshot({
+      availability: cloudAvailability(),
+      stage: "needs-messaging",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [],
+    });
+    expect(available.components).toEqual([
+      {
+        kind: "cloud",
+        status: "available",
+        blocking: false,
+        computerId,
+        displayName: "Cloud",
+        platform: "linux",
+        observedAt,
+      },
+    ]);
+
+    const unavailable = cloudSnapshot({
+      availability: cloudAvailability({ available: false, reason: "model_unavailable" }),
+      stage: "needs-runtime",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "cloud-service-unavailable", reason: "model-unavailable" }],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(unavailable.components).toEqual([
+      {
+        kind: "cloud",
+        status: "model-unavailable",
+        blocking: true,
+        computerId,
+        displayName: "Cloud",
+        platform: "linux",
+        observedAt,
+      },
+    ]);
+  });
+
+  it("rejects local preparation facts on a Cloud-bound Agent", () => {
+    const base = cloudSnapshot({
+      availability: cloudAvailability(),
+      stage: "needs-messaging",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [{ kind: "start-messaging", provider: "feishu" }],
+    });
+    // A Cloud setup carries no local CLI requirements.
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({ ...base, requiredImCliProviders: [...AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS] }),
+    ).toThrow("A Cloud setup requires no local IM CLI Providers");
+    // A local runtime observation can never describe the managed Cloud runtime.
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({
+        ...base,
+        runtime: { kind: "observed", provider: "pi", status: "ready", observedAt },
+      }),
+    ).toThrow("managed Cloud service");
+    // A waiting report is a local observation shape and is equally rejected.
+    expect(() => AgentSetupSnapshotSchema.parse({ ...base, runtime: { kind: "waiting", provider: "pi" } })).toThrow(
+      "managed Cloud service",
+    );
+  });
+
+  it("rejects the managed Cloud runtime on a Local-bound Agent", () => {
+    const snapshot = canonical({
+      agent: agent(computerIdentity),
+      stage: "needs-messaging",
+      computer: boundComputer(),
+      runtime: { kind: "cloud-managed", provider: "codex", availability: cloudAvailability() },
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [
+        { kind: "start-messaging", provider: "feishu" },
+        { kind: "start-messaging", provider: "slack" },
+      ],
+      observedAt,
+    });
+    expect(() => AgentSetupSnapshotSchema.parse(snapshot)).toThrow(
+      "A Local Computer's runtime readiness must come from its own observations",
+    );
+  });
+
+  it("rejects a Cloud service blocker whose reason drifts from the availability", () => {
+    const base = cloudSnapshot({
+      availability: cloudAvailability({ available: false, reason: "model_unavailable" }),
+      stage: "needs-runtime",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "cloud-service-unavailable", reason: "model-unavailable" }],
+      actions: [{ kind: "refresh" }],
+    });
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({
+        ...base,
+        blockers: [{ code: "cloud-service-unavailable", reason: "execution-unavailable" }],
+      }),
+    ).toThrow("exact reason");
+  });
+
+  it("rejects a Cloud service blocker on an available Cloud service", () => {
+    const base = cloudSnapshot({
+      availability: cloudAvailability(),
+      stage: "needs-messaging",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [{ kind: "start-messaging", provider: "feishu" }],
+    });
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({
+        ...base,
+        blockers: [{ code: "cloud-service-unavailable", reason: "disabled" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a Cloud identity presented as rebind-required while still projected as Cloud", () => {
+    const base = cloudSnapshot({
+      availability: cloudAvailability(),
+      stage: "needs-messaging",
+      messaging: { kind: "not-configured" },
+      blockers: [{ code: "messaging-not-configured" }],
+      actions: [{ kind: "start-messaging", provider: "feishu" }],
+    });
+    expect(() =>
+      AgentSetupSnapshotSchema.parse({
+        ...base,
+        agent: { ...base.agent, requiresComputerRebind: true },
+      }),
+    ).toThrow("A Computer that requires rebind is not a usable Cloud Computer");
   });
 });

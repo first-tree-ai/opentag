@@ -5,6 +5,19 @@ export const AGENT_SETUP_REFRESH_TEMPLATE = `${AGENT_SETUP_TEMPLATE}/refresh`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_RUNTIME_TEST_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/runtime-test`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
+export const AGENT_CLOUD_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/cloud`;
+
+export function agentCloudPath(
+  agentId: string,
+  options: { cursor?: string; limit?: number; sessionId?: string } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.cursor !== undefined) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.sessionId !== undefined) query.set("sessionId", options.sessionId);
+  const suffix = query.toString();
+  return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}/cloud${suffix ? `?${suffix}` : ""}`;
+}
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
 export const AGENT_COMPUTER_REBIND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/computer/rebind`;

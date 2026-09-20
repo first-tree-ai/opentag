@@ -10,6 +10,7 @@ import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import { cloudAvailability } from "./cloud-product-config.js";
 import {
   cloudAppOptions,
   collectKnownSecrets,
@@ -556,11 +557,16 @@ export async function startServer(): Promise<void> {
     });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ computerId: computers.id, runtimeProvider: agents.runtimeProvider })
+        .select({ computerId: computers.id, computerKind: computers.kind, runtimeProvider: agents.runtimeProvider })
         .from(agents)
         .innerJoin(computers, eq(computers.id, agents.computerId))
         .where(eq(agents.id, agentId))
         .limit(1);
+      // A Cloud Agent's runtime is the managed service: readiness is the deployment's Cloud
+      // configuration, never a Local registry observation — a Cloud Computer has no daemon to ask.
+      if (agent?.computerKind === "cloud") {
+        return cloudAvailability(config).available ? "ready" : "unavailable";
+      }
       const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
       if (!agent || !currentInstanceId) return "unavailable";
       return (
@@ -710,6 +716,7 @@ export async function startServer(): Promise<void> {
       },
       providerReadiness: registry,
       slackOAuthAvailable: config.slackOAuth !== undefined,
+      cloudAvailability: (now) => cloudAvailability(config, now),
     });
     const slackApi = new DefaultSlackApiClient(undefined, undefined, imCallPolicy);
     const slackConfigurationService = new SlackConfigurationService({
@@ -876,6 +883,7 @@ export async function startServer(): Promise<void> {
       },
       computerService,
       sandboxService,
+      cloudAvailability: () => cloudAvailability(config),
       ...cloudAppOptions({
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,

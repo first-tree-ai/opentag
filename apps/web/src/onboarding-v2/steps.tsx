@@ -1,4 +1,4 @@
-import type { ImProvider } from "@opentag/shared/browser";
+import type { CloudAvailability, ImProvider } from "@opentag/shared/browser";
 import { type FormEvent, useId, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
@@ -7,6 +7,7 @@ import { Button, Icon, KumoInputControl, Text } from "../ui/design-system.js";
 import { BrandMark } from "./brand-mark.js";
 import {
   type AgentDraft,
+  CLOUD_RUNTIME,
   DEFAULT_AGENT_NAME,
   type Destination,
   draftIsSubmittable,
@@ -119,19 +120,24 @@ export function CardCopy({
 }
 
 export function DestinationStep({
-  cloudAvailable,
+  cloud,
   draft,
   onChoose,
   onSubmit,
 }: {
-  cloudAvailable: boolean;
+  /**
+   * The deployment's Cloud availability as far as this page has confirmed it. `undefined` means
+   * the read has not answered yet: the Cloud choice stays disabled rather than guessing either way.
+   */
+  cloud: { readonly available: boolean; readonly reason: CloudAvailability["reason"] } | undefined;
   draft: AgentDraft;
   onChoose: (destination: Destination) => void;
   onSubmit: () => void;
 }) {
+  const cloudEnabled = cloud?.available === true;
   const destinations: readonly { id: Destination; icon: "laptop" | "model"; enabled: boolean }[] = [
     { id: "local", icon: "laptop", enabled: true },
-    { id: "cloud", icon: "model", enabled: cloudAvailable },
+    { id: "cloud", icon: "model", enabled: cloudEnabled },
   ];
   return (
     <section className={STEP} data-ui="onboarding-v2-step-destination">
@@ -148,10 +154,21 @@ export function DestinationStep({
                   title: m.onboarding_v2_destination_local_title(),
                   description: m.onboarding_v2_destination_local_description(),
                 }
-              : {
-                  title: m.onboarding_v2_destination_cloud_title(),
-                  description: m.onboarding_v2_destination_cloud_description(),
-                };
+              : cloudEnabled
+                ? {
+                    title: m.onboarding_v2_destination_cloud_title(),
+                    description: m.onboarding_v2_destination_cloud_description(),
+                  }
+                : {
+                    title: m.onboarding_v2_destination_cloud_title(),
+                    description: m.onboarding_v2_destination_cloud_unavailable_description(),
+                  };
+          const badge =
+            destination.id === "cloud" && !cloudEnabled
+              ? cloud === undefined
+                ? m.onboarding_v2_destination_cloud_checking()
+                : m.onboarding_v2_destination_cloud_unavailable_badge()
+              : undefined;
           return (
             <li key={destination.id}>
               <Button
@@ -166,7 +183,7 @@ export function DestinationStep({
                   name={destination.icon}
                 />
                 <CardCopy
-                  badge={destination.enabled ? undefined : m.onboarding_v2_coming_soon()}
+                  badge={badge}
                   description={copy.description}
                   disabled={!destination.enabled}
                   title={copy.title}
@@ -253,6 +270,27 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
 }
 
 function RuntimePicker({ draft, onChange }: { draft: AgentDraft; onChange: (draft: AgentDraft) => void }) {
+  // Cloud runs the managed Pi runtime: there is nothing to install and nothing to choose. The
+  // fixed fact is presented read-only so the choice the Local flow offers is never implied here.
+  if (draft.destination === "cloud") {
+    return (
+      <fieldset className={FIELDSET}>
+        <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
+        <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices" data-fixed="cloud">
+          <li>
+            <div className={CARD} data-ui="onboarding-v2-runtime-fixed">
+              <RuntimeMark runtime={CLOUD_RUNTIME} />
+              <CardCopy
+                description={m.onboarding_v2_agent_runtime_cloud_description()}
+                title={runtimeTitle(CLOUD_RUNTIME)}
+              />
+            </div>
+          </li>
+        </ul>
+        <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_cloud_footnote()}</p>
+      </fieldset>
+    );
+  }
   return (
     <fieldset className={FIELDSET}>
       <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
@@ -312,7 +350,7 @@ export function AgentStep({
           back={onBack}
           backDisabled={submitting}
           label={submitLabel}
-          nextDisabled={submitting || draft.runtime === undefined}
+          nextDisabled={submitting || (draft.destination !== "cloud" && draft.runtime === undefined)}
           submit
         />
       </form>

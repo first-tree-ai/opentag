@@ -157,6 +157,8 @@ describe("production Cloud runtime composition", () => {
         bootstrapTokenTtlSeconds: 600,
         acceptanceTimeoutMs: 60_000,
         idleTimeoutMs: 120_000,
+        maxInstancesPerAccount: 4,
+        maxInstances: 17,
       },
     };
     const store = new FakeWorkspaceObjectStore();
@@ -169,6 +171,8 @@ describe("production Cloud runtime composition", () => {
     });
     expect(await issuedToken).toBe("fixture-google-access-token");
     expect(runtime?.sandboxRunnerService.workspacePersistenceEnabled).toBe(true);
+    // E9 admission ceilings flow from the deployment configuration into the composed service.
+    expect(runtime?.sandboxRunnerService.capacityLimits).toEqual({ accountLimit: 4, platformLimit: 17 });
     const options = cloudAppOptions({ runnerRuntime: runtime, composition: {}, cloudModel: { enabled: false } });
     expect(options.runnerWorkspace).toBe(runtime?.runnerWorkspace);
     expect(options.runnerWorkspace).toBeDefined();

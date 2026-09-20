@@ -24,7 +24,7 @@ import {
   toResourceState,
   usePersistedSettledError,
 } from "../resource/resource-state.js";
-import type { AgentDetailView, AgentListItem } from "./agent-model.js";
+import type { AgentCloudRuntimeEvidence, AgentDetailView, AgentListItem } from "./agent-model.js";
 import {
   agentDetailFromListItem,
   isHandoffChecking,
@@ -43,6 +43,19 @@ export function readAgent(agentId: string) {
 
 export function readComputers() {
   return browserApi.computers();
+}
+
+/** Logical online identity alone cannot establish Cloud execution readiness. */
+function useCloudRuntimeEvidence(enabled: boolean, watched: boolean): AgentCloudRuntimeEvidence {
+  const query = useQuery({
+    queryKey: queryKeys.cloudAvailability(),
+    queryFn: () => browserApi.cloudAvailability(),
+    enabled,
+    ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
+  });
+  return enabled && isConfirmedQuerySuccess(query) && query.data
+    ? { kind: "ready", value: query.data }
+    : { kind: "unconfirmed" };
 }
 
 /*
@@ -173,6 +186,15 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
   const computersQuery = useComputersQuery(true);
   const agents = agentsQuery.data?.agents ?? [];
   const evidenceOffered = isConfirmedQuerySuccess(computersQuery);
+  const cloudRuntime = useCloudRuntimeEvidence(
+    evidenceOffered &&
+      agents.some((agent) =>
+        computersQuery.data?.computers.some(
+          (computer) => computer.computerId === agent.computer?.computerId && computer.kind === "cloud",
+        ),
+      ),
+    true,
+  );
   const bindings = useQueries({
     queries: agents.map((agent) => ({
       queryKey: queryKeys.agents.imBinding(agent.id),
@@ -219,6 +241,7 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
           handoffConfirmed ? (handoff?.data ?? undefined) : undefined,
           bindingConfirmed,
           handoffConfirmed,
+          cloudRuntime,
         ),
         evidenceConfirmed: true,
       };
@@ -276,6 +299,14 @@ export function useAgentDetailView(
   const computersQuery = useComputersQuery(watched);
   const bindingQuery = useImBindingQuery(agentId, watched);
   const handoffQuery = useImBindingHandoffQuery(agentId, watched);
+  const projectedAgent = listedUsable ? listed : agentQuery.data;
+  const cloudRuntime = useCloudRuntimeEvidence(
+    isConfirmedQuerySuccess(computersQuery) &&
+      computersQuery.data?.computers.some(
+        (computer) => computer.computerId === projectedAgent?.computer?.computerId && computer.kind === "cloud",
+      ) === true,
+    watched,
+  );
   const listError = usePersistedSettledError(queryKeys.agents.list(accountId ?? ""), listQuery);
   const detailError = usePersistedSettledError(detailKey, agentQuery);
 
@@ -295,6 +326,7 @@ export function useAgentDetailView(
     bindingConfirmed,
     computers: computersConfirmed ? computersQuery.data?.computers : undefined,
     computersConfirmed,
+    cloudRuntime,
     detailError,
     detailRefusal,
     detailSuccess,
@@ -352,6 +384,7 @@ function assembleAgentDetailView(
   binding: ImBindingSummary | undefined,
   handoffConfirmed: boolean,
   handoff: ImBindingHandoffStatus | undefined,
+  cloudRuntime: AgentCloudRuntimeEvidence,
 ): AgentDetailView {
   const computer = computersConfirmed
     ? computers?.find((entry) => entry.computerId === agent.computer?.computerId)
@@ -360,7 +393,15 @@ function assembleAgentDetailView(
     ...agent,
     ...(computer?.kind === undefined ? {} : { computerKind: computer.kind }),
     messaging: bindingConfirmed ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
-    availability: projectAgentAvailability(agent, computer, binding, handoff, bindingConfirmed, handoffConfirmed),
+    availability: projectAgentAvailability(
+      agent,
+      computer,
+      binding,
+      handoff,
+      bindingConfirmed,
+      handoffConfirmed,
+      cloudRuntime,
+    ),
   };
 }
 
@@ -371,6 +412,7 @@ function presentAgentDetailView({
   bindingConfirmed,
   computers,
   computersConfirmed,
+  cloudRuntime,
   detailError,
   detailRefusal,
   detailSuccess,
@@ -390,6 +432,7 @@ function presentAgentDetailView({
   bindingConfirmed: boolean;
   computers?: readonly AccountComputerSummary[];
   computersConfirmed: boolean;
+  cloudRuntime: AgentCloudRuntimeEvidence;
   detailError: Error | null;
   detailRefusal?: TerminalResourceObservation;
   detailSuccess?: ResourceObservation;
@@ -425,6 +468,7 @@ function presentAgentDetailView({
         binding,
         handoffConfirmed,
         handoff,
+        cloudRuntime,
       ),
       error: displayError,
       isError: displayError !== null,

@@ -817,8 +817,11 @@ export class ImBindingService {
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         credentialGeneration: imBindings.credentialGeneration,
         slackInstallation: slackInstallations,
+        computerKind: computers.kind,
       })
       .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
@@ -840,10 +843,16 @@ export class ImBindingService {
         ? "reauthorization_required"
         : row.status;
     const readiness = await this.#readiness(
-      this.#withCredentialStatus(
-        { ...row, status, observedConnectedAt, observedAt, grantedCapabilities, credentialGeneration },
-        credential.status,
-      ),
+      {
+        ...row,
+        status,
+        observedConnectedAt,
+        observedAt,
+        grantedCapabilities,
+        credentialGeneration,
+        credentialStatus: credential.status,
+      },
+      row.computerKind,
     );
     return {
       id: row.id,
@@ -993,8 +1002,11 @@ export class ImBindingService {
         credentialSchemaVersion: imBindings.credentialSchemaVersion,
         activatedAt: imBindings.activatedAt,
         slackInstallation: slackInstallations,
+        computerKind: computers.kind,
       })
       .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(computers, eq(computers.id, agents.computerId))
       .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
       .where(eq(imBindings.id, imBindingId))
       .limit(1);
@@ -1027,7 +1039,7 @@ export class ImBindingService {
       credentialGeneration,
       lastErrorCode,
     };
-    const readiness = await this.#readiness(this.#withCredentialStatus(imBinding, credential.status));
+    const readiness = await this.#readiness({ ...imBinding, credentialStatus: credential.status }, row.computerKind);
     const activity = await this.#activity(imBindingId);
     return {
       imBindingId,
@@ -1259,28 +1271,18 @@ export class ImBindingService {
     await this.assertCanManage(callerUserId, agentId);
   }
 
-  async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
-    return this.#providerCli.readiness(imBinding, this.#agentRuntimeReadiness(imBinding.agentId), this.#now());
+  async #readiness(
+    imBinding: ImBindingReadinessInput,
+    computerKind: "local" | "cloud" | null,
+  ): Promise<ImBindingReadiness> {
+    return this.#providerCli.readiness(
+      imBinding,
+      this.#agentRuntimeReadiness(imBinding.agentId),
+      this.#now(),
+      computerKind ?? "local",
+    );
   }
 
-  #withCredentialStatus<
-    T extends {
-      id: string;
-      provider: "feishu" | "slack";
-      encryptedCredential: string | null;
-      externalAppId: string | null;
-      externalBotId: string | null;
-      externalTeamId: string | null;
-      credentialGeneration: number;
-      credentialSchemaVersion: number | null;
-      grantedCapabilities: string[];
-    },
-  >(
-    imBinding: T,
-    credentialStatus = this.#inspectCredentialMaterial(imBinding).status,
-  ): T & { credentialStatus: "valid" | "invalid" } {
-    return { ...imBinding, credentialStatus };
-  }
   #inspectCredentialMaterial(input: CredentialMaterialWithId, bindingId?: string): CredentialInspection {
     const options = { bindingId: bindingId ?? input.id, slackInstallationId: input.slackInstallationId ?? undefined };
     return inspectCredentialMaterial(this.#cipher, input, { ...options, logger: this.#logger });

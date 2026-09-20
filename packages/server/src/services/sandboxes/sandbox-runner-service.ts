@@ -10,7 +10,13 @@ import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql 
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, sandboxes, sessions } from "../../db/schema/index.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
-import { SandboxServiceError, sandboxNotFound, WorkspaceRestoreRequiredError, WorkspaceSaveError } from "./errors.js";
+import {
+  CloudCapacityExceededError,
+  SandboxServiceError,
+  sandboxNotFound,
+  WorkspaceRestoreRequiredError,
+  WorkspaceSaveError,
+} from "./errors.js";
 import {
   loadManagedSandboxById,
   loadOwnedSandbox,
@@ -19,6 +25,13 @@ import {
 } from "./owned-sandbox.js";
 import type { RunnerBootstrapClaims, RunnerBootstrapTokenService } from "./runner-bootstrap-token.js";
 import { RunnerAcceptanceUnavailableError, type RunnerHub, type RunnerScope } from "./runner-hub.js";
+import {
+  type CloudCapacityLimits,
+  cloudCapacityAdmission,
+  countCloudCapacityOccupancy,
+  lockCloudCapacityAdmission,
+  normalizeCloudCapacityLimits,
+} from "./sandbox-capacity.js";
 import type { WorkspaceObjectScope, WorkspaceObjectStore } from "./workspace-object-store.js";
 
 /**
@@ -53,6 +66,9 @@ import type { WorkspaceObjectScope, WorkspaceObjectStore } from "./workspace-obj
  *   deployment target change: its Instance already passed strict initial acceptance, so the
  *   provider-verified original generation-1, digest-pinned image (tracked name/UID/ownership plus every non-image
  *   policy check) substitutes for the version equality first admission requires.
+ * - E9 admission: a brand-new generation is charged exactly once inside its reservation
+ *   transaction (see sandbox-capacity.ts); reused, existing, releasing and recovering
+ *   allocations are never charged or blocked by a full limit.
  */
 
 export interface SandboxRunnerServiceOptions {
@@ -73,6 +89,8 @@ export interface SandboxRunnerServiceOptions {
    * activity.
    */
   idleTimeoutMs?: number;
+  /** E9 admission ceilings; only a brand-new generation reservation is charged. Defaults 3/20. */
+  capacity?: CloudCapacityLimits;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   deleteVerifyTimeoutMs?: number;
@@ -223,6 +241,7 @@ export class SandboxRunnerService {
   readonly #createConvergeTimeoutMs: number;
   readonly #deleteVerifyTimeoutMs: number;
   readonly #idleTimeoutMs: number;
+  readonly #capacity: CloudCapacityLimits;
   readonly #workspace: { store: WorkspaceObjectStore; sealTimeoutMs: number } | undefined;
   readonly #sessionWorkBusy:
     | ((allocation: { sandboxId: string; environmentGeneration: number; resourceName: string }) => boolean)
@@ -253,6 +272,7 @@ export class SandboxRunnerService {
     if (!Number.isSafeInteger(this.#idleTimeoutMs) || this.#idleTimeoutMs < 1) {
       throw new Error("SandboxRunnerService requires a positive idleTimeoutMs");
     }
+    this.#capacity = normalizeCloudCapacityLimits(options.capacity);
     this.#workspace = options.workspace
       ? {
           store: options.workspace.store,
@@ -268,6 +288,11 @@ export class SandboxRunnerService {
   /** True when this deployment persists workspaces; the Runner capability gates key off this. */
   get workspacePersistenceEnabled(): boolean {
     return this.#workspace !== undefined;
+  }
+
+  /** E9 admission ceilings (defaults 3/20); occupancy is counted from the durable Sandbox facts. */
+  get capacityLimits(): CloudCapacityLimits {
+    return this.#capacity;
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -288,6 +313,14 @@ export class SandboxRunnerService {
         : undefined;
     const reservation = await this.#database
       .transaction(async (transaction) => {
+        /*
+         * Admission lock order: the environment-wide advisory lock is the FIRST lock of every
+         * reservation transaction, before any Sandbox row lock, so every new physical reservation
+         * serializes here and the occupancy count sees every committed one. A waiter holds no
+         * row locks yet, so it cannot deadlock stop/claim/acceptance transactions, which never
+         * take this lock. It covers only this short reservation — never seal or cloud I/O.
+         */
+        await lockCloudCapacityAdmission(transaction);
         // Start/execute requires the CURRENT authority chain: active Pi Agent, active binding,
         // un-ended Session, non-suspended Account, owned Cloud Computer.
         const owned = await loadOwnedSandbox(transaction, accountId, sandboxId, { lock: true, authority: "manage" });
@@ -301,7 +334,7 @@ export class SandboxRunnerService {
             const adopted = await this.#transferClaimedAllocation(transaction, row, borrowed, accountId);
             if (adopted) return { action: "reuse" as const, row: adopted };
           }
-          return this.#reserveNewGeneration(transaction, row);
+          return this.#reserveNewGeneration(transaction, row, accountId);
         }
         return this.#reserveExistingAllocation(row);
       })
@@ -410,7 +443,13 @@ export class SandboxRunnerService {
   async #reserveNewGeneration(
     transaction: DatabaseTransaction,
     row: typeof sandboxes.$inferSelect,
+    accountId: string,
   ): Promise<{ action: "allocate"; row: typeof sandboxes.$inferSelect }> {
+    // Charged exactly once per NEW generation, under the admission lock; the count invariant
+    // lives in sandbox-capacity.ts. A full limit throws the stable capacity error and rolls the
+    // reservation back; transfers, retries and reconciles never pass through here.
+    const admission = cloudCapacityAdmission(await countCloudCapacityOccupancy(transaction, accountId), this.#capacity);
+    if (!admission.admitted) throw new CloudCapacityExceededError(admission.scope);
     const now = this.#now();
     const generation = row.environmentGeneration + 1;
     const resourceName = this.#resourceNameFor(row, generation);
@@ -2211,14 +2250,15 @@ export class SandboxRunnerService {
   }
 
   /**
-   * Single-winner ownership hand-off. The claimant row is already locked by the caller and the
-   * candidate is locked second here. There is no lock cycle to order around: a candidate must be
-   * `ready` with a tracked binding and a claimant must be `unallocated`, so the two roles are
-   * disjoint and concurrent transfers touch disjoint candidate rows. The candidate is revalidated
-   * against the exact claim (`idle_reclaim_at`, same account, generation, name, UID, no pending
-   * marker), cleared first so the unique indexes never see two owners, and only then assigned to
-   * the claimant with generation + 1. A lost race returns undefined and leaves the candidate
-   * for the caller to release through the normal verified cleanup path.
+   * Single-winner ownership hand-off. The reservation's advisory admission lock is held first,
+   * the claimant row lock second (held by the caller), the candidate third here. There is no
+   * lock cycle to order around: a candidate must be `ready` with a tracked binding and a
+   * claimant must be `unallocated`, so the two roles are disjoint and concurrent transfers
+   * touch disjoint candidate rows. The candidate is revalidated against the exact claim
+   * (`idle_reclaim_at`, same account, generation, name, UID, no pending marker), cleared first
+   * so the unique indexes never see two owners, and only then assigned to the claimant with
+   * generation + 1. A lost race returns undefined and leaves the candidate for the caller to
+   * release through the normal verified cleanup path.
    */
   async #transferClaimedAllocation(
     transaction: DatabaseTransaction,
@@ -2226,11 +2266,11 @@ export class SandboxRunnerService {
     candidate: IdleSiblingSnapshot,
     accountId: string,
   ): Promise<typeof sandboxes.$inferSelect | undefined> {
-    // Lock order: `startForAccount` already holds the claimant row lock (FOR UPDATE) before this
-    // call, and the candidate is locked second here. The dependency is acyclic because a row can
-    // only be a candidate while it is `ready` with a tracked binding and a claimant while it is
-    // `unallocated`; those states are disjoint, so no transfer ever locks another transfer's
-    // claimant, and concurrent transfers touch disjoint candidate rows.
+    // Lock order: advisory admission lock, then the claimant row lock (held by `startForAccount`),
+    // then the candidate here. The dependency is acyclic because a row can only be a candidate
+    // while it is `ready` with a tracked binding and a claimant while it is `unallocated`; those
+    // states are disjoint, so no transfer ever locks another transfer's claimant, and
+    // concurrent transfers touch disjoint candidate rows.
     const [claimed] = await transaction
       .select()
       .from(sandboxes)

@@ -1,5 +1,6 @@
 import {
   AGENT_BY_ID_TEMPLATE,
+  AGENT_CLOUD_TEMPLATE,
   AGENT_COMPUTER_REBIND_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_CONTEXT_TREE_TEMPLATE,
@@ -11,6 +12,8 @@ import {
   AGENT_USAGE_TEMPLATE,
   AGENT_USAGE_WINDOW_DAYS,
   AgentAdminConfigSchema,
+  AgentCloudOverviewQuerySchema,
+  AgentCloudOverviewSchema,
   AgentDetailSchema,
   AgentRuntimeTestRequestSchema,
   AgentRuntimeTestResponseSchema,
@@ -28,6 +31,7 @@ import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plu
 import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
+import type { CloudOverviewService } from "../services/sandboxes/cloud-overview-service.js";
 import { projectAgentSetupSnapshotForHttp, requestIncludesProviderCliReasonV2 } from "./provider-cli-reason.js";
 import { parseRequest } from "./request-validation.js";
 
@@ -71,8 +75,18 @@ export function registerAgentRoutes(
   runtimeTest?: AgentRuntimeTestService,
   agentSetup?: AgentSetupService,
   contextTree?: ContextTreeOperationService,
+  cloudOverview?: CloudOverviewService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
+
+  if (cloudOverview) {
+    app.get(AGENT_CLOUD_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const query = parseRequest(AgentCloudOverviewQuerySchema, request.query);
+      const result = await cloudOverview.read(authenticatedUserId(request), agentId, query);
+      return reply.header("Cache-Control", "no-store").code(200).send(AgentCloudOverviewSchema.parse(result));
+    });
+  }
 
   app.get(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);

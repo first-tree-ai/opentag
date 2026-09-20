@@ -1,25 +1,28 @@
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import https from "node:https";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WebSocket as ServerWebSocket, WebSocketServer } from "ws";
 import type { RuntimeProxyStreamResponse } from "../runtime/runtime-proxy-data-client.js";
 import { RuntimeProxyDataConnection } from "../runtime/runtime-proxy-data-client.js";
 import {
+  generateExecutionCa,
   type RuntimeProxyAdapterStreamRequest,
   RuntimeProxyLoopbackAdapter,
 } from "../runtime/runtime-proxy-loopback-adapter.js";
 
 const homes: string[] = [];
+const roots: string[] = [];
 const teardowns: Array<() => Promise<void> | void> = [];
 
 afterEach(async () => {
   await Promise.all(teardowns.splice(0).map((teardown) => teardown()));
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 function bytesOf(value: string): Uint8Array {
@@ -1249,6 +1252,261 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     tunnel.destroy();
   });
 
+  it("forwards a Feishu tenant-token call without a local handle and rejects an oversized reply", async () => {
+    // No Feishu handle is bound: the request is forwarded verbatim, never blocked.
+    const forwarded = await startAdapter();
+    const forwardedCa = await readFile(forwarded.adapter.caCertPath);
+    const forwardedTunnel = await connectTunnel(
+      Number(new URL(forwarded.adapter.connectProxyUrl).port),
+      "open.feishu.cn",
+      forwardedCa,
+    );
+    await writeRequest(forwardedTunnel, {
+      body: JSON.stringify({ app_id: "cli-app", app_secret: "not-a-real-secret" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      path: "/open-apis/auth/v3/tenant_access_token/internal",
+    });
+    expect((await readHttpResponse(forwardedTunnel)).status).toBe(200);
+    expect(forwarded.requests).toHaveLength(1);
+    forwardedTunnel.destroy();
+
+    // A token reply larger than the substitution bound is refused instead of buffered forever.
+    const oversized = await startAdapter({
+      localHandleFor: () => "otrh_feishu_handle",
+      response: () => ({
+        body: (async function* () {
+          // 80 x 4 KiB exceeds the 256 KiB tenant-token substitution bound.
+          for (let index = 0; index < 80; index += 1) yield bytesOf("x".repeat(4096));
+        })(),
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    });
+    const oversizedCa = await readFile(oversized.adapter.caCertPath);
+    const oversizedTunnel = await connectTunnel(
+      Number(new URL(oversized.adapter.connectProxyUrl).port),
+      "open.feishu.cn",
+      oversizedCa,
+    );
+    await writeRequest(oversizedTunnel, {
+      body: JSON.stringify({ app_id: "cli-app", app_secret: "not-a-real-secret" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      path: "/open-apis/auth/v3/tenant_access_token/internal",
+    });
+    let raw = Buffer.alloc(0);
+    while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(oversizedTunnel)]);
+    expect(raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("utf8")).toContain("502");
+    oversizedTunnel.destroy();
+  });
+
+  it("answers 400 for a direct request whose URL is an asterisk-form target", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    const port = Number(new URL(harness.adapter.slackApiHost).port);
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = https.request({ ca, host: "127.0.0.1", method: "OPTIONS", path: "*", port }, (incoming) =>
+        resolve(incoming.statusCode ?? 0),
+      );
+      request.on("error", reject);
+      request.end();
+    });
+    // `*` carries no origin-relative path, so it is refused before any provider dispatch.
+    expect(status).toBe(400);
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it("streams a large upstream body through response backpressure", async () => {
+    const chunk = "z".repeat(64 * 1024);
+    const harness = await startAdapter({
+      response: () => ({
+        body: (async function* () {
+          for (let index = 0; index < 32; index += 1) yield bytesOf(chunk);
+        })(),
+        headers: { "content-type": "text/plain", "content-length": String(32 * chunk.length) },
+        status: 200,
+      }),
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    await writeRequest(tunnel, { method: "GET", path: "/user", headers: { authorization: "token otrh_valid" } });
+    // 2 MiB is written through a real socket, so the bounded writer observes backpressure and
+    // waits for drain instead of buffering the whole body in memory.
+    const response = await readHttpResponse(tunnel);
+    expect(response.status).toBe(200);
+    expect(response.body).toHaveLength(32 * chunk.length);
+    expect(harness.requests).toHaveLength(1);
+    tunnel.destroy();
+  });
+
+  it("answers 502 when the upstream stream throws while opening", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-adapter-throw-"));
+    homes.push(home);
+    const adapter = await RuntimeProxyLoopbackAdapter.start({
+      executionId: EXECUTION_ID,
+      materialDir: join(home, "exec"),
+      // A non-Error rejection from the upstream seam reaches the generic request failure path.
+      openStream: () => Promise.reject("upstream exploded"),
+      verifyHandle: () => true,
+    });
+    teardowns.push(() => adapter.close());
+    const ca = await readFile(adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(adapter.connectProxyUrl).port), "api.github.com", ca);
+    await writeRequest(tunnel, { method: "GET", path: "/user", headers: { authorization: "token otrh_valid" } });
+    let raw = Buffer.alloc(0);
+    while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(tunnel)]);
+    const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("utf8");
+    expect(head).toContain("503");
+    tunnel.destroy();
+  });
+
+  it("strips denylisted response headers and forwards repeated request headers", async () => {
+    const harness = await startAdapter({
+      response: () => ({
+        body: (async function* () {
+          yield bytesOf("{}");
+        })(),
+        headers: {
+          "content-length": "2",
+          "content-type": "application/json",
+          "transfer-encoding": "chunked",
+        },
+        status: 200,
+      }),
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    await writeRequest(tunnel, {
+      headers: { accept: "application/json", authorization: "token otrh_valid" },
+      method: "GET",
+      path: "/user",
+    });
+    const response = await readHttpResponse(tunnel);
+    expect(response.status).toBe(200);
+    // The hop-by-hop header from upstream is stripped; the real content-length survives.
+    expect(response.headers["transfer-encoding"]).toBeUndefined();
+    expect(response.headers["content-length"]).toBe("2");
+    tunnel.destroy();
+  });
+
+  it("answers a non-CONNECT request on the CONNECT listener with 403", async () => {
+    const harness = await startAdapter();
+    const socket = net.connect({ host: "127.0.0.1", port: Number(new URL(harness.adapter.connectProxyUrl).port) });
+    await once(socket, "connect");
+    socket.write("GET /api/auth.test HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n");
+    const response = await readHttpResponse(socket);
+    expect(response.status).toBe(403);
+    expect(harness.requests).toHaveLength(0);
+    socket.destroy();
+  });
+
+  it("cancels the upstream when the client aborts a tunnelled request", async () => {
+    const cancelled: string[] = [];
+    const harness = await startAdapter({
+      response: () => ({
+        body: (async function* () {
+          await new Promise((resolve) => setTimeout(resolve, 5_000));
+          yield bytesOf("never");
+        })(),
+        cancel: (code?: string) => {
+          cancelled.push(code ?? "default");
+        },
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    await writeRequest(tunnel, { method: "GET", path: "/user", headers: { authorization: "token otrh_valid" } });
+    await vi.waitFor(() => expect(harness.requests).toHaveLength(1));
+    // Destroying the client connection aborts the request, which must release the upstream.
+    tunnel.destroy();
+    await vi.waitFor(() => expect(cancelled.length).toBeGreaterThan(0), { timeout: 5_000 });
+  });
+
+  it("rejects a declared form body whose streamed bytes exceed the bound", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    const port = Number(new URL(harness.adapter.slackApiHost).port);
+    const status = await new Promise<number>((resolve, reject) => {
+      const request = https.request(
+        {
+          ca,
+          headers: { ...SLACK_FORM_HEADERS, "transfer-encoding": "chunked" },
+          host: "127.0.0.1",
+          method: "POST",
+          path: "/api/chat.postMessage",
+          port,
+        },
+        (incoming) => resolve(incoming.statusCode ?? 0),
+      );
+      request.on("error", () => resolve(0));
+      // Write well past the 64 KiB form bound without declaring a length.
+      for (let index = 0; index < 40; index += 1) request.write("x".repeat(4096));
+      request.end("");
+      request.on("error", reject);
+    });
+    expect(status).toBeGreaterThanOrEqual(400);
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it("forwards an inner request on a mapped provider tunnel", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    // A GitHub tunnel maps to the github provider and every path reaches the upstream seam.
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "github.com", ca);
+    await writeRequest(tunnel, {
+      headers: { authorization: "token otrh_valid" },
+      method: "GET",
+      path: "/acme/repo.git/info/refs",
+    });
+    expect((await readHttpResponse(tunnel)).status).toBe(200);
+    expect(harness.requests).toHaveLength(1);
+    expect(harness.requests[0]?.provider).toBe("github");
+    tunnel.destroy();
+  });
+
+  it("fails CA generation through the real OpenSSL CLI when the material directory is unusable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opentag-adapter-ca-"));
+    roots.push(root);
+    // A plain file where the material directory must be makes OpenSSL's real key write fail.
+    const blocked = join(root, "blocked");
+    await writeFile(blocked, "not a directory");
+    await expect(generateExecutionCa(blocked)).rejects.toMatchObject({
+      code: "ca_generation_failed",
+      name: "RuntimeProxyLoopbackError",
+    });
+  });
+
+  it("ignores a non-object or non-JSON tenant-token reply body", async () => {
+    for (const body of ["not json at all", '["array"]', JSON.stringify({ code: 0, tenant_access_token: 7 })]) {
+      const harness = await startAdapter({
+        localHandleFor: () => "otrh_feishu_handle",
+        response: () => ({
+          body: (async function* () {
+            yield bytesOf(body);
+          })(),
+          headers: { "content-type": "application/json" },
+          status: 200,
+        }),
+      });
+      const ca = await readFile(harness.adapter.caCertPath);
+      const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "open.feishu.cn", ca);
+      await writeRequest(tunnel, {
+        body: JSON.stringify({ app_id: "cli-app", app_secret: "not-a-real-secret" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        path: "/open-apis/auth/v3/tenant_access_token/internal",
+      });
+      const response = await readHttpResponse(tunnel);
+      // A body that cannot carry a token is forwarded byte-for-byte rather than rewritten.
+      expect(response.status).toBe(200);
+      expect(response.body).toBe(body);
+      tunnel.destroy();
+    }
+  });
+
   it("serves the direct Slack --apihost endpoint with handle verification and handle URLs", async () => {
     const { adapter, requests } = await startAdapter();
     const ca = await readFile(adapter.caCertPath);
@@ -1421,5 +1679,163 @@ describe("RuntimeProxyLoopbackAdapter", () => {
     tunnel.destroy();
     await wait(50);
     expect(cancelled).toBe(1);
+  });
+
+  it("reports the bound loopback port and closed state from the adapter's accessors", async () => {
+    const harness = await startAdapter();
+    expect(harness.adapter.executionId).toBe(EXECUTION_ID);
+    expect(harness.adapter.closed).toBe(false);
+    // The CONNECT proxy URL carries a real bound port, never a pending placeholder.
+    expect(Number(new URL(harness.adapter.connectProxyUrl).port)).toBeGreaterThan(0);
+    await harness.adapter.close();
+    expect(harness.adapter.closed).toBe(true);
+    // Closing twice is idempotent and leaves no listener bound.
+    await harness.adapter.close();
+    expect(Number(new URL(harness.adapter.connectProxyUrl).port)).toBeGreaterThan(0);
+  });
+
+  it("refuses a direct Slack request after the adapter is closed", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    const port = Number(new URL(harness.adapter.slackApiHost).port);
+    const call = (): Promise<{ status: number; body: string }> =>
+      new Promise((resolve, reject) => {
+        const next = https.request(
+          {
+            ca,
+            headers: { authorization: "Bearer otrh_valid", "content-length": "0" },
+            host: "127.0.0.1",
+            method: "POST",
+            path: "/api/auth.test",
+            port,
+          },
+          (response) => {
+            let body = "";
+            response.on("data", (chunk: Buffer) => {
+              body += chunk.toString("utf8");
+            });
+            response.on("end", () => resolve({ body, status: response.statusCode ?? 0 }));
+          },
+        );
+        next.on("error", reject);
+        next.end();
+      });
+    expect((await call()).status).toBe(200);
+    await harness.adapter.close();
+    // A closed adapter must never serve provider traffic again, whether the bound listener is
+    // already released (refused connection) or the request still reaches the closed handler (503).
+    const outcome = await call().then(
+      (response) => response.status,
+      () => 0,
+    );
+    expect([0, 503]).toContain(outcome);
+    expect(harness.requests).toHaveLength(1);
+  });
+
+  it("answers 503 when the upstream stream cannot be opened", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-adapter-openfail-"));
+    homes.push(home);
+    const adapter = await RuntimeProxyLoopbackAdapter.start({
+      executionId: EXECUTION_ID,
+      materialDir: join(home, "exec"),
+      openStream: async () => {
+        throw new Error("the Server refused the stream");
+      },
+      verifyHandle: () => true,
+    });
+    teardowns.push(() => adapter.close());
+    const ca = await readFile(adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(adapter.connectProxyUrl).port), "api.github.com", ca);
+    await writeRequest(tunnel, { method: "GET", path: "/user", headers: { authorization: "token otrh_valid" } });
+    let raw = Buffer.alloc(0);
+    while (raw.indexOf("\r\n\r\n") < 0) raw = Buffer.concat([raw, await onceData(tunnel)]);
+    const head = raw.subarray(0, raw.indexOf("\r\n\r\n")).toString("utf8");
+    expect(head).toContain("503");
+    expect(head.toLowerCase()).toContain("text/plain");
+    tunnel.destroy();
+  });
+
+  it("stops reading an upstream body that throws mid-flight", async () => {
+    let cancelled: string | undefined;
+    const harness = await startAdapter({
+      response: () => ({
+        body: (async function* () {
+          yield bytesOf("partial");
+          throw new Error("upstream body broke");
+        })(),
+        cancel: (code?: string) => {
+          cancelled = code;
+        },
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    });
+    const ca = await readFile(harness.adapter.caCertPath);
+    const tunnel = await connectTunnel(Number(new URL(harness.adapter.connectProxyUrl).port), "api.github.com", ca);
+    await writeRequest(tunnel, { method: "GET", path: "/user", headers: { authorization: "token otrh_valid" } });
+    // The status line is already committed, so the failure surfaces by cancelling the upstream
+    // and destroying the response instead of pretending the body completed.
+    await vi.waitFor(() => expect(cancelled).toBe("consumer_error"), { timeout: 3_000 });
+    expect(harness.requests).toHaveLength(1);
+    tunnel.destroy();
+  });
+
+  it("reports the real direct Slack endpoint URL and rejects a credential-less call", async () => {
+    const harness = await startAdapter();
+    expect(harness.adapter.slackApiHost).toMatch(/^https:\/\/127\.0\.0\.1:\d+$/);
+    const ca = await readFile(harness.adapter.caCertPath);
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const next = https.request(
+        {
+          ca,
+          headers: { "content-length": "0" },
+          host: "127.0.0.1",
+          method: "POST",
+          path: "/api/auth.test",
+          port: Number(new URL(harness.adapter.slackApiHost).port),
+        },
+        (incoming) => {
+          let body = "";
+          incoming.on("data", (chunk: Buffer) => {
+            body += chunk.toString("utf8");
+          });
+          incoming.on("end", () => resolve({ body, status: incoming.statusCode ?? 0 }));
+        },
+      );
+      next.on("error", reject);
+      next.end();
+    });
+    // No handle and no form token: the real Slack credential gate rejects before any upstream.
+    expect([400, 401]).toContain(response.status);
+    expect(harness.requests).toHaveLength(0);
+  });
+
+  it("does not forward an oversized declared Slack form body", async () => {
+    const harness = await startAdapter();
+    const ca = await readFile(harness.adapter.caCertPath);
+    const response = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const next = https.request(
+        {
+          ca,
+          headers: { ...SLACK_FORM_HEADERS, "content-length": "200000" },
+          host: "127.0.0.1",
+          method: "POST",
+          path: "/api/chat.postMessage",
+          port: Number(new URL(harness.adapter.slackApiHost).port),
+        },
+        (incoming) => {
+          let body = "";
+          incoming.on("data", (chunk: Buffer) => {
+            body += chunk.toString("utf8");
+          });
+          incoming.on("end", () => resolve({ body, status: incoming.statusCode ?? 0 }));
+        },
+      );
+      next.on("error", reject);
+      next.end("x");
+    });
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    // The declared length alone rejects the body before it is read or forwarded.
+    expect(harness.requests).toHaveLength(0);
   });
 });

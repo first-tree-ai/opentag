@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { GitHubAgentScope } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import type { ProviderProxyRequest, ProviderProxyResponse } from "../runtime-credentials/provider-proxy-adapter.js";
@@ -10,7 +11,6 @@ import { planGitHubRest } from "../services/github-proxy/api-policy.js";
 import { GitHubProxyApiTransport, jsonBody } from "../services/github-proxy/api-transport.js";
 import {
   assertPullRequestRefs,
-  type GitHubAgentScope,
   type GitHubExecutionRepository,
   publicationScopes,
 } from "../services/github-proxy/execution-policy.js";
@@ -507,9 +507,9 @@ describe("production GitHub provider adapter request admission", () => {
     ["a mismatched execution id", {}, { executionId: "another-execution" }],
     ["a mismatched binding id", {}, { bindingId: "another-binding" }],
   ] as const)("denies %s before resolving the policy", async (_label, requestPatch, authPatch) => {
-    const policy = vi.fn(async () => [repository]);
+    const policy = vi.fn(async (_authorization: RuntimeProxyAuthorization, _signal: AbortSignal) => [repository]);
     const guarded = new GitHubProviderAdapter({
-      policy,
+      policy: { resolve: policy },
       leases: new GitHubIatLeases({ mint, revoke }),
       reads: new GitReadTransport({ workspace }),
       publication: new GitPublicationGuard({ workspace }),
@@ -553,9 +553,9 @@ describe("production GitHub provider adapter request admission", () => {
   });
 
   it("rejects a path the request URL guard refuses before resolving the policy", async () => {
-    const policy = vi.fn(async () => [repository]);
+    const policy = vi.fn(async (_authorization: RuntimeProxyAuthorization, _signal: AbortSignal) => [repository]);
     const guarded = new GitHubProviderAdapter({
-      policy,
+      policy: { resolve: policy },
       leases: new GitHubIatLeases({ mint, revoke }),
       reads: new GitReadTransport({ workspace }),
       publication: new GitPublicationGuard({ workspace }),

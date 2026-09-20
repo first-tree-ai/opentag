@@ -97,7 +97,7 @@ function request(input: { method?: string; headers?: Record<string, string>; bod
   return {
     executionId: "execution",
     sessionId: SESSION_ID,
-    provider: "github",
+    provider: "github" as const,
     bindingId: "binding",
     method: input.method ?? "GET",
     path: "/owner/repository.git/info/refs?service=git-upload-pack",

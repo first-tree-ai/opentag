@@ -128,6 +128,35 @@ describe("PiAgentRuntime", () => {
     }
   });
 
+  it("passes Agent-scoped skill paths to Pi as explicit --skill arguments", async () => {
+    const client = new ScriptedPiClient("complete");
+    const factory = new PiAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createClient: (_cwd, args) => {
+        client.args = args;
+        return client;
+      },
+      probeRunner: async () => ({ credential: true, rpc: true, version: "fixture" }),
+    });
+    const request: CreateAgentRuntimeRequest = {
+      ...createRequest(() => undefined),
+      skillPaths: ["/workspace/.opentag/skills/alpha", "/workspace/.opentag/skills/beta"],
+    };
+    const runtime = await factory.create(request);
+    await expect(runtime.prompt({ runId: "run-skills", input: input("hello") })).resolves.toMatchObject({
+      status: "completed",
+    });
+    expect(client.args).toEqual(
+      expect.arrayContaining([
+        "--skill",
+        "/workspace/.opentag/skills/alpha",
+        "--skill",
+        "/workspace/.opentag/skills/beta",
+      ]),
+    );
+    await runtime.close();
+  });
+
   it("resumes the exact binding in a new process and preserves non-prompt overrides", async () => {
     const client = new ScriptedPiClient("complete");
     client.messageCount = 2;

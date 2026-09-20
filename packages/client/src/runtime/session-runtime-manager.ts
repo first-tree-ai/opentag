@@ -1,5 +1,6 @@
 import { resolve, sep } from "node:path";
 import type {
+  AgentRuntimeProvider,
   EffectiveRuntimeSnapshot,
   InputRejectReason,
   RuntimeSnapshotHashes,
@@ -7,6 +8,7 @@ import type {
 } from "@opentag/shared";
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
+import type { SkillSyncManager } from "../skills/skill-sync.js";
 import { prepareContextTreeHome } from "../storage/context-tree-home.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
@@ -64,6 +66,11 @@ export interface SessionRuntimeManagerOptions {
   readonly cliCommand?: string;
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly contextTree?: Pick<ContextTreeManager, "ensureAgent">;
+  /**
+   * Optional. Materializes the Agent's enabled Skills before the provider starts; a failure only
+   * changes what is on disk and never stops the runtime.
+   */
+  readonly skills?: Pick<SkillSyncManager, "ensureAgent">;
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
   readonly home?: string;
@@ -97,6 +104,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #cliCommand: string;
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #contextTree?: SessionRuntimeManagerOptions["contextTree"];
+  readonly #skills?: SessionRuntimeManagerOptions["skills"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
   readonly #environment: NodeJS.ProcessEnv;
@@ -122,6 +130,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
     this.#environment = { ...(options.environment ?? process.env) };
     if (options.contextTree) this.#contextTree = options.contextTree;
+    if (options.skills) this.#skills = options.skills;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
     this.#home = options.home;
@@ -309,6 +318,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       contextTreeEnvironment,
     );
     const configurationRoots = await prepareConfigurationRoots(this.#environment);
+    const skills = await prepareAgentSkills(this.#skills, {
+      agentId: managed.agentId,
+      cwd: managed.cwd,
+      provider: managed.snapshot.provider,
+    });
     const replyRoots = await visibleReplyWritableRoots(managed, this.#providerCliReplyWritableRoot);
     const common = {
       eventSink,
@@ -351,6 +365,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
         ...(managed.snapshot.model ? { model: managed.snapshot.model } : {}),
         ...(managed.snapshot.reasoningEffort ? { reasoningEffort: managed.snapshot.reasoningEffort } : {}),
       },
+      ...skills,
     } as const;
     let runtime: AgentRuntime | undefined;
     try {
@@ -529,6 +544,29 @@ async function prepareContextTree(
     promptContext: { contextTree: status },
     writableRoots: status.status === "ready" ? [status.treePath] : [],
   };
+}
+
+/**
+ * Resolve the Agent's synced Skill directories for the provider start request.
+ *
+ * `SkillSyncManager` already swallows its own failures, but this guard is the hard boundary that
+ * keeps a rejecting or stalled sync from ever failing runtime start: the worst case is no paths.
+ */
+async function prepareAgentSkills(
+  manager: Pick<SkillSyncManager, "ensureAgent"> | undefined,
+  input: { agentId: string; cwd: string; provider: AgentRuntimeProvider },
+): Promise<{ skillPaths?: readonly string[] }> {
+  if (!manager) return {};
+  try {
+    const result = await manager.ensureAgent(input);
+    return result.skillPaths.length > 0 ? { skillPaths: result.skillPaths } : {};
+  } catch (error) {
+    logger.warn(
+      { code: "skill_sync_failed", reason: String(error) },
+      "Agent Skill sync failed; continuing without synced Skills",
+    );
+    return {};
+  }
 }
 
 /**

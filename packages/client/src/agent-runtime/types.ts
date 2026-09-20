@@ -189,6 +189,11 @@ export interface CreateAgentRuntimeRequest {
   readonly workspace: AgentRuntimeWorkspace;
   readonly policy: AgentRuntimePolicy;
   readonly configuration?: AgentRunConfiguration;
+  /**
+   * Optional Agent-scoped Skill directories the provider should load explicitly in addition to any
+   * it discovers ambiently. Pi consumes these as `--skill`; other providers ignore them.
+   */
+  readonly skillPaths?: readonly string[];
 }
 
 export interface ResumeAgentRuntimeRequest extends CreateAgentRuntimeRequest {

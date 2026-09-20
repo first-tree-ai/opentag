@@ -617,6 +617,36 @@ export {
   WebToolsGatewayServer,
   type WebToolsGatewayServerOptions,
 } from "./runtime/web-tools-gateway.js";
+export {
+  extractSkillArchive,
+  type PackedSkillDirectory,
+  packSkillDirectory,
+  SkillArchiveError,
+  type SkillArchiveErrorCode,
+} from "./skills/skill-archive.js";
+export { type ExpectedSkillBundle, verifySkillBundle } from "./skills/skill-bundle.js";
+export {
+  type ReadBundleBodyOptions,
+  readBundleBody,
+  SKILL_PULL_BUNDLE_TIMEOUT_MS,
+} from "./skills/skill-bundle-body.js";
+export {
+  hashSkillDirectory,
+  isSkillMaterializationTarget,
+  isSyncedWorkspace,
+  markSkillDirectoryManaged,
+  resolveMaterializationWorkspace,
+  SKILL_CONTENT_SIDECAR_FILE,
+  SKILL_SYNC_DEFAULT_BUDGET_MS,
+  type SkillDirectoryMarkerInput,
+  type SkillSyncAgentInput,
+  type SkillSyncApi,
+  SkillSyncManager,
+  type SkillSyncManagerOptions,
+  type SkillSyncResult,
+  type SkillSyncStatus,
+  skillRootForProvider,
+} from "./skills/skill-sync.js";
 export { prepareContextTreeHome, resolveContextTreeHome } from "./storage/context-tree-home.js";
 export {
   assertRealDirectory,

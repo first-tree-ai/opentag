@@ -38,6 +38,7 @@ import {
   piAgentRuntimeEnvironment,
 } from "../providers/pi/agent-runtime.js";
 import { piRuntimePolicy, validatePiRuntimePolicy } from "../providers/pi/runtime-policy.js";
+import { SkillSyncManager } from "../skills/skill-sync.js";
 import { ensurePrivateDirectory, RuntimeStorageError } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { AdmissionController } from "./admission-controller.js";
@@ -259,7 +260,7 @@ function resolveSharedProviderRefreshResult(
 }
 
 export interface CreateClientRuntimeOptions {
-  readonly api?: Pick<OpenTagApi, "openImResource">;
+  readonly api?: Pick<OpenTagApi, "getComputerSkillManifest" | "openComputerSkillBundle" | "openImResource">;
   readonly serverDurability?: {
     readonly api: Pick<OpenTagApi, "listRuntimeDurableWork" | "writeRuntimeDurableWork">;
     readonly machineToken: string;
@@ -595,6 +596,20 @@ async function materializeProductionProviderLayout(
   };
 }
 
+/**
+ * Build the Skill sync manager when the composition has both an API client and a machine token.
+ * Without either there is nothing to authenticate a sync with, so runtime start skips it.
+ */
+export function createSkillSyncManager(
+  options: Pick<CreateClientRuntimeOptions, "api" | "machineToken">,
+  logger: ClientLogger,
+): SkillSyncManager | undefined {
+  const api = options.api;
+  const machineToken = options.machineToken;
+  if (!api || !machineToken) return undefined;
+  return new SkillSyncManager({ api, logger, machineToken: async () => machineToken });
+}
+
 export async function createClientRuntime(
   connection: RuntimeConnection,
   options: CreateClientRuntimeOptions,
@@ -722,6 +737,7 @@ export async function createClientRuntime(
   });
   await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
+  const skills = createSkillSyncManager(options, moduleLogger("skills"));
   const runtimeManager = new SessionRuntimeManager({
     environment: sourceEnvironment,
     bindingStore,
@@ -753,6 +769,7 @@ export async function createClientRuntime(
       ),
     slackConfigWritableRoot: (sessionId) => credentialEnvironment.activeSlackConfigDirForSession(sessionId),
     proofManager,
+    skills,
     workspace,
   });
   const reconciler = new SessionReconciler({

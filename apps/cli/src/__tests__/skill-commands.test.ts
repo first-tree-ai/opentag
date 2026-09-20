@@ -1,13 +1,19 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { OpenTagApiError, packSkillDirectory } from "@opentag/client";
+import { OpenTagApiError, packSkillDirectory, SkillArchiveError } from "@opentag/client";
 import { SKILL_ERROR_CODES, type Skill } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CommandError } from "../core/command/policy.js";
 import { resolveSkillCommandContext } from "../core/skill/context.js";
-import { runSkillPull, runSkillPush, runSkillSetEnabled } from "../core/skill/operations.js";
+import {
+  runSkillList,
+  runSkillPull,
+  runSkillPush,
+  runSkillRemove,
+  runSkillSetEnabled,
+} from "../core/skill/operations.js";
 import type { SkillApiClient } from "../core/skill/shared.js";
 
 const roots: string[] = [];
@@ -291,5 +297,287 @@ describe("skill lifecycle", () => {
     expect(api.updateAgentSkill).toHaveBeenCalledWith("fixture-account-access", "agent-a", expect.any(String), {
       enabled: false,
     });
+  });
+});
+
+describe("skill list", () => {
+  it("lists through the Session proof without naming an Agent", async () => {
+    const api = accountApi({
+      listRuntimeSkills: vi.fn(async () => ({ skills: [skillRecord("my-skill")], storage: "available" as const })),
+    });
+    await expect(runSkillList({}, { api, proof: "p".repeat(32) })).resolves.toMatchObject({
+      skills: [expect.objectContaining({ name: "my-skill" })],
+    });
+    expect(api.listRuntimeSkills).toHaveBeenCalledWith("p".repeat(32));
+    expect(api.listAgentSkills).not.toHaveBeenCalled();
+  });
+
+  it("lists one Agent's Skills when an operator names it", async () => {
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({ skills: [], storage: "available" as const })),
+    });
+    await expect(runSkillList({ agentId: "agent-a" }, { accessToken: "fixture-account-access", api })).resolves.toEqual(
+      {
+        skills: [],
+        storage: "available",
+      },
+    );
+    expect(api.listAgentSkills).toHaveBeenCalledWith("fixture-account-access", "agent-a");
+  });
+
+  it("refuses --agent inside a Session even for a read", async () => {
+    await expect(
+      runSkillList({ agentId: "agent-a" }, { api: accountApi(), proof: "p".repeat(32) }),
+    ).rejects.toMatchObject({ code: "SKILL_AGENT_FLAG_FORBIDDEN" });
+  });
+
+  it("requires --agent outside a Session, because a Skill always belongs to one Agent", async () => {
+    await expect(runSkillList({}, { environment: {}, api: accountApi() })).rejects.toMatchObject({
+      code: "SKILL_AGENT_REQUIRED",
+    });
+  });
+});
+
+describe("skill remove", () => {
+  it("deletes a Skill for an operator, resolving it by name and by id", async () => {
+    const record = skillRecord("my-skill");
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({ skills: [record], storage: "available" as const })),
+    });
+    await expect(
+      runSkillRemove("my-skill", { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).resolves.toEqual(record);
+    await expect(
+      runSkillRemove(record.id, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).resolves.toEqual(record);
+    expect(api.removeAgentSkill).toHaveBeenCalledTimes(2);
+    expect(api.removeAgentSkill).toHaveBeenLastCalledWith("fixture-account-access", "agent-a", record.id);
+  });
+
+  it("refuses an unknown name rather than deleting the wrong Skill", async () => {
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({ skills: [skillRecord("other")], storage: "available" as const })),
+    });
+    await expect(
+      runSkillRemove("my-skill", { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).rejects.toThrow('No Skill named or identified by "my-skill"');
+    expect(api.removeAgentSkill).not.toHaveBeenCalled();
+  });
+
+  it("refuses deletion from an Agent, because lifecycle is a human decision", async () => {
+    await expect(runSkillRemove("my-skill", {}, { api: accountApi(), proof: "p".repeat(32) })).rejects.toMatchObject({
+      code: "SKILL_LIFECYCLE_ACCOUNT_ONLY",
+    });
+  });
+});
+
+describe("skill pull edge cases", () => {
+  it("opened the bundle through the Session proof in Agent mode", async () => {
+    const root = await temporaryRoot();
+    const source = await writeSkillDirectory(join(root, "source"), "my-skill");
+    const packed = await packSkillDirectory(source);
+    const api = accountApi({
+      listRuntimeSkills: vi.fn(async () => ({
+        skills: [skillRecord("my-skill", { archiveBytes: packed.archive.byteLength, archiveSha256: packed.sha256 })],
+        storage: "available" as const,
+      })),
+      openRuntimeSkillBundle: vi.fn(async () => new Response(packed.archive)),
+    });
+    const out = join(root, "out");
+    const result = await runSkillPull("my-skill", { outDir: out }, { api, proof: "p".repeat(32), cwd: root });
+    expect(result.directory).toBe(resolve(out));
+    expect(api.openRuntimeSkillBundle).toHaveBeenCalledWith("p".repeat(32), "my-skill", {
+      signal: expect.any(AbortSignal),
+    });
+    expect(await readFile(join(out, "SKILL.md"), "utf8")).toContain("my-skill");
+  });
+
+  it("refuses a destination that exists as a file", async () => {
+    const root = await temporaryRoot();
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({ skills: [skillRecord("my-skill")], storage: "available" as const })),
+    });
+    const out = join(root, "out");
+    await writeFile(out, "not a directory");
+    await expect(
+      runSkillPull("my-skill", { agentId: "agent-a", outDir: out }, { accessToken: "fixture-account-access", api }),
+    ).rejects.toMatchObject({ code: "SKILL_PULL_DESTINATION_INVALID" });
+    expect(api.openAgentSkillBundle).not.toHaveBeenCalled();
+  });
+
+  it("defaults the destination to the Skill name under the working directory", async () => {
+    const root = await temporaryRoot();
+    const source = await writeSkillDirectory(join(root, "source"), "my-skill");
+    const packed = await packSkillDirectory(source);
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({
+        skills: [skillRecord("my-skill", { archiveBytes: packed.archive.byteLength, archiveSha256: packed.sha256 })],
+        storage: "available" as const,
+      })),
+      openAgentSkillBundle: vi.fn(async () => new Response(packed.archive)),
+    });
+    const result = await runSkillPull(
+      "my-skill",
+      { agentId: "agent-a" },
+      { accessToken: "fixture-account-access", api, cwd: root },
+    );
+    expect(result.directory).toBe(resolve(root, "my-skill"));
+    expect(await readFile(join(root, "my-skill", "SKILL.md"), "utf8")).toContain("my-skill");
+  });
+
+  it("refuses a destination that was filled between the check and the extraction", async () => {
+    const root = await temporaryRoot();
+    const source = await writeSkillDirectory(join(root, "source"), "my-skill");
+    const packed = await packSkillDirectory(source);
+    const out = join(root, "out");
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({
+        skills: [skillRecord("my-skill", { archiveBytes: packed.archive.byteLength, archiveSha256: packed.sha256 })],
+        storage: "available" as const,
+      })),
+      openAgentSkillBundle: vi.fn(async () => {
+        // The destination is empty when it is checked, and occupied by the time it is written.
+        await writeFile(join(out, "racing.txt"), "something landed first");
+        return new Response(packed.archive);
+      }),
+    });
+    await mkdir(out, { recursive: true });
+    await expect(
+      runSkillPull("my-skill", { agentId: "agent-a", outDir: out }, { accessToken: "fixture-account-access", api }),
+    ).rejects.toMatchObject({ code: "SKILL_PULL_DESTINATION_NOT_EMPTY" });
+  });
+});
+
+describe("skill upload failures", () => {
+  it("rethrows an upload failure that is not a name conflict, unchanged", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(root, "my-skill");
+    const original = new OpenTagApiError("SKILL_VALIDATION_FAILED", "validation", "manifest is invalid", 400);
+    const api = accountApi({
+      uploadAgentSkill: vi.fn(async () => {
+        throw original;
+      }),
+    });
+    await expect(
+      runSkillPush(directory, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).rejects.toBe(original);
+    expect(api.uploadAgentSkill).toHaveBeenCalledWith(
+      "fixture-account-access",
+      "agent-a",
+      expect.objectContaining({ format: "tar.gz" }),
+    );
+  });
+
+  it("reserves the --replace hint for the name conflict itself", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(root, "my-skill");
+    const api = accountApi({
+      pushRuntimeSkill: vi.fn(async () => {
+        throw new Error("the platform is unreachable");
+      }),
+    });
+    await expect(runSkillPush(directory, {}, { api, proof: "p".repeat(32) })).rejects.not.toThrow("--replace");
+  });
+});
+
+describe("skill extraction failures", () => {
+  it("rethrows an archive failure that is not a destination collision", async () => {
+    const root = await temporaryRoot();
+    const bytes = new TextEncoder().encode("this is not a gzipped tar archive");
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({
+        skills: [
+          skillRecord("my-skill", {
+            archiveBytes: bytes.byteLength,
+            archiveSha256: createHash("sha256").update(bytes).digest("hex"),
+          }),
+        ],
+        storage: "available" as const,
+      })),
+      openAgentSkillBundle: vi.fn(async () => new Response(bytes)),
+    });
+    await expect(
+      runSkillPull(
+        "my-skill",
+        { agentId: "agent-a", outDir: join(root, "out") },
+        { accessToken: "fixture-account-access", api },
+      ),
+    ).rejects.toBeInstanceOf(SkillArchiveError);
+  });
+});
+
+describe("skill push with --replace", () => {
+  it("never adopts when the push is a replacement from an authoring directory", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(join(root, "authoring"), "my-skill");
+    const api = accountApi();
+    const result = await runSkillPush(directory, { replace: true }, { api, proof: "p".repeat(32) });
+    expect(api.pushRuntimeSkill).toHaveBeenCalledWith(
+      "p".repeat(32),
+      expect.objectContaining({ format: "tar.gz", replace: true }),
+    );
+    expect(result.adopted).toBe(false);
+  });
+});
+
+describe("skill lifecycle enable", () => {
+  it("enables a Skill for an operator and re-reads the row it wrote", async () => {
+    const record = skillRecord("my-skill", { enabled: false });
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({ skills: [record], storage: "available" as const })),
+      updateAgentSkill: vi.fn(async () => skillRecord("my-skill", { enabled: true })),
+    });
+    await expect(
+      runSkillSetEnabled("my-skill", true, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).resolves.toMatchObject({ enabled: true });
+    expect(api.updateAgentSkill).toHaveBeenCalledWith("fixture-account-access", "agent-a", record.id, {
+      enabled: true,
+    });
+  });
+});
+
+describe("skill pull default destination", () => {
+  it("falls back to the process working directory when no cwd was injected", async () => {
+    const root = await temporaryRoot();
+    const source = await writeSkillDirectory(join(root, "source"), "my-skill");
+    const packed = await packSkillDirectory(source);
+    const api = accountApi({
+      listAgentSkills: vi.fn(async () => ({
+        skills: [skillRecord("my-skill", { archiveBytes: packed.archive.byteLength, archiveSha256: packed.sha256 })],
+        storage: "available" as const,
+      })),
+      openAgentSkillBundle: vi.fn(async () => new Response(packed.archive)),
+    });
+    // The fallback is `process.cwd()`, so it is redirected to a temporary directory rather than
+    // writing a Skill into the repository the test runs in.
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      const result = await runSkillPull(
+        "my-skill",
+        { agentId: "agent-a" },
+        { accessToken: "fixture-account-access", api },
+      );
+      expect(result.directory).toBe(resolve(root, "my-skill"));
+      expect(await readFile(join(root, "my-skill", "SKILL.md"), "utf8")).toContain("my-skill");
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+});
+
+describe("skill name conflict with a request id", () => {
+  it("carries the server's request id into the CLI error, so a report can be traced", async () => {
+    const root = await temporaryRoot();
+    const directory = await writeSkillDirectory(root, "my-skill");
+    const api = accountApi({
+      uploadAgentSkill: vi.fn(async () => {
+        throw new OpenTagApiError(SKILL_ERROR_CODES.NAME_CONFLICT, "deterministic", "exists", 409, undefined, {
+          requestId: "req-conflict-1",
+        });
+      }),
+    });
+    await expect(
+      runSkillPush(directory, { agentId: "agent-a" }, { accessToken: "fixture-account-access", api }),
+    ).rejects.toMatchObject({ code: SKILL_ERROR_CODES.NAME_CONFLICT, requestId: "req-conflict-1" });
   });
 });

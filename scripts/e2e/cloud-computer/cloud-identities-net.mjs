@@ -113,16 +113,23 @@ async function exchangeFrame(socket, frame, responseType) {
   return response;
 }
 
-async function authenticateSocket(socket, machineToken) {
+async function authenticateSocket(socket, machineToken, shared) {
   await waitSocket(socket, "open");
   return exchangeFrame(
     socket,
-    { type: "auth", requestId: randomUUID(), protocolVersion: 1, machineToken },
+    {
+      type: "auth",
+      requestId: randomUUID(),
+      protocolVersion: shared.RUNTIME_PROTOCOL_VERSION,
+      supportedProtocolVersions: shared.RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+      machineToken,
+    },
     "auth:result",
   );
 }
 
 export async function registerComputerWs({
+  shared,
   wsUrl,
   machineToken,
   installationId,
@@ -133,13 +140,16 @@ export async function registerComputerWs({
 }) {
   const socket = new WebSocket(wsUrl);
   try {
-    const auth = await authenticateSocket(socket, machineToken);
+    const auth = await authenticateSocket(socket, machineToken, shared);
     if (!auth.ok) throw new Error(auth.errorCode ?? "Runtime authentication rejected");
     const instanceId = randomUUID();
     const registered = await exchangeFrame(
       socket,
       {
         type: "computer:register",
+        protocolVersion: shared.RUNTIME_PROTOCOL_VERSION,
+        supportedCapabilities: shared.RUNTIME_CLIENT_CAPABILITY_OFFERS,
+        requiredServerCapabilities: shared.RUNTIME_REQUIRED_SERVER_CAPABILITIES,
         requestId: randomUUID(),
         installationId,
         instanceId,
@@ -155,6 +165,8 @@ export async function registerComputerWs({
       socket,
       {
         type: "heartbeat",
+        protocolVersion: shared.RUNTIME_PROTOCOL_VERSION,
+        connectionId: registered.connectionId,
         requestId: randomUUID(),
         installationId,
         instanceId,
@@ -169,10 +181,10 @@ export async function registerComputerWs({
   }
 }
 
-export async function authComputerWs({ wsUrl, machineToken }) {
+export async function authComputerWs({ wsUrl, machineToken, shared }) {
   const socket = new WebSocket(wsUrl);
   try {
-    return await authenticateSocket(socket, machineToken);
+    return await authenticateSocket(socket, machineToken, shared);
   } catch (error) {
     // Invalid credentials use the protocol's error frame before closing the socket.
     if (error.code === "AUTH_INVALID_TOKEN") return { ok: false, errorCode: error.code, frameType: "error" };

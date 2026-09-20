@@ -43,6 +43,7 @@ export async function runLocalConnectCases(ctx) {
   ctx.localMachineToken = unmarked.body.machineToken;
   const wsUrl = shared.runtimeWebSocketUrl(fixture.baseUrl);
   const registered = await registerComputerWs({
+    shared,
     wsUrl,
     machineToken: unmarked.body.machineToken,
     installationId,
@@ -80,7 +81,7 @@ export async function runLocalConnectCases(ctx) {
   record(assertions, "local-repair-preserves-id", repaired.ok && repaired.body.computerId === unmarked.body.computerId);
   fixture.secrets.push(repaired.body.machineToken);
   record(assertions, "local-repair-new-token", repaired.body.machineToken !== unmarked.body.machineToken);
-  const prior = await authComputerWs({ wsUrl, machineToken: unmarked.body.machineToken });
+  const prior = await authComputerWs({ shared, wsUrl, machineToken: unmarked.body.machineToken });
   record(assertions, "local-repair-rejects-prior-token", prior.ok === false);
   ctx.localMachineToken = repaired.body.machineToken;
   const cloudToLocal = await requestJson({
@@ -230,7 +231,7 @@ export async function runCloudGuardCases(ctx) {
     }),
   );
   const wsUrl = shared.runtimeWebSocketUrl(fixture.baseUrl);
-  const fakeAuth = await authComputerWs({ wsUrl, machineToken: `otmc_${fakeId}.${fakeSecret}` });
+  const fakeAuth = await authComputerWs({ shared, wsUrl, machineToken: `otmc_${fakeId}.${fakeSecret}` });
   record(assertions, "fake-cloud-credential-auth-rejected", fakeAuth.ok === false, fakeAuth.errorCode);
   await fixture.postgres.psql(deleteCredentialSql(fakeId));
   const leftover = await fixture.postgres.psql(

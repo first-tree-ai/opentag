@@ -277,7 +277,9 @@ async function verifyCloudSetupBoundary(ctx) {
     record(
       ctx.assertions,
       `cloud-server-owned-setup-${method.toLowerCase()}`,
-      result.ok && ctx.shared.AgentSetupSnapshotSchema.safeParse(result.body).success,
+      method === "POST"
+        ? result.status === 204
+        : result.status === 200 && ctx.shared.AgentSetupSnapshotSchema.safeParse(result.body).success,
       result.status,
     );
   }

@@ -3,13 +3,13 @@
   "cloud_action_discard_release": "放弃更改并释放…",
   "cloud_action_retry_save_release": "重试保存并释放",
   "cloud_action_save_release": "保存并释放",
-  "cloud_action_working": "正在释放…",
   "cloud_capacity_value": "{used} / {limit}",
   "cloud_computer_explanation": "Cloud Computer 无需在这里安装或连接任何东西。任务开始时会启动执行环境，不再需要时将其释放。",
   "cloud_computer_kind": "Cloud",
   "cloud_computer_online": "在线",
   "cloud_computer_online_detail": "由 OpenTag 托管",
   "cloud_computer_settings_description": "此 Agent 运行在 OpenTag Cloud Computer 上，它始终在线。任务开始时会启动执行环境。",
+  "cloud_count_agent_environments": "Agent 已占用环境",
   "cloud_count_attention": "需要处理",
   "cloud_count_environments": "账号已占用环境",
   "cloud_count_queued": "等待中",
@@ -42,6 +42,7 @@
   "cloud_overview_observed": "已于 {relative} 检查",
   "cloud_overview_title": "Cloud 环境",
   "cloud_overview_unavailable": "暂时无法确认 Cloud 环境状态。由于尚未确认任何状态，此处不显示内容。",
+  "cloud_release_stops_work": "释放会停止当前执行，再保存工作目录。",
   "cloud_session_kind_channel": "频道 Session",
   "cloud_session_kind_internal": "内部 Session",
   "cloud_session_kind_thread": "话题 Session",
@@ -56,7 +57,5 @@
   "cloud_task_state_label": "任务",
   "cloud_task_state_queued": "任务排队中",
   "cloud_task_state_running": "任务处理中",
-  "cloud_task_state_unknown": "任务状态未知",
-  "cloud_count_agent_environments": "Agent 已占用环境",
-  "cloud_release_stops_work": "释放会停止当前执行，再保存工作目录。"
+  "cloud_task_state_unknown": "任务状态未知"
 }

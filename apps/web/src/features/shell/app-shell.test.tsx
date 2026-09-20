@@ -1,5 +1,5 @@
 import type { MeResponse } from "@opentag/shared/browser";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { browserApi } from "../../api.js";
@@ -258,6 +258,12 @@ describe("app shell on a narrow viewport", () => {
     // would strand an open drawer on a page that has no Agent to navigate.
     await waitFor(() => {
       expect(document.querySelector('[data-ui="account-shell"]')).toBeTruthy();
+    });
+    expect(document.querySelector('[data-ui="account-shell"]')?.getAttribute("data-scope")).toBe("workspace");
+
+    // Leaving the Agent releases its labels after a brief fade, which is what the timer is for.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
     });
     expect(document.querySelector('[data-ui="account-shell"]')?.getAttribute("data-scope")).toBe("workspace");
   });

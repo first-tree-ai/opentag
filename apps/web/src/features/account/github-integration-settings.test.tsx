@@ -373,6 +373,15 @@ describe("GitHubIntegrationSettings states", () => {
     expect(screen.queryByText(/^Connected as @/)).toBeNull();
   });
 
+  it("reports a granted authorization as connected, with the default banner tone", async () => {
+    window.history.replaceState({}, "", "/account?github_oauth=success");
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
+    render(<GitHubIntegrationSettings />);
+
+    expect(await screen.findByText("GitHub connected.")).toBeTruthy();
+    await waitFor(() => expect(window.location.search).toBe(""));
+  });
+
   it("reports an error outcome from the callback and clears the parameters", async () => {
     window.history.replaceState({}, "", "/account?github_oauth=error&github_oauth_error=GITHUB_RATE_LIMITED");
     vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(null));
@@ -392,7 +401,29 @@ describe("GitHubIntegrationSettings states", () => {
     render(<GitHubIntegrationSettings />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Connect GitHub" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Working…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Working…" }));
+
+    resolve({ connectionId: CONNECTION_ID, authorizationUrl: "https://github.com/x", expiresAt: "e" });
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  });
+
+  it("refuses a disconnect that arrives while another action is still running", async () => {
+    // The pending-state row has both a finish and a cancel; the second press must be ignored while
+    // the first is in flight, or one reader action becomes two Server calls.
+    vi.spyOn(browserApi, "githubIntegration").mockResolvedValue(overview(connection({ status: "pending" })));
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((done) => {
+      resolve = done;
+    });
+    const start = vi.spyOn(browserApi, "startGitHubAuthorization").mockReturnValue(pending as never);
+    const disconnect = vi.spyOn(browserApi, "disconnectGitHub").mockResolvedValue(connection());
+    render(<GitHubIntegrationSettings />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Finish connecting" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await Promise.resolve();
+    expect(disconnect).not.toHaveBeenCalled();
 
     resolve({ connectionId: CONNECTION_ID, authorizationUrl: "https://github.com/x", expiresAt: "e" });
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));

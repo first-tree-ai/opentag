@@ -14,6 +14,7 @@ import {
   skillErrorMessage,
   skillRejectionMessage,
   skillSourceLabel,
+  storageStateForList,
 } from "./skills-page-model.js";
 
 beforeAll(() => {
@@ -36,6 +37,17 @@ describe("archiveFormatForFile", () => {
 
   it.each(["notes.tar", "notes", "notes.zip.txt", ""])("rejects %s", (name) => {
     expect(archiveFormatForFile(name)).toBeNull();
+  });
+});
+
+describe("storageStateForList", () => {
+  it("is unknown before any successful list, which is not the same as available", () => {
+    expect(storageStateForList(undefined)).toBe("unknown");
+  });
+
+  it("reports the storage the list response carried", () => {
+    expect(storageStateForList({ storage: "available" })).toBe("available");
+    expect(storageStateForList({ storage: "unavailable" })).toBe("unavailable");
   });
 });
 

@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
+import { queryKeys } from "../../query/keys.js";
 import { SkillsPage } from "./skills-page.js";
 
 /**
@@ -41,9 +42,12 @@ function stubList(skills: Skill[], storage: "available" | "unavailable" = "avail
   return vi.spyOn(browserApi, "agentSkills").mockResolvedValue({ skills, storage });
 }
 
-function wrap(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+function wrap(children: ReactNode, client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
+}
+
+function uploadButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: /Upload skill/ }) as HTMLButtonElement;
 }
 
 function fileInput(): HTMLInputElement {
@@ -189,6 +193,54 @@ describe("SkillsPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete Skill" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(AGENT_ID, SKILL_ID));
+  });
+
+  /*
+   * W3: unknown storage is not available storage. Before the first successful list the page knows
+   * nothing, so it must fail closed — no enabled Upload, no empty text, no "unavailable" claim.
+   */
+  it("fails closed while the first list is still pending", () => {
+    const list = vi.spyOn(browserApi, "agentSkills").mockReturnValue(new Promise(() => undefined) as never);
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    expect(uploadButton().disabled).toBe(true);
+    expect(screen.queryByText(/No Skills yet/)).toBeNull();
+    expect(screen.queryByText(/Skill storage is not configured/)).toBeNull();
+    expect(screen.getByText("Loading")).toBeTruthy();
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the error alone — not an empty list or an unavailable notice — when the first list fails", async () => {
+    vi.spyOn(browserApi, "agentSkills").mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText("Skill storage unavailable")).toBeTruthy();
+    expect(uploadButton().disabled).toBe(true);
+    expect(screen.queryByText(/No Skills yet/)).toBeNull();
+    expect(screen.queryByText(/Skill storage is not configured/)).toBeNull();
+  });
+
+  it("enables Upload and shows the empty state for a successful empty list", async () => {
+    stubList([], "available");
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText(/No Skills yet/)).toBeTruthy();
+    expect(uploadButton().disabled).toBe(false);
+  });
+
+  it("keeps the last known list and storage when a background refetch fails", async () => {
+    const list = stubList([skill()], "available");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    wrap(<SkillsPage agentId={AGENT_ID} />, client);
+    expect(await screen.findByText("Release notes writer")).toBeTruthy();
+
+    list.mockRejectedValue(new ApiError(503, "Skill storage unavailable"));
+    await client.refetchQueries({ queryKey: queryKeys.skills.agentSkills(AGENT_ID) });
+
+    expect(await screen.findByText("Skill storage unavailable")).toBeTruthy();
+    expect(screen.getByText("Release notes writer")).toBeTruthy();
+    expect(uploadButton().disabled).toBe(false);
+    expect(screen.queryByText(/No Skills yet/)).toBeNull();
   });
 
   it("renders the storage-unavailable notice from the list response with no extra request", async () => {

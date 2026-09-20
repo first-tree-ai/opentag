@@ -31,6 +31,21 @@ export async function sha256Hex(blob: Blob): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * Whether this deployment can store bundles, in three states rather than two.
+ *
+ * `unknown` is not "available": before the first successful list the page knows nothing, and an
+ * enabled Upload button would invite a request the Server is about to refuse. It is derived only
+ * from successful data, so a failed initial load stays `unknown` and never renders the calm
+ * "unavailable" notice, which is a claim about the deployment rather than about this request.
+ */
+export function storageStateForList(data: { storage: "available" | "unavailable" } | undefined) {
+  if (data === undefined) return "unknown" as const;
+  return data.storage;
+}
+
+export type SkillStorageState = ReturnType<typeof storageStateForList>;
+
 export type SkillArchiveRejection = "too_large" | "unsupported_format";
 
 export type SkillArchiveCheck =

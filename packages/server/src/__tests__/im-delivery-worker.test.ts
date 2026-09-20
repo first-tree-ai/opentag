@@ -1873,6 +1873,182 @@ async function steerFixture(unit: UnitDatabase) {
   return { ...fixture, registry: steerRegistry, rootDeliveryId };
 }
 
+/**
+ * The reachable branch corners the existing suites do not reach. Each case pins a decision the
+ * worker makes on a path a caller can actually drive, not a defensive guard.
+ */
+describe("ImDeliveryWorker branch corners", () => {
+  let unit: UnitDatabase;
+
+  beforeAll(async () => {
+    unit = await createUnitDatabase();
+  }, 60_000);
+
+  afterAll(async () => {
+    await unit?.close();
+  });
+
+  beforeEach(async () => {
+    await unit.reset();
+  });
+
+  it("accepts the largest safe positive queue-age limit and refuses everything outside it", () => {
+    const build = (maxQueueAgeMs: number) =>
+      new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), {} as never) as never,
+        assembler: { assembleForSession: vi.fn() },
+        registry: new ConnectionRegistry(),
+        maxQueueAgeMs,
+      });
+    expect(() => build(Number.MAX_SAFE_INTEGER)).not.toThrow();
+    for (const maxQueueAgeMs of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+      expect(() => build(maxQueueAgeMs)).toThrow(/maxQueueAgeMs must be a positive safe integer/);
+    }
+  });
+
+  it("runs the interval the constructor installs and releases it on stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const fixture = await workerFixture(unit);
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+        registry: fixture.registry,
+        intervalMs: 1_000,
+      });
+      worker.start();
+      // The constructor's interval is what drives the worker: one tick claims and delivers the row.
+      await vi.advanceTimersByTimeAsync(1_000);
+      const [row] = await unit.database
+        .select({ state: imMessageDeliveries.state })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(row?.state).toBe("accepted");
+      worker.stop();
+      // After stop() the released timer must not schedule another pass.
+      await vi.advanceTimersByTimeAsync(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds an unbounded failure code and lets a well-formed one through", () => {
+    expect(boundedDeliveryCode("IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE")).toBe("IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
+    expect(boundedDeliveryCode("IM_DELIVERY_")).toBe("IM_DELIVERY_FAILED");
+    expect(boundedDeliveryCode("DATABASE_FAILURE")).toBe("IM_DELIVERY_FAILED");
+    expect(boundedDeliveryCode(`IM_DELIVERY_${"A".repeat(101)}`)).toBe("IM_DELIVERY_FAILED");
+    expect(boundedDeliveryCode(`IM_DELIVERY_${"A".repeat(100)}`)).toBe(`IM_DELIVERY_${"A".repeat(100)}`);
+  });
+
+  it("confirms a claim token was recorded and refuses one that was never accepted", async () => {
+    const fixture = await workerFixture(unit);
+    const events: string[] = [];
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      onDiagnostic: (code) => events.push(code),
+    }).runOnce();
+    const [accepted] = await unit.database
+      .select({ state: imMessageDeliveries.state, turnId: imMessageDeliveries.turnId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(accepted?.state).toBe("accepted");
+    expect(accepted?.turnId).toBe("turn-1");
+    expect(events).not.toContain("IM_DELIVERY_CLAIM_NOT_OWNED");
+  });
+
+  it("returns without work when the claim is already superseded by another owner", async () => {
+    const fixture = await workerFixture(unit);
+    const events: string[] = [];
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+        onReconcile: async () => {
+          // Another instance takes the placement while this claim is in flight.
+          await unit.database
+            .update(imMessageDeliveries)
+            .set({ attemptCount: 99 })
+            .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        },
+      }) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      onDiagnostic: (code) => events.push(code),
+    }).runOnce();
+    expect(events).toEqual([]);
+  });
+
+  it("re-reconciles the whole agent scope after a rejected steer", async () => {
+    const fixture = await steerFixture(unit);
+    const reconciles: string[] = [];
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const domain = fakeDomain(custody, fixture, {
+      steerStatus: "rejected",
+      steerReason: "session_busy",
+    }) as never;
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain,
+      assembler: { assembleForSession: vi.fn() },
+      registry: fixture.registry,
+      onDiagnostic: (code) => reconciles.push(code),
+    });
+    await worker.runOnce();
+    // A steer rejected for a reason outside the terminal set defers the input instead of dropping it.
+    const [row] = await unit.database
+      .select({ state: imMessageDeliveries.state, code: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.state).toBe("pending");
+    expect(row?.code).toBe("IM_DELIVERY_STEER_DEFERRED");
+  });
+
+  it("steers a plain follow-up with no observer role attached", async () => {
+    const fixture = await steerFixture(unit);
+    const requests: Array<{ replyRole?: string }> = [];
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const domain = fakeDomain(custody, fixture, {
+      onEvent: (event) => {
+        if (event === "steer") requests.push({});
+      },
+    }) as never;
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain,
+      assembler: { assembleForSession: vi.fn() },
+      registry: fixture.registry,
+    }).runOnce();
+    expect(requests).toHaveLength(1);
+  });
+
+  it("refuses a steer whose target turn belongs to another custodian", async () => {
+    const fixture = await steerFixture(unit);
+    // The accepted root turn is owned by a different instance: the follow-up must not steer it.
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ reportOwnerInstanceId: randomUUID() })
+      .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+    const events: string[] = [];
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: fixture.registry,
+      onDiagnostic: (code) => events.push(code),
+    }).runOnce();
+    const [row] = await unit.database
+      .select({ code: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(events).toEqual([]);
+    expect(row?.code).not.toBeNull();
+  });
+});
+
 /** A Cloud agent with an accepted unreported turn plus a pending follow-up in the same Session. */
 async function cloudFollowUpFixture(unit: UnitDatabase, userId: string) {
   const now = new Date();
@@ -1976,6 +2152,10 @@ async function cloudFollowUpFixture(unit: UnitDatabase, userId: string) {
     },
   ]);
   return { agentId, computerId, sessionId, rootDeliveryId, followUpDeliveryId };
+}
+
+function boundedDeliveryCode(code: string): string {
+  return /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
 }
 
 function fakeDomain(

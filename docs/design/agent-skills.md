@@ -107,6 +107,11 @@ adapter supports path-style addressing for services that require it.
 <prefix>/accounts/<accountId>/agents/<agentId>/skills/<skillId>/<sha256>.tar.gz
 ```
 
+The configured prefix is **normalized once**: empty slash segments are dropped and every remaining
+segment must be `[A-Za-z0-9._-]+` and must not be `.` or `..`. So `skills/`, `/skills`, and
+`//skills//` are the same namespace, and an empty or traversal prefix is rejected at startup. Writes
+and collection both use that one normalized form.
+
 Keying by content hash makes a replace safe without a lock: write the new key, update the row, and
 leave the previous object in place. A reader either sees the old row with the old key or the new row
 with the new key; it never sees a torn object.
@@ -119,10 +124,15 @@ that old key current again in between, after which the delete would strand the r
 object. So the previous object is left as an orphan and `SkillObjectGc` sweeps it later.
 
 `SkillObjectGc` is a timer-driven worker — no overlapping runs, `unref`'d, errors logged and never
-thrown — that pages through `list(<prefix>/)` and deletes an object only when **all three** hold:
+thrown — that pages through `list(<normalized prefix>/)` and deletes an object only when **all three**
+hold:
 
-- its key parses as a Skill object key (`…/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz`),
-  so anything else that shares the bucket is never touched;
+- its key is **exactly** `<normalized prefix>/accounts/<uuid>/agents/<uuid>/skills/<uuid>/<sha256>.tar.gz`.
+  The binding is exact, with no intervening namespace, so a deployment may share a bucket with another
+  deployment under a nested prefix (`skills/staging`) or an adjacent one (`skills-staging`) without
+  collecting the other's objects — that deployment's rows live in a different database this one cannot
+  reference-check. A key not directly under this prefix is `skippedForeign` and is never looked up or
+  deleted;
 - it is older than the grace period (`OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS`, default one day), so a
   just-written object is never swept;
 - **no `agent_skills.object_key` references it.** References are checked in batches, then the single
@@ -194,6 +204,8 @@ OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS
 The two `GC_` values are only meaningful when storage is enabled:
 `OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` defaults to one hour and `0` disables the collector,
 `OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` defaults to one day with a floor of 300 seconds.
+`OPENTAG_SKILL_STORAGE_PREFIX` defaults to `skills`; it is normalized (see above), and a value whose
+segments are empty or a traversal fails the parse at startup.
 
 Routes are always registered, because a self-hosted deployment without object storage should still
 be able to manage Skills. Without storage, listing still works and reports `storage: "unavailable"`;
@@ -322,7 +334,8 @@ The Server and Web lanes add the coverage those layers owe:
 | `packages/server/src/__tests__/skill-service-concurrency.test.ts` | The "a committed row never points at a deleted object" invariant across racing writers and store failures, including the post-commit restore |
 | `packages/server/src/__tests__/skills-route.test.ts` | Auth on all three surfaces, the Skill error envelope (including `SKILL_REVISION_CONFLICT`), upload preconditions, and `content-disposition` on the account, computer, and runtime bundle responses plus the fallback for a hostile name |
 | `packages/server/src/__tests__/s3-skill-object-store.test.ts` | Signing, path-/virtual-hosted URLs, status mapping, secret redaction, and the `list` request shape, XML parsing (including an escaped key), continuation, and malformed/invalid responses |
-| `packages/server/src/__tests__/skill-object-gc.test.ts` | Deleting an old orphan, keeping a young or referenced object, keeping a key that becomes referenced between listing and deletion, ignoring non-Skill keys, pagination, the per-run cap, a failed delete continuing the run, and the replace→collect round trip |
+| `packages/server/src/__tests__/skill-object-gc.test.ts` | Deleting an old orphan, keeping a young or referenced object, keeping a key that becomes referenced between listing and deletion, ignoring non-Skill keys, the exact-prefix binding (a live object under a nested prefix and an adjacent sibling are never collected, across two databases), collecting an orphan under a slash-spelled prefix, pagination, the per-run cap, a failed delete continuing the run, and the replace→collect round trip |
+| `packages/server/src/__tests__/skill-object-prefix.test.ts` | The bound key matcher (exact match, extra namespace segment, different prefix with a valid tail, a string-prefix of the first segment, malformed tail) and the normalizer (leading/trailing/repeated slashes, empty and all-slash rejected, traversal rejected) |
 | `packages/server/src/__tests__/integration/skills-api.test.ts` | The account lifecycle and Computer manifest over real HTTP and PostgreSQL, with the bundle headers |
 | `apps/web/src/features/skills/*.test.ts(x)` | The error-code map is exhaustive over the contract, an upload/toggle revision conflict reports the new sentence without opening the Replace dialog, and every other page rule |
 

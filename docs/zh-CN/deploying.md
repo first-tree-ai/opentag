@@ -120,7 +120,7 @@ Agent Skills 以「每个 Skill 一个 `tar.gz` 对象」的形式存放在兼�
 | `OPENTAG_SKILL_STORAGE_BUCKET` | 存放 Skill 归档的 bucket，必须保持私有 |
 | `OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID` | 对该 bucket 有读写权限的 access key |
 | `OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY` | 该 access key 对应的 secret，永远不会写入日志 |
-| `OPENTAG_SKILL_STORAGE_PREFIX` | 可选的对象键前缀，默认 `skills` |
+| `OPENTAG_SKILL_STORAGE_PREFIX` | 可选的对象键前缀，会被规范化（丢弃空斜杠段），默认 `skills`；空段或路径穿越段会在启动时被拒绝 |
 | `OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE` | 可选，默认 `true`，MinIO 以及多个其他服务要求开启 |
 | `OPENTAG_SKILL_STORAGE_GC_INTERVAL_SECONDS` | 可选，清理孤儿 Skill 对象的间隔秒数，默认 `3600`，设为 `0` 可关闭清理 |
 | `OPENTAG_SKILL_STORAGE_GC_GRACE_SECONDS` | 可选，对象可被清理前的最小存活秒数，默认 `86400`，下限 `300` |
@@ -131,7 +131,9 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 `.env.example` 中被注释的配置块已指向该服务。
 
 替换 Skill 时会写入新对象并保留旧对象，由后台清理器回收那些超过宽限期、且没有任何 Skill 行引用的对象。清理器
-不会触碰键不是 Skill 对象键的对象，因此可以与其他前缀共用同一个 bucket。两个 `GC_` 变量仅在配置了存储组时才有意义。
+只会考虑恰好位于本部署自身规范化前缀之下的键，因此多个部署可以共用一个 bucket——包括使用嵌套前缀（如 `skills`
+与 `skills/staging`）——彼此都不会清理对方的对象。`skills/` 与 `/skills` 等同于 `skills`：配置值只规范化一次，
+写入与清理使用同一形式。两个 `GC_` 变量仅在配置了存储组时才有意义。
 
 ## 官网登录状态提示
 

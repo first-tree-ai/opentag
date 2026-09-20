@@ -414,13 +414,12 @@ GCP 验收时，先记录原 Session 的资源名与 UID，在其空闲且尚未
 当前配置、私有工作目录恢复、已发布知识、受管 Session CLI 授权和验收边界见
 [Cloud Context Tree 与 Session 协作](./cloud-context.md)。E8 复用已有 Sandbox 生命周期，不增加新的资源分配模型。
 
-发布与回滚必须作为同一批次配套进行：带 E8 的 Runner 总是在 auth 帧中发送
-`sessionCollaborationVersion`，而 E8 之前的 Server 使用严格 auth schema，会拒绝该未知字段。
-因此先发布 Server，且只要仍有 E8 Runner 存活，就绝不要把 Server 回滚到 E8 之前的版本——
-这些 Runner 的认证会被拒绝，连已在其上落盘的 IM custody 都无法上报，对应环境只能等到
-Instance 被替换才能解脱。反方向的 Runner 回滚同样需要配套：旧 Runner 无法识别 E8 Session
-协作的帧与日志条目。配套的回滚顺序是：先停止接纳新工作（暂停受影响的 Agent），让存活的
-E8 环境在仍由兼容 Server 服务时排空、结算并保存，并确认这些 Instance 已终止/移除；
-之后才能回滚 Server，并为新分配选择兼容的 Runner。替换 Instance 并不等同于恢复未被确认的
-Session custody：随 Instance 消失的只是未被确认的执行状态——Server 从未确认的日志收据与结算——
-这些内容绝不允许重放；Session 已保存的工作区会在下一次分配时正常恢复。
+普通兼容的 Runner 升级、回滚只改变新建 Instance 的目标。此前已验证并就绪的 Instance 可用原有不可变镜像重连，
+继续完成工作、保存并空闲回收；与当前目标镜像不同时不能跨 Session 借用。首次准入仍严格校验。
+统一 CLI 发布与启用流程见 [Cloud Runner 发布](./cloud-runner-release.md)。
+
+Server 跨不兼容协议回滚仍需明确顺序。E8 Runner 在 auth 中发送 `sessionCollaborationVersion`，
+E8 之前 Server 的严格 schema 会拒绝该字段。降级 Server 前，应停止新工作，在兼容 Server 上完成结果确认和保存，
+确认相关 Instance 已删除，再选择旧 Server 和兼容 Runner 目标。
+旧 Runner 不能消费 E8 执行日志；替换 Instance 不会恢复尚未确认的收据和结算，不能盲目重放。
+Session 已确认保存的工作目录在下次分配时正常恢复；协议兼容并不保证任意持久化数据降级都兼容。

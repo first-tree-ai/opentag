@@ -197,8 +197,15 @@ interface RunnerContext {
   store?: FakeWorkspaceObjectStore;
 }
 
-function makeRunnerContext(options: { tokenTtlSeconds?: number; workspace?: boolean } = {}): RunnerContext {
-  const fake = new FakeCloudRunAdmin();
+interface RunnerOptions {
+  tokenTtlSeconds?: number;
+  workspace?: boolean;
+  fake?: FakeCloudRunAdmin;
+  expectedRunnerVersion?: string;
+}
+
+function makeRunnerContext(options: RunnerOptions = {}): RunnerContext {
+  const fake = options.fake ?? new FakeCloudRunAdmin();
   const tokens = new RunnerBootstrapTokenService(JWT_SECRET, { ttlSeconds: options.tokenTtlSeconds ?? 600 });
   const hub = new RunnerHub();
   const store = options.workspace ? new FakeWorkspaceObjectStore() : undefined;
@@ -208,7 +215,7 @@ function makeRunnerContext(options: { tokenTtlSeconds?: number; workspace?: bool
     hub,
     environment: "staging",
     backendUrl: "wss://unit.example/api/v1/sandbox-runners/ws",
-    expectedRunnerVersion: RUNNER_VERSION,
+    expectedRunnerVersion: options.expectedRunnerVersion ?? RUNNER_VERSION,
     acceptanceTimeoutMs: 10_000,
     createConvergeTimeoutMs: 30_000,
     sleep: () => Promise.resolve(),
@@ -217,7 +224,7 @@ function makeRunnerContext(options: { tokenTtlSeconds?: number; workspace?: bool
   return { fake, tokens, hub, service, ...(store ? { store } : {}) };
 }
 
-async function createRunnerApp(accountId: string, options: { tokenTtlSeconds?: number; workspace?: boolean } = {}) {
+async function createRunnerApp(accountId: string, options: RunnerOptions = {}) {
   const context = makeRunnerContext(options);
   const app = createApp({
     authService: authService(accountId),
@@ -417,6 +424,32 @@ describe("runner control channel authentication", () => {
     expect(ready.runnerReadiness?.runnerVersion).toBe(RUNNER_VERSION);
     client.socket.close();
     await client.closed;
+  });
+
+  it("closes after a transient legacy-image lookup failure and recovers on a fresh connection", async () => {
+    const accountId = await account();
+    const first = await startedSandbox(accountId);
+    const initial = await authenticatedRunner(first.address, first.token);
+    initial.client.send(readyFrame(first.claims.resourceName));
+    await waitForLifecycle(first.service, accountId, first.sandbox.sandboxId, "ready");
+    initial.client.socket.close();
+    await initial.client.closed;
+
+    first.fake.targetImage = `us-west1-docker.pkg.dev/test/runners/runner@sha256:${"b".repeat(64)}`;
+    const next = await createRunnerApp(accountId, { fake: first.fake, expectedRunnerVersion: "0.0.6" });
+    first.fake.getInstanceFailures = 1;
+    const failed = await authenticatedRunner(next.address, first.token);
+    failed.client.send(readyFrame(first.claims.resourceName));
+    expect((await failed.client.closed).code).toBe(RUNNER_WS_CLOSE.protocolError);
+    expect((await next.service.statusForAccount(accountId, first.sandbox.sandboxId)).runnerReady).toBe(false);
+
+    const recovered = await authenticatedRunner(next.address, first.token);
+    recovered.client.send(readyFrame(first.claims.resourceName));
+    await vi.waitFor(async () => {
+      expect((await next.service.statusForAccount(accountId, first.sandbox.sandboxId)).runnerReady).toBe(true);
+    });
+    recovered.client.socket.close();
+    await recovered.client.closed;
   });
 
   it("acknowledges a client heartbeat with a server heartbeat frame", async () => {

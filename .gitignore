@@ -43,3 +43,6 @@ Thumbs.db
 
 # Agent orchestration scratch state - never commit
 .dispatch/
+
+# Short-lived credentials written by google-github-actions/auth; never build inputs.
+gha-creds-*.json

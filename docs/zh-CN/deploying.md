@@ -1,26 +1,29 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-09-11
+> Last synced with: 2026-09-20
 
-OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI 的 revision，都会用
+OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI、完成 CLI/Runner 发布的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
 只是把指针切到一个不可变镜像。
 
 | Environment | 触发条件 | 镜像 | Workflow |
 | --- | --- | --- | --- |
-| Staging | `main` 的 `CI` 成功，或有意的手动运行 | `ghcr.io/first-tree-ai/opentag:<commit-sha>` | `deploy-staging.yml` |
+| Staging | `main` 的 CLI/Runner 发布成功，或有意的手动运行 | `ghcr.io/first-tree-ai/opentag:<commit-sha>` | `deploy-staging.yml` |
 
-本仓库不部署 Production。Production 发布的 artifact 见 [releasing.md](./releasing.md)。
+Production Server 沿用现有运维部署流程。手动 **Deploy Runner** workflow 在兼容 Server 就绪后启用已发布的 Runner，
+见 [Cloud Runner 发布](./cloud-runner-release.md)。
 
 ## 一次推送如何到达 Staging
 
 1. 一个 revision 合入 `main`，`CI` 与 `Docker` 并行启动。
 2. `Docker` 构建并推送不可变的 commit coordinate `ghcr.io/first-tree-ai/opentag:<commit-sha>`。
-3. `CI` 成功，触发 `Deploy Staging`。
+3. `CI` 成功，触发 CLI/Runner 发布；发布成功后触发 `Deploy Staging`。
 4. `Deploy Staging` 先证明该 revision 属于 `main` 历史，等待 commit coordinate 发布完成，再确认该 revision 仍是 `main`
    的 tip。
 5. CapRover App 被指向这个精确的镜像 tag，由 CapRover 拉取并完成上线。
+6. 匹配的 Server 就绪后，启用已验证的 Runner 镜像和版本，再验证实际响应的 Server 已加载目标配置。
+   已就绪的 Instance 保留原有兼容镜像，直到正常回收。
 
 部署始终使用按 commit 的 tag，绝不使用 `edge` 或 `latest`。移动的 tag 会让 CapRover 面对一个没有变化的镜像引用，从而
 无法向前推进，也会让线上运行的 revision 无法识别。
@@ -146,6 +149,9 @@ bundle 始终以调用方自己的凭据（Account session、Computer machine to
 应先部署 Server 的支持，再部署官网的导航状态提示。检查不可用时，官网保留普通登录入口，进入应用后仍会校验 session。
 
 ## 手动部署与回滚
+
+现在必须已有匹配的 CLI/Runner 发布产物。只回滚 Runner 时，使用 **Deploy Runner** 并指定当前兼容 Server 的 SHA，
+见 [Cloud Runner 发布](./cloud-runner-release.md)。
 
 在 Actions 页面基于 `main` 运行 **Deploy Staging** workflow。`revision` 输入留空表示部署当前 tip；填入 commit SHA 则
 部署该 revision，这也是执行回滚的方式。手动运行被视为显式决策，永远不会因为"过期"被跳过，但该 revision 仍必须属于

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { BootstrapReadiness } from "../bootstrap-readiness.js";
@@ -15,6 +16,25 @@ afterEach(async () => {
 });
 
 describe("GET /readyz", () => {
+  it("proves the responding Server revision and Runner target without changing the readiness body", async () => {
+    const runner = { image: `registry.example/runner@sha256:${"a".repeat(64)}`, version: "0.0.6-staging.30.1" };
+    const readiness = new BootstrapReadiness();
+    completeReadiness(readiness);
+    const app = createApp({ readiness, deployment: { revision: "b".repeat(40), runner } });
+    apps.push(app);
+    const response = await app.inject({ method: "GET", url: "/readyz" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ready" });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.headers["x-opentag-revision"]).toBe("b".repeat(40));
+    expect(response.headers["x-opentag-runner-target"]).toBe(
+      createHash("sha256")
+        .update(JSON.stringify([runner.image, runner.version]))
+        .digest("hex"),
+    );
+    expect(JSON.stringify(response.headers)).not.toContain(runner.image);
+  });
+
   it("reports explicit bootstrap stages instead of liveness", async () => {
     const readiness = new BootstrapReadiness();
     const app = createApp({ readiness });

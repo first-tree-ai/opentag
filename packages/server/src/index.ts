@@ -390,6 +390,16 @@ function cipherKeySecrets(config: ServerConfig): string[] {
   return Array.from(config.encryptionKeyRing?.keys.values() ?? [], (key) => Buffer.from(key).toString("base64"));
 }
 
+function deploymentProof(config: ServerConfig) {
+  return {
+    revision: config.buildRevision,
+    runner:
+      config.cloudRunner.enabled && config.cloudIdentities.enabled
+        ? { image: config.cloudRunner.image, version: config.cloudIdentities.runnerVersion }
+        : undefined,
+  };
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
@@ -837,6 +847,7 @@ export async function startServer(): Promise<void> {
       : undefined;
     const internalNavigationService = new InternalNavigationVisibilityService();
     app = createApp({
+      deployment: deploymentProof(config),
       loggerLevel: config.logLevel,
       betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,

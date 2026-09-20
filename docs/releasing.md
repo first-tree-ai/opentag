@@ -16,6 +16,10 @@ Each channel also publishes a portable release to Google Cloud Storage: a per-pl
 plus its own Node.js runtime, installable without npm. It shares this guide's version coordinates and is built and
 published by the same workflow; see [portable-release.md](./portable-release.md).
 
+The same workflow also publishes the CLI-matched Runner image to Artifact Registry. Runner publication and offline
+smoke complete before npm publication; see [Cloud Runner releases](./cloud-runner-release.md) for configuration,
+activation and rollback.
+
 The internal `@opentag/client`, `@opentag/shared`, and `@opentag/server` workspaces remain private. Client and Shared
 code is bundled into the CLI tarball, and the packed manifest must not expose an `@opentag/*` runtime dependency.
 `THIRD_PARTY_NOTICES` is generated from the exact third-party packages bundled into the CLI and contains their complete

@@ -541,17 +541,15 @@ See [Cloud Context Tree and Session collaboration](./cloud-context.md) for curre
 private workspace recovery, published knowledge, managed Session CLI authority, and validation
 boundaries. E8 reuses the existing Sandbox lifecycle and does not introduce another allocation model.
 
-Rollout and rollback are a matched release: a Runner built with E8 always sends
-`sessionCollaborationVersion` in its auth frame, and a pre-E8 Server's strict auth schema rejects
-the unknown field. Deploy the Server first and never roll the Server back to a pre-E8 build while
-E8 Runners are alive — their auth would be rejected, so they could not even report the IM custody
-already journaled on them, stranding those environments until their Instances are replaced.
-A Runner rollback needs the same care in the other direction: an older Runner cannot consume E8
-Session collaboration frames or journal entries. The matched rollback sequence is: stop admitting
-new work (pause the affected Agents), let active E8 environments drain and settle and save while
-the compatible Server still serves them, and verify those Instances are terminated/removed; only
-then roll back the Server and select a compatible Runner for new allocations. Replacing an
-Instance is not recovery of unacknowledged Session custody: the Instance's unacknowledged
-execution state — journaled receipts and settlements the Server never confirmed — dies with it
-and must not be replayed, while the Session's saved workspace is restored normally on the next
-allocation.
+Ordinary compatible Runner upgrades and rollbacks change only the target for new Instances. Previously verified ready
+Instances may reconnect on their original immutable image, finish work, save and idle-reclaim; they cannot be borrowed
+across Sessions when their image differs from the current target. First admission remains strict. See
+[Cloud Runner releases](./cloud-runner-release.md) for the unified CLI publication and activation flow.
+
+Server rollback across an incompatible protocol still needs explicit sequencing. E8 Runners send
+`sessionCollaborationVersion` in auth; a pre-E8 Server's strict schema rejects it. Before downgrading that Server,
+stop new work, settle and save through the compatible Server, and verify the affected Instances are removed. Only then
+select the older Server and compatible Runner target. An older Runner cannot consume E8 execution journals: replacing an
+Instance never recovers its unacknowledged receipts or settlements, which must not be blindly replayed. The Session's
+confirmed saved workspace restores normally on the next allocation; protocol compatibility does not guarantee arbitrary
+persisted-data downgrades.

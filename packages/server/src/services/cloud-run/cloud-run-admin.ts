@@ -36,6 +36,8 @@ export interface RunnerInstanceSpec extends RunnerInstanceIdentityInput {
 export interface CloudRunInstanceView {
   name: string;
   uid: string;
+  /** Provider spec generation, distinct from the Sandbox's environment generation. */
+  generation?: string;
   labels: Record<string, string>;
   networkInterfaces: readonly { network?: string; subnetwork?: string; tags: readonly string[] }[];
   vpcEgress?: string;
@@ -139,9 +141,14 @@ export class CloudRunAdmin {
     await options.onOperation?.(operation.name);
     return { outcome: "created", operationName: operation.name, instance: await this.#adopt(name, spec, true) };
   }
-  async getInstance(name: string): Promise<CloudRunInstanceView | undefined> {
+  async getInstance(name: string, timeoutMs = this.#config.apiTimeoutMs): Promise<CloudRunInstanceView | undefined> {
     this.#assertResourceName(name);
-    const r = await this.#request("GET", `${this.#apiBaseUrl}/v2/${name}`);
+    const r = await this.#request(
+      "GET",
+      `${this.#apiBaseUrl}/v2/${name}`,
+      undefined,
+      Math.min(timeoutMs, this.#config.apiTimeoutMs),
+    );
     if (r.status === 404) return undefined;
     if (!r.ok) throw this.#httpError(r, "get");
     const body = record(await readBoundedJson(r));
@@ -154,6 +161,7 @@ export class CloudRunAdmin {
     return {
       name,
       uid: body.uid,
+      ...(typeof body.generation === "string" ? { generation: body.generation } : {}),
       labels: strings(body.labels),
       reconciling: body.reconciling === true,
       ...(workspacePersistence === undefined ? {} : { workspacePersistence }),
@@ -270,6 +278,30 @@ export class CloudRunAdmin {
   }
 
   /**
+   * Reconnect acceptance for an already tracked, previously verified READY allocation after the
+   * deployment target moved. Cloud Run permits image updates without changing UID. OpenTag
+   * never patches Instance configuration, so only provider generation 1 proves the image is
+   * still the one admitted at creation. Every non-image execution policy applies unchanged;
+   * first admission and borrow eligibility still require the current target image.
+   */
+  verifyTrackedOriginalImage(
+    view: CloudRunInstanceView,
+    input: { resourceName: string; resourceUid: string; environment: ChannelName },
+  ): void {
+    this.verifyTrackedOwnership(view, input);
+    const containers = Array.isArray(view.policy?.containers) ? view.policy.containers : [];
+    const image = record(containers[0]).image;
+    if (
+      view.generation !== "1" ||
+      typeof image !== "string" ||
+      !/^[a-z0-9][a-z0-9._/-]{0,254}@sha256:[0-9a-f]{64}$/.test(image)
+    ) {
+      throw new CloudRunAdminError("invalid", "Cloud Run Instance no longer proves its original pinned image");
+    }
+    this.#verifyExecutionPolicy(view, { originalImage: true });
+  }
+
+  /**
    * Ownership only (name + tracked UID + managed/environment labels), without deployment policy.
    * Save, renewal and cleanup of an already-owned Instance must survive an image or VPC config
    * change; only the borrow/eligibility path re-applies the full execution policy.
@@ -291,7 +323,7 @@ export class CloudRunAdmin {
     }
   }
 
-  #verifyExecutionPolicy(view: CloudRunInstanceView): void {
+  #verifyExecutionPolicy(view: CloudRunInstanceView, options: { originalImage?: boolean } = {}): void {
     this.verifyNetworkAttachment(view);
     const p = view.policy;
     const containers = Array.isArray(p?.containers) ? p.containers : [];
@@ -301,6 +333,11 @@ export class CloudRunAdmin {
       memory = limits.memory;
     const ports = Array.isArray(c.ports) ? c.ports : [];
     const containerPort = record(ports[0]).containerPort;
+    // Strict admission requires exactly the target image. A previously admitted ORIGINAL image
+    // must provably differ from the current target: equality here is a wrong-version report on
+    // the current target build and stays rejected.
+    const imageRejected =
+      options.originalImage === true ? c.image === this.#config.image : c.image !== this.#config.image;
     // False scalar values may be omitted by protobuf JSON. Security-sensitive true values must be explicit.
     if (
       p?.ingress !== "INGRESS_TRAFFIC_INTERNAL_ONLY" ||
@@ -310,7 +347,7 @@ export class CloudRunAdmin {
       p.serviceAccount !== this.#config.serviceAccount ||
       containers.length !== 1 ||
       c.name !== "runner" ||
-      c.image !== this.#config.image ||
+      imageRejected ||
       c.sandboxLauncher !== true ||
       (c.command !== undefined && JSON.stringify(c.command) !== "[]") ||
       (c.volumeMounts !== undefined && JSON.stringify(c.volumeMounts) !== "[]") ||
@@ -426,7 +463,12 @@ export class CloudRunAdmin {
     if (!name.startsWith(prefix) || !/^[a-zA-Z0-9_-]{1,200}$/.test(name.slice(prefix.length)))
       throw new CloudRunAdminError("invalid", "Cloud Run operation name is outside the configured project/region");
   }
-  async #request(method: string, url: string, body?: Record<string, unknown>): Promise<Response> {
+  async #request(
+    method: string,
+    url: string,
+    body?: Record<string, unknown>,
+    timeoutMs = this.#config.apiTimeoutMs,
+  ): Promise<Response> {
     let token: string;
     try {
       token = await this.#tokenProvider();
@@ -443,7 +485,7 @@ export class CloudRunAdmin {
         redirect: "error",
         headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(this.#config.apiTimeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (error instanceof CloudRunAdminError) throw error;

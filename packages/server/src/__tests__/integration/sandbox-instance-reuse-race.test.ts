@@ -30,6 +30,9 @@ import { FakeWorkspaceObjectStore } from "../support/fake-workspace-store.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const RUNNER_VERSION = "0.0.5";
+const UPGRADED_VERSION = "0.0.6";
+/** A deployment target image distinct from the fake's default, pinned only at Instance creation. */
+const UPGRADED_IMAGE = `unit/image@sha256:${"2".repeat(64)}`;
 const JWT_SECRET = "integration-test-jwt-secret-at-least-32-characters";
 const cloudIdentities = {
   enabled: true,
@@ -263,6 +266,126 @@ describe("E7 transfer races on PostgreSQL", () => {
       .from(sandboxes)
       .where(and(eq(sandboxes.currentResourceName, a.row.currentResourceName as string)));
     expect(liveOwners.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("E7 legacy-image Instances after a target change on PostgreSQL", () => {
+  it("reclaims an old-image READY Instance through the normal seal + verified delete path", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const a = await readySandbox(stack, accountId, "legacy-reclaim");
+    // The deployment target moved; the Instance keeps its original pinned image. Ownership-only
+    // save/cleanup must not depend on the target image.
+    stack.fake.targetImage = UPGRADED_IMAGE;
+    const now = new Date();
+    await database
+      .update(sandboxes)
+      .set({ lastActivityAt: new Date(now.getTime() - 120_000 - 1_000) })
+      .where(eq(sandboxes.id, a.sandbox.sandboxId));
+
+    const result = await stack.service.reclaimIdleSandboxes();
+    expect(result.released).toBe(1);
+    expect(await rowFor(a.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "unallocated",
+      currentResourceName: null,
+      currentResourceUid: null,
+      idleReclaimAt: null,
+    });
+    expect(stack.store.stored(a.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+    expect(stack.fake.deleteCalls).toEqual([{ name: a.row.currentResourceName, uid: a.row.currentResourceUid }]);
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("never borrows an old-image sibling after a target upgrade; the borrower cold-allocates", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const a = await readySandbox(stack, accountId, "legacy-borrow-source");
+    stack.fake.targetImage = UPGRADED_IMAGE;
+    const b = await ownedSandbox(accountId, "legacy-borrow-claimant");
+    const createsBefore = stack.fake.createCalls.length;
+
+    await stack.service.startForAccount(accountId, b.sandboxId);
+
+    // The legacy sibling was skipped before any claim/seal; the borrower cold-allocated the
+    // current target and the sibling keeps its binding for its own Session.
+    expect(stack.fake.createCalls.length).toBe(createsBefore + 1);
+    expect(await rowFor(a.sandbox.sandboxId)).toMatchObject({
+      lifecycle: "ready",
+      idleReclaimAt: null,
+      currentResourceUid: a.row.currentResourceUid,
+    });
+    expect((await rowFor(b.sandboxId)).currentResourceName).not.toBe(a.row.currentResourceName);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+    expect(stack.fake.liveInstanceCount()).toBe(2);
+  });
+
+  it("lets the original-image Runner reconnect after a restart with a new target, then saves on stop", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const a = await readySandbox(stack, accountId, "legacy-restart-save");
+    // Server restart with a new deployment target: fresh in-memory hub, new expected version,
+    // same database/store and the same physical Instance with its original pinned image.
+    stack.fake.targetImage = UPGRADED_IMAGE;
+    const hub = new RunnerHub();
+    const restarted = new SandboxRunnerService(database, {
+      cloudAdmin: stack.fake as never,
+      tokens: new RunnerBootstrapTokenService(JWT_SECRET, { ttlSeconds: 600 }),
+      hub,
+      environment: "staging",
+      backendUrl: "wss://unit.example/api/v1/sandbox-runners/ws",
+      expectedRunnerVersion: UPGRADED_VERSION,
+      acceptanceTimeoutMs: 10_000,
+      createConvergeTimeoutMs: 30_000,
+      idleTimeoutMs: 120_000,
+      sleep: () => Promise.resolve(),
+      workspace: { store: stack.store },
+    });
+    const scope: RunnerScope = {
+      sandboxId: a.row.id,
+      sessionId: a.row.sessionId,
+      environmentGeneration: a.row.environmentGeneration,
+      resourceName: a.row.currentResourceName as string,
+    };
+    const socket: RunnerControlSocket = {
+      async send(frame) {
+        if (frame.type !== "workspace:seal") return;
+        stack.store.plant(
+          {
+            storageUri: a.row.storageUri,
+            sandboxId: a.row.id,
+            sessionId: a.row.sessionId,
+            environmentGeneration: a.row.environmentGeneration,
+          },
+          { saved: true, sealed: true, ownerGeneration: a.row.environmentGeneration },
+        );
+        hub.settleWorkspaceSeal(
+          a.row.id,
+          { type: "workspace:seal:result", requestId: frame.requestId, ok: true },
+          socket,
+        );
+      },
+      close() {},
+    };
+    hub.attach(scope, socket, { reuseCapable: true });
+    const readiness = {
+      sandboxName: scope.resourceName.split("/").at(-1) as string,
+      rootfs: "/opt/sandbox-root",
+      nodeVersion: "v24.19.0",
+      piVersion: "0.84.2",
+      runnerVersion: RUNNER_VERSION,
+      reportedAt: new Date().toISOString(),
+    };
+    expect(await restarted.markRunnerReady(scope, readiness, { workspaceRestored: true })).toBe("ready");
+    hub.markReady(scope, readiness, socket);
+    expect((await restarted.statusForAccount(accountId, a.row.id)).runnerReady).toBe(true);
+    expect(stack.fake.createCalls).toHaveLength(1);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+
+    // An explicit stop still saves and releases the legacy Instance through the E5 path.
+    const stopped = await restarted.stopForAccount(accountId, a.row.id);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(stack.store.stored(a.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+    expect(stack.fake.liveInstanceCount()).toBe(0);
   });
 });
 

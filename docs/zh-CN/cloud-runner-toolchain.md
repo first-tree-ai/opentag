@@ -10,6 +10,8 @@
 Runner 由 `@opentag/client` 拥有，并与 **CLI 发布坐标**共享版本（`apps/cli`，当前为 `0.0.5`）。私有
 Client `0.0.0` 不是 Runner 版本。
 
+镜像随 CLI 流程统一发布；环境启用与回滚见 [Cloud Runner 发布](./cloud-runner-release.md)。
+
 ## 镜像内容
 
 镜像默认用户是 `root`，因为 Cloud Run 原生 Sandbox launcher 要求 Instance 父进程以 root 运行。

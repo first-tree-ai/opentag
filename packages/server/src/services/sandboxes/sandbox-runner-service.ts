@@ -48,7 +48,11 @@ import type { WorkspaceObjectScope, WorkspaceObjectStore } from "./workspace-obj
  *   owned by a different UID.
  * - `ready` requires an authenticated CURRENT Runner at the exact expected version plus verified
  *   Cloud policy for the CURRENT generation — never a signedRunner frame alone. An early Runner
- *   report is deferred, not rejected, until the create caller records the verified UID.
+ *   report is deferred, not rejected, until the create caller records the verified UID. The
+ *   single exception is a previously verified tracked READY allocation reconnecting after a
+ *   deployment target change: its Instance already passed strict initial acceptance, so the
+ *   provider-verified original generation-1, digest-pinned image (tracked name/UID/ownership plus every non-image
+ *   policy check) substitutes for the version equality first admission requires.
  */
 
 export interface SandboxRunnerServiceOptions {
@@ -892,22 +896,21 @@ export class SandboxRunnerService {
   }
 
   /**
-   * An authenticated Runner reported native sandbox/tool readiness. Readiness handling is
-   * database CAS/promotion ONLY, driven by the validated persisted scope and the native
-   * readiness report: a Runner-originated frame must never drive cloud reconcile/create/release
-   * inline in the per-connection frame chain (heartbeats queue behind it and a healthy Runner
-   * could be swept mid-reconcile). Readiness is accepted only for the current allocation AND
-   * the exact configured Runner version, and only once the Cloud resource for this generation
-   * has been policy-verified and its UID tracked. An early Runner report is DEFERRED, not
-   * rejected: the connection stays authenticated, the create caller promotes the deferred
-   * report when tracking completes, and a later start reconciles the deterministic name.
+   * Initial admission uses database CAS/promotion only; an early report stays deferred until
+   * create has verified and tracked the UID. Never reconcile/create/release resources in the
+   * serial frame chain. A previously READY allocation reporting a different version gets one
+   * short provider read to prove its unchanged original image (see `#markOriginalImageReady`).
    */
   async markRunnerReady(
     scope: RunnerScope,
     readiness: RunnerReadiness,
     options: { workspaceRestored?: boolean } = {},
   ): Promise<RunnerReadyOutcome> {
-    if (readiness.runnerVersion !== this.#expectedRunnerVersion) return "version_mismatch";
+    if (readiness.runnerVersion !== this.#expectedRunnerVersion) {
+      // A target upgrade/rollback does not invalidate an Instance this Server already verified:
+      // only the exact tracked READY allocation may reconnect on its unchanged original image.
+      return this.#markOriginalImageReady(scope, options);
+    }
     // E5: with persistence configured, an execution-capable Runner proves it restored the claimed
     // workspace archive before anything may become ready; an old Runner without the capability
     // fails closed here and can never promote the environment.
@@ -920,7 +923,7 @@ export class SandboxRunnerService {
     if (current.idleReclaimAt !== null) return "deferred";
     if (current.lifecycle === "ready") return "ready";
     if (current.lifecycle !== "preparing") return "stale";
-    // No verified UID is tracked yet: stay deferred. Cloud I/O belongs to start/stop only.
+    // No verified UID is tracked yet: stay deferred. Allocation I/O belongs to start/stop only.
     if (current.currentResourceUid === null) return "deferred";
     return (await this.#promoteReadyIfReported(scope.sandboxId)) ? "ready" : "deferred";
   }
@@ -928,6 +931,58 @@ export class SandboxRunnerService {
   /** A deferred readiness report may be promoted once the verified UID is tracked. */
   async promoteDeferredReadiness(sandboxId: string): Promise<boolean> {
     return this.#promoteReadyIfReported(sandboxId);
+  }
+
+  /**
+   * Target upgrade/rollback reconnect: a readiness report naming a different Runner version is
+   * acceptable only from the exact tracked READY allocation whose physical Instance already
+   * passed strict initial acceptance under its ORIGINAL pinned image (a tracked READY row is the
+   * durable proof of that earlier verdict). The bounded provider read re-proves the tracked
+   * name/UID, unchanged provider generation and ownership, the full non-image execution policy, and an
+   * observed image that differs from the current target; a wrong-version report on the CURRENT
+   * target image stays rejected. Preparing/untracked allocations are first admission and remain
+   * fail-closed without any cloud I/O. The scope/UID is rechecked after the provider read, so a
+   * released or replaced allocation gets the strict stale verdict and a new idle claim defers
+   * (its seal still needs the channel).
+   */
+  async #markOriginalImageReady(
+    scope: RunnerScope,
+    options: { workspaceRestored?: boolean },
+  ): Promise<RunnerReadyOutcome> {
+    const current = await this.#currentScopeRow(scope);
+    if (!current) return "stale";
+    // A claimed environment is quiescing for a transfer or deletion: keep the seal-capable
+    // channel attached without re-publishing readiness, exactly like the version-matched path.
+    if (current.idleReclaimAt !== null) return "deferred";
+    // First admission (preparing), an untracked create outcome and a releasing environment are
+    // never a legacy reconnect: they keep the strict fail-closed verdict without cloud I/O.
+    if (current.lifecycle !== "ready" || current.currentResourceUid === null) return "version_mismatch";
+    const resourceUid = current.currentResourceUid;
+    // Keep this read well below the heartbeat deadline, even if allocation API timeouts are
+    // configured longer. Transport failures propagate to the existing socket close/backoff:
+    // a version_mismatch frame alone would leave a healthy channel permanently unready.
+    const view = await this.#cloud.getInstance(scope.resourceName, 10_000);
+    if (!view) return "version_mismatch";
+    try {
+      this.#cloud.verifyTrackedOriginalImage(view, {
+        resourceName: scope.resourceName,
+        resourceUid,
+        environment: this.#environment,
+      });
+    } catch {
+      // A deterministic ownership/policy mismatch cannot prove the original image.
+      return "version_mismatch";
+    }
+    // Recheck AFTER the bounded provider read: the exact tracked READY binding must still own
+    // this scope. A released/replaced row is stale; a claim that landed meanwhile defers.
+    const rechecked = await this.#currentScopeRow(scope);
+    if (!rechecked) return "stale";
+    if (rechecked.idleReclaimAt !== null) return "deferred";
+    if (rechecked.lifecycle !== "ready" || rechecked.currentResourceUid !== resourceUid) return "stale";
+    // E5 proof is version-independent: an execution-capable Runner still must have restored its
+    // workspace before anything may report ready.
+    if (this.#workspace && options.workspaceRestored !== true) return "workspace_not_restored";
+    return "ready";
   }
 
   /* ------------------------------------------------------------------------------------------

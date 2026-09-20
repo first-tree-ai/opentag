@@ -37,6 +37,9 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
 
 let unit: UnitDatabase;
 const RUNNER_VERSION = "0.0.5";
+const UPGRADED_VERSION = "0.0.6";
+/** A deployment target image distinct from the fake's default, pinned only at Instance creation. */
+const UPGRADED_IMAGE = `unit/image@sha256:${"2".repeat(64)}`;
 const IDLE_TIMEOUT_MS = 120_000;
 const STARTUP_TIMEOUT_MS = 30_000 + 4 * RUNNER_WORKSPACE_TIMEOUT_MS;
 const JWT_SECRET = "unit-test-jwt-secret-at-least-32-characters";
@@ -168,6 +171,76 @@ function restartService(stack: Stack): SandboxRunnerService {
 }
 
 /**
+ * A fresh Server process after a deployment target change: new in-memory hub, new expected
+ * Runner version, and the fake provider's target image moved. Existing Instances keep the image
+ * they pinned at creation, exactly like the immutable real resource.
+ */
+function restartedWithUpgradedTarget(stack: Stack): { service: SandboxRunnerService; hub: RunnerHub } {
+  stack.fake.targetImage = UPGRADED_IMAGE;
+  const hub = new RunnerHub();
+  const service = new SandboxRunnerService(unit.database, {
+    cloudAdmin: stack.fake as never,
+    tokens: stack.tokens,
+    hub,
+    environment: "staging",
+    backendUrl: "wss://unit.example/api/v1/sandbox-runners/ws",
+    expectedRunnerVersion: UPGRADED_VERSION,
+    acceptanceTimeoutMs: 10_000,
+    createConvergeTimeoutMs: 30_000,
+    idleTimeoutMs: IDLE_TIMEOUT_MS,
+    sleep: () => Promise.resolve(),
+    now: stack.now,
+    workspace: { store: stack.store },
+  });
+  return { service, hub };
+}
+
+/** A reconnecting original-image Runner that answers workspace seals like the ready fixture. */
+function attachOriginalImageRunner(
+  stack: Stack,
+  hub: RunnerHub,
+  row: typeof sandboxes.$inferSelect,
+): { scope: RunnerScope; socket: RunnerControlSocket } {
+  const scope: RunnerScope = {
+    sandboxId: row.id,
+    sessionId: row.sessionId,
+    environmentGeneration: row.environmentGeneration,
+    resourceName: row.currentResourceName as string,
+  };
+  const socket: RunnerControlSocket = {
+    send(frame) {
+      if (frame.type !== "workspace:seal") return;
+      stack.store.plant(
+        {
+          storageUri: row.storageUri,
+          sandboxId: row.id,
+          sessionId: row.sessionId,
+          environmentGeneration: row.environmentGeneration,
+        },
+        { saved: true, sealed: true, ownerGeneration: row.environmentGeneration },
+      );
+      hub.settleWorkspaceSeal(row.id, { type: "workspace:seal:result", requestId: frame.requestId, ok: true }, socket);
+    },
+    close() {
+      // The hub owns connection replacement; tests only need the send surface.
+    },
+  };
+  hub.attach(scope, socket, { reuseCapable: true });
+  return { scope, socket };
+}
+
+function originalImageReadiness(stack: Stack, scope: RunnerScope) {
+  return {
+    sandboxName: scope.resourceName.split("/").at(-1) as string,
+    rootfs: "/opt/sandbox-root",
+    nodeVersion: "v24.19.0",
+    piVersion: "0.84.2",
+    runnerVersion: RUNNER_VERSION,
+    reportedAt: stack.now().toISOString(),
+  };
+}
+
+/**
  * One Sandbox allocated and promoted to `ready` with a connected reuse-capable E7 Runner. The
  * fake socket answers `workspace:seal` exactly as a Runner would: on success it plants the sealed
  * object before acknowledging; on failure it returns the terminal failure code.
@@ -283,6 +356,52 @@ async function insertDelivery(
 }
 
 describe("E7 automatic idle reclamation", () => {
+  it("lets a previously verified READY Instance continue after a target upgrade and reclaims it normally", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, "room-upgrade");
+    const restarted = restartedWithUpgradedTarget(stack);
+    const runner = attachOriginalImageRunner(stack, restarted.hub, ready.row);
+    const readiness = originalImageReadiness(stack, runner.scope);
+
+    // The original build reconnects with its restored workspace: the tracked READY allocation is
+    // re-verified against the provider (ownership + non-image policy + provably original image).
+    expect(await restarted.service.markRunnerReady(runner.scope, readiness, { workspaceRestored: true })).toBe("ready");
+    restarted.hub.markReady(runner.scope, readiness, runner.socket);
+    expect((await restarted.service.statusForAccount(accountId, ready.row.id)).runnerReady).toBe(true);
+    expect(stack.fake.createCalls).toHaveLength(1);
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+
+    // Idle reclamation still seals and deletes the legacy Instance through the normal E5 path.
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    const result = await restarted.service.reclaimIdleSandboxes();
+    expect(result.released).toBe(1);
+    expect(await sandboxRow(ready.row.id)).toMatchObject({
+      lifecycle: "unallocated",
+      currentResourceName: null,
+      currentResourceUid: null,
+      idleReclaimAt: null,
+    });
+    expect(stack.store.stored(ready.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("still requires the workspace restore proof from an original-image reconnect", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, "room-upgrade-unrestored");
+    const restarted = restartedWithUpgradedTarget(stack);
+    const runner = attachOriginalImageRunner(stack, restarted.hub, ready.row);
+    const readiness = originalImageReadiness(stack, runner.scope);
+
+    // The original-image re-verification passes, but without the restore proof the readiness is
+    // still refused: a blank environment must never report ready.
+    expect(await restarted.service.markRunnerReady(runner.scope, readiness)).toBe("workspace_not_restored");
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("ready");
+    expect(restarted.hub.describe(ready.row.id).ready).toBe(false);
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+  });
+
   it("rotates a full batch of failed seals so another Session is reclaimed on the next sweep", async () => {
     const accountId = await account();
     const stack = makeStack();
@@ -895,6 +1014,33 @@ describe("E7 same-account physical reuse", () => {
     expect((await sandboxRow(b.sandbox.sandboxId)).currentResourceName).not.toBe(a.row.currentResourceName);
     expect(stack.fake.deleteCalls).toHaveLength(1);
     expect(stack.fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("never borrows an old-image sibling after a target upgrade; the borrower cold-allocates", async () => {
+    const accountId = await account();
+    const stack = makeStack();
+    const a = await readySandbox(stack, accountId, "room-old-image");
+    // The target moved: the sibling's pinned image is now legacy, so it must never cross a
+    // Session boundary even though it remains a valid reclaim candidate for its own Session.
+    stack.fake.targetImage = UPGRADED_IMAGE;
+    const b = await ownedSandbox(accountId, "room-old-image-borrower");
+    const seal = vi.spyOn(stack.hub, "requestWorkspaceSeal");
+    const createsBefore = stack.fake.createCalls.length;
+
+    await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+
+    // The legacy sibling was skipped BEFORE any claim or seal; the borrower cold-allocated the
+    // current target instead, and the sibling keeps its binding for its own Session.
+    expect(seal).not.toHaveBeenCalled();
+    expect(stack.fake.createCalls.length).toBe(createsBefore + 1);
+    expect(await sandboxRow(a.row.id)).toMatchObject({
+      lifecycle: "ready",
+      idleReclaimAt: null,
+      currentResourceUid: a.row.currentResourceUid,
+    });
+    expect(stack.fake.deleteCalls).toHaveLength(0);
+    expect(stack.fake.liveInstanceCount()).toBe(2);
+    expect(await stack.service.ensureIngressAllocation(accountId, a.row.id)).toBe("ready");
   });
 
   it("transfers the exact physical UID and generation fencing to a same-account sibling with zero create", async () => {

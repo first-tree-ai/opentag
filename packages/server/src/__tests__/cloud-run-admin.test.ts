@@ -59,6 +59,7 @@ function instanceBody(overrides: Record<string, unknown> = {}) {
   const name = runnerInstanceResourceName(CONFIG.project, CONFIG.region, runnerInstanceId(IDENTITY));
   return {
     name,
+    generation: "1",
     etag: '"revision-1"',
     ingress: "INGRESS_TRAFFIC_INTERNAL_ONLY",
     defaultUriDisabled: true,
@@ -314,6 +315,76 @@ describe("CloudRunAdmin create", () => {
       expect(() => api.verifyInstance(view, IDENTITY)).toThrow(CloudRunAdminError);
       expect(() => api.verifyOwnership(view, { ...IDENTITY, environmentGeneration: 4 })).toThrow(CloudRunAdminError);
     }
+  });
+
+  it("bounds reconnect reads independently of a long allocation API timeout", async () => {
+    const fetchImpl = ((_input: unknown, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      })) as typeof fetch;
+    const cloud = new CloudRunAdmin(
+      { ...CONFIG, apiTimeoutMs: 120_000 },
+      { fetchImpl, tokenProvider: createStaticTokenProvider("unit-token") },
+    );
+    await expect(cloud.getInstance(instanceBody().name, 20)).rejects.toMatchObject({ kind: "unknown" });
+  });
+
+  it("accepts a proven original image on a tracked binding while keeping every non-image policy", async () => {
+    const [container] = instanceBody().containers as Record<string, unknown>[];
+    const body = instanceBody();
+    const tracked = {
+      resourceName: body.name,
+      resourceUid: body.uid,
+      environment: "staging" as const,
+    };
+    const originalImage = `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"b".repeat(64)}`;
+    const viewOf = async (overrides: Record<string, unknown>) => {
+      const { fetchImpl } = fakeFetch(() => ({ status: 200, body: instanceBody(overrides) }));
+      const view = await admin(fetchImpl).getInstance(body.name);
+      if (!view) throw new Error("Missing test Instance");
+      return view;
+    };
+    // A previously admitted Instance reconnecting after a target change: its pinned image differs
+    // from the current target, ownership matches, and the full non-image policy still holds.
+    const legacy = await viewOf({ containers: [{ ...container, image: originalImage }] });
+    expect(() => admin(fetch).verifyTrackedOriginalImage(legacy, tracked)).not.toThrow();
+    // UID survives an external image update. Only the initial provider generation proves that
+    // this is still the image admitted at creation, rather than another image on the same UID.
+    for (const generation of ["2", undefined]) {
+      const changed = await viewOf({ generation, containers: [{ ...container, image: originalImage }] });
+      expect(() => admin(fetch).verifyTrackedOriginalImage(changed, tracked)).toThrow(CloudRunAdminError);
+    }
+    for (const image of [undefined, "", "unit/image:latest"]) {
+      const unknown = await viewOf({ containers: [{ ...container, image }] });
+      expect(() => admin(fetch).verifyTrackedOriginalImage(unknown, tracked)).toThrow(CloudRunAdminError);
+    }
+    // Strict first admission and borrow eligibility still require exactly the target image.
+    expect(() => admin(fetch).verifyInstance(legacy, IDENTITY)).toThrow(CloudRunAdminError);
+    expect(() => admin(fetch).verifyTrackedInstance(legacy, tracked)).toThrow(CloudRunAdminError);
+    // The current target image reporting a wrong version is NOT an original-image reconnect.
+    const current = await viewOf({});
+    expect(() => admin(fetch).verifyTrackedOriginalImage(current, tracked)).toThrow(CloudRunAdminError);
+    // Every non-image check still applies to a legacy image: VPC, service account and resources.
+    for (const override of [
+      {
+        serviceAccount: "other-sa@opentag-test.iam.gserviceaccount.com",
+        containers: [{ ...container, image: originalImage }],
+      },
+      {
+        vpcAccess: { egress: "PRIVATE_RANGES_ONLY", networkInterfaces: [] },
+        containers: [{ ...container, image: originalImage }],
+      },
+      {
+        containers: [{ ...container, image: originalImage, resources: { limits: { cpu: "2", memory: "2Gi" } } }],
+      },
+    ]) {
+      const unsafe = await viewOf(override);
+      expect(() => admin(fetch).verifyTrackedOriginalImage(unsafe, tracked)).toThrow(CloudRunAdminError);
+    }
+    // Ownership (name/UID/labels) is never relaxed.
+    expect(() => admin(fetch).verifyTrackedOriginalImage(legacy, { ...tracked, resourceUid: "uid-other" })).toThrow(
+      CloudRunAdminError,
+    );
   });
 
   it("fails verification unless exactly the declared startup-probe port is present", async () => {

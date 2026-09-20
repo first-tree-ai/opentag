@@ -1130,6 +1130,221 @@ describe("SandboxRunnerService runner scope + readiness", () => {
   });
 });
 
+describe("SandboxRunnerService original-image reconnect after a target change", () => {
+  const OLD_VERSION = "0.0.4";
+  const NEW_VERSION = "0.0.6";
+  const OLD_IMAGE = `unit/image@sha256:${"1".repeat(64)}`;
+  const NEW_IMAGE = `unit/image@sha256:${"2".repeat(64)}`;
+
+  /** One READY environment whose Instance was created and verified under a previous target. */
+  async function readyUnderTarget(
+    owner: string,
+    target: { image: string; version: string } = { image: OLD_IMAGE, version: OLD_VERSION },
+  ) {
+    const fixture = await ownedSandbox(owner);
+    const fake = new RunnerFakeCloudRunAdmin();
+    fake.targetImage = target.image;
+    const made = makeService(fake, { expectedRunnerVersion: target.version });
+    await made.service.startForAccount(owner, fixture.sandbox.sandboxId);
+    const row = await sandboxRow(fixture.sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: fixture.sandbox.sandboxId,
+      sessionId: fixture.sandbox.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const readiness = { ...READINESS, runnerVersion: target.version };
+    const socket = fakeSocket();
+    made.hub.attach(scope, socket);
+    made.hub.markReady(scope, readiness, socket);
+    expect(await made.service.markRunnerReady(scope, readiness)).toBe("ready");
+    expect((await sandboxRow(fixture.sandbox.sandboxId)).lifecycle).toBe("ready");
+    return { ...fixture, fake, ...made, scope, socket };
+  }
+
+  /** A fresh Server process over the same database/cloud with a changed deployment target. */
+  function restartedWithTarget(fake: RunnerFakeCloudRunAdmin, target: { image: string; version: string }) {
+    fake.targetImage = target.image;
+    return makeService(fake, { expectedRunnerVersion: target.version });
+  }
+
+  /** Park the next provider read so the test can mutate the row mid-verification. */
+  function gateNextProviderRead(fake: RunnerFakeCloudRunAdmin) {
+    const realGet = fake.getInstance.bind(fake);
+    let release!: () => void;
+    let markStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let gated = true;
+    fake.getInstance = async (name: string) => {
+      if (gated) {
+        gated = false;
+        markStarted();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return realGet(name);
+    };
+    return { readStarted, release: () => release() };
+  }
+
+  it("accepts a previously verified READY Instance reconnecting on its original image after a target upgrade", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    const socket = fakeSocket();
+    restart.hub.attach(scope, socket);
+    const getsBefore = fake.getCalls;
+    // The Runner still runs its original build: exactly one bounded provider re-verification
+    // (tracked ownership + non-image policy + provably original image) accepts the report.
+    expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe("ready");
+    expect(fake.getCalls).toBe(getsBefore + 1);
+    expect(restart.hub.markReady(scope, { ...READINESS, runnerVersion: OLD_VERSION }, socket)).toBe(true);
+    const status = await restart.service.statusForAccount(owner, sandbox.sandboxId);
+    expect(status.lifecycle).toBe("ready");
+    expect(status.runnerReady).toBe(true);
+    // No replacement, no cleanup: the existing Instance simply continues.
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+    expect(fake.liveInstanceCount()).toBe(1);
+    // And the legacy Instance still releases normally on explicit stop.
+    const stopped = await restart.service.stopForAccount(owner, sandbox.sandboxId);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("keeps a newer existing Runner permitted when the target rolls back", async () => {
+    const owner = await account();
+    // The Instance was created and verified under the NEWER target; the target rolls back.
+    const { sandbox, fake, scope } = await readyUnderTarget(owner, { image: NEW_IMAGE, version: NEW_VERSION });
+    const rollback = restartedWithTarget(fake, { image: OLD_IMAGE, version: OLD_VERSION });
+    const socket = fakeSocket();
+    rollback.hub.attach(scope, socket);
+    expect(await rollback.service.markRunnerReady(scope, { ...READINESS, runnerVersion: NEW_VERSION })).toBe("ready");
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("ready");
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("rejects a wrong-version report on the CURRENT target image even for a tracked READY row", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    // The target image did NOT change; only the expected version string moved. A report naming
+    // neither the expected version nor a provably different image is a wrong-version report.
+    const restart = makeService(fake, { expectedRunnerVersion: NEW_VERSION });
+    const socket = fakeSocket();
+    restart.hub.attach(scope, socket);
+    expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe(
+      "version_mismatch",
+    );
+    expect(restart.hub.describe(sandbox.sandboxId).ready).toBe(false);
+    expect((await restart.service.statusForAccount(owner, sandbox.sandboxId)).runnerReady).toBe(false);
+  });
+
+  it("keeps first admission fail-closed: preparing allocations never reach the original-image path", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    // Back the row down to a tracked-but-never-ready allocation (create verified, no readiness).
+    await unit.database.update(sandboxes).set({ lifecycle: "preparing" }).where(eq(sandboxes.id, sandbox.sandboxId));
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    const getsBefore = fake.getCalls;
+    expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe(
+      "version_mismatch",
+    );
+    expect(fake.getCalls).toBe(getsBefore);
+    // An UNTRACKED new allocation (create outcome unknown, no UID) is rejected the same way.
+    const second = await ownedSandbox(owner);
+    fake.createUnknownWithoutResourceOnce = true;
+    const pending = await restart.service.startForAccount(owner, second.sandbox.sandboxId);
+    expect(pending.lastErrorCode).toBe("cloud_create_uncertain");
+    expect(pending.currentResourceUid).toBeNull();
+    const untrackedScope: RunnerScope = {
+      sandboxId: second.sandbox.sandboxId,
+      sessionId: second.sandbox.sessionId,
+      environmentGeneration: pending.environmentGeneration,
+      resourceName: pending.currentResourceName as string,
+    };
+    expect(await restart.service.markRunnerReady(untrackedScope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe(
+      "version_mismatch",
+    );
+    expect(fake.getCalls).toBe(getsBefore);
+    expect((await sandboxRow(second.sandbox.sandboxId)).lifecycle).toBe("preparing");
+  });
+
+  it("fails closed when the tracked binding changes while the provider read is in flight", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    const gate = gateNextProviderRead(fake);
+    const pending = restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION });
+    await gate.readStarted;
+    // The tracked UID was replaced mid-verification: the recheck after the read must refuse.
+    await unit.database
+      .update(sandboxes)
+      .set({ currentResourceUid: "uid-swapped" })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    gate.release();
+    expect(await pending).toBe("stale");
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({
+      lifecycle: "ready",
+      currentResourceUid: "uid-swapped",
+    });
+  });
+
+  it("defers instead of accepting when an idle claim lands during the provider read", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    const gate = gateNextProviderRead(fake);
+    const pending = restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION });
+    await gate.readStarted;
+    // A claim landed mid-verification: the environment is quiescing for a transfer or deletion,
+    // so readiness must not be re-published; the seal-capable channel stays attached.
+    await unit.database.update(sandboxes).set({ idleReclaimAt: new Date() }).where(eq(sandboxes.id, sandbox.sandboxId));
+    gate.release();
+    expect(await pending).toBe("deferred");
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("ready");
+  });
+
+  it("propagates a temporary provider failure for reconnect and permits the next verified attempt", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    fake.getInstanceFailures = 1;
+    await expect(
+      restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION }),
+    ).rejects.toMatchObject({ kind: "unavailable" });
+    // The tracked READY row is untouched: a transient read failure is not a revocation.
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("ready");
+    expect(fake.liveInstanceCount()).toBe(1);
+    expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe("ready");
+  });
+
+  it("rejects an externally updated image even when the physical UID is unchanged", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    const before = await sandboxRow(sandbox.sandboxId);
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    fake.replaceImage(scope.resourceName, `unit/image@sha256:${"3".repeat(64)}`);
+    expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe(
+      "version_mismatch",
+    );
+    expect((await sandboxRow(sandbox.sandboxId)).currentResourceUid).toBe(before.currentResourceUid);
+  });
+
+  it("keeps a claimed environment's seal channel without any provider verification", async () => {
+    const owner = await account();
+    const { sandbox, fake, scope } = await readyUnderTarget(owner);
+    await unit.database.update(sandboxes).set({ idleReclaimAt: new Date() }).where(eq(sandboxes.id, sandbox.sandboxId));
+    const restart = restartedWithTarget(fake, { image: NEW_IMAGE, version: NEW_VERSION });
+    const getsBefore = fake.getCalls;
+    expect(await restart.service.markRunnerReady(scope, { ...READINESS, runnerVersion: OLD_VERSION })).toBe("deferred");
+    expect(fake.getCalls).toBe(getsBefore);
+  });
+});
+
 describe("SandboxRunnerService acceptance", () => {
   async function readySandbox(owner: string, options: { acceptanceTimeoutMs?: number } = {}) {
     const fixture = await ownedSandbox(owner);

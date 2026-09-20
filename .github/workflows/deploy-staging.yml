@@ -1,12 +1,11 @@
 name: Deploy Staging
 
 on:
-  # CI, not Docker: staging must only ever run a revision whose checks passed, and `main` CI is the
-  # gate that proves that. The image the revision needs is published by the Docker workflow running
-  # alongside CI, so this workflow waits for that coordinate instead of building anything itself.
+  # CLI publication is gated on CI and now includes the matching Runner image. Wait for the whole
+  # release, then deploy the compatible Server before changing the target for new Instances.
   workflow_run:
     workflows:
-      - CI
+      - npm Publish
     branches:
       - main
     types:
@@ -21,6 +20,8 @@ on:
 permissions:
   contents: read
   packages: read
+  actions: read
+  id-token: write
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
@@ -39,13 +40,19 @@ jobs:
       github.repository == 'first-tree-ai/opentag' &&
       ((github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
-        github.event.workflow_run.event == 'push' &&
+        (github.event.workflow_run.event == 'workflow_run' || github.event.workflow_run.event == 'workflow_dispatch') &&
         github.event.workflow_run.head_repository.full_name == github.repository &&
         github.event.workflow_run.head_branch == 'main') ||
        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: staging
+    env:
+      RUNNER_IMAGE: ${{ vars.OPENTAG_RUNNER_STAGING_IMAGE_REPOSITORY }}
+      CAPROVER_SERVER: ${{ secrets.CAPROVER_STAGING_SERVER }}
+      CAPROVER_APP: ${{ secrets.CAPROVER_STAGING_APP }}
+      CAPROVER_PASSWORD_SECRET: ${{ vars.CAPROVER_STAGING_PASSWORD_SECRET }}
+      OPENTAG_PUBLIC_URL: https://dev.opentag.build
     steps:
       - name: Check out main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,20 +65,41 @@ jobs:
         with:
           node-version-file: .node-version
 
+      # Direct federation keeps administrator-secret access on this deployment Environment,
+      # rather than granting it to the CLI build/publish service account.
+      - name: Authenticate deployment identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          project_id: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Read the completed CLI release
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          gh run download "$RELEASE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name runner-release-staging --dir "$RUNNER_TEMP/runner-release"
+
       - name: Resolve the deployment revision
         id: target
         env:
           EVENT_NAME: ${{ github.event_name }}
-          RUN_REVISION: ${{ github.event.workflow_run.head_sha }}
           REQUESTED_REVISION: ${{ inputs.revision }}
         run: |
           set -euo pipefail
           git fetch origin main:refs/remotes/origin/main
 
           if [ "$EVENT_NAME" = "workflow_run" ]; then
-            REVISION="$RUN_REVISION"
+            # A workflow_run's head_sha can identify its workflow checkout, not the source the
+            # upstream CI actually published. Read the exact release record, never infer it.
+            REVISION=$(node -p "JSON.parse(require('node:fs').readFileSync(process.env.RUNNER_TEMP + '/runner-release/runner-release.json', 'utf8')).sourceSha")
           elif [ -n "$REQUESTED_REVISION" ]; then
-            REVISION=$(git rev-parse --verify "${REQUESTED_REVISION}^{commit}")
+            REVISION=$(git rev-parse --verify --end-of-options "${REQUESTED_REVISION}^{commit}")
           else
             REVISION=$(git rev-parse --verify refs/remotes/origin/main)
           fi
@@ -91,6 +119,21 @@ jobs:
           echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
           echo "Deployment target is $REVISION"
 
+      - name: Verify the published Runner coordinate
+        id: runner
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REVISION: ${{ steps.target.outputs.revision }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_run ]; then
+            node scripts/runner/release.mjs resolve --channel staging --image "$RUNNER_IMAGE" \
+              --source-sha "$REVISION" --metadata "$RUNNER_TEMP/runner-release/runner-release.json" \
+              --output "$RUNNER_TEMP/runner-target.json"
+          else
+            node scripts/runner/release.mjs resolve --channel staging --image "$RUNNER_IMAGE" \
+              --source-sha "$REVISION" --output "$RUNNER_TEMP/runner-target.json"
+          fi
+
       - name: Wait for the commit image
         id: image
         # Bounded so a revision whose image never lands fails instead of holding the deploy slot for
@@ -100,8 +143,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REVISION: ${{ steps.target.outputs.revision }}
         run: |
-          # CI and the image build run in parallel, so the commit coordinate is normally already
-          # published by the time CI concludes; waiting covers the case where it is not.
+          # The image build and CLI release are independent, so verify the immutable Server
+          # coordinate even after the CLI release has completed.
           node scripts/registry-coordinate.mjs --image "$IMAGE" --reference "$REVISION" --wait
 
       - name: Confirm the revision is still current
@@ -149,6 +192,14 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Runner activation configuration
+        if: steps.gate.outputs.deploy == 'true'
+        run: |
+          test -n "$CAPROVER_PASSWORD_SECRET" || {
+            echo 'CAPROVER_STAGING_PASSWORD_SECRET must identify the existing Secret Manager credential' >&2
+            exit 1
+          }
+
       - name: Deploy the commit image to CapRover
         if: steps.gate.outputs.deploy == 'true'
         uses: caprover/deploy-from-github@c221bd9d1c3a55de4c2b66c0dc4a3972d04c027c # v1.2.0
@@ -160,22 +211,45 @@ jobs:
           # an unchanged image reference and nothing to roll forward to.
           image: ${{ env.IMAGE }}:${{ steps.target.outputs.revision }}
 
+      # The Server rollout may outlast the first federated credential. Obtain a fresh identity
+      # immediately before reading the deployment secret; no service account key is involved.
+      - name: Refresh deployment identity
+        if: steps.gate.outputs.deploy == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          project_id: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+
+      - name: Activate the matching Runner for new Instances
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          SERVER_REVISION: ${{ steps.target.outputs.revision }}
+        run: >-
+          node scripts/runner/deploy.mjs apply
+          --release "$RUNNER_TEMP/runner-target.json"
+          --server-revision "$SERVER_REVISION"
+
       - name: Summarise the deployment
         if: always() && steps.target.outputs.revision != ''
         env:
+          RESULT: ${{ job.status }}
           DEPLOYED: ${{ steps.gate.outputs.deploy }}
           DIGEST: ${{ steps.image.outputs.digest }}
           REVISION: ${{ steps.target.outputs.revision }}
+          RUNNER_TARGET: ${{ steps.runner.outputs.image }}
+          RUNNER_VERSION: ${{ steps.runner.outputs.version }}
         run: |
           {
             echo "### Staging deployment"
+            printf -- "- Result: %s\n" "$RESULT"
             echo
             printf -- "- Revision: \`%s\`\n" "$REVISION"
             printf -- "- Image: \`%s:%s\`\n" "$IMAGE" "$REVISION"
             if [ -n "$DIGEST" ]; then
               printf -- "- Digest: \`%s\`\n" "$DIGEST"
             fi
-            if [ "$DEPLOYED" != "true" ]; then
+            printf -- "- Runner: %s (%s)\n" "$RUNNER_TARGET" "$RUNNER_VERSION"
+            if [ "$DEPLOYED" = "false" ]; then
               echo "- Skipped: this revision is no longer the tip of main."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

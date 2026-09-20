@@ -295,6 +295,10 @@ const ServerEnvironmentSchema = z
   .object({
     BETTER_AUTH_SECRET: z.string().min(32),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
+    OPENTAG_BUILD_REVISION: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/)
+      .optional(),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
     OPENTAG_ENCRYPTION_KEY_RING: EncryptionKeyRingSchema,
@@ -688,6 +692,8 @@ export function parseSlackRedirectUrl(value: string, publicOrigin: string): stri
 
 export interface ServerConfig {
   autoMigrate: boolean;
+  /** Source revision baked into the Server image; used for deployment verification. */
+  buildRevision?: string;
   /** Signs every Account session and its cookies. */
   betterAuthSecret: string;
   /** Where the Server reads the channel's exact latest Client target, and how often. */
@@ -844,6 +850,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
   const parsed = ServerEnvironmentSchema.parse({
     BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
+    OPENTAG_BUILD_REVISION: emptyToUndefined(environment.OPENTAG_BUILD_REVISION),
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
     OPENTAG_ENCRYPTION_KEY_RING: emptyToUndefined(environment.OPENTAG_ENCRYPTION_KEY_RING),
@@ -899,6 +906,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
 
   return {
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
+    buildRevision: parsed.OPENTAG_BUILD_REVISION,
     betterAuthSecret: parsed.BETTER_AUTH_SECRET,
     channelTarget: {
       downloadBaseUrl: parsed.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL,

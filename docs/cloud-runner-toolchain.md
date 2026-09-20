@@ -9,6 +9,9 @@ covers image construction and local toolchain acceptance; E3 documents the nativ
 The Runner is owned by `@opentag/client`. It shares the **CLI release coordinate**
 (`apps/cli`, currently `0.0.5`). Private Client `0.0.0` is not a Runner version.
 
+Publication follows the CLI workflow; environment activation and rollback are described in
+[Cloud Runner releases](./cloud-runner-release.md).
+
 ## What the image contains
 
 The image default user is `root` because the Cloud Run native sandbox launcher requires the

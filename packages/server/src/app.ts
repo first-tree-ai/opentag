@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fastifyOpenTelemetry from "@autotelic/fastify-opentelemetry";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, redactForLog, ServerHealthSchema } from "@opentag/shared";
@@ -159,6 +159,8 @@ export interface CreateAppOptions {
   loggerStream?: FastifyLoggerOptions["stream"];
   loggerLevel?: FastifyLoggerOptions["level"];
   readiness?: BootstrapReadiness;
+  /** Non-secret deployment proof from the responding process, independent of control-plane state. */
+  deployment?: { revision?: string; runner?: { image: string; version: string } };
   runtime?: RuntimeRoutesOptions;
   runtimeAuthService?: ComputerAuthVerifier;
   runtimeProviderProxy?: RuntimeProviderProxyRoutesOptions;
@@ -185,6 +187,17 @@ export interface CreateAppOptions {
 
 export function sanitizeRequestUrl(url: string): string {
   return url.split("?", 1)[0] ?? "/";
+}
+
+function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<string, string> {
+  const headers: Record<string, string> = { "cache-control": "no-store" };
+  if (deployment?.revision) headers["x-opentag-revision"] = deployment.revision;
+  if (deployment?.runner) {
+    headers["x-opentag-runner-target"] = createHash("sha256")
+      .update(JSON.stringify([deployment.runner.image, deployment.runner.version]))
+      .digest("hex");
+  }
+  return headers;
 }
 
 type AccountFacingError =
@@ -504,7 +517,9 @@ export function createApp(options: CreateAppOptions = {}) {
     return reply.code(200).send(health);
   });
 
+  const readinessHeaders = deploymentHeaders(options.deployment);
   app.get("/readyz", async (request, reply) => {
+    reply.headers(readinessHeaders);
     const snapshot = readiness.snapshot();
     if (!snapshot.ready) {
       return reply.code(503).send({ status: "not_ready", ...snapshot });

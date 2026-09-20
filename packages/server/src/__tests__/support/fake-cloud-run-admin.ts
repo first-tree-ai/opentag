@@ -12,17 +12,22 @@ import {
 
 export const FAKE_PROJECT = "unit-project";
 export const FAKE_REGION = "us-west1";
+/** Image every Instance pins at creation unless the test moves the deployment target first. */
+export const FAKE_RUNNER_IMAGE = "unit/image@sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 const PROJECT = FAKE_PROJECT;
 const REGION = FAKE_REGION;
 
 export interface FakeInstance {
   uid: string;
+  generation: string;
   spec: RunnerInstanceSpec;
   labels: Record<string, string>;
   gone: boolean;
   etag: string;
   operationName: string;
+  /** Image pinned at creation; only an explicit simulated provider update changes it. */
+  image: string;
 }
 
 export interface FakeOperation {
@@ -53,6 +58,8 @@ export class FakeCloudRunAdmin {
   getOperationFailures = 0;
   /** When set, a successful delete immediately materializes a same-name replacement with this UID. */
   deleteSpawnsReplacementUid?: string;
+  /** The deployment target image this fake verifies against; Instances pin theirs at creation. */
+  targetImage = FAKE_RUNNER_IMAGE;
   private uidCounter = 0;
 
   instanceIdFor(identity: RunnerInstanceIdentityInput) {
@@ -98,6 +105,28 @@ export class FakeCloudRunAdmin {
     input: { resourceName: string; resourceUid: string; environment: string },
   ): void {
     this.verifyTrackedOwnership(view, input);
+    // Mirror the real execution policy's image equality: a borrow only takes a current-target
+    // Instance, so an old-image Instance can never cross a Session boundary.
+    if (viewImage(view) !== this.targetImage) {
+      throw new CloudRunAdminError("invalid", "Cloud Run Instance does not carry the target Runner image");
+    }
+  }
+
+  /** Mirror of the real original-image reconnect acceptance: ownership + provably legacy image. */
+  verifyTrackedOriginalImage(
+    view: CloudRunInstanceView,
+    input: { resourceName: string; resourceUid: string; environment: string },
+  ): void {
+    this.verifyTrackedOwnership(view, input);
+    const image = viewImage(view);
+    if (
+      view.generation !== "1" ||
+      !image ||
+      !/^[a-z0-9][a-z0-9._/-]{0,254}@sha256:[0-9a-f]{64}$/.test(image) ||
+      image === this.targetImage
+    ) {
+      throw new CloudRunAdminError("invalid", "Cloud Run Instance does not carry a proven original Runner image");
+    }
   }
 
   verifyTrackedOwnership(
@@ -124,6 +153,15 @@ export class FakeCloudRunAdmin {
   replaceUid(name: string, uid: string): void {
     const instance = this.instances.get(name);
     if (instance) instance.uid = uid;
+  }
+
+  /** Simulate an Instance created under a previous deployment target (different pinned image). */
+  replaceImage(name: string, image: string): void {
+    const instance = this.instances.get(name);
+    if (instance) {
+      instance.image = image;
+      instance.generation = String(Number(instance.generation) + 1);
+    }
   }
 
   async createInstance(
@@ -239,6 +277,8 @@ export class FakeCloudRunAdmin {
       gone: false,
       etag: `etag-${ordinal}`,
       operationName,
+      image: this.targetImage,
+      generation: "1",
     };
     this.instances.set(name, instance);
     this.operations.set(operationName, { state: "pending", resourceName: name });
@@ -249,6 +289,7 @@ export class FakeCloudRunAdmin {
     return {
       name,
       uid: instance.uid,
+      generation: instance.generation,
       etag: instance.etag,
       labels: { ...instance.labels },
       networkInterfaces: [{ network: "n", subnetwork: "s", tags: ["t"] }],
@@ -264,7 +305,7 @@ export class FakeCloudRunAdmin {
         containers: [
           {
             name: "runner",
-            image: "unit/image@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            image: instance.image,
             sandboxLauncher: true,
             args: ["opentag-runner", "serve"],
             resources: { limits: { cpu: "1", memory: "1Gi" } },
@@ -278,4 +319,12 @@ export class FakeCloudRunAdmin {
   liveInstanceCount(): number {
     return [...this.instances.values()].filter((instance) => !instance.gone).length;
   }
+}
+
+/** The single container image a view declares, when it has exactly one well-formed container. */
+function viewImage(view: CloudRunInstanceView): string | undefined {
+  const containers = view.policy?.containers;
+  if (!Array.isArray(containers) || containers.length !== 1) return undefined;
+  const image = (containers[0] as { image?: unknown } | undefined)?.image;
+  return typeof image === "string" ? image : undefined;
 }

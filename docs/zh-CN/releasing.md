@@ -17,6 +17,9 @@ OpenTag 以两个相互隔离的 npm package identity 发布一个自包含 CLI 
 自己的 Node.js runtime，无需 npm 即可安装。它沿用本指南的 version coordinate，并由同一个 workflow 构建与发布，
 说明见 [portable-release.md](./portable-release.md)。
 
+同一流程也向 Artifact Registry 发布与 CLI 同版本的 Runner 镜像。Runner 发布和离线验收在 npm 发布之前完成；
+配置、启用和回滚见 [Cloud Runner 发布](./cloud-runner-release.md)。
+
 内部 `@opentag/client`、`@opentag/shared` 和 `@opentag/server` workspace 永久保持 private。Client 与 Shared
 代码会 bundle 进 CLI tarball，pack 后的 manifest 不得暴露任何 `@opentag/*` runtime dependency。
 `THIRD_PARTY_NOTICES` 从实际 bundle 进 CLI 的精确第三方 package 生成，并包含完整许可证正文。bundle dependency

@@ -91,6 +91,7 @@ function makeService(
   options: {
     createConvergeTimeoutMs?: number;
     deleteVerifyTimeoutMs?: number;
+    expectedRunnerVersion?: string;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ) {
@@ -102,7 +103,7 @@ function makeService(
     hub,
     environment: "staging",
     backendUrl: "wss://api.example.com/api/v1/sandbox-runners/ws",
-    expectedRunnerVersion: RUNNER_VERSION,
+    expectedRunnerVersion: options.expectedRunnerVersion ?? RUNNER_VERSION,
     acceptanceTimeoutMs: 30_000,
     createConvergeTimeoutMs: options.createConvergeTimeoutMs ?? 30_000,
     deleteVerifyTimeoutMs: options.deleteVerifyTimeoutMs ?? 2_000,
@@ -126,6 +127,169 @@ async function sandboxRow(sandboxId: string) {
   const [row] = await database.select().from(sandboxes).where(eq(sandboxes.id, sandboxId));
   return row as typeof sandboxes.$inferSelect;
 }
+
+describe("SandboxRunnerService original-image reconnect on PostgreSQL", () => {
+  const OLD_VERSION = "0.0.4";
+  const UPGRADED_VERSION = "0.0.6";
+  const OLD_IMAGE = `unit/image@sha256:${"1".repeat(64)}`;
+  const UPGRADED_IMAGE = `unit/image@sha256:${"2".repeat(64)}`;
+
+  function readinessFor(version: string) {
+    return {
+      sandboxName: "ots-s-x-1",
+      rootfs: "/opt/sandbox-root",
+      nodeVersion: "v24.19.0",
+      piVersion: "0.84.2",
+      runnerVersion: version,
+      reportedAt: new Date().toISOString(),
+    };
+  }
+
+  /** One READY environment whose Instance was created and verified under the given target. */
+  async function readyUnderTarget(target: { image: string; version: string }) {
+    const it = await fixture();
+    const fake = new FakeCloudRunAdmin();
+    fake.targetImage = target.image;
+    const made = makeService(fake, { expectedRunnerVersion: target.version });
+    await made.service.startForAccount(it.accountId, it.sandbox.sandboxId);
+    const row = await sandboxRow(it.sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: it.sandbox.sandboxId,
+      sessionId: it.sandbox.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const socket = fakeSocket();
+    made.hub.attach(scope, socket);
+    made.hub.markReady(scope, readinessFor(target.version), socket);
+    expect(await made.service.markRunnerReady(scope, readinessFor(target.version))).toBe("ready");
+    expect((await sandboxRow(it.sandbox.sandboxId)).lifecycle).toBe("ready");
+    return { ...it, fake, ...made, scope };
+  }
+
+  /** A fresh Server process over the same database/cloud with a changed deployment target. */
+  function restartedWithTarget(fake: FakeCloudRunAdmin, target: { image: string; version: string }) {
+    fake.targetImage = target.image;
+    return makeService(fake, { expectedRunnerVersion: target.version });
+  }
+
+  it("accepts a previously verified READY Instance reconnecting after a restart with a new target", async () => {
+    const { accountId, sandbox, fake, scope } = await readyUnderTarget({ image: OLD_IMAGE, version: OLD_VERSION });
+    const restart = restartedWithTarget(fake, { image: UPGRADED_IMAGE, version: UPGRADED_VERSION });
+    const socket = fakeSocket();
+    restart.hub.attach(scope, socket);
+    expect(await restart.service.markRunnerReady(scope, readinessFor(OLD_VERSION))).toBe("ready");
+    expect(restart.hub.markReady(scope, readinessFor(OLD_VERSION), socket)).toBe(true);
+    const status = await restart.service.statusForAccount(accountId, sandbox.sandboxId);
+    expect(status).toMatchObject({ lifecycle: "ready", runnerReady: true, environmentGeneration: 1 });
+    expect(await restart.service.ensureIngressAllocation(accountId, sandbox.sandboxId)).toBe("ready");
+    // No replacement and no cleanup: the same physical Instance simply continues.
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.deleteCalls).toHaveLength(0);
+    expect(fake.liveInstanceCount()).toBe(1);
+    // Explicit stop still releases the legacy Instance through the verified cleanup path.
+    const stopped = await restart.service.stopForAccount(accountId, sandbox.sandboxId);
+    expect(stopped.lifecycle).toBe("unallocated");
+    expect(fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("keeps a newer existing Runner permitted when the target rolls back", async () => {
+    const { sandbox, fake, scope } = await readyUnderTarget({ image: UPGRADED_IMAGE, version: UPGRADED_VERSION });
+    const rollback = restartedWithTarget(fake, { image: OLD_IMAGE, version: OLD_VERSION });
+    const socket = fakeSocket();
+    rollback.hub.attach(scope, socket);
+    expect(await rollback.service.markRunnerReady(scope, readinessFor(UPGRADED_VERSION))).toBe("ready");
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("ready");
+    expect(fake.createCalls).toHaveLength(1);
+    expect(fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("rejects a wrong-version report on the CURRENT target image even for a tracked READY row", async () => {
+    const { accountId, sandbox, fake, scope } = await readyUnderTarget({ image: OLD_IMAGE, version: OLD_VERSION });
+    // The target image did NOT change; a different version expectation alone can never be met by
+    // a report whose image is still the current target.
+    const restart = makeService(fake, { expectedRunnerVersion: UPGRADED_VERSION });
+    const socket = fakeSocket();
+    restart.hub.attach(scope, socket);
+    expect(await restart.service.markRunnerReady(scope, readinessFor(OLD_VERSION))).toBe("version_mismatch");
+    expect(restart.hub.describe(sandbox.sandboxId).ready).toBe(false);
+    expect((await restart.service.statusForAccount(accountId, sandbox.sandboxId)).runnerReady).toBe(false);
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("ready");
+  });
+
+  it("keeps first admission fail-closed for untracked and tracked preparing allocations", async () => {
+    const { accountId, sandbox } = await fixture();
+    const fake = new FakeCloudRunAdmin();
+    fake.targetImage = OLD_IMAGE;
+    let open!: () => void;
+    fake.createGate = {
+      promise: new Promise<void>((resolve) => {
+        open = resolve;
+      }),
+      open: () => open(),
+    };
+    const { service } = makeService(fake, { expectedRunnerVersion: UPGRADED_VERSION });
+    const providerReads = vi.spyOn(fake, "getInstance");
+    const start = service.startForAccount(accountId, sandbox.sandboxId);
+    await vi.waitFor(async () => {
+      expect((await sandboxRow(sandbox.sandboxId))?.lifecycle).toBe("preparing");
+    });
+    const pending = await sandboxRow(sandbox.sandboxId);
+    const scope: RunnerScope = {
+      sandboxId: sandbox.sandboxId,
+      sessionId: sandbox.sessionId,
+      environmentGeneration: 1,
+      resourceName: pending.currentResourceName as string,
+    };
+    // Untracked (create outcome unknown, no UID): a wrong-version report is a plain mismatch and
+    // must never trigger an original-image provider lookup.
+    expect(await service.markRunnerReady(scope, readinessFor(OLD_VERSION))).toBe("version_mismatch");
+    expect(providerReads).not.toHaveBeenCalled();
+    open();
+    await start;
+    // Tracked but still preparing (first admission): equally fail-closed, still no lookup.
+    expect((await sandboxRow(sandbox.sandboxId)).currentResourceUid).not.toBeNull();
+    expect(await service.markRunnerReady(scope, readinessFor(OLD_VERSION))).toBe("version_mismatch");
+    expect(providerReads).not.toHaveBeenCalled();
+    expect((await sandboxRow(sandbox.sandboxId)).lifecycle).toBe("preparing");
+  });
+
+  it("fails closed when the tracked binding changes while the provider read is in flight", async () => {
+    const { sandbox, fake, scope } = await readyUnderTarget({ image: OLD_IMAGE, version: OLD_VERSION });
+    const restart = restartedWithTarget(fake, { image: UPGRADED_IMAGE, version: UPGRADED_VERSION });
+    const realGet = fake.getInstance.bind(fake);
+    let release!: () => void;
+    let markStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let gated = true;
+    fake.getInstance = async (name: string) => {
+      if (gated) {
+        gated = false;
+        markStarted();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return realGet(name);
+    };
+    const pendingReport = restart.service.markRunnerReady(scope, readinessFor(OLD_VERSION));
+    await readStarted;
+    // The tracked UID was replaced mid-verification: the recheck after the read must refuse.
+    await database
+      .update(sandboxes)
+      .set({ currentResourceUid: "uid-swapped" })
+      .where(eq(sandboxes.id, sandbox.sandboxId));
+    release();
+    expect(await pendingReport).toBe("stale");
+    expect(await sandboxRow(sandbox.sandboxId)).toMatchObject({
+      lifecycle: "ready",
+      currentResourceUid: "uid-swapped",
+    });
+    expect(fake.liveInstanceCount()).toBe(1);
+  });
+});
 
 describe("SandboxRunnerService real-PostgreSQL lifecycle", () => {
   it("persists the deterministic name before I/O and never clears it while the create is unknown", async () => {

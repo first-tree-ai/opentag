@@ -43,6 +43,14 @@ const githubAppPrivateKeyPem = generateKeyPairSync("rsa", {
 }).privateKey;
 
 describe("parseServerConfig", () => {
+  it("accepts an image source revision and rejects a malformed deployment proof", () => {
+    expect(parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "a".repeat(40) }).buildRevision).toBe(
+      "a".repeat(40),
+    );
+    expect(parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "" }).buildRevision).toBeUndefined();
+    expect(() => parseServerConfig({ ...required, OPENTAG_BUILD_REVISION: "main" })).toThrow();
+  });
+
   it("offers Internal Tools on staging and keeps other environments closed by default", () => {
     expect(
       parseServerConfig({

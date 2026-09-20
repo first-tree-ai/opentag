@@ -33,6 +33,9 @@ RUN pnpm install --frozen-lockfile --config.engine-strict=true --ignore-scripts 
 
 FROM node:24-alpine AS runtime
 
+ARG OPENTAG_BUILD_REVISION
+ENV OPENTAG_BUILD_REVISION=${OPENTAG_BUILD_REVISION}
+
 WORKDIR /app
 COPY --from=prod-deps /app ./
 COPY --from=build /app/packages/shared/dist packages/shared/dist

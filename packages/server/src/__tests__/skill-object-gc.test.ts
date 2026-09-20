@@ -282,4 +282,41 @@ describe("SkillObjectGc", () => {
     expect(summary.deleted).toBe(0);
     expect(store.stored(siblingKey)).toBeDefined();
   });
+
+  it.each(["skills/", "/skills", "//skills//", "skills//nested/"])(
+    "collects the orphan when the prefix is configured as %j",
+    async (rawPrefix) => {
+      const accountId = await h.createUser();
+      const agentId = await h.createAgent(accountId);
+      const store = new FakeSkillObjectStore();
+      const service = new SkillService({ database: h.database, store, keyPrefix: rawPrefix });
+      const first = await h.upload(service, accountId, agentId, "normalized");
+      const oldKey = (await h.objectKeyOf(first.id)) as string;
+      const replaced = await h.upload(service, accountId, agentId, "normalized", {
+        replace: true,
+        files: { "a.txt": "a" },
+      });
+      const newKey = (await h.objectKeyOf(replaced.id)) as string;
+      expect(oldKey).not.toBe(newKey);
+      store.setLastModified(oldKey, OLD);
+      store.setLastModified(newKey, OLD);
+
+      // The GC is given the same raw configuration value the writer was; it must list the normalized
+      // prefix, or it would scan nothing forever and leak every replaced bundle.
+      const configuredGc = new SkillObjectGc({
+        database: h.database,
+        store,
+        prefix: rawPrefix,
+        graceMs: GRACE_MS,
+        now: () => NOW,
+      });
+      const summary = await configuredGc.runOnce();
+
+      expect(summary).toMatchObject({ deleted: 1, skippedReferenced: 1 });
+      expect(store.stored(oldKey)).toBeUndefined();
+      expect(store.stored(newKey)).toBeDefined();
+      const bundle = await service.openBundle(accountId, agentId, replaced.id);
+      expect(bundle.sha256).toBe(replaced.archiveSha256);
+    },
+  );
 });

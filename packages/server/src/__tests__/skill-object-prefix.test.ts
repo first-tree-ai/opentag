@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSkillObjectKeyUnder } from "../services/skills/index.js";
+import { isSkillObjectKeyUnder, normalizeSkillObjectPrefix, SkillObjectPrefixError } from "../services/skills/index.js";
 
 /**
  * The prefix binding is what keeps two deployments that share a bucket from collecting each other's
@@ -45,5 +45,27 @@ describe("isSkillObjectKeyUnder", () => {
     expect(
       isSkillObjectKeyUnder("skills", `skills/accounts/${ACCOUNT}/agents/nope/skills/${SKILL}/${SHA}.tar.gz`),
     ).toBe(false);
+  });
+});
+
+describe("normalizeSkillObjectPrefix", () => {
+  it("drops empty slash segments, so a slash spelling is the same namespace", () => {
+    expect(normalizeSkillObjectPrefix("skills")).toBe("skills");
+    expect(normalizeSkillObjectPrefix("skills/")).toBe("skills");
+    expect(normalizeSkillObjectPrefix("/skills")).toBe("skills");
+    expect(normalizeSkillObjectPrefix("//skills//")).toBe("skills");
+    expect(normalizeSkillObjectPrefix("skills//nested/")).toBe("skills/nested");
+  });
+
+  it("rejects an empty or all-slash prefix", () => {
+    for (const value of ["", "/", "//", "///"]) {
+      expect(() => normalizeSkillObjectPrefix(value)).toThrow(SkillObjectPrefixError);
+    }
+  });
+
+  it("rejects a traversal or otherwise malformed segment", () => {
+    for (const value of ["..", "../x", "a/../b", "a/./b", ".", "a b", "a?b"]) {
+      expect(() => normalizeSkillObjectPrefix(value)).toThrow(SkillObjectPrefixError);
+    }
   });
 });

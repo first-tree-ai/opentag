@@ -793,6 +793,24 @@ describe("Skill storage configuration", () => {
     ).toThrow();
   });
 
+  it("normalizes the object-key prefix and rejects a traversal at parse time", () => {
+    for (const [raw, expected] of [
+      ["skills/", "skills"],
+      ["/skills", "skills"],
+      ["//skills//", "skills"],
+      ["skills//nested/", "skills/nested"],
+    ] as const) {
+      expect(
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_PREFIX: raw }).skillStorage,
+      ).toMatchObject({ prefix: expected });
+    }
+    for (const raw of ["/", "a/../b", "a b"]) {
+      expect(() =>
+        parseServerConfig({ ...required, ...skillStorageEnvironment, OPENTAG_SKILL_STORAGE_PREFIX: raw }),
+      ).toThrow(/OPENTAG_SKILL_STORAGE_PREFIX/);
+    }
+  });
+
   it("allows a base path but rejects a partial group and a bad endpoint", () => {
     expect(
       parseServerConfig({

@@ -22,15 +22,15 @@ export class SkillObjectPrefixError extends Error {
  *
  * `skills/`, `/skills`, and `//skills//` all normalize to `skills`; one leading or trailing slash is
  * therefore a configuration detail, not a different namespace. `/`, `""`, and any segment that is
- * not `[A-Za-z0-9._-]+` (including `.` and `..`) are rejected, so a traversal or an empty prefix can
- * never become a key. This is the only implementation of the rule: `skillObjectKey` writes with it
- * and `SkillObjectGc` lists and matches with it.
+ * not `[A-Za-z0-9._-]+` (and not a bare `.` or `..`, which would be a traversal) are rejected, so an
+ * empty or escaping prefix can never become a key. This is the only implementation of the rule:
+ * `skillObjectKey` writes with it and `SkillObjectGc` lists and matches with it.
  */
 export function normalizeSkillObjectPrefix(prefix: string): string {
   if (typeof prefix !== "string") throw new SkillObjectPrefixError("Skill object store prefix must be a string");
   const segments = prefix.split("/").filter((segment) => segment.length > 0);
   for (const segment of segments) {
-    if (!SEGMENT.test(segment)) {
+    if (!SEGMENT.test(segment) || segment === "." || segment === "..") {
       throw new SkillObjectPrefixError("Skill object store prefix has a malformed segment");
     }
   }

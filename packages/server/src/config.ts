@@ -13,6 +13,7 @@ import { z } from "zod";
 import { CloudRunnerVersionSchema, parseCloudStorageBase } from "./cloud-identities-config.js";
 import { type CloudModelConfig, resolveCloudModelConfig } from "./cloud-model-config.js";
 import { type CloudRunnerConfig, resolveCloudRunnerConfig } from "./cloud-runner-config.js";
+import { normalizeSkillObjectPrefix } from "./services/skills/skill-object-prefix.js";
 
 export { parseCloudStorageBase } from "./cloud-identities-config.js";
 
@@ -379,7 +380,23 @@ const ServerEnvironmentSchema = z
     OPENTAG_SKILL_STORAGE_BUCKET: z.string().trim().min(1).optional(),
     OPENTAG_SKILL_STORAGE_ACCESS_KEY_ID: z.string().min(1).optional(),
     OPENTAG_SKILL_STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),
-    OPENTAG_SKILL_STORAGE_PREFIX: z.string().trim().min(1).default("skills"),
+    OPENTAG_SKILL_STORAGE_PREFIX: z
+      .string()
+      .trim()
+      .min(1)
+      .transform((value, context) => {
+        try {
+          return normalizeSkillObjectPrefix(value);
+        } catch {
+          context.addIssue({
+            code: "custom",
+            message:
+              "OPENTAG_SKILL_STORAGE_PREFIX must be a slash-separated path of non-empty segments (no '.' or '..')",
+          });
+          return value;
+        }
+      })
+      .default("skills"),
     OPENTAG_SKILL_STORAGE_FORCE_PATH_STYLE: booleanString("true"),
     /*
      * Deferred orphan-object collection. `0` disables the worker; the grace period protects an object

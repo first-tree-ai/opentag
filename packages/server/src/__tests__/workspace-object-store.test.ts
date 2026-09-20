@@ -1408,6 +1408,29 @@ describe("workspace object store transport hygiene", () => {
     expect(typed.message).not.toContain("sensitive-upstream-payload");
   });
 
+  it("swallows a rejecting cancel while discarding an upstream error body", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    fake.setInterceptor(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(Buffer.from("upstream error body"));
+            },
+            cancel() {
+              return Promise.reject(new Error("teardown failed"));
+            },
+          }),
+          { status: 404 },
+        ),
+    );
+    const store = createStore(fake);
+    expect(await store.head(SCOPE)).toBeUndefined();
+    // Let the detached teardown promise settle so a regression to an unhandled rejection is visible.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
   it("rejects constructor timeouts outside the safe bound", () => {
     expect(() => new GcsWorkspaceObjectStore({ tokenProvider: async () => TOKEN, timeoutMs: 0 })).toThrow(
       WorkspaceObjectStoreError,
@@ -1415,5 +1438,569 @@ describe("workspace object store transport hygiene", () => {
     expect(() => new GcsWorkspaceObjectStore({ tokenProvider: async () => TOKEN, timeoutMs: 1.5 })).toThrow(
       WorkspaceObjectStoreError,
     );
+  });
+});
+
+describe("workspace object store fail-closed input validation", () => {
+  it("rejects storage URIs outside the durable address bound", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    for (const storageUri of ["", `gs://${BUCKET}/${"a".repeat(2_100)}`, 42 as unknown as string]) {
+      const error = await store.head({ ...SCOPE, storageUri }).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(WorkspaceObjectStoreError);
+      expect((error as WorkspaceObjectStoreError).code).toBe("invalid_uri");
+    }
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("rejects a metadata response that is not a JSON object resource", async () => {
+    const fake = createFakeGcs();
+    fake.setInterceptor(async () => jsonResponse(200, []));
+    const store = createStore(fake);
+    const error = await store.head(SCOPE).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("corrupt");
+  });
+
+  it("rejects snapshots outside the durable snapshot shape, before any request", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    const content = Buffer.from("abc");
+    const valid: WorkspaceObject = {
+      generation: "1001",
+      metageneration: "1",
+      ownerGeneration: 1,
+      saved: true,
+      sealed: false,
+      bytes: content.byteLength,
+      sha256: sha256hex(content),
+      md5: md5b64(content),
+    };
+    const cases: Array<Record<string, unknown> | null> = [
+      null,
+      { generation: "0" },
+      { generation: "12x" },
+      { metageneration: "0" },
+      { ownerGeneration: 0 },
+      { ownerGeneration: 10_000_000_000 },
+      { ownerGeneration: 1.5 },
+      { bytes: -1 },
+      { bytes: RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES + 1 },
+      { bytes: 1.5 },
+      { sha256: "z".repeat(64) },
+      { md5: "not-base64!!" },
+      { saved: "true" },
+      { sealed: 0 },
+    ];
+    for (const patch of cases) {
+      const object = (patch === null ? null : { ...valid, ...patch }) as unknown as WorkspaceObject;
+      const error = await store.read(SCOPE, object).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(WorkspaceObjectStoreError);
+      expect((error as WorkspaceObjectStoreError).code).toBe("invalid_input");
+    }
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("rejects write inputs outside the durable input shape, before any request", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("payload");
+    const planted = fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = previousOf(planted);
+    // `null` is the missing input; the second case passes every earlier field check with a
+    // non-boolean seal, which must still fail closed.
+    const cases: unknown[] = [null, { ...archiveInput(content), sealed: "yes" }];
+    for (const input of cases) {
+      const error = await store.write(SCOPE, previous, input as WorkspaceObjectWriteInput).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      expect(error).toBeInstanceOf(WorkspaceObjectStoreError);
+      expect((error as WorkspaceObjectStoreError).code).toBe("invalid_input");
+    }
+    expect(fake.calls).toHaveLength(0);
+  });
+
+  it("defaults the deadline and the platform fetch when options omit them", () => {
+    const store = new GcsWorkspaceObjectStore({ tokenProvider: async () => TOKEN });
+    expect(store).toBeInstanceOf(GcsWorkspaceObjectStore);
+  });
+
+  it("skips zero-length source chunks when framing the upload", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v1");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    async function* padded(): AsyncGenerator<Uint8Array> {
+      yield new Uint8Array(0);
+      yield content.subarray(0, 4);
+      yield new Uint8Array(0);
+      yield content.subarray(4);
+      yield new Uint8Array(0);
+    }
+    const result = await store.write(SCOPE, previous, { ...archiveInput(content), body: padded() });
+    expect(result.sha256).toBe(sha256hex(content));
+    expect(result.bytes).toBe(content.byteLength);
+    expect(must(fake.stored()).content).toEqual(content);
+  });
+});
+
+describe("workspace object store read failure modes", () => {
+  it("fails a read when the archive disappeared after the claim", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive-v1"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    fake.clearStored();
+    const error = await store.read(SCOPE, object).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("missing");
+    expect(fake.calls.filter((call) => call.url.includes("alt=media"))).toHaveLength(0);
+  });
+
+  it("maps a failed media request to a typed error without reading its body", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-bytes");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) =>
+      call.url.includes("alt=media") ? new Response("sensitive-upstream-payload", { status: 503 }) : undefined,
+    );
+    const error = await store.read(SCOPE, object).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    const typed = error as WorkspaceObjectStoreError;
+    expect(typed.code).toBe("unavailable");
+    expect(typed.status).toBe(503);
+    expect(typed.message).not.toContain("sensitive-upstream-payload");
+  });
+
+  it("fails a read whose media response carried no body", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-bytes");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) =>
+      call.url.includes("alt=media")
+        ? new Response(null, { status: 200, headers: { "content-length": String(content.byteLength) } })
+        : undefined,
+    );
+    const error = await store.read(SCOPE, object).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("unavailable");
+  });
+
+  it("errors the stream with unavailable for an untyped mid-read failure", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-bytes");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) =>
+      call.url.includes("alt=media")
+        ? new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.error(new Error("socket reset"));
+              },
+            }),
+            { status: 200, headers: { "content-length": String(content.byteLength) } },
+          )
+        : undefined,
+    );
+    const stream = await store.read(SCOPE, object);
+    const error = await streamToBytes(stream).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("unavailable");
+  });
+
+  it("errors the stream with a typed timeout when the media body times out", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-bytes");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) =>
+      call.url.includes("alt=media")
+        ? new Response(
+            new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.error(new DOMException("The operation timed out.", "TimeoutError"));
+              },
+            }),
+            { status: 200, headers: { "content-length": String(content.byteLength) } },
+          )
+        : undefined,
+    );
+    const stream = await store.read(SCOPE, object);
+    const error = await streamToBytes(stream).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("timeout");
+  });
+
+  it("ignores a rejecting cancel while bounding an over-long media stream", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-bytes");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) =>
+      call.url.includes("alt=media")
+        ? new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(Buffer.concat([content, Buffer.from("!")]));
+              },
+              cancel() {
+                return Promise.reject(new Error("teardown failed"));
+              },
+            }),
+            { status: 200, headers: { "content-length": String(content.byteLength) } },
+          )
+        : undefined,
+    );
+    const stream = await store.read(SCOPE, object);
+    const error = await streamToBytes(stream).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("corrupt");
+  });
+
+  it("settles a read abandoned mid-pull without a leaked source reader", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-bytes");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const object = must(await store.head(SCOPE));
+    let markPulled: (() => void) | undefined;
+    let openGate: (() => void) | undefined;
+    const pulled = new Promise<void>((resolve) => {
+      markPulled = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    fake.setInterceptor(async ({ call }) => {
+      if (!call.url.includes("alt=media")) return undefined;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            markPulled?.();
+            await gate;
+            controller.enqueue(content.subarray(0, 4));
+          },
+        }),
+        { status: 200, headers: { "content-length": String(content.byteLength) } },
+      );
+    });
+    const stream = await store.read(SCOPE, object);
+    const reader = stream.getReader();
+    const pending = reader.read();
+    await pulled; // The bounded stream is provably inside a pull, so cancellation races it.
+    await reader.cancel("abandoned").catch(() => undefined);
+    openGate?.();
+    await pending.catch(() => undefined);
+  });
+});
+
+describe("workspace object store uncertain upload settlement", () => {
+  it("verifies by read-back when the upload response disagrees with the attempt", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v2".repeat(16));
+    fake.plant(Buffer.from("archive-v1"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await proceed(); // The intended object committed...
+      const resource = structuredClone(fake.resourceJson());
+      // ...but the response describes a valid yet different snapshot, so only read-back can settle it.
+      (resource.metadata as Record<string, string>).saved = "false";
+      return jsonResponse(200, resource);
+    });
+    const result = await store.write(SCOPE, previous, archiveInput(content));
+    expect(result.saved).toBe(true);
+    expect(result.sha256).toBe(sha256hex(content));
+    expect(must(fake.stored()).content).toEqual(content);
+  });
+
+  it("verifies by read-back when the upload response could not be decoded", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v2".repeat(16));
+    fake.plant(Buffer.from("archive-v1"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await proceed();
+      return new Response("x".repeat(200_000), { status: 200 });
+    });
+    const result = await store.write(SCOPE, previous, archiveInput(content));
+    expect(result.generation).not.toBe(previous.generation);
+    expect(result.sha256).toBe(sha256hex(content));
+  });
+
+  it("verifies by read-back when the upload response is not a workspace object", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v2".repeat(16));
+    fake.plant(Buffer.from("archive-v1"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await proceed();
+      return jsonResponse(200, { error: "unexpected resource" });
+    });
+    const result = await store.write(SCOPE, previous, archiveInput(content));
+    expect(result.generation).not.toBe(previous.generation);
+    expect(result.md5).toBe(md5b64(content));
+  });
+
+  it("reports an uncertain write when the verification read itself fails", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive-v1"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    let uploaded = false;
+    fake.setInterceptor(async ({ call }) => {
+      if (call.method === "POST") {
+        uploaded = true;
+        return jsonResponse(503, { error: "backend error" }); // Never committed.
+      }
+      if (uploaded && call.method === "GET") return jsonResponse(500, { error: "verification read failed" });
+      return undefined;
+    });
+    const error = await store.write(SCOPE, previous, archiveInput(Buffer.from("archive-v2"))).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("unknown_result");
+  });
+
+  it("rethrows a non-uncertain upload failure without re-reading", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v1");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    let tokenCalls = 0;
+    // The metadata pre-check authenticates; the token then expires before the upload is signed.
+    const store = new GcsWorkspaceObjectStore({
+      tokenProvider: async () => {
+        tokenCalls += 1;
+        if (tokenCalls > 2) throw new Error("token expired");
+        return TOKEN;
+      },
+      fetchImpl: fake.fetchImpl,
+      timeoutMs: 5_000,
+    });
+    const previous = must(await store.head(SCOPE));
+    const error = await store.write(SCOPE, previous, archiveInput(Buffer.from("archive-v2"))).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("credential");
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+  });
+
+  it("treats a transport failure during the upload as an uncertain outcome", async () => {
+    const fake = createFakeGcs();
+    const original = Buffer.from("archive-v1");
+    const planted = fake.plant(original, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) => {
+      if (call.method === "POST") throw new TypeError("socket hang up");
+      return undefined;
+    });
+    const error = await store.write(SCOPE, previous, archiveInput(Buffer.from("archive-v2"))).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("unknown_result");
+    expect(fake.callsNamed("POST")).toHaveLength(1);
+    const stored = must(fake.stored());
+    expect(stored.generation).toBe(planted.generation);
+    expect(stored.content).toEqual(original);
+  });
+
+  it("rejects a definitive 404 upload as missing, without re-reading", async () => {
+    const fake = createFakeGcs();
+    const original = Buffer.from("archive-v1");
+    const planted = fake.plant(original, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    fake.setInterceptor(async ({ call }) =>
+      call.method === "POST" ? jsonResponse(404, { error: "no such bucket" }) : undefined,
+    );
+    const error = await store.write(SCOPE, previous, archiveInput(Buffer.from("archive-v2"))).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("missing");
+    expect(fake.callsNamed("POST")).toHaveLength(1);
+    expect(must(fake.stored()).generation).toBe(planted.generation);
+  });
+
+  it("errors the upload stream when the source iterable fails mid-body", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v1");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    async function* broken(): AsyncGenerator<Uint8Array> {
+      yield content.subarray(0, 4);
+      throw new Error("source exploded");
+    }
+    const error = await store.write(SCOPE, previous, { ...archiveInput(content), body: broken() }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(WorkspaceObjectStoreError);
+    expect((error as WorkspaceObjectStoreError).code).toBe("invalid_input");
+    expect(must(fake.stored()).content).toEqual(content);
+  });
+
+  it("closes the multipart source iterator when the transport abandons the upload", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("archive-v1");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const resource = fake.resourceJson();
+    let closed = 0;
+    const generator = chunksOf(content, 4);
+    const body: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => generator.next(),
+        return: (value?: unknown) => {
+          closed += 1;
+          return generator.return(value as undefined);
+        },
+      }),
+    };
+    let posted = false;
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posted = true;
+        const stream = must(init.body as ReadableStream<Uint8Array> | undefined, "upload body");
+        const reader = stream.getReader();
+        await reader.read(); // The framed preamble.
+        await reader.read(); // The first content chunk: the source iterator is now open.
+        await reader.cancel("transport abandoned the upload");
+        reader.releaseLock();
+        return jsonResponse(503, { error: "backend error" });
+      }
+      return posted ? jsonResponse(404, { error: "not found" }) : jsonResponse(200, resource);
+    }) as unknown as typeof fetch;
+    const store = new GcsWorkspaceObjectStore({ tokenProvider: async () => TOKEN, fetchImpl, timeoutMs: 5_000 });
+    const previous = must(await store.head(SCOPE));
+    const error = await store.write(SCOPE, previous, { ...archiveInput(content), body }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(closed).toBe(1);
+    expect((error as WorkspaceObjectStoreError).code).toBe("unknown_result");
+  });
+});
+
+describe("workspace object store claim re-reads", () => {
+  it("retries a claim whose PATCH lost the object to a 404", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    fake.setInterceptor(async ({ call }) =>
+      call.method === "PATCH" ? jsonResponse(404, { error: "gone" }) : undefined,
+    );
+    const store = createStore(fake);
+    const error = await store.claim({ ...SCOPE, environmentGeneration: 2 }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("conflict");
+    expect(fake.callsNamed("PATCH")).toHaveLength(5);
+    expect(must(fake.stored()).metadata.owner).toBe("1");
+  });
+
+  it("re-reads a claim whose PATCH response could not be decoded", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    fake.setInterceptor(async ({ call }) =>
+      call.method === "PATCH" ? new Response("x".repeat(200_000), { status: 200 }) : undefined,
+    );
+    const store = createStore(fake);
+    const error = await store.claim({ ...SCOPE, environmentGeneration: 2 }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("unknown_result");
+    expect(fake.callsNamed("PATCH")).toHaveLength(5);
+  });
+
+  it("re-reads a claim whose PATCH response is not a workspace object", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    fake.setInterceptor(async ({ call }) =>
+      call.method === "PATCH" ? jsonResponse(200, { error: "unexpected resource" }) : undefined,
+    );
+    const store = createStore(fake);
+    const error = await store.claim({ ...SCOPE, environmentGeneration: 2 }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as WorkspaceObjectStoreError).code).toBe("unknown_result");
+    expect(fake.callsNamed("PATCH")).toHaveLength(5);
+  });
+
+  it("re-reads a claim whose PATCH response does not match the patched snapshot", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH") return undefined;
+      await proceed(); // The owner advanced to generation 2...
+      const resource = structuredClone(fake.resourceJson());
+      // ...but the response still claims generation 1, so the claim must be re-read.
+      (resource.metadata as Record<string, string>).owner = "1";
+      return jsonResponse(200, resource);
+    });
+    const store = createStore(fake);
+    const object = await store.claim({ ...SCOPE, environmentGeneration: 2 });
+    expect(object.ownerGeneration).toBe(2);
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+    expect(fake.callsNamed("GET")).toHaveLength(2);
+  });
+
+  it("re-reads a seed response that does not describe the empty object", async () => {
+    const fake = createFakeGcs();
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await proceed(); // The seed committed...
+      const resource = structuredClone(fake.resourceJson());
+      // ...but the response reports it as saved, which the empty seed never is.
+      (resource.metadata as Record<string, string>).saved = "true";
+      return jsonResponse(200, resource);
+    });
+    const store = createStore(fake);
+    const seed = await store.claim(SCOPE, { initialize: true });
+    expect(seed.ownerGeneration).toBe(1);
+    expect(seed.saved).toBe(false);
+    expect(seed.bytes).toBe(0);
+    expect(fake.callsNamed("POST")).toHaveLength(1);
   });
 });

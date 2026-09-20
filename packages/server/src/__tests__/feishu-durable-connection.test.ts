@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
-import { and, eq } from "drizzle-orm";
+import { FEISHU_REQUIRED_TENANT_SCOPES, type NormalizedInboundImEvent } from "@opentag/shared";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { computers, imBindings } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
-import { feishuSetupAttemptContext } from "../services/im-bindings/credential-material.js";
+import { ImInboundPersistenceError } from "../services/im/index.js";
+import {
+  feishuBindingCredentialContext,
+  feishuSetupAttemptContext,
+} from "../services/im-bindings/credential-material.js";
+import type { FeishuAdapter, FeishuChannel } from "../services/im-bindings/feishu/index.js";
 import {
   classifyFeishuCandidateFailure,
   decodeFeishuSetupContext,
@@ -15,6 +20,7 @@ import {
   type FeishuBindingActivation,
   type FeishuCandidateCheckOutcome,
   FeishuCandidateExpiredError,
+  FeishuConnectionManager,
   FeishuOperationError,
   FeishuSetupService,
   type FeishuSetupTiming,
@@ -1683,5 +1689,1893 @@ describe("Feishu durable candidate under a key ring missing its key", () => {
     );
     await owner.stop();
     expect(fake.activations).toHaveLength(1);
+  });
+});
+
+/**
+ * A real `FeishuConnectionManager` over the PGlite database with an in-memory adapter factory. The
+ * suites above drive the *setup service* with a fake activation; these drive the production manager
+ * the setup service injects, so the channel-free probe, the maintenance sweep, the real activation
+ * transaction, and the provider callbacks are all exercised.
+ */
+interface ManagerHarness {
+  manager: FeishuConnectionManager;
+  created: Array<{ appId: string; channel: boolean }>;
+  disconnected: string[];
+  /** The handlers installed by the most recent channel, for driving provider callbacks. */
+  handlers: Array<Parameters<FeishuChannel["on"]>[0]>;
+  scopes: { value: string[] };
+  diagnostics: string[];
+  ingest: Mock;
+  setBotProbe: (fn: () => Promise<{ openId: string; activateStatus: number | null }>) => void;
+  setScopeFailure: (error: unknown) => void;
+  setScopeList: (fn: () => Promise<string[]>) => void;
+  setValidate: (
+    fn: (signal?: AbortSignal) => Promise<{ externalAppId: string; externalTeamId: string; externalBotId: string }>,
+  ) => void;
+  setDisconnect: (fn: (appId: string) => unknown) => void;
+  setResolveSenderName: (fn: (input: { chatId: string; senderOpenId: string }) => Promise<string | undefined>) => void;
+  setNormalize: (fn: () => unknown[]) => void;
+}
+
+function managerHarness(
+  value: FixtureValue,
+  options: {
+    runtimeReady?: boolean;
+    instanceId?: string;
+    leaseMs?: number;
+    maintenanceMs?: number;
+    maintenanceBackoffBaseMs?: number;
+    maintenanceBackoffMaxMs?: number;
+    receipts?: { claim: Mock; markProcessed: Mock; markFailed: Mock };
+    supervisor?: { track: Mock };
+    /** Runs in addition to recording the code; may throw to model a failing observer. */
+    diagnosticHook?: (code: string) => void;
+    /** The test-only seam between the Agent lock and the binding re-read. */
+    afterActivationAgentLocked?: () => Promise<void>;
+  } = {},
+): ManagerHarness {
+  const ingest = vi.fn();
+  let resolveSenderName = async (_input: { chatId: string; senderOpenId: string }): Promise<string | undefined> =>
+    undefined;
+  let normalize = (_envelope: { message: unknown }) => [] as unknown[];
+  const created: Array<{ appId: string; channel: boolean }> = [];
+  const disconnected: string[] = [];
+  const handlers: Array<Parameters<FeishuChannel["on"]>[0]> = [];
+  const diagnostics: string[] = [];
+  const scopes = { value: [...FEISHU_REQUIRED_TENANT_SCOPES] };
+  let scopeFailure: unknown;
+  let scopeList: (() => Promise<string[]>) | undefined;
+  let botProbe = async () => ({ openId: "ou_probe", activateStatus: 2 });
+  let validate = async (
+    _signal?: AbortSignal,
+  ): Promise<{ externalAppId: string; externalTeamId: string; externalBotId: string }> =>
+    Promise.reject(new Error("validateBinding was not configured"));
+  let disconnect = (appId: string) => {
+    disconnected.push(appId);
+  };
+  const manager = new FeishuConnectionManager({
+    database: database.database,
+    inbox: { ingest } as never,
+    instanceId: options.instanceId ?? randomUUID(),
+    imBindings: value.imBindings,
+    now: () => clock.now,
+    runtimeReady: () => options.runtimeReady ?? true,
+    onDiagnostic: (code) => {
+      diagnostics.push(code);
+      options.diagnosticHook?.(code);
+    },
+    ...(options.leaseMs === undefined ? {} : { leaseMs: options.leaseMs }),
+    ...(options.maintenanceMs === undefined ? {} : { maintenanceMs: options.maintenanceMs }),
+    ...(options.maintenanceBackoffBaseMs === undefined
+      ? {}
+      : { maintenanceBackoffBaseMs: options.maintenanceBackoffBaseMs }),
+    ...(options.maintenanceBackoffMaxMs === undefined
+      ? {}
+      : { maintenanceBackoffMaxMs: options.maintenanceBackoffMaxMs }),
+    ...(options.receipts ? { receipts: options.receipts as never } : {}),
+    ...(options.supervisor ? { supervisor: options.supervisor as never } : {}),
+    ...(options.afterActivationAgentLocked ? { afterActivationAgentLocked: options.afterActivationAgentLocked } : {}),
+    createAdapter: (input) => {
+      created.push({ appId: input.appId, channel: input.channel !== null });
+      const channel: FeishuChannel = {
+        on: (next) => {
+          handlers.push(next);
+          return () => undefined;
+        },
+        connect: vi.fn(async () => undefined),
+        disconnect: vi.fn(async () => {
+          await disconnect(input.appId);
+        }),
+        botIdentity: { openId: `ou_${input.appId}` },
+      };
+      const adapter = {
+        channel,
+        validateBinding: vi.fn((signal?: AbortSignal) => validate(signal)),
+        listGrantedWorkspaceScopes: vi.fn(async () => {
+          if (scopeFailure) throw scopeFailure;
+          return scopeList ? scopeList() : [...scopes.value];
+        }),
+        probeBotIdentity: vi.fn(() => botProbe()),
+        normalizeInbound: vi.fn((envelope: { message: unknown }) => normalize(envelope as { message: unknown })),
+        resolveSenderName: vi.fn((input: { chatId: string; senderOpenId: string }) => resolveSenderName(input)),
+      };
+      return adapter as unknown as FeishuAdapter;
+    },
+  });
+  return {
+    manager,
+    created,
+    disconnected,
+    handlers,
+    scopes,
+    diagnostics,
+    ingest,
+    setNormalize: (fn) => {
+      normalize = fn;
+    },
+    setResolveSenderName: (fn) => {
+      resolveSenderName = fn;
+    },
+    setScopeList: (fn) => {
+      scopeList = fn;
+    },
+    setBotProbe: (fn) => {
+      botProbe = fn as typeof botProbe;
+    },
+    setScopeFailure: (error) => {
+      scopeFailure = error;
+    },
+    setValidate: (fn) => {
+      validate = fn;
+    },
+    setDisconnect: (fn) => {
+      disconnect = fn;
+    },
+  };
+}
+
+/** Inserts an active binding-shaped row the sweep can claim, without a credential. */
+async function insertActiveFeishuBinding(
+  value: FixtureValue,
+  input: { agentId: string; appId?: string; botOpenId?: string; epoch?: number } = { agentId: "" },
+): Promise<string> {
+  const id = randomUUID();
+  await database.database.insert(imBindings).values({
+    id,
+    agentId: input.agentId,
+    provider: "feishu",
+    status: "active",
+    externalAppId: input.appId ?? "cli_sweep",
+    externalTeamId: "tenant_sweep",
+    externalBotId: input.botOpenId ?? `ou_${input.appId ?? "cli_sweep"}`,
+    credentialSchemaVersion: 1,
+    credentialGeneration: 1,
+    encryptedCredential: value.cipher.encryptCredential(
+      JSON.stringify({
+        appId: input.appId ?? "cli_sweep",
+        appSecret: CANDIDATE_SECRET,
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES].sort(),
+      }),
+      feishuBindingCredentialContext(id),
+    ),
+    grantedCapabilities: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    connectionFencingEpoch: input.epoch ?? 0,
+    activatedAt: clock.now,
+    createdAt: clock.now,
+    updatedAt: clock.now,
+  });
+  return id;
+}
+
+describe("FeishuConnectionManager candidate probe", () => {
+  it("returns a terminal credential verdict from the channel-free scope read", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    harness.setScopeFailure({ response: { data: { code: 10015 } } });
+    await expect(
+      harness.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "terminal", errorCode: "FEISHU_CREDENTIAL_INVALID" });
+    // Admission is channel-free by contract: the probe never opens a message socket.
+    expect(harness.created).toEqual([{ appId: "cli_probe", channel: false }]);
+  });
+
+  it("reads a provider-reported disabled App as a bounded wait, not a dead credential", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    harness.setBotProbe(async () => ({ openId: "ou_probe", activateStatus: 0 }));
+    await expect(
+      harness.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "waiting", reason: "app_unavailable", missingScopes: [] });
+  });
+
+  it("reads a missing Bot identity as app-unavailable and a transport failure as a transient wait", async () => {
+    const value = await fixture();
+    const missingBot = managerHarness(value);
+    missingBot.setBotProbe(async () => {
+      throw Object.assign(new Error("FEISHU_BOT_IDENTITY_MISSING"), { code: "FEISHU_BOT_IDENTITY_MISSING" });
+    });
+    await expect(
+      missingBot.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "waiting", reason: "app_unavailable", missingScopes: [] });
+
+    const transport = managerHarness(value);
+    transport.setBotProbe(async () => {
+      throw new Error("socket closed");
+    });
+    await expect(
+      transport.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toMatchObject({ status: "waiting", reason: "temporary_failure" });
+  });
+
+  it("honours a candidate abort before any provider call and skips a channel's absent Bot probe", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const abort = new AbortController();
+    abort.abort();
+    await expect(
+      harness.manager.checkCandidate({
+        agentId: value.agent.id,
+        appId: "cli_probe",
+        appSecret: CANDIDATE_SECRET,
+        signal: abort.signal,
+      }),
+    ).rejects.toThrow();
+    expect(harness.created).toEqual([]);
+
+    // An adapter without `probeBotIdentity` proves readiness from scopes and runtime alone.
+    const bare = new FeishuConnectionManager({
+      database: database.database,
+      inbox: { ingest: vi.fn() } as never,
+      instanceId: randomUUID(),
+      imBindings: value.imBindings,
+      now: () => clock.now,
+      runtimeReady: () => true,
+      createAdapter: () =>
+        ({
+          channel: {} as FeishuChannel,
+          listGrantedWorkspaceScopes: vi.fn(async () => [...FEISHU_REQUIRED_TENANT_SCOPES]),
+        }) as never,
+    });
+    await expect(
+      bare.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "ready" });
+  });
+});
+
+async function rowById(id: string) {
+  const [row] = await database.database.select().from(imBindings).where(eq(imBindings.id, id));
+  return row;
+}
+
+/**
+ * Drives the real fenced activation of one durable candidate through the manager. The candidate row
+ * is the exact shape the setup service claims: `validating`, owned by the caller's token.
+ */
+async function activateThroughManager(
+  harness: ManagerHarness,
+  value: FixtureValue,
+  input: { appId?: string; botOpenId?: string } = {},
+): Promise<{ bindingId: string; attemptId: string }> {
+  const appId = input.appId ?? "cli_act";
+  const owner = randomUUID();
+  const candidate = await insertCandidate(
+    value,
+    { agentId: value.agent.id },
+    { appId, state: "validating", owner, heartbeatAt: clock.now },
+  );
+  harness.setValidate(async () => ({
+    externalAppId: appId,
+    externalTeamId: `tenant_${appId}`,
+    externalBotId: input.botOpenId ?? `ou_${appId}`,
+  }));
+  await harness.manager.activateAtomicAttempt({
+    attemptId: candidate.attemptId,
+    ownerInstanceId: owner,
+    agentId: value.agent.id,
+    appId,
+    appSecret: CANDIDATE_SECRET,
+  });
+  const row = await rowForAgent(value.agent.id);
+  if (!row) throw new Error("activated binding missing");
+  return { bindingId: row.id, attemptId: candidate.attemptId };
+}
+
+describe("FeishuConnectionManager fenced activation", () => {
+  it("commits one activation and replaces the previously owned channel on reauthorization", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const first = await activateThroughManager(harness, value);
+    const row = await rowById(first.bindingId);
+    expect(row).toMatchObject({
+      status: "active",
+      setupState: "succeeded",
+      externalAppId: "cli_act",
+      credentialGeneration: 1,
+      connectionLeaseExpiresAt: expect.any(Date),
+    });
+    expect(harness.created.map((entry) => entry.channel)).toEqual([false, true]);
+
+    // A second authorization of the same App replaces the owned channel: the old socket closes
+    // before the new one becomes the manager's only channel for this binding.
+    await database.database
+      .update(imBindings)
+      .set({ setupIntent: "reauthorize" })
+      .where(eq(imBindings.id, first.bindingId));
+    const owner = randomUUID();
+    const second = await insertCandidate(
+      value,
+      { agentId: value.agent.id, id: first.bindingId },
+      { appId: "cli_act", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    await harness.manager.activateAtomicAttempt({
+      attemptId: second.attemptId,
+      ownerInstanceId: owner,
+      agentId: value.agent.id,
+      appId: "cli_act",
+      appSecret: CANDIDATE_SECRET,
+    });
+    expect(harness.disconnected).toEqual(["cli_act"]);
+    expect((await rowById(first.bindingId))?.credentialGeneration).toBe(2);
+    await harness.manager.stop();
+  });
+
+  it("releases the committed lease when shutdown lands after the activation commit", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_act",
+      externalTeamId: "tenant_act",
+      externalBotId: "ou_act",
+    }));
+    const transact = database.database.transaction.bind(database.database);
+    // Shutdown races the commit: the row is durable but the channel must not be installed.
+    const transaction = vi.spyOn(database.database, "transaction").mockImplementationOnce(async (...args) => {
+      const committed = await transact(...args);
+      await harness.manager.stop();
+      return committed;
+    });
+    try {
+      await expect(
+        harness.manager.activateAtomicAttempt({
+          attemptId: candidate.attemptId,
+          ownerInstanceId: owner,
+          agentId: value.agent.id,
+          appId: "cli_act",
+          appSecret: CANDIDATE_SECRET,
+        }),
+      ).rejects.toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    } finally {
+      transaction.mockRestore();
+    }
+    expect(harness.disconnected).toEqual(["cli_act"]);
+    const row = await rowForAgent(value.agent.id);
+    expect(row).toMatchObject({ status: "active", setupState: "succeeded", connectionOwnerInstanceId: null });
+    await harness.manager.stop();
+  });
+
+  it("refuses a candidate whose App identity no longer matches the claimed attempt", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    await value.imBindings.activateFeishu({
+      agentId: value.agent.id,
+      appId: "cli_old",
+      teamId: "tenant_old",
+      botOpenId: "ou_old",
+      appSecret: EXISTING_SECRET,
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    });
+    const owner = randomUUID();
+    const [active] = await database.database
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, value.agent.id), eq(imBindings.provider, "feishu")));
+    if (!active) throw new Error("active binding missing");
+    // A `replace` candidate may carry a different App; a *reauthorize* candidate whose App drifted
+    // from the current binding is rejected at the claim re-read, before any provider call.
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id, id: active.id },
+      { appId: "cli_new", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_new",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_APP_IDENTITY_MISMATCH" });
+    // The probe adapter is channel-free and the drifted identity is caught before a socket exists.
+    expect(harness.created).toEqual([{ appId: "cli_new", channel: false }]);
+  });
+
+  it("refuses a candidate whose retention deadline lapsed before the claim re-read", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    await database.database
+      .update(imBindings)
+      .set({ setupExpiresAt: new Date(clock.now.getTime() - 1_000) })
+      .where(eq(imBindings.setupAttemptId, candidate.attemptId));
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+        candidateExpiresAt: new Date(clock.now.getTime() - 1_000),
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SETUP_CANDIDATE_EXPIRED" });
+    // Admission probes are channel-free; no message socket was opened for a lapsed candidate.
+    expect(harness.created.filter((entry) => entry.channel)).toEqual([]);
+  });
+});
+
+describe("FeishuConnectionManager maintenance sweep", () => {
+  it("claims and connects an unowned active binding, then renews and keeps its channel", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_sweep",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_sweep",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+    expect(harness.disconnected).toEqual([]);
+
+    // The second pass renews the live lease instead of reconnecting the already-owned binding.
+    const connectedAt = (await rowById(bindingId))?.observedConnectedAt;
+    clock.now = new Date(clock.now.getTime() + 30_000);
+    await harness.manager.maintain();
+    const renewed = await rowById(bindingId);
+    expect(renewed?.observedConnectedAt).toEqual(connectedAt);
+    expect(renewed?.connectionLeaseExpiresAt?.getTime()).toBeGreaterThan(clock.now.getTime());
+    expect(harness.created.filter((entry) => entry.channel)).toHaveLength(1);
+    await harness.manager.stop();
+  });
+
+  it("drops an owned channel whose binding material changed under it", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_sweep",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_sweep",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+
+    // A credential rotation keeps the binding active but changes the App the channel was opened
+    // for; another instance also holds the lease, so the stale socket closes and nothing reconnects.
+    await database.database
+      .update(imBindings)
+      .set({
+        externalAppId: "cli_rotated",
+        externalBotId: "ou_cli_rotated",
+        connectionOwnerInstanceId: randomUUID(),
+        connectionLeaseExpiresAt: new Date(clock.now.getTime() + 600_000),
+      })
+      .where(eq(imBindings.id, bindingId));
+    await harness.manager.maintain();
+    expect(harness.disconnected).toEqual(["cli_sweep"]);
+    // The replaced binding was dropped, not reconnected: only the first channel ever opened.
+    expect(harness.created).toHaveLength(1);
+    await harness.manager.stop();
+  });
+
+  it("releases an owned channel whose fencing epoch no longer matches the lease", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_sweep",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_sweep",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+
+    // Another instance took the lease without changing the credential material, and the socket is
+    // already gone: the loss is reported as a diagnostic instead of aborting the sweep.
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    await database.database
+      .update(imBindings)
+      .set({
+        connectionOwnerInstanceId: randomUUID(),
+        connectionLeaseExpiresAt: new Date(clock.now.getTime() + 600_000),
+      })
+      .where(eq(imBindings.id, bindingId));
+    await harness.manager.maintain();
+    expect(harness.diagnostics).toEqual(["FEISHU_CONNECTION_DISCONNECT_FAILED"]);
+    await harness.manager.stop();
+  });
+
+  it("backs off a failed connect, records the diagnostic, and skips bindings whose lease is stale", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    // The provider answers with a different Bot than the binding recorded.
+    harness.setValidate(async () => ({
+      externalAppId: "cli_sweep",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_other_bot",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.lastErrorCode).toBe("FEISHU_BOT_IDENTITY_MISMATCH");
+      },
+      { timeout: 5_000 },
+    );
+    // The failed attempt closed its own channel and released the claim it took.
+    expect(harness.disconnected).toEqual(["cli_sweep"]);
+    expect((await rowById(bindingId))?.connectionOwnerInstanceId).toBeNull();
+    await harness.manager.stop();
+
+    // The single attempt created exactly one channel adapter; the backoff window now suppresses
+    // any further attempt for this binding.
+    await harness.manager.maintain();
+    expect(harness.created).toHaveLength(1);
+  });
+
+  it("does nothing while stopped and never runs two sweeps at once", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_sweep",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_sweep",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+    const gate = deferred<void>();
+    const listed: string[] = [];
+    const original = value.imBindings.listFeishuConnectionIds.bind(value.imBindings);
+    const spy = vi.spyOn(value.imBindings, "listFeishuConnectionIds").mockImplementation(async (afterId, limit) => {
+      listed.push("pass");
+      if (listed.length === 1) await gate.promise;
+      return original(afterId, limit);
+    });
+    try {
+      const first = harness.manager.maintain();
+      const overlapping = harness.manager.maintain();
+      gate.resolve();
+      await Promise.all([first, overlapping]);
+    } finally {
+      spy.mockRestore();
+    }
+    // The overlapping call returned immediately: only the first pass reached the scan.
+    expect(listed).toHaveLength(1);
+    expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+    await harness.manager.stop();
+    // A stopped manager never scans, even when the scheduled pass is invoked directly.
+    await harness.manager.maintain();
+    expect(listed).toHaveLength(1);
+  });
+});
+
+describe("FeishuConnectionManager maintenance pacing and rows it must skip", () => {
+  it("waits out a per-binding backoff window before retrying a failed connect", async () => {
+    const value = await fixture();
+    // A long base backoff keeps the retry window observable while the timer keeps sweeping.
+    const harness = managerHarness(value, {
+      maintenanceMs: 30,
+      maintenanceBackoffBaseMs: 600_000,
+      maintenanceBackoffMaxMs: 600_000,
+    });
+    await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => {
+      throw new Error("transport down");
+    });
+    const scans: number[] = [];
+    const original = value.imBindings.listFeishuConnectionIds.bind(value.imBindings);
+    const spy = vi.spyOn(value.imBindings, "listFeishuConnectionIds").mockImplementation(async (afterId, limit) => {
+      scans.push(scans.length);
+      return original(afterId, limit);
+    });
+    harness.manager.start();
+    try {
+      // The sweep runs repeatedly and the backoff window suppresses every attempt after the first.
+      await vi.waitFor(() => expect(scans.length).toBeGreaterThanOrEqual(4), { timeout: 5_000 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(harness.created).toHaveLength(1);
+    await harness.manager.stop();
+    // A stopped manager short-circuits before it ever reaches the scan.
+    const before = scans.length;
+    await harness.manager.maintain();
+    expect(scans.length).toBe(before);
+  });
+
+  it("skips a listed binding that is no longer claimable, and never re-claims an owned one", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const owned = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_owned" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_owned",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_owned",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(owned))?.connectionOwnerInstanceId).not.toBeNull();
+      },
+      { timeout: 5_000 },
+    );
+    await harness.manager.stop();
+
+    // A second pass lists a row that vanished between the scan and the claim: `#claim` must refuse
+    // it without touching the provider, and must skip the binding it already owns.
+    const vanished = randomUUID();
+    const original = value.imBindings.listFeishuConnectionIds.bind(value.imBindings);
+    const spy = vi.spyOn(value.imBindings, "listFeishuConnectionIds").mockImplementation(async (afterId, limit) => {
+      const ids = await original(afterId, limit);
+      return afterId === undefined ? [vanished, ...ids] : ids;
+    });
+    const second = managerHarness(value, { maintenanceMs: 60_000 });
+    second.manager.start();
+    try {
+      await vi.waitFor(() => expect(second.ingest).toBeDefined(), { timeout: 5_000 });
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    } finally {
+      spy.mockRestore();
+    }
+    // Only the owned row was connected: the vanished id was refused and the live lease was renewed.
+    expect(second.created).toHaveLength(1);
+    await second.manager.stop();
+  });
+
+  it("aborts the in-flight connect of an owned binding when the manager stops", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    const entered = deferred<void>();
+    let observedSignal: AbortSignal | undefined;
+    harness.setValidate((signal) => {
+      observedSignal = signal;
+      entered.resolve();
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    });
+    harness.manager.start();
+    await entered.promise;
+    expect(observedSignal?.aborted).toBe(false);
+    await harness.manager.stop();
+    expect(observedSignal?.aborted).toBe(true);
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.connectionOwnerInstanceId).toBeNull();
+    });
+  });
+
+  it("closes a channel whose disconnect itself fails without losing the sweep", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_sweep",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_sweep",
+    }));
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    // Rotate the credential so the owned channel is dropped, exercising the failing close path.
+    await database.database
+      .update(imBindings)
+      .set({ externalAppId: "cli_rotated", externalBotId: "ou_cli_rotated" })
+      .where(eq(imBindings.id, bindingId));
+    await harness.manager.maintain();
+    expect(harness.diagnostics).toContain("FEISHU_CONNECTION_DISCONNECT_FAILED");
+    // The sweep continued past the failed close instead of abandoning the pass.
+    expect((await rowById(bindingId))?.connectionOwnerInstanceId).toBeNull();
+    await harness.manager.stop();
+  });
+});
+
+function feishuNormalizedMessage(senderOpenId = "ou_sender") {
+  return { raw: { opentagSenderOpenId: senderOpenId } } as never;
+}
+
+/** A minimal provider-normalized event, shaped exactly like the adapter's own output. */
+function normalizedFeishuEvent(): NormalizedInboundImEvent {
+  return {
+    providerEventId: "evt-1",
+    externalAppId: "cli_in",
+    externalTeamId: "tenant_in",
+    providerContext: { provider: "feishu", chatType: "p2p" },
+    conversation: { externalId: "chat-1", kind: "dm" },
+    message: {
+      externalId: "msg-1",
+      revisionKey: "1",
+      operation: "created",
+      author: { externalId: "ou_sender", kind: "human" },
+      occurredAt: new Date("2026-09-10T00:00:00.000Z"),
+      content: { version: 1, fallbackText: "hi", blocks: [{ type: "text", text: "hi" }], truncated: false },
+      resources: [],
+    },
+    mentions: [],
+  };
+}
+
+describe("FeishuConnectionManager inbound callbacks", () => {
+  it("persists a normalized inbound event under the adapter's handoff", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const ingest = harness.ingest;
+    ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: [] });
+    const { bindingId } = await activateThroughManager(harness, value, { appId: "cli_in" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    expect(ingest).toHaveBeenCalledTimes(1);
+    expect(ingest.mock.calls[0]?.[0]).toBe(bindingId);
+    await harness.manager.stop();
+  });
+
+  it("reports a duplicate inbound event without persisting a delivery", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    harness.ingest.mockResolvedValue({ duplicate: true, messageId: randomUUID(), deliveryIds: [] });
+    await activateThroughManager(harness, value, { appId: "cli_dup" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    expect(harness.ingest).toHaveBeenCalledTimes(1);
+    await harness.manager.stop();
+  });
+
+  it("returns early when a duplicate inbound event was already claimed as a receipt", async () => {
+    const value = await fixture();
+    const receipts = {
+      claim: vi.fn(async () => ({ accepted: false, duplicate: true })),
+      markProcessed: vi.fn(async () => undefined),
+      markFailed: vi.fn(async () => undefined),
+    };
+    const harness = managerHarness(value, { receipts });
+    harness.setNormalize(() => [{ ...normalizedFeishuEvent(), providerEventId: "evt-receipt-1" }]);
+    await activateThroughManager(harness, value, { appId: "cli_receipt" });
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    // The claim already held the receipt: the inbox is never asked to ingest it again.
+    expect(receipts.claim).toHaveBeenCalledTimes(1);
+    expect(harness.ingest).not.toHaveBeenCalled();
+    await harness.manager.stop();
+  });
+
+  it("records the provider error code on a failed diagnostic callback", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const { bindingId } = await activateThroughManager(harness, value, { appId: "cli_err" });
+    const handler = harness.handlers.at(-1);
+    if (!handler?.error) throw new Error("error handler was not installed");
+    handler.error(new FeishuOperationError("FEISHU_UPSTREAM_UNAVAILABLE"));
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.lastErrorCode).toBe("FEISHU_UPSTREAM_UNAVAILABLE");
+    });
+    await harness.manager.stop();
+  });
+
+  it("observes a reconnect and a disconnect transition on the owned binding", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const { bindingId } = await activateThroughManager(harness, value, { appId: "cli_obs" });
+    const handler = harness.handlers.at(-1);
+    if (!handler?.reconnecting || !handler.reconnected) throw new Error("socket handlers were not installed");
+    handler.reconnecting();
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.observedConnectedAt).toBeNull();
+    });
+    handler.reconnected();
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+    });
+    await harness.manager.stop();
+  });
+
+  it("skips enrichment for an unresolvable sender name without reporting a failure", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    // The adapter resolves no display name: enrichment is a no-op, never an error.
+    harness.setResolveSenderName(async () => undefined);
+    harness.ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: [] });
+    await activateThroughManager(harness, value, { appId: "cli_name" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.ingest).toHaveBeenCalledTimes(1);
+    expect(harness.diagnostics).toEqual([]);
+    await harness.manager.stop();
+  });
+
+  it("refuses an over-long sender name and supervises the enrichment failure as a provider fault", async () => {
+    const value = await fixture();
+    const track = vi.fn((operation: Promise<unknown>, _metadata?: Record<string, unknown>) => {
+      void operation.catch(() => undefined);
+    });
+    const harness = managerHarness(value, { supervisor: { track } });
+    harness.setResolveSenderName(async () => "x".repeat(513));
+    harness.ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: [] });
+    await activateThroughManager(harness, value, { appId: "cli_long_name" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    // The bound failure must not escape into the provider callback that fired it.
+    await handler.message(feishuNormalizedMessage());
+    await vi.waitFor(() => expect(harness.diagnostics).toContain("FEISHU_SENDER_NAME_ENRICHMENT_FAILED"));
+    // Enrichment is provider work, so the supervisor sees it classified as an external dependency.
+    expect(track).toHaveBeenCalled();
+    expect(track.mock.calls[0]?.[1]).toMatchObject({
+      code: "FEISHU_SENDER_NAME_ENRICHMENT_FAILED",
+      category: "dependency",
+      phase: "provider",
+      requestId: expect.any(String),
+    });
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager admission rejections", () => {
+  it("keeps a candidate waiting on missing scopes and on an unavailable runtime", async () => {
+    const value = await fixture();
+    const noScopes = managerHarness(value);
+    noScopes.setScopeList(async () => []);
+    await expect(
+      noScopes.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toMatchObject({ status: "waiting", reason: "permissions_pending" });
+
+    const noRuntime = managerHarness(value, { runtimeReady: false });
+    await expect(
+      noRuntime.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "waiting", reason: "runtime_unavailable", missingScopes: [] });
+  });
+
+  it("never opens a socket for a candidate that lost its tenant grant or its runtime", async () => {
+    const value = await fixture();
+    const noScopes = managerHarness(value);
+    const short = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner: randomUUID(), heartbeatAt: clock.now },
+    );
+    noScopes.setScopeList(async () => []);
+    await expect(
+      noScopes.manager.activateAtomicAttempt({
+        attemptId: short.attemptId,
+        ownerInstanceId: randomUUID(),
+        agentId: value.agent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SCOPE_REAUTH_REQUIRED" });
+    expect(noScopes.created.every((entry) => entry.channel === false)).toBe(true);
+
+    const secondAgent = await createAgent(value, "no-runtime");
+    const noRuntime = managerHarness(value, { runtimeReady: false });
+    const candidate = await insertCandidate(
+      value,
+      { agentId: secondAgent.id },
+      { appId: "cli_act", state: "validating", owner: randomUUID(), heartbeatAt: clock.now },
+    );
+    await expect(
+      noRuntime.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: randomUUID(),
+        agentId: secondAgent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_RUNTIME_TOOL_UNAVAILABLE" });
+    expect(noRuntime.created.every((entry) => entry.channel === false)).toBe(true);
+  });
+
+  it("refuses an activation whose attempt is no longer the claimed one", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner: randomUUID(), heartbeatAt: clock.now },
+    );
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: randomUUID(),
+        ownerInstanceId: randomUUID(),
+        agentId: value.agent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    // Only the channel-free admission probe was created.
+    expect(harness.created).toEqual([{ appId: "cli_act", channel: false }]);
+  });
+
+  it("refuses an activation whose channel answers for another App", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_other",
+      externalTeamId: "tenant_other",
+      externalBotId: "ou_other",
+    }));
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_APP_IDENTITY_MISMATCH" });
+    // The channel opened for the drifted identity was closed again on the way out.
+    expect(harness.disconnected).toEqual(["cli_act"]);
+    expect((await rowForAgent(value.agent.id))?.status).toBe("provisioning");
+  });
+
+  it("refuses an activation whose tenant grant shrank between the probe and the channel", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_act",
+      externalTeamId: "tenant_act",
+      externalBotId: "ou_cli_act",
+    }));
+    let calls = 0;
+    // The channel-free probe sees the full grant; the channel re-check sees it shrink.
+    harness.setScopeList(async () => {
+      calls += 1;
+      return calls === 1 ? [...FEISHU_REQUIRED_TENANT_SCOPES] : [...FEISHU_REQUIRED_TENANT_SCOPES].slice(3);
+    });
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SCOPE_REAUTH_REQUIRED" });
+    expect(harness.disconnected).toEqual(["cli_act"]);
+  });
+
+  it("refuses an activation whose Agent stopped being active inside the transaction", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_act", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_act",
+      externalTeamId: "tenant_act",
+      externalBotId: "ou_cli_act",
+    }));
+    await database.database.execute(sql`update agents set status = 'suspended' where id = ${value.agent.id}`);
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_act",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    expect(harness.disconnected).toEqual(["cli_act"]);
+  });
+
+  it("keeps an activation when the runtime notification fails", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const notification = vi
+      .spyOn(value.imBindings, "notifyProviderCliRequirementChanged")
+      .mockRejectedValue(new Error("runtime unreachable"));
+    try {
+      const { bindingId } = await activateThroughManager(harness, value, { appId: "cli_notify" });
+      expect((await rowById(bindingId))?.status).toBe("active");
+    } finally {
+      notification.mockRestore();
+    }
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager close paths that fail", () => {
+  it("keeps the activation committed when the replaced channel refuses to close", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const first = await activateThroughManager(harness, value, { appId: "cli_close" });
+    await database.database
+      .update(imBindings)
+      .set({ setupIntent: "reauthorize" })
+      .where(eq(imBindings.id, first.bindingId));
+    // The previous socket is already gone: the replacement must still commit.
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    const owner = randomUUID();
+    const second = await insertCandidate(
+      value,
+      { agentId: value.agent.id, id: first.bindingId },
+      { appId: "cli_close", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    await harness.manager.activateAtomicAttempt({
+      attemptId: second.attemptId,
+      ownerInstanceId: owner,
+      agentId: value.agent.id,
+      appId: "cli_close",
+      appSecret: CANDIDATE_SECRET,
+    });
+    expect(harness.diagnostics).toEqual(["FEISHU_CONNECTION_DISCONNECT_FAILED"]);
+    expect((await rowById(first.bindingId))?.credentialGeneration).toBe(2);
+    await harness.manager.stop();
+  });
+
+  it("stops cleanly when an owned channel refuses to close during shutdown", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    await activateThroughManager(harness, value, { appId: "cli_stop" });
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    await expect(harness.manager.stop()).resolves.toBeUndefined();
+    expect(harness.diagnostics).toEqual(["FEISHU_CONNECTION_DISCONNECT_FAILED"]);
+  });
+
+  it("closes the failed channel even when that close also fails", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_sweep" });
+    harness.setValidate(async () => {
+      throw new Error("transport down");
+    });
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    harness.manager.start();
+    await vi.waitFor(() => expect(harness.diagnostics).toContain("FEISHU_CONNECTION_DISCONNECT_FAILED"), {
+      timeout: 5_000,
+    });
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager connection scan paging", () => {
+  it("advances the keyset cursor past a saturated page", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, {
+      maintenanceBackoffBaseMs: 600_000,
+      maintenanceBackoffMaxMs: 600_000,
+    });
+    harness.setValidate(async () => {
+      throw new Error("transport down");
+    });
+    // One more than a full scan page: the sweep must issue a second listing to reach the tail.
+    const agents: string[] = [];
+    for (let index = 0; index < 101; index += 1) {
+      const agent = await createAgent(value, `page-${index}`);
+      agents.push(agent.id);
+      await insertActiveFeishuBinding(value, { agentId: agent.id, appId: `cli_page_${index}` });
+    }
+    const pages: Array<string | undefined> = [];
+    const original = value.imBindings.listFeishuConnectionIds.bind(value.imBindings);
+    const spy = vi.spyOn(value.imBindings, "listFeishuConnectionIds").mockImplementation(async (afterId, limit) => {
+      pages.push(afterId);
+      return original(afterId, limit);
+    });
+    harness.manager.start();
+    try {
+      await vi.waitFor(() => expect(pages.length).toBeGreaterThanOrEqual(2), { timeout: 15_000 });
+      await vi.waitFor(() => expect(harness.created.length).toBe(101), { timeout: 15_000 });
+    } finally {
+      spy.mockRestore();
+      await harness.manager.stop();
+    }
+    // The second page was requested with the retained cursor from the first.
+    expect(pages).toHaveLength(2);
+    expect(pages[0]).toBeUndefined();
+    expect(pages[1]).toBeDefined();
+    // Every row was attempted, tail included: one page cannot starve the rest.
+    expect(harness.created.length).toBe(101);
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager inbound receipt lifecycle", () => {
+  it("claims, persists, and marks a receipt processed", async () => {
+    const value = await fixture();
+    const receipts = {
+      claim: vi.fn(async () => ({ accepted: true, duplicate: false, receiptId: "receipt-1" })),
+      markProcessed: vi.fn(async () => undefined),
+      markFailed: vi.fn(async () => undefined),
+    };
+    const harness = managerHarness(value, { receipts });
+    harness.ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: ["delivery-1"] });
+    await activateThroughManager(harness, value, { appId: "cli_rec_ok" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    expect(receipts.claim).toHaveBeenCalledWith({
+      bindingId: expect.any(String),
+      credentialGeneration: 1,
+      eventId: "evt-1",
+    });
+    expect(receipts.markProcessed).toHaveBeenCalledWith("receipt-1");
+    expect(receipts.markFailed).not.toHaveBeenCalled();
+    await harness.manager.stop();
+  });
+
+  it("marks a receipt failed with the persistence error code when ingestion fails", async () => {
+    const value = await fixture();
+    const receipts = {
+      claim: vi.fn(async () => ({ accepted: true, duplicate: false, receiptId: "receipt-2" })),
+      markProcessed: vi.fn(async () => undefined),
+      markFailed: vi.fn(async () => undefined),
+    };
+    const harness = managerHarness(value, { receipts });
+    const failure = Object.assign(new Error("IM_PROVIDER_CALL_ABORTED"), { code: "IM_PROVIDER_CALL_ABORTED" });
+    harness.ingest.mockRejectedValue(failure);
+    await activateThroughManager(harness, value, { appId: "cli_rec_fail" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await expect(handler.message(feishuNormalizedMessage())).rejects.toBe(failure);
+    expect(receipts.markFailed).toHaveBeenCalledWith("receipt-2", "IM_PROVIDER_CALL_ABORTED");
+    expect(receipts.markProcessed).not.toHaveBeenCalled();
+    await harness.manager.stop();
+  });
+
+  it("rejects an inbound callback that fires before the activation handoff exists", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_early", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    const validation = deferred<{ externalAppId: string; externalTeamId: string; externalBotId: string }>();
+    harness.setValidate(() => validation.promise);
+    const activation = harness.manager.activateAtomicAttempt({
+      attemptId: candidate.attemptId,
+      ownerInstanceId: owner,
+      agentId: value.agent.id,
+      appId: "cli_early",
+      appSecret: CANDIDATE_SECRET,
+    });
+    await vi.waitFor(() => expect(harness.handlers.length).toBeGreaterThan(0));
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    // The handoff is only published at commit: a message before it is refused, never persisted.
+    await expect(handler.message(feishuNormalizedMessage())).rejects.toMatchObject({
+      code: "FEISHU_ADMISSION_NOT_READY",
+    });
+    expect(harness.ingest).not.toHaveBeenCalled();
+    validation.resolve({ externalAppId: "cli_early", externalTeamId: "tenant", externalBotId: "ou_cli_early" });
+    await activation;
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager admission edge cases", () => {
+  it("waits when the Bot info omits the activation status and terminates on a rejected credential", async () => {
+    const value = await fixture();
+    // An omitted `activate_status` carries no evidence against the App: readiness is proven.
+    const omitted = managerHarness(value);
+    omitted.setBotProbe(async () => ({ openId: "ou_probe", activateStatus: null }));
+    await expect(
+      omitted.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "ready" });
+
+    const rejected = managerHarness(value);
+    rejected.setBotProbe(async () => {
+      throw Object.assign(new Error("FEISHU_BOT_INFO_FAILED"), { response: { data: { code: 20002 } } });
+    });
+    await expect(
+      rejected.manager.checkCandidate({ agentId: value.agent.id, appId: "cli_probe", appSecret: CANDIDATE_SECRET }),
+    ).resolves.toEqual({ status: "terminal", errorCode: "FEISHU_CREDENTIAL_INVALID" });
+  });
+
+  it("skips a listed binding whose lease another instance still holds", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_held" });
+    // `#claim` compares the lease against the wall clock, not the injected one, so a lease that
+    // must outlive the machine's own date has to be far in the future.
+    const heldUntil = new Date(Date.now() + 10 * 365 * 24 * 60 * 60 * 1_000);
+    const heldBy = randomUUID();
+    await database.database
+      .update(imBindings)
+      .set({ connectionOwnerInstanceId: heldBy, connectionLeaseExpiresAt: heldUntil })
+      .where(eq(imBindings.id, bindingId));
+    harness.manager.start();
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    // A live foreign lease is respected: no adapter, no ownership change, no diagnostic.
+    expect(harness.created).toEqual([]);
+    expect(harness.diagnostics).toEqual([]);
+    const held = await rowById(bindingId);
+    expect(held?.connectionOwnerInstanceId).toBe(heldBy);
+    expect(held?.connectionLeaseExpiresAt?.getTime()).toBe(heldUntil.getTime());
+    await harness.manager.stop();
+  });
+
+  it("refuses to install a channel when another instance took the lease during validation", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_takeover" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_takeover",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_takeover",
+    }));
+    let bumped = false;
+    const original = value.imBindings.getFeishuConnectionMaterial.bind(value.imBindings);
+    const spy = vi
+      .spyOn(value.imBindings, "getFeishuConnectionMaterial")
+      .mockImplementation(async (id, transaction) => {
+        const material = await original(id, transaction);
+        if (!bumped && material) {
+          bumped = true;
+          // The takeover lands while this instance is still validating the channel.
+          await database.database
+            .update(imBindings)
+            .set({ connectionFencingEpoch: 99 })
+            .where(eq(imBindings.id, bindingId));
+        }
+        return material;
+      });
+    harness.manager.start();
+    try {
+      await vi.waitFor(
+        async () => {
+          expect((await rowById(bindingId))?.lastErrorCode).toBe("FEISHU_CONNECTION_LEASE_STALE");
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    // The channel opened under the lost epoch was closed and never installed.
+    expect(harness.disconnected).toEqual(["cli_takeover"]);
+    const lost = await rowById(bindingId);
+    expect(lost?.connectionFencingEpoch).toBe(99);
+    expect(lost?.observedConnectedAt).toBeNull();
+    await harness.manager.stop();
+  });
+
+  it("ignores socket callbacks that arrive before the activation handoff exists", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_socket" });
+    harness.setValidate(async () => {
+      // The provider pushes transitions while the channel is still being validated: the handoff
+      // is not published yet, so every observer must be a silent no-op.
+      const handlers = harness.handlers.at(-1);
+      handlers?.reconnecting?.();
+      handlers?.reconnected?.();
+      handlers?.error?.(new Error("provider hiccup"));
+      return { externalAppId: "cli_socket", externalTeamId: "tenant_sweep", externalBotId: "ou_cli_socket" };
+    });
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+    // The pre-handoff transitions were dropped: only the real connect observation was recorded,
+    // and the provider "hiccup" never became a persisted diagnostic.
+    expect((await rowById(bindingId))?.lastErrorCode).toBeNull();
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager detached-failure supervision", () => {
+  it("supervises the scheduled sweep so a failing pass is reported once", async () => {
+    const value = await fixture();
+    // The real supervisor subscribes to the promise it is handed; the mock must do the same or the
+    // deliberately failing sweep surfaces as an unhandled rejection.
+    const track = vi.fn((operation: Promise<unknown>, _metadata?: Record<string, unknown>) => {
+      void operation.catch(() => undefined);
+    });
+    const harness = managerHarness(value, { maintenanceMs: 60_000, supervisor: { track } });
+    const list = vi
+      .spyOn(value.imBindings, "listFeishuConnectionIds")
+      .mockRejectedValue(new Error("database unavailable"));
+    try {
+      harness.manager.start();
+      await vi.waitFor(() => expect(track).toHaveBeenCalledTimes(1));
+    } finally {
+      list.mockRestore();
+      await harness.manager.stop();
+    }
+    expect(track.mock.calls[0]?.[1]).toMatchObject({
+      code: "FEISHU_CONNECTION_MAINTENANCE_FAILED",
+      phase: "scheduler",
+      operation: "feishu.connection",
+    });
+  });
+
+  it("enriches a resolvable sender name onto the persisted message", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    harness.setResolveSenderName(async () => "  Alice  ");
+    harness.ingest.mockResolvedValue({
+      duplicate: false,
+      messageId: "11111111-1111-4111-8111-111111111111",
+      deliveryIds: [],
+    });
+    await activateThroughManager(harness, value, { appId: "cli_enrich" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // The enrichment path completed; it is opportunistic, so no diagnostic is reported either way.
+    expect(harness.diagnostics).toEqual([]);
+    expect(harness.ingest).toHaveBeenCalledTimes(1);
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager inbound persistence failures", () => {
+  it.each([
+    ["IM_INBOUND_FENCE_STALE", "FEISHU_INBOUND_FENCE_STALE"],
+    ["IM_INBOUND_BINDING_STALE", "FEISHU_INBOUND_FENCE_STALE"],
+    ["IM_INBOUND_IDENTITY_MISMATCH", "FEISHU_INBOUND_IDENTITY_MISMATCH"],
+  ] as const)("classifies a %s ingestion failure for the trace", async (code, expected) => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const failure = new ImInboundPersistenceError(code, code);
+    harness.ingest.mockRejectedValue(failure);
+    await activateThroughManager(harness, value, { appId: "cli_fence" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await expect(handler.message(feishuNormalizedMessage())).rejects.toBe(failure);
+    await harness.manager.stop();
+    // The trace carries only the bounded classification, never the raw provider payload.
+    expect(expected).toMatch(/^FEISHU_INBOUND_(FENCE_STALE|IDENTITY_MISMATCH)$/);
+  });
+
+  it("falls back to the generic processing code for an unlabelled failure", async () => {
+    const value = await fixture();
+    const receipts = {
+      claim: vi.fn(async () => ({ accepted: true, duplicate: false, receiptId: "receipt-3" })),
+      markProcessed: vi.fn(async () => undefined),
+      markFailed: vi.fn(async () => undefined),
+    };
+    const harness = managerHarness(value, { receipts });
+    const failure = new Error("socket closed mid-write");
+    harness.ingest.mockRejectedValue(failure);
+    await activateThroughManager(harness, value, { appId: "cli_unlabelled" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await expect(handler.message(feishuNormalizedMessage())).rejects.toBe(failure);
+    expect(receipts.markFailed).toHaveBeenCalledWith("receipt-3", "FEISHU_EVENT_PROCESSING_FAILED");
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager activation corners", () => {
+  it("reports a lost lease when the activation transaction is rolled back under it", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_lease", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_lease",
+      externalTeamId: "tenant_lease",
+      externalBotId: "ou_cli_lease",
+    }));
+    // The activation transaction commits the row, then a later stage aborts the whole transaction:
+    // the committed lease is detected as unrenewable and must be released.
+    const original = value.imBindings.getFeishuConnectionMaterial.bind(value.imBindings);
+    const spy = vi
+      .spyOn(value.imBindings, "getFeishuConnectionMaterial")
+      .mockImplementation(async (id, transaction) => {
+        const material = await original(id, transaction);
+        if (material && transaction) throw new Error("activation query failed");
+        return material;
+      });
+    try {
+      await expect(
+        harness.manager.activateAtomicAttempt({
+          attemptId: candidate.attemptId,
+          ownerInstanceId: owner,
+          agentId: value.agent.id,
+          appId: "cli_lease",
+          appSecret: CANDIDATE_SECRET,
+        }),
+      ).rejects.toThrow("activation query failed");
+    } finally {
+      spy.mockRestore();
+    }
+    // The rolled-back transaction left no binding behind and the opened channel was closed.
+    expect(harness.disconnected).toEqual(["cli_lease"]);
+    expect((await rowForAgent(value.agent.id))?.status).toBe("provisioning");
+    await harness.manager.stop();
+  });
+
+  it("publishes the handoff only after the runtime notification resolves", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_notify", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_notify",
+      externalTeamId: "tenant_notify",
+      externalBotId: "ou_cli_notify",
+    }));
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    harness.ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: [] });
+    const gate = deferred<void>();
+    const notification = vi
+      .spyOn(value.imBindings, "notifyProviderCliRequirementChanged")
+      .mockImplementation(() => gate.promise);
+    try {
+      const activation = harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_notify",
+        appSecret: CANDIDATE_SECRET,
+      });
+      await vi.waitFor(() => expect(harness.handlers.length).toBeGreaterThan(0));
+      const handler = harness.handlers.at(-1);
+      if (!handler?.message) throw new Error("message handler was not installed");
+      // The handoff is already published at commit, before the notification settles.
+      await handler.message(feishuNormalizedMessage());
+      expect(harness.ingest).toHaveBeenCalledTimes(1);
+      gate.resolve();
+      await activation;
+    } finally {
+      notification.mockRestore();
+    }
+    await harness.manager.stop();
+  });
+
+  it("omits the request id for a detached failure that has no provider event", async () => {
+    const value = await fixture();
+    const track = vi.fn((operation: Promise<unknown>, _metadata?: Record<string, unknown>) => {
+      void operation.catch(() => undefined);
+    });
+    const harness = managerHarness(value, { supervisor: { track } });
+    await activateThroughManager(harness, value, { appId: "cli_socket" });
+    const handler = harness.handlers.at(-1);
+    if (!handler?.reconnecting) throw new Error("socket handlers were not installed");
+    handler.reconnecting();
+    await vi.waitFor(() => expect(track).toHaveBeenCalled());
+    // A socket observation carries the binding id as the request id.
+    expect(track.mock.calls[0]?.[1]).toMatchObject({
+      code: "FEISHU_CONNECTION_OBSERVATION_FAILED",
+      phase: "socket",
+      requestId: expect.any(String),
+    });
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager close and classification corners", () => {
+  it("normalizes a provider that reports the App id as its own tenant", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    // The provider echoes the App id when the App has no separate tenant: the binding stores null.
+    harness.setValidate(async () => ({
+      externalAppId: "cli_self",
+      externalTeamId: "cli_self",
+      externalBotId: "ou_cli_self",
+    }));
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_self", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    const verified = await harness.manager.activateAtomicAttempt({
+      attemptId: candidate.attemptId,
+      ownerInstanceId: owner,
+      agentId: value.agent.id,
+      appId: "cli_self",
+      appSecret: CANDIDATE_SECRET,
+    });
+    expect(verified.teamId).toBeNull();
+    expect((await rowForAgent(value.agent.id))?.externalTeamId).toBeNull();
+    await harness.manager.stop();
+  });
+
+  it("reports a failing close on the activation failure path too", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_failclose", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    // Validation fails *and* the half-open channel refuses to close: the failure is bounded to a
+    // diagnostic and the original error still propagates.
+    harness.setValidate(async () => {
+      throw new Error("transport down");
+    });
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_failclose",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toThrow("transport down");
+    expect(harness.diagnostics).toEqual(["FEISHU_CONNECTION_DISCONNECT_FAILED"]);
+    await harness.manager.stop();
+  });
+
+  it("keeps persisting when the receipt store itself fails to record the failure", async () => {
+    const value = await fixture();
+    const receipts = {
+      claim: vi.fn(async () => ({ accepted: true, duplicate: false, receiptId: "receipt-4" })),
+      markProcessed: vi.fn(async () => undefined),
+      markFailed: vi.fn(async () => Promise.reject(new Error("receipt store unavailable"))),
+    };
+    const harness = managerHarness(value, { receipts });
+    const failure = new Error("inbox unavailable");
+    harness.ingest.mockRejectedValue(failure);
+    await activateThroughManager(harness, value, { appId: "cli_receipt_fail" });
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    // The receipt-store failure is swallowed: the original ingestion failure is what the caller sees.
+    await expect(handler.message(feishuNormalizedMessage())).rejects.toBe(failure);
+    expect(receipts.markFailed).toHaveBeenCalledTimes(1);
+    await harness.manager.stop();
+  });
+
+  it("skips the receipt store for a normalizer-synthesized envelope id", async () => {
+    const value = await fixture();
+    const receipts = {
+      claim: vi.fn(async () => ({ accepted: true, duplicate: false, receiptId: "receipt-5" })),
+      markProcessed: vi.fn(async () => undefined),
+      markFailed: vi.fn(async () => undefined),
+    };
+    const harness = managerHarness(value, { receipts });
+    harness.ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: [] });
+    await activateThroughManager(harness, value, { appId: "cli_synthetic" });
+    const event = normalizedFeishuEvent();
+    // A normalizer-synthesized `providerEventId` (`<message>:<occurredAt>`) is not a delivery
+    // receipt: deduplication falls back to the inbox's own semantic key.
+    harness.setNormalize(() => [
+      { ...event, providerEventId: `${event.message.externalId}:${event.message.occurredAt.getTime()}` },
+    ]);
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message) throw new Error("message handler was not installed");
+    await handler.message(feishuNormalizedMessage());
+    expect(receipts.claim).not.toHaveBeenCalled();
+    expect(receipts.markProcessed).not.toHaveBeenCalled();
+    expect(harness.ingest).toHaveBeenCalledTimes(1);
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager sweep-owned provider callbacks", () => {
+  it("routes a swept channel's inbound message and socket transitions to its binding", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    const bindingId = await insertActiveFeishuBinding(value, { agentId: value.agent.id, appId: "cli_handoff" });
+    harness.setValidate(async () => ({
+      externalAppId: "cli_handoff",
+      externalTeamId: "tenant_sweep",
+      externalBotId: "ou_cli_handoff",
+    }));
+    harness.setNormalize(() => [normalizedFeishuEvent()]);
+    harness.ingest.mockResolvedValue({ duplicate: false, messageId: randomUUID(), deliveryIds: [] });
+    harness.manager.start();
+    await vi.waitFor(
+      async () => {
+        expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+      },
+      { timeout: 5_000 },
+    );
+    const handler = harness.handlers.at(-1);
+    if (!handler?.message || !handler.reconnecting || !handler.reconnected || !handler.error) {
+      throw new Error("swept channel handlers were not installed");
+    }
+    // A swept channel resolves its handoff lazily, from the state installed by `#replaceOwned`.
+    await handler.message(feishuNormalizedMessage());
+    expect(harness.ingest).toHaveBeenCalledTimes(1);
+    expect(harness.ingest.mock.calls[0]?.[0]).toBe(bindingId);
+
+    handler.reconnecting();
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.observedConnectedAt).toBeNull();
+    });
+    handler.reconnected();
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.observedConnectedAt).toBeInstanceOf(Date);
+    });
+    handler.error(new FeishuOperationError("FEISHU_UPSTREAM_UNAVAILABLE"));
+    await vi.waitFor(async () => {
+      expect((await rowById(bindingId))?.lastErrorCode).toBe("FEISHU_UPSTREAM_UNAVAILABLE");
+    });
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager failures on the committed-activation unwind", () => {
+  it("releases the committed lease when the replacement close raises through its diagnostic hook", async () => {
+    const value = await fixture();
+    let raised = false;
+    // The diagnostic observer itself fails while the replaced channel is being closed: the unwind
+    // must still drop the channel it installed and release the committed lease.
+    const harness = managerHarness(value, {
+      diagnosticHook: () => {
+        if (!raised) {
+          raised = true;
+          throw new Error("diagnostic reporter unavailable");
+        }
+      },
+    });
+    const first = await activateThroughManager(harness, value, { appId: "cli_raise" });
+    await database.database
+      .update(imBindings)
+      .set({ setupIntent: "reauthorize" })
+      .where(eq(imBindings.id, first.bindingId));
+    harness.setDisconnect(() => Promise.reject(new Error("socket already gone")));
+    const owner = randomUUID();
+    const second = await insertCandidate(
+      value,
+      { agentId: value.agent.id, id: first.bindingId },
+      { appId: "cli_raise", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: second.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_raise",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toThrow("diagnostic reporter unavailable");
+    // The committed activation survived, but the manager holds no lease on it any more.
+    const row = await rowById(first.bindingId);
+    expect(row?.status).toBe("active");
+    expect(row?.credentialGeneration).toBe(2);
+    expect(row?.connectionOwnerInstanceId).toBeNull();
+    await harness.manager.stop();
+  });
+});
+
+describe("FeishuConnectionManager activation transaction guards", () => {
+  it("is idempotent on a repeated start", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value, { maintenanceMs: 60_000 });
+    harness.manager.start();
+    // A second start must not install a second interval or schedule another immediate sweep.
+    harness.manager.start();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await harness.manager.stop();
+    expect(harness.created).toEqual([]);
+  });
+
+  it("refuses an activation canceled between the claim re-read and the activation transaction", async () => {
+    const value = await fixture();
+    const owner = randomUUID();
+    const harness = managerHarness(value);
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_guard", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    // The provider call between the claim re-read and the activation transaction is where a
+    // competing `cancel` lands: the transaction's own binding re-read must then refuse the claim.
+    harness.setValidate(async () => {
+      // Releasing the claim back to the ownerless pending shape is what a competitor's takeover
+      // (or a restart) leaves behind, and the activation transaction must refuse it.
+      await database.database
+        .update(imBindings)
+        .set({ setupState: "pending_activation", setupOwnerInstanceId: null, setupOwnerHeartbeatAt: null })
+        .where(eq(imBindings.setupAttemptId, candidate.attemptId));
+      return { externalAppId: "cli_guard", externalTeamId: "tenant_guard", externalBotId: "ou_cli_guard" };
+    });
+    await expect(
+      harness.manager.activateAtomicAttempt({
+        attemptId: candidate.attemptId,
+        ownerInstanceId: owner,
+        agentId: value.agent.id,
+        appId: "cli_guard",
+        appSecret: CANDIDATE_SECRET,
+      }),
+    ).rejects.toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    expect(harness.disconnected).toEqual(["cli_guard"]);
+    expect((await rowForAgent(value.agent.id))?.status).toBe("provisioning");
+    await harness.manager.stop();
+  });
+
+  it("refuses an activation whose binding never became leasable", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_guard", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_guard",
+      externalTeamId: "tenant_guard",
+      externalBotId: "ou_cli_guard",
+    }));
+    // The activation reports a binding id that the lease update cannot match: no lease, no channel.
+    const activate = vi.spyOn(value.imBindings, "activateFeishu").mockResolvedValue(randomUUID());
+    try {
+      await expect(
+        harness.manager.activateAtomicAttempt({
+          attemptId: candidate.attemptId,
+          ownerInstanceId: owner,
+          agentId: value.agent.id,
+          appId: "cli_guard",
+          appSecret: CANDIDATE_SECRET,
+        }),
+      ).rejects.toMatchObject({ code: "FEISHU_CONNECTION_LEASE_UNAVAILABLE" });
+    } finally {
+      activate.mockRestore();
+    }
+    expect(harness.disconnected).toEqual(["cli_guard"]);
+    expect((await rowForAgent(value.agent.id))?.status).toBe("provisioning");
+    await harness.manager.stop();
+  });
+
+  it("refuses an activation whose attempt was canceled during the credential write", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_guard", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_guard",
+      externalTeamId: "tenant_guard",
+      externalBotId: "ou_cli_guard",
+    }));
+    const original = value.imBindings.activateFeishu.bind(value.imBindings);
+    // A cancel committing inside the same transaction window clears the claim the completion
+    // update is fenced on: the activation must not report success.
+    const activate = vi.spyOn(value.imBindings, "activateFeishu").mockImplementation(async (verified, transaction) => {
+      const id = await original(verified, transaction);
+      if (transaction) {
+        await transaction
+          .update(imBindings)
+          .set({
+            setupState: "canceled",
+            setupOwnerInstanceId: null,
+            setupOwnerHeartbeatAt: null,
+            encryptedSetupContext: null,
+            setupExpiresAt: null,
+          })
+          .where(eq(imBindings.id, id));
+      }
+      return id;
+    });
+    try {
+      await expect(
+        harness.manager.activateAtomicAttempt({
+          attemptId: candidate.attemptId,
+          ownerInstanceId: owner,
+          agentId: value.agent.id,
+          appId: "cli_guard",
+          appSecret: CANDIDATE_SECRET,
+        }),
+      ).rejects.toMatchObject({ code: "FEISHU_SETUP_FENCE_STALE" });
+    } finally {
+      activate.mockRestore();
+    }
+    expect(harness.disconnected).toEqual(["cli_guard"]);
+    await harness.manager.stop();
+  });
+
+  it("refuses an activation whose credential material is already unreadable", async () => {
+    const value = await fixture();
+    const harness = managerHarness(value);
+    const owner = randomUUID();
+    const candidate = await insertCandidate(
+      value,
+      { agentId: value.agent.id },
+      { appId: "cli_guard", state: "validating", owner, heartbeatAt: clock.now },
+    );
+    harness.setValidate(async () => ({
+      externalAppId: "cli_guard",
+      externalTeamId: "tenant_guard",
+      externalBotId: "ou_cli_guard",
+    }));
+    // The in-transaction material read reports the credential unusable: never install a channel.
+    const original = value.imBindings.getFeishuConnectionMaterial.bind(value.imBindings);
+    const material = vi
+      .spyOn(value.imBindings, "getFeishuConnectionMaterial")
+      .mockImplementation(async (id, transaction) => (transaction ? undefined : original(id, transaction)));
+    try {
+      await expect(
+        harness.manager.activateAtomicAttempt({
+          attemptId: candidate.attemptId,
+          ownerInstanceId: owner,
+          agentId: value.agent.id,
+          appId: "cli_guard",
+          appSecret: CANDIDATE_SECRET,
+        }),
+      ).rejects.toMatchObject({ code: "FEISHU_BINDING_NOT_ACTIVE" });
+    } finally {
+      material.mockRestore();
+    }
+    expect(harness.disconnected).toEqual(["cli_guard"]);
+    await harness.manager.stop();
   });
 });

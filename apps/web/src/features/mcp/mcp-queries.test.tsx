@@ -200,6 +200,15 @@ describe("MCP queries and id-only mutations", () => {
     expect(detach).toHaveBeenCalledWith(AGENT_ID, SERVER_ID);
   });
 
+  it("removes a whole definition by its id, which is Account-level and takes no Agent", async () => {
+    const remove = countCalls("removeMcpServer", undefined);
+    const { result } = renderHook(() => useRemoveMcpServer(AGENT_ID), { wrapper });
+
+    await result.current.mutateAsync(SERVER_ID);
+
+    expect(remove).toHaveBeenCalledWith(SERVER_ID);
+  });
+
   it("revokes this Agent's credential by both ids", async () => {
     const revoke = countCalls("revokeMcpAuthorization", {});
     const { result } = renderHook(() => useRevokeMcpAuthorization(AGENT_ID), { wrapper });

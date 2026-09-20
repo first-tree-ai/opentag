@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { RuntimeExecutionSource } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import type { DatabaseClient } from "../db/client.js";
-import { imMessageDeliveries, sessionMessages } from "../db/schema/index.js";
+import { imMessageDeliveries, runtimeDurableWork, sessionMessages } from "../db/schema/index.js";
 import type { AcceptedDeliveryRecord, RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { CloudSessionWorkEnvelopeSchema } from "../runtime/runtime-durable-work-store.js";
 import {
   PostgresRuntimeExecutionAuthority,
   type RuntimeExecutionAuthorityContext,
@@ -11,8 +12,8 @@ import {
 } from "../runtime-credentials/execution-authority.js";
 import { RuntimeValidationRunRegistry } from "../runtime-credentials/validation-runs.js";
 
-const SESSION = "session-1";
-const AGENT = "agent-1";
+const SESSION = "00000000-0000-4000-8000-000000000001";
+const AGENT = "00000000-0000-4000-8000-0000000000a1";
 const COMPUTER = "00000000-0000-4000-8000-0000000000c1";
 const INSTANCE = "00000000-0000-4000-8000-0000000000d1";
 const DELIVERY = "00000000-0000-4000-8000-0000000000e1";
@@ -64,6 +65,7 @@ class StubCustody {
 interface StubDatabaseRows {
   readonly deliveries?: readonly Record<string, unknown>[];
   readonly sessionMessages?: readonly Record<string, unknown>[];
+  readonly durableWork?: readonly Record<string, unknown>[];
 }
 
 interface StubDatabase {
@@ -81,6 +83,7 @@ function stubDatabase(rows: StubDatabaseRows = {}): StubDatabase {
   const resultFor = (table: unknown): readonly Record<string, unknown>[] => {
     if (table === imMessageDeliveries) return rows.deliveries ?? [];
     if (table === sessionMessages) return rows.sessionMessages ?? [];
+    if (table === runtimeDurableWork) return rows.durableWork ?? [];
     throw new Error("Unexpected table in the runtime execution authority query");
   };
   const database = {
@@ -92,6 +95,8 @@ function stubDatabase(rows: StubDatabaseRows = {}): StubDatabase {
           table = value;
           return query;
         },
+        innerJoin: () => query,
+        leftJoin: () => query,
         limit: () => Promise.resolve(resultFor(table)),
         where: () => query,
       };
@@ -106,12 +111,17 @@ function makeAuthority(
     custody?: AcceptedDeliveryRecord;
     deliveries?: readonly Record<string, unknown>[];
     sessionMessages?: readonly Record<string, unknown>[];
+    durableWork?: readonly Record<string, unknown>[];
     validationRuns?: RuntimeValidationRunRegistry;
   } = {},
 ) {
   const custody = new StubCustody();
   custody.accepted = options.custody;
-  const stub = stubDatabase({ deliveries: options.deliveries, sessionMessages: options.sessionMessages });
+  const stub = stubDatabase({
+    deliveries: options.deliveries,
+    sessionMessages: options.sessionMessages,
+    durableWork: options.durableWork,
+  });
   const validationRuns = options.validationRuns ?? new RuntimeValidationRunRegistry();
   return {
     authority: new PostgresRuntimeExecutionAuthority({
@@ -177,7 +187,9 @@ describe("PostgresRuntimeExecutionAuthority Session message admission", () => {
     ["unreachable", "invalid"],
     ["rejected", "invalid"],
   ])("maps Session message outcome %s to %s", async (lastOutcome, status) => {
-    const { authority, selects } = makeAuthority({ sessionMessages: [{ lastOutcome }] });
+    const { authority, selects } = makeAuthority({
+      sessionMessages: [{ lastOutcome, agentId: AGENT, computerKind: "local" }],
+    });
 
     await expect(authority.authorize(sessionMessageSource, context())).resolves.toEqual({ status });
     expect(selects()).toBe(1);
@@ -187,6 +199,74 @@ describe("PostgresRuntimeExecutionAuthority Session message admission", () => {
     const { authority } = makeAuthority();
 
     await expect(authority.authorize(sessionMessageSource, context())).resolves.toEqual({ status: "invalid" });
+  });
+
+  it("never authorizes accepted Cloud work whose durable record is settled or on another allocation", async () => {
+    const sandboxId = "00000000-0000-4000-8000-0000000000aa";
+    const cloudFacts = [
+      {
+        lastOutcome: "accepted",
+        agentId: AGENT,
+        computerKind: "cloud",
+        placementComputerId: COMPUTER,
+        placementGeneration: PLACEMENT,
+        sandboxId,
+        sandboxResourceName: "instances/one",
+        sandboxEnvironmentGeneration: 2,
+      },
+    ];
+    const envelope = CloudSessionWorkEnvelopeSchema.parse({
+      type: "cloud-session-message-work",
+      request: {
+        type: "session:message:deliver",
+        requestId: MESSAGE,
+        messageId: MESSAGE,
+        sourceSessionId: "00000000-0000-4000-8000-000000000002",
+        targetSessionId: SESSION,
+        agentId: AGENT,
+        placementGeneration: PLACEMENT,
+        content: { kind: "text", text: "do it" },
+        runtime: {
+          contextTreeRepository: null,
+          revision: {
+            agent: { sequence: 1, id: "revision-agent" },
+            session: { sequence: 1, id: "revision-session" },
+          },
+          agentId: AGENT,
+          provider: "pi",
+          instructions: { platform: "platform", agent: "agent" },
+          execution: { approvalPolicy: "never", networkAccess: false },
+          workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
+        },
+      },
+      allocation: { sandboxId, environmentGeneration: 2, resourceName: "instances/one" },
+      turnId: "turn-1",
+    });
+
+    const accepted = makeAuthority({
+      sessionMessages: cloudFacts,
+      durableWork: [{ status: "accepted", payload: envelope }],
+    });
+    await expect(accepted.authority.authorize(sessionMessageSource, context())).resolves.toEqual({
+      status: "authorized",
+    });
+    // Settled work keeps `lastOutcome=accepted` but can never authorize a fresh execution.
+    const settled = makeAuthority({
+      sessionMessages: cloudFacts,
+      durableWork: [{ status: "failed", payload: envelope }],
+    });
+    await expect(settled.authority.authorize(sessionMessageSource, context())).resolves.toEqual({ status: "invalid" });
+    // An accepted record for a replaced allocation is not the current allocation's authority.
+    const replaced = makeAuthority({
+      sessionMessages: [{ ...cloudFacts[0], sandboxResourceName: "instances/two" }],
+      durableWork: [{ status: "accepted", payload: envelope }],
+    });
+    await expect(replaced.authority.authorize(sessionMessageSource, context())).resolves.toEqual({
+      status: "invalid",
+    });
+    // A missing durable record fails closed for Cloud even though the outcome says accepted.
+    const missing = makeAuthority({ sessionMessages: cloudFacts });
+    await expect(missing.authority.authorize(sessionMessageSource, context())).resolves.toEqual({ status: "invalid" });
   });
 });
 
@@ -283,7 +363,9 @@ describe("PostgresRuntimeExecutionAuthority live revalidation", () => {
     ["unreachable", "invalid"],
     ["rejected", "invalid"],
   ])("maps recorded Session message outcome %s to %s on revalidation", async (lastOutcome, expected) => {
-    const { authority } = makeAuthority({ sessionMessages: [{ lastOutcome }] });
+    const { authority } = makeAuthority({
+      sessionMessages: [{ lastOutcome, agentId: AGENT, computerKind: "local" }],
+    });
 
     await expect(authority.revalidate(sessionMessageSource, revalidationContext)).resolves.toBe(expected);
   });

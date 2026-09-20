@@ -1,8 +1,10 @@
 import { CLOUD_MODEL_PROXY_PATH, sandboxRunnerWebSocketUrl } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import type { CloudModelProxyRouteOptions } from "./api/cloud-model-proxy.js";
 import type { CloudModelConfig } from "./cloud-model-config.js";
 import type { ServerConfig } from "./config.js";
 import type { DatabaseClient } from "./db/client.js";
+import { agents, imBindings, sessions } from "./db/schema/index.js";
 import type { ServiceLogger } from "./observability/service-logger.js";
 import type { CloudSessionAllocationPort } from "./runtime/im-delivery-worker.types.js";
 import type { RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
@@ -13,9 +15,14 @@ import {
   createMetadataServerTokenProvider,
   createStaticTokenProvider,
 } from "./services/cloud-run/index.js";
-import { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
+import { CloudDeliveryOwner, type CloudDeliveryOwnerOptions } from "./services/sandboxes/cloud-delivery-owner.js";
 import { CloudModelGrantService } from "./services/sandboxes/cloud-model-grants.js";
 import type { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
+import {
+  type CloudSessionCollaborationAllocationPort,
+  CloudSessionCollaborationOwner,
+  type CloudSessionCollaborationOwnerOptions,
+} from "./services/sandboxes/cloud-session-collaboration-owner.js";
 import type { SandboxService } from "./services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import { RunnerHub } from "./services/sandboxes/runner-hub.js";
@@ -23,6 +30,7 @@ import { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-se
 import {
   type SandboxAllocationReconciliation,
   SandboxRunnerService,
+  type SandboxRunnerServiceOptions,
 } from "./services/sandboxes/sandbox-runner-service.js";
 import type { WorkspaceObjectStore } from "./services/sandboxes/workspace-object-store.js";
 import { GcsWorkspaceObjectStore } from "./services/sandboxes/workspace-object-store.js";
@@ -37,6 +45,7 @@ export interface SandboxRunnerRuntime {
 export interface CloudDeliveryComposition {
   cloudModelGrants?: CloudModelGrantService;
   cloudDeliveryOwner?: CloudDeliveryOwner;
+  cloudSessionOwner?: CloudSessionCollaborationOwner;
 }
 
 /**
@@ -57,6 +66,8 @@ export function createSandboxRunnerRuntime(
   options: {
     /** Tests inject a fake store factory; production defaults to the GCS object store adapter. */
     workspaceStoreFactory?: (input: { tokenProvider: AccessTokenProvider }) => WorkspaceObjectStore;
+    sessionWorkBusy?: SandboxRunnerServiceOptions["sessionWorkBusy"];
+    sessionWorkBarrier?: SandboxRunnerServiceOptions["sessionWorkBarrier"];
   } = {},
 ): SandboxRunnerRuntime | undefined {
   const cloudRunner = config.cloudRunner;
@@ -95,6 +106,8 @@ export function createSandboxRunnerRuntime(
     createConvergeTimeoutMs: cloudRunner.createConvergeTimeoutMs,
     idleTimeoutMs: cloudRunner.idleTimeoutMs,
     workspace: { store },
+    ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
+    ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
   });
   const runnerWorkspace = new RunnerWorkspaceService(database, {
     tokens,
@@ -120,6 +133,11 @@ export function createCloudDeliveryComposition(input: {
   hub?: RunnerHub;
   cloudRuntimeFence?: CloudRuntimeFence;
   credentialOwner: RuntimeCredentialOwner;
+  sessionProofs?: CloudDeliveryOwnerOptions["sessionProofs"];
+  sessionCollaboration?: Pick<
+    CloudSessionCollaborationOwnerOptions,
+    "assembler" | "work" | "proofs" | "sessions" | "durableWork" | "allocation"
+  >;
   allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
   /** E7 business-activity clock from the allocation service; absent keeps Cloud delivery untracked. */
   noteActivity?: (sandboxId: string) => Promise<void>;
@@ -133,19 +151,29 @@ export function createCloudDeliveryComposition(input: {
         ttlSeconds: input.cloudModel.tokenTtlSeconds,
       })
     : undefined;
-  const cloudDeliveryOwner = new CloudDeliveryOwner({
-    custody: input.custody,
+  const common = {
     database: input.database,
     fence: input.cloudRuntimeFence,
     hub: input.hub,
-    credentials: { owner: input.credentialOwner },
-    ...(input.allocationStatus ? { allocationStatus: input.allocationStatus } : {}),
     ...(input.noteActivity ? { noteActivity: input.noteActivity } : {}),
     ...(input.logger ? { logger: input.logger } : {}),
     ...(input.cloudModel.enabled ? { modelBaseUrl: `${input.publicUrl}${CLOUD_MODEL_PROXY_PATH}` } : {}),
     ...(cloudModelGrants ? { modelGrants: cloudModelGrants } : {}),
+  };
+  const cloudDeliveryOwner = new CloudDeliveryOwner({
+    ...common,
+    custody: input.custody,
+    credentials: { owner: input.credentialOwner },
+    ...(input.sessionProofs ? { sessionProofs: input.sessionProofs } : {}),
+    ...(input.allocationStatus ? { allocationStatus: input.allocationStatus } : {}),
   });
-  return { cloudModelGrants, cloudDeliveryOwner };
+  const cloudSessionOwner = input.sessionCollaboration
+    ? new CloudSessionCollaborationOwner({
+        ...common,
+        ...input.sessionCollaboration,
+      })
+    : undefined;
+  return { cloudModelGrants, cloudDeliveryOwner, cloudSessionOwner };
 }
 
 /**
@@ -181,6 +209,30 @@ export function createCloudIngressAllocationPort(input: {
   };
 }
 
+/** Internal children reuse the existing Session and Sandbox rows; visible targets already have a Sandbox. */
+export function createCloudSessionAllocationPort(input: {
+  database: DatabaseClient;
+  sandboxService: Pick<SandboxService, "ensureForInternalSession">;
+  sandboxRunnerService: Pick<SandboxRunnerService, "ensureIngressAllocation">;
+}): CloudSessionCollaborationAllocationPort {
+  return {
+    async ensureSandbox(sessionId) {
+      const [row] = await input.database
+        .select({ accountId: agents.createdByUserId })
+        .from(sessions)
+        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .where(eq(sessions.id, sessionId))
+        .limit(1);
+      if (!row) return undefined;
+      const sandbox = await input.sandboxService.ensureForInternalSession(row.accountId, sessionId);
+      return { sandboxId: sandbox.sandboxId, accountId: row.accountId };
+    },
+    ensureEnvironmentAllocated: ({ accountId, sandboxId }) =>
+      input.sandboxRunnerService.ensureIngressAllocation(accountId, sandboxId),
+  };
+}
+
 /** The createApp options fragment for the Cloud Runner channel and the controlled model path. */
 export function cloudAppOptions(input: {
   runnerRuntime: SandboxRunnerRuntime | undefined;
@@ -188,11 +240,20 @@ export function cloudAppOptions(input: {
   cloudModel: CloudModelConfig;
 }): {
   sandboxRunnerService?: SandboxRunnerService;
-  runnerChannel?: { tokens: RunnerBootstrapTokenService; hub: RunnerHub; cloudDelivery?: CloudDeliveryOwner };
+  runnerChannel?: {
+    tokens: RunnerBootstrapTokenService;
+    hub: RunnerHub;
+    cloudDelivery?: CloudDeliveryOwner;
+    cloudSession?: CloudSessionCollaborationOwner;
+  };
   runnerWorkspace?: RunnerWorkspaceService;
   cloudModel?: CloudModelProxyRouteOptions;
 } {
-  const runnerOptions = sandboxRunnerRouteOptions(input.runnerRuntime, input.composition.cloudDeliveryOwner);
+  const runnerOptions = sandboxRunnerRouteOptions(
+    input.runnerRuntime,
+    input.composition.cloudDeliveryOwner,
+    input.composition.cloudSessionOwner,
+  );
   return {
     ...runnerOptions,
     // The workspace routes exist exactly when the runtime configured persistence; without them a
@@ -208,10 +269,16 @@ export function cloudAppOptions(input: {
 function sandboxRunnerRouteOptions(
   runtime: SandboxRunnerRuntime | undefined,
   cloudDelivery: CloudDeliveryOwner | undefined,
+  cloudSession: CloudSessionCollaborationOwner | undefined,
 ):
   | {
       sandboxRunnerService: SandboxRunnerService;
-      runnerChannel: { tokens: RunnerBootstrapTokenService; hub: RunnerHub; cloudDelivery?: CloudDeliveryOwner };
+      runnerChannel: {
+        tokens: RunnerBootstrapTokenService;
+        hub: RunnerHub;
+        cloudDelivery?: CloudDeliveryOwner;
+        cloudSession?: CloudSessionCollaborationOwner;
+      };
     }
   | Record<string, never> {
   return runtime
@@ -221,6 +288,7 @@ function sandboxRunnerRouteOptions(
           tokens: runtime.runnerChannel.tokens,
           hub: runtime.runnerChannel.hub,
           ...(cloudDelivery ? { cloudDelivery } : {}),
+          ...(cloudSession ? { cloudSession } : {}),
         },
       }
     : {};

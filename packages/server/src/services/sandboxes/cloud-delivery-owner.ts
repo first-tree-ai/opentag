@@ -6,6 +6,7 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
+  RUNTIME_SERVER_CAPABILITY_OFFERS,
   type RunnerCloudModelGrant,
   type RuntimeCredentialClientFrame,
   type RuntimeCredentialServerFrame,
@@ -26,6 +27,7 @@ import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
+import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import type { CloudModelGrantIssue } from "./cloud-model-grants.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
@@ -86,6 +88,8 @@ export interface CloudModelGrantPort {
     sessionId: string;
     model: string;
     expiresAt?: Date;
+    /** Explicit recovery rotation for an accepted-but-unfinished turn; never implied by omission. */
+    supersedeRevoked?: true;
   }): Promise<CloudModelGrantIssue | undefined>;
   revokeExecution(executionId: string): number;
 }
@@ -111,6 +115,11 @@ export interface CloudDeliveryOwnerOptions {
   allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
   /** E7 business-activity clock: called on real work boundaries only, never on heartbeats. */
   noteActivity?: (sandboxId: string) => Promise<void>;
+  /**
+   * E8 Session collaboration: mints the Session's CLI proof bound to this exact allocation and
+   * connection, delivered on verified frames so every Cloud Session can create/send/list.
+   */
+  sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
 }
 
 /**
@@ -150,6 +159,7 @@ export class CloudDeliveryOwner {
   readonly #modelGrants?: CloudModelGrantPort;
   readonly #allocationStatus?: (sandboxId: string) => Promise<SandboxAllocationReconciliation | undefined>;
   readonly #noteActivity?: (sandboxId: string) => Promise<void>;
+  readonly #sessionProofs?: Pick<SessionCliProofService, "mintCloud">;
   /**
    * Live model-grant ownership per turn: which connection is allowed to hand out or revoke this
    * turn's permission. `generation` distinguishes concurrent mint attempts on the same connection
@@ -181,6 +191,7 @@ export class CloudDeliveryOwner {
     this.#modelGrants = options.modelGrants;
     this.#allocationStatus = options.allocationStatus;
     this.#noteActivity = options.noteActivity;
+    this.#sessionProofs = options.sessionProofs;
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -437,6 +448,9 @@ export class CloudDeliveryOwner {
       this.#sendVerified(connection, frame.requestId, "rejected", "model_unavailable");
       return;
     }
+    // E8: the Session CLI proof is NOT delivered with execution permission. It is minted at the
+    // actual credential execution open (handleCredentialFrame), after the common worker reached
+    // its FIFO head and opened a real execution. Nothing proof-related belongs in custody here.
     const inputHash = computeDirectInputHash(request);
     let custody: Awaited<ReturnType<RuntimeCustodyStore["acceptDelivery"]>>;
     try {
@@ -464,6 +478,39 @@ export class CloudDeliveryOwner {
     const frameWithGrant = this.#verifiedFrame(frame.requestId, "verified", undefined, grant);
     if (!this.#sendToConnection(connection, frameWithGrant)) {
       this.#revokeIfOwned(frame.turnId, connection.connectionId);
+    }
+  }
+
+  /**
+   * E8 proof-on-open: mint the Session CLI proof only after the trusted Runner opened a REAL
+   * Runtime credential execution for this connection's allocation. The proof is correlated with
+   * that actual execution id and liveness-checked against the registry, so a queued Turn never
+   * rotates an active Turn's proof and a finished execution can never be revived. A mint failure
+   * degrades this Turn's Session CLI only: the credential execution itself remains valid.
+   */
+  async #sessionCliProofForOpen(
+    connection: CloudConnectionRecord,
+    frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:execution:open" }>,
+    executionId: string,
+  ): Promise<{ proofId: string; token: string } | undefined> {
+    const proofs = this.#sessionProofs;
+    if (!proofs || connection.sessionCollaborationEligible !== true) return undefined;
+    if (frame.source.kind === "validation") return undefined;
+    try {
+      return await proofs.mintCloud({
+        sessionId: connection.scope.sessionId,
+        computerId: connection.computerId,
+        placementGeneration: frame.placementGeneration,
+        connectionId: connection.connectionId,
+        sandboxId: connection.scope.sandboxId,
+        executionId,
+      });
+    } catch {
+      this.#logger?.warn(
+        { code: "CLOUD_DELIVERY_PROOF_MINT_FAILED", sessionId: connection.scope.sessionId },
+        "Cloud Session CLI proof mint failed; the execution continues without it",
+      );
+      return undefined;
     }
   }
 
@@ -956,7 +1003,11 @@ export class CloudDeliveryOwner {
   ): Promise<RuntimeCredentialServerFrame | undefined> {
     const deps = this.#credentials;
     if (!deps) return credentialFailure(frame, "owner_unavailable");
-    return deps.owner.handle(frame, this.#context(connection));
+    const result = await deps.owner.handle(frame, this.#context(connection));
+    if (frame.type !== "runtime:execution:open") return result;
+    if (!result || result.type !== "runtime:execution:result" || result.status !== "succeeded") return result;
+    const proof = await this.#sessionCliProofForOpen(connection, frame, result.executionId);
+    return proof ? { ...result, sessionCliProof: proof } : result;
   }
 
   /** Exact-connection revocation routing for the credential owner's sweep/close notifications. */
@@ -978,6 +1029,8 @@ export class CloudDeliveryOwner {
     socket?: RunnerControlSocket;
     /** False for a report-only reconnect: settle/report only, never mint execution permission. */
     executionEligible?: boolean;
+    /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
+    sessionCollaborationEligible?: boolean;
   }): CloudConnectionRecord {
     // A same-Sandbox replacement (reconnect or newer generation) must tear down the superseded
     // connection's privileges even when the fence entry is replaced inside attach.
@@ -1018,7 +1071,7 @@ export class CloudDeliveryOwner {
    */
   #revokeIfOwned(turnId: string, connectionId: string): void {
     const ownership = this.#grantOwnershipByTurn.get(turnId);
-    if (!ownership || ownership.connectionId !== connectionId) return;
+    if (ownership?.connectionId !== connectionId) return;
     this.#grantOwnershipByTurn.delete(turnId);
     this.#modelGrants?.revokeExecution(turnId);
   }
@@ -1062,6 +1115,18 @@ export class CloudDeliveryOwner {
       negotiatedCapabilities: {
         [RUNTIME_CAPABILITY.providerProxy]: 1,
         [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+        /*
+         * Session collaboration is carried explicitly only on the exact connection that
+         * negotiated it and may receive execution permission. An internal collaboration child
+         * opens its scope-free execution against this fact; a report-only or legacy connection
+         * keeps the existing denial.
+         */
+        ...(connection.sessionCollaborationEligible && connection.executionEligible
+          ? {
+              [RUNTIME_CAPABILITY.sessionCollaboration]:
+                RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.sessionCollaboration].max,
+            }
+          : {}),
       },
       signal: (this.#signals.get(connection.connectionId) ?? new AbortController()).signal,
     };

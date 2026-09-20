@@ -11,4 +11,11 @@ export {
   AgentSetupService,
   type AgentSetupServiceOptions,
 } from "./agent-setup-service.js";
+export {
+  type CloudContextTreeGitHubManagement,
+  type CloudContextTreeOperationInput,
+  type CloudContextTreeOperationRunner,
+  CloudContextTreeOperations,
+  type CloudContextTreeOperationsOptions,
+} from "./cloud-context-tree-operations.js";
 export { AgentServiceError } from "./errors.js";

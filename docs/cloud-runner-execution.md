@@ -1,4 +1,4 @@
-# Cloud Runner execution (E3–E7)
+# Cloud Runner execution (E3–E8)
 
 [简体中文](./zh-CN/cloud-runner-execution.md)
 
@@ -534,3 +534,24 @@ keeps that physical name and UID without create/PATCH and each Session restores 
 archive. Separately, let the idle budget expire, verify provider-confirmed deletion, and restore
 the original Session into a fresh Instance. Also verify a stale Session bearer cannot follow the
 transfer, and explicit stop wins against an in-flight borrow or automatic release.
+
+## E8: Context Tree and Session collaboration
+
+See [Cloud Context Tree and Session collaboration](./cloud-context.md) for current configuration,
+private workspace recovery, published knowledge, managed Session CLI authority, and validation
+boundaries. E8 reuses the existing Sandbox lifecycle and does not introduce another allocation model.
+
+Rollout and rollback are a matched release: a Runner built with E8 always sends
+`sessionCollaborationVersion` in its auth frame, and a pre-E8 Server's strict auth schema rejects
+the unknown field. Deploy the Server first and never roll the Server back to a pre-E8 build while
+E8 Runners are alive — their auth would be rejected, so they could not even report the IM custody
+already journaled on them, stranding those environments until their Instances are replaced.
+A Runner rollback needs the same care in the other direction: an older Runner cannot consume E8
+Session collaboration frames or journal entries. The matched rollback sequence is: stop admitting
+new work (pause the affected Agents), let active E8 environments drain and settle and save while
+the compatible Server still serves them, and verify those Instances are terminated/removed; only
+then roll back the Server and select a compatible Runner for new allocations. Replacing an
+Instance is not recovery of unacknowledged Session custody: the Instance's unacknowledged
+execution state — journaled receipts and settlements the Server never confirmed — dies with it
+and must not be replayed, while the Session's saved workspace is restored normally on the next
+allocation.

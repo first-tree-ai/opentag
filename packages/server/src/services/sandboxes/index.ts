@@ -13,6 +13,18 @@ export {
   CloudRuntimeFence,
   cloudInstanceIdFor,
 } from "./cloud-runtime-fence.js";
+export {
+  type CloudSessionCancelOutcome as CloudSessionCollaborationCancelOutcome,
+  type CloudSessionCollaborationAllocationPort,
+  CloudSessionCollaborationOwner,
+  type CloudSessionCollaborationOwnerOptions,
+  type CloudSessionDeliveryInput,
+  type CloudSessionDurableWorkPort,
+  type CloudSessionTargetEnvelope,
+  CloudSessionWorkTracker,
+  createCloudSourceConnectionVerifier,
+  createSessionCliCloudProofAuthority,
+} from "./cloud-session-collaboration-owner.js";
 export { SandboxServiceError, sandboxNotFound, sandboxScopeInvalid, WorkspaceSaveError } from "./errors.js";
 export { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
 export {

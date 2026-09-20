@@ -98,6 +98,112 @@ describe("PostgresRuntimeDurableWorkStore", () => {
     await expect(store.list(computerId, "session-message")).resolves.toEqual({ items: [active, recentTerminal] });
   });
 
+  it("never age-prunes active custody while terminal retention stays bounded", async () => {
+    let now = 10_000;
+    const store = new PostgresRuntimeDurableWorkStore(unit.database, {
+      now: () => now,
+      retentionMs: 100,
+      maxTerminalRecords: 1,
+    });
+    // Accepted custody far older than the retention window: a Turn near the 24h runtime maximum,
+    // long FIFO waits, or work paused on IM re-authorization must keep its barrier and its
+    // `already_recorded` evidence for a late settlement.
+    const ancient = { ...sessionRecord(), key: "ancient-active", updatedAt: 0 };
+    const oldTerminal = { ...sessionRecord(), key: "old-terminal", status: "failed" as const, updatedAt: 0 };
+    await store.write(computerId, ancient);
+    await store.write(computerId, oldTerminal);
+
+    now = 10_000;
+    // The write-triggered prune must drop the aged terminal row yet keep the aged active row.
+    await store.write(computerId, { ...sessionRecord(), key: "trigger", updatedAt: 9_990 });
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [{ key: "ancient-active" }, { key: "trigger" }],
+    });
+
+    // Bounded terminal retention still works by count: two terminal records over the cap of one
+    // prune the oldest even when both are fresh.
+    await store.write(computerId, { ...ancient, status: "succeeded", updatedAt: 10_000 });
+    await store.write(computerId, { ...sessionRecord(), key: "terminal-new", status: "failed", updatedAt: 10_001 });
+    await store.write(computerId, { ...sessionRecord(), key: "terminal-newer", status: "failed", updatedAt: 10_002 });
+    await expect(store.list(computerId, "session-message")).resolves.toMatchObject({
+      items: [{ key: "trigger" }, { key: "terminal-newer" }],
+    });
+  });
+
+  it("replaceSessionMessageRecord swaps the exact expected record and bumps updatedAt", async () => {
+    const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1_000 });
+    const original = { ...sessionRecord(), key: "replace-me", updatedAt: 1_000 };
+    await store.write(computerId, original);
+    const expected = await store.read(computerId, "session-message", "replace-me");
+    if (!expected) throw new Error("missing record");
+
+    // A record that moved under the caller is never overwritten.
+    const stale = { ...expected };
+    await store.write(computerId, { ...expected, status: "running", updatedAt: 1_001 });
+    await expect(
+      store.replaceSessionMessageRecord(computerId, stale, { ...sessionRecord(), key: "replace-me", updatedAt: 1_002 }),
+    ).resolves.toBeUndefined();
+    await expect(store.read(computerId, "session-message", "replace-me")).resolves.toMatchObject({
+      status: "running",
+      updatedAt: 1_001,
+    });
+
+    // The exact current record compares equal and is replaced atomically, strictly monotonic.
+    const current = await store.read(computerId, "session-message", "replace-me");
+    if (!current) throw new Error("missing record");
+    const replacementPayload = sessionRecord().payload;
+    const written = await store.replaceSessionMessageRecord(computerId, current, {
+      ...sessionRecord(),
+      key: "replace-me",
+      payload: replacementPayload,
+      updatedAt: 1,
+    });
+    expect(written).toMatchObject({ status: "accepted", updatedAt: 1_002 });
+    expect(written?.payload).toEqual(replacementPayload);
+    await expect(store.read(computerId, "session-message", "replace-me")).resolves.toEqual(written);
+    expect(await unit.database.select().from(runtimeDurableWork)).toHaveLength(1);
+
+    // An absent row fails closed instead of inserting.
+    await expect(
+      store.replaceSessionMessageRecord(
+        computerId,
+        { ...sessionRecord(), key: "absent" },
+        { ...sessionRecord(), key: "absent" },
+      ),
+    ).resolves.toBeUndefined();
+    await expect(store.read(computerId, "session-message", "absent")).resolves.toBeUndefined();
+  });
+
+  it("replaceSessionMessageRecord charges only the net payload delta and no extra slot", async () => {
+    const store = new PostgresRuntimeDurableWorkStore(unit.database, {
+      now: () => 1,
+      maxRecordsPerComputer: 1,
+    });
+    const original = { ...sessionRecord(), key: "terminal", status: "failed" as const, updatedAt: 1 };
+    await store.write(computerId, original);
+    // Replacing the terminal record with accepted custody consumes the single slot exactly once.
+    const retried = await store.replaceSessionMessageRecord(computerId, original, {
+      ...sessionRecord(),
+      key: "terminal",
+      updatedAt: 2,
+    });
+    expect(retried).toMatchObject({ key: "terminal", status: "accepted" });
+    // A second live record does not fit the slot; the CAS never inserts.
+    await expect(
+      store.replaceSessionMessageRecord(
+        computerId,
+        { ...sessionRecord(), key: "second" },
+        { ...sessionRecord(), key: "second", updatedAt: 3 },
+      ),
+    ).resolves.toBeUndefined();
+    // Replacing the active record again keeps the count at one.
+    const current = await store.read(computerId, "session-message", "terminal");
+    if (!current) throw new Error("missing record");
+    await expect(
+      store.replaceSessionMessageRecord(computerId, current, { ...sessionRecord(), key: "terminal", updatedAt: 4 }),
+    ).resolves.toMatchObject({ key: "terminal", status: "accepted" });
+  });
+
   it("rejects backward state transitions and stale updates", async () => {
     const store = new PostgresRuntimeDurableWorkStore(unit.database, { now: () => 1 });
     const record = sessionRecord();

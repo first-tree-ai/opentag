@@ -307,6 +307,44 @@ describe("runtime credential control frames", () => {
     ).toThrow();
   });
 
+  it("carries the E8 Session CLI proof only on a succeeded execution open", () => {
+    const proof = {
+      proofId: "0b12b3c0-0000-4000-8000-0000000000a1",
+      token: "unit-session-proof-token-0123456789abcdef",
+    };
+    const succeeded = RuntimeExecutionOpenResultSchema.parse({
+      type: "runtime:execution:result",
+      requestId,
+      status: "succeeded",
+      executionId,
+      expiresAt: "2026-09-17T00:00:00Z",
+      providers: [],
+      sessionCliProof: proof,
+    });
+    expect(succeeded).toMatchObject({ status: "succeeded", sessionCliProof: proof });
+    // Legacy succeeded opens keep parsing without the E8 field.
+    expect(
+      RuntimeExecutionOpenResultSchema.safeParse({
+        type: "runtime:execution:result",
+        requestId,
+        status: "succeeded",
+        executionId,
+        expiresAt: "2026-09-17T00:00:00Z",
+        providers: [],
+      }).success,
+    ).toBe(true);
+    // A rejected open is never a Session CLI authority.
+    expect(
+      RuntimeExecutionOpenResultSchema.safeParse({
+        type: "runtime:execution:result",
+        requestId,
+        status: "rejected",
+        code: "placement_stale",
+        sessionCliProof: proof,
+      }).success,
+    ).toBe(false);
+  });
+
   it("parses the open result providers and the revoked push", () => {
     const result = RuntimeExecutionOpenResultSchema.parse({
       type: "runtime:execution:result",

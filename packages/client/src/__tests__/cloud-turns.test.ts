@@ -9,7 +9,12 @@ import type {
   RunnerCloudModelGrant,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CloudJournal, CloudJournalError, type CloudJournalScope } from "../runner/cloud-journal.js";
+import {
+  CloudJournal,
+  CloudJournalError,
+  type CloudJournalScope,
+  cloudJournalEntryKey,
+} from "../runner/cloud-journal.js";
 import { CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS, CloudTurnRunner, type CloudTurnScope } from "../runner/cloud-turns.js";
 import { cloudDeliveryFixture } from "./cloud-turns.fixture.js";
 
@@ -260,6 +265,28 @@ describe("CloudTurnRunner", () => {
     };
   }
 
+  it("passes the actual execution proof to an IM worker without journaling it", async () => {
+    const proof = { proofId: randomUUID(), token: "ephemeral-session-proof-0123456789abcdef" };
+    const h = harness({
+      runnerOptions: {
+        openExecution: async () => ({
+          executionDir: "/run/opentag-execution/turn-x",
+          sessionCliProof: proof,
+          close: async () => undefined,
+        }),
+      },
+    });
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await h.runner.handleVerified(verifiedFrame(h.delivery.requestId));
+    await h.runner.waitForActive();
+    expect(JSON.parse(h.workerInputs[0]?.stdin ?? "{}").sessionCollaboration).toEqual({
+      proof,
+      serverUrl: "https://server.example.com",
+    });
+    expect(JSON.stringify(await h.journal.read(h.delivery.deliveryId))).not.toContain(proof.token);
+    await h.runner.close();
+  });
+
   it("holds the Turn slot and publication until its workspace checkpoint succeeds", async () => {
     const saving = deferred<void>();
     const saved = deferred<void>();
@@ -278,7 +305,7 @@ describe("CloudTurnRunner", () => {
     expect(h.runner.activeDeliveryId).toBe(h.delivery.deliveryId);
     expect(reportsOf(h.sent)).toHaveLength(0);
     const entry = await h.journal.read(h.delivery.deliveryId);
-    if (!entry) throw new Error("missing journal entry");
+    if (entry?.kind !== "delivery") throw new Error("missing delivery journal entry");
     await h.runner.handleQuery({
       type: "delivery:query",
       deliveryId: entry.deliveryId,
@@ -309,7 +336,8 @@ describe("CloudTurnRunner", () => {
     await h.runner.waitForActive();
     expect(failed).toHaveBeenCalledOnce();
     expect(reportsOf(h.sent)).toHaveLength(1);
-    expect((await h.journal.read(h.delivery.deliveryId))?.report).toMatchObject({
+    const failedEntry = await h.journal.read(h.delivery.deliveryId);
+    expect(failedEntry?.kind === "delivery" ? failedEntry.report : undefined).toMatchObject({
       outcome: "failed",
       errorReason: "workspace_failed",
       executionEffects: "completed",
@@ -588,7 +616,7 @@ describe("CloudTurnRunner", () => {
     const receipts = h.sent.filter((frame) => frame.type === "delivery:received");
     expect(receipts).toHaveLength(1);
     const [entry] = await h.journal.list();
-    expect(entry?.delivery.content).toEqual(h.delivery.content);
+    expect(entry?.kind === "delivery" ? entry.delivery.content : undefined).toEqual(h.delivery.content);
     await h.runner.close();
   });
 
@@ -1229,7 +1257,7 @@ describe("CloudTurnRunner", () => {
     await waitFor(() => h.runner.activeDeliveryId === undefined, "first turn to settle");
     // The queued grant from the dead connection must never start.
     expect(tokens).toEqual(["dead-channel-grant-token-a-0123456789"]);
-    const entryB = (await h.journal.list()).find((entry) => entry.deliveryId === b.deliveryId);
+    const entryB = (await h.journal.list()).find((entry) => cloudJournalEntryKey(entry) === b.deliveryId);
     expect(entryB?.phase).toBe("received");
     // Fresh verification on the new generation starts B with the new grant.
     await h.runner.handleVerified(verifiedFrame(b.requestId, grantWith("fresh-channel-token-b-0123456789")));
@@ -1270,7 +1298,7 @@ describe("CloudTurnRunner", () => {
     gate.resolve();
     await waitFor(() => h.runner.activeDeliveryId === undefined, "runner to settle");
     expect(tokens).toEqual(["start-read-token-a-0123456789ab"]);
-    const entryB = (await h.journal.list()).find((entry) => entry.deliveryId === b.deliveryId);
+    const entryB = (await h.journal.list()).find((entry) => cloudJournalEntryKey(entry) === b.deliveryId);
     expect(entryB?.phase).toBe("received");
     gated.restore();
     await h.runner.close();
@@ -1348,7 +1376,7 @@ describe("CloudTurnRunner", () => {
     await verifying;
     // The old grant must not start: no worker, and the durable entry stays received.
     expect(tokens).toEqual([]);
-    const entryB = (await h.journal.list()).find((entry) => entry.deliveryId === b.deliveryId);
+    const entryB = (await h.journal.list()).find((entry) => cloudJournalEntryKey(entry) === b.deliveryId);
     expect(entryB?.phase).toBe("received");
     // Fresh verification on the new generation starts it with the new grant.
     await h.runner.handleVerified(verifiedFrame(b.requestId, grantWith("fresh-token-0123456789abcdefgh")));

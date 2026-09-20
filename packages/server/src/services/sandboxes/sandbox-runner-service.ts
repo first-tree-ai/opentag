@@ -83,6 +83,27 @@ export interface SandboxRunnerServiceOptions {
     /** Covers drain, two uploads and archive processing; defaults to 4 x the transfer timeout. */
     sealTimeoutMs?: number;
   };
+  /**
+   * E8 Session collaboration liveness: accepted-unfinished Session-message work on the exact
+   * allocation being considered. Consulted next to `hub.isBusy` under the same Sandbox row lock,
+   * so an idle claim or a sibling borrow can never interrupt a collaboration Turn the IM custody
+   * rows cannot see (Session messages have no durable Turn columns by design). The allocation
+   * identity (Sandbox + generation + resource) keeps a stale registration on a replaced
+   * allocation from pinning its successor.
+   */
+  sessionWorkBusy?: (allocation: { sandboxId: string; environmentGeneration: number; resourceName: string }) => boolean;
+  /**
+   * The authoritative durable barrier, awaited inside the same row-lock transaction as the claim.
+   * It reads the existing `runtime_durable_work` `session-message` records and compares their
+   * recorded allocation with the exact allocation being claimed, so accepted work blocks reclaim
+   * only while its own Instance still holds it. A record whose allocation was retired or replaced
+   * can never execute again and must not pin a replacement environment.
+   */
+  sessionWorkBarrier?: (input: {
+    allocation: { sandboxId: string; environmentGeneration: number; resourceName: string };
+    sessionId: string;
+    transaction: DatabaseTransaction;
+  }) => Promise<boolean>;
 }
 
 const DELETE_VERIFY_DEFAULT_MS = 60_000;
@@ -199,6 +220,16 @@ export class SandboxRunnerService {
   readonly #deleteVerifyTimeoutMs: number;
   readonly #idleTimeoutMs: number;
   readonly #workspace: { store: WorkspaceObjectStore; sealTimeoutMs: number } | undefined;
+  readonly #sessionWorkBusy:
+    | ((allocation: { sandboxId: string; environmentGeneration: number; resourceName: string }) => boolean)
+    | undefined;
+  readonly #sessionWorkBarrier:
+    | ((input: {
+        allocation: { sandboxId: string; environmentGeneration: number; resourceName: string };
+        sessionId: string;
+        transaction: DatabaseTransaction;
+      }) => Promise<boolean>)
+    | undefined;
   readonly #now: () => Date;
   readonly #sleep: (ms: number) => Promise<void>;
 
@@ -224,6 +255,8 @@ export class SandboxRunnerService {
           sealTimeoutMs: options.workspace.sealTimeoutMs ?? 4 * RUNNER_WORKSPACE_TIMEOUT_MS,
         }
       : undefined;
+    this.#sessionWorkBusy = options.sessionWorkBusy;
+    this.#sessionWorkBarrier = options.sessionWorkBarrier;
     this.#now = options.now ?? (() => new Date());
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
@@ -1822,8 +1855,10 @@ export class SandboxRunnerService {
   /**
    * Atomic idle claim under the Sandbox row lock, shared by the automatic sweep and an on-demand
    * same-account borrow. The unsettled-delivery check runs AFTER the row lock, and dispatch
-   * custody takes the same row lock, so an accepted/claimed dispatch and a claim can never both
-   * commit. Any unsettled work (pending/claimed dispatch, accepted/unreported) refuses the claim.
+   * custody takes the same row lock — IM dispatch registers acceptance under it and the E8
+   * Session-message owner re-verifies the unclaimed allocation under it before writing accepted
+   * custody — so an accepted/claimed dispatch and a claim can never both commit. Any unsettled
+   * work (pending/claimed dispatch, accepted/unreported) refuses the claim.
    */
   async #claimIdle(
     sandboxId: string,
@@ -1854,23 +1889,26 @@ export class SandboxRunnerService {
     const now = this.#now();
     const cutoff = new Date(now.getTime() - this.#idleTimeoutMs);
     return this.#database.transaction(async (transaction) => {
-      const [row] = await transaction
+      const [locked] = await transaction
         .select()
         .from(sandboxes)
         .where(eq(sandboxes.id, sandboxId))
         .limit(1)
         .for("update");
-      if (row?.lifecycle !== "ready" || row.idleReclaimAt !== null) return undefined;
-      if (row.currentResourceName === null || row.currentResourceUid === null) return undefined;
-      if (
-        row.environmentGeneration !== candidate.environmentGeneration ||
-        row.currentResourceName !== candidate.currentResourceName ||
-        row.currentResourceUid !== candidate.currentResourceUid
-      )
-        return undefined;
+      const row = this.#reclaimableRow(locked, candidate);
+      if (!row) return undefined;
       // Acceptance registration also runs under this row lock (via the hub authorize hook), so
       // this in-memory check cannot miss a concurrent acceptance.
       if (this.#hub.isBusy(sandboxId)) return undefined;
+      if (
+        await this.#sessionWorkBlocksClaim(
+          { environmentGeneration: row.environmentGeneration, resourceName: row.currentResourceName, sandboxId },
+          row.sessionId,
+          transaction,
+        )
+      ) {
+        return undefined;
+      }
       if (!this.#withinIdleBudget(row, options, now, cutoff)) return undefined;
       if (await this.#hasUnsettledWork(transaction, row.sessionId)) return undefined;
       const [claimed] = await transaction
@@ -1896,6 +1934,26 @@ export class SandboxRunnerService {
     });
   }
 
+  /**
+   * The row locked for a claim still holds the exact identity the un-locked preflight observed,
+   * with a live allocation and no pending reclaim; otherwise the claim is refused.
+   */
+  #reclaimableRow(
+    locked: typeof sandboxes.$inferSelect | undefined,
+    candidate: typeof sandboxes.$inferSelect,
+  ): (typeof sandboxes.$inferSelect & { currentResourceName: string; currentResourceUid: string }) | undefined {
+    if (locked?.lifecycle !== "ready" || locked.idleReclaimAt !== null) return undefined;
+    if (locked.currentResourceName === null || locked.currentResourceUid === null) return undefined;
+    if (
+      locked.environmentGeneration !== candidate.environmentGeneration ||
+      locked.currentResourceName !== candidate.currentResourceName ||
+      locked.currentResourceUid !== candidate.currentResourceUid
+    ) {
+      return undefined;
+    }
+    return locked as typeof locked & { currentResourceName: string; currentResourceUid: string };
+  }
+
   /** The single budget check: `automatic` uses the idle cutoff, a borrow only refuses the future. */
   #withinIdleBudget(
     row: typeof sandboxes.$inferSelect,
@@ -1905,6 +1963,21 @@ export class SandboxRunnerService {
   ): boolean {
     if (options.automatic) return row.lastActivityAt.getTime() <= cutoff.getTime();
     return row.lastActivityAt.getTime() <= now.getTime();
+  }
+
+  /**
+   * E8 shared occupancy for one claim: the in-memory collaboration picture first (fast, catches
+   * the pre-custody hand-off), then the durable accepted-work barrier that survives restarts and
+   * lost settlement signals. Both are evaluated under the same Sandbox row lock as the claim.
+   */
+  async #sessionWorkBlocksClaim(
+    allocation: { sandboxId: string; environmentGeneration: number; resourceName: string },
+    sessionId: string,
+    transaction: DatabaseTransaction,
+  ): Promise<boolean> {
+    if (this.#sessionWorkBusy?.(allocation)) return true;
+    if (!this.#sessionWorkBarrier) return false;
+    return this.#sessionWorkBarrier({ allocation, sessionId, transaction });
   }
 
   /** Unsettled work in the Session blocks every claim, under the same row lock as the claim. */
@@ -1951,14 +2024,21 @@ export class SandboxRunnerService {
   /** A candidate is borrowable only through a connected, ready, E7-negotiated, non-busy Runner. */
   #isReuseCandidateReady(candidate: typeof sandboxes.$inferSelect): boolean {
     const snapshot = this.#hub.describe(candidate.id);
+    const resourceName = candidate.currentResourceName;
     return (
       snapshot.connected &&
       snapshot.ready &&
       snapshot.reuseCapable &&
       snapshot.scope !== null &&
+      resourceName !== null &&
       snapshot.scope.environmentGeneration === candidate.environmentGeneration &&
-      snapshot.scope.resourceName === candidate.currentResourceName &&
-      !this.#hub.isBusy(candidate.id)
+      snapshot.scope.resourceName === resourceName &&
+      !this.#hub.isBusy(candidate.id) &&
+      this.#sessionWorkBusy?.({
+        sandboxId: candidate.id,
+        environmentGeneration: candidate.environmentGeneration,
+        resourceName,
+      }) !== true
     );
   }
 

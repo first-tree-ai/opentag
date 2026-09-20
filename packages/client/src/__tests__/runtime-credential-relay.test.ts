@@ -381,6 +381,21 @@ describe("RuntimeCredentialRelay", () => {
     }
   });
 
+  it("retains the Session CLI proof from the open result only until the execution closes", async () => {
+    const proof = { proofId: randomUUID(), token: "p".repeat(40) };
+    const harness = relayHarness({
+      providers: ["github"],
+      openResults: [{ ...openResultFrame("placeholder", ["github"], Date.now()), sessionCliProof: proof }],
+    });
+    const relay = await RuntimeCredentialRelay.open(harness.relayOptions, harness.subject);
+    try {
+      expect(relay.sessionCliProof).toEqual(proof);
+    } finally {
+      await relay.close("test");
+    }
+    expect(relay.sessionCliProof).toBeUndefined();
+  });
+
   it("retries execution_not_ready until custody is accepted", async () => {
     const harness = relayHarness({
       providers: ["github"],

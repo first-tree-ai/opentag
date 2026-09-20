@@ -15,6 +15,7 @@ import {
   collectKnownSecrets,
   createCloudDeliveryComposition,
   createCloudIngressAllocationPort,
+  createCloudSessionAllocationPort,
   createSandboxRunnerRuntime,
   type SandboxRunnerRuntime,
 } from "./cloud-runtime-composition.js";
@@ -41,6 +42,7 @@ import { ProviderCliReconcileOwner } from "./runtime/provider-cli-reconcile-owne
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { CloudContextTreeOperations } from "./services/agents/cloud-context-tree-operations.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import {
   AgentRuntimeTestService,
@@ -95,6 +97,12 @@ import { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import { CloudRuntimeFence } from "./services/sandboxes/cloud-runtime-fence.js";
+import {
+  type CloudSessionCollaborationOwner,
+  CloudSessionWorkTracker,
+  createCloudSourceConnectionVerifier,
+  createSessionCliCloudProofAuthority,
+} from "./services/sandboxes/cloud-session-collaboration-owner.js";
 import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
@@ -267,6 +275,7 @@ async function stopCloudThenLocalAgentSessions(
   cloudDelivery: CloudDeliveryOwner | undefined,
   dependencies: AgentSessionStopDependencies,
   onDiagnostic?: (code: string) => void,
+  cloudSession?: CloudSessionCollaborationOwner,
 ): Promise<void> {
   if (cloudDelivery) {
     for (const target of targets) {
@@ -278,7 +287,48 @@ async function stopCloudThenLocalAgentSessions(
       }
     }
   }
+  for (const target of targets) {
+    try {
+      const outcomes = await cloudSession?.cancelSessionMessages(target.sessionId);
+      for (const outcome of outcomes ?? []) {
+        if (outcome.status !== "requested") onDiagnostic?.("CLOUD_SESSION_STOP_UNCONFIRMED");
+      }
+    } catch {
+      onDiagnostic?.("CLOUD_SESSION_STOP_FAILED");
+    }
+  }
   await stopAgentSessions(database, targets, dependencies);
+}
+
+function cloudSessionAuthorityOptions(
+  fence: CloudRuntimeFence | undefined,
+  credentials: Parameters<typeof createCloudDeliveryComposition>[0]["credentialOwner"],
+) {
+  if (!fence) return { session: {}, proof: {} };
+  return {
+    session: { cloudSourceConnection: createCloudSourceConnectionVerifier(fence) },
+    proof: { cloud: createSessionCliCloudProofAuthority({ fence, registry: credentials.executionRegistry }) },
+  };
+}
+
+function createContextTreeServices(
+  management: NonNullable<ReturnType<typeof createGitHubIntegration>>["management"] | undefined,
+  imBindings: ImBindingService,
+  agents: AgentService,
+  owner: ContextTreeOperationOwner,
+) {
+  const computerKind = (computerId: string) => imBindings.computerKind(computerId);
+  const cloudContextTreeOperations = management
+    ? new CloudContextTreeOperations({ management, computerKind })
+    : undefined;
+  return {
+    cloudContextTreeOperations,
+    contextTreeOperationService: new ContextTreeOperationService(agents, owner, {
+      computerKind,
+      run: (input) =>
+        cloudContextTreeOperations?.run(input) ?? Promise.resolve({ status: "failed", code: "capability_missing" }),
+    }),
+  };
 }
 
 /*
@@ -440,7 +490,12 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const custody = new PostgresRuntimeCustodyStore(database);
-    const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config);
+    let cloudSessionOwner: CloudSessionCollaborationOwner | undefined;
+    const cloudSessionWork = new CloudSessionWorkTracker();
+    const cloudRunnerRuntime = createSandboxRunnerRuntime(database, config, {
+      sessionWorkBusy: (allocation) => cloudSessionWork.isBusy(allocation),
+      sessionWorkBarrier: (input) => cloudSessionOwner?.hasUnsettledSessionWork(input) ?? Promise.resolve(false),
+    });
     /*
      * E7 idle reclamation runs on the existing Server lifecycle: one fixed 15s cadence, one idle
      * budget from lastActivityAt, bounded batches, and a database CAS that converges across
@@ -559,11 +614,20 @@ export async function startServer(): Promise<void> {
     const feishuInboundReceipts = new FeishuInboundReceiptStore(database, {
       onMetric: (metric) => app?.log.info({ metric }, "Feishu inbound receipt metric"),
     });
-    const sessionService = new SessionService(database, { logger: serviceLogger("session") });
+    const sessionAuthority = cloudSessionAuthorityOptions(cloudRuntimeFence, platformRuntime.credentials.owner);
+    const sessionService = new SessionService(database, {
+      logger: serviceLogger("session"),
+      ...sessionAuthority.session,
+    });
     const sandboxService = new SandboxService(database, sessionService, { cloudIdentities });
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
-    const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
+    const sessionCliProofService = new SessionCliProofService(
+      database,
+      registry,
+      config.encryptionKey,
+      sessionAuthority.proof,
+    );
     const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"));
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       logger: serviceLogger("runtime-domain"),
@@ -582,14 +646,6 @@ export async function startServer(): Promise<void> {
     });
     const contextTreeOperationOwner = new ContextTreeOperationOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
-    const sessionCollaborationService = new SessionCollaborationService({
-      assembler: runtimeSnapshotAssembler,
-      domain: domainOwner,
-      onDiagnostic: reportDiagnostic,
-      registry,
-      sessions: sessionService,
-      logger: serviceLogger("session-collaboration"),
-    });
     const agentService = new AgentService(database, {
       cloudIdentitiesEnabled: cloudIdentities.enabled,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
@@ -605,9 +661,15 @@ export async function startServer(): Promise<void> {
               domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
           },
           reportDiagnostic,
+          cloudSessionOwner,
         ),
     });
-    const contextTreeOperationService = new ContextTreeOperationService(agentService, contextTreeOperationOwner);
+    const { cloudContextTreeOperations, contextTreeOperationService } = createContextTreeServices(
+      github?.management,
+      imBindingService,
+      agentService,
+      contextTreeOperationOwner,
+    );
     const agentRuntimeTestService = new AgentRuntimeTestService(agentService, agentRuntimeTestOwner);
     const feishuConnections = new FeishuConnectionManager({
       database,
@@ -675,12 +737,39 @@ export async function startServer(): Promise<void> {
       hub: cloudRunnerRuntime?.runnerChannel.hub,
       ...optionalCloudFence(cloudRuntimeFence),
       credentialOwner: platformRuntime.credentials.owner,
+      sessionProofs: sessionCliProofService,
+      ...(cloudRunnerRuntime
+        ? {
+            sessionCollaboration: {
+              work: cloudSessionWork,
+              assembler: runtimeSnapshotAssembler,
+              proofs: sessionCliProofService,
+              sessions: sessionService,
+              durableWork: durableWorkStore,
+              allocation: createCloudSessionAllocationPort({
+                database,
+                sandboxService,
+                sandboxRunnerService: cloudRunnerRuntime.sandboxRunnerService,
+              }),
+            },
+          }
+        : {}),
       ...optionalAllocationStatus(cloudRunnerRuntime),
       ...optionalNoteActivity(cloudRunnerRuntime),
       logger: serviceLogger("cloud-delivery"),
     });
     const cloudDeliveryOwner = cloudDelivery.cloudDeliveryOwner;
     cloudDeliveryOwnerRef = cloudDeliveryOwner;
+    cloudSessionOwner = cloudDelivery.cloudSessionOwner;
+    const sessionCollaborationService = new SessionCollaborationService({
+      assembler: runtimeSnapshotAssembler,
+      domain: domainOwner,
+      onDiagnostic: reportDiagnostic,
+      registry,
+      sessions: sessionService,
+      cloud: cloudSessionOwner,
+      logger: serviceLogger("session-collaboration"),
+    });
     const imDeliveryLogger = serviceLogger("im-delivery");
     /*
      * The MCP management plane. Every outbound request goes through one fetcher that enforces the
@@ -883,6 +972,7 @@ export async function startServer(): Promise<void> {
       mcpRefreshWorker.stop();
       skillRuntime.gc?.stop();
       if (github) await github.worker.stop();
+      await cloudContextTreeOperations?.close();
       await platformRuntime.close();
       await feishuSetupService.stop();
       await feishuConnections.stop();

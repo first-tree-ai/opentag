@@ -1,6 +1,7 @@
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
+  RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_CLOSE,
   RUNNER_WS_MAX_FRAME_BYTES,
@@ -8,6 +9,8 @@ import {
   type RunnerAcceptanceResultFrame,
   type RunnerClientFrame,
   RunnerClientFrameSchema,
+  type RunnerCloudSessionMessageReceivedFrame,
+  type RunnerCloudSessionMessageSettledFrame,
   type RunnerReadiness,
   type RunnerServerFrame,
   type RuntimeCredentialClientFrame,
@@ -46,12 +49,26 @@ export interface RunnerWebSocketRouteOptions {
   hub: RunnerHub;
   /** E4 Session-scoped Cloud IM delivery; absent keeps the channel acceptance-only. */
   cloudDelivery?: CloudDeliveryOwner;
+  /**
+   * E8 Cloud Session collaboration. Present exactly when the deployment composed a
+   * CloudSessionCollaborationOwner; absent keeps the channel E7-compatible (no E8 echo, no
+   * session frames).
+   */
+  cloudSession?: RunnerCloudSessionPort;
   authTimeoutMs?: number;
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
   /** Override the token-service derived renewal cadence (tests only). */
   credentialRenewalIntervalMs?: number;
   now?: () => number;
+}
+
+/** The narrow collaboration surface RunnerConnection routes inbound frames and teardown to. */
+export interface RunnerCloudSessionPort {
+  handleReceived(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageReceivedFrame): Promise<void>;
+  handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void>;
+  /** Synchronously fails pending dispatches; async durable cleanup is handled internally. */
+  detachConnection(connectionId: string): void;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -204,7 +221,7 @@ export class RunnerConnection {
     if (this.#closed) return;
     this.#closed = true;
     this.#clearTimers();
-    if (this.#cloudConnection) this.#options.cloudDelivery?.detachConnection(this.#cloudConnection.connectionId);
+    this.#detachCloudConnection();
     if (this.#scope) this.#options.hub.detach(this.#scope.sandboxId, this.#adapter);
     this.#adapter.close(code, reason);
   }
@@ -212,8 +229,21 @@ export class RunnerConnection {
   #onTransportClosed(): void {
     this.#closed = true;
     this.#clearTimers();
-    if (this.#cloudConnection) this.#options.cloudDelivery?.detachConnection(this.#cloudConnection.connectionId);
+    this.#detachCloudConnection();
     if (this.#scope) this.#options.hub.detach(this.#scope.sandboxId, this.#adapter);
+  }
+
+  /**
+   * Teardown order is significant: Cloud delivery first closes the credential executions (the
+   * registry close synchronously invalidates every Session proof correlated with them), then the
+   * collaboration owner synchronously fails its pending dispatches and schedules its durable
+   * revocation cleanup. Both are idempotent, so either close path is safe.
+   */
+  #detachCloudConnection(): void {
+    const connection = this.#cloudConnection;
+    if (!connection) return;
+    this.#options.cloudDelivery?.detachConnection(connection.connectionId);
+    this.#options.cloudSession?.detachConnection(connection.connectionId);
   }
 
   #sendAuthResult(ok: boolean, requestId: string | undefined): void {
@@ -237,6 +267,7 @@ export class RunnerConnection {
     renewExpired: boolean,
     controlToken: string | undefined,
     reuseVersion: number | undefined,
+    wantsSessionCollaboration: boolean,
   ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
@@ -247,7 +278,14 @@ export class RunnerConnection {
     // credential names the immutable physical birth identity; the Server resolves the unique
     // current owning Sandbox by resource name and validates that owner's authority below.
     if (controlToken !== undefined && reuseVersion === RUNNER_REUSE_VERSION) {
-      await this.#handleControlAuth(controlToken, requestId, wantsCloudDelivery, wantsWorkspace, renewExpired);
+      await this.#handleControlAuth(
+        controlToken,
+        requestId,
+        wantsCloudDelivery,
+        wantsWorkspace,
+        renewExpired,
+        wantsSessionCollaboration,
+      );
       return;
     }
     const claims = await this.#verifyBootstrapToken(token, requestId, wantsWorkspace && renewExpired);
@@ -260,6 +298,8 @@ export class RunnerConnection {
       wantsCloudDelivery,
       wantsWorkspace,
       resolved.reportOnly,
+      undefined,
+      wantsSessionCollaboration,
     );
   }
 
@@ -274,6 +314,7 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     renewExpired: boolean,
+    wantsSessionCollaboration: boolean,
   ): Promise<void> {
     let controlClaims: RunnerBootstrapClaims;
     try {
@@ -310,6 +351,7 @@ export class RunnerConnection {
       wantsWorkspace,
       resolved.reportOnly,
       { reuseCapable: wantsWorkspace && this.#options.service.workspacePersistenceEnabled },
+      wantsSessionCollaboration,
     );
   }
 
@@ -422,12 +464,21 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     reportOnly: boolean,
-    control?: { reuseCapable: boolean },
+    control: { reuseCapable: boolean } | undefined,
+    wantsSessionCollaboration: boolean,
   ): Promise<void> {
     const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
     // E5 capability negotiation is independent of delivery: echo only when the Runner requested
     // the workspace capability AND this Server has persistence configured.
     const workspaceNegotiated = wantsWorkspace && this.#options.service.workspacePersistenceEnabled;
+    // E8 Session collaboration requires the E4 Cloud channel first: without the fence there is no
+    // allocation to bind a proof or session frame to, so the echo is withheld and the connection
+    // keeps the exact E7 behavior.
+    const sessionCollaborationNegotiated = this.#negotiateSessionCollaboration(
+      wantsSessionCollaboration,
+      cloudNegotiated,
+      this.#options.cloudSession !== undefined,
+    );
     // The asynchronous Cloud fence facts are resolved BEFORE the hub attach: once this socket is
     // the hub's current entry, the route's cadenced heartbeat sweep can write to it, and no server
     // frame may ever reach the Runner ahead of its auth:result. Everything between the hub attach
@@ -469,25 +520,22 @@ export class RunnerConnection {
         // A report-only reconnect may settle/report existing custody, but the owner must never
         // mint execution permission for it; the fresh active handshake replaces the record.
         executionEligible: !reportOnly,
+        // E8: gated on the explicit auth opt-in, so a legacy E7 Runner's fence record never
+        // receives a Session-CLI proof field or a session:message frame.
+        sessionCollaborationEligible: sessionCollaborationNegotiated,
       });
     }
     this.#sendAuthResult(true, requestId);
-    this.#send({
-      type: "server:welcome",
-      protocolVersion: RUNNER_WS_PROTOCOL_VERSION,
-      sandboxId: validated.sandboxId,
-      sessionId: validated.sessionId,
-      environmentGeneration: validated.environmentGeneration,
-      resourceName: validated.resourceName,
-      // Exact legacy E3 welcome shape for a connection that did not opt into E4: no capability
-      // echo and no resourceUid are added for it.
-      ...(cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
-      ...(cloudNegotiated && fence?.resourceUid ? { resourceUid: fence.resourceUid } : {}),
-      ...(workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
-      ...(control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
-      heartbeatIntervalMs: this.#heartbeatIntervalMs,
-      heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
-    });
+    this.#send(
+      this.#welcomeFrame({
+        cloudNegotiated,
+        control,
+        fence,
+        sessionCollaborationNegotiated,
+        validated,
+        workspaceNegotiated,
+      }),
+    );
     await this.#renewCredential();
     if (!this.#closed) {
       this.#credentialTimer = setInterval(() => {
@@ -497,6 +545,47 @@ export class RunnerConnection {
       }, this.#credentialRenewalIntervalMs);
       this.#credentialTimer.unref?.();
     }
+  }
+
+  /** Negotiate E8 only when the Runner asks for it, the E4 Cloud channel exists, and this Server
+   * actually composed a collaboration owner. */
+  #negotiateSessionCollaboration(
+    wantsSessionCollaboration: boolean,
+    cloudNegotiated: boolean,
+    ownerPresent: boolean,
+  ): boolean {
+    return wantsSessionCollaboration && cloudNegotiated && ownerPresent;
+  }
+
+  /**
+   * The exact legacy E3 welcome shape for a connection that did not opt into a capability: only
+   * negotiated capabilities and the verified allocation UID are additive fields.
+   */
+  #welcomeFrame(input: {
+    cloudNegotiated: boolean;
+    control: { reuseCapable: boolean } | undefined;
+    fence: { resourceUid: string | null } | undefined;
+    sessionCollaborationNegotiated: boolean;
+    validated: RunnerScope;
+    workspaceNegotiated: boolean;
+  }): RunnerServerFrame {
+    return {
+      type: "server:welcome",
+      protocolVersion: RUNNER_WS_PROTOCOL_VERSION,
+      sandboxId: input.validated.sandboxId,
+      sessionId: input.validated.sessionId,
+      environmentGeneration: input.validated.environmentGeneration,
+      resourceName: input.validated.resourceName,
+      ...(input.cloudNegotiated ? { cloudDeliveryVersion: RUNNER_CLOUD_DELIVERY_VERSION } : {}),
+      ...(input.cloudNegotiated && input.fence?.resourceUid ? { resourceUid: input.fence.resourceUid } : {}),
+      ...(input.workspaceNegotiated ? { workspaceVersion: RUNNER_WORKSPACE_VERSION } : {}),
+      ...(input.control?.reuseCapable === true ? { reuseVersion: RUNNER_REUSE_VERSION } : {}),
+      ...(input.sessionCollaborationNegotiated
+        ? { sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_VERSION }
+        : {}),
+      heartbeatIntervalMs: this.#heartbeatIntervalMs,
+      heartbeatTimeoutMs: this.#heartbeatTimeoutMs,
+    };
   }
 
   /**
@@ -880,6 +969,41 @@ export class RunnerConnection {
     return true;
   }
 
+  /**
+   * The E8 inbound handlers close the exact same way an unnegotiated E4 frame does: a Session
+   * frame on a channel that never negotiated the capability is a protocol error, never a silent
+   * no-op that leaves a journaled Turn hanging.
+   */
+  #requireCloudSession(): { connection: CloudConnectionRecord; session: RunnerCloudSessionPort } | undefined {
+    const connection = this.#cloudConnection;
+    const session = this.#options.cloudSession;
+    if (!connection || !session || connection.sessionCollaborationEligible !== true) {
+      this.#closeWith(RUNNER_WS_CLOSE.protocolError, "cloud session collaboration is not enabled on this channel");
+      return undefined;
+    }
+    return { connection, session };
+  }
+
+  async #handleSessionMessageReceived(
+    current: RunnerScope,
+    frame: Extract<RunnerClientFrame, { type: "session:message:received" }>,
+  ): Promise<void> {
+    if (!(await this.#channelHolds(current))) return;
+    const cloud = this.#requireCloudSession();
+    if (!cloud) return;
+    await cloud.session.handleReceived(cloud.connection, frame);
+  }
+
+  async #handleSessionMessageSettled(
+    current: RunnerScope,
+    frame: Extract<RunnerClientFrame, { type: "session:message:settled" }>,
+  ): Promise<void> {
+    if (!(await this.#channelHolds(current))) return;
+    const cloud = this.#requireCloudSession();
+    if (!cloud) return;
+    await cloud.session.handleSettled(cloud.connection, frame);
+  }
+
   #requireCloudContext(): { connection: CloudConnectionRecord; owner: CloudDeliveryOwner } | undefined {
     const connection = this.#cloudConnection;
     const owner = this.#options.cloudDelivery;
@@ -926,6 +1050,8 @@ export class RunnerConnection {
     if (data.type === "delivery:received") return this.#handleDeliveryReceived(current, data);
     if (data.type === "delivery:report") return this.#handleDeliveryReport(current, data);
     if (data.type === "delivery:query:result") return this.#handleQueryResult(current, data);
+    if (data.type === "session:message:received") return this.#handleSessionMessageReceived(current, data);
+    if (data.type === "session:message:settled") return this.#handleSessionMessageSettled(current, data);
     if (data.type === "credential:frame") return this.#handleCredentialFrame(current, data);
     if (data.type === "workspace:seal:result") return this.#handleWorkspaceSealResult(current, data);
   }
@@ -935,8 +1061,9 @@ export class RunnerConnection {
       this.#closeWith(RUNNER_WS_CLOSE.authFailed, "the first frame must authenticate");
       return;
     }
-    // E4/E5 capability negotiation happens on the auth frame; a legacy E3 auth never sets either
-    // capability and keeps the exact legacy welcome/behavior.
+    // E4/E5/E8 capability negotiation happens on the auth frame; a legacy E3 auth never sets any
+    // capability and keeps the exact legacy welcome/behavior, and an E7 Runner that does not send
+    // the E8 request never receives a Session-collaboration field or frame.
     await this.#handleAuth(
       data.token,
       data.requestId,
@@ -945,6 +1072,7 @@ export class RunnerConnection {
       data.renewExpired === true,
       data.controlToken,
       data.reuseVersion,
+      data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION,
     );
   }
 

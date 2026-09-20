@@ -9,9 +9,23 @@ import { randomUUID } from "node:crypto";
 import { RUNNER_WORKSPACE_TIMEOUT_MS } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { imBindings, imMessageDeliveries, imMessages, sandboxes, users } from "../db/schema/index.js";
+import {
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  runtimeDurableWork,
+  sandboxes,
+  users,
+} from "../db/schema/index.js";
+import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
 import { AgentService } from "../services/agents/index.js";
 import { ComputerService } from "../services/computers/index.js";
+import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
+import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
+import {
+  CloudSessionCollaborationOwner,
+  CloudSessionWorkTracker,
+} from "../services/sandboxes/cloud-session-collaboration-owner.js";
 import { SandboxService } from "../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
@@ -94,7 +108,13 @@ interface Stack {
   advance: (ms: number) => void;
 }
 
-function makeStack(options: { workspace?: boolean } = {}): Stack {
+function makeStack(
+  options: {
+    workspace?: boolean;
+    sessionWorkBusy?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBusy"];
+    sessionWorkBarrier?: ConstructorParameters<typeof SandboxRunnerService>[1]["sessionWorkBarrier"];
+  } = {},
+): Stack {
   const fake = new FakeCloudRunAdmin();
   const store = new FakeWorkspaceObjectStore();
   const tokens = new RunnerBootstrapTokenService(JWT_SECRET, { ttlSeconds: 600 });
@@ -113,6 +133,8 @@ function makeStack(options: { workspace?: boolean } = {}): Stack {
     sleep: () => Promise.resolve(),
     now: () => current,
     ...(options.workspace === false ? {} : { workspace: { store } }),
+    ...(options.sessionWorkBusy ? { sessionWorkBusy: options.sessionWorkBusy } : {}),
+    ...(options.sessionWorkBarrier ? { sessionWorkBarrier: options.sessionWorkBarrier } : {}),
   });
   return {
     fake,
@@ -591,6 +613,224 @@ describe("E7 automatic idle reclamation", () => {
       .where(eq(sandboxes.id, ready.row.id));
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+  });
+
+  it("blocks an automatic idle claim while accepted Session-message work is durably unfinished", async () => {
+    const accountId = await account();
+    const owner = new CloudSessionCollaborationOwner({
+      assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+      database: unit.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(unit.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      work: new CloudSessionWorkTracker(),
+    });
+    const stack = makeStack({ sessionWorkBarrier: (input) => owner.hasUnsettledSessionWork(input) });
+    const ready = await readySandbox(stack, accountId, "room-session-work");
+    // Age the row past the idle budget: only the durable collaboration barrier can refuse it.
+    const now = stack.now();
+    await unit.database
+      .update(sandboxes)
+      .set({ lastActivityAt: new Date(now.getTime() - IDLE_TIMEOUT_MS - 1_000) })
+      .where(eq(sandboxes.id, ready.row.id));
+    const recordKey = `${ready.row.sessionId}:${randomUUID()}`;
+    await unit.database.insert(runtimeDurableWork).values({
+      acceptedAt: now.getTime(),
+      attempts: 0,
+      computerId: ready.owned.cloud.computerId,
+      kind: "session-message",
+      payload: { messageId: recordKey.split(":")[1] },
+      recordKey,
+      status: "accepted",
+      updatedAt: now.getTime(),
+    });
+
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).idleReclaimAt).toBeNull();
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+
+    // A verified terminal outcome clears the barrier and the same sweep reclaims normally.
+    await unit.database
+      .update(runtimeDurableWork)
+      .set({ status: "succeeded", updatedAt: now.getTime() + 1 })
+      .where(eq(runtimeDurableWork.recordKey, recordKey));
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+  });
+
+  /** Attach a reuse-capable Runner for the row's current allocation, answering seals like a Runner. */
+  async function attachReadyRunner(stack: Stack, row: typeof sandboxes.$inferSelect) {
+    const scope: RunnerScope = {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName as string,
+    };
+    const socket: RunnerControlSocket = {
+      send(frame) {
+        if (frame.type !== "workspace:seal") return;
+        stack.store.plant(
+          {
+            storageUri: row.storageUri,
+            sandboxId: row.id,
+            sessionId: row.sessionId,
+            environmentGeneration: row.environmentGeneration,
+          },
+          { saved: true, sealed: true, ownerGeneration: row.environmentGeneration },
+        );
+        stack.hub.settleWorkspaceSeal(
+          row.id,
+          { type: "workspace:seal:result", requestId: frame.requestId, ok: true },
+          socket,
+        );
+      },
+      close() {
+        // The hub owns connection replacement; tests only need the send surface.
+      },
+    };
+    stack.hub.attach(scope, socket, { reuseCapable: true });
+    stack.hub.markReady(
+      scope,
+      {
+        sandboxName: scope.resourceName.split("/").at(-1) as string,
+        rootfs: "/opt/sandbox-root",
+        nodeVersion: "v24.19.0",
+        piVersion: "0.84.2",
+        runnerVersion: RUNNER_VERSION,
+        reportedAt: stack.now().toISOString(),
+      },
+      socket,
+    );
+    await stack.service.promoteDeferredReadiness(row.id);
+    const ready = await sandboxRow(row.id);
+    expect(ready.lifecycle).toBe("ready");
+    return { row: ready, scope, socket };
+  }
+
+  /** Accepted Session-collaboration work on one allocation: tracker registration + durable envelope. */
+  async function plantSessionWork(
+    stack: Stack,
+    ready: Awaited<ReturnType<typeof readySandbox>>,
+    work: CloudSessionWorkTracker,
+  ): Promise<void> {
+    const messageId = randomUUID();
+    const now = stack.now();
+    work.register(ready.scope, messageId, "turn-old");
+    await unit.database.insert(runtimeDurableWork).values({
+      acceptedAt: now.getTime(),
+      attempts: 0,
+      computerId: ready.owned.cloud.computerId,
+      kind: "session-message",
+      payload: {
+        type: "cloud-session-message-work",
+        request: {
+          type: "session:message:deliver",
+          requestId: randomUUID(),
+          messageId,
+          sourceSessionId: ready.row.sessionId,
+          targetSessionId: ready.row.sessionId,
+          agentId: ready.owned.agent.id,
+          placementGeneration: 1,
+          content: { kind: "text", text: "old work" },
+          runtime: {
+            contextTreeRepository: null,
+            revision: { agent: { sequence: 1, id: "agent" }, session: { sequence: 1, id: "session" } },
+            agentId: ready.owned.agent.id,
+            provider: "codex",
+            instructions: { platform: "platform", agent: "agent" },
+            execution: { approvalPolicy: "never", networkAccess: false },
+            workspace: { workspaceId: "workspace", mode: "empty_on_create", sharing: "agent" },
+          },
+        },
+        allocation: {
+          sandboxId: ready.scope.sandboxId,
+          environmentGeneration: ready.scope.environmentGeneration,
+          resourceName: ready.scope.resourceName,
+        },
+        turnId: "turn-old",
+      },
+      recordKey: `${ready.row.sessionId}:${messageId}`,
+      status: "accepted",
+      updatedAt: now.getTime(),
+    });
+  }
+
+  /**
+   * The IM ingress replacement path: provider-confirmed loss of the old Instance, then a normal
+   * start allocating the next generation. No Session-collaboration dispatch or reconcile runs.
+   */
+  async function replaceAllocation(
+    stack: Stack,
+    ready: Awaited<ReturnType<typeof readySandbox>>,
+    accountId: string,
+  ): Promise<Awaited<ReturnType<typeof attachReadyRunner>>> {
+    const instance = stack.fake.instances.get(ready.row.currentResourceName as string);
+    if (!instance) throw new Error("Missing fixture Instance");
+    instance.gone = true;
+    stack.hub.detach(ready.row.id, ready.socket);
+    await stack.service.startForAccount(accountId, ready.row.id);
+    const replaced = await sandboxRow(ready.row.id);
+    expect(replaced.environmentGeneration).toBe(ready.row.environmentGeneration + 1);
+    expect(replaced.currentResourceName).not.toBe(ready.row.currentResourceName);
+    return attachReadyRunner(stack, replaced);
+  }
+
+  function sessionWorkStack(work: CloudSessionWorkTracker) {
+    const owner = new CloudSessionCollaborationOwner({
+      assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+      database: unit.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(unit.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      work,
+    });
+    // Exactly the production composition: the allocation-scoped fast pre-filter plus the durable
+    // barrier.
+    return makeStack({
+      sessionWorkBarrier: (input) => owner.hasUnsettledSessionWork(input),
+      sessionWorkBusy: (allocation) => work.isBusy(allocation),
+    });
+  }
+
+  it("does not pin an IM-created replacement allocation through a stale Session-work registration", async () => {
+    const accountId = await account();
+    const work = new CloudSessionWorkTracker();
+    const stack = sessionWorkStack(work);
+    const ready = await readySandbox(stack, accountId, "room-replaced-session-work");
+    await plantSessionWork(stack, ready, work);
+
+    // The IM ingress path replaces the allocation; reconcile never runs for it.
+    const replacement = await replaceAllocation(stack, ready, accountId);
+    expect(work.isBusy(ready.scope)).toBe(true); // the stale generation's own picture stays on record
+    expect(work.isBusy(replacement.scope)).toBe(false);
+
+    // The sweep claims and reclaims the replacement: neither the stale in-memory registration nor
+    // the stale durable record is a barrier for the new allocation, and no reconcile was invoked.
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+    expect(stack.fake.liveInstanceCount()).toBe(0);
+  });
+
+  it("lets a same-account sibling borrow a replaced allocation despite a stale Session-work registration", async () => {
+    const accountId = await account();
+    const work = new CloudSessionWorkTracker();
+    const stack = sessionWorkStack(work);
+    const ready = await readySandbox(stack, accountId, "room-replaced-borrow-source");
+    await plantSessionWork(stack, ready, work);
+    const replacement = await replaceAllocation(stack, ready, accountId);
+    const b = await ownedSandbox(accountId, "room-replaced-borrower");
+
+    const createsBefore = stack.fake.createCalls.length;
+    await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+
+    // The borrow used the replacement's exact physical Instance: no new create happened, and the
+    // stale Session-work registration never excluded the candidate from reuse selection.
+    expect(stack.fake.createCalls.length).toBe(createsBefore);
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+    const rowB = await sandboxRow(b.sandbox.sandboxId);
+    expect(rowB.currentResourceName).toBe(replacement.row.currentResourceName);
+    expect(rowB.currentResourceUid).toBe(replacement.row.currentResourceUid);
   });
 
   it("clears a claimed binding that the provider confirms absent without a delete call", async () => {

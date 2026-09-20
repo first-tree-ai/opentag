@@ -32,6 +32,7 @@ interface ActiveSessionAuthority {
   placement: PlacementRow;
   agentId: string;
   computerId: string;
+  computerKind: "local" | "cloud";
   connectionInstanceId: string;
   installationId: string;
 }
@@ -92,6 +93,8 @@ export interface AuthorizedSessionMessageRoute {
   targetSessionId: string;
   targetInstallationId: string;
   targetComputerId: string;
+  /** Where the target executes: the Local runtime registry or the per-Sandbox Cloud Runner. */
+  targetComputerKind: "local" | "cloud";
   targetPlacementGeneration: number;
   targetSessionKind: SessionKind;
   targetCreatorSessionId: string | null;
@@ -150,6 +153,9 @@ export class SessionServiceError extends Error {
 export class SessionService {
   readonly #database: DatabaseClient;
   readonly #afterPlacementLock: (() => Promise<void>) | undefined;
+  readonly #cloudSourceConnection:
+    | ((input: { computerId: string; connectionInstanceId: string; sessionId: string }) => boolean)
+    | undefined;
   readonly #now: () => Date;
   readonly #logger?: Pick<ServiceLogger, "info">;
 
@@ -157,12 +163,23 @@ export class SessionService {
     database: DatabaseClient,
     options: {
       afterPlacementLock?: () => Promise<void>;
+      /**
+       * Cloud source liveness evidence: whether the exact current execution-eligible Runner
+       * connection for a Cloud Session's Sandbox allocation still holds. A Cloud Computer's own
+       * row is a logical always-online identity and never proves an execution connection.
+       */
+      cloudSourceConnection?: (input: {
+        computerId: string;
+        connectionInstanceId: string;
+        sessionId: string;
+      }) => boolean;
       now?: () => Date;
       logger?: Pick<ServiceLogger, "info">;
     } = {},
   ) {
     this.#database = database;
     this.#afterPlacementLock = options.afterPlacementLock;
+    this.#cloudSourceConnection = options.cloudSourceConnection;
     this.#now = options.now ?? (() => new Date());
     this.#logger = options.logger;
   }
@@ -349,6 +366,7 @@ export class SessionService {
         session: created,
         placement,
         computerId: creator.computerId,
+        computerKind: creator.computerKind,
         installationId: creator.installationId,
       };
       return {
@@ -425,95 +443,7 @@ export class SessionService {
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
     return this.#database.transaction(async (transaction) => {
-      const [agent] = await transaction
-        .select({ createdByUserId: agents.createdByUserId, status: agents.status })
-        .from(agents)
-        .where(eq(agents.id, route.agentId))
-        .limit(1)
-        .for("update");
-      if (agent?.status !== "active") {
-        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AGENT_INACTIVE");
-        return { admitted: false } as const;
-      }
-
-      const [binding] = await transaction
-        .select({ agentId: imBindings.agentId, status: imBindings.status })
-        .from(imBindings)
-        .where(eq(imBindings.id, route.imBindingId))
-        .limit(1)
-        .for("update");
-      if (binding?.agentId !== route.agentId || binding.status !== "active") {
-        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_BINDING_INVALID");
-        return { admitted: false } as const;
-      }
-
-      const authoritySessionIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
-      const authoritySessions = await transaction
-        .select({ id: sessions.id, imBindingId: sessions.imBindingId, endedAt: sessions.endedAt })
-        .from(sessions)
-        .where(inArray(sessions.id, authoritySessionIds))
-        .orderBy(sessions.id)
-        .for("update");
-      if (
-        authoritySessions.length !== authoritySessionIds.length ||
-        authoritySessions.some(({ endedAt, imBindingId }) => endedAt !== null || imBindingId !== route.imBindingId)
-      ) {
-        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AUTHORITY_SESSION_INVALID");
-        return { admitted: false } as const;
-      }
-
-      const authorityPlacementIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
-      const authorityPlacements = await transaction
-        .select({
-          computerId: sessionPlacements.computerId,
-          generation: sessionPlacements.generation,
-          sessionId: sessionPlacements.sessionId,
-        })
-        .from(sessionPlacements)
-        .where(inArray(sessionPlacements.sessionId, authorityPlacementIds))
-        .orderBy(sessionPlacements.sessionId)
-        .for("update");
-      const sourcePlacement = authorityPlacements.find(({ sessionId }) => sessionId === route.sourceSessionId);
-      const targetPlacement = authorityPlacements.find(({ sessionId }) => sessionId === route.targetSessionId);
-      if (
-        authorityPlacements.length !== authorityPlacementIds.length ||
-        sourcePlacement?.computerId !== route.sourceComputerId ||
-        sourcePlacement.generation !== route.sourcePlacementGeneration ||
-        targetPlacement?.computerId !== route.targetComputerId ||
-        targetPlacement.generation !== route.targetPlacementGeneration
-      ) {
-        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_PLACEMENT_INVALID");
-        return { admitted: false } as const;
-      }
-
-      const placementComputerIds = [...new Set(authorityPlacements.map(({ computerId }) => computerId))].sort();
-      const placementComputers = await transaction
-        .select({ id: computers.id, ownerAccountId: computers.ownerAccountId })
-        .from(computers)
-        .where(inArray(computers.id, placementComputerIds))
-        .orderBy(computers.id)
-        .for("update");
-      if (
-        placementComputers.length !== placementComputerIds.length ||
-        placementComputers.some(({ ownerAccountId }) => ownerAccountId !== agent.createdByUserId)
-      ) {
-        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_COMPUTER_OWNERSHIP_INVALID");
-        return { admitted: false } as const;
-      }
-
-      const [sourceComputer] = await transaction
-        .select({
-          currentInstanceId: computers.currentInstanceId,
-        })
-        .from(computers)
-        .where(eq(computers.id, route.sourceComputerId))
-        .limit(1)
-        .for("update");
-      if (!sourceComputer || sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId) {
-        this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_SOURCE_INSTANCE_STALE");
-        return { admitted: false } as const;
-      }
-
+      if (!(await this.#authorityAdmits(transaction, route))) return { admitted: false } as const;
       let markDispatched: () => void = () => undefined;
       const dispatched = new Promise<void>((resolve) => {
         markDispatched = resolve;
@@ -531,6 +461,136 @@ export class SessionService {
     });
   }
 
+  /** Every durable authority a collaboration dispatch must prove while its rows are locked. */
+  async #authorityAdmits(transaction: DatabaseTransaction, route: AuthorizedSessionMessageRoute): Promise<boolean> {
+    const agent = await this.#agentAndBindingAdmit(transaction, route);
+    if (!agent) return false;
+    const placements = await this.#sessionsAndPlacementsAdmit(transaction, route);
+    if (!placements) return false;
+    if (!(await this.#computersAdmit(transaction, route, placements, agent.createdByUserId))) return false;
+    return this.#sourceConnectionAdmits(transaction, route);
+  }
+
+  async #agentAndBindingAdmit(
+    transaction: DatabaseTransaction,
+    route: AuthorizedSessionMessageRoute,
+  ): Promise<{ createdByUserId: string } | undefined> {
+    const [agent] = await transaction
+      .select({ createdByUserId: agents.createdByUserId, status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, route.agentId))
+      .limit(1)
+      .for("update");
+    if (agent?.status !== "active") {
+      this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AGENT_INACTIVE");
+      return undefined;
+    }
+    const [binding] = await transaction
+      .select({ agentId: imBindings.agentId, status: imBindings.status })
+      .from(imBindings)
+      .where(eq(imBindings.id, route.imBindingId))
+      .limit(1)
+      .for("update");
+    if (binding?.agentId !== route.agentId || binding.status !== "active") {
+      this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_BINDING_INVALID");
+      return undefined;
+    }
+    return { createdByUserId: agent.createdByUserId };
+  }
+
+  async #sessionsAndPlacementsAdmit(
+    transaction: DatabaseTransaction,
+    route: AuthorizedSessionMessageRoute,
+  ): Promise<{ computerId: string; generation: number; sessionId: string }[] | undefined> {
+    const sessionIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
+    const sessionRows = await transaction
+      .select({ id: sessions.id, imBindingId: sessions.imBindingId, endedAt: sessions.endedAt })
+      .from(sessions)
+      .where(inArray(sessions.id, sessionIds))
+      .orderBy(sessions.id)
+      .for("update");
+    if (
+      sessionRows.length !== sessionIds.length ||
+      sessionRows.some(({ endedAt, imBindingId }) => endedAt !== null || imBindingId !== route.imBindingId)
+    ) {
+      this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_AUTHORITY_SESSION_INVALID");
+      return undefined;
+    }
+    const placementRows = await transaction
+      .select({
+        computerId: sessionPlacements.computerId,
+        generation: sessionPlacements.generation,
+        sessionId: sessionPlacements.sessionId,
+      })
+      .from(sessionPlacements)
+      .where(inArray(sessionPlacements.sessionId, sessionIds))
+      .orderBy(sessionPlacements.sessionId)
+      .for("update");
+    const sourcePlacement = placementRows.find(({ sessionId }) => sessionId === route.sourceSessionId);
+    const targetPlacement = placementRows.find(({ sessionId }) => sessionId === route.targetSessionId);
+    if (
+      placementRows.length !== sessionIds.length ||
+      sourcePlacement?.computerId !== route.sourceComputerId ||
+      sourcePlacement.generation !== route.sourcePlacementGeneration ||
+      targetPlacement?.computerId !== route.targetComputerId ||
+      targetPlacement.generation !== route.targetPlacementGeneration
+    ) {
+      this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_PLACEMENT_INVALID");
+      return undefined;
+    }
+    return placementRows;
+  }
+
+  async #computersAdmit(
+    transaction: DatabaseTransaction,
+    route: AuthorizedSessionMessageRoute,
+    placements: readonly { computerId: string }[],
+    agentOwnerId: string,
+  ): Promise<boolean> {
+    const computerIds = [...new Set(placements.map(({ computerId }) => computerId))].sort();
+    const computerRows = await transaction
+      .select({ id: computers.id, ownerAccountId: computers.ownerAccountId })
+      .from(computers)
+      .where(inArray(computers.id, computerIds))
+      .orderBy(computers.id)
+      .for("update");
+    if (
+      computerRows.length !== computerIds.length ||
+      computerRows.some(({ ownerAccountId }) => ownerAccountId !== agentOwnerId)
+    ) {
+      this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_COMPUTER_OWNERSHIP_INVALID");
+      return false;
+    }
+    return true;
+  }
+
+  async #sourceConnectionAdmits(
+    transaction: DatabaseTransaction,
+    route: AuthorizedSessionMessageRoute,
+  ): Promise<boolean> {
+    const [sourceComputer] = await transaction
+      .select({
+        currentInstanceId: computers.currentInstanceId,
+        kind: computers.kind,
+      })
+      .from(computers)
+      .where(eq(computers.id, route.sourceComputerId))
+      .limit(1)
+      .for("update");
+    const sourceConnectionCurrent = this.#connectionIsCurrent({
+      computerId: route.sourceComputerId,
+      computerKind: sourceComputer?.kind,
+      connectionInstanceId: route.sourceConnectionInstanceId,
+      localCurrentInstanceId: sourceComputer?.currentInstanceId,
+      sessionId: route.sourceSessionId,
+    });
+    if (!sourceComputer || !sourceConnectionCurrent) {
+      this.#logAdmissionRejection(route, "SESSION_COLLABORATION_ADMISSION_SOURCE_INSTANCE_STALE");
+      return false;
+    }
+    return true;
+  }
+
   #logAdmissionRejection(route: AuthorizedSessionMessageRoute, code: string): void {
     this.#logger?.info(
       {
@@ -540,6 +600,7 @@ export class SessionService {
         sourceComputerId: route.sourceComputerId,
         sourceSessionId: route.sourceSessionId,
         targetComputerId: route.targetComputerId,
+        targetComputerKind: route.targetComputerKind,
         targetSessionId: route.targetSessionId,
       },
       "Session collaboration dispatch admission rejected",
@@ -743,6 +804,7 @@ export class SessionService {
         agentId: agents.id,
         agentCreatedByUserId: agents.createdByUserId,
         installationId: computers.currentInstallationId,
+        computerKind: computers.kind,
         computerOwnerAccountId: computers.ownerAccountId,
         connectionInstanceId: computers.currentInstanceId,
         computerId: computers.id,
@@ -768,26 +830,69 @@ export class SessionService {
     }
     if (
       source.installationId !== input.installationId ||
-      source.connectionInstanceId !== input.connectionInstanceId ||
       source.computerId !== input.computerId ||
       source.placement.generation !== input.placementGeneration
     ) {
       throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
     }
+    // The connection evidence differs by Computer kind: a Local Computer proves it with its own
+    // current connection; a Cloud Computer is a logical always-online identity, so the proof is
+    // the exact current execution-eligible Runner connection for the Session's allocation.
+    const connectionCurrent = this.#connectionIsCurrent({
+      computerId: source.computerId,
+      computerKind: source.computerKind,
+      connectionInstanceId: input.connectionInstanceId,
+      localCurrentInstanceId: source.connectionInstanceId,
+      sessionId: source.session.id,
+    });
+    if (!connectionCurrent) {
+      throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
+    }
     return { ...source, connectionInstanceId: input.connectionInstanceId };
+  }
+
+  /**
+   * Exact-connection evidence for one source Session: Cloud authority is the current
+   * execution-eligible Runner connection; Local authority is the Computer's own current
+   * connection. A Cloud Computer's logical online state is never execution evidence.
+   */
+  #connectionIsCurrent(input: {
+    computerId: string;
+    computerKind: "local" | "cloud" | undefined;
+    connectionInstanceId: string;
+    localCurrentInstanceId: string | null | undefined;
+    sessionId: string;
+  }): boolean {
+    if (input.computerKind === "cloud") {
+      return (
+        this.#cloudSourceConnection?.({
+          computerId: input.computerId,
+          connectionInstanceId: input.connectionInstanceId,
+          sessionId: input.sessionId,
+        }) === true
+      );
+    }
+    return input.localCurrentInstanceId === input.connectionInstanceId;
   }
 
   async #activeTarget(
     transaction: DatabaseTransaction,
     targetSessionId: string,
     sourceSession: SessionRow,
-  ): Promise<{ session: SessionRow; placement: PlacementRow; computerId: string; installationId: string }> {
+  ): Promise<{
+    session: SessionRow;
+    placement: PlacementRow;
+    computerId: string;
+    computerKind: "local" | "cloud";
+    installationId: string;
+  }> {
     const [target] = await transaction
       .select({
         session: sessions,
         placement: sessionPlacements,
         agentCreatedByUserId: agents.createdByUserId,
         installationId: computers.currentInstallationId,
+        computerKind: computers.kind,
         computerOwnerAccountId: computers.ownerAccountId,
         computerId: computers.id,
       })
@@ -855,7 +960,13 @@ export class SessionService {
 
   #route(
     source: ActiveSessionAuthority,
-    target: { session: SessionRow; placement: PlacementRow; computerId: string; installationId: string },
+    target: {
+      session: SessionRow;
+      placement: PlacementRow;
+      computerId: string;
+      computerKind: "local" | "cloud";
+      installationId: string;
+    },
   ): AuthorizedSessionMessageRoute {
     return {
       agentId: source.agentId,
@@ -867,6 +978,7 @@ export class SessionService {
       targetSessionId: target.session.id,
       targetInstallationId: target.installationId,
       targetComputerId: target.computerId,
+      targetComputerKind: target.computerKind,
       targetPlacementGeneration: target.placement.generation,
       targetSessionKind: target.session.kind,
       targetCreatorSessionId: target.session.createdBySessionId,

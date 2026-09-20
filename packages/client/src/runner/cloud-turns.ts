@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RunnerClientFrame,
   type RunnerCloudDeliveryQueryFrame,
@@ -11,7 +12,13 @@ import {
   type RunnerCloudDeliveryRunFrame,
   type RunnerCloudDeliveryVerifiedFrame,
   type RunnerCloudModelGrant,
+  type RunnerCloudSessionMessageRunFrame,
+  type RunnerCloudSessionMessageSettledAckFrame,
+  type RunnerCloudSessionMessageVerifiedFrame,
   RuntimeUsageSchema,
+  type SessionCliProofGrant,
+  type SessionMessageDeliveryRequest,
+  serializeRunnerCloudSessionWorkerStdin,
   serializeRunnerCloudTurnWorkerStdin,
   TurnFailureReasonSchema,
   type TurnReportRequest,
@@ -33,10 +40,14 @@ import { type CloudCredentialChannel, CloudCredentialConnection } from "./cloud-
 import {
   assertCloudJournalScope,
   type CloudJournal,
+  type CloudJournalDeliveryEntry,
   type CloudJournalEntry,
   CloudJournalError,
   type CloudJournalScope,
+  type CloudJournalSessionEntry,
+  type CloudJournalSettlementOutcome,
   computeCloudDeliveryInputHash,
+  computeCloudSessionInputHash,
 } from "./cloud-journal.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
 import { type NativeSandbox, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
@@ -109,6 +120,8 @@ export interface CloudTurnRunnerOptions {
   readonly onPersistenceError?: (error: unknown) => void;
   /** Test seam: replace the credential-execution bridge pipeline. */
   readonly openExecution?: (input: CloudTurnExecutionOpenInput) => Promise<CloudTurnExecutionHandle>;
+  /** Test seam: replace the Session-message credential-execution bridge pipeline. */
+  readonly openSessionExecution?: (input: CloudSessionExecutionOpenInput) => Promise<CloudTurnExecutionHandle>;
   /** Test seam: replace the in-sandbox worker invocation. */
   readonly runWorker?: (
     input: { stdin: string; timeoutMs: number },
@@ -123,26 +136,50 @@ export interface CloudTurnExecutionOpenInput {
   readonly signal: AbortSignal;
 }
 
+export interface CloudSessionExecutionOpenInput {
+  readonly message: SessionMessageDeliveryRequest;
+  readonly scope: CloudTurnScope;
+  readonly turnId: string;
+  readonly signal: AbortSignal;
+}
+
 export interface CloudTurnExecutionHandle {
   /** In-sandbox absolute path of the per-turn public material directory. */
   readonly executionDir: string;
+  /**
+   * E8 Session CLI proof received on the execution-open result. Ephemeral: forwarded to the worker
+   * via stdin and cleared with the execution; never journaled, logged, or archived.
+   */
+  readonly sessionCliProof?: SessionCliProofGrant;
   close(): Promise<void>;
 }
 
 interface ActiveTurn {
-  readonly deliveryId: string;
+  readonly kind: "delivery" | "session-message";
+  /** The active journal key: the delivery id or the Session message id. */
+  readonly entryKey: string;
   readonly abort: AbortController;
   readonly settled: Promise<void>;
   readonly settle: () => void;
   execution?: Promise<void>;
 }
 
-interface QueuedVerified {
+interface QueuedDeliveryVerified {
+  readonly kind: "delivery";
   readonly deliveryId: string;
   readonly frame: RunnerCloudDeliveryVerifiedFrame;
   /** Connection generation that received the grant; a newer generation invalidates it. */
   readonly generation: number;
 }
+
+interface QueuedSessionVerified {
+  readonly kind: "session-message";
+  readonly messageId: string;
+  readonly frame: RunnerCloudSessionMessageVerifiedFrame;
+  readonly generation: number;
+}
+
+type QueuedVerified = QueuedDeliveryVerified | QueuedSessionVerified;
 
 /**
  * Result of one start attempt: `started` occupies the turn slot, `settled` resolved the head
@@ -215,7 +252,11 @@ export class CloudTurnRunner {
   }
 
   get activeDeliveryId(): string | undefined {
-    return this.#active?.deliveryId;
+    return this.#active?.kind === "delivery" ? this.#active.entryKey : undefined;
+  }
+
+  get activeMessageId(): string | undefined {
+    return this.#active?.kind === "session-message" ? this.#active.entryKey : undefined;
   }
 
   async waitForActive(): Promise<void> {
@@ -255,34 +296,19 @@ export class CloudTurnRunner {
       }
       const journalScope = this.#requireJournalScope();
       const existing = await this.#options.journal.read(delivery.deliveryId);
-      let entry: CloudJournalEntry;
-      if (existing) {
-        // A journaled delivery may only be re-dispatched with the SAME dispatch identity and
-        // content. Changed input under the same ids is a visible conflict, never a second turn.
-        try {
-          assertCloudJournalScope(existing, journalScope);
-        } catch {
-          this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled under another allocation`);
-          return;
-        }
-        if (
-          existing.requestId !== delivery.requestId ||
-          existing.inputHash !== computeCloudDeliveryInputHash(delivery)
-        ) {
-          this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled dispatch identity or input differs`);
-          this.#reconcileSupersededReceipt(existing, delivery.requestId);
-          return;
-        }
-        entry = existing;
-      } else {
-        entry = await this.#options.journal.recordReceived({
+      const reusable = this.#reuseDeliveryEntry(existing, delivery, journalScope);
+      if (existing && !reusable) return;
+      // A journaled delivery may only be re-dispatched with the SAME dispatch identity and
+      // content. Changed input under the same ids is a visible conflict, never a second turn.
+      const entry =
+        reusable ??
+        (await this.#options.journal.recordReceived({
           delivery,
           scope: journalScope,
           deliveryId: delivery.deliveryId,
           requestId: delivery.requestId,
           turnId: randomUUID(),
-        });
-      }
+        }));
       this.#send({
         type: "delivery:received",
         deliveryId: entry.deliveryId,
@@ -292,8 +318,33 @@ export class CloudTurnRunner {
     });
   }
 
+  /** Reuse one already-journaled delivery, or undefined when the re-dispatch must be refused. */
+  #reuseDeliveryEntry(
+    existing: CloudJournalEntry | undefined,
+    delivery: DirectImMessageDeliveryRequest,
+    journalScope: CloudJournalScope,
+  ): CloudJournalDeliveryEntry | undefined {
+    if (!existing) return undefined;
+    if (existing.kind !== "delivery") {
+      this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journal key belongs to a Session message`);
+      return undefined;
+    }
+    try {
+      assertCloudJournalScope(existing, journalScope);
+    } catch {
+      this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled under another allocation`);
+      return undefined;
+    }
+    if (existing.requestId !== delivery.requestId || existing.inputHash !== computeCloudDeliveryInputHash(delivery)) {
+      this.#log(`refusing re-dispatch of ${delivery.deliveryId}: journaled dispatch identity or input differs`);
+      this.#reconcileSupersededReceipt(existing, delivery.requestId);
+      return undefined;
+    }
+    return existing;
+  }
+
   /** Ask the Server to retire an expired old receipt before its replacement can be admitted. */
-  #reconcileSupersededReceipt(entry: CloudJournalEntry, requestId: string): void {
+  #reconcileSupersededReceipt(entry: CloudJournalDeliveryEntry, requestId: string): void {
     // Never erase durable state locally; a changed payload under the SAME request remains a conflict.
     if (entry.phase === "received" && entry.requestId !== requestId) this.#sendReceipt(entry);
   }
@@ -305,7 +356,7 @@ export class CloudTurnRunner {
     const generation = this.#channelGeneration;
     await this.#enqueue(async () => {
       const entry = await this.#entryByRequestId(frame.requestId);
-      if (!entry) return; // Already retired or never received.
+      if (entry?.kind !== "delivery") return; // Already retired or never received.
       if (generation !== this.#channelGeneration) {
         this.#log(`ignoring delivery ${entry.deliveryId} verified on a closed channel generation`);
         return;
@@ -333,13 +384,155 @@ export class CloudTurnRunner {
     });
   }
 
+  /** Journal + fsync one Session message, THEN acknowledge receipt. Idempotent across redispatch. */
+  async handleSessionMessageRun(frame: RunnerCloudSessionMessageRunFrame): Promise<void> {
+    await this.#enqueue(async () => {
+      if (this.#closed) return;
+      const message = frame.message;
+      const scope = this.#options.scope();
+      if (!scope || message.targetSessionId !== scope.sessionId) {
+        this.#log("ignoring session:message:run outside the current Session scope");
+        return;
+      }
+      const entry = await this.#journalSessionDispatch(frame, this.#requireJournalScope());
+      if (!entry) return;
+      if (entry.phase === "reported") {
+        // The immutable settlement is the only answer to a redispatch of completed custody.
+        this.#sendSessionSettled(entry);
+        return;
+      }
+      // The receipt always correlates THIS dispatch attempt by its unique request id; the
+      // journaled Turn identity stays stable across retries of the same logical message.
+      this.#send({
+        type: "session:message:received",
+        requestId: frame.requestId,
+        messageId: entry.messageId,
+        turnId: entry.turnId,
+        status: "accepted",
+        phase: entry.phase === "started" ? "started" : "received",
+      });
+    });
+  }
+
+  /**
+   * Journal (or reuse) the entry for one Session run frame; undefined when the dispatch is
+   * refused. Every write is fsynced before the caller may send the receipt.
+   */
+  async #journalSessionDispatch(
+    frame: RunnerCloudSessionMessageRunFrame,
+    journalScope: CloudJournalScope,
+  ): Promise<CloudJournalSessionEntry | undefined> {
+    const message = frame.message;
+    const existing = await this.#options.journal.read(message.messageId);
+    const decision = this.#sessionDispatchDecision(existing, frame, journalScope);
+    if (decision.kind === "refuse") return undefined;
+    if (decision.kind === "reuse") return decision.entry;
+    if (decision.kind === "rekey") {
+      return this.#options.journal.updateSessionRequestId(message.messageId, journalScope, frame.requestId);
+    }
+    const input = {
+      message,
+      sessionKind: frame.sessionKind,
+      ...(frame.outboxContext ? { outboxContext: frame.outboxContext } : {}),
+      scope: journalScope,
+      requestId: frame.requestId,
+      turnId: randomUUID(),
+    };
+    return decision.kind === "replace"
+      ? this.#options.journal.replaceSessionReceived(input)
+      : this.#options.journal.recordSessionReceived(input);
+  }
+
+  /**
+   * How one Session run frame relates to the journaled entry, if any. The request id is the
+   * per-attempt identity and the input hash ignores it, so a retry of the same logical message
+   * reuses its entry, a changed snapshot supersedes a never-started entry, and any started or
+   * reported entry is left to converge through its own settlement — never a second execution.
+   */
+  #sessionDispatchDecision(
+    existing: CloudJournalEntry | undefined,
+    frame: RunnerCloudSessionMessageRunFrame,
+    journalScope: CloudJournalScope,
+  ):
+    | { kind: "fresh" }
+    | { kind: "refuse" }
+    | { kind: "replace" }
+    | { kind: "rekey"; entry: CloudJournalSessionEntry }
+    | { kind: "reuse"; entry: CloudJournalSessionEntry } {
+    const messageId = frame.message.messageId;
+    if (!existing) return { kind: "fresh" };
+    if (existing.kind !== "session-message") {
+      this.#log(`refusing re-dispatch of ${messageId}: journal key belongs to a delivery`);
+      return { kind: "refuse" };
+    }
+    try {
+      assertCloudJournalScope(existing, journalScope);
+    } catch {
+      this.#log(`refusing re-dispatch of ${messageId}: journaled under another allocation`);
+      return { kind: "refuse" };
+    }
+    const sameAttempt = existing.requestId === frame.requestId;
+    const sameInput = existing.inputHash === computeCloudSessionInputHash(frame);
+    // A journaled dispatch may only be re-sent with the SAME dispatch identity and content.
+    // Changed input under the same attempt identity is a visible conflict, never a second turn.
+    if (sameAttempt && !sameInput) {
+      this.#log(`refusing re-dispatch of ${messageId}: journaled input differs for the same dispatch`);
+      return { kind: "refuse" };
+    }
+    if (sameInput) {
+      // A new attempt for identical input reuses the entry. A still-`received` entry is first
+      // re-correlated to the new attempt; a started/reported entry keeps its settlement identity.
+      return existing.phase === "received" ? { kind: "rekey", entry: existing } : { kind: "reuse", entry: existing };
+    }
+    if (existing.phase === "received") {
+      // The journaled input is outdated and the Turn never started: retire the stale entry and
+      // journal this attempt (the Server replaces the never-executed custody record in step).
+      return { kind: "replace" };
+    }
+    this.#log(
+      `refusing re-dispatch of ${messageId}: a ${existing.phase} entry with changed input settles through its own path`,
+    );
+    return { kind: "refuse" };
+  }
+
+  /** Server persisted durable custody for one Session message: execution may start. */
+  async handleSessionMessageVerified(frame: RunnerCloudSessionMessageVerifiedFrame): Promise<void> {
+    const generation = this.#channelGeneration;
+    await this.#enqueue(async () => {
+      const entry = await this.#entryByRequestId(frame.requestId);
+      if (entry?.kind !== "session-message") return;
+      if (generation !== this.#channelGeneration) {
+        this.#log(`ignoring Session message ${entry.messageId} verified on a closed channel generation`);
+        return;
+      }
+      if (frame.status === "rejected") {
+        if (entry.phase === "received") {
+          await this.#options.journal.clearSessionRejected(entry.messageId, entry.scope);
+          this.#notifyJournalChanged();
+        } else this.#log(`ignoring rejected receipt for Session message ${entry.messageId} in phase ${entry.phase}`);
+        return;
+      }
+      if (entry.phase !== "received") return;
+      if (this.#closed || this.#cancelRequested.delete(entry.messageId)) {
+        await this.#settleSessionTerminal(entry, "cancelled");
+        return;
+      }
+      const denial = this.#admitSession(frame);
+      if (denial) {
+        await this.#settleSessionTerminal(entry, denial);
+        return;
+      }
+      await this.#queueSessionVerified(entry, frame, generation);
+    });
+  }
+
   /**
    * Queue a verified frame in FIFO order, then drain: a later verification can never overtake an
-   * earlier queued delivery. When this frame is the head and the slot is free, start it before
+   * earlier queued entry. When this frame is the head and the slot is free, start it before
    * resolving (the established frame contract); otherwise a serialized drain picks it up in order.
    */
   async #queueVerified(
-    entry: CloudJournalEntry,
+    entry: CloudJournalDeliveryEntry,
     frame: RunnerCloudDeliveryVerifiedFrame,
     generation: number,
   ): Promise<void> {
@@ -347,7 +540,8 @@ export class CloudTurnRunner {
       this.#log(`cloud turn queue is full; leaving ${entry.deliveryId} at the received boundary for re-verification`);
       return;
     }
-    const queued: QueuedVerified = {
+    const queued: QueuedDeliveryVerified = {
+      kind: "delivery",
       deliveryId: entry.deliveryId,
       frame: { ...frame, model: frame.model },
       generation,
@@ -360,26 +554,62 @@ export class CloudTurnRunner {
     this.#scheduleDrain();
   }
 
+  async #queueSessionVerified(
+    entry: CloudJournalSessionEntry,
+    frame: RunnerCloudSessionMessageVerifiedFrame,
+    generation: number,
+  ): Promise<void> {
+    if (this.#queue.size >= CLOUD_TURN_MAX_QUEUED) {
+      this.#log(`cloud turn queue is full; leaving ${entry.messageId} at the received boundary for re-verification`);
+      return;
+    }
+    const queued: QueuedSessionVerified = {
+      kind: "session-message",
+      messageId: entry.messageId,
+      frame: { ...frame },
+      generation,
+    };
+    this.#queue.set(entry.requestId, queued);
+    if (!this.#active && this.#queue.keys().next().value === entry.requestId) {
+      await this.#processQueued(queued);
+      return;
+    }
+    this.#scheduleDrain();
+  }
+
   /**
-   * Explicit stop. An owned in-sandbox worker is aborted immediately; a not-yet-started delivery
-   * settles durably as a `not_started` cancellation instead of silently disappearing.
+   * Explicit stop. An owned in-sandbox worker is aborted immediately; a not-yet-started entry
+   * settles durably as a not-started cancellation instead of silently disappearing.
    */
   handleCancel(deliveryId: string): void {
+    this.#cancelEntry("delivery", deliveryId);
+  }
+
+  /** Explicit stop of one journaled Session message (same FIFO slot and cancellation semantics). */
+  handleSessionMessageCancel(messageId: string): void {
+    this.#cancelEntry("session-message", messageId);
+  }
+
+  #cancelEntry(kind: "delivery" | "session-message", entryKey: string): void {
     const active = this.#active;
-    if (active?.deliveryId === deliveryId) {
+    if (active?.kind === kind && active.entryKey === entryKey) {
       active.abort.abort();
       return;
     }
     for (const [requestId, queued] of this.#queue) {
-      if (queued.deliveryId === deliveryId) this.#queue.delete(requestId);
+      if (queued.kind !== kind) continue;
+      const queuedKey = queued.kind === "delivery" ? queued.deliveryId : queued.messageId;
+      if (queuedKey === entryKey) this.#queue.delete(requestId);
     }
-    this.#cancelRequested.add(deliveryId);
+    this.#cancelRequested.add(entryKey);
     void this.#enqueue(async () => {
-      if (!this.#cancelRequested.delete(deliveryId)) return;
-      const entry = await this.#options.journal.read(deliveryId);
-      if (!entry) return;
+      if (!this.#cancelRequested.delete(entryKey)) return;
+      const entry = await this.#options.journal.read(entryKey);
+      if (!entry || entry.kind !== kind) return;
       this.#assertCurrentScope(entry);
-      if (entry.phase === "received") await this.#reportTerminal(entry, cancelledBeforeStart());
+      if (entry.phase !== "received") return;
+      if (entry.kind === "delivery") await this.#reportTerminal(entry, cancelledBeforeStart());
+      else await this.#settleSessionTerminal(entry, "cancelled");
     }).catch((error) => this.#reportPersistenceError(error));
   }
 
@@ -388,7 +618,7 @@ export class CloudTurnRunner {
     await this.#enqueue(async () => {
       const entries = await this.#options.journal.list();
       const entry = entries.find((candidate) => candidate.turnId === frame.turnId);
-      if (!entry) return;
+      if (entry?.kind !== "delivery") return;
       this.#assertCurrentScope(entry);
       if (entry.phase !== "reported" || !entry.report) return;
       if (frame.status !== "recorded" && frame.status !== "already_recorded") {
@@ -401,6 +631,25 @@ export class CloudTurnRunner {
       }
       await this.#options.journal.clearAcknowledged(entry.deliveryId, entry.scope, {
         resultHash: frame.resultHash,
+        status: frame.status,
+        turnId: frame.turnId,
+      });
+      this.#notifyJournalChanged();
+    });
+  }
+
+  /** The Server durably committed the exact Session settlement: retire the immutable entry. */
+  async handleSessionMessageSettledAck(frame: RunnerCloudSessionMessageSettledAckFrame): Promise<void> {
+    await this.#enqueue(async () => {
+      const entry = await this.#entryByRequestId(frame.requestId);
+      if (entry?.kind !== "session-message") return;
+      this.#assertCurrentScope(entry);
+      if (entry.phase !== "reported" || !entry.settlement) return;
+      if (frame.messageId !== entry.messageId || frame.turnId !== entry.turnId) {
+        this.#log(`retaining durable settlement for ${entry.messageId}: ack identity mismatch`);
+        return;
+      }
+      await this.#options.journal.clearSessionAcknowledged(entry.messageId, entry.scope, {
         status: frame.status,
         turnId: frame.turnId,
       });
@@ -421,7 +670,12 @@ export class CloudTurnRunner {
         requestId: frame.requestId,
         turnId: frame.turnId,
       });
-      if (phase === "reported" && entry?.report && !this.#isCheckpointing(entry.deliveryId)) {
+      if (
+        phase === "reported" &&
+        entry?.kind === "delivery" &&
+        entry.report &&
+        !this.#isCheckpointing(entry.deliveryId)
+      ) {
         this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
       }
     });
@@ -450,6 +704,10 @@ export class CloudTurnRunner {
   }
 
   async #reconcileEntry(entry: CloudJournalEntry): Promise<void> {
+    if (entry.kind === "session-message") {
+      await this.#reconcileSessionEntry(entry);
+      return;
+    }
     if (entry.phase === "received") {
       this.#sendReceipt(entry);
       return;
@@ -460,7 +718,7 @@ export class CloudTurnRunner {
       return;
     }
     if (entry.phase !== "started") return;
-    if (this.#active?.deliveryId === entry.deliveryId) {
+    if (this.#active?.kind === "delivery" && this.#active.entryKey === entry.deliveryId) {
       // A live execution in this process is never rewritten as unknown by a reconnect.
       this.#sendReceipt(entry);
       return;
@@ -468,16 +726,67 @@ export class CloudTurnRunner {
     await this.#reportTerminal(entry, UNKNOWN_COMPLETION);
   }
 
-  #isCheckpointing(deliveryId: string): boolean {
-    return this.#options.checkpoint !== undefined && this.#active?.deliveryId === deliveryId;
+  async #reconcileSessionEntry(entry: CloudJournalSessionEntry): Promise<void> {
+    if (entry.phase === "received") {
+      this.#sendSessionProgress(entry);
+      return;
+    }
+    if (entry.phase === "reported") {
+      // Immutable terminal settlement: replay until the Server's exact ack retires the entry.
+      this.#sendSessionSettled(entry);
+      return;
+    }
+    if (this.#active?.kind === "session-message" && this.#active.entryKey === entry.messageId) {
+      // A live execution in this process is never rewritten as unknown by a reconnect.
+      this.#sendSessionProgress(entry);
+      return;
+    }
+    // A started Session turn whose worker is gone can never be resumed: report unknown once and
+    // keep the immutable settlement for ack-driven replay.
+    await this.#settleSessionTerminal(entry, "unknown");
   }
 
-  #sendReceipt(entry: CloudJournalEntry): void {
+  #isCheckpointing(deliveryId: string): boolean {
+    return (
+      this.#options.checkpoint !== undefined &&
+      this.#active?.kind === "delivery" &&
+      this.#active.entryKey === deliveryId
+    );
+  }
+
+  #sendReceipt(entry: CloudJournalDeliveryEntry): void {
     this.#send({
       type: "delivery:received",
       deliveryId: entry.deliveryId,
       requestId: entry.requestId,
       turnId: entry.turnId,
+    });
+  }
+
+  /** Re-announce one Session entry: its receipt, or its immutable terminal settlement. */
+  #sendSessionProgress(entry: CloudJournalSessionEntry): void {
+    if (entry.phase === "reported") {
+      this.#sendSessionSettled(entry);
+      return;
+    }
+    this.#send({
+      type: "session:message:received",
+      requestId: entry.requestId,
+      messageId: entry.messageId,
+      turnId: entry.turnId,
+      status: "accepted",
+      phase: entry.phase === "started" ? "started" : "received",
+    });
+  }
+
+  #sendSessionSettled(entry: CloudJournalSessionEntry): void {
+    if (!entry.settlement) return;
+    this.#send({
+      type: "session:message:settled",
+      requestId: entry.requestId,
+      messageId: entry.messageId,
+      turnId: entry.turnId,
+      outcome: entry.settlement.outcome,
     });
   }
 
@@ -520,19 +829,7 @@ export class CloudTurnRunner {
       try {
         const remaining = await this.#enqueue(async () => {
           const entries = await this.#options.journal.list();
-          for (const entry of entries) {
-            this.#assertCurrentScope(entry);
-            if (entry.phase === "reported" && entry.report) {
-              this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
-            } else if (entry.phase === "received") {
-              // The Server may not have accepted this receipt. Re-announce it: an unaccepted
-              // input is rejected and retired; accepted custody is cancelled and reported.
-              // Manufacturing a report before custody would strand the release on a conflict.
-              this.#sendReceipt(entry);
-            } else {
-              await this.#reportTerminal(entry, UNKNOWN_COMPLETION);
-            }
-          }
+          for (const entry of entries) await this.#drainReleaseEntry(entry);
           return entries.length;
         });
         if (remaining === 0) return;
@@ -557,13 +854,39 @@ export class CloudTurnRunner {
     for (const listener of this.#journalListeners) listener();
   }
 
+  /**
+   * Re-announce one durable entry while releasing. A still-`received` input is re-announced so an
+   * unaccepted attempt is rejected and retired; accepted custody is cancelled and reported.
+   * Manufacturing a report before custody would strand the release on a conflict.
+   */
+  async #drainReleaseEntry(entry: CloudJournalEntry): Promise<void> {
+    this.#assertCurrentScope(entry);
+    if (entry.kind === "delivery") {
+      if (entry.phase === "reported" && entry.report) {
+        this.#send({ type: "delivery:report", report: entry.report, requestId: randomUUID() });
+      } else if (entry.phase === "received") {
+        this.#sendReceipt(entry);
+      } else {
+        await this.#reportTerminal(entry, UNKNOWN_COMPLETION);
+      }
+      return;
+    }
+    if (entry.phase === "reported") {
+      this.#sendSessionSettled(entry);
+    } else if (entry.phase === "received") {
+      this.#sendSessionProgress(entry);
+    } else {
+      await this.#settleSessionTerminal(entry, "unknown");
+    }
+  }
+
   /* --------------------------------------------------------------------------------------------
    * Turn execution
    * ------------------------------------------------------------------------------------------ */
 
   /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
   async #startTurn(
-    entry: CloudJournalEntry,
+    entry: CloudJournalDeliveryEntry,
     frame: RunnerCloudDeliveryVerifiedFrame,
     generation: number,
   ): Promise<StartTurnOutcome> {
@@ -573,7 +896,13 @@ export class CloudTurnRunner {
     const settled = new Promise<void>((resolve) => {
       settle = resolve;
     });
-    const active: ActiveTurn = { abort: new AbortController(), deliveryId: entry.deliveryId, settle, settled };
+    const active: ActiveTurn = {
+      abort: new AbortController(),
+      entryKey: entry.deliveryId,
+      kind: "delivery",
+      settle,
+      settled,
+    };
     this.#active = active;
     try {
       if (this.#sandboxUnusable) {
@@ -585,7 +914,7 @@ export class CloudTurnRunner {
       if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
       const current = await this.#options.journal.read(entry.deliveryId);
       if (this.#closed) return "wait";
-      if (current?.phase !== "received") {
+      if (current?.kind !== "delivery" || current.phase !== "received") {
         // Another path already settled or started this head; the drain may advance.
         this.#queue.delete(entry.requestId);
         return "settled";
@@ -618,6 +947,67 @@ export class CloudTurnRunner {
         // journal/namespace failure must not schedule another drain and spin on the same head.
         this.#completeActive(active);
       }
+    }
+  }
+
+  /**
+   * The Session-message counterpart of `#startTurn`: same synchronous slot reservation, namespace
+   * reset, cancel re-check, and durable `started` marker, but the terminal evidence is the
+   * immutable Session settlement instead of a delivery report.
+   */
+  async #startSessionTurn(
+    entry: CloudJournalSessionEntry,
+    frame: RunnerCloudSessionMessageVerifiedFrame,
+    generation: number,
+  ): Promise<StartTurnOutcome> {
+    if (this.#closed || this.#active) return "wait";
+    if (!(this.#options.canStart?.() ?? true)) return "wait";
+    let settle: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    const active: ActiveTurn = {
+      abort: new AbortController(),
+      entryKey: entry.messageId,
+      kind: "session-message",
+      settle,
+      settled,
+    };
+    this.#active = active;
+    try {
+      if (this.#sandboxUnusable) {
+        throw new CloudJournalError(
+          "store_failed",
+          "The native sandbox namespace could not be verified clean; the Runner must not start another Turn",
+        );
+      }
+      if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
+      const current = await this.#options.journal.read(entry.messageId);
+      if (this.#closed) return "wait";
+      if (current?.kind !== "session-message" || current.phase !== "received") {
+        this.#queue.delete(entry.requestId);
+        return "settled";
+      }
+      if (generation !== this.#channelGeneration) {
+        this.#queue.delete(entry.requestId);
+        return "settled";
+      }
+      if (active.abort.signal.aborted) {
+        this.#queue.delete(entry.requestId);
+        this.#cancelRequested.delete(entry.messageId);
+        await this.#settleSessionTerminal(current, "cancelled");
+        return "settled";
+      }
+      const started = await this.#options.journal.markSessionStarted(current.messageId, current.scope);
+      active.execution = this.#executeSessionTurn(started, frame, active.abort.signal, generation)
+        .catch((error) => this.#reportPersistenceError(error))
+        .finally(() => {
+          this.#completeActive(active);
+          this.#scheduleDrain();
+        });
+      return "started";
+    } finally {
+      if (!active.execution) this.#completeActive(active);
     }
   }
 
@@ -682,13 +1072,22 @@ export class CloudTurnRunner {
    * await so a delivery cancelled mid-drain is never started.
    */
   async #processQueued(next: QueuedVerified): Promise<"continue" | "started" | "stop"> {
+    return next.kind === "session-message" ? this.#processQueuedSession(next) : this.#processQueuedDelivery(next);
+  }
+
+  /**
+   * Process the FIFO head. The entry stays queued until it is actually started, so losing the
+   * occupation race can never drop verified work, and cancellation is re-checked after every
+   * await so a delivery cancelled mid-drain is never started.
+   */
+  async #processQueuedDelivery(next: QueuedDeliveryVerified): Promise<"continue" | "started" | "stop"> {
     if (this.#cancelRequested.delete(next.deliveryId)) {
       this.#queue.delete(next.frame.requestId);
       await this.#settleCancelled(next.deliveryId);
       return "continue";
     }
     const entry = await this.#entryByRequestId(next.frame.requestId);
-    if (entry?.phase !== "received") {
+    if (entry?.kind !== "delivery" || entry.phase !== "received") {
       this.#queue.delete(next.frame.requestId);
       return "continue";
     }
@@ -716,11 +1115,56 @@ export class CloudTurnRunner {
     return outcome === "started" ? "started" : "continue";
   }
 
+  /** Session-message FIFO head: identical discipline, terminal evidence is the settlement. */
+  async #processQueuedSession(next: QueuedSessionVerified): Promise<"continue" | "started" | "stop"> {
+    if (this.#cancelRequested.delete(next.messageId)) {
+      this.#queue.delete(next.frame.requestId);
+      await this.#settleCancelledSession(next.messageId);
+      return "continue";
+    }
+    const entry = await this.#entryByRequestId(next.frame.requestId);
+    if (entry?.kind !== "session-message" || entry.phase !== "received") {
+      this.#queue.delete(next.frame.requestId);
+      return "continue";
+    }
+    if (this.#cancelRequested.delete(next.messageId)) {
+      this.#queue.delete(next.frame.requestId);
+      await this.#settleCancelledSession(next.messageId);
+      return "continue";
+    }
+    if (next.generation !== this.#channelGeneration) {
+      this.#queue.delete(next.frame.requestId);
+      return "continue";
+    }
+    const denial = this.#admitSession(next.frame);
+    if (denial) {
+      this.#queue.delete(next.frame.requestId);
+      await this.#settleSessionTerminal(entry, denial);
+      return "continue";
+    }
+    if (!(this.#options.canStart?.() ?? true)) return "stop";
+    const outcome = await this.#startSessionTurn(entry, next.frame, next.generation);
+    if (outcome === "wait") return "stop";
+    this.#queue.delete(next.frame.requestId);
+    return outcome === "started" ? "started" : "continue";
+  }
+
   async #settleCancelled(deliveryId: string): Promise<void> {
     const entry = await this.#options.journal.read(deliveryId);
     if (!entry) return;
     this.#assertCurrentScope(entry);
-    if (entry.phase === "received") await this.#reportTerminal(entry, cancelledBeforeStart());
+    if (entry.kind === "delivery" && entry.phase === "received") {
+      await this.#reportTerminal(entry, cancelledBeforeStart());
+    }
+  }
+
+  async #settleCancelledSession(messageId: string): Promise<void> {
+    const entry = await this.#options.journal.read(messageId);
+    if (!entry) return;
+    this.#assertCurrentScope(entry);
+    if (entry.kind === "session-message" && entry.phase === "received") {
+      await this.#settleSessionTerminal(entry, "cancelled");
+    }
   }
 
   #completeActive(active: ActiveTurn): void {
@@ -729,13 +1173,13 @@ export class CloudTurnRunner {
   }
 
   async #executeTurn(
-    entry: CloudJournalEntry,
+    entry: CloudJournalDeliveryEntry,
     frame: RunnerCloudDeliveryVerifiedFrame,
     signal: AbortSignal,
     generation: number,
   ): Promise<void> {
     const current = await this.#options.journal.read(entry.deliveryId);
-    if (current?.phase !== "started") return;
+    if (current?.kind !== "delivery" || current.phase !== "started") return;
     if (generation !== this.#channelGeneration) {
       // The connection closed after the durable started marker but before any sandbox work: no
       // execution effect occurred, so settle honestly instead of running with a revoked grant.
@@ -763,28 +1207,39 @@ export class CloudTurnRunner {
     // while the occupation stays reserved, and only publish the terminal report after the
     // verified reset: a stopped Session must never leave orphan children behind, and a failed
     // reset must never be reported as a safe cancellation.
-    let cleanupFailure: unknown;
-    if (isInterrupted(completion) && this.#options.sandboxReset && !this.#options.checkpoint) {
-      this.#markSandboxDirty();
-      try {
-        await this.#resetSandboxNamespace();
-      } catch (error) {
-        cleanupFailure = error;
-        completion = {
-          errorReason: "sandbox_unavailable",
-          executionEffects: "may_have_occurred",
-          outcome: "unknown",
-        };
-      }
-    }
-    await this.#reportTerminal(current, completion, true);
+    const cleanup = await this.#cleanupInterrupted(completion);
+    await this.#reportTerminal(current, cleanup.completion, true);
     // Publish the honest report first; then surface the cleanup failure through the existing
     // Runner failure path (serve marks the environment fatal and exits).
-    if (cleanupFailure !== undefined) this.#reportPersistenceError(cleanupFailure);
+    if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
+  }
+
+  /**
+   * Verified namespace cleanup after an interrupted Turn. A failed reset makes the completion an
+   * honest unknown and keeps the failure for the caller to surface after the terminal evidence.
+   */
+  async #cleanupInterrupted(completion: TurnCompletion): Promise<{ completion: TurnCompletion; failure?: unknown }> {
+    if (!isInterrupted(completion) || !this.#options.sandboxReset || this.#options.checkpoint) {
+      return { completion };
+    }
+    this.#markSandboxDirty();
+    try {
+      await this.#resetSandboxNamespace();
+      return { completion };
+    } catch (error) {
+      return {
+        completion: { errorReason: "sandbox_unavailable", executionEffects: "may_have_occurred", outcome: "unknown" },
+        failure: error,
+      };
+    }
   }
 
   /** Build the fsynced report and send it; the entry retires only on the Server's durable ack. */
-  async #reportTerminal(entry: CloudJournalEntry, completion: TurnCompletion, checkpoint = false): Promise<void> {
+  async #reportTerminal(
+    entry: CloudJournalDeliveryEntry,
+    completion: TurnCompletion,
+    checkpoint = false,
+  ): Promise<void> {
     let checkpointError: unknown;
     if (checkpoint) {
       try {
@@ -811,7 +1266,7 @@ export class CloudTurnRunner {
 
   #buildReport(
     delivery: DirectImMessageDeliveryRequest,
-    entry: CloudJournalEntry,
+    entry: CloudJournalDeliveryEntry,
     completion: TurnCompletion,
   ): TurnReportRequest {
     const base = {
@@ -884,7 +1339,7 @@ export class CloudTurnRunner {
   async #runInSandbox(
     delivery: DirectImMessageDeliveryRequest,
     model: RunnerCloudModelGrant,
-    entry: CloudJournalEntry,
+    entry: CloudJournalDeliveryEntry,
     signal: AbortSignal,
     generation: number,
   ): Promise<TurnCompletion> {
@@ -903,6 +1358,9 @@ export class CloudTurnRunner {
         delivery,
         executionDir: execution.executionDir,
         model,
+        ...(execution.sessionCliProof
+          ? { sessionCollaboration: { proof: execution.sessionCliProof, serverUrl: this.#options.serverUrl } }
+          : {}),
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
       const runWorker =
@@ -935,12 +1393,176 @@ export class CloudTurnRunner {
   }
 
   /**
+   * Session-message execution: same durable `started` boundary and namespace discipline as an IM
+   * Turn, but the terminal evidence is the immutable Session settlement. The execution-open result
+   * carries the ephemeral Session CLI proof, which is forwarded to the worker via stdin.
+   */
+  async #executeSessionTurn(
+    entry: CloudJournalSessionEntry,
+    frame: RunnerCloudSessionMessageVerifiedFrame,
+    signal: AbortSignal,
+    generation: number,
+  ): Promise<void> {
+    const current = await this.#options.journal.read(entry.messageId);
+    if (current?.kind !== "session-message" || current.phase !== "started") return;
+    if (generation !== this.#channelGeneration || signal.aborted) {
+      // The connection closed or a stop landed after the started marker but before any sandbox
+      // work: no execution effect occurred, so settle honestly instead of running.
+      await this.#settleSessionTerminal(current, "cancelled");
+      return;
+    }
+    const model = frame.model;
+    if (!model) {
+      await this.#settleSessionTerminal(current, "failed");
+      return;
+    }
+    let completion: TurnCompletion;
+    try {
+      completion = await this.#runSessionInSandbox(current.message, model, current, signal, generation);
+    } catch {
+      completion = { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
+    }
+    if (signal.aborted && completion.executionEffects !== "not_started" && completion.outcome !== "completed") {
+      completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
+    }
+    const cleanup = await this.#cleanupInterrupted(completion);
+    await this.#settleSessionTerminal(current, sessionSettlementOutcome(cleanup.completion), true);
+    if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
+  }
+
+  /** Deadline/grant admission BEFORE any native or Pi effect, mirroring the IM Turn gate. */
+  #admitSession(frame: RunnerCloudSessionMessageVerifiedFrame): CloudJournalSettlementOutcome | undefined {
+    const model = frame.model;
+    if (!model) return "failed";
+    if (!Number.isFinite(Date.parse(model.expiresAt)) || Date.parse(model.expiresAt) <= Date.now()) return "failed";
+    return undefined;
+  }
+
+  /**
+   * Record the immutable settlement after the same save boundary as an IM report, then send (or
+   * replay) it; the entry retires only on the Server's exact settlement ack.
+   */
+  async #settleSessionTerminal(
+    entry: CloudJournalSessionEntry,
+    outcome: CloudJournalSettlementOutcome,
+    checkpoint = false,
+  ): Promise<void> {
+    let effective = outcome;
+    let checkpointError: unknown;
+    if (checkpoint) {
+      try {
+        await this.#options.checkpoint?.();
+      } catch (error) {
+        checkpointError = error;
+        effective = "failed";
+      }
+    }
+    const recorded = await this.#options.journal.recordSessionSettled(entry.messageId, entry.scope, effective);
+    if (!recorded.settlement) return;
+    this.#notifyJournalChanged();
+    this.#sendSessionSettled(recorded);
+    if (
+      checkpointError !== undefined &&
+      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
+    ) {
+      this.#reportPersistenceError(checkpointError);
+    }
+  }
+
+  async #runSessionInSandbox(
+    message: SessionMessageDeliveryRequest,
+    model: RunnerCloudModelGrant,
+    entry: CloudJournalSessionEntry,
+    signal: AbortSignal,
+    generation: number,
+  ): Promise<TurnCompletion> {
+    const scope = this.#options.scope();
+    if (!scope) throw new Error("The Runner scope is not established");
+    if (signal.aborted) return cancelledBeforeStart();
+    // The single execution deadline for this Turn, anchored only now — after the Session queue
+    // wait — so legitimate queue wait is never charged against the runtime budget. The in-sandbox
+    // worker derives its own timeout from the same absolute deadline and the parent exec backstop
+    // adds only the bounded reporting grace, so the worker's `turn_timeout` always wins over the
+    // backstop and a slow bridge/worker startup can never record a real timeout as `unknown`.
+    const budgetMs = Math.max(1, message.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS);
+    const deadlineAt = new Date(Date.now() + budgetMs).toISOString();
+    const openExecution =
+      this.#options.openSessionExecution ??
+      ((input: CloudSessionExecutionOpenInput) => this.#openSessionBridgeExecution(input));
+    const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
+    try {
+      if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
+      const stdin = serializeRunnerCloudSessionWorkerStdin({
+        message,
+        executionDir: execution.executionDir,
+        model,
+        sessionKind: entry.sessionKind,
+        deadlineAt,
+        ...(entry.outboxContext ? { outboxContext: entry.outboxContext } : {}),
+        ...(execution.sessionCliProof
+          ? { sessionCollaboration: { proof: execution.sessionCliProof, serverUrl: this.#options.serverUrl } }
+          : {}),
+        ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
+      });
+      const runWorker =
+        this.#options.runWorker ??
+        ((input: { stdin: string; timeoutMs: number }, workerSignal: AbortSignal) =>
+          this.#options.sandbox.exec(SANDBOX_NODE, [SANDBOX_WORKER_ENTRY, "worker"], {
+            signal: workerSignal,
+            stdin: input.stdin,
+            timeoutMs: input.timeoutMs,
+          }));
+      const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
+      const exec = await runWorker({ stdin, timeoutMs }, signal);
+      if (signal.aborted) {
+        return { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
+      }
+      const completion = parseWorkerCompletion(exec.stdout);
+      if (exec.code !== 0 && completion.outcome === "completed") {
+        return { errorReason: "provider_failed", executionEffects: "may_have_occurred", outcome: "failed" };
+      }
+      return completion;
+    } finally {
+      await execution.close().catch((error) => this.#reportPersistenceError(error));
+    }
+  }
+
+  /**
    * Default per-turn credential bridge: open a #633 execution through the Runner channel tunnel,
    * start the trusted loopback adapter, and publish ONLY the per-turn public material the native
    * Sandbox mounts. The private CA/journal/bootstrap material stays in the unmounted private root.
    * Nothing runs in this parent beyond credential relaying; the worker executes inside the Sandbox.
    */
   async #openBridgeExecution(input: CloudTurnExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
+    return this.#openRelayExecution({
+      agentId: input.delivery.agentId,
+      placementGeneration: input.delivery.placementGeneration,
+      sessionId: input.delivery.sessionId,
+      signal: input.signal,
+      source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
+      scope: input.scope,
+    });
+  }
+
+  async #openSessionBridgeExecution(input: CloudSessionExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
+    return this.#openRelayExecution({
+      agentId: input.message.agentId,
+      placementGeneration: input.message.placementGeneration,
+      sessionId: input.message.targetSessionId,
+      signal: input.signal,
+      source: { kind: "session-message", messageId: input.message.messageId },
+      scope: input.scope,
+    });
+  }
+
+  async #openRelayExecution(input: {
+    agentId: string;
+    placementGeneration: number;
+    sessionId: string;
+    signal: AbortSignal;
+    scope: CloudTurnScope;
+    source: { kind: "delivery"; deliveryId: string; turnId: string } | { kind: "session-message"; messageId: string };
+  }): Promise<CloudTurnExecutionHandle> {
     const scope = input.scope;
     if (!scope.resourceUid) throw new Error("The Sandbox allocation UID is not tracked yet");
     const connection = new CloudCredentialConnection(this.#options.credentialChannel());
@@ -989,16 +1611,16 @@ export class CloudTurnRunner {
           serverUrl: this.#options.serverUrl,
         } satisfies RuntimeCredentialRelayOptions,
         {
-          agentId: input.delivery.agentId,
-          placementGeneration: input.delivery.placementGeneration,
+          agentId: input.agentId,
+          placementGeneration: input.placementGeneration,
           runId: randomUUID(),
           sandbox: {
             environmentGeneration: scope.environmentGeneration,
             resourceUid: scope.resourceUid,
             sandboxId: scope.sandboxId,
           },
-          sessionId: input.delivery.sessionId,
-          source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
+          sessionId: input.sessionId,
+          source: input.source,
         },
         input.signal,
       );
@@ -1025,6 +1647,7 @@ export class CloudTurnRunner {
       });
       return {
         executionDir: inSandboxExecutionDir,
+        ...(openRelay.sessionCliProof ? { sessionCliProof: openRelay.sessionCliProof } : {}),
         close: async () => {
           const failures = await cleanup("execution_closed");
           if (failures.length > 0) {
@@ -1108,6 +1731,20 @@ export class CloudTurnRunner {
 
 function cancelledBeforeStart(): TurnCompletion {
   return { errorReason: "client_shutdown", executionEffects: "not_started", outcome: "cancelled" };
+}
+
+/**
+ * One conservative Session settlement outcome. A Turn may only be reported `completed` when the
+ * worker reported complete execution effects; anything else stays distinguishable as failed,
+ * cancelled, or unknown.
+ */
+function sessionSettlementOutcome(completion: TurnCompletion): CloudJournalSettlementOutcome {
+  if (completion.outcome === "cancelled") return "cancelled";
+  if (completion.outcome === "unknown") return "unknown";
+  if (completion.outcome === "completed") {
+    return completion.executionEffects === "completed" ? "completed" : "unknown";
+  }
+  return "failed";
 }
 
 function workspaceSaveFailure(completion: TurnCompletion): TurnCompletion {

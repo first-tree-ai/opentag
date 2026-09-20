@@ -8,23 +8,32 @@ import {
   collectKnownSecrets,
   createCloudDeliveryComposition,
   createCloudIngressAllocationPort,
+  createCloudSessionAllocationPort,
   createSandboxRunnerRuntime,
 } from "../cloud-runtime-composition.js";
 import type { ServerConfig } from "../config.js";
 import { imBindings, sandboxes, users } from "../db/schema/index.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { PostgresRuntimeDurableWorkStore } from "../runtime/runtime-durable-work-store.js";
 import { createRuntimeCredentialServices } from "../runtime-credentials/index.js";
 import { AgentService } from "../services/agents/index.js";
 import { formatStartupError } from "../services/auth/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { ApplicationCipher } from "../services/crypto.js";
+import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
+import {
+  CloudSessionCollaborationOwner,
+  CloudSessionWorkTracker,
+  createSessionCliCloudProofAuthority,
+} from "../services/sandboxes/cloud-session-collaboration-owner.js";
 import { SandboxService } from "../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootstrap-token.js";
 import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
+import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import { FAKE_REGION, FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -91,6 +100,44 @@ function runnerRuntime() {
 }
 
 describe("production Cloud runtime composition", () => {
+  it("registers the same Cloud collaboration owner for Session dispatch and Runner frames", () => {
+    const runtime = runnerRuntime();
+    const fence = new CloudRuntimeFence();
+    const credentials = credentialOwner();
+    const sessions = new SessionService(unit.database);
+    const proofs = new SessionCliProofService(unit.database, new ConnectionRegistry(), new Uint8Array(32).fill(8), {
+      cloud: createSessionCliCloudProofAuthority({ fence, registry: credentials.executionRegistry }),
+    });
+    const composition = createCloudDeliveryComposition({
+      database: unit.database,
+      custody: new PostgresRuntimeCustodyStore(unit.database),
+      credentialOwner: credentials,
+      cloudRuntimeFence: fence,
+      hub: runtime.runnerChannel.hub,
+      cloudModel: CLOUD_MODEL,
+      publicUrl: "https://server.example.test",
+      jwtSecret: "unit-test-jwt-secret-at-least-32-characters",
+      sessionProofs: proofs,
+      sessionCollaboration: {
+        assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+        work: new CloudSessionWorkTracker(),
+        proofs,
+        sessions,
+        durableWork: new PostgresRuntimeDurableWorkStore(unit.database),
+        allocation: createCloudSessionAllocationPort({
+          database: unit.database,
+          sandboxService: new SandboxService(unit.database, sessions, { cloudIdentities }),
+          sandboxRunnerService: runtime.sandboxRunnerService,
+        }),
+      },
+    });
+    expect(composition.cloudSessionOwner).toBeInstanceOf(CloudSessionCollaborationOwner);
+    const appOptions = cloudAppOptions({ runnerRuntime: runtime, composition, cloudModel: CLOUD_MODEL });
+    expect(appOptions.runnerChannel?.cloudSession).toBe(composition.cloudSessionOwner);
+    expect(appOptions.runnerChannel?.cloudDelivery).toBe(composition.cloudDeliveryOwner);
+    expect(appOptions.cloudModel?.grants).toBe(composition.cloudModelGrants);
+  });
+
   it("wires workspace persistence through the exact production factory and app registration", async () => {
     const config: Pick<ServerConfig, "environment" | "jwtSecret" | "cloudRunner" | "cloudIdentities"> = {
       environment: "dev",

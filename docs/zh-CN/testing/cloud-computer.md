@@ -189,5 +189,5 @@ Cloud Run 命名空间、真实 IM provider 或 GCP 分配。因此原生取消�
 连接丢失时的授权撤销以及 IM 回复验收仍需真实环境证据。E4 不新增数据库表。E5 见
 [Cloud 工作目录持久化](../cloud-workspace-persistence.md)，其真实验收必须包含释放与替换实例，
 不能将本 E3/E4 验收工具当作持久化证据。E6 Session 并发检查与 E4–E6 staging 组合验收步骤见
-[Cloud Runner 执行](../cloud-runner-execution.md#e6cloud-session-并发)。E7–E8 仍为独立工作，
-E6 本地证据不能代替尚未完成的原生 Cloud／IM 验收。
+[Cloud Runner 执行](../cloud-runner-execution.md#e6cloud-session-并发)。E7 生命周期检查见同文档的空闲回收与复用部分；
+E8 配置、Tree 和协作边界见 [Cloud Context](../cloud-context.md)。本地证据不能代替原生 Cloud／IM 验收。

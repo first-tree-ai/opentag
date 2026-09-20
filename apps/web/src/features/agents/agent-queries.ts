@@ -353,19 +353,14 @@ function assembleAgentDetailView(
   handoffConfirmed: boolean,
   handoff: ImBindingHandoffStatus | undefined,
 ): AgentDetailView {
+  const computer = computersConfirmed
+    ? computers?.find((entry) => entry.computerId === agent.computer?.computerId)
+    : undefined;
   return {
     ...agent,
+    ...(computer?.kind === undefined ? {} : { computerKind: computer.kind }),
     messaging: bindingConfirmed ? { kind: "ready", value: binding } : { kind: "unconfirmed" },
-    availability: projectAgentAvailability(
-      agent,
-      computersConfirmed
-        ? computers?.find((computer) => computer.computerId === agent.computer?.computerId)
-        : undefined,
-      binding,
-      handoff,
-      bindingConfirmed,
-      handoffConfirmed,
-    ),
+    availability: projectAgentAvailability(agent, computer, binding, handoff, bindingConfirmed, handoffConfirmed),
   };
 }
 

@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { SessionCliProofGrant } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { RuntimeBusinessFrame, RuntimeConnection } from "./runtime-connection.js";
 import {
@@ -191,6 +192,7 @@ export class RuntimeCredentialRelay {
   #data?: RuntimeProxyDataConnectionLike;
   #executionId = "";
   #providers: readonly RuntimeExecutionProvider[] = [];
+  #sessionCliProof?: SessionCliProofGrant;
   #services: readonly RuntimeExecutionService[] = [];
 
   private constructor(options: RuntimeCredentialRelayOptions) {
@@ -229,6 +231,15 @@ export class RuntimeCredentialRelay {
   /** Platform services the Server granted this execution (e.g. `web` with exact scopes). */
   get services(): readonly RuntimeExecutionService[] {
     return this.#services;
+  }
+
+  /**
+   * E8 Cloud Session CLI proof from the execution-open result, retained in memory only. The
+   * trusted Runner forwards it to the in-sandbox worker via stdin; it is never journaled, logged,
+   * or archived, and it is dropped with the execution.
+   */
+  get sessionCliProof(): SessionCliProofGrant | undefined {
+    return this.#sessionCliProof;
   }
 
   /** Fires when the execution is revoked, closed, or loses its control/data connection. */
@@ -351,6 +362,7 @@ export class RuntimeCredentialRelay {
         this.#executionId = result.executionId;
         this.#providers = result.providers;
         this.#services = result.services ?? [];
+        this.#sessionCliProof = result.sessionCliProof;
         return;
       }
       // Only `execution_not_ready` is retryable: Server custody has not accepted yet.
@@ -654,6 +666,7 @@ export class RuntimeCredentialRelay {
   async #closeInternal(reason: string, release: boolean): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#sessionCliProof = undefined;
     for (const grant of this.#grants.values()) {
       grant.dead = true;
       grant.renewTimer?.cancel();

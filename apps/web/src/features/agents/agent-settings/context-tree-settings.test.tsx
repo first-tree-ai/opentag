@@ -89,6 +89,94 @@ it("disconnects an offline, unbound Agent", async () => {
     ),
   );
 });
+it("hides Create for a Cloud Agent, connects an existing Tree, and points at integration authorization", async () => {
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: "acme/memory" });
+  const onChanged = vi.fn();
+  const view = render(
+    <ContextTreeSettings config={config()} computerName="Computer" computerKind="cloud" online onChanged={onChanged} />,
+  );
+  expect(screen.queryByRole("button", { name: "Create private repository" })).toBeNull();
+  expect(screen.getByText(/Integrations/i)).toBeTruthy();
+  enter(view.container, "acme/memory");
+  click(view.container, "Connect");
+  await waitFor(() =>
+    expect(operation).toHaveBeenCalledWith(
+      "agent-a",
+      expect.objectContaining({ action: "connect", repository: "acme/memory" }),
+    ),
+  );
+  expect(onChanged).toHaveBeenCalled();
+});
+it("guides a Cloud authentication failure to GitHub integrations, not the local computer", async () => {
+  vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({
+    status: "failed",
+    code: "authentication_required",
+  });
+  const view = render(
+    <ContextTreeSettings config={config()} computerName="Computer" computerKind="cloud" online onChanged={vi.fn()} />,
+  );
+  enter(view.container, "acme/memory");
+  click(view.container, "Connect");
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toMatch(/Integrations/i);
+  expect(alert.textContent).not.toMatch(/gh auth login/i);
+});
+it("guides Cloud permission and preparation failures to Integrations instead of local advice", async () => {
+  const operation = vi.spyOn(browserApi, "contextTreeOperation");
+  const view = render(
+    <ContextTreeSettings config={config()} computerName="Computer" computerKind="cloud" online onChanged={vi.fn()} />,
+  );
+  enter(view.container, "acme/memory");
+  operation.mockResolvedValue({ status: "failed", code: "permission_denied" });
+  click(view.container, "Connect");
+  const denied = await screen.findByRole("alert");
+  expect(denied.textContent).toMatch(/Integrations/i);
+  expect(denied.textContent).not.toMatch(/computer/i);
+  operation.mockResolvedValue({ status: "failed", code: "failed" });
+  click(view.container, "Connect");
+  const failed = await screen.findByRole("alert");
+  expect(failed.textContent).toMatch(/Integrations/i);
+  expect(failed.textContent).not.toMatch(/computer and repository/i);
+});
+it("keeps Local permission and preparation failure advice unchanged", async () => {
+  const operation = vi.spyOn(browserApi, "contextTreeOperation");
+  const view = render(<ContextTreeSettings config={config()} computerName="Computer" online onChanged={vi.fn()} />);
+  enter(view.container, "acme/memory");
+  operation.mockResolvedValue({ status: "failed", code: "permission_denied" });
+  click(view.container, "Connect");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "GitHub denied access. Check repository and organization permissions.",
+  );
+  operation.mockResolvedValue({ status: "failed", code: "failed" });
+  click(view.container, "Connect");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "Context Tree preparation failed. Check the computer and repository, then retry.",
+  );
+});
+it("keeps Local create and local authentication guidance unchanged", async () => {
+  const operation = vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({
+    status: "failed",
+    code: "authentication_required",
+  });
+  const view = render(<ContextTreeSettings config={config()} computerName="Computer" online onChanged={vi.fn()} />);
+  expect(screen.getByRole("button", { name: "Create private repository" })).toBeTruthy();
+  expect(screen.queryByText(/Integrations/i)).toBeNull();
+  enter(view.container, "acme/memory");
+  click(view.container, "Connect");
+  expect((await screen.findByRole("alert")).textContent).toBe("Run gh auth login on Computer, then retry.");
+  expect(operation).toHaveBeenCalledWith("agent-a", expect.objectContaining({ action: "connect" }));
+});
+it("keeps the Local capability guidance unchanged", async () => {
+  vi.spyOn(browserApi, "contextTreeOperation").mockResolvedValue({ status: "failed", code: "capability_missing" });
+  const view = render(<ContextTreeSettings config={config()} computerName="Computer" online onChanged={vi.fn()} />);
+  enter(view.container, "acme/memory");
+  click(view.container, "Create private repository");
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    "Update OpenTag on the bound computer to use Context Tree settings.",
+  );
+});
 it("replays uncertainty with the same identity, but uses a new identity for changed revisions or repositories", async () => {
   const operation = vi
     .spyOn(browserApi, "contextTreeOperation")

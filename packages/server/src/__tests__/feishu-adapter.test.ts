@@ -1024,13 +1024,13 @@ describe("Feishu adapter branch corners", () => {
       });
 
       // Every verb of the default HttpInstance merges the caller's options.
-      const defaultHttp = httpInstances[0] as Record<string, (url: string, options?: unknown) => Promise<unknown>>;
-      await defaultHttp.get("https://open.feishu.cn/x", { headers: { a: "1" } });
-      await defaultHttp.delete("https://open.feishu.cn/x");
-      await defaultHttp.head("https://open.feishu.cn/x");
-      await defaultHttp.options("https://open.feishu.cn/x");
-      await defaultHttp.put("https://open.feishu.cn/x", {}, { headers: {} });
-      await defaultHttp.patch("https://open.feishu.cn/x", {}, { headers: {} });
+      const defaultHttp = httpInstances[0] as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+      await defaultHttp.get?.("https://open.feishu.cn/x", { headers: { a: "1" } });
+      await defaultHttp.delete?.("https://open.feishu.cn/x");
+      await defaultHttp.head?.("https://open.feishu.cn/x");
+      await defaultHttp.options?.("https://open.feishu.cn/x");
+      await defaultHttp.put?.("https://open.feishu.cn/x", {}, { headers: {} });
+      await defaultHttp.patch?.("https://open.feishu.cn/x", {}, { headers: {} });
       expect(transport.get).toHaveBeenCalledWith("https://open.feishu.cn/x", { headers: { a: "1" } });
       for (const verb of ["delete", "head", "options"] as const) {
         expect(transport[verb]).toHaveBeenCalledWith("https://open.feishu.cn/x", {});

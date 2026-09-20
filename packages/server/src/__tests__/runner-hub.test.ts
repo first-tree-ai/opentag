@@ -328,7 +328,7 @@ describe("RunnerHub acceptance runs", () => {
     expect(
       hub.resolveAcceptanceResult(
         scope.sandboxId,
-        { type: "acceptance:result", requestId: frame.requestId, mode: "offline", outcome: "passed" },
+        { type: "acceptance:result", requestId: frame.requestId, outcome: "passed" },
         socket,
       ),
     ).toBe(true);
@@ -338,7 +338,7 @@ describe("RunnerHub acceptance runs", () => {
     expect(
       hub.resolveAcceptanceResult(
         scope.sandboxId,
-        { type: "acceptance:result", requestId: frame.requestId, mode: "offline", outcome: "passed" },
+        { type: "acceptance:result", requestId: frame.requestId, outcome: "passed" },
         socket,
       ),
     ).toBe(false);
@@ -381,7 +381,7 @@ describe("RunnerHub acceptance runs", () => {
     expect(hub.isBusy(scope.sandboxId)).toBe(true);
     hub.resolveAcceptanceResult(
       scope.sandboxId,
-      { type: "acceptance:result", requestId: frame.requestId, mode: "offline", outcome: "passed" },
+      { type: "acceptance:result", requestId: frame.requestId, outcome: "passed" },
       socket,
     );
     await expect(first).resolves.toMatchObject({ outcome: "passed" });
@@ -470,7 +470,6 @@ describe("RunnerHub acceptance runs", () => {
     const result: RunnerAcceptanceResultFrame = {
       type: "acceptance:result",
       requestId: frame.requestId,
-      mode: "offline",
       outcome: "failed",
     };
     expect(hub.resolveAcceptanceResult(scope.sandboxId, result, fakeSocket())).toBe(false);
